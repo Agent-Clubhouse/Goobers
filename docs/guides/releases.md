@@ -226,7 +226,12 @@ Every non-empty release build writes three metadata assets alongside the binarie
 - `feature-registry.json` is the complete, schema-versioned snapshot returned by
   the same registry that powers `goobers features` and
   [`docs/feature-matrix.md`](../feature-matrix.md).
-- `dsl-support-matrix.json` records the compiled-in DSL `SupportMatrix`.
+- `dsl-support-matrix.json` records the compiled-in DSL `SupportMatrix`. Packaging
+  a final `vMAJOR.MINOR.PATCH` version refuses to run when a DSL version's
+  declared level is not the level its lifecycle history actually reaches in that
+  release — a level whose transition is dated at a release that does not exist
+  yet would otherwise ship, and the append-only history rules would then make it
+  permanent. Pre-release, `git describe` and `dev` versions are not gated.
 - `RELEASE_NOTES.md` is rendered from
   [`release/release-notes.tmpl.md`](../../release/release-notes.tmpl.md). It
   includes newly GA, newly deprecated, and removed features; DSL versions newly

@@ -50,7 +50,8 @@ func TestDSLMatrixAgainstLatestRelease(t *testing.T) {
 
 func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
-	firstTag, latestTag, _ := supportReleaseTagRange(t, root)
+	released, latestTag, _ := loadLatestReleasedSupportMatrix(t, root)
+	firstTag, _, _ := supportReleaseTagRange(t, root)
 	var latest releaseVersion
 	if latestTag != "" {
 		var err error
@@ -77,7 +78,13 @@ func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 			if firstTag == "" {
 				releaseAnchor = candidate
 			}
-			if err := validateSupportMatrixAfterTag(GetDSL(), candidate, releaseAnchor); err != nil {
+			if err := validateSupportMatrixAfterTag(
+				released,
+				GetDSL(),
+				latestTag,
+				candidate,
+				releaseAnchor,
+			); err != nil {
 				t.Fatalf("compiled-in DSL support matrix would fail after cutting %s: %v", candidate.String(), err)
 			}
 		})
@@ -104,24 +111,164 @@ func TestPreTagSimulationRejectsOffByOneSupportDeadline(t *testing.T) {
 	firstRelease := releaseVersion{major: 1, minor: 1}
 	nextRelease := releaseVersion{major: 1, minor: 2}
 
-	err := validateSupportMatrixAfterTag(matrix, nextRelease, firstRelease)
+	err := validateSupportMatrixAfterTag(SupportMatrix{}, matrix, "", nextRelease, firstRelease)
 	if err == nil || !strings.Contains(err.Error(), "fewer than 3 minor releases") {
 		t.Fatalf("off-by-one support deadline error = %v, want three-minor support-window failure", err)
 	}
 }
 
+// validateSupportMatrixAfterTag simulates cutting release from candidate. It
+// validates candidate against the matrix released in latestRelease first — the
+// baseline that gives validateSupportMatrixEvolution's release-sensitive loop
+// real input, without which every new-transition rule iterates an empty slice
+// (#4215) — and then against the post-tag world, where candidate is itself the
+// released matrix and the support window must hold with release anchored.
 func validateSupportMatrixAfterTag(
-	matrix SupportMatrix,
+	released, candidate SupportMatrix,
+	latestRelease string,
 	release releaseVersion,
 	firstRelease releaseVersion,
 ) error {
 	developmentReleases := make(map[string]releaseVersion)
-	for _, version := range matrix.Versions() {
+	for _, version := range candidate.Versions() {
 		if len(version.History) > 0 && version.History[0].SinceVersion == initialSupportVersion {
 			developmentReleases[version.Version] = firstRelease
 		}
 	}
-	return validateSupportMatrixEvolution(matrix, matrix, release.String(), developmentReleases)
+	if latestRelease == "" {
+		latestRelease = initialSupportVersion
+	}
+	if err := validateSupportMatrixEvolution(released, candidate, latestRelease, developmentReleases); err != nil {
+		return err
+	}
+	return validateSupportMatrixEvolution(candidate, candidate, release.String(), developmentReleases)
+}
+
+// betaTwoSupportMatrix reconstructs the DSL support matrix shipped in
+// v0.4.0-beta.1 and v0.4.0-beta.2: DSL 1.4 declared unsupported with the
+// transition dated v0.5.0, a release that does not exist yet.
+func betaTwoSupportMatrix() SupportMatrix {
+	return SupportMatrix{
+		"1.4": {
+			Level:       LevelUnsupported,
+			Replacement: "2.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+				{Level: LevelUnsupported, SinceVersion: "v0.5.0"},
+			},
+		},
+		"2.0": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+			},
+		},
+	}
+}
+
+// lastReleasedSupportMatrix reconstructs the matrix published in v0.3.3, the
+// last release before the beta line.
+func lastReleasedSupportMatrix() SupportMatrix {
+	return SupportMatrix{
+		"1.4": {
+			Level:            LevelDeprecated,
+			Replacement:      "2.0",
+			UnsupportedAfter: "v0.5.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+			},
+		},
+		"2.0": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+			},
+		},
+	}
+}
+
+func TestReleaseLevelRefusesLevelAheadOfItsTransition(t *testing.T) {
+	candidate := betaTwoSupportMatrix()
+	released := lastReleasedSupportMatrix()
+	firstRelease := releaseVersion{major: 0, minor: 1}
+	cut := releaseVersion{major: 0, minor: 4}
+
+	if err := validateSupportMatrixAfterTag(released, candidate, "v0.3.3", cut, firstRelease); err != nil {
+		t.Fatalf("evolution rules alone reject the beta.2 matrix (%v); the release-level check is what must catch it", err)
+	}
+	err := ValidateSupportPolicyForRelease(candidate, cut.String())
+	if err == nil || !strings.Contains(err.Error(), `only reaches "deprecated"`) {
+		t.Fatalf("release-level error = %v, want DSL 1.4 refused for declaring unsupported at v0.4.0", err)
+	}
+	if err := ValidateSupportPolicyForRelease(candidate, "v0.5.0"); err != nil {
+		t.Fatalf("beta.2 matrix must be valid in the release its transition names: %v", err)
+	}
+}
+
+func TestReleaseLevelRequiresATransitionAtOrBeforeTheRelease(t *testing.T) {
+	matrix := SupportMatrix{
+		"3.0": {
+			Level: LevelPreview,
+			History: []SupportTransition{
+				{Level: LevelPreview, SinceVersion: "v0.4.0"},
+			},
+		},
+	}
+	err := ValidateSupportPolicyForRelease(matrix, "v0.3.3")
+	if err == nil || !strings.Contains(err.Error(), "after the release") {
+		t.Fatalf("release-level error = %v, want a not-yet-in-lifecycle failure", err)
+	}
+	if err := ValidateSupportPolicyForRelease(matrix, "v0.4.0"); err != nil {
+		t.Fatalf("preview declared in the release being built must be accepted: %v", err)
+	}
+}
+
+func TestPreTagSimulationRefusesTransitionAtTheLatestRelease(t *testing.T) {
+	candidate := betaTwoSupportMatrix()
+	candidate["3.0"] = VersionSupport{
+		Level: LevelPreview,
+		History: []SupportTransition{
+			{Level: LevelPreview, SinceVersion: "v0.3.3"},
+		},
+	}
+	released := lastReleasedSupportMatrix()
+	firstRelease := releaseVersion{major: 0, minor: 1}
+	cut := releaseVersion{major: 0, minor: 4}
+
+	err := validateSupportMatrixAfterTag(released, candidate, "v0.3.3", cut, firstRelease)
+	if err == nil || !strings.Contains(err.Error(), "must be later than latest release") {
+		t.Fatalf("pre-tag simulation error = %v, want the later-than-latest-release failure", err)
+	}
+}
+
+func TestEvolutionKeepsPublishedUnsupportedAfter(t *testing.T) {
+	released := lastReleasedSupportMatrix()
+	firstRelease := releaseVersion{major: 0, minor: 1}
+	developmentReleases := map[string]releaseVersion{"1.4": firstRelease, "2.0": firstRelease}
+
+	pulledIn := betaTwoSupportMatrix()
+	version := pulledIn["1.4"]
+	version.History[len(version.History)-1].SinceVersion = "v0.4.0"
+	pulledIn["1.4"] = version
+	err := validateSupportMatrixEvolution(released, pulledIn, "v0.3.3", developmentReleases)
+	if err == nil || !strings.Contains(err.Error(), "before the unsupported-after release") {
+		t.Fatalf("pulled-in unsupported release error = %v, want the published-deadline failure", err)
+	}
+
+	dropped := lastReleasedSupportMatrix()
+	stillDeprecated := dropped["1.4"]
+	stillDeprecated.UnsupportedAfter = "v0.4.0"
+	dropped["1.4"] = stillDeprecated
+	err = validateSupportMatrixEvolution(released, dropped, "v0.3.3", developmentReleases)
+	if err == nil || !strings.Contains(err.Error(), "moves its unsupported-after release earlier") {
+		t.Fatalf("earlier unsupported-after error = %v, want the published-deadline failure", err)
+	}
+
+	if err := validateSupportMatrixEvolution(released, betaTwoSupportMatrix(), "v0.3.3", developmentReleases); err != nil {
+		t.Fatalf("honoring the published unsupported-after release must be accepted: %v", err)
+	}
 }
 
 func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {
