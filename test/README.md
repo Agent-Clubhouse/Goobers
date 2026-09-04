@@ -15,6 +15,7 @@ A PR is mergeable only when CI is green, where green means:
 | Vet | `go vet` (`make test` or its own step) | clean |
 | Unit tests | `go test ./...` (`make test`) | all pass |
 | Coverage | `make cover-check` | total ≥ **70%** (ratcheting target) |
+| Complexity | `make complexity` (in `make ci`) | no new function ≥ **cc 40** outside the baseline |
 | Acceptance | suites in this dir | all pass |
 
 **One CI workflow.** Dev-3 owns `.github/workflows/ci.yml` and the build/vet/lint/unit
@@ -40,8 +41,38 @@ workflow (coordinated with Dev-3, not a second workflow). In the interim gate QA
 directly on the PR head. Threshold starts at 70% and ratchets up as the codebase matures;
 it is never lowered to pass a specific PR (see QA checklist §5).
 
-## Acceptance suites
+### Complexity gate
+**`go run ./test/complexitygate`** (`make complexity`, and a `checks`-group step of
+`make ci`) scores every non-test Go function in the tree the way `gocyclo` does
+(1 + branch points) and enforces three tiers:
 
+| Tier | Threshold | Behaviour |
+|---|---|---|
+| Hard cap | cc **40** | the function must appear in `test/complexitygate/baseline.txt` at no more than its recorded score; a new offender, or a baselined one that grew, fails |
+| Ratchet | cc **25** | the number of such functions must not exceed the `!ratchet-budget` recorded in the baseline; dropping under it prints a note to re-pin |
+| Report | cc **15** | counted and printed only, never fails |
+
+The baseline is keyed by **path + symbol**, not by count, so moving a function to
+another file does not create headroom — the moved copy is an unknown key and trips
+the hard cap. Unlike the coverage gate it does **not** exclude `cmd/`: command
+entrypoints are where complexity has grown fastest.
+
+After a deliberate decomposition (or a deliberate, justified increase), re-pin with
+`make complexity-update` and commit the regenerated baseline. The thresholds are
+pinned to the tree as measured when the gate landed; tightening them is a separate,
+explicit ratchet.
+
+**Escape hatch.** A function may carry an inline
+
+```go
+//complexitygate:allow <why this cannot reasonably be decomposed>
+```
+
+comment in its doc comment or body. The justification text is mandatory — a bare
+`//complexitygate:allow` fails the gate — and an allowed function is exempt from the
+hard cap while still counting toward the ratchet budget.
+
+## Acceptance suites
 ### M1 — config validation + envelope schemas (`config/`)
 - Runs Dev-1's `validate` CLI against `fixtures/config/good/*` (must pass) and
   `fixtures/config/bad/*` (must be rejected, with a non-zero exit).
