@@ -54,3 +54,67 @@ func TestNormalizeSignatureKeepsNonPathValues(t *testing.T) {
 		t.Fatalf("NormalizeSignature() = %q, want %q", got, want)
 	}
 }
+
+// The Go test runner echoes `-test.shuffle <seed>` on a failing package, and
+// for a package-level failure that echo can be the only line left after
+// boilerplate. The seed changes every run, so keeping it splits one recurring
+// failure into one issue per run (#4221).
+func TestNormalizeSignatureFoldsRunnerFlagValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		first string
+		other string
+		same  bool
+		want  string
+	}{
+		{
+			name:  "shuffle seed alone",
+			first: "-test.shuffle 1788254672532515140",
+			other: "-test.shuffle 1788173513904988007",
+			same:  true,
+			want:  "-test.shuffle <value>",
+		},
+		{
+			name:  "shuffle seed alongside an assertion",
+			first: "runner_test.go:42: Resume() = 3, want 4\n-test.shuffle 1788254672532515140",
+			other: "runner_test.go:42: Resume() = 3, want 4\n-test.shuffle 1788083830159618170",
+			same:  true,
+			want:  "Resume() = 3, want 4 | -test.shuffle <value>",
+		},
+		{
+			name:  "equals form and numeric limits",
+			first: "-test.shuffle=1788254672532515140 -test.count=17",
+			other: "-test.shuffle=1788083830159618170 -test.count=3",
+			same:  true,
+			want:  "-test.shuffle=<value> -test.count=<value>",
+		},
+		{
+			name:  "distinct assertions stay distinct",
+			first: "runner_test.go:42: Resume() = 3, want 4\n-test.shuffle 1788254672532515140",
+			other: "runner_test.go:42: Resume() = 9, want 4\n-test.shuffle 1788254672532515140",
+			same:  false,
+			want:  "Resume() = 3, want 4 | -test.shuffle <value>",
+		},
+		{
+			name:  "non-numeric flag values are meaning, not noise",
+			first: "-test.run TestResume",
+			other: "-test.run TestRestart",
+			same:  false,
+			want:  "-test.run TestResume",
+		},
+	}
+	const pkg, test = "./cmd/goobers", ""
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			first := NormalizeSignature(testCase.first)
+			other := NormalizeSignature(testCase.other)
+			if first != testCase.want {
+				t.Fatalf("NormalizeSignature() = %q, want %q", first, testCase.want)
+			}
+			got := Fingerprint(pkg, test, first) == Fingerprint(pkg, test, other)
+			if got != testCase.same {
+				t.Fatalf("fingerprints equal = %t, want %t (%q vs %q)", got, testCase.same, first, other)
+			}
+		})
+	}
+}

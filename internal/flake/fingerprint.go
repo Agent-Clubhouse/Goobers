@@ -25,6 +25,11 @@ var (
 	// system under test derived (a mirror's repo key, an object directory),
 	// stable within a run and different in the next.
 	volatileHexSegment = regexp.MustCompile(`([\\/])[0-9a-fA-F]{8,}\b`)
+	// volatileTestFlagValue is the Go test runner echoing its own flags on a
+	// failing package (-test.shuffle 1788254672532515140). A numeric value
+	// there is a seed or a limit the harness chose for this run, not anything
+	// that distinguishes one failure from another.
+	volatileTestFlagValue = regexp.MustCompile(`(-test\.[A-Za-z0-9_.]+)([= ])\d[^\s]*`)
 )
 
 // NormalizeSignature removes volatile values while retaining the assertion,
@@ -160,6 +165,7 @@ func normalizeLine(line string) string {
 	line = strings.TrimSpace(line)
 	line = leadingSourceLocation.ReplaceAllString(line, "")
 	line = sourceLocation.ReplaceAllString(line, "$1:$2")
+	line = volatileTestFlagValue.ReplaceAllString(line, "${1}${2}<value>")
 	line = volatileTimestamp.ReplaceAllString(line, "<time>")
 	line = volatileUUID.ReplaceAllString(line, "<uuid>")
 	line = volatileAddress.ReplaceAllString(line, "<addr>")
