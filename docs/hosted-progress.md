@@ -43,8 +43,13 @@ The payload contains the Actions identity and URL, canonical immutable
 `RunIdentity`, current phase, pinned workflow graph, transition and
 operator-relevant journal events, revision, and update time. Updates occur only
 when the committed journal sequence advances. Older projected events may be
-removed to remain within the Check Run output limit; `truncatedBefore` records
-that boundary.
+removed to remain within the Check Run output limit. `truncatedBefore`
+records the highest journal sequence dropped by that bounding: the anchor
+`events[0]` is preserved regardless of its sequence, every later projected
+event with `seq > truncatedBefore` is present, and events with a sequence at
+or below `truncatedBefore` (other than the anchor) may have been dropped.
+When `events` is empty, `truncatedBefore` equals `revision`, marking that
+every projected event was dropped.
 
 Consumers must match both `schema` and `actionsRunId`. They should use the
 highest matching revision and replace the projection with the final journal

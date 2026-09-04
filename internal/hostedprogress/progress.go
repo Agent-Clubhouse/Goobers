@@ -33,16 +33,23 @@ const (
 // Contract is the portable live-run projection embedded in a GitHub Check Run.
 // It intentionally reuses the canonical journal identity, graph, and events.
 type Contract struct {
-	Schema          string              `json:"schema"`
-	Revision        uint64              `json:"revision"`
-	ActionsRunID    string              `json:"actionsRunId"`
-	ActionsRunURL   string              `json:"actionsRunUrl"`
-	Identity        journal.RunIdentity `json:"identity"`
-	Phase           journal.RunPhase    `json:"phase"`
-	Graph           json.RawMessage     `json:"graph,omitempty"`
-	Events          []journal.Event     `json:"events"`
-	UpdatedAt       time.Time           `json:"updatedAt"`
-	TruncatedBefore uint64              `json:"truncatedBefore,omitempty"`
+	Schema        string              `json:"schema"`
+	Revision      uint64              `json:"revision"`
+	ActionsRunID  string              `json:"actionsRunId"`
+	ActionsRunURL string              `json:"actionsRunUrl"`
+	Identity      journal.RunIdentity `json:"identity"`
+	Phase         journal.RunPhase    `json:"phase"`
+	Graph         json.RawMessage     `json:"graph,omitempty"`
+	Events        []journal.Event     `json:"events"`
+	UpdatedAt     time.Time           `json:"updatedAt"`
+	// TruncatedBefore is the highest journal sequence dropped by payload
+	// bounding (see boundContract). When non-zero, the retained anchor
+	// Events[0] is preserved regardless of its sequence, every later
+	// projected event with Seq > TruncatedBefore is present in Events, and
+	// events with a sequence at or below TruncatedBefore (other than the
+	// anchor) may have been dropped. When Events is empty this equals
+	// Revision, marking that every projected event was dropped.
+	TruncatedBefore uint64 `json:"truncatedBefore,omitempty"`
 }
 
 // GitHubEnvironment is the workflow metadata required to publish progress.

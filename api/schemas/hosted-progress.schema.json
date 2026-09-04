@@ -35,7 +35,7 @@
       "items": { "type": "object" }
     },
     "updatedAt": { "type": "string", "format": "date-time", "description": "UTC time at which this projection was generated." },
-    "truncatedBefore": { "type": "integer", "minimum": 1, "description": "First retained sequence after payload bounding removed older projected events." }
+    "truncatedBefore": { "type": "integer", "minimum": 1, "description": "Highest journal sequence dropped by payload bounding. When set, the retained anchor events[0] is preserved regardless of its sequence, and every later projected event with seq greater than truncatedBefore is present in events[]; events with a sequence at or below truncatedBefore, other than the anchor, may have been dropped. When events[] is empty this equals revision, indicating every projected event was dropped." }
   },
   "additionalProperties": false
 }

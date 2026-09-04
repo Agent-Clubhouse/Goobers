@@ -81,11 +81,23 @@ func TestHostedProgressTerminalContractValidates(t *testing.T) {
 }
 
 func TestHostedProgressTruncatedContractValidates(t *testing.T) {
+	// Shape a producer actually emits after payload bounding drops middle
+	// projected events: the anchor Events[0] (typically run.started) is
+	// retained at its original low seq, later events remain, and
+	// TruncatedBefore records the highest dropped seq — strictly above the
+	// anchor seq and strictly below the retained trailing event's seq. See
+	// TestBoundContractMarksTruncationWhenTwoEventsBecomeOne in
+	// internal/hostedprogress for the pinned producer contract.
 	contract := minimalHostedProgressContract(t)
 	contract.Revision = 200
 	contract.TruncatedBefore = 150
 	contract.Graph = json.RawMessage(`{"nodes":[]}`)
-	contract.Events[0].Seq = 150
+	contract.Events = append(contract.Events, journal.Event{
+		Schema: journal.EventSchema,
+		Seq:    200,
+		Type:   journal.EventRunFinished,
+		Time:   contract.UpdatedAt,
+	})
 	data, err := json.Marshal(contract)
 	if err != nil {
 		t.Fatalf("marshal truncated hosted-progress contract: %v", err)
