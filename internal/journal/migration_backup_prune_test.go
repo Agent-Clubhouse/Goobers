@@ -29,6 +29,9 @@ func TestPruneMigrationBackupsBoundsGrowth(t *testing.T) {
 	if err := os.Mkdir(recent, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chtimes(recent, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	unrecognized := filepath.Join(backupRoot, "keep-me")
 	if err := os.Mkdir(unrecognized, 0o700); err != nil {
 		t.Fatal(err)
