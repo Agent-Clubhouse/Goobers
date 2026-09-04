@@ -207,7 +207,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		return PullRequestPollResult{}, err
 	}
 
-	comments, err := p.pullRequestComments(ctx, req.Repository, req.PullID, req.CommentsSince)
+	comments, err := pullRequestComments(ctx, p, p.BaseURL, req.Repository, req.PullID, req.CommentsSince)
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
@@ -232,7 +232,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		Draft:              pr.Draft,
 		Labels:             labels,
 		HeadBranch:         pr.Head.Ref,
-		HeadRepository:     githubRepositoryRef(pr.Head.Repo),
+		HeadRepository:     repositoryRef(ProviderGitHub, pr.Head.Repo),
 		HeadSHA:            pr.Head.SHA,
 		BaseSHA:            pr.Base.SHA,
 		BaseBranch:         pr.Base.Ref,
@@ -245,18 +245,6 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		URL:                pr.HTMLURL,
 		Integrity:          apiintegrity.Unapproved,
 	}, nil
-}
-
-func githubRepositoryRef(repo *githubRepository) *RepositoryRef {
-	if repo == nil {
-		return nil
-	}
-	return &RepositoryRef{
-		Provider: ProviderGitHub,
-		Owner:    repo.Owner.Login,
-		Name:     repo.Name,
-		URL:      repo.HTMLURL,
-	}
 }
 
 // ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
@@ -277,7 +265,7 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		return ClosePullRequestResult{}, err
 	}
 	if req.Comment != "" {
-		if err := p.postAttributedComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
+		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
 			return ClosePullRequestResult{}, err
 		}
 	}
@@ -1475,47 +1463,6 @@ func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo Repositor
 		return nil, err
 	}
 	return annotations, nil
-}
-
-func (p *GitHubProvider) pullRequestComments(ctx context.Context, repo RepositoryRef, pullID string, since *time.Time) ([]PullRequestComment, error) {
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", pullID, "comments")
-	if err != nil {
-		return nil, err
-	}
-	if since != nil {
-		endpoint, err = addQuery(endpoint, url.Values{"since": []string{since.UTC().Format(time.RFC3339)}})
-		if err != nil {
-			return nil, err
-		}
-	}
-	comments := make([]PullRequestComment, 0)
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var raw []githubIssueComment
-		if err := json.Unmarshal(page, &raw); err != nil {
-			return fmt.Errorf("decode pull request comments page: %w", err)
-		}
-		for _, c := range raw {
-			comments = append(comments, PullRequestComment{
-				ID: c.ID, Author: c.User.Login, Body: c.Body, URL: c.HTMLURL,
-				CreatedAt: c.CreatedAt, Integrity: apiintegrity.Unapproved,
-			})
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return comments, nil
-}
-
-func normalizeCombinedStatusState(state string) CheckState {
-	switch strings.ToLower(state) {
-	case "success":
-		return CheckStatePassing
-	case "failure", "error":
-		return CheckStateFailing
-	default:
-		return CheckStatePending
-	}
 }
 
 func normalizeCheckRunState(status, conclusion string) CheckState {

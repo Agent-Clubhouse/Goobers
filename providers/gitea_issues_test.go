@@ -558,7 +558,7 @@ func TestGiteaReleaseWorkItemClaimRemovesMarker(t *testing.T) {
 	if len(m.comments) != commentCount {
 		t.Fatalf("retry release posted duplicate comment: %d -> %d", commentCount, len(m.comments))
 	}
-	winner, claimed, err := p.claimWinner(ctx, repo, "7")
+	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, repo, "7")
 	if err != nil {
 		t.Fatalf("claimWinner after release: %v", err)
 	}

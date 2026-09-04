@@ -526,7 +526,7 @@ func (p *GitHubProvider) ActionsWorkflowCount(ctx context.Context, repo Reposito
 	var out struct {
 		TotalCount int `json:"total_count"`
 	}
-	if err := p.doStatus(ctx, http.MethodGet, endpoint, nil, &out, nil); err != nil {
+	if err := doStatus(ctx, p, http.MethodGet, endpoint, nil, &out, nil); err != nil {
 		return 0, err
 	}
 	return out.TotalCount, nil
@@ -653,7 +653,7 @@ func (p *GitHubProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWor
 		}
 	}
 	if req.Comment != "" {
-		if err := p.postAttributedComment(ctx, req.Repository, req.ID, req.Comment, "state-change"); err != nil {
+		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, req.Comment, "state-change"); err != nil {
 			return WorkItem{}, err
 		}
 	}

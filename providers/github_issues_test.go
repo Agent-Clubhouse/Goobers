@@ -974,7 +974,7 @@ func TestGitHubLedgerAuthorizedReleaseReconcilesHistoricalWinner(t *testing.T) {
 	if released.HasLabel(LabelClaimed) {
 		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
 	}
-	winner, claimed, err := p.claimWinner(context.Background(), repo, "7")
+	winner, claimed, err := claimWinner(context.Background(), p, p.BaseURL, repo, "7")
 	if err != nil {
 		t.Fatalf("claimWinner after reconciliation: %v", err)
 	}
@@ -1007,7 +1007,7 @@ func TestGitHubReconcileOrphanedClaimClosesEpochAndExplainsLabels(t *testing.T) 
 	if item.HasLabel(LabelClaimed) || item.HasLabel(LabelReady) {
 		t.Fatalf("reconciled labels = %v, want claim and ready removed", item.Labels)
 	}
-	winner, claimed, err := p.claimWinner(context.Background(), repo, "7")
+	winner, claimed, err := claimWinner(context.Background(), p, p.BaseURL, repo, "7")
 	if err != nil {
 		t.Fatalf("claimWinner: %v", err)
 	}

@@ -185,7 +185,7 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 	if id == "" {
 		return nil, errIssueIDRequired
 	}
-	raw, err := p.allIssueComments(ctx, repo, id)
+	raw, err := allIssueComments(ctx, p, p.BaseURL, repo, id)
 	if err != nil {
 		return nil, err
 	}
@@ -279,29 +279,7 @@ func (p *GitHubProvider) DeleteComment(ctx context.Context, repo RepositoryRef, 
 	if err != nil {
 		return err
 	}
-	return p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound})
-}
-
-// allIssueComments fetches every comment on an issue, following pagination
-// (#139). Both ListComments and the claim protocol's claimWinner read the full
-// comment set through here: a claim breadcrumb landing on page 2+ used to be
-// invisible, so two racers each read "no claim" and both took the empty-read
-// "we win" branch — a double claim on any issue with >30 comments.
-func (p *GitHubProvider) allIssueComments(ctx context.Context, repo RepositoryRef, id string) ([]githubComment, error) {
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
-	if err != nil {
-		return nil, err
-	}
-	var all []githubComment
-	err = p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageItems []githubComment
-		if err := json.Unmarshal(page, &pageItems); err != nil {
-			return fmt.Errorf("decode comments page: %w", err)
-		}
-		all = append(all, pageItems...)
-		return nil
-	})
-	return all, err
+	return doStatus(ctx, p, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound})
 }
 
 type githubIssueEvent struct {
@@ -646,7 +624,7 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 
 	// Fast path: if a claim breadcrumb already exists, do not add another. Recognize
 	// the existing winner (which may be us on an idempotent re-claim).
-	if winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID); err != nil {
+	if winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID); err != nil {
 		return ClaimResult{}, err
 	} else if ok {
 		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner, label)
@@ -654,10 +632,10 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 
 	// No existing claim: stake ours with a breadcrumb comment, then re-read to settle
 	// the race deterministically by minimum comment id.
-	if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
+	if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
 		return ClaimResult{}, err
 	}
-	winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID)
+	winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
 	if err != nil {
 		return ClaimResult{}, err
 	}
@@ -691,7 +669,7 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 		label = LabelClaimed
 	}
 
-	winner, claimed, err := p.claimWinner(ctx, req.Repository, req.ID)
+	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
 	if err != nil {
 		return WorkItem{}, err
 	}
@@ -707,7 +685,7 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
-		if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
+		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
 			return WorkItem{}, err
 		}
 	}
@@ -764,7 +742,7 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 		removeLabels = append(removeLabels, LabelClaimed)
 	}
 
-	winner, claimed, err := p.claimWinner(ctx, repo, id)
+	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, repo, id)
 	if err != nil {
 		return WorkItem{}, err
 	}
@@ -826,42 +804,6 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
 }
 
-// claimWinner reads trusted issue comments and returns the run id of the recognized
-// claimer in the current epoch. Only the authenticated provider identity can change
-// epoch state; issue comments from other users are untrusted. A matching release
-// breadcrumb ends an epoch, so stale winner and losing-racer breadcrumbs cannot
-// block the next owner.
-func (p *GitHubProvider) claimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
-	markerAuthor, err := p.AuthenticatedLogin(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("resolve claim marker author: %w", err)
-	}
-	raw, err := p.allIssueComments(ctx, repo, id)
-	if err != nil {
-		return "", false, err
-	}
-	sort.Slice(raw, func(i, j int) bool { return raw[i].ID < raw[j].ID })
-	winner := ""
-	for _, c := range raw {
-		if !strings.EqualFold(c.User.Login, markerAuthor) {
-			continue
-		}
-		if releasedBy := claimReleaseRunID(c.Body); releasedBy != "" {
-			if winner == releasedBy {
-				winner = ""
-			}
-			continue
-		}
-		if winner == "" {
-			winner = claimRunID(c.Body)
-		}
-	}
-	if winner == "" {
-		return "", false, nil
-	}
-	return winner, true, nil
-}
-
 // applyLabelChanges adds labels (additive; GitHub ignores duplicates) and removes
 // labels, tolerating a 404 when a removed label is not present.
 func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryRef, id string, add, remove []string) error {
@@ -879,7 +821,7 @@ func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryR
 		if err != nil {
 			return err
 		}
-		if err := p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound}); err != nil {
+		if err := doStatus(ctx, p, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound}); err != nil {
 			return err
 		}
 	}
@@ -887,19 +829,7 @@ func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryR
 }
 
 func (p *GitHubProvider) postComment(ctx context.Context, repo RepositoryRef, id, body string) error {
-	return p.postAttributedComment(ctx, repo, id, body, "comment")
-}
-
-func (p *GitHubProvider) postAttributedComment(ctx context.Context, repo RepositoryRef, id, body, action string) error {
-	body, err := withAttribution(body, p.attribution, action)
-	if err != nil {
-		return err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
-	if err != nil {
-		return err
-	}
-	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, nil)
+	return postAttributedComment(ctx, p, p.BaseURL, p.attribution, repo, id, body, "comment")
 }
 
 // CreateWorkItemComment appends one issue comment and returns its provider
@@ -920,22 +850,14 @@ func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo Reposit
 	if err != nil {
 		return Comment{}, err
 	}
-	var comment githubComment
+	var comment restComment
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
 		return Comment{}, err
 	}
 	return mapGitHubComment(comment), nil
 }
 
-type githubComment struct {
-	ID        int64      `json:"id"`
-	Body      string     `json:"body"`
-	User      githubUser `json:"user"`
-	HTMLURL   string     `json:"html_url"`
-	CreatedAt *time.Time `json:"created_at"`
-}
-
-func mapGitHubComment(c githubComment) Comment {
+func mapGitHubComment(c restComment) Comment {
 	return Comment{
 		ID:         strconv.FormatInt(c.ID, 10),
 		Author:     c.User.Login,

@@ -11,7 +11,7 @@ import (
 )
 
 func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body interface{}, out interface{}) error {
-	return p.doStatus(ctx, method, endpoint, body, out, nil)
+	return doStatus(ctx, p, method, endpoint, body, out, nil)
 }
 
 // doRetryable is do with sendWithAcceptRetryable's explicit retry-safety
@@ -135,24 +135,6 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 		}
 		return resp, nil
 	}
-}
-
-// doStatus performs a GitHub request with transient-failure retries (see send).
-// Status codes in allowStatus are treated as success (used to tolerate a 404
-// when removing a label that is not present); the response body is not decoded
-// for those.
-func (p *GitHubProvider) doStatus(ctx context.Context, method, endpoint string, body, out interface{}, allowStatus []int) error {
-	resp, err := p.send(ctx, method, endpoint, body)
-	if err != nil {
-		return err
-	}
-	for _, code := range allowStatus {
-		if resp.StatusCode == code {
-			_ = resp.Body.Close()
-			return nil
-		}
-	}
-	return readJSONResponse(resp, method, endpoint, out)
 }
 
 // getAllPages issues GET requests against endpoint with per_page maximized,
