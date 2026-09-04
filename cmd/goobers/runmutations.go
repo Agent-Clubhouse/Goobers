@@ -170,38 +170,63 @@ func callInterventionAPI(
 	routeID apicontract.RouteID,
 	input httpapi.InterventionRequest,
 ) (httpapi.InterventionResult, *apicontract.APIError, error) {
+	var result httpapi.InterventionResult
+	apiErr, err := callDaemonMutationAPI(layout, endpoint, routeID, map[string]string{
+		"{run}":   input.RunID,
+		"{stage}": input.Stage,
+	}, input, &result)
+	if err != nil || apiErr != nil {
+		return httpapi.InterventionResult{}, apiErr, err
+	}
+	return result, nil, nil
+}
+
+// callDaemonMutationAPI POSTs one contract mutation route and decodes its
+// result. An empty endpoint resolves the daemon from this instance root, which
+// requires the daemon to share this filesystem; a configured endpoint names a
+// daemon that does not (#3279/#3807). pathValues substitutes the route path's
+// placeholders, each escaped for a path segment.
+func callDaemonMutationAPI(
+	layout instance.Layout,
+	endpoint string,
+	routeID apicontract.RouteID,
+	pathValues map[string]string,
+	input any,
+	result any,
+) (*apicontract.APIError, error) {
 	baseURL := endpoint
 	if baseURL == "" {
 		config, err := instance.LoadConfig(layout.ConfigFile())
 		if err != nil {
-			return httpapi.InterventionResult{}, nil, fmt.Errorf("load instance config: %w", err)
+			return nil, fmt.Errorf("load instance config: %w", err)
 		}
 		address, err := dashboardDaemonAPIAddress(layout, apiListenAddress(config))
 		if err != nil {
-			return httpapi.InterventionResult{}, nil, fmt.Errorf("resolve live daemon API: %w", err)
+			return nil, fmt.Errorf("resolve live daemon API: %w", err)
 		}
 		baseURL = daemonAPIScheme(config) + "://" + address
 	}
 	route, ok := apicontract.V1Route(routeID)
 	if !ok {
-		return httpapi.InterventionResult{}, nil, fmt.Errorf("API route %q is not registered", routeID)
+		return nil, fmt.Errorf("API route %q is not registered", routeID)
 	}
-	routePath := strings.NewReplacer(
-		"{run}", url.PathEscape(input.RunID),
-		"{stage}", url.PathEscape(input.Stage),
-	).Replace(route.Path)
+	replacements := make([]string, 0, 2*len(pathValues))
+	for placeholder, value := range pathValues {
+		replacements = append(replacements, placeholder, url.PathEscape(value))
+	}
+	routePath := strings.NewReplacer(replacements...).Replace(route.Path)
 	body, err := json.Marshal(input)
 	if err != nil {
-		return httpapi.InterventionResult{}, nil, fmt.Errorf("encode intervention request: %w", err)
+		return nil, fmt.Errorf("encode %s request: %w", routeID, err)
 	}
 	request, err := http.NewRequest(route.Method, baseURL+routePath, bytes.NewReader(body))
 	if err != nil {
-		return httpapi.InterventionResult{}, nil, fmt.Errorf("build intervention request: %w", err)
+		return nil, fmt.Errorf("build %s request: %w", routeID, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	key, err := newInterventionIdempotencyKey()
 	if err != nil {
-		return httpapi.InterventionResult{}, nil, fmt.Errorf("generate intervention idempotency key: %w", err)
+		return nil, fmt.Errorf("generate intervention idempotency key: %w", err)
 	}
 	request.Header.Set(httpapi.HeaderIdempotencyKey, key)
 	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
@@ -210,22 +235,21 @@ func callInterventionAPI(
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return httpapi.InterventionResult{}, nil, fmt.Errorf("call live daemon API: %w", err)
+		return nil, fmt.Errorf("call live daemon API: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxInterventionResponseBody))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var envelope apicontract.ErrorEnvelope
 		if err := decoder.Decode(&envelope); err != nil {
-			return httpapi.InterventionResult{}, nil, fmt.Errorf("daemon API returned %s with an invalid error body: %w", response.Status, err)
+			return nil, fmt.Errorf("daemon API returned %s with an invalid error body: %w", response.Status, err)
 		}
-		return httpapi.InterventionResult{}, &envelope.Error, nil
+		return &envelope.Error, nil
 	}
-	var result httpapi.InterventionResult
-	if err := decoder.Decode(&result); err != nil {
-		return httpapi.InterventionResult{}, nil, fmt.Errorf("decode daemon intervention result: %w", err)
+	if err := decoder.Decode(result); err != nil {
+		return nil, fmt.Errorf("decode daemon %s result: %w", routeID, err)
 	}
-	return result, nil, nil
+	return nil, nil
 }
 
 func newInterventionIdempotencyKey() (string, error) {

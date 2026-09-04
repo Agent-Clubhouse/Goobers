@@ -1,0 +1,31 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ESCALATIONS RESOLVE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers escalations resolve \- resolve an escalated run through the daemon's HITL plane
+.SH SYNOPSIS
+\fBgoobers escalations resolve\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers escalations resolve --resolution=approve|deny|redirect [--gate=<gate>] [--decision=<name>]
+                                  [--rationale=<text>] [--actor=<identity>] [--api=<url>] <run-id> [path]
+
+Resolve an escalated run through the daemon's HITL plane: approve resumes
+it through the escalated gate's pass branch, redirect resumes it through a
+chosen decision branch, and deny records the escalation resolved-denied and
+leaves the run terminal. approve and redirect name the escalated gate with
+--gate; redirect also names the branch with --decision. deny and redirect
+require --rationale. The actor, resolution, and rationale are recorded in
+the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
+
+Exit codes: 0 = resolution accepted, 1 = resolution refused, 2 = usage/transport error.
+.fi
+.SH EXAMPLES
+.nf
+goobers escalations resolve --resolution approve --gate review <run-id>
+goobers escalations resolve --resolution deny --rationale="not worth it" <run-id>
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

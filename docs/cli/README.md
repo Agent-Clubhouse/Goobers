@@ -62,6 +62,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
 | [`goobers engine-queues`](#goobers-engine-queues) | report which workers poll this instance's engine and dispatch task queues (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
+| [`goobers escalations resolve`](#goobers-escalations-resolve) | resolve an escalated run through the daemon's HITL plane |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
 | [`goobers examples show`](#goobers-examples-show) | print a canonical embedded workflow example |
@@ -1355,9 +1356,11 @@ list escalated runs newest first
 ~~~text
 Usage: goobers escalations [--json] [path]
        goobers escalations show [--json] [--include-verdict] <run-id> [path]
+       goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
-escalation cause and the artifacts available before and after each stage.
+escalation cause and the artifacts available before and after each stage,
+and `escalations resolve` to approve, redirect, or deny one.
 ~~~
 
 **Examples**
@@ -1365,6 +1368,35 @@ escalation cause and the artifacts available before and after each stage.
 ~~~console
 $ goobers escalations
 $ goobers escalations --json
+~~~
+
+## `goobers escalations resolve`
+
+resolve an escalated run through the daemon's HITL plane
+
+~~~text
+Usage: goobers escalations resolve --resolution=approve|deny|redirect [--gate=<gate>] [--decision=<name>]
+                                  [--rationale=<text>] [--actor=<identity>] [--api=<url>] <run-id> [path]
+
+Resolve an escalated run through the daemon's HITL plane: approve resumes
+it through the escalated gate's pass branch, redirect resumes it through a
+chosen decision branch, and deny records the escalation resolved-denied and
+leaves the run terminal. approve and redirect name the escalated gate with
+--gate; redirect also names the branch with --decision. deny and redirect
+require --rationale. The actor, resolution, and rationale are recorded in
+the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
+
+Exit codes: 0 = resolution accepted, 1 = resolution refused, 2 = usage/transport error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers escalations resolve --resolution approve --gate review <run-id>
+$ goobers escalations resolve --resolution deny --rationale="not worth it" <run-id>
 ~~~
 
 ## `goobers escalations show`
@@ -2753,9 +2785,9 @@ trigger a run manually (still honors run conditions)
 ~~~text
 Usage: goobers run [--gaggle <name>] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
-       goobers run abort <run-id> [path]
+       goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
-       goobers run cancel <run-id> [path]
+       goobers run cancel [--api <url>] <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
 (run conditions, instance journal, single-instance lock) a live `goobers up`
@@ -2802,12 +2834,16 @@ $ goobers run example/default-implement --no-wait
 mark a stuck non-terminal run aborted
 
 ~~~text
-Usage: goobers run abort <run-id> [path]
+Usage: goobers run abort [--api=<url>] <run-id> [path]
 
 Mark a stuck non-terminal run aborted by appending a terminal
 run.finished(status=aborted) event to its own journal (default path
 "."). An ENGINE-DRIVEN run is cancelled on the engine instead — its
 journal is never edited here, and the engine writes its terminal event.
+With --api (or $GOOBERS_DAEMON_API) the abort is delegated to that
+daemon's authenticated HTTP API instead of this filesystem, which is the
+only way to reach a daemon running in another pod; name the run by its
+full id, since no local journal is read to expand an abbreviation.
 Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 ~~~
@@ -2823,7 +2859,7 @@ $ goobers run abort <run-id>
 cancel a live in-flight run via the daemon
 
 ~~~text
-Usage: goobers run cancel <run-id> [path]
+Usage: goobers run cancel [--api=<url>] <run-id> [path]
 
 Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
@@ -2832,7 +2868,12 @@ records terminal phase aborted — without stopping the daemon or editing a
 journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
 (CancelWorkflow) instead, with no live daemon required. Use `run abort`
 instead when no daemon is running (that path finalizes a stuck run's
-journal directly). Exit codes: 0 = cancelled, 1 = business error
+journal directly).
+With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that
+daemon's authenticated HTTP API instead of the local pending-cancels
+drop, so a caller that does not share the daemon's filesystem can stop a
+run at all; name the run by its full id, since no local journal is read to
+expand an abbreviation. Exit codes: 0 = cancelled, 1 = business error
 (already terminal, not currently running, or no daemon to cancel it),
 2 = usage/IO error (unknown run).
 ~~~

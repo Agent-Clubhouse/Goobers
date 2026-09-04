@@ -130,6 +130,7 @@ Advanced operator commands:
   engine-project    write a completed engine run's journal into the instance (experimental)
   engine-queues     report which workers poll this instance's engine and dispatch task queues (experimental)
   engine-start      dispatch one run onto the tier-3 engine via Temporal (experimental)
+  escalations resolve resolve an escalated run through the daemon's HITL plane
   escalations show  show escalation cause, verdict, and per-stage artifact timeline
   explain           project field facts from an embedded JSON Schema
   features          list the workflow-DSL features this build supports
@@ -1024,9 +1025,28 @@ Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 ### escalations
 Usage: goobers escalations [--json] [path]
        goobers escalations show [--json] [--include-verdict] <run-id> [path]
+       goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
-escalation cause and the artifacts available before and after each stage.
+escalation cause and the artifacts available before and after each stage,
+and `escalations resolve` to approve, redirect, or deny one.
+
+### escalations resolve
+Usage: goobers escalations resolve --resolution=approve|deny|redirect [--gate=<gate>] [--decision=<name>]
+                                  [--rationale=<text>] [--actor=<identity>] [--api=<url>] <run-id> [path]
+
+Resolve an escalated run through the daemon's HITL plane: approve resumes
+it through the escalated gate's pass branch, redirect resumes it through a
+chosen decision branch, and deny records the escalation resolved-denied and
+leaves the run terminal. approve and redirect name the escalated gate with
+--gate; redirect also names the branch with --decision. deny and redirect
+require --rationale. The actor, resolution, and rationale are recorded in
+the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
+
+Exit codes: 0 = resolution accepted, 1 = resolution refused, 2 = usage/transport error.
 
 ### escalations show
 Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]
@@ -1821,9 +1841,9 @@ processed, 1 = business error, 2 = usage/IO error.
 ### run
 Usage: goobers run [--gaggle <name>] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
-       goobers run abort <run-id> [path]
+       goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
-       goobers run cancel <run-id> [path]
+       goobers run cancel [--api <url>] <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
 (run conditions, instance journal, single-instance lock) a live `goobers up`
@@ -1857,17 +1877,21 @@ one, and the command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal.
 
 ### run abort
-Usage: goobers run abort <run-id> [path]
+Usage: goobers run abort [--api=<url>] <run-id> [path]
 
 Mark a stuck non-terminal run aborted by appending a terminal
 run.finished(status=aborted) event to its own journal (default path
 "."). An ENGINE-DRIVEN run is cancelled on the engine instead — its
 journal is never edited here, and the engine writes its terminal event.
+With --api (or $GOOBERS_DAEMON_API) the abort is delegated to that
+daemon's authenticated HTTP API instead of this filesystem, which is the
+only way to reach a daemon running in another pod; name the run by its
+full id, since no local journal is read to expand an abbreviation.
 Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 
 ### run cancel
-Usage: goobers run cancel <run-id> [path]
+Usage: goobers run cancel [--api=<url>] <run-id> [path]
 
 Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
@@ -1876,7 +1900,12 @@ records terminal phase aborted — without stopping the daemon or editing a
 journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
 (CancelWorkflow) instead, with no live daemon required. Use `run abort`
 instead when no daemon is running (that path finalizes a stuck run's
-journal directly). Exit codes: 0 = cancelled, 1 = business error
+journal directly).
+With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that
+daemon's authenticated HTTP API instead of the local pending-cancels
+drop, so a caller that does not share the daemon's filesystem can stop a
+run at all; name the run by its full id, since no local journal is read to
+expand an abbreviation. Exit codes: 0 = cancelled, 1 = business error
 (already terminal, not currently running, or no daemon to cancel it),
 2 = usage/IO error (unknown run).
 

@@ -503,6 +503,7 @@ type handlerConfig struct {
 	claims              ClaimService
 	triggers            TriggerService
 	escalations         EscalationService
+	cancels             CancelService
 	journal             JournalService
 	runJournal          RunJournalService
 	credentials         CredentialService
