@@ -168,6 +168,7 @@ _goobers_completion()
             flags+=" --json"
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --include-verdict" ;;
+                resolve) flags+=" --resolution --gate --decision --rationale --actor --api" ;;
             esac
             ;;
         telemetry)
@@ -334,8 +335,11 @@ _goobers_completion()
             ;;
         escalations)
             if (( COMP_CWORD == 2 )); then
-                candidates="show"
+                candidates="show resolve"
             elif [[ "${COMP_WORDS[2]:-}" == "show" ]] && (( COMP_CWORD == 3 )); then
+                dynamic=1
+                candidates="$(command goobers __complete escalations 2>/dev/null)"
+            elif [[ "${COMP_WORDS[2]:-}" == "resolve" ]] && (( COMP_CWORD == 3 )); then
                 dynamic=1
                 candidates="$(command goobers __complete escalations 2>/dev/null)"
             fi

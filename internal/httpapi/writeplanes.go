@@ -253,6 +253,42 @@ type EscalationService interface {
 	AcceptResolve(admission, execution context.Context, input EscalationResolutionRequest) (InterventionResult, error)
 }
 
+// Cancel dispositions, the wire form of the daemon's existing cancel-response
+// codes: the run was cancelled and finalized aborted, it finished on its own
+// before the cancel landed, or this daemon is not executing it.
+const (
+	CancelCodeAborted    = "aborted"
+	CancelCodeTerminal   = "already_terminal"
+	CancelCodeNotRunning = "not_running"
+)
+
+// CancelRunRequest asks the daemon to stop a run it is actively executing
+// (#3807). Workflow and Gaggle are the run's own identity, read from its
+// journal by the caller; the daemon uses them to resolve the owning Runner and
+// release the scheduler's concurrency slot, exactly as the file-drop seam does.
+type CancelRunRequest struct {
+	RunID    string `json:"-"`
+	Workflow string `json:"workflow,omitempty"`
+	Gaggle   string `json:"gaggle,omitempty"`
+	Actor    string `json:"actor,omitempty"`
+}
+
+// CancelRunResult reports the cancel disposition. A refusal the operator can
+// act on (already terminal, not running under this daemon) is a 200 carrying a
+// Code rather than an HTTP error: the request was well-formed and the daemon
+// answered it, and the CLI maps the code to its own exit code the same way the
+// local file-drop path does.
+type CancelRunResult struct {
+	Phase string `json:"phase,omitempty"`
+	Code  string `json:"code,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// CancelService cancels one live run through the Runner that owns it.
+type CancelService interface {
+	Cancel(ctx context.Context, input CancelRunRequest) (CancelRunResult, error)
+}
+
 // WithClaimService enables the claims-plane routes.
 func WithClaimService(claims ClaimService) HandlerOption {
 	return func(config *handlerConfig) error {
@@ -286,6 +322,17 @@ func WithEscalationService(escalations EscalationService) HandlerOption {
 	}
 }
 
+// WithCancelService enables the run-control cancel route (#3807).
+func WithCancelService(cancels CancelService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if cancels == nil {
+			return errors.New("http API cancel service is required")
+		}
+		config.cancels = cancels
+		return nil
+	}
+}
+
 func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *log.Logger) {
 	registerClaimRoute(router, apicontract.RouteClaimAcquire, config.claims, errorLog, "acquire claim",
 		func(ctx context.Context, claims ClaimService, request ClaimRequest) (ClaimResponse, error) {
@@ -307,6 +354,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
+	registerCancelRoute(router, config.cancels, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)
 }
 
@@ -587,6 +635,49 @@ func registerEscalationRoute(router *Router, escalations EscalationService, life
 			return
 		}
 		w.Header().Set(HeaderSourceApplied, fmt.Sprintf("%s:%d", input.RunID, result.JournalSeq))
+		writeJSON(w, http.StatusOK, result)
+	})
+}
+
+// registerCancelRoute serves `run cancel`/`run abort` over the API (#3807).
+// The cancel itself stays the daemon's: the service resolves the Runner that
+// owns the run and calls the same CancelRun the pending-cancels sweep calls,
+// so a remote cancel and a local one are one code path with two ways in.
+func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteCancelRun, func(w http.ResponseWriter, request *http.Request) {
+		if cancels == nil {
+			writeError(w, http.StatusServiceUnavailable, "cancel_unavailable", "run cancellation is not available from this server")
+			return
+		}
+		if status, code, message := validateMutationTransport(request); status != 0 {
+			writeError(w, status, code, message)
+			return
+		}
+		if _, ok := requireIdempotencyKey(w, request); !ok {
+			return
+		}
+		var input CancelRunRequest
+		if err := decodeWriteRequest(request, &input); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+			return
+		}
+		input.RunID = request.PathValue("run")
+		if strings.TrimSpace(input.RunID) == "" {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run is required")
+			return
+		}
+		if principal, ok := PrincipalFromRequest(request); ok {
+			input.Actor = principal.Subject
+		}
+		if strings.TrimSpace(input.Actor) == "" {
+			writeError(w, http.StatusBadRequest, "actor_required", "actor is required")
+			return
+		}
+		result, err := cancels.Cancel(request.Context(), input)
+		if err != nil {
+			writePlaneError(w, errorLog, "cancel run", err)
+			return
+		}
 		writeJSON(w, http.StatusOK, result)
 	})
 }

@@ -34,6 +34,76 @@ func ValidateSupportPolicy(matrix SupportMatrix) error {
 	return validateSupportPolicy(matrix, nil, false)
 }
 
+// ValidateSupportPolicyForRelease checks matrix under ValidateSupportPolicy and
+// additionally requires every declared Level to be the level the version
+// actually holds in release — the last lifecycle transition dated at or before
+// the release being built. ValidateSupportPolicy alone is release-invariant: it
+// only ties Level to the *last* transition, so a matrix can declare a level
+// whose transition is dated at a release that does not exist yet and ship it in
+// a build that behaves as if the transition already happened (#4215). Release
+// tooling threads the version being cut in here so that mismatch is refused
+// before it is published, and locked in by the append-only history rules.
+func ValidateSupportPolicyForRelease(matrix SupportMatrix, release string) error {
+	target, err := parseSupportReleaseVersion(release, false)
+	if err != nil {
+		return fmt.Errorf("invalid release %q: %w", release, err)
+	}
+	if err := ValidateSupportPolicy(matrix); err != nil {
+		return err
+	}
+	return validateLevelsAtRelease(matrix, target)
+}
+
+func validateLevelsAtRelease(matrix SupportMatrix, release releaseVersion) error {
+	for _, version := range matrix.Versions() {
+		if len(version.History) == 0 {
+			return fmt.Errorf("DSL version %q: lifecycle history must not be empty", version.Version)
+		}
+		level, since, err := levelAtRelease(version, release)
+		if err != nil {
+			return fmt.Errorf("DSL version %q: %w", version.Version, err)
+		}
+		if since == "" {
+			return fmt.Errorf(
+				"DSL version %q enters its lifecycle as %q in %q, after the release %q being built",
+				version.Version,
+				version.History[0].Level,
+				version.History[0].SinceVersion,
+				release.String(),
+			)
+		}
+		if version.Level != level {
+			return fmt.Errorf(
+				"DSL version %q declares support level %q but release %q only reaches %q declared in %q",
+				version.Version,
+				version.Level,
+				release.String(),
+				level,
+				since,
+			)
+		}
+	}
+	return nil
+}
+
+// levelAtRelease returns the level the version holds in release: the level of
+// the last lifecycle transition dated at or before it. since is empty when no
+// transition has taken effect yet.
+func levelAtRelease(version Version, release releaseVersion) (level Level, since string, err error) {
+	for i, transition := range version.History {
+		transitionRelease, parseErr := parseSupportReleaseVersion(transition.SinceVersion, i == 0)
+		if parseErr != nil {
+			return "", "", fmt.Errorf("invalid lifecycle version %q: %w", transition.SinceVersion, parseErr)
+		}
+		if compareReleaseVersions(transitionRelease, release) > 0 {
+			break
+		}
+		level = transition.Level
+		since = transition.SinceVersion
+	}
+	return level, since, nil
+}
+
 func validateSupportPolicy(
 	matrix SupportMatrix,
 	developmentReleases map[string]releaseVersion,
@@ -123,6 +193,9 @@ func validateSupportMatrixEvolution(
 			!slices.Equal(candidate.History[:len(previous.History)], previous.History) {
 			return fmt.Errorf("released DSL version %q lifecycle history must not change", previous.Version)
 		}
+		if err := validateUnsupportedAfterCarriedForward(previous, candidate); err != nil {
+			return err
+		}
 	}
 
 	for _, candidate := range current.Versions() {
@@ -162,6 +235,79 @@ func validateSupportMatrixEvolution(
 				candidate.Version,
 			)
 		}
+	}
+	return nil
+}
+
+// validateUnsupportedAfterCarriedForward holds a published unsupported-after
+// release to its promise: it is the date external consumers were told a
+// deprecated version stops loading, and validateVersionHistory measures the
+// support window from it. Without this, the field can be silently dropped when
+// the level flips to unsupported, or quietly pulled in to an earlier release,
+// with no rule noticing (#4215). Deferring it is allowed; retracting it is not.
+func validateUnsupportedAfterCarriedForward(previous Version, candidate VersionSupport) error {
+	published := strings.TrimSpace(previous.UnsupportedAfter)
+	if published == "" {
+		return nil
+	}
+	publishedRelease, err := parseSupportReleaseVersion(published, false)
+	if err != nil {
+		return fmt.Errorf(
+			"released DSL version %q has invalid unsupported-after release %q: %w",
+			previous.Version,
+			published,
+			err,
+		)
+	}
+
+	if candidate.Level != LevelUnsupported {
+		carried := strings.TrimSpace(candidate.UnsupportedAfter)
+		if carried == "" {
+			return fmt.Errorf(
+				"DSL version %q must carry forward the unsupported-after release %q published in the latest released support matrix",
+				previous.Version,
+				published,
+			)
+		}
+		carriedRelease, err := parseSupportReleaseVersion(carried, false)
+		if err != nil {
+			return fmt.Errorf(
+				"DSL version %q has invalid unsupported-after release %q: %w",
+				previous.Version,
+				carried,
+				err,
+			)
+		}
+		if compareReleaseVersions(carriedRelease, publishedRelease) < 0 {
+			return fmt.Errorf(
+				"DSL version %q moves its unsupported-after release earlier than the published %q",
+				previous.Version,
+				published,
+			)
+		}
+		return nil
+	}
+
+	if len(candidate.History) == 0 {
+		return fmt.Errorf("DSL version %q lifecycle history must not be empty", previous.Version)
+	}
+	last := candidate.History[len(candidate.History)-1]
+	unsupportedAt, err := parseSupportReleaseVersion(last.SinceVersion, false)
+	if err != nil {
+		return fmt.Errorf(
+			"DSL version %q has invalid unsupported lifecycle version %q: %w",
+			previous.Version,
+			last.SinceVersion,
+			err,
+		)
+	}
+	if compareReleaseVersions(unsupportedAt, publishedRelease) < 0 {
+		return fmt.Errorf(
+			"DSL version %q becomes unsupported in %q, before the unsupported-after release %q published in the latest released support matrix",
+			previous.Version,
+			last.SinceVersion,
+			published,
+		)
 	}
 	return nil
 }

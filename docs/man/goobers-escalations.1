@@ -8,9 +8,11 @@ goobers escalations \- list escalated runs newest first
 .nf
 Usage: goobers escalations [--json] [path]
        goobers escalations show [--json] [--include-verdict] <run-id> [path]
+       goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
-escalation cause and the artifacts available before and after each stage.
+escalation cause and the artifacts available before and after each stage,
+and `escalations resolve` to approve, redirect, or deny one.
 .fi
 .SH EXAMPLES
 .nf

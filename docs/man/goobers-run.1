@@ -8,9 +8,9 @@ goobers run \- trigger a run manually (still honors run conditions)
 .nf
 Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]
-       goobers run abort <run-id> [path]
+       goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
-       goobers run cancel <run-id> [path]
+       goobers run cancel [--api <url>] <run-id> [path]
 
 Trigger a run of a config/ workflow manually, through the same scheduler
 (run conditions, instance journal, single-instance lock) a live `goobers up`

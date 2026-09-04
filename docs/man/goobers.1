@@ -157,6 +157,9 @@ report which workers poll this instance's engine and dispatch task queues (exper
 \fBgoobers engine-start\fR
 dispatch one run onto the tier-3 engine via Temporal (experimental)
 .TP
+\fBgoobers escalations resolve\fR
+resolve an escalated run through the daemon's HITL plane
+.TP
 \fBgoobers escalations show\fR
 show escalation cause, verdict, and per-stage artifact timeline
 .TP
@@ -475,6 +478,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-engine-queues\fR(1),
 \fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
+\fBgoobers-escalations-resolve\fR(1),
 \fBgoobers-escalations-show\fR(1),
 \fBgoobers-examples\fR(1),
 \fBgoobers-examples-list\fR(1),

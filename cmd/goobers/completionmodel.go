@@ -58,12 +58,13 @@ type completionFlagSpec struct {
 // supported kinds (completionCandidates) and are the completion-specific
 // knowledge the registry does not carry.
 var completionPositionalArgKinds = map[string]string{
-	"run":              "workflows",
-	"run abort":        "runs",
-	"trace":            "runs",
-	"escalations show": "escalations",
-	"examples show":    "examples",
-	"workflow show":    "workflows",
+	"run":                 "workflows",
+	"run abort":           "runs",
+	"trace":               "runs",
+	"escalations show":    "escalations",
+	"escalations resolve": "escalations",
+	"examples show":       "examples",
+	"workflow show":       "workflows",
 }
 
 var completionPositionalArgValues = map[string][]string{
@@ -262,6 +263,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
+	"run abort": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
+	},
+	"run cancel": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
+	},
 	"override": {
 		{name: "rationale", takesArg: true, desc: "Override rationale"},
 		{name: "decision", takesArg: true, desc: "Gate decision"},
@@ -362,6 +369,14 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"escalations show": {
 		{name: "json", desc: "Emit JSON"},
 		{name: "include-verdict", desc: "Include review verdict content"},
+	},
+	"escalations resolve": {
+		{name: "resolution", takesArg: true, values: []string{"approve", "deny", "redirect"}, desc: "Escalation resolution"},
+		{name: "gate", takesArg: true, desc: "Escalated gate for approve and redirect"},
+		{name: "decision", takesArg: true, desc: "Branch decision for redirect"},
+		{name: "rationale", takesArg: true, desc: "Audit rationale"},
+		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"telemetry stats": {
 		{name: "json", desc: "Emit JSON"},

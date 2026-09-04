@@ -25,6 +25,45 @@ type supportDelta struct {
 	NewlyUnsupported []supportmatrix.Version
 }
 
+// checkSupportMatrixForRelease refuses to package a tagged release whose
+// compiled-in DSL support matrix declares a level the release does not actually
+// reach — a level whose lifecycle transition is dated at a release that has not
+// happened yet (#4215). Only a final vMAJOR.MINOR.PATCH version is gated: a
+// pre-release, a `git describe` build version or `dev` is still in flux, and
+// the matrix can be corrected before the tag that publishes it exists. Once a
+// stable tag ships a mislabel, the append-only history rules make it permanent.
+func checkSupportMatrixForRelease(version string) error {
+	version = strings.TrimSpace(version)
+	if !isFinalReleaseVersion(version) {
+		return nil
+	}
+	if err := supportmatrix.ValidateSupportPolicyForRelease(supportmatrix.GetDSL(), version); err != nil {
+		return fmt.Errorf("DSL support matrix cannot ship in %s: %w", version, err)
+	}
+	return nil
+}
+
+func isFinalReleaseVersion(version string) bool {
+	if !strings.HasPrefix(version, "v") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(version, "v"), ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func supportReleaseMetadata(version, previousPath string) (string, []byte, error) {
 	current, err := newSupportSnapshot(version, supportmatrix.GetDSL())
 	if err != nil {

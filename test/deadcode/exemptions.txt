@@ -93,6 +93,7 @@ github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest.Run # Shared
 
 # Test seams retained to exercise fail-closed and lifecycle behavior.
 github.com/goobers/goobers/internal/supportmatrix.validateSupportMatrixEvolution # Support-matrix evolution guard (DVL-7) exercised by release-history tests.
+github.com/goobers/goobers/internal/supportmatrix.validateUnsupportedAfterCarriedForward # Published unsupported-after carry-forward rule (#4215) reachable only through the retained evolution guard, exercised by release-history tests.
 github.com/goobers/goobers/internal/workflow/v_next.newFeatureRegistryAgainstReleased # Next-interpreter feature-registry evolution guard (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/internal/workflow/v_next.validateFeatureRegistryEvolution # Next-interpreter feature-registry evolution validator (VER-3) exercised by workflow tests, retained pending a released baseline to enforce against.
 github.com/goobers/goobers/internal/workflow/v_3_0.dslVersionLevel # 3.0-interpreter copy of the v_next per-version level lookup, reachable only through the release-gate evolution validation the tagged-baseline tests drive (#3505).

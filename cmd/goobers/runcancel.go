@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/durability"
 )
@@ -251,5 +256,104 @@ func executeCancelRequest(
 			Code:  cancelCodeNotRunning,
 			Error: fmt.Sprintf("run %s is no longer running under this daemon", req.RunID),
 		}
+	}
+}
+
+// daemonCancelService is the run-control plane's daemon-side half (#3807): it
+// runs the SAME executeCancelRequest the pending-cancels sweep runs, so a
+// cancel that arrives over HTTP and one that arrives as a file drop resolve
+// the owning Runner, stop the active stage, and free the scheduler slot
+// identically. Only the way in differs — which is the point, since the file
+// drop only reaches a daemon that shares the caller's filesystem.
+type daemonCancelService struct {
+	runners *daemonRunnerRegistry
+
+	mu      sync.RWMutex
+	release func(runID, workflow string)
+}
+
+func newDaemonCancelService(runners *daemonRunnerRegistry) *daemonCancelService {
+	return &daemonCancelService{runners: runners}
+}
+
+// AttachRelease supplies the scheduler's slot release once the scheduler
+// exists. The API handler is built before it, exactly as the HITL deliverer is
+// attached after the fact.
+func (s *daemonCancelService) AttachRelease(release func(runID, workflow string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.release = release
+}
+
+func (s *daemonCancelService) Cancel(_ context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
+	s.mu.RLock()
+	release := s.release
+	s.mu.RUnlock()
+
+	workflow := strings.TrimSpace(input.Workflow)
+	if workflow == "" {
+		// A remote caller has no journal to read the run's workflow from, so
+		// the daemon supplies it from its own registry; without it the
+		// scheduler's concurrency slot would leak.
+		for _, run := range s.runners.ActiveRuns() {
+			if run.RunID == input.RunID {
+				workflow = run.Workflow
+				break
+			}
+		}
+	}
+	resp := executeCancelRequest(s.runners, release, cancelRequest{
+		RunID:    input.RunID,
+		Workflow: workflow,
+		Gaggle:   input.Gaggle,
+		Actor:    input.Actor,
+	}, time.Now())
+	return httpapi.CancelRunResult{Phase: resp.Phase, Code: resp.Code, Error: resp.Error}, nil
+}
+
+// runRemoteCancel cancels a run on a daemon that does not share this
+// filesystem (#3807). The local paths resolve the run's directory, journal
+// identity, and daemon lock under an instance root the caller does not have
+// here, so a remote cancel names the run by its full id and lets the daemon
+// answer from its own registry: the disposition codes, and the exit codes they
+// map to, are the file-drop path's unchanged.
+func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) int {
+	if strings.TrimSpace(endpoint) == "" {
+		pf(stderr, "error: no daemon API endpoint configured\n")
+		return 2
+	}
+	actor, err := defaultInterventionActor()
+	if err != nil {
+		actor = "cli"
+	}
+	var result httpapi.CancelRunResult
+	apiErr, err := callDaemonMutationAPI(
+		instance.NewLayout("."), endpoint, apicontract.RouteCancelRun,
+		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, &result,
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if apiErr != nil {
+		pf(stderr, "error: %s: %s\n", apiErr.Code, apiErr.Message)
+		return 1
+	}
+	switch {
+	case result.Error != "":
+		pf(stderr, "error: %s\n", result.Error)
+		return 1
+	case result.Code == httpapi.CancelCodeAborted:
+		pf(stdout, "%s run %s (aborted via daemon API)\n", action, runID)
+		return 0
+	case result.Code == httpapi.CancelCodeTerminal:
+		pf(stderr, "error: run %s finished before it could be cancelled (phase=%s)\n", runID, result.Phase)
+		return 1
+	case result.Code == httpapi.CancelCodeNotRunning:
+		pf(stderr, "error: run %s is not currently running under that daemon\n", runID)
+		return 1
+	default:
+		pf(stderr, "error: unexpected cancel response for run %s\n", runID)
+		return 1
 	}
 }
