@@ -1,10 +1,12 @@
 package journal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/readprobe"
 )
@@ -129,5 +131,73 @@ func TestReadInstanceLogAfterSeqReadsBoundedBytes(t *testing.T) {
 	}
 	if largeBytes > 2*tailChunkSize {
 		t.Fatalf("bounded read = %d bytes, want at most %d", largeBytes, 2*tailChunkSize)
+	}
+}
+
+func TestReadInstanceLogAfterSeqColdReadScalesWithJournal(t *testing.T) {
+	padding := strings.Repeat("y", 4<<10)
+	measure := func(t *testing.T, count int) (readprobe.Snapshot, int64) {
+		t.Helper()
+		dir := t.TempDir()
+		path, err := InstanceEventsPath(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var journal strings.Builder
+		for i := 1; i <= count; i++ {
+			line, err := marshalEvent(Event{
+				Seq:    uint64(i),
+				Schema: EventSchema,
+				Time:   time.Unix(int64(i), 0).UTC(),
+				Type:   EventTickSkipped,
+				Reason: padding,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal.Write(line)
+			journal.WriteByte('\n')
+		}
+		if err := os.WriteFile(path, []byte(journal.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		readprobe.Enable()
+		t.Cleanup(readprobe.Disable)
+		if _, err := ReadInstanceLogAfterSeq(dir, 0); err != nil {
+			t.Fatal(err)
+		}
+		return readprobe.Take(), info.Size()
+	}
+
+	var previous readprobe.Snapshot
+	var previousSize int64
+	for mb := 4; mb <= 64; mb *= 2 {
+		t.Run(fmt.Sprintf("%dMB", mb), func(t *testing.T) {
+			work, size := measure(t, mb*250)
+			target := int64(mb) << 20
+			if size < target*9/10 || size > target*11/10 {
+				t.Fatalf("fixture journal is %d bytes, want about %d bytes", size, target)
+			}
+			if work.InstanceTailReads != 1 || work.InstanceTailRecords != uint64(mb*250) {
+				t.Fatalf("cold read work = %+v, want one read and %d parsed records", work, mb*250)
+			}
+			if previousSize != 0 {
+				if work.InstanceTailRecords > 3*previous.InstanceTailRecords ||
+					work.InstanceTailBytes > 3*previous.InstanceTailBytes {
+					t.Fatalf(
+						"cold read work grew super-quadratically: %d records/%d bytes over %d records/%d bytes for journals of %d/%d bytes",
+						work.InstanceTailRecords, work.InstanceTailBytes,
+						previous.InstanceTailRecords, previous.InstanceTailBytes,
+						size, previousSize,
+					)
+				}
+			}
+			previous, previousSize = work, size
+		})
 	}
 }
