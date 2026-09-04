@@ -553,6 +553,8 @@ export interface RunSummary {
   infraRetryCount: number;
   /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
   noWork: boolean;
+  /** Projected cause of a non-completed terminal run — failed and aborted as well as escalated (#4246). */
+  terminalReason?: string;
   operator?: OperatorRunSummary;
 }
 
@@ -583,6 +585,8 @@ export interface RunDetail extends RunSummary {
   graph?: WorkflowGraph;
   graphStatus: "pinned" | "unavailable";
   escalation?: EscalationCause;
+  /** The same cause projection as escalation, present for every non-completed terminal phase (#4246). */
+  terminalCause?: EscalationCause;
   /** The business decision a completed run reached, distinct from phase (the execution axis). */
   outcome?: RunOutcome;
   /** The run's exact executed workflow-graph transition history — never inferred from "both endpoint nodes were visited". */

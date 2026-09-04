@@ -183,10 +183,15 @@ type RunSummary struct {
 	// that stage's terminal status was apiv1.ResultNoWork (#2188) — a routine
 	// schedule tick that found nothing to do, as opposed to a genuine
 	// single-stage workflow that did real work.
-	NoWork        bool               `json:"noWork"`
-	Operator      OperatorRunSummary `json:"operator"`
-	Stages        []string           `json:"-"`
-	stageAttempts map[string][]StageAttempt
+	NoWork bool `json:"noWork"`
+	// TerminalReason is the projected cause of a non-completed terminal run —
+	// failed and aborted as well as escalated (#4246). A list view that only
+	// reported "failed" forced an operator to open the run and read raw events
+	// for a reason the journal already recorded.
+	TerminalReason string             `json:"terminalReason,omitempty"`
+	Operator       OperatorRunSummary `json:"operator"`
+	Stages         []string           `json:"-"`
+	stageAttempts  map[string][]StageAttempt
 }
 
 // OperatorRunSummary answers the operational questions that otherwise require
@@ -248,7 +253,11 @@ type RunDetail struct {
 	Graph       *workflow.Graph  `json:"graph,omitempty"`
 	GraphStatus string           `json:"graphStatus"`
 	Escalation  *EscalationCause `json:"escalation,omitempty"`
-	Outcome     *RunOutcome      `json:"outcome,omitempty"`
+	// TerminalCause is the same projection as Escalation, computed for every
+	// non-completed terminal phase (#4246). Escalation stays escalated-only so
+	// consumers keyed on "this run escalated" keep their meaning.
+	TerminalCause *EscalationCause `json:"terminalCause,omitempty"`
+	Outcome       *RunOutcome      `json:"outcome,omitempty"`
 	// Transitions is the run's exact executed workflow-graph transition
 	// history (#1427) — never inferred from "both endpoint nodes were
 	// visited", which is what let the portal highlight an untaken repass
@@ -1148,9 +1157,13 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err != nil {
 		return RunDetail{}, err
 	}
-	escalation, err := escalationCause(summary, run.records)
+	cause, err := terminalCause(summary.Phase, run.records)
 	if err != nil {
 		return RunDetail{}, err
+	}
+	var escalation *EscalationCause
+	if summary.Phase == journal.PhaseEscalated {
+		escalation = cause
 	}
 	transitions, transitionsStatus := readmodel.ProjectTransitions(recordEvents(run.records), graph)
 	return RunDetail{
@@ -1158,6 +1171,7 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 		Graph:             graph,
 		GraphStatus:       status,
 		Escalation:        escalation,
+		TerminalCause:     cause,
 		Outcome:           runOutcome(summary, run.records),
 		Transitions:       runTransitionsFrom(transitions),
 		TransitionsStatus: transitionsStatus,
@@ -1816,6 +1830,12 @@ func summarizeRunForStage(
 	if attemptStage != "" {
 		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
 	}
+	terminalReason := ""
+	if cause, err := terminalCause(phase, run.records); err != nil {
+		return RunSummary{}, err
+	} else if cause != nil {
+		terminalReason = cause.TerminalReason
+	}
 
 	return RunSummary{
 		ID:               run.identity.RunID,
@@ -1837,6 +1857,7 @@ func summarizeRunForStage(
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
 		NoWork:           noWork,
+		TerminalReason:   terminalReason,
 		Operator:         operator,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
@@ -2098,8 +2119,15 @@ func canonicalTrigger(trigger journal.TriggerKind) bool {
 	}
 }
 
-func escalationCause(summary RunSummary, records []journal.EventRecord) (*EscalationCause, error) {
-	if summary.Phase != journal.PhaseEscalated {
+// terminalCause projects why a run reached a non-completed terminal phase.
+//
+// The scan is identical for every such phase — the decisive gate, else the
+// last failed or blocked stage, else the last error event — so failed and
+// aborted runs get the reason escalated runs have always had (#4246).
+func terminalCause(phase journal.RunPhase, records []journal.EventRecord) (*EscalationCause, error) {
+	switch phase {
+	case journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+	default:
 		return nil, nil
 	}
 	records = currentLifecycleRecords(records)
@@ -2212,7 +2240,7 @@ func isRemediationCheckpointStage(stage string) bool {
 
 // runOutcome derives the #851 business-decision axis for a completed run
 // from the last gate decision before completion — the same "walk backward
-// for the decisive gate" approach escalationCause uses for the escalated
+// for the decisive gate" approach terminalCause uses for the escalated
 // case. Returns nil for a non-completed run.
 func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
 	if summary.Phase != journal.PhaseCompleted {

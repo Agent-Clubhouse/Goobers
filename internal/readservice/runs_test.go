@@ -2130,8 +2130,8 @@ func TestRoutedGateEscalationMarkersIncludeCause(t *testing.T) {
 			if tc.legacy {
 				event.Runner["escalated"] = true
 			}
-			cause, err := escalationCause(
-				RunSummary{Phase: journal.PhaseEscalated},
+			cause, err := terminalCause(
+				journal.PhaseEscalated,
 				[]journal.EventRecord{{Event: event}},
 			)
 			if err != nil {
@@ -2199,7 +2199,7 @@ func TestRemediationCheckpointEscalationIncludesAttemptEvidence(t *testing.T) {
 				records[i].Event.Seq = uint64(i + 4)
 			}
 
-			cause, err := escalationCause(RunSummary{Phase: journal.PhaseEscalated}, records)
+			cause, err := terminalCause(journal.PhaseEscalated, records)
 			if err != nil {
 				t.Fatal(err)
 			}

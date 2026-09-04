@@ -363,6 +363,7 @@ function RunDetailWorkspace({
               ? undefined
               : () => replaySeek(failure.causalEventSeq!)
           }
+          phase={run.phase}
         />
       )}
 

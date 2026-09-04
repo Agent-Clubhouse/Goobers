@@ -129,9 +129,21 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		PolicyRetryCount: row.PolicyRetryCount,
 		InfraRetryCount:  row.InfraRetryCount,
 		NoWork:           row.Disposition == readmodel.DispositionNoWork,
+		TerminalReason:   terminalReasonFromReadModel(row),
 		Operator:         operatorFromReadModel(row, observedAt),
 		Stages:           row.Stages,
 	}
+}
+
+// terminalReasonFromReadModel degrades the terminal-cause projection to what
+// the row already stores. The read model carries no terminal-cause column, so
+// a non-completed terminal run reports its last recorded error rather than no
+// reason at all (#4246).
+func terminalReasonFromReadModel(row readmodel.RunRow) string {
+	if !row.Terminal || row.Phase == journal.PhaseCompleted {
+		return ""
+	}
+	return eventErrorReason(row.Operator.LatestError)
 }
 
 func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorRunSummary {

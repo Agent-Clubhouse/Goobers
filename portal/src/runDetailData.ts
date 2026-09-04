@@ -96,15 +96,14 @@ export function orderRunEvents(events: RunEvent[]): RunEvent[] {
 }
 
 /**
- * The single authoritative "why" for a failed run, mirroring what EscalationPanel
- * gives an escalated run and RunOutcome gives a completed one. A failed run's
- * RunDetail carries no escalation/outcome cause (readservice only populates those
- * for the escalated/completed phases), so — until the read model projects a
- * FailureCause of its own — the portal derives it here from the durable journal:
- * the failing stage attempt carries the coded ErrorDetail (the same field
- * readservice reads in stageEscalationReason). This is what turns the run page
- * from "it failed, go dig" into "failed: harness.crash — Harness exited before
- * producing a result envelope" at a glance.
+ * The single authoritative "why" for a failed or aborted run, mirroring what
+ * EscalationPanel gives an escalated run and RunOutcome gives a completed one.
+ * The read service now projects a terminalCause for every non-completed
+ * terminal phase (#4246), so that projection is preferred; the durable journal
+ * events still supply the failing stage, attempt, and coded error, and remain
+ * the whole answer for a run projected before the field existed. This is what
+ * turns the run page from "it failed, go dig" into "failed: harness.crash —
+ * Harness exited before producing a result envelope" at a glance.
  */
 export interface RunFailure {
   /** Human-readable failure reason, always non-empty. */
@@ -121,8 +120,9 @@ export interface RunFailure {
 
 export function runFailure(run: RunDetail, events: RunEvent[]): RunFailure | undefined {
   // Escalated runs get EscalationPanel and completed runs get RunOutcome; this is
-  // strictly the failed axis, so the two banners never fight over the same run.
-  if (run.phase !== "failed") {
+  // strictly the unsuccessful-termination axis, so the banners never fight over
+  // the same run.
+  if (run.phase !== "failed" && run.phase !== "aborted") {
     return undefined;
   }
 
@@ -149,14 +149,23 @@ export function runFailure(run: RunDetail, events: RunEvent[]): RunFailure | und
   const attempt = errored?.attempt ?? failingStage?.attempt;
   const code = errored?.error?.code?.trim() || undefined;
   const errorText = errored?.error?.message?.trim() || errored?.error?.code?.trim();
+  const projected = run.terminalCause?.terminalReason?.trim() || run.terminalReason?.trim();
+  const ended = run.phase === "aborted" ? "was aborted" : "failed";
   const message =
     errorText ||
+    projected ||
     finished?.reason?.trim() ||
     (stage
-      ? `Stage ${humanize(stage)} failed without a recorded reason.`
-      : "The run failed without a recorded reason.");
+      ? `Stage ${humanize(stage)} ${ended} without a recorded reason.`
+      : `The run ${ended} without a recorded reason.`);
 
-  return { message, code, stage, attempt, causalEventSeq: causal?.seq };
+  return {
+    message,
+    code,
+    stage,
+    attempt,
+    causalEventSeq: causal?.seq ?? run.terminalCause?.causalEventSeq,
+  };
 }
 
 export function eventNodeId(event: RunEvent, runId?: string): string | undefined {
