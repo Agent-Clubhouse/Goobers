@@ -693,7 +693,7 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
-	comments, err := p.pullRequestComments(ctx, req.Repository, req.PullID, req.CommentsSince)
+	comments, err := pullRequestComments(ctx, p, p.BaseURL, req.Repository, req.PullID, req.CommentsSince)
 	if err != nil {
 		return PullRequestPollResult{}, err
 	}
@@ -708,7 +708,7 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 		Draft:            isWIPTitle(pr.Title),
 		Labels:           labels,
 		HeadBranch:       pr.Head.Ref,
-		HeadRepository:   giteaRepositoryRef(pr.Head.Repo),
+		HeadRepository:   repositoryRef(ProviderGitea, pr.Head.Repo),
 		HeadSHA:          pr.Head.SHA,
 		BaseSHA:          pr.Base.SHA,
 		BaseBranch:       pr.Base.Ref,
@@ -725,18 +725,6 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 
 func isWIPTitle(title string) bool {
 	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(title)), "WIP:")
-}
-
-func giteaRepositoryRef(repo *giteaRepository) *RepositoryRef {
-	if repo == nil {
-		return nil
-	}
-	return &RepositoryRef{
-		Provider: ProviderGitea,
-		Owner:    repo.Owner.Login,
-		Name:     repo.Name,
-		URL:      repo.HTMLURL,
-	}
 }
 
 func (p *GiteaProvider) getPull(ctx context.Context, repo RepositoryRef, pullID string) (giteaPull, error) {
@@ -832,7 +820,7 @@ func (p *GiteaProvider) combinedCheckState(ctx context.Context, repo RepositoryR
 	details := make([]CheckDetail, 0, len(combined.Statuses))
 	failing, pending := false, false
 	for _, status := range combined.Statuses {
-		state := giteaStatusToCheckState(status.Status)
+		state := normalizeCombinedStatusState(status.Status)
 		details = append(details, CheckDetail{
 			Name: status.Context, State: state, Conclusion: status.Status,
 			URL: status.TargetURL, Summary: status.Description,
@@ -856,47 +844,6 @@ func (p *GiteaProvider) combinedCheckState(ctx context.Context, repo RepositoryR
 	}
 }
 
-func giteaStatusToCheckState(state string) CheckState {
-	switch strings.ToLower(state) {
-	case "success":
-		return CheckStatePassing
-	case "failure", "error":
-		return CheckStateFailing
-	default:
-		return CheckStatePending
-	}
-}
-
-func (p *GiteaProvider) pullRequestComments(ctx context.Context, repo RepositoryRef, pullID string, since *time.Time) ([]PullRequestComment, error) {
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", pullID, "comments")
-	if err != nil {
-		return nil, err
-	}
-	if since != nil {
-		endpoint, err = addQuery(endpoint, url.Values{"since": []string{since.UTC().Format(time.RFC3339)}})
-		if err != nil {
-			return nil, err
-		}
-	}
-	comments := make([]PullRequestComment, 0)
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var raw []githubIssueComment
-		if err := json.Unmarshal(page, &raw); err != nil {
-			return fmt.Errorf("decode pull request comments page: %w", err)
-		}
-		for _, c := range raw {
-			comments = append(comments, PullRequestComment{
-				ID: c.ID, Author: c.User.Login, Body: c.Body, URL: c.HTMLURL,
-				CreatedAt: c.CreatedAt, Integrity: apiintegrity.Unapproved,
-			})
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return comments, nil
-}
-
 // ClosePullRequest closes a Gitea pull request, detecting merged-vs-closed, and
 // optionally leaves a comment.
 func (p *GiteaProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
@@ -918,7 +865,7 @@ func (p *GiteaProvider) ClosePullRequest(ctx context.Context, req ClosePullReque
 		return ClosePullRequestResult{}, err
 	}
 	if req.Comment != "" {
-		if err := p.postAttributedComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
+		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
 			return ClosePullRequestResult{}, err
 		}
 	}
@@ -1713,22 +1660,6 @@ func (p *GiteaProvider) do(ctx context.Context, method, endpoint string, body, o
 	return readJSONResponse(resp, method, endpoint, out)
 }
 
-// doStatus performs a request treating any status in allowStatus as success
-// (used to tolerate a 404 when removing a label that is not present).
-func (p *GiteaProvider) doStatus(ctx context.Context, method, endpoint string, body, out interface{}, allowStatus []int) error {
-	resp, err := p.send(ctx, method, endpoint, body)
-	if err != nil {
-		return err
-	}
-	for _, code := range allowStatus {
-		if resp.StatusCode == code {
-			_ = resp.Body.Close()
-			return nil
-		}
-	}
-	return readJSONResponse(resp, method, endpoint, out)
-}
-
 // send issues one Gitea request, retrying transport errors and 5xx responses
 // with a bounded budget and honoring 429 + Retry-After when a reverse proxy
 // emits it. Gitea sends no X-RateLimit headers, so the rate-limit machinery is
@@ -1883,15 +1814,9 @@ type giteaPull struct {
 }
 
 type giteaPRBranch struct {
-	Ref  string           `json:"ref"`
-	SHA  string           `json:"sha"`
-	Repo *giteaRepository `json:"repo"`
-}
-
-type giteaRepository struct {
-	Name    string     `json:"name"`
-	HTMLURL string     `json:"html_url"`
-	Owner   githubUser `json:"owner"`
+	Ref  string          `json:"ref"`
+	SHA  string          `json:"sha"`
+	Repo *restRepository `json:"repo"`
 }
 
 type giteaLabel struct {

@@ -392,20 +392,14 @@ type githubPullRequestDetail struct {
 	Labels             []githubLabel `json:"labels"`
 	UpdatedAt          time.Time     `json:"updated_at"`
 	Head               struct {
-		Ref  string            `json:"ref"`
-		SHA  string            `json:"sha"`
-		Repo *githubRepository `json:"repo"`
+		Ref  string          `json:"ref"`
+		SHA  string          `json:"sha"`
+		Repo *restRepository `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"base"`
-}
-
-type githubRepository struct {
-	Name    string     `json:"name"`
-	HTMLURL string     `json:"html_url"`
-	Owner   githubUser `json:"owner"`
 }
 
 type githubMergeResult struct {
