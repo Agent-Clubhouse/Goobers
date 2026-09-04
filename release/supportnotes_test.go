@@ -87,3 +87,21 @@ func TestRenderSupportDeltaHandlesFirstAndUnchangedRelease(t *testing.T) {
 		t.Fatalf("unchanged release notes:\n%s", unchanged)
 	}
 }
+
+func TestCheckSupportMatrixForRelease(t *testing.T) {
+	// A final tag whose release every declared level has already reached.
+	if err := checkSupportMatrixForRelease("v9.9.9"); err != nil {
+		t.Fatalf("checkSupportMatrixForRelease(v9.9.9) = %v, want nil", err)
+	}
+	// v0.1.0 predates the transitions the compiled-in matrix declares, so the
+	// levels it ships cannot be true in that release.
+	err := checkSupportMatrixForRelease("v0.1.0")
+	if err == nil || !strings.Contains(err.Error(), "cannot ship in v0.1.0") {
+		t.Fatalf("checkSupportMatrixForRelease(v0.1.0) = %v, want a release-level refusal", err)
+	}
+	for _, version := range []string{"dev", "v0.4.0-beta.2", "v0.4.0-beta.2-11-g9bcc47a2e", "9bcc47a2e", ""} {
+		if err := checkSupportMatrixForRelease(version); err != nil {
+			t.Errorf("checkSupportMatrixForRelease(%q) = %v, want nil for a non-final version", version, err)
+		}
+	}
+}
