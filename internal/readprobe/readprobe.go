@@ -46,14 +46,15 @@ import "sync/atomic"
 var enabled atomic.Bool
 
 var (
-	journalOpens       atomic.Uint64
-	activeScanDirs     atomic.Uint64
-	activeScanOpens    atomic.Uint64
-	instanceLogAppends atomic.Uint64
-	instanceLogBytes   atomic.Uint64
-	instanceTailReads  atomic.Uint64
-	instanceTailBytes  atomic.Uint64
-	runPhaseBytes      atomic.Uint64
+	journalOpens        atomic.Uint64
+	activeScanDirs      atomic.Uint64
+	activeScanOpens     atomic.Uint64
+	instanceLogAppends  atomic.Uint64
+	instanceLogBytes    atomic.Uint64
+	instanceTailReads   atomic.Uint64
+	instanceTailBytes   atomic.Uint64
+	instanceTailRecords atomic.Uint64
+	runPhaseBytes       atomic.Uint64
 )
 
 // Snapshot is a point-in-time reading of the counters.
@@ -90,6 +91,8 @@ type Snapshot struct {
 	// InstanceTailBytes the bytes read after the remembered cursor.
 	InstanceTailReads uint64 `json:"instanceTailReads"`
 	InstanceTailBytes uint64 `json:"instanceTailBytesRead"`
+	// InstanceTailRecords counts event records parsed by instance-journal reads.
+	InstanceTailRecords uint64 `json:"instanceTailRecordsParsed"`
 	// RunPhaseBytes counts the journal bytes read to reconstruct run phases,
 	// by whichever route the caller took.
 	//
@@ -120,20 +123,22 @@ func Reset() {
 	instanceLogBytes.Store(0)
 	instanceTailReads.Store(0)
 	instanceTailBytes.Store(0)
+	instanceTailRecords.Store(0)
 	runPhaseBytes.Store(0)
 }
 
 // Take returns the current counter values.
 func Take() Snapshot {
 	return Snapshot{
-		JournalOpens:       journalOpens.Load(),
-		ActiveScanDirs:     activeScanDirs.Load(),
-		ActiveScanOpens:    activeScanOpens.Load(),
-		InstanceLogAppends: instanceLogAppends.Load(),
-		InstanceLogBytes:   instanceLogBytes.Load(),
-		InstanceTailReads:  instanceTailReads.Load(),
-		InstanceTailBytes:  instanceTailBytes.Load(),
-		RunPhaseBytes:      runPhaseBytes.Load(),
+		JournalOpens:        journalOpens.Load(),
+		ActiveScanDirs:      activeScanDirs.Load(),
+		ActiveScanOpens:     activeScanOpens.Load(),
+		InstanceLogAppends:  instanceLogAppends.Load(),
+		InstanceLogBytes:    instanceLogBytes.Load(),
+		InstanceTailReads:   instanceTailReads.Load(),
+		InstanceTailBytes:   instanceTailBytes.Load(),
+		InstanceTailRecords: instanceTailRecords.Load(),
+		RunPhaseBytes:       runPhaseBytes.Load(),
 	}
 }
 
@@ -142,14 +147,15 @@ func Take() Snapshot {
 // goroutine may be recording into.
 func (s Snapshot) Sub(earlier Snapshot) Snapshot {
 	return Snapshot{
-		JournalOpens:       s.JournalOpens - earlier.JournalOpens,
-		ActiveScanDirs:     s.ActiveScanDirs - earlier.ActiveScanDirs,
-		ActiveScanOpens:    s.ActiveScanOpens - earlier.ActiveScanOpens,
-		InstanceLogAppends: s.InstanceLogAppends - earlier.InstanceLogAppends,
-		InstanceLogBytes:   s.InstanceLogBytes - earlier.InstanceLogBytes,
-		InstanceTailReads:  s.InstanceTailReads - earlier.InstanceTailReads,
-		InstanceTailBytes:  s.InstanceTailBytes - earlier.InstanceTailBytes,
-		RunPhaseBytes:      s.RunPhaseBytes - earlier.RunPhaseBytes,
+		JournalOpens:        s.JournalOpens - earlier.JournalOpens,
+		ActiveScanDirs:      s.ActiveScanDirs - earlier.ActiveScanDirs,
+		ActiveScanOpens:     s.ActiveScanOpens - earlier.ActiveScanOpens,
+		InstanceLogAppends:  s.InstanceLogAppends - earlier.InstanceLogAppends,
+		InstanceLogBytes:    s.InstanceLogBytes - earlier.InstanceLogBytes,
+		InstanceTailReads:   s.InstanceTailReads - earlier.InstanceTailReads,
+		InstanceTailBytes:   s.InstanceTailBytes - earlier.InstanceTailBytes,
+		InstanceTailRecords: s.InstanceTailRecords - earlier.InstanceTailRecords,
+		RunPhaseBytes:       s.RunPhaseBytes - earlier.RunPhaseBytes,
 	}
 }
 
@@ -209,5 +215,12 @@ func RecordInstanceTailRead(bytesRead int) {
 		if bytesRead > 0 {
 			instanceTailBytes.Add(uint64(bytesRead))
 		}
+	}
+}
+
+// RecordInstanceTailRecords records event records parsed by an instance-journal read.
+func RecordInstanceTailRecords(records int) {
+	if records > 0 && enabled.Load() {
+		instanceTailRecords.Add(uint64(records))
 	}
 }

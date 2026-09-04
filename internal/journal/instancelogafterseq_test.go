@@ -131,3 +131,43 @@ func TestReadInstanceLogAfterSeqReadsBoundedBytes(t *testing.T) {
 		t.Fatalf("bounded read = %d bytes, want at most %d", largeBytes, 2*tailChunkSize)
 	}
 }
+
+func TestReadInstanceLogAfterSeqColdReadScalesWithJournal(t *testing.T) {
+	padding := strings.Repeat("y", 4<<10)
+	measure := func(t *testing.T, count int) (readprobe.Snapshot, int64) {
+		t.Helper()
+		dir := t.TempDir()
+		events := make([]Event, count)
+		for i := range events {
+			events[i] = Event{Type: EventTickSkipped, Reason: padding}
+		}
+		appendInstanceEvents(t, dir, events...)
+		info, err := os.Stat(filepath.Join(dir, "events.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		readprobe.Enable()
+		t.Cleanup(readprobe.Disable)
+		if _, err := ReadInstanceLogAfterSeq(dir, 0); err != nil {
+			t.Fatal(err)
+		}
+		return readprobe.Take(), info.Size()
+	}
+
+	smallWork, smallSize := measure(t, 64)
+	largeWork, largeSize := measure(t, 640)
+	if largeSize < 10*tailChunkSize {
+		t.Fatalf("fixture journal is %d bytes, too small to measure", largeSize)
+	}
+	if largeWork.InstanceTailReads != 1 || largeWork.InstanceTailRecords != 640 {
+		t.Fatalf("cold read work = %+v, want one read and 640 parsed records", largeWork)
+	}
+	if largeWork.InstanceTailBytes < 9*smallWork.InstanceTailBytes ||
+		largeWork.InstanceTailBytes > 11*smallWork.InstanceTailBytes {
+		t.Fatalf(
+			"cold read bytes did not scale linearly: %d over %d-byte journal, %d over %d-byte journal",
+			largeWork.InstanceTailBytes, largeSize, smallWork.InstanceTailBytes, smallSize,
+		)
+	}
+}

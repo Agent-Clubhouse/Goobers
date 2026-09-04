@@ -1383,6 +1383,32 @@ func TestStatusPathsCostDoesNotGrowWithInstanceJournalHistory(t *testing.T) {
 	}
 }
 
+func TestStatusColdPathReadsInstanceJournalOnce(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	history := make([]journal.Event, 640)
+	for i := range history {
+		history[i] = journal.Event{Type: journal.EventTickSkipped, Reason: strings.Repeat("y", 4<<10)}
+	}
+	appendSchedulerEvents(t, layout, history...)
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	if _, err := service.SchedulerStatus(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	work := readprobe.Take()
+	if work.InstanceTailReads != 1 || work.InstanceTailRecords != 640 {
+		t.Fatalf("cold status work = %+v, want one read and 640 parsed records", work)
+	}
+}
+
 func appendSchedulerEvents(t *testing.T, layout instance.Layout, events ...journal.Event) {
 	t.Helper()
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
