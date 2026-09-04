@@ -124,6 +124,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           for report in stress-results/*/failures.json; do
-            [ -f "$report" ] || continue
-            go run ./test/flakeledger -input "$report"
+            if [ -f "$report" ]; then
+              go run ./test/flakeledger -input "$report"
+            fi
           done

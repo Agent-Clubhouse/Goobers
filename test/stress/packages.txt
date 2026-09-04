@@ -31,8 +31,9 @@
 # it was reduced to when its full twenty-repetition race suite stopped fitting
 # the per-package budget. One race pass costs about twenty minutes on a hosted
 # runner, so twenty repetitions only fit once the suite is split: thirty-two
-# shards put each nightly job around a quarter of its timeout while restoring
-# the full repetition count every other enrolled package gets.
+# shards put each nightly job at 12m30s of test execution plus the 10m build
+# reserve, three quarters of its 30m timeout, while restoring the full
+# repetition count every other enrolled package gets.
 ./cmd/goobers pass=20m shards=32
 ./internal/harness pass=45s
 ./internal/httpapi pass=45s
