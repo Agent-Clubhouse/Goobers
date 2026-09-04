@@ -100,6 +100,92 @@ const run = {
   noWork: false,
 };
 
+const runDetail = {
+  ...run,
+  graph: workflowGraph,
+  graphStatus: "pinned",
+  transitionsStatus: "projected",
+  transitions: [
+    { branch: 0, occurrence: 1, seq: 2, source: "query", target: "implement", status: "success" },
+  ],
+};
+
+function journalEvent(seq, type, fields) {
+  return {
+    schema: "goobers.run.v1",
+    seq,
+    type,
+    branch: 0,
+    time: new Date(Date.parse(run.startedAt) + seq * 1_000).toISOString(),
+    knownSchema: true,
+    ...fields,
+  };
+}
+const runEvents = {
+  runId: run.id,
+  events: [
+    journalEvent(1, "run.started", { runId: run.id, workflow: run.workflow }),
+    journalEvent(2, "stage.started", { stage: "query", attempt: 1, attemptClass: "initial" }),
+    journalEvent(3, "stage.finished", {
+      stage: "query",
+      attempt: 1,
+      attemptClass: "initial",
+      status: "success",
+    }),
+    journalEvent(4, "stage.started", { stage: "implement", attempt: 1, attemptClass: "initial" }),
+  ],
+};
+const stageAttempts = (stage, status) => ({
+  runId: run.id,
+  stage,
+  attempts: [
+    {
+      id: `sta-${stage}-1`,
+      visit: 1,
+      number: 1,
+      class: "initial",
+      status,
+      startedSeq: 2,
+      durationMillis: 1_500,
+      artifacts: [],
+    },
+  ],
+});
+
+const telemetryStats = {
+  gaggles: [],
+  runs: [],
+  stages: [],
+  usage: [],
+  models: [],
+  creditAssignment: [],
+  causalCredit: null,
+  curation: {
+    everRecorded: false,
+    runs: 0,
+    reportedRuns: 0,
+    ready: 0,
+    needsHuman: 0,
+    closed: 0,
+    deduped: 0,
+    split: 0,
+    stale: 0,
+    reconciled: 0,
+    milestoned: 0,
+    bounced: 0,
+  },
+  readyPool: {
+    sampleEverRecorded: false,
+    claimAgeSamples: 0,
+    bounceEverRecorded: false,
+    inFlightClaimSamples: 0,
+    averageInFlightClaimAgeSeconds: 0,
+    oldestInFlightClaimAgeSeconds: 0,
+    forwardCurationThroughput: 0,
+    implementationDemand: 0,
+  },
+};
+
 const responses = new Map([
   [
     "/api/v1/health",
@@ -224,6 +310,13 @@ const responses = new Map([
       ],
     },
   ],
+  ["/api/v1/telemetry/stats", telemetryStats],
+  ["/api/v1/telemetry/error-signatures", { items: [] }],
+  [`/api/v1/runs/${run.id}`, runDetail],
+  [`/api/v1/runs/${run.id}/events`, runEvents],
+  [`/api/v1/runs/${run.id}/stages/query/attempts`, stageAttempts("query", "success")],
+  [`/api/v1/runs/${run.id}/stages/implement/attempts`, stageAttempts("implement", "running")],
+  [`/api/v1/runs/${run.id}/stages/review/attempts`, { runId: run.id, stage: "review", attempts: [] }],
 ]);
 
 const contentTypes = {
