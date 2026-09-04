@@ -326,6 +326,9 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "complexity", command: tools.goCommand, args: []string{"run", "./test/complexitygate"}, group: groupChecks},
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
+		// A workflow whose schedule is commented out never runs, and nothing
+		// else distinguishes it from an enforced gate (#4224).
+		{label: "workflow-inventory", command: tools.goCommand, args: []string{"run", "./test/workflowinventory"}, group: groupChecks},
 		// A lockfile pinned to a private npm mirror answers 403 to every
 		// checkout outside that mirror's ACL, and the failure surfaces as an
 		// unrelated portal-install break in whatever change is in flight.

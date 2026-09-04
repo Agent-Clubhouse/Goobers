@@ -7,16 +7,25 @@ name: CI
 # fanned across independent runners here so the sequential gate runs in
 # parallel. Each parallel job runs one slice via `go run ./test/ci group <name>`:
 #
+# group jobs:
 #   checks   fmt · tidy · no-phone-home · vet · command builds · config validation · portal
 #   lint     golangci-lint (staticcheck / govet / revive / errcheck / ...)
 #   unit     the -race unit suite, split into shards (Linux) — the long pole
 #   shipped  shipped-workflow contract suite on Linux, macOS, and Windows
 #
-# plus deadcode, and the dedicated deploy-reference, conformance, windows-smoke,
-# integration, vulnerability-scan, sandbox, and linux-validation jobs. Coverage
-# of the merge tier is unchanged: the four groups are a disjoint, exhaustive
-# partition of the checks the monolith used to run serially (asserted by
-# test/ci's group tests).
+# dedicated jobs: darwin-build, deadcode, deploy-reference, integration,
+#   linux-validation, sandbox, unit-linux-coverage, unit-macos,
+#   vulnerability-scan, windows-smoke
+#
+# Those two lists together are exactly required-ci's `needs:` — this header is
+# not prose that can quietly drift from the workflow it describes:
+# TestCIHeaderMatchesRequiredJobs (test/ci) fails when the group names here
+# disagree with test/ci's group constants, or when the union of both lists
+# disagrees with required-ci's `needs:`.
+#
+# Coverage of the merge tier is unchanged: the four groups are a disjoint,
+# exhaustive partition of the checks the monolith used to run serially
+# (asserted by test/ci's group tests).
 #
 # Race posture: a data race is a source-level property, not OS behaviour, so the
 # full -race suite runs on Linux (sharded for wall-clock). macOS runs the same
@@ -27,14 +36,18 @@ name: CI
 # Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633) plus the
 # shipped-workflow contract suite. The broad Windows behavioural tier is NOT
 # here: enabling it surfaced 670 failures across 19 packages, tracked separately.
-# The platform slices, the Windows gates, the vulnerability scan, and the journal
-# conformance job must all be green for the required `make ci` check (the
-# required-ci aggregator, whose NAME is pinned by the branch ruleset) to pass.
+# The platform slices, the Windows gates, and the vulnerability scan must all be
+# green for the required `make ci` check (the required-ci aggregator, whose NAME
+# is pinned by the branch ruleset) to pass.
 #
 # Pull requests and merge groups run that complete matrix. A push to main also
 # validates the exact landed SHA with checks, lint, the Linux race shards, the
 # macOS behavioral suite, shipped-workflow contracts, and the Windows gate.
 # Failures on the landed tree are automatically escalated as critical issues.
+#
+# Every workflow in this directory — including the dormant ones, whose
+# schedules are commented out and which therefore enforce nothing — is
+# inventoried in docs/reference/workflow-inventory.md.
 
 on:
   push:
