@@ -1,39 +1,10 @@
 package validate
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
 )
-
-func TestMissionControlGoldenArtifactsValidate(t *testing.T) {
-	files, err := filepath.Glob("../../internal/missioncontrol/testdata/*.golden")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != 5 {
-		t.Fatalf("golden fixture count = %d, want 5", len(files))
-	}
-	for _, file := range files {
-		t.Run(filepath.Base(file), func(t *testing.T) {
-			data, readErr := os.ReadFile(file)
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			jsonData, _, ok := strings.Cut(string(data), "\n--- FACTS ---\n")
-			if !ok || !json.Valid([]byte(jsonData)) {
-				t.Fatal("golden does not contain valid JSON and exact facts sections")
-			}
-			if validateErr := newV(t).ValidateJSON(schemas.MissionControlVerdict, []byte(jsonData)); validateErr != nil {
-				t.Fatalf("schema validation: %v", validateErr)
-			}
-		})
-	}
-}
 
 func TestMissionControlSchemaRejectsWrongVersionAndThresholdShape(t *testing.T) {
 	for name, document := range map[string]string{

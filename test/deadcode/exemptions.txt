@@ -10,40 +10,6 @@ github.com/goobers/goobers/internal/configdiff.OperationalFields # Documented op
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper, exercised by assets_test.go's hidden-directory case (#2044 audit).
 github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
-github.com/goobers/goobers/internal/missioncontrol.EvaluateMetric # Versioned mission-control metric contract entry point retained for workflow consumers (#1449).
-github.com/goobers/goobers/internal/missioncontrol.Build # Versioned mission-control artifact builder retained for workflow consumers (#1449).
-github.com/goobers/goobers/internal/missioncontrol.aggregate # Mission-control aggregation helper reachable through the retained artifact builder (#1449).
-github.com/goobers/goobers/internal/missioncontrol.compare # Mission-control criterion evaluator reachable through retained contract entry points (#1449).
-github.com/goobers/goobers/internal/missioncontrol.Artifact.Validate # Versioned mission-control artifact validator retained for workflow consumers (#1449).
-github.com/goobers/goobers/internal/missioncontrol.validateArtifactMetadata # Mission-control artifact metadata validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateEvidence # Mission-control evidence validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateSubsystemDefinitions # Mission-control subsystem-definition validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMetrics # Mission-control metrics-section validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateSubsystems # Mission-control subsystem-section validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateOverall # Mission-control overall-section validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMetric # Mission-control metric validator reachable through the retained artifact validator (#1449).
-github.com/goobers/goobers/internal/missioncontrol.validateMetricMetadata # Mission-control metric metadata validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMetricCriterion # Mission-control metric criterion validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMetricValue # Mission-control metric value validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMetricTiming # Mission-control metric timing validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMetricStatus # Mission-control metric status validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validMetricReason # Mission-control metric verdict-reason guard reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMetricObservation # Mission-control metric observation validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateConclusiveMetricObservation # Mission-control conclusive-observation validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateStaleMetricObservation # Mission-control stale-observation validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMetricWithoutCanonicalValue # Mission-control canonical-value validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateMissingMetricObservation # Mission-control missing-observation validator reachable through the retained artifact validator (#3038).
-github.com/goobers/goobers/internal/missioncontrol.validateAggregation # Mission-control aggregate validator reachable through the retained artifact validator (#1449).
-github.com/goobers/goobers/internal/missioncontrol.validateMembers # Mission-control membership validator reachable through the retained artifact validator (#1449).
-github.com/goobers/goobers/internal/missioncontrol.uniqueID # Mission-control identifier validator reachable through the retained artifact validator (#1449).
-github.com/goobers/goobers/internal/missioncontrol.criterionFinite # Mission-control finite-criterion guard reachable through retained contract entry points (#1449).
-github.com/goobers/goobers/internal/missioncontrol.validCriterionShape # Mission-control criterion-shape guard reachable through the retained artifact validator (#1449).
-github.com/goobers/goobers/internal/missioncontrol.finite # Mission-control finite-number guard reachable through retained contract entry points (#1449).
-github.com/goobers/goobers/internal/missioncontrol.validVerdict # Mission-control verdict enum guard reachable through the retained artifact validator (#1449).
-github.com/goobers/goobers/internal/missioncontrol.validReasonCode # Mission-control reason-code enum guard reachable through the retained artifact validator (#1449).
-github.com/goobers/goobers/internal/missioncontrol.canonicalize # Mission-control deterministic ordering helper reachable through the retained artifact builder (#1449).
-github.com/goobers/goobers/internal/missioncontrol.RenderFacts # Exact mission-control facts renderer retained for workflow consumers (#1449).
-github.com/goobers/goobers/internal/missioncontrol.renderCriterion # Mission-control criterion renderer reachable through the retained exact-facts renderer (#1449).
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
 github.com/goobers/goobers/internal/instance.InitQuickstart # Default-options convenience wrapper over InitQuickstartWithOptions, retained for the CLI and release onboarding tests; the init command always passes the --harness selection (#3071).
 github.com/goobers/goobers/internal/instance.SeedQuickstartConfigSource # Default-options convenience wrapper over SeedQuickstartConfigSourceWithOptions, retained for the config-source seeding and validate tests; the init command always passes the --harness selection (#3071).
@@ -117,38 +83,6 @@ github.com/goobers/goobers/internal/worktree.WithPinnedProcessKiller # Pinned-wo
 github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # Object-cache lock-timeout test seam (#2905), used only from objectcachelock_test.go — mirrors internal/journal.SetLockTimeoutForTest.
 
 # Quarantined, reserved, and extension seams required by the architecture.
-# Notification output boundary (#1451) ships ahead of its mission-control
-# workflow caller (#1450); each entry is exercised by notification package tests.
-github.com/goobers/goobers/internal/notification.NewJournalRecorder # Durable notification journal adapter reserved for the mission-control workflow caller (#1450).
-github.com/goobers/goobers/internal/notification.JournalRecorder.RecordRequest # Notification request persistence method reached through the reserved recorder boundary (#1450).
-github.com/goobers/goobers/internal/notification.JournalRecorder.RecordReceipt # Notification receipt persistence method reached through the reserved recorder boundary (#1450).
-github.com/goobers/goobers/internal/notification.JournalRecorder.recordReceipt # Locked receipt append helper reached through the reserved recorder boundary (#1450).
-github.com/goobers/goobers/internal/notification.JournalRecorder.ClaimDelivery # Atomic delivery-claim method reached through the reserved recorder boundary (#1450).
-github.com/goobers/goobers/internal/notification.Policy.normalized # Notification policy validator reached through the reserved dispatcher constructor (#1450).
-github.com/goobers/goobers/internal/notification.NewDispatcher # Notification dispatcher constructor reserved for the mission-control workflow caller (#1450).
-github.com/goobers/goobers/internal/notification.Dispatcher.Dispatch # Notification dispatch entrypoint reserved for the mission-control workflow caller (#1450).
-github.com/goobers/goobers/internal/notification.Dispatcher.dispatchSink # Per-sink delivery helper reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.Dispatcher.persist # Durable receipt helper reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.startDelivery # Bounded asynchronous sink helper reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.deliveryAttempt.wait # Delivery timeout helper reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.Dispatcher.resolvePending # Timed-out delivery resolution helper reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.Dispatcher.receipt # Delivery receipt builder reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.idempotencyDigest # Receipt idempotency helper reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.sinkRef # Provider-neutral sink reference helper reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.ValidateRequest # Notification contract validator reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.validSHA256Digest # Evidence digest validator reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.Dispatcher.sanitizeError # Credential-aware error sanitizer reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.NewRegistry # Notification sink registry constructor reserved for the mission-control workflow caller (#1450).
-github.com/goobers/goobers/internal/notification.Registry.Register # Notification sink registration entrypoint reserved for the mission-control workflow caller (#1450).
-github.com/goobers/goobers/internal/notification.Registry.lookup # Sink lookup helper reached through the reserved dispatch entrypoint (#1450).
-github.com/goobers/goobers/internal/notification.RecordingSink.Kind # Hermetic sink contract method retained for shared notification tests (#1451).
-github.com/goobers/goobers/internal/notification.RecordingSink.Version # Hermetic sink contract method retained for shared notification tests (#1451).
-github.com/goobers/goobers/internal/notification.RecordingSink.Deliver # Hermetic sink delivery method retained for shared notification tests (#1451).
-github.com/goobers/goobers/internal/notification.RecordingSink.Requests # Hermetic sink assertion accessor retained for shared notification tests (#1451).
-github.com/goobers/goobers/internal/notification.NewTerminalSink # Development terminal sink constructor reserved for notification-output callers (#1451).
-github.com/goobers/goobers/internal/notification.TerminalSink.Kind # Development terminal sink contract method reserved for notification-output callers (#1451).
-github.com/goobers/goobers/internal/notification.TerminalSink.Version # Development terminal sink contract method reserved for notification-output callers (#1451).
-github.com/goobers/goobers/internal/notification.TerminalSink.Deliver # Development terminal sink delivery method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/configsync.AuthoritativeGeneration # Generation-barrier read side (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's authoritative-generation assertions.
 github.com/goobers/goobers/internal/configsync.GenerationSelector # Single-generation label selector (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's single-generation consistency assertions.

@@ -1,6 +1,7 @@
 # Notification output boundary
 
-> Status: **implemented** (#2569)
+> Status: **historical** — implemented under #2569, then deleted unused in #4233;
+> the schemas remain, the `internal/notification` implementation does not.
 
 Notification decisions are rendered before dispatch and cross the runner boundary
 as `goobers.dev/notification/request/v1`. The request carries stable notification,
@@ -10,7 +11,7 @@ requested registered sink kinds; expiry; and an idempotency key. It contains no
 provider configuration or credentials. Canonical schemas live in
 `api/schemas/notification-{request,receipt}.schema.json`.
 
-Sink implementations register with `internal/notification.Registry`; workflows
+Sink implementations register with the dispatcher's sink registry; workflows
 name sink kinds but never construct transports. `Dispatcher` validates payload
 limits, records the request, and passes the request unchanged to each sink.
 Execution has a per-attempt timeout, caller cancellation, at most five attempts,
