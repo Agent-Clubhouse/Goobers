@@ -20,10 +20,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const integrationGuidance = "tag this test with //go:build integration and run it in the integration tier"
 const shardWeightsPath = ".github/unit-shard-weights.json"
+
+// shardWeightsMaxAge bounds how long the checked-in package measurements may
+// go without a refresh before TestCheckedInShardWeightsAreFresh fails: the
+// weights have no automated writer, so a hard cadence is what keeps the LPT
+// scheduler balancing against current package costs instead of a stale
+// snapshot.
+const shardWeightsMaxAge = 60 * 24 * time.Hour
 
 type toolSpec struct {
 	name     string
@@ -60,7 +68,24 @@ func (s shardSpec) enabled() bool { return s.total > 0 }
 type shardWeights struct {
 	SchemaVersion  int                `json:"schemaVersion"`
 	DefaultSeconds float64            `json:"defaultSeconds"`
+	Source         shardWeightsSource `json:"source"`
 	Packages       map[string]float64 `json:"packages"`
+}
+
+type shardWeightsSource struct {
+	GeneratedAt string `json:"generatedAt"`
+}
+
+func (w shardWeights) generatedAt() (time.Time, error) {
+	stamp := strings.TrimSpace(w.Source.GeneratedAt)
+	if stamp == "" {
+		return time.Time{}, errors.New("source.generatedAt is missing")
+	}
+	generated, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("source.generatedAt %q must be an RFC 3339 timestamp", stamp)
+	}
+	return generated, nil
 }
 
 func (w shardWeights) packageSeconds(pkg string) float64 {
@@ -269,6 +294,9 @@ func loadShardWeights(root string) (shardWeights, error) {
 	}
 	if !validShardWeight(weights.DefaultSeconds) {
 		return shardWeights{}, fmt.Errorf("shard weights %s: defaultSeconds must be finite and positive", path)
+	}
+	if _, err := weights.generatedAt(); err != nil {
+		return shardWeights{}, fmt.Errorf("shard weights %s: %w", path, err)
 	}
 	for pkg, seconds := range weights.Packages {
 		if strings.TrimSpace(pkg) == "" || !validShardWeight(seconds) {

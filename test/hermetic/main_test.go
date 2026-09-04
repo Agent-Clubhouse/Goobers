@@ -490,6 +490,52 @@ func TestCheckedInShardWeightsBalanceRepresentativeRun(t *testing.T) {
 	}
 }
 
+func TestCheckedInShardWeightsAreFresh(t *testing.T) {
+	root, err := findModuleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	weights, err := loadShardWeights(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := weights.generatedAt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age := time.Since(generated); age > shardWeightsMaxAge {
+		t.Fatalf("%s was generated %s (%.0f days ago), want no older than %.0f days: "+
+			"refresh it from a recent test-timings artifact and update source.generatedAt",
+			shardWeightsPath, generated.Format(time.RFC3339), age.Hours()/24, shardWeightsMaxAge.Hours()/24)
+	}
+}
+
+func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
+	for name, source := range map[string]string{
+		"missing":   `{}`,
+		"blank":     `{"generatedAt": "   "}`,
+		"malformed": `{"generatedAt": "2026-08-26"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, ".github"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			document := `{"schemaVersion": 1, "defaultSeconds": 1, "source": ` + source + `, "packages": {}}`
+			if err := os.WriteFile(filepath.Join(root, shardWeightsPath), []byte(document), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := loadShardWeights(root)
+			if err == nil {
+				t.Fatal("loadShardWeights accepted weights without a usable generatedAt")
+			}
+			if !strings.Contains(err.Error(), "generatedAt") {
+				t.Fatalf("error = %v, want it to name generatedAt", err)
+			}
+		})
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

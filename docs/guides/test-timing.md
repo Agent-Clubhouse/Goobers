@@ -53,6 +53,15 @@ measurement threshold and packages added later use `defaultSeconds`. Refresh
 the table from successful race-shard logs or timing artifacts when the package
 mix or measured shard balance changes, and update its source metadata.
 
+The table has no automated writer, so `source.generatedAt` (RFC 3339) records
+when it was last regenerated and `TestCheckedInShardWeightsAreFresh` fails once
+that stamp is more than **60 days** old. That is the documented refresh
+cadence: when the test fires, download a recent `test-timings-Linux` artifact,
+regenerate the per-package seconds from it, and commit the new table with
+`source.generatedAt` set to the regeneration time. `source.generatedAt` is
+required — the hermetic runner refuses to shard against a table that is missing
+it or carries an unparseable stamp.
+
 Timing budgets are intentionally soft, and the comparison command always
 succeeds regardless of what the timing data shows -- test failures and
 malformed timing data remain the only ordinary CI failures this step can
