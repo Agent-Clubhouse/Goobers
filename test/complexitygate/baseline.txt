@@ -41,12 +41,11 @@ internal/mcpconfig/validate.go	Validate	52
 internal/readmodel/causal.go	(*Store).CausalCredit	56
 internal/readmodel/project.go	ProjectRun	64
 internal/readservice/runs.go	(*Local).listRunsUnannotated	42
-internal/readservice/runs.go	summarizeRunForStage	74
+internal/readservice/runs.go	summarizeRunForStage	72
 internal/readservice/telemetry.go	(*Local).runtimeAnalyticsGraph	42
 internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	50
 internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	58
 internal/runner/parallel_run.go	(*Runner).runParallelBranch	78
-internal/runner/resume.go	(*Runner).resumeOwned	119
 internal/runner/resume.go	pendingParallel	61
 internal/runner/run.go	(*Runner).dispatchTask	71
 internal/runner/run.go	(*Runner).evaluateGate	44
