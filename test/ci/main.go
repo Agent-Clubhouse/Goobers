@@ -51,15 +51,6 @@ type check struct {
 	// and the command itself is never invoked. nil means always run, same
 	// as before this field existed. See resolvePortalPlaywrightSkip (#3372).
 	skip func() (bool, string)
-	// retries is the number of EXTRA attempts a failing command gets before
-	// the gate fails, and retryDelay is the pause between them. Zero (the
-	// default) means one attempt, which is what every deterministic check
-	// wants: a retried deterministic failure is just a slower failure.
-	// Reserve these for checks whose failure mode includes a remote service
-	// being briefly unavailable, where a retry is the difference between a
-	// real signal and a red PR nobody's change caused. See portal-audit.
-	retries    int
-	retryDelay time.Duration
 }
 
 // Check groups. Each maps to one parallel job in .github/workflows/ci.yml.
@@ -701,14 +692,7 @@ func portalPreparationChecks(tools toolchain) []check {
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "audit", "--audit-level=low"},
 			windowsBatch: true,
-			// `npm audit` calls the registry's bulk advisory endpoint, which
-			// answers 503 often enough to redden PRs that changed no
-			// dependency at all; npm surfaces that as the same exit 1 it uses
-			// for a real advisory, so the only way to tell them apart is that
-			// the outage does not survive a retry.
-			retries:    2,
-			retryDelay: 5 * time.Second,
-			group:      groupChecks,
+			group:        groupChecks,
 		},
 		{
 			label:        "portal-playwright-install",
@@ -767,17 +751,6 @@ func executeChecksAt(
 			}
 		}
 		output, err := exec.run(current)
-		for attempt := 1; err != nil && attempt <= current.retries; attempt++ {
-			_, _ = fmt.Fprintf(
-				stdout,
-				"%s: attempt %d/%d failed (%v); retrying\n",
-				current.label, attempt, current.retries+1, err,
-			)
-			if current.retryDelay > 0 {
-				time.Sleep(current.retryDelay)
-			}
-			output, err = exec.run(current)
-		}
 		_, _ = fmt.Fprintf(stdout, "<== %s (elapsed %s)\n", current.label, now().Sub(started).Round(time.Millisecond))
 		if err != nil {
 			if len(output) > 0 {
