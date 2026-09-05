@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -45,12 +44,4 @@ func resolveRunID(layout instance.Layout, arg string) (string, error) {
 
 func runDirFor(layout instance.Layout, runID string) (string, error) {
 	return layout.FindRunDir(runID)
-}
-
-func runsDirForRun(layout instance.Layout, runID string) (string, error) {
-	dir, err := runDirFor(layout, runID)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Dir(dir), nil
 }

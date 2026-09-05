@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	iofs "io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -101,13 +101,13 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	if haveIssue && issueID != "" && !structuredBody {
 		body += "\n\nFixes #" + issueID
 	}
-	runsDir, err := runsDirForRun(layoutFor(root), runID)
-	if err != nil && !errors.Is(err, iofs.ErrNotExist) {
-		pf(stderr, "error: locate run journal for escalation state: %v\n", err)
+	_, journalErr := stageRunJournal(root, runID)
+	if journalErr != nil && !errors.Is(journalErr, journalclient.ErrRunNotFound) {
+		pf(stderr, "error: locate run journal for escalation state: %v\n", journalErr)
 		return 1
 	}
-	if err == nil {
-		escalation, duplicate, err := issueCloseOutDuplicateEscalation(runsDir, runID)
+	if journalErr == nil {
+		escalation, duplicate, err := issueCloseOutDuplicateEscalation(root, runID)
 		if err != nil {
 			pf(stderr, "error: resolve duplicate-diff escalation: %v\n", err)
 			return 1

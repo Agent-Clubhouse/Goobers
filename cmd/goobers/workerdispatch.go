@@ -173,7 +173,8 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 		// every pod stage to GET /user — which a GitHub App installation token
 		// cannot call — so it is pinned by
 		// TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod.
-		BotLogins: cfg.GitHubBotLogins(),
+		BotLogins:          cfg.GitHubBotLogins(),
+		NeedsHumanAssignee: cfg.NeedsHumanAssignee,
 	}, dispatcher.NewKubernetesPodAPI(client), nil, dispatcher.PlaneSurrenderGate{Plane: surrenders}, nil)
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)

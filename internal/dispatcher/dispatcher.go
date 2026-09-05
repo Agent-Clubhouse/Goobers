@@ -129,6 +129,9 @@ type Config struct {
 	//
 	// Unset leaves the pod on procenv's built-in list alone, which fails closed.
 	EnvPassthrough []string
+	// NeedsHumanAssignee is the daemon-resolved routing identity for
+	// issue-close-out CLI stages.
+	NeedsHumanAssignee string
 	// BotLogins is the instance config's declared GitHub App bot login per
 	// configured github repository, keyed by instance.GitHubBotLoginKey —
 	// i.e. instance.Config.GitHubBotLogins(), threaded at wiring
@@ -167,6 +170,12 @@ type Config struct {
 	// CapacityInterval overrides DefaultCapacityInterval; zero uses the
 	// default.
 	CapacityInterval time.Duration
+}
+
+// NeedsHumanAssignee returns the daemon-resolved routing identity that CLI
+// close-out stages may carry into a pod.
+func (d *Dispatcher) NeedsHumanAssignee() string {
+	return d.cfg.NeedsHumanAssignee
 }
 
 // ownerLabel is Owner rendered into label grammar. The stamp and the sweep's

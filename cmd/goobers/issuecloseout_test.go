@@ -445,7 +445,11 @@ func TestIssueCloseOutNeedsRemediationParksWithoutAssignee(t *testing.T) {
 }
 
 func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
-	runsDir := t.TempDir()
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatalf("create runs directory: %v", err)
+	}
 	run, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: "run-local-ci", Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
 		Gaggle: "goobers",
@@ -462,7 +466,7 @@ func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 		t.Fatalf("record local gate event: %v", err)
 	}
 
-	reason, err := issueCloseOutReason(runsDir, "run-local-ci", "")
+	reason, err := issueCloseOutReason(root, "run-local-ci", "")
 	if err != nil {
 		t.Fatalf("issueCloseOutReason: %v", err)
 	}
@@ -472,7 +476,11 @@ func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 }
 
 func TestIssueCloseOutDuplicateEscalationCarriesDigestAndCause(t *testing.T) {
-	runsDir := t.TempDir()
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatalf("create runs directory: %v", err)
+	}
 	run, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: "run-duplicate", Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
 		Gaggle: "goobers",
@@ -506,7 +514,7 @@ func TestIssueCloseOutDuplicateEscalationCarriesDigestAndCause(t *testing.T) {
 		t.Fatalf("append gate event: %v", err)
 	}
 
-	state, ok, err := issueCloseOutDuplicateEscalation(runsDir, "run-duplicate")
+	state, ok, err := issueCloseOutDuplicateEscalation(root, "run-duplicate")
 	if err != nil {
 		t.Fatalf("issueCloseOutDuplicateEscalation: %v", err)
 	}
@@ -672,7 +680,11 @@ func TestIssueCloseOutEscalationCommentEmbedsReviewFindings(t *testing.T) {
 }
 
 func TestIssueCloseOutReasonUsesNonRetryableTaskSummary(t *testing.T) {
-	runsDir := t.TempDir()
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatalf("create runs directory: %v", err)
+	}
 	run, err := journal.Create(runsDir, journal.RunIdentity{
 		RunID: "run-over-scope", Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
 		Gaggle: "goobers",
@@ -696,7 +708,7 @@ func TestIssueCloseOutReasonUsesNonRetryableTaskSummary(t *testing.T) {
 		t.Fatalf("record interrupted parking attempt: %v", err)
 	}
 
-	reason, err := issueCloseOutReason(runsDir, "run-over-scope", "")
+	reason, err := issueCloseOutReason(root, "run-over-scope", "")
 	if err != nil {
 		t.Fatalf("issueCloseOutReason: %v", err)
 	}

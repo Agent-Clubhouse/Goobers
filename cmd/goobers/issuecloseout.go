@@ -7,16 +7,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
+	"os"
 	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -92,8 +94,12 @@ func issueCloseOutStatus(raw string) (providers.WorkItemStatus, error) {
 	}
 }
 
-func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
-	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+func issueCloseOutJournal(root, runID string) (journalclient.Reader, error) {
+	return stageRunJournal(root, runID)
+}
+
+func issueCloseOutReason(root, runID, gateName string) (string, error) {
+	reader, err := issueCloseOutJournal(root, runID)
 	if err != nil {
 		return "", err
 	}
@@ -164,9 +170,12 @@ func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 // drove a repass-exhaustion escalation lived only in a content-addressed run
 // artifact, so a human triaging the parked issue saw a generic comment and had
 // to spelunk events.jsonl to learn what was actually wrong.
-func issueCloseOutReviewVerdict(runsDir, runID string) (apiv1.Verdict, string, bool, error) {
-	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+func issueCloseOutReviewVerdict(root, runID string) (apiv1.Verdict, string, bool, error) {
+	reader, err := issueCloseOutJournal(root, runID)
 	if err != nil {
+		if errors.Is(err, journalclient.ErrRunNotFound) {
+			return apiv1.Verdict{}, "", false, nil
+		}
 		return apiv1.Verdict{}, "", false, err
 	}
 	events, err := reader.Events()
@@ -237,9 +246,12 @@ func issueCloseOutVerdictDetail(verdict apiv1.Verdict, gateName, runID string) s
 	return b.String()
 }
 
-func issueCloseOutDuplicateEscalation(runsDir, runID string) (implementationEscalationState, bool, error) {
-	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+func issueCloseOutDuplicateEscalation(root, runID string) (implementationEscalationState, bool, error) {
+	reader, err := issueCloseOutJournal(root, runID)
 	if err != nil {
+		if errors.Is(err, journalclient.ErrRunNotFound) {
+			return implementationEscalationState{}, false, nil
+		}
 		return implementationEscalationState{}, false, err
 	}
 	events, err := reader.Events()
@@ -256,7 +268,7 @@ func issueCloseOutDuplicateEscalation(runsDir, runID string) (implementationEsca
 		if !duplicate || digest == "" {
 			continue
 		}
-		reason, err := issueCloseOutReason(runsDir, runID, event.Gate)
+		reason, err := issueCloseOutReason(root, runID, event.Gate)
 		if err != nil {
 			return implementationEscalationState{}, false, err
 		}
@@ -393,81 +405,71 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		if status == issueCloseOutNeedsRemediation {
 			parkPrefix = "Implementation parked for remediation: "
 		}
-		var runsDir string
 		if comment == "" {
-			runsDir, err = runsDirForRun(l, runID)
-			if err != nil {
-				pf(stderr, "error: locate run journal: %v\n", err)
-				return 1
-			}
 			gateName := providerInput("reasonFromGate", "")
-			reason, err := issueCloseOutReason(runsDir, runID, gateName)
+			reason, err := issueCloseOutReason(root, runID, gateName)
 			if err != nil {
 				pf(stderr, "error: resolve parking reason: %v\n", err)
 				return 1
 			}
 			comment = parkPrefix + reason
-		} else {
-			runsDir, _ = runsDirForRun(l, runID)
 		}
 		if err := validateIssueCloseOutParkComment(status, comment); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		if runsDir != "" {
-			escalation, duplicate, err := issueCloseOutDuplicateEscalation(runsDir, runID)
+		escalation, duplicate, err := issueCloseOutDuplicateEscalation(root, runID)
+		if err != nil {
+			pf(stderr, "error: resolve duplicate-diff escalation: %v\n", err)
+			return 1
+		}
+		if duplicate {
+			comment = parkPrefix + escalation.Reason
+		}
+		if duplicate && (repo.Provider == providers.ProviderGitHub || repo.Provider == providers.ProviderGitea) {
+			head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
+			base := providerInput("base", providerBaseBranch())
+			pr, found, err := provider.FindPullRequestByBranch(ctx, repo, head, base)
 			if err != nil {
-				pf(stderr, "error: resolve duplicate-diff escalation: %v\n", err)
-				return 1
-			}
-			if duplicate {
-				comment = parkPrefix + escalation.Reason
-			}
-			if duplicate && (repo.Provider == providers.ProviderGitHub || repo.Provider == providers.ProviderGitea) {
-				head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
-				base := providerInput("base", providerBaseBranch())
-				pr, found, err := provider.FindPullRequestByBranch(ctx, repo, head, base)
-				if err != nil {
-					return failProviderStage(stderr, "find pull request for escalation digest", err, "")
-				}
-				if found {
-					reader, ok := provider.(pullRequestReader)
-					if !ok {
-						pf(stderr, "error: provider cannot read pull request for escalation digest\n")
-						return 1
-					}
-					summary, err := reader.GetPullRequest(ctx, repo, strconv.Itoa(pr.Number))
-					if err != nil {
-						return failProviderStage(stderr, "read pull request for escalation digest", err, "")
-					}
-					body, err := withImplementationEscalationMarker(summary.Body, escalation)
-					if err != nil {
-						pf(stderr, "error: render duplicate-diff escalation: %v\n", err)
-						return 1
-					}
-					if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-						Repository: repo,
-						ID:         strconv.Itoa(pr.Number),
-						Body:       &body,
-					}); err != nil {
-						return failProviderStage(stderr, "record escalated diff on pull request", err, "")
-					}
-				}
-			}
-			// #3564: embed the reviewer's actual verdict — rationale and every
-			// finding's severity/message/location — plus the run id, so the
-			// parked issue is self-contained instead of pointing a human at
-			// run artifacts they'd have to parse by hand. Appended after the
-			// question validation above so a needs-human park still states its
-			// question, and the evidence follows it.
-			verdict, gateName, found, err := issueCloseOutReviewVerdict(runsDir, runID)
-			if err != nil {
-				pf(stderr, "error: resolve review verdict for escalation comment: %v\n", err)
-				return 1
+				return failProviderStage(stderr, "find pull request for escalation digest", err, "")
 			}
 			if found {
-				comment += issueCloseOutVerdictDetail(verdict, gateName, runID)
+				reader, ok := provider.(pullRequestReader)
+				if !ok {
+					pf(stderr, "error: provider cannot read pull request for escalation digest\n")
+					return 1
+				}
+				summary, err := reader.GetPullRequest(ctx, repo, strconv.Itoa(pr.Number))
+				if err != nil {
+					return failProviderStage(stderr, "read pull request for escalation digest", err, "")
+				}
+				body, err := withImplementationEscalationMarker(summary.Body, escalation)
+				if err != nil {
+					pf(stderr, "error: render duplicate-diff escalation: %v\n", err)
+					return 1
+				}
+				if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+					Repository: repo,
+					ID:         strconv.Itoa(pr.Number),
+					Body:       &body,
+				}); err != nil {
+					return failProviderStage(stderr, "record escalated diff on pull request", err, "")
+				}
 			}
+		}
+		// #3564: embed the reviewer's actual verdict — rationale and every
+		// finding's severity/message/location — plus the run id, so the
+		// parked issue is self-contained instead of pointing a human at
+		// run artifacts they'd have to parse by hand. Appended after the
+		// question validation above so a needs-human park still states its
+		// question, and the evidence follows it.
+		verdict, gateName, found, err := issueCloseOutReviewVerdict(root, runID)
+		if err != nil {
+			pf(stderr, "error: resolve review verdict for escalation comment: %v\n", err)
+			return 1
+		}
+		if found {
+			comment += issueCloseOutVerdictDetail(verdict, gateName, runID)
 		}
 		// #2028: needs-remediation never gets the configured human assignee —
 		// withNeedsHumanAssignee only fires for LabelNeedsHuman — so config
@@ -475,12 +477,21 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		parkLabel := providers.LabelNeedsHuman
 		var assignee string
 		if status == issueCloseOutNeedsHuman {
-			cfg, err := instance.LoadConfig(l.ConfigFile())
-			if err != nil {
-				pf(stderr, "error: load needs-human routing config: %v\n", err)
+			selection, selectErr := stageJournalSelection()
+			if selectErr != nil {
+				pf(stderr, "error: select journal plane: %v\n", selectErr)
 				return 1
 			}
-			assignee = cfg.NeedsHumanAssignee
+			if selection.OnPlane() {
+				assignee = os.Getenv(executor.NeedsHumanAssigneeEnvVar)
+			} else {
+				cfg, configErr := instance.LoadConfig(l.ConfigFile())
+				if configErr != nil {
+					pf(stderr, "error: load needs-human routing config: %v\n", configErr)
+					return 1
+				}
+				assignee = cfg.NeedsHumanAssignee
+			}
 		} else {
 			parkLabel = needsRemediationLabel
 		}
