@@ -1,7 +1,12 @@
 import { useRef } from "react";
 import type { DaemonClient } from "../api/types";
 import { useCobrand } from "../cobrand";
-import { useLiveData, type DataFreshness, type LiveFreshness } from "../liveData";
+import {
+  useLiveData,
+  type DataFreshness,
+  type LiveDataSSEFailure,
+  type LiveFreshness,
+} from "../liveData";
 import { useGaggleList } from "../operationalData";
 import { routeHash, type Navigate, type PrimaryArea } from "../routing";
 import { hasScopeIdentity, type ScopeFilters } from "../scope";
@@ -38,8 +43,9 @@ export function PortalShell({
   // and intentionally do not carry across views.
   const scopedFilters = hasScopeIdentity(currentScope) ? currentScope : undefined;
   const { config } = useCobrand();
-  const { dataFreshness, freshness } = useLiveData();
+  const { dataFreshness, freshness, lastSSEFailure, retryConnection } = useLiveData();
   const mainContent = useRef<HTMLElement>(null);
+  const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -128,7 +134,7 @@ export function PortalShell({
               <small>
                 {standalone
                   ? "Daemon not running; reading this instance locally"
-                  : freshnessCopy[freshness]}
+                  : describeConnectionSummary(freshness, lastSSEFailure)}
               </small>
             </span>
           </div>
@@ -164,11 +170,21 @@ export function PortalShell({
               className={`freshness-status freshness-status-${freshness}`}
               data-state={freshness}
               role="status"
-              title="Live update connection"
+              title={describeConnectionTitle(freshness, lastSSEFailure)}
             >
               <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
-              {freshnessLabel[freshness]}
+              {connectionStatus}
             </span>
+            {freshness === "polling-fallback" ? (
+              <button
+                aria-label="Retry live updates"
+                className="reconnect-button"
+                onClick={retryConnection}
+                type="button"
+              >
+                Retry live updates
+              </button>
+            ) : null}
             <button
               aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
               className="theme-button"
@@ -254,6 +270,40 @@ const freshnessCopy: Record<LiveFreshness, string> = {
   offline: "Offline; showing stale data",
   "polling-fallback": "SSE unavailable; polling",
 };
+
+function describeConnectionStatus(
+  freshness: LiveFreshness,
+  failure: LiveDataSSEFailure | undefined,
+): string {
+  if (freshness !== "polling-fallback" || !failure) {
+    return freshnessLabel[freshness];
+  }
+  const causeChunk = failure.result ? `${failure.cause} (${failure.result})` : failure.cause;
+  return `${freshnessLabel[freshness]} — ${causeChunk}`;
+}
+
+function describeConnectionSummary(
+  freshness: LiveFreshness,
+  failure: LiveDataSSEFailure | undefined,
+): string {
+  const fallback = freshnessCopy[freshness];
+  if (freshness !== "polling-fallback" || !failure) {
+    return fallback;
+  }
+  const cause = failure.result ? `${failure.cause} (${failure.result})` : failure.cause;
+  return `${fallback} — ${cause} on ${failure.endpoint}`;
+}
+
+function describeConnectionTitle(
+  freshness: LiveFreshness,
+  failure: LiveDataSSEFailure | undefined,
+): string {
+  if (freshness !== "polling-fallback" || !failure) {
+    return "Live update connection";
+  }
+  const detail = failure.result ? `${failure.cause} (${failure.result})` : failure.cause;
+  return `${detail} on ${failure.endpoint}`;
+}
 
 /**
  * Renders how current the data is.
