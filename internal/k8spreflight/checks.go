@@ -312,6 +312,202 @@ func checkMixedOSPlacement(ctx context.Context, client kubernetes.Interface, _ O
 	return result
 }
 
+func checkRunnerClassCapacity(ctx context.Context, client kubernetes.Interface, _ Options) Result {
+	result := Result{
+		ID:       "runner-class-capacity",
+		Title:    "runner-class requests fit the node pool (incident I-55 / O-11)",
+		Citation: "§7",
+		Severity: SeverityRequired,
+	}
+	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("unable to list nodes: %v", err)
+		result.Hint = "grant list on nodes to the preflighting identity so runner-class capacity is verified against the pool"
+		return result
+	}
+	if len(nodes.Items) == 0 {
+		result.Status = StatusWarn
+		result.Detail = "checked 0 node(s); no pool capacity was available to verify"
+		result.Hint = "a non-empty cluster is required before runner-class capacity can be checked"
+		return result
+	}
+
+	maxCPU := int64(0)
+	maxMemory := int64(0)
+	for _, node := range nodes.Items {
+		if cpu := node.Status.Allocatable.Cpu().MilliValue(); cpu > maxCPU {
+			maxCPU = cpu
+		}
+		if mem := node.Status.Allocatable.Memory().Value(); mem > maxMemory {
+			maxMemory = mem
+		}
+	}
+
+	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("unable to list pods: %v", err)
+		result.Hint = "grant list on pods across namespaces so runner-class requests can be checked against node allocatable capacity"
+		return result
+	}
+
+	classRequests := map[string]struct{ cpu, memory int64 }{}
+	for _, pod := range pods.Items {
+		class, ok := pod.Labels["goobers.dev/runner-class"]
+		if !ok || class == "" {
+			continue
+		}
+		entry := classRequests[class]
+		for _, c := range pod.Spec.InitContainers {
+			entry.cpu += c.Resources.Requests.Cpu().MilliValue()
+			entry.memory += c.Resources.Requests.Memory().Value()
+		}
+		for _, c := range pod.Spec.Containers {
+			entry.cpu += c.Resources.Requests.Cpu().MilliValue()
+			entry.memory += c.Resources.Requests.Memory().Value()
+		}
+		classRequests[class] = entry
+	}
+	if len(classRequests) == 0 {
+		result.Status = StatusWarn
+		result.Detail = "checked 0 runner class(es); no pods carry a goobers.dev/runner-class label"
+		result.Hint = "a runner class must be declared and populated before its request ceiling can be evaluated against node allocatable capacity"
+		return result
+	}
+
+	var offenders []string
+	for class, req := range classRequests {
+		if req.cpu > maxCPU || req.memory > maxMemory {
+			offenders = append(offenders, fmt.Sprintf("%s requests %dm CPU / %d bytes vs node-pool ceiling %dm CPU / %d bytes", class, req.cpu, req.memory, maxCPU, maxMemory))
+		}
+	}
+	if len(offenders) > 0 {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("checked %d runner class(es) across %d node(s); %s", len(classRequests), len(nodes.Items), strings.Join(offenders, "; "))
+		result.Hint = "lower the runner-class request ceiling or expand the node pool so every declared class fits within the allocatable capacity a node can actually provide"
+		return result
+	}
+
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("checked %d runner class(es) across %d node(s); every class fits within the largest allocatable node (%dm CPU / %d bytes)", len(classRequests), len(nodes.Items), maxCPU, maxMemory)
+	return result
+}
+
+func checkPodHealth(ctx context.Context, client kubernetes.Interface, _ Options) Result {
+	result := Result{
+		ID:       "pod-health",
+		Title:    "per-container pod health (incident: crash-looping sidecar mistaken as healthy)",
+		Citation: "§7",
+		Severity: SeverityRequired,
+	}
+	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("unable to list pods: %v", err)
+		result.Hint = "grant list on pods so every container's readiness and restart count can be examined"
+		return result
+	}
+
+	checked := 0
+	var unhealthy []string
+	for _, pod := range pods.Items {
+		statuses := make(map[string]corev1.ContainerStatus, len(pod.Status.ContainerStatuses)+len(pod.Status.InitContainerStatuses))
+		for _, status := range pod.Status.InitContainerStatuses {
+			statuses[status.Name] = status
+		}
+		for _, status := range pod.Status.ContainerStatuses {
+			statuses[status.Name] = status
+		}
+		for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+			checked++
+			status, ok := statuses[container.Name]
+			if !ok {
+				unhealthy = append(unhealthy, fmt.Sprintf("%s/%s %s status missing from pod status", pod.Namespace, pod.Name, container.Name))
+				continue
+			}
+			if status.RestartCount > 0 || !status.Ready || status.State.Waiting != nil || (status.State.Terminated != nil && status.State.Terminated.ExitCode != 0) {
+				reasonParts := []string{fmt.Sprintf("%s/%s %s", pod.Namespace, pod.Name, container.Name)}
+				if status.RestartCount > 0 {
+					reasonParts = append(reasonParts, fmt.Sprintf("restarts=%d", status.RestartCount))
+				}
+				if !status.Ready {
+					reasonParts = append(reasonParts, "not ready")
+				}
+				if status.State.Waiting != nil {
+					reasonParts = append(reasonParts, "waiting: "+status.State.Waiting.Reason)
+				}
+				if status.State.Terminated != nil {
+					reasonParts = append(reasonParts, fmt.Sprintf("terminated exit=%d", status.State.Terminated.ExitCode))
+				}
+				unhealthy = append(unhealthy, strings.Join(reasonParts, "; "))
+			}
+		}
+	}
+	if checked == 0 {
+		result.Status = StatusWarn
+		result.Detail = "checked 0 container(s); no pod inventory was present to inspect"
+		result.Hint = "a live cluster must expose pod inventory before a pod-health preflight can assess container readiness"
+		return result
+	}
+	if len(unhealthy) > 0 {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("checked %d container(s) across %d pod(s); unhealthy: %s", checked, len(pods.Items), strings.Join(unhealthy, "; "))
+		result.Hint = "inspect every container by name from status.containerStatuses[name], not containerStatuses[0]; a log-healthy sidecar with restarts is not a healthy pod"
+		return result
+	}
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("checked %d container(s) across %d pod(s); every container is ready and restart-free", checked, len(pods.Items))
+	return result
+}
+
+func checkOTLPSignalSet(ctx context.Context, _ kubernetes.Interface, opts Options) Result {
+	result := Result{
+		ID:       "otlp-signal-set",
+		Title:    "OTLP signal set accepts traces, metrics, and logs (incident #4261)",
+		Citation: "§4",
+		Severity: SeverityRequired,
+	}
+	if opts.OTLPEndpoint == "" {
+		result.Severity = SeverityOptional
+		result.Status = StatusWarn
+		result.Detail = "skipped — no OTLP collector endpoint configured"
+		result.Hint = "set the collector endpoint in config or environment so the preflight can verify the collector accepts traces, metrics, and logs"
+		return result
+	}
+	baseURL := strings.TrimRight(opts.OTLPEndpoint, "/")
+	signals := []string{"traces", "metrics", "logs"}
+	var rejected []string
+	for _, signal := range signals {
+		endpoint := baseURL + "/v1/" + signal
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			rejected = append(rejected, fmt.Sprintf("%s query not constructed: %v", signal, err))
+			continue
+		}
+		response, err := opts.httpClient().Do(request)
+		if err != nil {
+			rejected = append(rejected, fmt.Sprintf("%s query never ran: %v", signal, err))
+			continue
+		}
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			_ = response.Body.Close()
+			continue
+		}
+		_ = response.Body.Close()
+		rejected = append(rejected, fmt.Sprintf("%s returned HTTP %d", signal, response.StatusCode))
+	}
+	if len(rejected) > 0 {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("checked %d signal route(s); %s", len(signals), strings.Join(rejected, "; "))
+		result.Hint = "the configured collector must accept traces, metrics, and logs; a request that never ran is different from a request that returned no data"
+		return result
+	}
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("checked %d signal route(s); traces, metrics, and logs all accepted by the configured OTLP collector", len(signals))
+	return result
+}
+
 func hasWindowsNoScheduleTaint(taints []corev1.Taint) bool {
 	for _, taint := range taints {
 		if taint.Key == corev1.LabelOSStable && taint.Value == "windows" && taint.Effect == corev1.TaintEffectNoSchedule {
