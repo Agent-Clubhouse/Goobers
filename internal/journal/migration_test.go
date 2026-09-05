@@ -3,6 +3,7 @@ package journal
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,36 @@ func copyLegacyJournalFixture(t *testing.T) string {
 		t.Fatalf("copy legacy journal fixture: %v", err)
 	}
 	return dir
+}
+
+func TestPruneMigrationBackupsBoundsGrowth(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".journal-backups")
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 40; i++ {
+		path := filepath.Join(root, fmt.Sprintf("run-%02d.v0.bak", i))
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatalf("mkdir backup %d: %v", i, err)
+		}
+		modTime := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			t.Fatalf("set modtime backup %d: %v", i, err)
+		}
+	}
+
+	removed, err := PruneMigrationBackups(root, DefaultMigrationBackupKeep)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if removed == 0 {
+		t.Fatal("pruning to a 10-backup window removed nothing")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != DefaultMigrationBackupKeep {
+		t.Fatalf("retained %d backups, want %d", len(entries), DefaultMigrationBackupKeep)
+	}
 }
 
 func TestOpenReadMigratesLegacyJournalWithBackup(t *testing.T) {

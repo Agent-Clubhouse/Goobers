@@ -1320,6 +1320,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 				if err == nil {
 					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
 				}
+				if err == nil {
+					err = sweepJournalBackups(l, setup)
+				}
 				telemetryRetentionErrors.report(err)
 			}
 		}

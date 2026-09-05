@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 
@@ -43,6 +45,12 @@ var journalMigrations = []journalMigration{
 		apply:         func(string) error { return nil },
 	},
 }
+
+// DefaultMigrationBackupKeep is the stock bound for rollback scratch backups in
+// the sibling .journal-backups directory. It keeps a conservative N most recent
+// backups while allowing a migration recovery copy to survive deprecated schema
+// churn without unbounded accumulation.
+const DefaultMigrationBackupKeep = 10
 
 func minimumBinaryForJournalSchema(schemaVersion int) string {
 	if schemaVersion < 1 || schemaVersion > len(journalMigrations) {
@@ -448,6 +456,60 @@ func migrationBackupPath(dir string, version int) string {
 		migrationBackupRoot(dir),
 		fmt.Sprintf("%s.v%d.bak", filepath.Base(dir), version),
 	)
+}
+
+// PruneMigrationBackups deletes the oldest rollback backups beyond keep newest
+// entries in the sibling .journal-backups directory.
+func PruneMigrationBackups(root string, keep int) (int, error) {
+	if keep <= 0 {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("journal: read migration backups %s: %w", root, err)
+	}
+	candidates := make([]struct {
+		path string
+		mod  int64
+	}, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".bak") {
+			info, err := entry.Info()
+			if err != nil {
+				return 0, fmt.Errorf("journal: stat migration backup %s: %w", entry.Name(), err)
+			}
+			candidates = append(candidates, struct {
+				path string
+				mod  int64
+			}{path: filepath.Join(root, entry.Name()), mod: info.ModTime().UnixNano()})
+		}
+	}
+	if len(candidates) <= keep {
+		return 0, nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].mod < candidates[j].mod
+	})
+	removed := 0
+	for _, candidate := range candidates[:len(candidates)-keep] {
+		if err := os.RemoveAll(candidate.path); err != nil {
+			return removed, fmt.Errorf("journal: remove migration backup %s: %w", candidate.path, err)
+		}
+		removed++
+	}
+	if err := durability.SyncDir(root); err != nil {
+		return removed, fmt.Errorf("journal: sync migration backup root %s: %w", root, err)
+	}
+	return removed, nil
+}
+
+// PruneMigrationBackupsForRunsDir prunes the backup set generated for a runs
+// directory under the usual sibling .journal-backups root.
+func PruneMigrationBackupsForRunsDir(runsDir string, keep int) (int, error) {
+	return PruneMigrationBackups(migrationBackupRoot(runsDir), keep)
 }
 
 func copyJournalTree(source, destination string) error {

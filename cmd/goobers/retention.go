@@ -57,6 +57,25 @@ func sweepWorktreeRetention(ctx context.Context, l instance.Layout, setup *sched
 	return pruneConfiguredRetention(ctx, l, setup, io.Discard, io.Discard)
 }
 
+func sweepJournalBackups(l instance.Layout, setup *schedulerSetup) error {
+	gaggles := make([]string, 0, len(setup.WorktreesByGaggle))
+	for gaggle := range setup.WorktreesByGaggle {
+		gaggles = append(gaggles, gaggle)
+	}
+	sort.Strings(gaggles)
+	for _, gaggle := range gaggles {
+		if _, err := journal.PruneMigrationBackupsForRunsDir(l.ForGaggle(gaggle).RunsDir(), journal.DefaultMigrationBackupKeep); err != nil {
+			return fmt.Errorf("prune journal backups for gaggle %s: %w", gaggle, err)
+		}
+	}
+	if setup.LegacyWorktrees != nil {
+		if _, err := journal.PruneMigrationBackupsForRunsDir(l.RunsDir(), journal.DefaultMigrationBackupKeep); err != nil {
+			return fmt.Errorf("prune legacy journal backups: %w", err)
+		}
+	}
+	return nil
+}
+
 func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *schedulerSetup, stdout, stderr io.Writer) error {
 	cfg := setup.Config.Retention
 	if !cfg.Enabled && !cfg.DryRun {
