@@ -3,7 +3,7 @@ package capability
 // subsumptions declares, per held capability, the strictly-narrower
 // capabilities that grant also satisfies. It exists because admission is
 // exact-set-membership (internal/workflow/v_current/compile.go's
-// admissionProblems, mirrored in v_next): when TBH-1 (#2386, commit ed11ae81)
+// admissionProblems, mirrored in v_2_0): when TBH-1 (#2386, commit ed11ae81)
 // NARROWED backlog-dedupe's requirement from github:issues:write to
 // github:issues:read, every existing config that declared the broader write
 // grant stopped compiling — a strictly-safer change broke workflows that
