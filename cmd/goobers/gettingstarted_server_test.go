@@ -897,19 +897,22 @@ func TestGettingStartedProbeBacklogNoTokenYetSkipsExec(t *testing.T) {
 
 func TestGettingStartedProbeBacklogParsesEligibleCount(t *testing.T) {
 	cases := []struct {
-		name   string
-		stdout string
-		want   int
+		name      string
+		stdout    string
+		stderr    string
+		want      int
+		wantTrunc bool
 	}{
-		{"none eligible", "no eligible items\n", 0},
-		{"one eligible", "123\tFix the flaky test\n", 1},
-		{"multiple eligible", "1\tFirst\n2\tSecond\n3\tThird\n", 3},
+		{"none eligible", "no eligible items\n", "", 0, false},
+		{"one eligible", "123\tFix the flaky test\n", "", 1, false},
+		{"multiple eligible", "1\tFirst\n2\tSecond\n3\tThird\n", "", 3, false},
+		{"truncated empty", "no eligible items\n", "warning: backlog scan found no eligible item after examining 260 candidate(s), and stopped on its 250-candidate scan budget rather than the end of the backlog: unexamined items remain\n", 0, true},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			server := newTestGuidedServer(t, t.TempDir())
 			t.Setenv(defaultWorkTrackingTokenEnv, "issues-token")
-			stubGuidedExec(t, fmt.Sprintf("printf %q", testCase.stdout))
+			stubGuidedExec(t, fmt.Sprintf("printf %q; printf %q 1>&2", testCase.stdout, testCase.stderr))
 
 			recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
 			if recorder.Code != http.StatusOK {
@@ -918,6 +921,9 @@ func TestGettingStartedProbeBacklogParsesEligibleCount(t *testing.T) {
 			body := decodeGuidedResponse[guidedProbeBody](t, recorder)
 			if body.EligibleCount == nil || *body.EligibleCount != testCase.want {
 				t.Fatalf("eligibleCount = %v, want %d", body.EligibleCount, testCase.want)
+			}
+			if body.Truncated != testCase.wantTrunc {
+				t.Fatalf("truncated = %v, want %v; stderr=%q", body.Truncated, testCase.wantTrunc, body.Stderr)
 			}
 		})
 	}

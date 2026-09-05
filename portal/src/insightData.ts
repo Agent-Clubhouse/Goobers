@@ -68,6 +68,7 @@ export function useInsightStats(
   gaggle?: string,
   workflow?: string,
   scopeRequest = false,
+  enabled = true,
 ): {
   retry: () => void;
   state: QueryState<InsightSnapshot>;
@@ -76,6 +77,7 @@ export function useInsightStats(
     cacheKey: scopeRequest
       ? dataCacheKey("insight-stats", window, gaggle ?? "", workflow ?? "")
       : dataCacheKey("insight-stats", window),
+    enabled,
     dependencies: RUN_DATA_DEPENDENCIES,
     models: RUN_MODELS,
     scope: { gaggle, workflow },
@@ -156,12 +158,14 @@ export function useInsightCostTrend(
   window: InsightWindow,
   gaggle?: string,
   workflow?: string,
+  enabled = true,
 ): {
   retry: () => void;
   state: QueryState<InsightCostTrendSnapshot>;
 } {
   return useLiveQuery<InsightCostTrendSnapshot>({
     cacheKey: dataCacheKey("insight-cost-trend", window, gaggle ?? "", workflow ?? ""),
+    enabled,
     dependencies: insightDependencies(gaggle, workflow),
     models: RUN_MODELS,
     scope: { gaggle, workflow },
@@ -214,12 +218,14 @@ export function useInsightCostTrend(
 export function useInsightCostRollup(
   client: DaemonClient,
   window: InsightWindow,
+  enabled = true,
 ): {
   retry: () => void;
   state: QueryState<InsightCostRollupSnapshot>;
 } {
   return useLiveQuery<InsightCostRollupSnapshot>({
     cacheKey: dataCacheKey("insight-cost-rollup", window),
+    enabled,
     dependencies: RUN_DATA_DEPENDENCIES,
     models: RUN_MODELS,
     isCurrent: (data) => data.window === window,
@@ -259,6 +265,7 @@ export function useInsightErrorSignatures(
   gaggle?: string,
   workflow?: string,
   stage?: string,
+  enabled = true,
 ): {
   retry: () => void;
   state: QueryState<InsightErrorSignaturesSnapshot>;
@@ -266,6 +273,7 @@ export function useInsightErrorSignatures(
   const requestKey = JSON.stringify([window, gaggle ?? "", workflow ?? "", stage ?? ""]);
   return useLiveQuery<InsightErrorSignaturesSnapshot>({
     cacheKey: dataCacheKey("insight-error-signatures", requestKey),
+    enabled,
     dependencies: insightDependencies(gaggle, workflow),
     models: RUN_MODELS,
     scope: { gaggle, workflow },

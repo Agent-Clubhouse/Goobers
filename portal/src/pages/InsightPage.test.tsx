@@ -23,6 +23,25 @@ afterEach(() => {
 });
 
 describe("Insight page", () => {
+  it("sequences aggregate requests within the daemon admission limit", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    const getTelemetryErrorSignatures = vi.spyOn(client, "getTelemetryErrorSignatures");
+
+    render(<App client={client} />);
+
+    await waitFor(() => {
+      expect(getTelemetryStats).toHaveBeenCalledTimes(3);
+      expect(getTelemetryErrorSignatures).toHaveBeenCalledTimes(1);
+    });
+
+    const statsCalls = getTelemetryStats.mock.invocationCallOrder;
+    const errorCall = getTelemetryErrorSignatures.mock.invocationCallOrder[0];
+    expect(statsCalls[0]).toBeLessThan(errorCall);
+    expect(errorCall).toBeLessThan(statsCalls[1]);
+    expect(statsCalls[1]).toBeLessThan(statsCalls[2]);
+  });
+
   it("shows scoped outcomes and full stage duration distributions", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");

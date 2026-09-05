@@ -157,34 +157,44 @@ func queryStatusParkedBacklog(ctx context.Context, cfg *instance.Config) (status
 	byID := make(map[string]*statusParkedItem)
 	var order []string
 	for _, disposition := range statusParkedDispositions {
-		items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-			Repository: repoRef,
-			Labels:     []string{disposition},
-			State:      "open",
-			Limit:      statusParkedBacklogQueryLimit,
-		})
-		if err != nil {
-			return statusParkedBacklog{}, fmt.Errorf("list %s work items for %s: %s",
-				disposition, ref, scrubRepositoryError(err, token))
-		}
-		for _, item := range items {
-			// A parked item that still carries goobers:ready is still
-			// selectable — backlog reconcile resolves that conflict; it is not
-			// invisible work, so it is not this section's subject.
-			if item.HasLabel(providers.LabelReady) {
-				continue
+		cursor := ""
+		for {
+			pageInfo := &providers.ListWorkItemsPageInfo{}
+			items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+				Repository: repoRef,
+				Labels:     []string{disposition},
+				State:      "open",
+				Limit:      statusParkedBacklogQueryLimit,
+				Cursor:     cursor,
+				PageInfo:   pageInfo,
+			})
+			if err != nil {
+				return statusParkedBacklog{}, fmt.Errorf("list %s work items for %s: %s",
+					disposition, ref, scrubRepositoryError(err, token))
 			}
-			existing, ok := byID[item.ID]
-			if !ok {
-				existing = &statusParkedItem{
-					ID:    item.ID,
-					Ref:   statusParkedRef(item.ID),
-					Title: item.Title,
+			for _, item := range items {
+				// A parked item that still carries goobers:ready is still
+				// selectable — backlog reconcile resolves that conflict; it is not
+				// invisible work, so it is not this section's subject.
+				if item.HasLabel(providers.LabelReady) {
+					continue
 				}
-				byID[item.ID] = existing
-				order = append(order, item.ID)
+				existing, ok := byID[item.ID]
+				if !ok {
+					existing = &statusParkedItem{
+						ID:    item.ID,
+						Ref:   statusParkedRef(item.ID),
+						Title: item.Title,
+					}
+					byID[item.ID] = existing
+					order = append(order, item.ID)
+				}
+				existing.Dispositions = append(existing.Dispositions, disposition)
 			}
-			existing.Dispositions = append(existing.Dispositions, disposition)
+			if !pageInfo.HasNext || pageInfo.NextCursor == "" {
+				break
+			}
+			cursor = pageInfo.NextCursor
 		}
 	}
 

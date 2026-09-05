@@ -994,6 +994,7 @@ func (s *guidedServer) handleValidate(w http.ResponseWriter, r *http.Request) {
 type guidedProbeBody struct {
 	ExitCode      int    `json:"exitCode"`
 	EligibleCount *int   `json:"eligibleCount"`
+	Truncated     bool   `json:"truncated"`
 	Stderr        string `json:"stderr"`
 }
 
@@ -1059,9 +1060,11 @@ func (s *guidedServer) handleProbeBacklog(w http.ResponseWriter, r *http.Request
 		exitCode = exitErr.ExitCode()
 	}
 	count := countEligibleBacklogLines(stdout.String())
+	truncated := count == 0 && strings.Contains(stderr.String(), "unexamined items remain")
 	writeGuidedJSON(w, http.StatusOK, guidedProbeBody{
 		ExitCode:      exitCode,
 		EligibleCount: &count,
+		Truncated:     truncated,
 		Stderr:        stderr.String(),
 	})
 }
