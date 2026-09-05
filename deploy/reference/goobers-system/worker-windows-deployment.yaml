@@ -1,0 +1,100 @@
+# Opt-in Windows task-queue worker. This is deliberately a sibling of the
+# Linux Deployment: Linux securityContext fields do not describe Windows.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-worker-windows
+  namespace: goobers-system
+  labels:
+    app.kubernetes.io/name: goobers-worker-windows
+    app.kubernetes.io/component: worker
+    goobers.dev/role: worker
+    goobers.dev/platform: windows
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goobers-worker-windows
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goobers-worker-windows
+        app.kubernetes.io/component: worker
+        goobers.dev/role: worker
+        goobers.dev/platform: windows
+    spec:
+      serviceAccountName: goobers-worker
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: kubernetes.io/os
+          operator: Equal
+          value: windows
+          effect: NoSchedule
+      securityContext:
+        windowsOptions:
+          hostProcess: false
+      initContainers:
+        - name: seed-instance-root-acl
+          image: goobers
+          command: ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
+          args:
+            - >-
+              New-Item -ItemType Directory -Force
+              -Path C:\var\lib\goobers\config,C:\var\lib\goobers\runs;
+              icacls C:\var\lib\goobers /grant
+              'ContainerUser:(OI)(CI)M' /T
+          volumeMounts:
+            - name: journal
+              mountPath: C:\var\lib\goobers
+          securityContext:
+            windowsOptions:
+              runAsUserName: ContainerUser
+              hostProcess: false
+      containers:
+        - name: worker
+          image: goobers
+          args:
+            - worker
+            - --task-queue
+            - goobers-engine-windows
+            - --work-root
+            - C:\var\lib\goobers-worker
+            - --instance
+            - C:\var\lib\goobers
+            - --blob-store
+            - C:\var\lib\goobers-blobs
+          env:
+            - name: GOOBERS_TEMPORAL_HOSTPORT
+              value: temporal-frontend.goobers-temporal:7233
+          volumeMounts:
+            - name: journal
+              mountPath: C:\var\lib\goobers
+            - name: workspaces
+              mountPath: C:\var\lib\goobers-worker
+            - name: blobs
+              mountPath: C:\var\lib\goobers-blobs
+            - name: harness-home
+              mountPath: C:\Users\ContainerUser
+          securityContext:
+            windowsOptions:
+              runAsUserName: ContainerUser
+              hostProcess: false
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: journal
+          persistentVolumeClaim:
+            claimName: goobers-journal
+        - name: workspaces
+          emptyDir: {}
+        - name: harness-home
+          emptyDir: {}
+        - name: blobs
+          persistentVolumeClaim:
+            claimName: goobers-blobs

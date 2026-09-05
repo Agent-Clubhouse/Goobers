@@ -5,4 +5,8 @@ kind: Namespace
 metadata:
   name: goobers-system
   labels:
-    pod-security.kubernetes.io/enforce: restricted
+    # L-124: PSA restricted evaluates runAsNonRoot against Windows pods and
+    # rejects them at admission; baseline permits the mixed-OS worker.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
