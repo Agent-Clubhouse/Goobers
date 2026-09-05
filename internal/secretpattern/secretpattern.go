@@ -10,6 +10,10 @@
 // Keeping the patterns here means an author's finding names exactly the shapes
 // the runtime would otherwise have had to redact, with no second copy to drift
 // (#2931).
+//
+// Azure DevOps PATs are intentionally not included: their bare 52-character
+// base32 shape has no distinguishing prefix, so matching it would create an
+// unacceptably broad false-positive net.
 package secretpattern
 
 import "regexp"
@@ -51,6 +55,11 @@ var defaultPatterns = []pattern{
 	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), Redacted},
 	// Slack tokens.
 	{regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`), Redacted},
+	// Anthropic API keys and GitLab personal access tokens.
+	{regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`), Redacted},
+	{regexp.MustCompile(`glpat-[A-Za-z0-9_-]{20,}`), Redacted},
+	// JWTs: require the conventional base64url-encoded JSON header prefix.
+	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), Redacted},
 	// PEM private key blocks.
 	{regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`), Redacted},
 	// Bearer/authorization header values with a long opaque token. The scheme
