@@ -74,6 +74,9 @@ func TestSelfUpdateCommandRoutesPrereleaseOptIn(t *testing.T) {
 	if !got.IncludePrerelease {
 		t.Fatalf("prepare options includePrerelease = %v, want true", got.IncludePrerelease)
 	}
+	if got.Policy != selfupdate.PolicyOnRelease {
+		t.Fatalf("prepare options policy = %q, want %q", got.Policy, selfupdate.PolicyOnRelease)
+	}
 }
 
 func TestSelfUpdateCommandReportsAlreadyActiveResult(t *testing.T) {
