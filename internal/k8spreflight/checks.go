@@ -1,9 +1,11 @@
 package k8spreflight
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"slices"
@@ -310,6 +312,211 @@ func checkMixedOSPlacement(ctx context.Context, client kubernetes.Interface, _ O
 	result.Status = StatusPass
 	result.Detail = fmt.Sprintf("%d Windows node(s) tainted NoSchedule; all shipped workloads pinned to Linux", len(windowsNodes))
 	return result
+}
+
+func checkRunnerClassCapacity(ctx context.Context, client kubernetes.Interface, _ Options) Result {
+	result := Result{
+		ID:       "runner-class-capacity",
+		Title:    "runner-class requests fit node allocatable capacity",
+		Citation: "§7",
+		Severity: SeverityRequired,
+	}
+	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("unable to list nodes: %v", err)
+		result.Hint = "grant list on nodes so the preflight can compare runner-class requests to allocatable capacity"
+		return result
+	}
+	allocatableCPU := make(map[string]int64, len(nodes.Items))
+	for _, node := range nodes.Items {
+		allocatableCPU[node.Name] = node.Status.Allocatable.Cpu().MilliValue()
+	}
+
+	pods, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("unable to list pods: %v", err)
+		result.Hint = "grant list on pods so the preflight can compare runner-class requests to node allocatable capacity"
+		return result
+	}
+
+	var violations []string
+	checked := 0
+	for _, pod := range pods.Items {
+		if pod.Labels["goobers.dev/runner-class"] == "" || pod.Spec.NodeName == "" {
+			continue
+		}
+		checked++
+		allocatable, ok := allocatableCPU[pod.Spec.NodeName]
+		if !ok {
+			violations = append(violations, fmt.Sprintf("pod %s/%s on unknown node %q", pod.Namespace, pod.Name, pod.Spec.NodeName))
+			continue
+		}
+		requested := int64(0)
+		for _, container := range pod.Spec.Containers {
+			requested += container.Resources.Requests.Cpu().MilliValue()
+		}
+		if requested > allocatable {
+			violations = append(violations, fmt.Sprintf("pod %s/%s (%s) requests %dm CPU on node %s but allocatable is %dm", pod.Namespace, pod.Name, pod.Labels["goobers.dev/runner-class"], requested, pod.Spec.NodeName, allocatable))
+		}
+	}
+	if checked == 0 {
+		result.Status = StatusWarn
+		result.Detail = "checked 0 runner-class pods — no runner-class pod requests were inspected"
+		result.Hint = "a cluster with no covered runner-class pods is not evidence of safety; inspect the node pool or runner-class inventory"
+		return result
+	}
+	if len(violations) > 0 {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("checked %d runner-class pod(s); %d request/allocatable mismatch(es): %s", checked, len(violations), strings.Join(violations, "; "))
+		result.Hint = "reduce runner-class CPU requests or provision a node pool whose allocatable CPU covers the class ceiling"
+		return result
+	}
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("checked %d runner-class pod(s); all requests fit their node allocatable CPU", checked)
+	return result
+}
+
+func checkPodHealth(ctx context.Context, client kubernetes.Interface, _ Options) Result {
+	result := Result{
+		ID:       "pod-container-health",
+		Title:    "per-container pod health (crash-looping sidecars are not healthy)",
+		Citation: "§5",
+		Severity: SeverityRequired,
+	}
+	pods, err := client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("unable to list pods: %v", err)
+		result.Hint = "grant list on pods so the preflight can inspect each container by name"
+		return result
+	}
+
+	var unhealthy []string
+	checked := 0
+	for _, pod := range pods.Items {
+		for _, c := range pod.Spec.Containers {
+			checked++
+			status, ok := containerStatusByName(pod.Status.ContainerStatuses, c.Name)
+			if !ok {
+				unhealthy = append(unhealthy, fmt.Sprintf("%s/%s:%s has no status yet", pod.Namespace, pod.Name, c.Name))
+				continue
+			}
+			if status.State.Waiting != nil {
+				switch status.State.Waiting.Reason {
+				case "CrashLoopBackOff", "CreateContainerConfigError", "ImagePullBackOff", "ErrImagePull", "RunContainerError":
+					unhealthy = append(unhealthy, fmt.Sprintf("%s/%s:%s waiting=%s restart=%d", pod.Namespace, pod.Name, c.Name, status.State.Waiting.Reason, status.RestartCount))
+				}
+			}
+			if status.State.Terminated != nil && status.State.Terminated.ExitCode != 0 {
+				unhealthy = append(unhealthy, fmt.Sprintf("%s/%s:%s terminated with exit code %d", pod.Namespace, pod.Name, c.Name, status.State.Terminated.ExitCode))
+			}
+			if status.State.Running == nil && status.State.Waiting == nil && status.State.Terminated == nil {
+				unhealthy = append(unhealthy, fmt.Sprintf("%s/%s:%s has no running, waiting, or terminated state", pod.Namespace, pod.Name, c.Name))
+			}
+		}
+	}
+	if checked == 0 {
+		result.Status = StatusWarn
+		result.Detail = "checked 0 containers — no pod containers were inspected"
+		result.Hint = "a cluster with no pod containers to inspect is not evidence of health; make sure the workload inventory is present"
+		return result
+	}
+	if len(unhealthy) > 0 {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("checked %d container(s); unhealthy container(s): %s", checked, strings.Join(unhealthy, "; "))
+		result.Hint = "fix crash-looping sidecars and any container that never reaches a healthy running state before trusting the pod as healthy"
+		return result
+	}
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("checked %d container(s) across %d pod(s); all containers are healthy", checked, len(pods.Items))
+	return result
+}
+
+func containerStatusByName(statuses []corev1.ContainerStatus, name string) (corev1.ContainerStatus, bool) {
+	for _, status := range statuses {
+		if status.Name == name {
+			return status, true
+		}
+	}
+	return corev1.ContainerStatus{}, false
+}
+
+func checkOTLPSignalSet(ctx context.Context, _ kubernetes.Interface, opts Options) Result {
+	result := Result{
+		ID:       "otlp-signal-set",
+		Title:    "OTLP collector accepts traces, metrics, and logs",
+		Citation: "§4",
+		Severity: SeverityOptional,
+	}
+	if opts.OTLPEndpoint == "" {
+		result.Status = StatusWarn
+		result.Detail = "skipped — no OTLP collector endpoint configured"
+		result.Hint = "configure the telemetry collector endpoint so the preflight can verify traces, metrics, and logs pipes are all present"
+		return result
+	}
+	result.Severity = SeverityRequired
+	base := strings.TrimRight(opts.OTLPEndpoint, "/")
+	client := opts.httpClient()
+	var failed []string
+	var warnings []string
+	passed := 0
+	checked := 0
+	for _, signal := range []string{"traces", "metrics", "logs"} {
+		checked++
+		url := base + "/v1/" + signal
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte(`{"resourceSpans":[]}`)))
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: invalid URL: %v", signal, err))
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: query never ran: %v", signal, err))
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+			passed++
+			if len(body) == 0 {
+				warnings = append(warnings, fmt.Sprintf("%s: query returned no payload (accepted but empty)", signal))
+			}
+			continue
+		}
+		failed = append(failed, fmt.Sprintf("%s: collector replied HTTP %d%s", signal, resp.StatusCode, maybeOTLPReason(body)))
+	}
+	if checked == 0 {
+		result.Status = StatusFail
+		result.Detail = "checked 0 signal paths — the collector was not queried"
+		result.Hint = "a configured OTLP collector must answer all three signal endpoints"
+		return result
+	}
+	if len(failed) > 0 {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("checked %d signal(s); %d accepted, %d rejected: %s", checked, passed, len(failed), strings.Join(failed, "; "))
+		result.Hint = "fix the collector pipeline so it accepts traces, metrics, and logs; a metrics-only or logs-only collector is not a complete signal set"
+		return result
+	}
+	if len(warnings) > 0 {
+		result.Status = StatusWarn
+		result.Detail = fmt.Sprintf("checked %d signal(s); %d accepted, 0 rejected: %s", checked, passed, strings.Join(warnings, "; "))
+		result.Hint = "the collector accepted the signal paths but returned no payloads; verify the collector pipeline and that it is actually receiving telemetry"
+		return result
+	}
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("checked %d signal(s); traces, metrics, and logs all reached the collector", checked)
+	return result
+}
+
+func maybeOTLPReason(body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return ""
+	}
+	return ": " + trimmed
 }
 
 func hasWindowsNoScheduleTaint(taints []corev1.Taint) bool {
