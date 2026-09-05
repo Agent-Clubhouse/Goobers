@@ -186,6 +186,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"self-update": {
 		{name: "policy", takesArg: true, values: []string{"manual", "on-release", "on-main"}, desc: "Update policy"},
+		{name: "include-prerelease", desc: "Consider pre-releases when on-release selects the newest target"},
 		{name: "branch", takesArg: true, desc: "Branch tracked by on-main"},
 		{name: "target", takesArg: true, desc: "Manual release tag"},
 		{name: "health-ticks", takesArg: true, desc: "Required clean heartbeat ticks"},

@@ -17,7 +17,7 @@ spec:
       type: deterministic
       goal: Stage and validate a Goobers binary, then request supervised activation.
       run:
-        command: ["goobers", "self-update"]
+        command: ["goobers", "self-update", "--include-prerelease"]
       inputs:
         policy: "on-release"
         owner: "Agent-Clubhouse"

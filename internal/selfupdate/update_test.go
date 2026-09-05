@@ -113,6 +113,48 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsNonNewerRelease(t *testing.T) {
+	root, work := t.TempDir(), t.TempDir()
+	current := currentBinary(root, "linux")
+	writeTestExecutable(t, current, "current")
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/goobers/releases/latest":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.3.3", "assets": []map[string]string{{
+				"name":                 "goobers_v0.3.3_linux_amd64.tar.gz",
+				"browser_download_url": server.URL + "/archive",
+			}, {
+				"name":                 "SHA256SUMS",
+				"browser_download_url": server.URL + "/sums",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	runner := commandFunc(func(_ context.Context, _ string, _ []string, name string, _ ...string) ([]byte, error) {
+		if name == current {
+			return []byte(`{"version":"v0.4.0-beta.2","commit":"beta2"}`), nil
+		}
+		return nil, fmt.Errorf("unexpected command %q", name)
+	})
+
+	_, err := Prepare(context.Background(), PrepareOptions{
+		Root: root, WorkDir: work, Policy: PolicyOnRelease, Owner: "acme", Repository: "goobers",
+		RunID: "run", GOOS: "linux", GOARCH: "amd64", APIBaseURL: server.URL,
+		HTTPClient: server.Client(), Runner: runner, HealthTicks: 1,
+		HealthTimeout: time.Minute, HeartbeatInterval: time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to stage v0.3.3") {
+		t.Fatalf("Prepare() error = %v, want error containing %q", err, "refusing to stage v0.3.3")
+	}
+	if _, err := os.Stat(requestPath(root)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("update request exists after downgrade refusal: %v", err)
+	}
+}
+
 func TestPrepareReleaseFailuresLeaveCurrentBinaryUntouched(t *testing.T) {
 	const archiveName = "goobers_v2_linux_amd64.tar.gz"
 	tests := []struct {

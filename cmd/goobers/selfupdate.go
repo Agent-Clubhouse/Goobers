@@ -21,7 +21,9 @@ import (
 const selfUpdateHelp = "Usage: goobers self-update [flags] [path]\n\n" +
 	"Stage and smoke-check a binary, then request supervised activation. Policies\n" +
 	"are manual, on-release (default), and on-main. Manual requires a release tag;\n" +
-	"on-main builds the configured branch. Config is never changed.\n"
+	"on-main builds the configured branch. on-release resolves the newest stable\n" +
+	"release unless --include-prerelease is set, which considers all GitHub\n" +
+	"releases and only stages a target strictly newer than the running build.\n"
 
 func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
 	return runSelfUpdateWith(args, stdout, stderr, "self-update", selfupdate.Prepare)
@@ -36,6 +38,7 @@ func runSelfUpdateWith(
 	fs := newCLIFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	policy := fs.String("policy", providerInput("policy", selfupdate.PolicyOnRelease), "update policy: manual, on-release, or on-main")
+	includePrerelease := fs.Bool("include-prerelease", false, "for on-release, include GitHub pre-releases when selecting the newest target")
 	branch := fs.String("branch", providerInput("branch", "main"), "branch tracked by on-main")
 	target := fs.String("target", providerInput("target", ""), "manual release tag")
 	healthTicks := fs.Int("health-ticks", selfupdate.DefaultHealthTicks, "required clean heartbeat ticks")
@@ -95,6 +98,7 @@ func runSelfUpdateWith(
 		Root:              root,
 		WorkDir:           workDir,
 		Policy:            *policy,
+		IncludePrerelease: *includePrerelease,
 		Owner:             owner,
 		Repository:        repository,
 		Branch:            *branch,
