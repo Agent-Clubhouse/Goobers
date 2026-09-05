@@ -141,7 +141,49 @@ type SurrenderedResult struct {
 	Verdict *apiv1.Verdict `json:"verdict,omitempty"`
 }
 
-// ReadSurrenderedResult fetches and decodes one attempt's surrendered result.
+// Validate reports whether the surrendered document is structurally usable as
+// the engine's record of the attempt (#3838). A stage pod is disposable,
+// attacker-reachable compute whose only contract with the engine is this
+// document, so every field the engine projects is shape-checked HERE, at the
+// decode, rather than being trusted because the pod wrote it: an unknown
+// status, a failure with no error detail, an escaping or unpinned artifact
+// pointer, or a mutation fact naming no provider/kind/id all fail the read
+// closed instead of becoming ground truth one or more stages later.
+//
+// It is deliberately shape-only. Whether a claimed mutation actually happened,
+// or a workspace digest actually went through the write-through path, is
+// provenance no local check can settle; the engine's own projection rules
+// (task attempts carry no verdict, review attempts re-validate the verdict
+// against the shared schema, "unchanged" only beside no digest) remain where
+// they are, since those are routing decisions the engine — not the transport —
+// owns.
+func (r SurrenderedResult) Validate() error {
+	if err := r.Result.Validate(); err != nil {
+		return fmt.Errorf("dispatcher: surrendered result envelope: %w", err)
+	}
+	for i, m := range r.Mutations {
+		switch {
+		case m.Provider == "":
+			return fmt.Errorf("dispatcher: surrendered mutation %d names no provider", i)
+		case m.Kind == "":
+			return fmt.Errorf("dispatcher: surrendered mutation %d (%s) names no kind", i, m.Provider)
+		case m.ID == "":
+			return fmt.Errorf("dispatcher: surrendered mutation %d (%s %s) names no id", i, m.Provider, m.Kind)
+		}
+	}
+	for i, issue := range r.MutationIssues {
+		if issue == "" {
+			return fmt.Errorf("dispatcher: surrendered mutation issue %d is empty", i)
+		}
+	}
+	return nil
+}
+
+// ReadSurrenderedResult fetches, decodes, and validates one attempt's
+// surrendered result. A document that decodes but does not validate is
+// refused: the engine treats an unreadable surrender as an infrastructure
+// fault and retries the attempt on a fresh pod, which is the right outcome
+// for a garbled or substituted document too.
 func ReadSurrenderedResult(ctx context.Context, plane SurrenderPlane, runID, stage string, attempt int) (SurrenderedResult, error) {
 	if plane == nil {
 		return SurrenderedResult{}, fmt.Errorf("dispatcher: no surrender plane configured for run %s stage %s attempt %d", runID, stage, attempt)
@@ -153,6 +195,9 @@ func ReadSurrenderedResult(ctx context.Context, plane SurrenderPlane, runID, sta
 	var result SurrenderedResult
 	if err := json.Unmarshal(data, &result); err != nil {
 		return SurrenderedResult{}, fmt.Errorf("dispatcher: decode surrendered result for run %s stage %s attempt %d: %w", runID, stage, attempt, err)
+	}
+	if err := result.Validate(); err != nil {
+		return SurrenderedResult{}, fmt.Errorf("dispatcher: invalid surrendered result for run %s stage %s attempt %d: %w", runID, stage, attempt, err)
 	}
 	return result, nil
 }
