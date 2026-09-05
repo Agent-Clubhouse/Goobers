@@ -739,6 +739,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
+	// The workflow-enable/disable mutation surface (WF-enable-disable): the
+	// service is constructed here so the HTTP handler can be built before the
+	// config reloader exists. AttachReloader wires the reloader in once it is
+	// constructed below; until then the service fails closed with a documented
+	// 503/workflow_mutations_unavailable envelope.
+	workflowMutations := newWorkflowMutationService(l)
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithWorkflowMutations(workflowMutations))
 	// The telemetry read plane's containment (decision 005 R4 / finding 002
 	// C3). Wired unconditionally: without it every pod telemetry read is
 	// refused, so this is what OPENS the plane, and a daemon that serves stage
@@ -1114,6 +1121,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		appliedDigest:  setup.ConfigDigest,
 		observedDigest: setup.ConfigDigest,
 	}
+	// The workflow mutation service was built above so the HTTP handler could
+	// register the surface before the reloader existed. Now that it does,
+	// attach it so subsequent SetWorkflowEnabled calls can drive on-demand
+	// pollOnce reloads and roll back their on-disk edit on rejection.
+	workflowMutations.AttachReloader(reloader)
 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks

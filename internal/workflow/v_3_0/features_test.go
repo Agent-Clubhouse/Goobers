@@ -635,6 +635,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{
 				Type:     apiv1.TriggerSchedule,
 				Schedule: "@hourly",
+				Enabled:  func() *bool { enabled := true; return &enabled }(),
 				IdleBackoff: &apiv1.IdleBackoff{
 					Enabled: func() *bool { enabled := true; return &enabled }(),
 					Floor:   "1m",
@@ -1109,6 +1110,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"trigger.schedule",
 		"trigger.signal",
 		"trigger.webhook",
+		"trigger.enabled",
 		"task.name",
 		"task.deterministic",
 		"task.agentic",
