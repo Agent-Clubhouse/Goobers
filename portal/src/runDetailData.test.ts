@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunEvent, RunTransition, WorkflowGraph } from "./api/types";
+import type { RunDetail, RunEvent, RunTransition, WorkflowGraph } from "./api/types";
 import {
   branchStateLabel,
   deriveBranchStates,
@@ -20,6 +20,7 @@ import {
   keyMoments,
   orderRunEvents,
   runEventStages,
+  runFailure,
   UNSCOPED_EVENT_STAGE,
 } from "./runDetailData";
 
@@ -904,5 +905,89 @@ describe("keyMomentEvidence", () => {
     ];
 
     expect(keyMomentEvidence(events, events[0], "run-1")).toBeUndefined();
+  });
+});
+
+// The read service projects a terminal cause for every non-completed terminal
+// phase (#4246), so the banner must read it — an aborted run used to get no
+// "why" at all, and a failed run whose reason lived only in the projection
+// showed a "without a recorded reason" placeholder over a recorded reason.
+describe("run failure banner", () => {
+  function terminalRun(overrides: Partial<RunDetail>): RunDetail {
+    return {
+      id: "run-1",
+      workflow: "implementation",
+      workflowVersion: 7,
+      gaggle: "core",
+      trigger: { kind: "manual" },
+      phase: "failed",
+      terminal: true,
+      startedAt: "2026-07-18T00:00:00Z",
+      finishedAt: "2026-07-18T00:01:00Z",
+      durationMillis: 60_000,
+      lastActivityAt: "2026-07-18T00:01:00Z",
+      stale: false,
+      lastSeq: 3,
+      repassCount: 0,
+      retryCount: 0,
+      policyRetryCount: 0,
+      infraRetryCount: 0,
+      noWork: false,
+      graphStatus: "unavailable",
+      transitionsStatus: "unavailable",
+      ...overrides,
+    };
+  }
+
+  it("reports the projected terminal cause for an aborted run", () => {
+    const run = terminalRun({
+      phase: "aborted",
+      terminalReason: "operator aborted the run",
+      terminalCause: {
+        selector: { kind: "stage", name: "implement" },
+        repassCount: 0,
+        retryCount: 0,
+        terminalReason: "operator aborted the run",
+        causalEventSeq: 2,
+      },
+    });
+
+    expect(runFailure(run, [])).toEqual({
+      message: "operator aborted the run",
+      code: undefined,
+      stage: undefined,
+      attempt: undefined,
+      causalEventSeq: 2,
+    });
+  });
+
+  it("falls back to the summary terminal reason when no event carries one", () => {
+    const run = terminalRun({ terminalReason: "harness.crash" });
+
+    expect(runFailure(run, [])?.message).toBe("harness.crash");
+  });
+
+  it("still prefers the failing event's coded error over the projection", () => {
+    const run = terminalRun({ terminalReason: "stage implement finished with status failure" });
+    const events = [
+      event(2, "stage.finished", {
+        stage: "implement",
+        attempt: 1,
+        status: "failure",
+        error: { code: "harness.crash", message: "Harness exited early" },
+      }),
+    ];
+
+    expect(runFailure(run, events)).toMatchObject({
+      message: "Harness exited early",
+      code: "harness.crash",
+      stage: "implement",
+      causalEventSeq: 2,
+    });
+  });
+
+  it("leaves completed and escalated runs to their own banners", () => {
+    expect(runFailure(terminalRun({ phase: "completed" }), [])).toBeUndefined();
+    expect(runFailure(terminalRun({ phase: "escalated" }), [])).toBeUndefined();
   });
 });

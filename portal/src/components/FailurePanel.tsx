@@ -1,31 +1,39 @@
-import type { RunEvent } from "../api/types";
+import type { RunEvent, RunPhase } from "../api/types";
 import { eventHeading, type RunFailure } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
-// FailurePanel is the failed-run counterpart to EscalationPanel: the single
-// authoritative "why this run failed", surfaced at the top of the run page so an
-// operator reads the coded reason (and jumps to the failing event) in seconds
-// rather than scrolling the ledger to reconstruct it. It is deliberately shaped
-// like EscalationPanel — same danger banner, same causal-event affordance — so
-// failure and escalation read one consistent way.
+// FailurePanel is the unsuccessfully-terminated-run counterpart to
+// EscalationPanel: the single authoritative "why this run ended", surfaced at
+// the top of the run page so an operator reads the coded reason (and jumps to
+// the failing event) in seconds rather than scrolling the ledger to
+// reconstruct it. It is deliberately shaped like EscalationPanel — same danger
+// banner, same causal-event affordance — so failure, abort, and escalation read
+// one consistent way.
 export function FailurePanel({
   failure,
+  phase,
   causalEvent,
   onFocusCausalEvent,
   errorsHref,
 }: {
   failure: RunFailure;
+  phase?: RunPhase;
   causalEvent?: RunEvent;
   onFocusCausalEvent?: () => void;
   errorsHref?: string;
 }) {
+  const aborted = phase === "aborted";
   return (
     <section aria-labelledby="failure-title" className="failure-panel" tabIndex={0}>
       <span className="escalation-icon">
         <Icon name="alert" />
       </span>
       <div className="escalation-content">
-        <span className="escalation-label">Attention · Failure · why this run failed</span>
+        <span className="escalation-label">
+          {aborted
+            ? "Attention · Aborted · why this run was aborted"
+            : "Attention · Failure · why this run failed"}
+        </span>
         <h2 id="failure-title">
           {failure.code ? <span className="mono">{failure.code}</span> : null}
           {failure.code ? " · " : null}
@@ -34,7 +42,7 @@ export function FailurePanel({
         <dl className="escalation-facts">
           {failure.stage && (
             <div>
-              <dt>Failed stage</dt>
+              <dt>{aborted ? "Last stage" : "Failed stage"}</dt>
               <dd>
                 <span className="mono">{failure.stage}</span>
                 {failure.attempt ? ` · attempt ${failure.attempt}` : ""}
