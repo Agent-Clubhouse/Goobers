@@ -46,6 +46,13 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 				return validateManifestArgs(args, registeredCommandFlagSet(t, "worker"), []string{"instance"}, 0)
 			},
 		},
+		"goobers-worker-windows": {
+			binary:  "goobers",
+			command: "worker",
+			validateArgs: func(args []string) error {
+				return validateManifestArgs(args, registeredCommandFlagSet(t, "worker"), []string{"instance"}, 0)
+			},
+		},
 	}
 
 	paths, err := filepath.Glob("../../deploy/reference/goobers-system/*-deployment.yaml")
@@ -114,6 +121,33 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 	}
 	if _, err := app.ParseArgs("operator", []string{"--version=eventually"}, io.Discard, true); err == nil {
 		t.Error("invalid operator flag value was accepted")
+	}
+}
+
+func TestDeployReferenceWindowsWorkerUsesWindowsSecurityShape(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-windows-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+
+	pod := deployment.Spec.Template.Spec
+	if got := pod.NodeSelector["kubernetes.io/os"]; got != "windows" {
+		t.Fatalf("node selector = %q, want windows", got)
+	}
+	if pod.SecurityContext == nil || pod.SecurityContext.WindowsOptions == nil ||
+		pod.SecurityContext.WindowsOptions.HostProcess == nil ||
+		*pod.SecurityContext.WindowsOptions.HostProcess {
+		t.Fatal("pod must explicitly disable Windows host-process mode")
+	}
+	if len(pod.Containers) != 1 || pod.Containers[0].SecurityContext == nil ||
+		pod.Containers[0].SecurityContext.WindowsOptions == nil ||
+		pod.Containers[0].SecurityContext.WindowsOptions.RunAsUserName == nil ||
+		*pod.Containers[0].SecurityContext.WindowsOptions.RunAsUserName != "ContainerUser" {
+		t.Fatal("worker must declare its Windows container identity")
 	}
 }
 

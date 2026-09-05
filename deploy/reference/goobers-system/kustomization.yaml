@@ -16,6 +16,7 @@ resources:
   - operator-deployment.yaml
   - worker-rbac.yaml
   - worker-deployment.yaml
+  - worker-windows-deployment.yaml
   - api-rbac.yaml
   - api-deployment.yaml
   - api-service.yaml
