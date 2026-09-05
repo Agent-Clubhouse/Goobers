@@ -32,19 +32,6 @@ spec:
                 values:
                   - operator
                   - worker
-        # Dedicated per-gaggle workers (G2 mode, #656): gaggle namespaces
-        # carry the goobers.dev/gaggle label stamped by the template. Only
-        # worker-role pods are admitted — stage pods run untrusted agent
-        # output and must never reach the unauthenticated frontend, even if
-        # their namespace's egress policy is widened or the CNI enforces
-        # ingress only.
-        - namespaceSelector:
-            matchExpressions:
-              - key: goobers.dev/gaggle
-                operator: Exists
-          podSelector:
-            matchLabels:
-              goobers.dev/role: worker
       ports:
         - protocol: TCP
           port: 7233
