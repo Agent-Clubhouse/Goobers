@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +206,32 @@ func TestStatusJSONCarriesParkedBacklog(t *testing.T) {
 	if output.ParkedBacklog == nil || output.ParkedBacklog.Total != 1 ||
 		len(output.ParkedBacklog.Items) != 1 || output.ParkedBacklog.Items[0].Ref != "#168" {
 		t.Fatalf("parkedBacklog = %+v, want the parked item snapshot", output.ParkedBacklog)
+	}
+}
+
+func TestStatusParkedBacklogPagesPastTheQueryLimit(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "status-fixture-token")
+
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for i := 1; i <= statusParkedBacklogQueryLimit+25; i++ {
+		server.addIssue(i, fmt.Sprintf("parked %d", i), needsRemediationLabel)
+	}
+	useFakeStatusProvider(t, server)
+
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked, err := queryStatusParkedBacklog(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("queryStatusParkedBacklog: %v", err)
+	}
+	if parked.Total < statusParkedBacklogQueryLimit {
+		t.Fatalf("parked.Total = %d, want >= %d", parked.Total, statusParkedBacklogQueryLimit)
+	}
+	if len(parked.Items) != statusParkedBacklogListLimit {
+		t.Fatalf("len(parked.Items) = %d, want %d (display cap preserved)", len(parked.Items), statusParkedBacklogListLimit)
 	}
 }
 
