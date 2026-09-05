@@ -1461,23 +1461,15 @@ jobs:
   # faster than a full validation completes, and those jobs report `cancelled`.
   # Escalating on anything-but-success would file an issue on almost every
   # merge, burying the real reds this job exists to surface.
+  #
+  # The job itself runs on every push and decides per step: the failure
+  # predicate files or updates the issue, and the all-green predicate closes it
+  # again. Without that second step the issue is filed once and never resolved,
+  # so `goobers:critical` accumulates every main break ever instead of
+  # reporting whether main is red right now (#4228).
   escalate-main-failure:
     name: escalate failed main validation
-    if: >-
-      ${{
-        always() &&
-        github.event_name == 'push' &&
-        (
-          needs.checks.result == 'failure' ||
-          needs.deploy-reference.result == 'failure' ||
-          needs.lint.result == 'failure' ||
-          needs.unit.result == 'failure' ||
-          needs.unit-linux-coverage.result == 'failure' ||
-          needs.unit-macos.result == 'failure' ||
-          needs.shipped.result == 'failure' ||
-          needs.windows-smoke.result == 'failure'
-        )
-      }}
+    if: ${{ always() && github.event_name == 'push' }}
     needs: [checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1486,6 +1478,17 @@ jobs:
       issues: write
     steps:
       - name: File or update critical main failure
+        if: >-
+          ${{
+            needs.checks.result == 'failure' ||
+            needs.deploy-reference.result == 'failure' ||
+            needs.lint.result == 'failure' ||
+            needs.unit.result == 'failure' ||
+            needs.unit-linux-coverage.result == 'failure' ||
+            needs.unit-macos.result == 'failure' ||
+            needs.shipped.result == 'failure' ||
+            needs.windows-smoke.result == 'failure'
+          }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
@@ -1523,4 +1526,59 @@ jobs:
               title,
               body,
               labels: ["goobers:critical", "type:bug", "area:workflows"],
+            });
+
+      # Only a fully-green push lane resolves the incident. `cancelled` and
+      # `skipped` jobs prove nothing about the landed SHA, so requiring every
+      # watched job to be `success` keeps a cancelled run from closing an issue
+      # that is still live.
+      - name: Close resolved main failure
+        if: >-
+          ${{
+            needs.checks.result == 'success' &&
+            needs.deploy-reference.result == 'success' &&
+            needs.lint.result == 'success' &&
+            needs.unit.result == 'success' &&
+            needs.unit-linux-coverage.result == 'success' &&
+            needs.unit-macos.result == 'success' &&
+            needs.shipped.result == 'success' &&
+            needs.windows-smoke.result == 'success'
+          }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const title = "CI: main branch validation failed";
+            const runURL = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const {data: issues} = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: "goobers:critical",
+              state: "open",
+              per_page: 100,
+            });
+            const existing = issues.find(
+              issue => !issue.pull_request && issue.title === title,
+            );
+            if (!existing) {
+              return;
+            }
+            const body = [
+              `Main validation is green again on \`${context.sha}\`.`,
+              "",
+              `Run: ${runURL}`,
+              "",
+              "Closed automatically by the main-push CI escalation.",
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              body,
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              state: "closed",
+              state_reason: "completed",
             });
