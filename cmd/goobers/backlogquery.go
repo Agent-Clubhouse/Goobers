@@ -56,13 +56,13 @@ const DefaultClaimLease = 30 * time.Minute
 // backlogScanCeiling is the floor on how many candidates a backlog query
 // fetches from the provider, independent of maxItems (#532) — "how many to
 // scan" and "how many to claim this run" are different questions. High enough
-// that the full eligible set is normally covered outright; the live backlog
-// was measured on 2026-09-03 at 201 open goobers:approved issues, so 250 is
-// ~1.24x that pool rather than the stale "~40 item / ~6x" claim. Low enough
-// to bound provider pagination (3 pages at GitHub's per_page=100 max).
-// Truncation past this ceiling is starvation-safe because empty windows
-// advance a durable cursor and wrap after reaching the end of the oldest-first
-// result set.
+// that the full eligible set is normally covered outright, low enough to bound
+// provider pagination (3 pages at GitHub's per_page=100 max). Measurements from
+// the #4036 investigation set 60 of 218 approved items eligible on 2026-09-03;
+// the live issue count on that date was 201 open goobers:approved issues, so a
+// 250-candidate budget is a ~1.24x ceiling, not a ~6x headroom claim.
+// Truncation past this ceiling is starvation-safe because empty windows advance
+// a durable cursor and wrap after reaching the end of the oldest-first result set.
 const backlogScanCeiling = 250
 const backlogScanPageSize = 100
 
@@ -437,6 +437,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			selectionPriority: selectionPriority,
 			respectAssignee:   respectAssignee,
 			assignedTo:        assignedTo,
+			scanLimit:         scanLimit,
 		})
 	}
 	observedAt := time.Now().UTC()
@@ -1997,6 +1998,9 @@ func runReadOnlyBacklogQuery(
 	if opts.respectAssignee && opts.assignedTo != "" {
 		queryAssignee = opts.assignedTo
 	}
+	if opts.scanLimit <= 0 {
+		opts.scanLimit = backlogScanCeiling
+	}
 	items, window, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
@@ -2004,7 +2008,7 @@ func runReadOnlyBacklogQuery(
 		labels,
 		queryAssignee,
 		opts.fieldFilter,
-		backlogScanCeiling,
+		opts.scanLimit,
 		backlogScanCursor{},
 		false,
 	)
