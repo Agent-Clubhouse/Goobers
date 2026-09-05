@@ -367,6 +367,31 @@ func TestBacklogQueryWarnsWhenAnEmptyScanRanOutOfBudget(t *testing.T) {
 	}
 }
 
+func TestReadOnlyBacklogQueryWarnsWhenAnEmptyScanRanOutOfBudget(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for i := 1; i <= backlogScanCeiling+50; i++ {
+		server.addIssue(i, fmt.Sprintf("Item %d", i), "goobers:approved", providers.LabelNeedsHuman)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "run-4036-readonly-warn")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelNeedsHuman)
+
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runArgs(t, "backlog-query", "--read-only", root)
+	if code != 0 {
+		t.Fatalf("backlog-query --read-only: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no eligible items") {
+		t.Fatalf("stdout = %q, want the read-only no-eligible output", stdout)
+	}
+	if !strings.Contains(stderr, "warning: backlog scan found no eligible item after examining") ||
+		!strings.Contains(stderr, "unexamined items remain") {
+		t.Fatalf("stderr = %q, want a truncation warning on the read-only path", stderr)
+	}
+}
+
 // TestBacklogQueryDoesNotWarnWhenTheBacklogIsGenuinelyDrained is the negative
 // control for that warning: it must stay silent when the scan really did
 // cover everything, or it becomes noise on every idle tick and stops meaning
