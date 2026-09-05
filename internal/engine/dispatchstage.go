@@ -405,6 +405,23 @@ type needsHumanAssigneeProvider interface {
 	NeedsHumanAssignee() string
 }
 
+func needsHumanAssignee(dispatcher StageDispatcher) string {
+	provider, ok := dispatcher.(needsHumanAssigneeProvider)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(provider.NeedsHumanAssignee())
+}
+
+func stampDeterministicRun(attempt *dispatcher.Attempt, run *apiv1.DeterministicRun) {
+	if run == nil {
+		return
+	}
+	attempt.Command = run.Command
+	attempt.Script = run.Script
+	attempt.Env = run.Env
+}
+
 // DispatchStage executes one mode-3 stage attempt: it hands the attempt to
 // the dispatcher (which creates, supervises, and disposes the pod) and then
 // marshals the pod's surrendered blob back into the stageActivityResult the
@@ -477,11 +494,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// (#3619) — distinct from the credential Capabilities set below.
 		RunsOnCapabilities: input.Placement.Capabilities,
 	}
-	if input.Run != nil {
-		attempt.Command = input.Run.Command
-		attempt.Script = input.Run.Script
-		attempt.Env = input.Run.Env
-	}
+	stampDeterministicRun(&attempt, input.Run)
 	// Declared credential capabilities travel as NAMES; the pod resolves them
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.
@@ -602,10 +615,8 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		if trigger := input.Envelope.TriggerRef; trigger != "" {
 			attempt.RunContext[executor.TriggerRefEnvVar] = trigger
 		}
-		if assigneeProvider, ok := a.Dispatcher.(needsHumanAssigneeProvider); ok {
-			if assignee := strings.TrimSpace(assigneeProvider.NeedsHumanAssignee()); assignee != "" {
-				attempt.RunContext[executor.NeedsHumanAssigneeEnvVar] = assignee
-			}
+		if assignee := needsHumanAssignee(a.Dispatcher); assignee != "" {
+			attempt.RunContext[executor.NeedsHumanAssigneeEnvVar] = assignee
 		}
 	}
 
