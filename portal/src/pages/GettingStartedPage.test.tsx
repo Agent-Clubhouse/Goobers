@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GuidedClient,
   type GuidedRepositoryInspection,
@@ -134,6 +134,36 @@ function clientWith(routes: Record<string, RouteHandler>): GuidedClient {
 
 function parseBody(init?: RequestInit): unknown {
   return JSON.parse(String(init?.body ?? "null"));
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * A client whose `/guided/state` reads settle only when the test says so, and
+ * which answers even an aborted read — the shape of the polling defect (#3660),
+ * where a response that had already settled arrives after a newer one.
+ */
+function gatedStateClient(routes: Record<string, RouteHandler> = {}) {
+  const pending: Array<(state: GuidedState) => void> = [];
+  const signals: Array<AbortSignal | null | undefined> = [];
+  const fetchFn = vi.fn(async (input: string, init?: RequestInit) => {
+    if (input === "/guided/state") {
+      signals.push(init?.signal);
+      return jsonResponse(await new Promise<GuidedState>((resolve) => pending.push(resolve)));
+    }
+    const handler = routes[input];
+    if (!handler) {
+      return jsonResponse({ code: "not_found", message: input }, 404);
+    }
+    const { status = 200, body } = handler(init);
+    return jsonResponse(body, status);
+  });
+  return { client: new GuidedClient(fetchFn), fetchFn, pending, signals };
 }
 
 async function continueWizard(user: ReturnType<typeof userEvent.setup>) {
@@ -533,5 +563,83 @@ describe("GettingStartedPage", () => {
     expect(screen.getByText(/goobers-dsl-author/)).toBeInTheDocument();
     expect(screen.getByText(/close this browser window/i)).toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  describe("state polling", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("schedules the next state poll only after the previous one settles", async () => {
+      vi.useFakeTimers();
+      const { client, fetchFn, pending } = gatedStateClient();
+      render(<GettingStartedPage client={client} />);
+
+      await act(async () => {});
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6_000);
+      });
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        pending[0](guidedState());
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    });
+
+    it("stops polling and abandons the read in flight when the page unmounts", async () => {
+      const { client, fetchFn, pending, signals } = gatedStateClient();
+      const view = render(<GettingStartedPage client={client} />);
+      await waitFor(() => expect(pending).toHaveLength(1));
+
+      view.unmount();
+      expect(signals[0]?.aborted).toBe(true);
+
+      await act(async () => {
+        pending[0](guidedState());
+      });
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores a superseded state read that settles after a newer one", async () => {
+      window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(8));
+      const user = userEvent.setup();
+      const { client, pending } = gatedStateClient({
+        "/guided/actions/validate": () => ({
+          body: {
+            exitCode: 0,
+            envelope: { ok: true, counts: { errors: 0, warnings: 0 }, findings: [] },
+            stderr: "",
+          },
+        }),
+      });
+      render(<GettingStartedPage client={client} />);
+
+      await waitFor(() => expect(pending).toHaveLength(1));
+      await act(async () => {
+        pending[0](guidedState({ instanceExists: true, instancePath: "C:\\first" }));
+      });
+      expect(await screen.findByRole("heading", { name: "Check the setup" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Run checks" }));
+      await waitFor(() => expect(pending).toHaveLength(2));
+      await user.click(screen.getByRole("button", { name: "Run checks" }));
+      await waitFor(() => expect(pending).toHaveLength(3));
+
+      await act(async () => {
+        pending[2](guidedState({ instanceExists: true, instancePath: "C:\\newest" }));
+      });
+      await act(async () => {
+        pending[1](guidedState({ instanceExists: true, instancePath: "C:\\stale" }));
+      });
+
+      expect(screen.getByText(/C:\\newest/)).toBeInTheDocument();
+      expect(screen.queryByText(/C:\\stale/)).not.toBeInTheDocument();
+    });
   });
 });
