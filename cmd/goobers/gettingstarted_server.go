@@ -174,6 +174,8 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleConnect(w, r)
 	case r.URL.Path == "/guided/actions/validate":
 		s.handleValidate(w, r)
+	case r.URL.Path == "/guided/actions/install-portal-extension":
+		s.handleInstallPortalExtension(w, r)
 	case r.URL.Path == "/guided/actions/probe-backlog":
 		s.handleProbeBacklog(w, r)
 	case r.URL.Path == "/guided/actions/run":
@@ -246,6 +248,7 @@ type guidedStateBody struct {
 	Job                 *guidedJobSummary    `json:"job"`
 	APIReady            bool                 `json:"apiReady"`
 	Connected           guidedConnectedState `json:"connected"`
+	CopilotAppDetected  bool                 `json:"copilotAppDetected"`
 }
 
 // guidedConnectedState reports the repository the tutorial instance is
@@ -305,9 +308,10 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 			GoobersGithubToken:       os.Getenv(tokenEnv) != "",
 			GoobersGithubIssuesToken: os.Getenv(defaultWorkTrackingTokenEnv) != "",
 		},
-		Job:       job,
-		APIReady:  apiReady,
-		Connected: connected,
+		Job:                job,
+		APIReady:           apiReady,
+		Connected:          connected,
+		CopilotAppDetected: detectCopilotAppForInit(),
 	})
 }
 
@@ -980,6 +984,36 @@ func (s *guidedServer) handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	argv = append(argv, s.instancePath)
 	s.respondEnvelope(w, r, argv)
+}
+
+type guidedPortalInstallBody struct {
+	Path      string `json:"path"`
+	Installed bool   `json:"installed"`
+}
+
+func (s *guidedServer) handleInstallPortalExtension(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !detectCopilotAppForInit() {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "copilot_app_unavailable",
+			Message: "the GitHub Copilot app was not detected",
+		})
+		return
+	}
+	result, err := installPortalForInit()
+	if err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "portal_extension_install_failed",
+			Message: fmt.Sprintf("%v; install or update it later with `goobers portal-extension install` or `goobers portal-extension update`", err),
+		})
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, guidedPortalInstallBody{
+		Path:      result.Path,
+		Installed: result.Installed,
+	})
 }
 
 // guidedProbeBody is a purpose-built envelope, not `backlog-query
