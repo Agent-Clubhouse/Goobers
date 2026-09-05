@@ -13,7 +13,7 @@
 #     namespace);
 #   - NO INBOUND TO STAGE PODS. EVER. (No Ingress rule exists for them.)
 # This base is exactly the class-independent floor: default-deny-all +
-# allow-dns (+ the dedicated-worker Temporal egress). Compose it with the
+# allow-dns. Compose it with the
 # per-runner-class output of `goobers netpol-render` (issue #3568), which
 # fills the egress CIDRs from instance.yaml egress.allowlist and refuses
 # CHANGE-ME placeholders instead of shipping stubs.
@@ -51,27 +51,3 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-worker-temporal
-spec:
-  # Dedicated per-gaggle worker mode only (G2, #656): the gaggle's worker may
-  # reach the Temporal frontend (§2/§5 — Temporal is reachable from workers
-  # and operator only; the ingress half lives in
-  # ../../temporal/networkpolicy-temporal.yaml). Delete this policy for
-  # gaggles served by the shared goobers-system workers.
-  podSelector:
-    matchLabels:
-      goobers.dev/role: worker
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: goobers-temporal
-      ports:
-        - protocol: TCP
-          port: 7233
