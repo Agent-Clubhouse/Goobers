@@ -21,7 +21,6 @@ cmd/goobers/reconcilebranches.go	reconcileRemoteBranches	56
 cmd/goobers/run_continue.go	runRunContinue	44
 cmd/goobers/status.go	runRunTable	80
 cmd/goobers/trace.go	runTraceWithFactories	51
-cmd/goobers/up.go	runUpContextWithForce	200
 cmd/goobers/validate.go	runValidateConfig	43
 internal/agentkit/repository.go	(*Repository).planInterruptedUpdate	57
 internal/authoring/explain.go	(*registry).schemaExample	50
@@ -46,7 +45,6 @@ internal/readservice/telemetry.go	(*Local).runtimeAnalyticsGraph	42
 internal/readservice/telemetry.go	(*Telemetry).TelemetryStats	50
 internal/runner/parallel_run.go	(*Runner).runConcurrentParallel	58
 internal/runner/parallel_run.go	(*Runner).runParallelBranch	78
-internal/runner/resume.go	(*Runner).resumeOwned	119
 internal/runner/resume.go	pendingParallel	61
 internal/runner/run.go	(*Runner).dispatchTask	71
 internal/runner/run.go	(*Runner).evaluateGate	44
