@@ -15,8 +15,8 @@ package main
 // FINDS THE TARGET POD VIA LABEL SELECTOR, NOT THE DAEMON'S HTTP READ API.
 // An earlier version of this command polled the daemon's read API
 // (RouteStageAttempts) to find the running attempt's pod. That's unreachable
-// in practice: the daemon's API listener defaults to (and, confirmed live
-// against aks-goobernetes-prod, actually is) loopback-only
+// in practice: the daemon's API listener defaults to (and is confirmed live to
+// be) loopback-only
 // (instance.DefaultAPIListenAddress = "127.0.0.1:8080") — nothing outside
 // the daemon's own pod network namespace can reach it, and binding it wider
 // with no auth just to support this one command is not a security posture

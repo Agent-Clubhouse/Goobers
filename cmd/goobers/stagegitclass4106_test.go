@@ -36,7 +36,7 @@ func TestStageGitFailureClassifiesAsInfraNotProvider(t *testing.T) {
 			t.Fatal("expected the git subprocess to fail")
 		}
 		// Exactly how gather-pr-context wraps it before failProviderStage.
-		wrapped := fmt.Errorf("checkout PR #3894's branch %q: %w", "goobernetes/implementation/47622a80", gitErr)
+		wrapped := fmt.Errorf("checkout PR #3894's branch %q: %w", providerBranchNamespace()+"implementation/47622a80", gitErr)
 
 		code, retryable, extra := classifyProviderError(wrapped)
 		if code != telemetry.ErrCodeInfraGit {
