@@ -6,15 +6,108 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+func checkAPIServerIPBlockDrift(ctx context.Context, client kubernetes.Interface, opts Options) Result {
+	result := Result{
+		ID:       "apiserver-ipblock-drift",
+		Title:    "NetworkPolicy API-server ipBlock matches the live endpoint",
+		Citation: "§5",
+		Severity: SeverityRequired,
+	}
+	if opts.APIServerEndpoint == "" {
+		result.Severity = SeverityOptional
+		result.Status = StatusWarn
+		result.Detail = "cannot determine the live API-server endpoint"
+		result.Hint = "rerun with a kubeconfig that provides the API-server endpoint"
+		return result
+	}
+	endpoint, err := url.Parse(opts.APIServerEndpoint)
+	if err != nil || endpoint.Hostname() == "" {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("invalid API-server endpoint %q", opts.APIServerEndpoint)
+		result.Hint = "verify the kubeconfig cluster server URL"
+		return result
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", endpoint.Hostname())
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("cannot resolve API-server endpoint %q: %v", endpoint.Hostname(), err)
+		result.Hint = "verify the kubeconfig cluster server URL and DNS reachability"
+		return result
+	}
+	policies, err := client.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("unable to list NetworkPolicies: %v", err)
+		result.Hint = "grant list on networkpolicies across namespaces to the preflighting identity"
+		return result
+	}
+	checked := 0
+	var mismatches []string
+	for _, policy := range policies.Items {
+		checkPeers := func(peers []networkingv1.NetworkPolicyPeer) {
+			for _, peer := range peers {
+				if peer.IPBlock == nil {
+					continue
+				}
+				checked++
+				network := peer.IPBlock.CIDR
+				ip, cidr, parseErr := net.ParseCIDR(network)
+				if parseErr != nil {
+					mismatches = append(mismatches, policy.Namespace+"/"+policy.Name+"="+network)
+					continue
+				}
+				ones, bits := cidr.Mask.Size()
+				if ip.String() != cidr.IP.String() || ones != bits {
+					mismatches = append(mismatches, policy.Namespace+"/"+policy.Name+"="+network)
+					continue
+				}
+				matches := false
+				for _, liveIP := range ips {
+					if cidr.Contains(liveIP) {
+						matches = true
+						break
+					}
+				}
+				if !matches {
+					mismatches = append(mismatches, policy.Namespace+"/"+policy.Name+"="+network)
+				}
+			}
+		}
+		for _, ingress := range policy.Spec.Ingress {
+			checkPeers(ingress.From)
+		}
+		for _, egress := range policy.Spec.Egress {
+			checkPeers(egress.To)
+		}
+	}
+	if checked == 0 {
+		result.Status = StatusFail
+		result.Detail = "incident: API calls can time out as RBAC or auth symptoms when no API-server ipBlock entries are inspected (checked 0)"
+		result.Hint = "render a NetworkPolicy egress ipBlock for the live API-server endpoint"
+		return result
+	}
+	if len(mismatches) > 0 {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("incident: API calls can time out as RBAC or auth symptoms when API-server ipBlock drifts; checked %d ipBlock entries, mismatches: %s", checked, strings.Join(mismatches, ", "))
+		result.Hint = "replace stale API-server ipBlock CIDRs with the live endpoint address"
+		return result
+	}
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("checked %d API-server ipBlock entries; all match the live endpoint", checked)
+	return result
+}
 
 // minSupportedMinor is the oldest 1.x minor the preflight considers current.
 // It tracks the compatibility window of the pinned client-go (±3 minors) —

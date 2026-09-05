@@ -184,10 +184,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	report := k8spreflight.Run(context.Background(), client, k8spreflight.Options{
-		OIDCIssuer: *oidcIssuer,
-		Registry:   *registry,
-		Egress:     splitCommaList(*egress),
-		Timeout:    *timeout,
+		APIServerEndpoint: host,
+		OIDCIssuer:        *oidcIssuer,
+		Registry:          *registry,
+		Egress:            splitCommaList(*egress),
+		Timeout:           *timeout,
 	})
 	report.Target = host
 

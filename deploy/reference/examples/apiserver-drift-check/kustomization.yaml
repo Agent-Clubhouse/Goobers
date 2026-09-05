@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goobers-system
+
+resources:
+  - rbac.yaml
+  - cronjob.yaml
+
+images:
+  - name: goobers
+    newName: registry.example.com/CHANGE-ME/goobers # CHANGE-ME
+    newTag: CHANGE-ME

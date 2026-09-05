@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: goobers-apiserver-drift-check
+  labels:
+    goobers.dev/role: apiserver-drift-check
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    metadata:
+      labels:
+        goobers.dev/role: apiserver-drift-check
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            goobers.dev/role: apiserver-drift-check
+        spec:
+          serviceAccountName: goobers-apiserver-drift-check
+          restartPolicy: Never
+          containers:
+            - name: check
+              image: goobers
+              args:
+                - doctor
+                - --k8s
+                - --report
+                - json
