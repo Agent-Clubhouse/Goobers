@@ -924,6 +924,50 @@ func TestGitHubClaimCanBeReacquiredAfterRelease(t *testing.T) {
 	}
 }
 
+type rejectGitHubUserClient struct {
+	inner HTTPClient
+}
+
+func (c rejectGitHubUserClient) Do(req *http.Request) (*http.Response, error) {
+	if req.URL.Path == "/user" {
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Status:     "403 Forbidden",
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	}
+	return c.inner.Do(req)
+}
+
+func TestGitHubReleaseClaimUsesConfiguredLogin(t *testing.T) {
+	m := newIssueMock()
+	m.labels = append(m.labels, LabelClaimed)
+	m.comments = append(m.comments, map[string]interface{}{
+		"id":   int64(1),
+		"body": claimBreadcrumb("run-A"),
+		"user": map[string]string{"login": "goobers"},
+	})
+	m.nextID = 1
+	p, repo := newIssueProvider(t, m,
+		WithConfiguredLogin("goobers"),
+		WithHTTPClient(rejectGitHubUserClient{inner: http.DefaultClient}),
+	)
+
+	released, err := p.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		RunID:      "run-A",
+	})
+	if err != nil {
+		t.Fatalf("release claim: %v", err)
+	}
+	if released.HasLabel(LabelClaimed) {
+		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
+	}
+}
+
 func TestGitHubClaimIgnoresForgedRelease(t *testing.T) {
 	m := newIssueMock()
 	p, repo := newIssueProvider(t, m)

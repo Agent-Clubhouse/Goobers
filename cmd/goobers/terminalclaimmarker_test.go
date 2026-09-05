@@ -313,7 +313,7 @@ func TestNoWorkTerminalRunReleasesClaimMarker(t *testing.T) {
 	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
 	fake := &fakeClaimMarkerRelease{ledgerPath: ledgerPath, runID: runID}
 	previous := newTerminalClaimMarkerProvider
-	newTerminalClaimMarkerProvider = func(providers.TokenSource) workItemClaimReleaser {
+	newTerminalClaimMarkerProvider = func(providers.TokenSource, ...func(*providers.GitHubProvider)) workItemClaimReleaser {
 		return claimReleaserFunc(fake.release)
 	}
 	t.Cleanup(func() { newTerminalClaimMarkerProvider = previous })
