@@ -110,6 +110,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
 	},
+	"onboarding stub-sample": {
+		{name: "destination", takesArg: true, desc: "Sample destination"},
+		{name: "work-tracking", takesArg: true, desc: "GitHub owner/repo to seed"},
+		{name: "token-env", takesArg: true, desc: "Issue token environment variable name"},
+		{name: "force", desc: "Replace conflicting regular files"},
+		{name: "json", desc: "Emit the versioned onboarding action envelope"},
+	},
 	"onboarding stub-agent-instructions": {
 		{name: "source-tree", takesArg: true, desc: "Config source repository root"},
 		{name: "harness", takesArg: true, values: []string{"copilot", "claude", "generic"}, desc: "Harness adapter"},

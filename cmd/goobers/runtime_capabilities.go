@@ -132,6 +132,16 @@ func init() {
 			"onboarding",
 			runOnboarding,
 			subcommand(
+				"onboarding stub-sample",
+				"stub-sample",
+				apicontract.ActionConfigTime,
+				runOnboardingStubSample,
+			).
+				withHelp("materialize the getting-started sample tree", stubSampleHelp).
+				withExamples(
+					"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
+				),
+			subcommand(
 				"onboarding stub-agent-instructions",
 				"stub-agent-instructions",
 				apicontract.ActionConfigTime,
@@ -145,6 +155,7 @@ func init() {
 			withSynopsis(synopsisByID["onboarding"]).
 			withHelp("run non-interactive onboarding actions", onboardingHelp).
 			withExamples(
+				"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
 				"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
 			),
 		coreGroupCommand(

@@ -131,6 +131,27 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 	)
 }
 
+func TestOnboardingStubSampleDispatchesFromCLI(t *testing.T) {
+	destination := filepath.Join(onboardingTestTempDir(t), "sample")
+	code, stdout, stderr := runArgs(t, "onboarding", "stub-sample", "--destination", destination, "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("onboarding stub-sample: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var result onboardingActionResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, stdout)
+	}
+	if result.Action != stubSampleAction {
+		t.Fatalf("result.Action = %q, want %q", result.Action, stubSampleAction)
+	}
+	if result.Version != onboardingActionVersion {
+		t.Fatalf("result.Version = %d, want %d", result.Version, onboardingActionVersion)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("sample directory not created: %v", err)
+	}
+}
+
 func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 	for _, fixture := range []string{"empty", "partial", "populated"} {
 		t.Run(fixture, func(t *testing.T) {
