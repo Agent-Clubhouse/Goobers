@@ -8,6 +8,7 @@ import (
 	"time"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,6 +32,12 @@ func withFakeDoctorCluster(t *testing.T) {
 			ObjectMeta:  metav1.ObjectMeta{Name: "goobers-files"},
 			Provisioner: "file.csi.azure.com",
 		},
+		&networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "api-server-egress", Namespace: "goobers-system"},
+			Spec: networkingv1.NetworkPolicySpec{Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "127.0.0.1/32"}}},
+			}}},
+		},
 	)
 	discovery := client.Discovery().(*fakediscovery.FakeDiscovery)
 	discovery.FakedServerVersion = &version.Info{Major: "1", Minor: "31", GitVersion: "v1.31.2"}
@@ -47,7 +54,7 @@ func withFakeDoctorCluster(t *testing.T) {
 
 	orig := doctorKubeClient
 	doctorKubeClient = func(string, string, time.Duration) (kubernetes.Interface, string, error) {
-		return client, "https://fake-cluster.example.com", nil
+		return client, "https://127.0.0.1", nil
 	}
 	t.Cleanup(func() { doctorKubeClient = orig })
 }
@@ -103,7 +110,7 @@ func TestDoctorK8sTextReportConformant(t *testing.T) {
 		t.Fatalf("code = %d, want 0; stdout:\n%s", code, stdout)
 	}
 	for _, want := range []string{
-		"target: https://fake-cluster.example.com",
+		"target: https://127.0.0.1",
 		"cluster-version",
 		"storage-rwx",
 		"cluster conforms",
@@ -130,7 +137,7 @@ func TestDoctorK8sJSONReportAndFailExitCode(t *testing.T) {
 	if report.Conformant {
 		t.Fatal("report.Conformant = true, want false")
 	}
-	if report.Target != "https://fake-cluster.example.com" {
+	if report.Target != "https://127.0.0.1" {
 		t.Fatalf("report.Target = %q", report.Target)
 	}
 }
