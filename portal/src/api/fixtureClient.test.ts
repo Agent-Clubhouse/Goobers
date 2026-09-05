@@ -131,6 +131,19 @@ describe("FixtureDaemonClient", () => {
     });
   });
 
+  it("exposes both deployment-dependent capabilities through the portal config", async () => {
+    // Guards the source-of-truth mapping between the Go
+    // readservice.PortalCapabilities struct (revealRun + workflowEnable, both
+    // required) and the fixture defaults consumers rely on. If either flag
+    // drifts, the canvas extension either hides a control the daemon actually
+    // wires (bad UX) or offers one the daemon cannot honour (500s on click).
+    const client: DaemonClient = new FixtureDaemonClient(fixtures());
+
+    await expect(client.getPortalConfig()).resolves.toMatchObject({
+      capabilities: { revealRun: true, workflowEnable: true },
+    });
+  });
+
   it("uses the same structured error type for missing fixture resources", async () => {
     const client = new FixtureDaemonClient(fixtures());
 
