@@ -88,7 +88,7 @@ import (
 // nothing was asked of the credential plane and nothing failed there — the
 // WORKFLOW is missing a declaration, and an operator reading
 // credential_resolve_failed would go looking at the daemon's resolver for a
-// fault that is in a YAML file. (v_next's compiler already rejects this shape
+// fault that is in a YAML file. (v_2_0's compiler already rejects this shape
 // statically; this is the runtime backstop for a hand-built or
 // version-skewed attempt, in the same spirit as the instance-root backstop.)
 const ciPollCapabilityUndeclaredCode = "capability_not_declared"

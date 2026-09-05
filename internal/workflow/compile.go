@@ -9,8 +9,8 @@ import (
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	v20 "github.com/goobers/goobers/internal/workflow/v_2_0"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
-	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
 type versionedInterpreter struct {
@@ -151,26 +151,26 @@ func noGateRunsOnProblems(Definition) []string { return nil }
 
 var nextInterpreter = versionedInterpreter{
 	compile:                         compileNext,
-	checkWarnings:                   vnext.CheckWarnings,
-	checkReachability:               vnext.CheckReachability,
-	checkSchedules:                  vnext.CheckSchedules,
-	checkTriggerFields:              vnext.CheckTriggerFields,
-	checkWorkflowAdmission:          vnext.CheckWorkflowAdmission,
-	checkPushBoundaries:             vnext.CheckPushBoundaries,
+	checkWarnings:                   v20.CheckWarnings,
+	checkReachability:               v20.CheckReachability,
+	checkSchedules:                  v20.CheckSchedules,
+	checkTriggerFields:              v20.CheckTriggerFields,
+	checkWorkflowAdmission:          v20.CheckWorkflowAdmission,
+	checkPushBoundaries:             v20.CheckPushBoundaries,
 	checkRunsOnOSTokens:             noRunsOnProblems,
 	checkRunsOnRestrictions:         noRunsOnProblems,
 	checkRunsOnPlacement:            preV30SurfaceProblems,
 	stagePlacements:                 preV30StagePlacements,
 	checkRepoHandoffs:               noRepoHandoffProblems,
 	checkGateRunsOn:                 noGateRunsOnProblems,
-	checkGateParameters:             vnext.CheckGateParameters,
-	checkGateOutcomes:               vnext.CheckGateOutcomes,
-	checkStageRequiredInputs:        vnext.CheckStageRequiredInputs,
-	checkStageContracts:             vnext.CheckStageContracts,
-	checkStageContractWarnings:      vnext.CheckStageContractWarnings,
-	checkStageTimeoutCoherence:      vnext.CheckStageTimeoutCoherence,
-	checkSubprocessTimeoutCoherence: vnext.CheckSubprocessTimeoutCoherence,
-	checkPathSimulation:             vnext.CheckPathSimulation,
+	checkGateParameters:             v20.CheckGateParameters,
+	checkGateOutcomes:               v20.CheckGateOutcomes,
+	checkStageRequiredInputs:        v20.CheckStageRequiredInputs,
+	checkStageContracts:             v20.CheckStageContracts,
+	checkStageContractWarnings:      v20.CheckStageContractWarnings,
+	checkStageTimeoutCoherence:      v20.CheckStageTimeoutCoherence,
+	checkSubprocessTimeoutCoherence: v20.CheckSubprocessTimeoutCoherence,
+	checkPathSimulation:             v20.CheckPathSimulation,
 	newFeatureRegistry:              newNextFeatureRegistry,
 	featuresAtDSLVersion:            nextFeaturesAtDSLVersion,
 	featuresForWorkflow:             featuresForNextWorkflow,
@@ -178,9 +178,9 @@ var nextInterpreter = versionedInterpreter{
 	featuresForGoober:               featuresForNextGoober,
 	checkFeatureSupport:             checkNextFeatureSupport,
 	checkWorkflowFeatureSupport:     checkNextWorkflowFeatureSupport,
-	taskInvocationInputs:            vnext.TaskInvocationInputs,
-	taskLimits:                      vnext.TaskLimits,
-	gateLimits:                      vnext.GateLimits,
+	taskInvocationInputs:            v20.TaskInvocationInputs,
+	taskLimits:                      v20.TaskLimits,
+	gateLimits:                      v20.GateLimits,
 }
 
 // v30Interpreter is the DSL 3.0 arm (dsl-3.0.md §8, issue #3505): the
@@ -345,23 +345,23 @@ func compileNext(def Definition, config compileConfig) (*Machine, error) {
 	if err := refusePreV30Surface(def, config); err != nil {
 		return nil, err
 	}
-	var opts []vnext.Option
+	var opts []v20.Option
 	if config.goobersSet {
-		opts = append(opts, vnext.WithGoobers(goobersForCapabilityAdmission(config.goobers)))
+		opts = append(opts, v20.WithGoobers(goobersForCapabilityAdmission(config.goobers)))
 	}
 	if config.knownChecksSet {
-		opts = append(opts, vnext.WithKnownChecks(config.knownChecks))
+		opts = append(opts, v20.WithKnownChecks(config.knownChecks))
 	}
 	if config.knownHarnessesSet {
-		opts = append(opts, vnext.WithKnownHarnesses(config.knownHarnesses))
+		opts = append(opts, v20.WithKnownHarnesses(config.knownHarnesses))
 	}
 	if config.previewFeaturesSet {
-		opts = append(opts, vnext.WithPreviewFeatures(config.allowPreviewFeatures))
+		opts = append(opts, v20.WithPreviewFeatures(config.allowPreviewFeatures))
 	}
 	if config.gaggleRequiredCapabilitiesSet {
-		opts = append(opts, vnext.WithGaggleRequiredCapabilities(config.gaggleRequiredCapabilities))
+		opts = append(opts, v20.WithGaggleRequiredCapabilities(config.gaggleRequiredCapabilities))
 	}
-	return vnext.Compile(def, opts...)
+	return v20.Compile(def, opts...)
 }
 
 func compileV30(def Definition, config compileConfig) (*Machine, error) {
@@ -424,7 +424,7 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 	}
 
 	switch version {
-	case vnext.DSLVersion:
+	case v20.DSLVersion:
 		return &nextInterpreter, nil
 	case v30.DSLVersion:
 		return &v30Interpreter, nil

@@ -2,7 +2,7 @@
 // subcommand names a workflow's run.command may invoke as
 // ["goobers", "<name>", ...] when the stage actually shells out — i.e. its
 // inputs.kind is empty or "shell". The DSL compilers (internal/workflow's
-// v_current and v_next admissionProblems) reject a shell-out to a name
+// v_current and v_2_0 admissionProblems) reject a shell-out to a name
 // outside this inventory, because such a stage fails at runtime with the
 // CLI's own "unknown command" only after the run has already been scheduled,
 // claimed work, and provisioned a worktree.

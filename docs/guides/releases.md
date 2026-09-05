@@ -60,7 +60,7 @@ anchored to real release lines.
 
 This is unrelated to the DSL feature/support-matrix registry's own
 `vMAJOR.MINOR.PATCH` version requirement (`internal/supportmatrix`,
-`internal/workflow/v_3_0`, `internal/workflow/v_next`) — that tracks which
+`internal/workflow/v_3_0`, `internal/workflow/v_2_0`) — that tracks which
 *stable* release a DSL feature or version shipped or was deprecated in, and
 intentionally does not accept pre-release identifiers. A pre-release tag
 never appears in that lineage.

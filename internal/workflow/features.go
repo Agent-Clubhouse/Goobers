@@ -6,29 +6,29 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	v20 "github.com/goobers/goobers/internal/workflow/v_2_0"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
-	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
 // The shared feature types are re-exported from the oldest live interpreter,
-// which is DSL 2.0 (v_next) now that 1.4 (v_current) is dropped (#3507). Newer
+// which is DSL 2.0 (v_2_0) now that 1.4 (v_current) is dropped (#3507). Newer
 // interpreters' feature values are converted into this canonical shape by the
 // featureForNext/v30 glue below.
 
 // FeatureID is the stable, author-facing name of a DSL capability.
-type FeatureID = vnext.FeatureID
+type FeatureID = v20.FeatureID
 
 // SupportLevel describes the compatibility promise for a DSL feature.
-type SupportLevel = vnext.SupportLevel
+type SupportLevel = v20.SupportLevel
 
 // SupportTransition records when a feature entered a support level.
-type SupportTransition = vnext.SupportTransition
+type SupportTransition = v20.SupportTransition
 
 // Feature records a DSL feature's support metadata.
-type Feature = vnext.Feature
+type Feature = v20.Feature
 
 // DSLFeatureSupport records a feature's support in one DSL version.
-type DSLFeatureSupport = vnext.DSLFeatureSupport
+type DSLFeatureSupport = v20.DSLFeatureSupport
 
 // FeatureRegistry is an immutable feature-support lookup table.
 type FeatureRegistry struct {
@@ -36,17 +36,17 @@ type FeatureRegistry struct {
 }
 
 // FeatureDiagnostic describes one support-level finding.
-type FeatureDiagnostic = vnext.FeatureDiagnostic
+type FeatureDiagnostic = v20.FeatureDiagnostic
 
 const (
 	// SupportPreview marks an unstable feature requiring acknowledgement.
-	SupportPreview = vnext.SupportPreview
+	SupportPreview = v20.SupportPreview
 	// SupportGA marks a stable feature.
-	SupportGA = vnext.SupportGA
+	SupportGA = v20.SupportGA
 	// SupportDeprecated marks a feature scheduled for removal.
-	SupportDeprecated = vnext.SupportDeprecated
+	SupportDeprecated = v20.SupportDeprecated
 	// SupportRemoved marks a feature validation rejects.
-	SupportRemoved = vnext.SupportRemoved
+	SupportRemoved = v20.SupportRemoved
 )
 
 // NewFeatureRegistry validates and copies feature entries for a pinned definition.
@@ -89,9 +89,9 @@ func LookupFeature(id FeatureID) (Feature, bool) {
 // AllFeatures returns a stable snapshot of features across registered DSL
 // interpreters.
 func AllFeatures() []Feature {
-	// v_next (DSL 2.0) is the oldest live interpreter and supplies the
+	// v_2_0 (DSL 2.0) is the oldest live interpreter and supplies the
 	// canonical Feature type, so its features are the base with no conversion.
-	features := vnext.AllFeatures()
+	features := v20.AllFeatures()
 	byID := make(map[FeatureID]int, len(features))
 	for i, feature := range features {
 		byID[feature.ID] = i
@@ -118,7 +118,7 @@ func AllFeatures() []Feature {
 func FeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error) {
 	interpreter, err := interpreterForDefinition(Definition{DSLVersion: version})
 	if err != nil {
-		return vnext.FeaturesAtDSLVersion(features, version)
+		return v20.FeaturesAtDSLVersion(features, version)
 	}
 	return interpreter.featuresAtDSLVersion(features, version)
 }
@@ -230,14 +230,14 @@ func CheckGooberFeatureSupport(def Definition, spec apiv1.GooberSpec, allowPrevi
 }
 
 func newNextFeatureRegistry(features []Feature) (FeatureRegistry, error) {
-	return newNextFeatureRegistryWith(features, vnext.NewFeatureRegistry)
+	return newNextFeatureRegistryWith(features, v20.NewFeatureRegistry)
 }
 
 func newNextFeatureRegistryWith(
 	features []Feature,
-	validate func([]vnext.Feature) (vnext.FeatureRegistry, error),
+	validate func([]v20.Feature) (v20.FeatureRegistry, error),
 ) (FeatureRegistry, error) {
-	next := make([]vnext.Feature, len(features))
+	next := make([]v20.Feature, len(features))
 	for i, feature := range features {
 		next[i] = featureForNext(feature)
 	}
@@ -249,11 +249,11 @@ func newNextFeatureRegistryWith(
 }
 
 func nextFeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error) {
-	next := make([]vnext.Feature, len(features))
+	next := make([]v20.Feature, len(features))
 	for i, feature := range features {
 		next[i] = featureForNext(feature)
 	}
-	filtered, err := vnext.FeaturesAtDSLVersion(next, version)
+	filtered, err := v20.FeaturesAtDSLVersion(next, version)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +261,7 @@ func nextFeaturesAtDSLVersion(features []Feature, version string) ([]Feature, er
 }
 
 func featuresForNextWorkflow(def Definition) ([]Feature, error) {
-	features, err := vnext.FeaturesForWorkflow(def)
+	features, err := v20.FeaturesForWorkflow(def)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +269,7 @@ func featuresForNextWorkflow(def Definition) ([]Feature, error) {
 }
 
 func featuresForNextGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
-	features, err := vnext.FeaturesForGaggle(spec)
+	features, err := v20.FeaturesForGaggle(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +277,7 @@ func featuresForNextGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 }
 
 func featuresForNextGoober(spec apiv1.GooberSpec) ([]Feature, error) {
-	features, err := vnext.FeaturesForGoober(spec)
+	features, err := v20.FeaturesForGoober(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -285,18 +285,18 @@ func featuresForNextGoober(spec apiv1.GooberSpec) ([]Feature, error) {
 }
 
 func checkNextFeatureSupport(features []Feature, allowPreview bool) []FeatureDiagnostic {
-	next := make([]vnext.Feature, len(features))
+	next := make([]v20.Feature, len(features))
 	for i, feature := range features {
 		next[i] = featureForNext(feature)
 	}
-	return diagnosticsFromNext(vnext.CheckFeatureSupport(next, allowPreview))
+	return diagnosticsFromNext(v20.CheckFeatureSupport(next, allowPreview))
 }
 
 func checkNextWorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDiagnostic {
-	return diagnosticsFromNext(vnext.CheckWorkflowFeatureSupport(def, allowPreview))
+	return diagnosticsFromNext(v20.CheckWorkflowFeatureSupport(def, allowPreview))
 }
 
-func featuresFromNext(features []vnext.Feature) []Feature {
+func featuresFromNext(features []v20.Feature) []Feature {
 	out := make([]Feature, len(features))
 	for i, feature := range features {
 		out[i] = nextFeature(feature)
@@ -304,7 +304,7 @@ func featuresFromNext(features []vnext.Feature) []Feature {
 	return out
 }
 
-func diagnosticsFromNext(diagnostics []vnext.FeatureDiagnostic) []FeatureDiagnostic {
+func diagnosticsFromNext(diagnostics []v20.FeatureDiagnostic) []FeatureDiagnostic {
 	out := make([]FeatureDiagnostic, len(diagnostics))
 	for i, diagnostic := range diagnostics {
 		out[i] = FeatureDiagnostic{
@@ -316,23 +316,23 @@ func diagnosticsFromNext(diagnostics []vnext.FeatureDiagnostic) []FeatureDiagnos
 	return out
 }
 
-func featureForNext(feature Feature) vnext.Feature {
-	out := vnext.Feature{
+func featureForNext(feature Feature) v20.Feature {
+	out := v20.Feature{
 		ID:                    feature.ID,
 		Level:                 feature.Level,
 		SinceVersion:          feature.SinceVersion,
 		Replacement:           feature.Replacement,
 		RemovalTargetVersion:  feature.RemovalTargetVersion,
 		LastSupportingVersion: feature.LastSupportingVersion,
-		DSLVersions:           make([]vnext.DSLFeatureSupport, len(feature.DSLVersions)),
-		History:               make([]vnext.SupportTransition, len(feature.History)),
+		DSLVersions:           make([]v20.DSLFeatureSupport, len(feature.DSLVersions)),
+		History:               make([]v20.SupportTransition, len(feature.History)),
 	}
 	copy(out.DSLVersions, feature.DSLVersions)
 	copy(out.History, feature.History)
 	return out
 }
 
-func nextFeature(feature vnext.Feature) Feature {
+func nextFeature(feature v20.Feature) Feature {
 	out := Feature{
 		ID:                    feature.ID,
 		Level:                 feature.Level,
@@ -348,7 +348,7 @@ func nextFeature(feature vnext.Feature) Feature {
 	return out
 }
 
-// --- DSL 3.0 glue: the same shape as the vnext conversions above. ---------
+// --- DSL 3.0 glue: the same shape as the v20 conversions above. ---------
 
 func newV30FeatureRegistry(features []Feature) (FeatureRegistry, error) {
 	converted := make([]v30.Feature, len(features))

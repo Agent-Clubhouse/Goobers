@@ -678,7 +678,7 @@ func TestRunnerExecutesReadOnlyParallelWithinDeclaredBound(t *testing.T) {
 }
 
 // A writable-repo branch workspace is now rejected by compile-time rule 9
-// (internal/workflow/v_next/parallel.go) for every declared width, including
+// (internal/workflow/v_2_0/parallel.go) for every declared width, including
 // the unset-default case — strictly earlier and stronger than this runtime
 // check, so a machine built through the normal workflow.Compile path can no
 // longer reach parallel_run.go's own maxConcurrentBranches>1 dispatch-time

@@ -11,12 +11,12 @@ const (
 	ciPollTaskKind = "ci-poll"
 )
 
-// applyCurrentToNext implements the DVL-5 (#865, PR #1353) v_current→v_next
-// edge's one concrete semantic delta: internal/workflow/v_next's ci-poll
+// applyCurrentToNext implements the DVL-5 (#865, PR #1353) v_current→v_2_0
+// edge's one concrete semantic delta: internal/workflow/v_2_0's ci-poll
 // input builder injects a "10s" pollIntervalSeconds default onto a ci-poll
 // task's invocation whenever its downstream automated gate leaves
 // PollIntervalSeconds unset, where v_current's builder leaves the input
-// absent entirely (see internal/workflow/{v_current,v_next}/inputs.go). That
+// absent entirely (see internal/workflow/{v_current,v_2_0}/inputs.go). That
 // default lives in compiled-invocation code, not in the workflow schema, so
 // migrating a workflow forward would otherwise silently change its runtime
 // polling cadence. This transform makes the new default explicit in the YAML
