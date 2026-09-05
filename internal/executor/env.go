@@ -97,6 +97,11 @@ const (
 	// need organization/project/repo to address a repo.
 	RepoProjectEnvVar = "GOOBERS_REPO_PROJECT"
 
+	// NeedsHumanAssigneeEnvVar carries the daemon-resolved needs-human
+	// routing identity to the close-out CLI stage without exposing instance
+	// configuration files to a pod.
+	NeedsHumanAssigneeEnvVar = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
+
 	// AdditionalReposEnvVar carries the comma-separated names of the gaggle's
 	// read-only reference-repo checkouts (MGV-11 #1286) available to this stage,
 	// so a stage can discover which GOOBERS_ADDITIONAL_REPO_* vars are set.

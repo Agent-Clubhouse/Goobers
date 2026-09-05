@@ -42,7 +42,7 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 
 		// --- STILL REFUSED: a direct instance-root file no plane serves ---
 		// Each of these names the specific file in shell.go's map comment.
-		{name: "issue-close-out (journal.OpenRead over FindRunDir)", cmd: []string{"goobers", "issue-close-out"}, want: true},
+		{name: "issue-close-out (journal read plane)", cmd: []string{"goobers", "issue-close-out"}, want: false},
 		{name: "select-source (instance log + direct claim ledger)", cmd: []string{"goobers", "select-source"}, want: true},
 		{name: "publish-batch (SchedulerDir/decomposition-target-locks)", cmd: []string{"goobers", "publish-batch"}, want: true},
 		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: true},

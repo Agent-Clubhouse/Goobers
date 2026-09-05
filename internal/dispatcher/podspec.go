@@ -384,7 +384,7 @@ var DispatcherPlaneEnv = []string{
 var runContextEnv = []string{
 	executorRepoProviderEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
 	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
-	executorTriggerRefEnv,
+	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv,
 }
 
 // The executor package owns these names; they are restated rather than imported
@@ -392,13 +392,14 @@ var runContextEnv = []string{
 // would invert the dependency. Pinned against the originals by
 // TestRunContextEnvMatchesExecutor so the restatement cannot drift.
 const (
-	executorRepoProviderEnv    = "GOOBERS_REPO_PROVIDER"
-	executorRepoOwnerEnv       = "GOOBERS_REPO_OWNER"
-	executorRepoProjectEnv     = "GOOBERS_REPO_PROJECT"
-	executorRepoNameEnv        = "GOOBERS_REPO_NAME"
-	executorBranchNamespaceEnv = "GOOBERS_BRANCH_NAMESPACE"
-	executorBaseBranchEnv      = "GOOBERS_BASE_BRANCH"
-	executorTriggerRefEnv      = "GOOBERS_TRIGGER_REF"
+	executorRepoProviderEnv       = "GOOBERS_REPO_PROVIDER"
+	executorRepoOwnerEnv          = "GOOBERS_REPO_OWNER"
+	executorRepoProjectEnv        = "GOOBERS_REPO_PROJECT"
+	executorRepoNameEnv           = "GOOBERS_REPO_NAME"
+	executorBranchNamespaceEnv    = "GOOBERS_BRANCH_NAMESPACE"
+	executorBaseBranchEnv         = "GOOBERS_BASE_BRANCH"
+	executorTriggerRefEnv         = "GOOBERS_TRIGGER_REF"
+	executorNeedsHumanAssigneeEnv = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
 )
 
 // Workspace and temp paths — the base-image contract half of the mount

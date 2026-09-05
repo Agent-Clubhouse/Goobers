@@ -373,12 +373,6 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// namespace and served under the SAME claims.lock it always took, so a
 	// pod-executed selection and a daemon-driven one advance ONE lease rather
 	// than two. Everything else it touches is a provider API call.
-	// issue-close-out reads run journals through journal.OpenRead directly
-	// (issuecloseout.go:96, :168, :241) over a run directory it finds with
-	// instance.Layout.FindRunDir — bypassing the stageRunJournal seam
-	// entirely, so the journal plane does not serve it. Its claim RELEASE is
-	// already plane-served; only these three reads hold it here.
-	"issue-close-out": true,
 	// telemetry-query is NOT here any more (Goobers#4001). It opened the
 	// daemon's telemetry ROLLUP database directly (l.TelemetryDB()), and
 	// decision 005 R4 refused it at dispatch because the only shape anyone

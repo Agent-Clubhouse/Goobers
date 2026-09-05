@@ -401,6 +401,10 @@ type StageDispatcher interface {
 	Dispatch(ctx context.Context, attempt dispatcher.Attempt, eligible []dispatcher.RunnerSpec) (dispatcher.Report, error)
 }
 
+type needsHumanAssigneeProvider interface {
+	NeedsHumanAssignee() string
+}
+
 // DispatchStage executes one mode-3 stage attempt: it hands the attempt to
 // the dispatcher (which creates, supervises, and disposes the pod) and then
 // marshals the pod's surrendered blob back into the stageActivityResult the
@@ -597,6 +601,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		}
 		if trigger := input.Envelope.TriggerRef; trigger != "" {
 			attempt.RunContext[executor.TriggerRefEnvVar] = trigger
+		}
+		if assigneeProvider, ok := a.Dispatcher.(needsHumanAssigneeProvider); ok {
+			if assignee := strings.TrimSpace(assigneeProvider.NeedsHumanAssignee()); assignee != "" {
+				attempt.RunContext[executor.NeedsHumanAssigneeEnvVar] = assignee
+			}
 		}
 	}
 
