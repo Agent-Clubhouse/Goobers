@@ -692,7 +692,6 @@ func appendPendingSeedIssues(result *onboardingActionResult, catalog onboardingS
 	}
 }
 
-//nolint:unused // Retained for fixture-level tests after removing the public stub-sample command.
 func seedOnboardingIssues(
 	ctx context.Context,
 	seeder onboardingIssueSeeder,
@@ -788,7 +787,6 @@ func printOnboardingActionResult(stdout io.Writer, result onboardingActionResult
 	pf(stdout, "next: %s\n", result.NextCommand)
 }
 
-//nolint:unused // Retained for fixture-level tests after removing the public stub-sample command.
 func runOnboardingStubSample(args []string, stdout, stderr io.Writer) int {
 	flags := newCLIFlagSet("onboarding stub-sample", flag.ContinueOnError)
 	flags.SetOutput(stderr)
