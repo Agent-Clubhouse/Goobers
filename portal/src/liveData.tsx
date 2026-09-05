@@ -292,6 +292,11 @@ export class LiveDataController {
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private refreshFailureCount = 0;
   lastSSEFailure: LiveDataSSEFailure | undefined;
+  // Tracks the failure object last broadcast to state listeners, so a repeat
+  // failure while freshness holds steady (e.g. a second SSE drop while
+  // already in polling-fallback) still reaches subscribers — see
+  // setFreshness below.
+  private lastNotifiedSSEFailure: LiveDataSSEFailure | undefined;
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly cache: SessionDataCache;
   private skipNextSnapshotRefresh = false;
@@ -978,10 +983,19 @@ export class LiveDataController {
   }
 
   private setFreshness(freshness: LiveFreshness): void {
-    if (this.freshness === freshness) {
+    // A repeated SSE failure while the freshness value doesn't change (e.g. a
+    // second disconnect while already in polling-fallback) still needs to
+    // reach subscribers, since it carries new failure details — so the
+    // no-op guard only fires when BOTH the freshness value and the failure
+    // are unchanged from what was last broadcast.
+    if (
+      this.freshness === freshness &&
+      this.lastSSEFailure === this.lastNotifiedSSEFailure
+    ) {
       return;
     }
     this.freshness = freshness;
+    this.lastNotifiedSSEFailure = this.lastSSEFailure;
     for (const listener of this.stateListeners) {
       listener(freshness, this.lastSSEFailure);
     }

@@ -172,6 +172,63 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  // Regression for a state-notification defect found on PR #4360: setFreshness
+  // used to no-op whenever the freshness VALUE was unchanged, so a second SSE
+  // failure that arrives while freshness is already "polling-fallback" updated
+  // controller.lastSSEFailure internally but never reached subscribers (e.g.
+  // LiveDataProvider) — the portal kept showing the first failure's stale
+  // cause/details after a later, different failure.
+  it("notifies subscribers of a new SSE failure even while freshness stays polling-fallback", async () => {
+    const first = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.reject(new TypeError("second connect boom")),
+    ]);
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      failuresBeforePolling: 1,
+    });
+    const states: { freshness: LiveFreshness; failure: unknown }[] = [];
+    controller.subscribeState((freshness, failure) => states.push({ freshness, failure }));
+
+    controller.start();
+    await settle();
+    first.end();
+    await settle();
+    expect(controller.freshness).toBe("polling-fallback");
+    expect(controller.lastSSEFailure).toEqual({
+      cause: "stream-ended",
+      endpoint: "/api/v1/events",
+    });
+    states.length = 0;
+
+    // The reconnect attempt scheduled off the first failure fails too, with
+    // different failure details, while freshness never leaves
+    // polling-fallback.
+    await vi.advanceTimersByTimeAsync(100);
+    await settle();
+
+    expect(controller.freshness).toBe("polling-fallback");
+    expect(controller.lastSSEFailure).toEqual({
+      cause: "stream-error",
+      endpoint: "/api/v1/events",
+      result: "TypeError",
+    });
+    // The bug: without a fix, `states` stays empty here because setFreshness
+    // early-returns for an unchanged freshness value and subscribers never
+    // hear about the new failure.
+    expect(states).toContainEqual({
+      freshness: "polling-fallback",
+      failure: {
+        cause: "stream-error",
+        endpoint: "/api/v1/events",
+        result: "TypeError",
+      },
+    });
+
+    controller.stop();
+  });
+
   // Uses an `invalidate` event rather than the connect `snapshot`: a cold connect
   // already fires its own full refresh, so #1685 deliberately skips the snapshot
   // that follows it. The behaviour under test here is the cache contract — an
