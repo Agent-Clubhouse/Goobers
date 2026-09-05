@@ -1124,6 +1124,15 @@ spec:
                     Trigger declares one condition under which the scheduler may start a run. A run
                     starts only when a trigger fires AND readiness is satisfied (WF-011).
                   properties:
+                    enabled:
+                      description: |-
+                        Enabled toggles whether the scheduler honors this trigger without
+                        removing it from the workflow. Omitting the field preserves the
+                        historical behavior (the trigger is active). Setting it to false
+                        disables the trigger for schedule, signal, webhook, and backlog-item
+                        types; type=manual is unaffected because manual runs are always started
+                        from the operator surface, not by the scheduler.
+                      type: boolean
                     events:
                       description: |-
                         Events are GitHub webhook event names (for example pull_request, issues,

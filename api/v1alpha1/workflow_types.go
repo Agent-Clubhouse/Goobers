@@ -81,6 +81,14 @@ type Trigger struct {
 	// +kubebuilder:validation:MinItems=1
 	// +optional
 	Events []string `json:"events,omitempty" yaml:"events,omitempty"`
+	// Enabled toggles whether the scheduler honors this trigger without
+	// removing it from the workflow. Omitting the field preserves the
+	// historical behavior (the trigger is active). Setting it to false
+	// disables the trigger for schedule, signal, webhook, and backlog-item
+	// types; type=manual is unaffected because manual runs are always started
+	// from the operator surface, not by the scheduler.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
 // IdleBackoff configures adaptive delay after consecutive scheduled runs find

@@ -25,6 +25,7 @@ export const apiRoutes = {
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
   "rerunStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/rerun", actionClass: "runtime-mutation", capability: "rerun" },
+  "workflowEnabled": { method: "PUT", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}/enabled", actionClass: "maintenance" },
   "claimAcquire": { method: "POST", path: "/api/v1/claims/acquire", actionClass: "workflow-execution" },
   "claimRenew": { method: "POST", path: "/api/v1/claims/renew", actionClass: "workflow-execution" },
   "claimRelease": { method: "POST", path: "/api/v1/claims/release", actionClass: "workflow-execution" },

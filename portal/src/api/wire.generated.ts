@@ -123,7 +123,8 @@ export const goWireFixtures = {
       "links": []
     },
     "capabilities": {
-      "revealRun": false
+      "revealRun": false,
+      "workflowEnable": false
     }
   },
   "gaggles": {

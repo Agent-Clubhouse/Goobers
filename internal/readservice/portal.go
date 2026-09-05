@@ -20,7 +20,8 @@ type PortalConfig struct {
 
 // PortalCapabilities reports deployment-dependent actions the portal may offer.
 type PortalCapabilities struct {
-	RevealRun bool `json:"revealRun"`
+	RevealRun      bool `json:"revealRun"`
+	WorkflowEnable bool `json:"workflowEnable"`
 }
 
 // PortalBrandResponse is the resolved brand identity. Name, Tagline, and

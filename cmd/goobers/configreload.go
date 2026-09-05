@@ -139,6 +139,21 @@ func (r *configReloader) pollOnce(now time.Time) (applied bool, oldDigest, newDi
 	return false, oldDigest, oldDigest, r.lastRejectionMessage, nil
 }
 
+// workflowSource returns the config-relative source file the currently
+// applied definitions loaded the workflow from, taking the same lock
+// poll/pollOnce hold when they swap the definitions in. It is the read
+// counterpart to the workflow mutation service's write path: taking the same
+// lock guarantees the source lookup and the subsequent atomic edit see a
+// consistent set of applied definitions.
+func (r *configReloader) workflowSource(gaggle, workflow string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.setup.Definitions == nil {
+		return "", false
+	}
+	return r.setup.Definitions.WorkflowSource(gaggle, workflow)
+}
+
 // poll runs one reload check. Callers must hold r.mu — poll freely mutates
 // appliedDigest/observedDigest/lastDigestError/lastRejectionMessage and
 // drives non-idempotent side effects (scheduler.Reload, RunnerRegistry

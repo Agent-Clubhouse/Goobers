@@ -83,6 +83,12 @@ const clientRoutes = {
   approveStage: apiRoutes.approveStage,
   overrideStage: apiRoutes.overrideStage,
   rerunStage: apiRoutes.rerunStage,
+  // The workflow-enable maintenance route (#4152 layer 2): serialized atomic
+  // YAML edit of a workflow's Trigger.Enabled flag with reload + rollback on
+  // the daemon side. No DaemonClient method calls it yet — a workflow-enable
+  // UI would be the first consumer — but the exhaustiveness check requires
+  // the full contract here as it grows.
+  workflowEnabled: apiRoutes.workflowEnabled,
   // Daemon write planes (#3509): machine seams (claims, trigger ingestion)
   // plus HITL escalation resolution. The portal calls none of them yet — an
   // escalation-resolution UI would be the first consumer — but the

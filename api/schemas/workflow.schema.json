@@ -189,6 +189,10 @@
           "description": "GitHub webhook event names accepted by a webhook trigger, such as pull_request, issues, or check_suite.",
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Toggle whether the scheduler honors this trigger without removing it. Omit to preserve the historical enabled behavior; false disables schedule, signal, webhook, and backlog-item triggers. type=manual is always allowed because manual runs are started from the operator surface."
         }
       },
       "allOf": [
