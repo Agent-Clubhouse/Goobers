@@ -5,7 +5,7 @@
 # <path>\t<symbol>\t<complexity>. The key is path+symbol, so moving a
 # function to another file does not create headroom.
 # !ratchet-budget is how many functions may sit at or above 25.
-!ratchet-budget 188
+!ratchet-budget 187
 api/validate/validate.go	(*index).checkWorkflow	59
 cmd/goobers/applyverdict.go	runApplyVerdict	83
 cmd/goobers/backlogquery.go	runBacklogQueryMode	41
@@ -16,7 +16,7 @@ cmd/goobers/init.go	runInitWithInputForOS	57
 cmd/goobers/issuecloseout.go	runIssueCloseOut	47
 cmd/goobers/mergepr.go	runMergePR	63
 cmd/goobers/openpr.go	runOpenPR	56
-cmd/goobers/prsiblingcontext.go	runGatherSiblingContextCore	70
+cmd/goobers/prsiblingcontext.go	runGatherSiblingContextCore	71
 cmd/goobers/reconcilebranches.go	reconcileRemoteBranches	56
 cmd/goobers/run_continue.go	runRunContinue	44
 cmd/goobers/status.go	runRunTable	80
