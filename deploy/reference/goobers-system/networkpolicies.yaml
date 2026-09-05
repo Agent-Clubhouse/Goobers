@@ -1,0 +1,21 @@
+# Shared worker egress to the Temporal frontend. Stage pods run in a gaggle
+# namespace and receive their egress grants from the per-runner-class renderer.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worker-temporal
+  namespace: goobers-system
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: goobers-temporal
+      ports:
+        - protocol: TCP
+          port: 7233

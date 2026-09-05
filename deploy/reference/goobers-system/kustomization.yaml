@@ -17,6 +17,7 @@ resources:
   - worker-rbac.yaml
   - worker-deployment.yaml
   - worker-windows-deployment.yaml
+  - networkpolicies.yaml
   - api-rbac.yaml
   - api-deployment.yaml
   - api-service.yaml
