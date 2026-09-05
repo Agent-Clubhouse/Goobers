@@ -241,9 +241,11 @@ deploy-validate:
 	kubectl kustomize deploy/reference/goobers-system >/dev/null
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a >/dev/null
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
+	kubectl kustomize deploy/reference/examples/apiserver-drift-check >/dev/null
 	kubectl kustomize deploy/reference/goobers-system | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/examples/apiserver-drift-check | $(KUBECONFORM) -strict -summary
 	$(GO) test ./cmd/goobers -run 'TestDeployReference' -count=1
 	@echo "deploy/reference kustomize builds, schemas, value formats (#3310), and rendered-together cross-base assertion (#3301) OK"
 

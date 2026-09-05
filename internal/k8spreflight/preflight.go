@@ -67,6 +67,8 @@ const DefaultTimeout = 10 * time.Second
 // Options carries the operator-supplied probe targets. The zero value runs
 // the cluster-only checks and reports the network probes as skipped warns.
 type Options struct {
+	// APIServerEndpoint is the cluster API server URL returned by kubeconfig.
+	APIServerEndpoint string
 	// OIDCIssuer is the customer OIDC issuer for portal/API auth (§1/§3);
 	// its discovery document must be reachable from the doctor host.
 	OIDCIssuer string
@@ -118,6 +120,7 @@ func Run(ctx context.Context, client kubernetes.Interface, opts Options) Report 
 	checks := []func(context.Context, kubernetes.Interface, Options) Result{
 		checkClusterVersion,
 		checkNetworkPolicySupport,
+		checkAPIServerIPBlockDrift,
 		checkInstallRBAC,
 		checkGaggleRBAC,
 		checkStorage,

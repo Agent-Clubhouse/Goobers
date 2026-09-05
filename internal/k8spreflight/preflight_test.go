@@ -15,6 +15,7 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -126,7 +127,7 @@ func TestRunConformantClusterPasses(t *testing.T) {
 	for _, result := range report.Results {
 		want := StatusPass
 		switch result.ID {
-		case "storage-rwx", "networkpolicy-api":
+		case "storage-rwx", "networkpolicy-api", "apiserver-ipblock-drift":
 			// storage-rwx: inferred, never a hard pass (§4). networkpolicy-api:
 			// API-discovery only — a served API is a correlate of enforcement,
 			// not proof of it, so even an "otherwise conformant" cluster warns
@@ -417,9 +418,11 @@ func TestNetworkPolicyAPIServedWarnsNotProof(t *testing.T) {
 	if result.Status != StatusWarn {
 		t.Fatalf("networkpolicy-api = %s, want warn when the API is served (enforcement is unverified by this check)", result.Status)
 	}
+
 	if strings.Contains(result.Title, "deny-first defaults enforceable") {
 		t.Errorf("networkpolicy-api title %q still claims enforcement is proven", result.Title)
 	}
+
 	if !strings.Contains(result.Detail, "unverified") {
 		t.Errorf("networkpolicy-api detail %q does not say enforcement is unverified", result.Detail)
 	}
@@ -428,6 +431,40 @@ func TestNetworkPolicyAPIServedWarnsNotProof(t *testing.T) {
 	}
 	if !report.Conformant {
 		t.Fatal("a networkpolicy-api warn must not flip an otherwise-conformant report")
+	}
+}
+
+func TestAPIServerIPBlockDriftChecksEntriesAndFailsClosedWhenEmpty(t *testing.T) {
+	tests := []struct {
+		name   string
+		cidr   string
+		status Status
+		detail string
+	}{
+		{name: "matches", cidr: "10.0.0.1/32", status: StatusPass, detail: "checked 1"},
+		{name: "drifts", cidr: "10.0.0.2/32", status: StatusFail, detail: "checked 1"},
+		{name: "empty", status: StatusFail, detail: "checked 0"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := newFakeCluster(t)
+			if test.cidr != "" {
+				_, err := client.NetworkingV1().NetworkPolicies("goobers-system").Create(context.Background(), &networkingv1.NetworkPolicy{
+					ObjectMeta: metav1.ObjectMeta{Name: "api-server-egress", Namespace: "goobers-system"},
+					Spec: networkingv1.NetworkPolicySpec{Egress: []networkingv1.NetworkPolicyEgressRule{{
+						To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: test.cidr}}},
+					}}},
+				}, metav1.CreateOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			report := Run(context.Background(), client, Options{APIServerEndpoint: "https://10.0.0.1"})
+			result := resultByID(t, report, "apiserver-ipblock-drift")
+			if result.Status != test.status || !strings.Contains(result.Detail, test.detail) {
+				t.Fatalf("result = %s (%s), want %s containing %q", result.Status, result.Detail, test.status, test.detail)
+			}
+		})
 	}
 }
 
