@@ -48,6 +48,37 @@ func TestSelfUpdateCommandRoutesManualTarget(t *testing.T) {
 	}
 }
 
+func TestSelfUpdateCommandRoutesPrereleaseOptIn(t *testing.T) {
+	root := selfUpdateTestInstance(t, "20m")
+	setSelfUpdateRepoRoute(t)
+	resultFile := filepath.Join(t.TempDir(), "result.json")
+	t.Setenv(executor.InputEnvVar("resultFile"), resultFile)
+
+	var got selfupdate.PrepareOptions
+	prepare := func(_ context.Context, opts selfupdate.PrepareOptions) (selfupdate.PrepareResult, error) {
+		got = opts
+		return selfupdate.PrepareResult{UpdateRequested: true, Policy: opts.Policy, Target: opts.Target}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	code := runSelfUpdateWith(
+		[]string{"--include-prerelease", root},
+		&stdout,
+		&stderr,
+		"self-update",
+		prepare,
+	)
+
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if !got.IncludePrerelease {
+		t.Fatalf("prepare options includePrerelease = %v, want true", got.IncludePrerelease)
+	}
+	if got.Policy != selfupdate.PolicyOnRelease {
+		t.Fatalf("prepare options policy = %q, want %q", got.Policy, selfupdate.PolicyOnRelease)
+	}
+}
+
 func TestSelfUpdateCommandReportsAlreadyActiveResult(t *testing.T) {
 	root := selfUpdateTestInstance(t, "20m")
 	setSelfUpdateRepoRoute(t)

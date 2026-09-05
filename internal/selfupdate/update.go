@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	hashiversion "github.com/hashicorp/go-version"
+
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -63,6 +65,7 @@ type Request struct {
 // PrepareOptions configures update discovery, staging, and validation.
 type PrepareOptions struct {
 	Root, WorkDir, Policy, Owner, Repository, Branch, Target, Token, RunID string
+	IncludePrerelease                                                      bool
 	HealthTicks                                                            int
 	HealthTimeout, HeartbeatInterval                                       time.Duration
 	GOOS, GOARCH, APIBaseURL                                               string
@@ -139,8 +142,15 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 		var release githubRelease
 		release, err = resolveRelease(ctx, opts)
 		target, version = release.TagName, release.TagName
-		if err == nil && current.Version != version {
-			staged, err = stageRelease(ctx, opts, release)
+		if err == nil {
+			newer, compareErr := isNewerVersion(current.Version, version)
+			if compareErr != nil {
+				err = fmt.Errorf("compare current version %q with release %q: %w", current.Version, version, compareErr)
+			} else if !newer {
+				err = fmt.Errorf("refusing to stage %s: current build %s is newer than or equal to the target release", version, current.Version)
+			} else {
+				staged, err = stageRelease(ctx, opts, release)
+			}
 		}
 	}
 	if err != nil {
@@ -225,6 +235,9 @@ func validatePrepareOptions(opts PrepareOptions) error {
 	default:
 		return fmt.Errorf("unknown self-update policy %q (want manual, on-release, or on-main)", opts.Policy)
 	}
+	if opts.IncludePrerelease && opts.Policy != PolicyOnRelease {
+		return errors.New("include-prerelease is only valid with on-release policy")
+	}
 	minimum := time.Duration(opts.HealthTicks+1) * opts.HeartbeatInterval
 	if opts.HealthTicks < 1 || opts.HealthTimeout <= 0 || opts.HeartbeatInterval <= 0 || opts.HealthTimeout < minimum {
 		return fmt.Errorf("health window requires positive values and at least %s", minimum)
@@ -233,18 +246,67 @@ func validatePrepareOptions(opts PrepareOptions) error {
 }
 
 func resolveRelease(ctx context.Context, opts PrepareOptions) (githubRelease, error) {
-	suffix := "/releases/latest"
 	if opts.Policy == PolicyManual {
-		suffix = "/releases/tags/" + url.PathEscape(opts.Target)
+		return resolveSingleRelease(ctx, opts, "/releases/tags/"+url.PathEscape(opts.Target), opts.Target)
 	}
+	if opts.IncludePrerelease {
+		return resolveNewestRelease(ctx, opts)
+	}
+	return resolveSingleRelease(ctx, opts, "/releases/latest", "")
+}
+
+func resolveSingleRelease(ctx context.Context, opts PrepareOptions, suffix, wantTag string) (githubRelease, error) {
 	var release githubRelease
 	if err := githubJSON(ctx, opts, suffix, &release); err != nil {
 		return release, fmt.Errorf("query GitHub release: %w", err)
 	}
-	if release.TagName == "" || opts.Policy == PolicyManual && release.TagName != opts.Target {
+	if release.TagName == "" || wantTag != "" && release.TagName != wantTag {
 		return release, fmt.Errorf("GitHub release returned unexpected tag %q", release.TagName)
 	}
 	return release, nil
+}
+
+func resolveNewestRelease(ctx context.Context, opts PrepareOptions) (githubRelease, error) {
+	var releases []githubRelease
+	if err := githubJSON(ctx, opts, "/releases", &releases); err != nil {
+		return githubRelease{}, fmt.Errorf("query GitHub releases: %w", err)
+	}
+	if len(releases) == 0 {
+		return githubRelease{}, errors.New("GitHub release board is empty")
+	}
+	selected := githubRelease{}
+	for _, release := range releases {
+		if release.TagName == "" {
+			continue
+		}
+		if selected.TagName == "" {
+			selected = release
+			continue
+		}
+		newer, err := isNewerVersion(selected.TagName, release.TagName)
+		if err != nil {
+			continue
+		}
+		if newer {
+			selected = release
+		}
+	}
+	if selected.TagName == "" {
+		return githubRelease{}, errors.New("GitHub releases does not contain a valid SemVer tag")
+	}
+	return selected, nil
+}
+
+func isNewerVersion(currentVersion, candidateVersion string) (bool, error) {
+	current, err := hashiversion.NewVersion(currentVersion)
+	if err != nil {
+		return false, fmt.Errorf("parse current version %q: %w", currentVersion, err)
+	}
+	candidate, err := hashiversion.NewVersion(candidateVersion)
+	if err != nil {
+		return false, fmt.Errorf("parse candidate version %q: %w", candidateVersion, err)
+	}
+	return candidate.GreaterThan(current), nil
 }
 
 func resolveMainCommit(ctx context.Context, opts PrepareOptions) (string, error) {

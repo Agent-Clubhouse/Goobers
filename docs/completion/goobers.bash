@@ -84,7 +84,7 @@ _goobers_completion()
             flags+=" --quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
             ;;
         self-update)
-            flags+=" --policy --branch --target --health-ticks --health-timeout"
+            flags+=" --policy --include-prerelease --branch --target --health-ticks --health-timeout"
             ;;
         service)
             case "${COMP_WORDS[2]:-}" in

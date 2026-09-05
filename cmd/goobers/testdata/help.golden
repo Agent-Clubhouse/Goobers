@@ -2052,7 +2052,9 @@ Usage: goobers self-update [flags] [path]
 
 Stage and smoke-check a binary, then request supervised activation. Policies
 are manual, on-release (default), and on-main. Manual requires a release tag;
-on-main builds the configured branch. Config is never changed.
+on-main builds the configured branch. on-release resolves the newest stable
+release unless --include-prerelease is set, which considers all GitHub
+releases and only stages a target strictly newer than the running build.
 
 ### service
 Usage: goobers service <subcommand> [path]
