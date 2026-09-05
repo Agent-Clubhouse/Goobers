@@ -69,16 +69,28 @@ export function InsightPage({
   const setWindow = (nextWindow: InsightWindow) =>
     navigate({ page: "insight", filters: insightScopeRouteFilters(requestedScope, nextWindow) });
   const errorScope = insightScopeApiParameters(requestedScope);
+  // Keep the daemon's CostAggregate ceiling unchanged; these four page loads
+  // take turns instead of competing with one another.
   const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
+  const statsSettled = query.state.status !== "loading";
   const errorSignatures = useInsightErrorSignatures(
     client,
     window,
     errorScope.gaggle,
     errorScope.workflow,
     errorScope.stage,
+    statsSettled,
   );
-  const costTrend = useInsightCostTrend(client, window, errorScope.gaggle, errorScope.workflow);
-  const costRollup = useInsightCostRollup(client, window);
+  const errorsSettled = errorSignatures.state.status !== "loading";
+  const costTrend = useInsightCostTrend(
+    client,
+    window,
+    errorScope.gaggle,
+    errorScope.workflow,
+    errorsSettled,
+  );
+  const trendSettled = costTrend.state.status !== "loading";
+  const costRollup = useInsightCostRollup(client, window, trendSettled);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -88,6 +100,13 @@ export function InsightPage({
   }
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
+  }
+  if (
+    errorSignatures.state.status === "loading" ||
+    costTrend.state.status === "loading" ||
+    costRollup.state.status === "loading"
+  ) {
+    return <DaemonLoadingState standalone={standalone} />;
   }
   const snapshot = query.state.data;
   const availableScopes = insightScopeOptions(snapshot.stats);

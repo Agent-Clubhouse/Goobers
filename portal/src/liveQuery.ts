@@ -27,6 +27,8 @@ import { useLiveData, type LiveDataScope } from "./liveData";
 export interface LiveQueryOptions<T> {
   /** Session cache key for the snapshot. A change re-subscribes and reloads. */
   cacheKey: string;
+  /** Keep the query idle until its caller is ready to spend a request. */
+  enabled?: boolean;
   dependencies: readonly DataCacheDependency[];
   /** Models whose invalidation should refresh this query. */
   models: readonly UpdateModel[];
@@ -113,6 +115,10 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
   const modelsKey = options.models.join(",");
 
   useEffect(() => {
+    if (options.enabled === false) {
+      setState({ status: "loading" });
+      return;
+    }
     const cached = cache.get<T>(cacheKey);
     setState(cached ? { status: "ready", data: cached } : { status: "loading" });
     const owned = new QueryFamily((context) => load(context.signal));
@@ -142,7 +148,7 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
         family.current = undefined;
       }
     };
-  }, [cache, cacheKey, load, modelsKey, publish, scopeKey, subscribe]);
+  }, [cache, cacheKey, load, modelsKey, options.enabled, publish, scopeKey, subscribe]);
 
   // Freshness downgrade (#1714).
   //
