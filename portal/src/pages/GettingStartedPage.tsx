@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatedGoober } from "../components/AnimatedGoober";
 import { RecoveryCommand } from "../components/RecoveryAction";
 import {
@@ -17,6 +17,9 @@ import { Icon } from "../ui/Icon";
 const defaultClient = new GuidedClient();
 const statePollIntervalMs = 5_000;
 const githubPATSettingsURL = "https://github.com/settings/personal-access-tokens/new";
+/** Deadline for a single `/guided/state` read, so a getting-started server that
+ *  stops answering cannot stall the poll loop indefinitely. */
+const stateRequestTimeoutMs = 15_000;
 type RepositorySource = "local" | "remote";
 type QueryState =
   | { status: "loading" }
@@ -152,23 +155,74 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   } | null>(null);
   const [promptCopied, setPromptCopied] = useState(false);
 
+  const statePass = useRef<{ generation: number; controller: AbortController | null }>({
+    generation: 0,
+    controller: null,
+  });
+
+  /**
+   * Read `/guided/state` under a pass that supersedes any read still in flight
+   * (#3660). Without both guards a slow earlier read lands after a newer one
+   * and repaints settled state — a finished job shown as running for as long as
+   * the page stays open — and keeps writing after unmount: the abort stops the
+   * request, the generation stamp drops a response that had already settled
+   * when the abort was issued.
+   */
   const refreshState = useCallback(async () => {
+    const pass = statePass.current;
+    pass.controller?.abort();
+    const controller = new AbortController();
+    const generation = (pass.generation += 1);
+    pass.controller = controller;
+    const current = () => generation === pass.generation && !controller.signal.aborted;
     try {
-      const state = await client.getState();
+      const state = await client.getState({
+        signal: controller.signal,
+        timeoutMs: stateRequestTimeoutMs,
+      });
+      if (!current()) {
+        return null;
+      }
       setQuery({ status: "ready", state });
       return state;
     } catch {
+      if (!current()) {
+        return null;
+      }
       setQuery((previous) =>
         previous.status === "ready" ? previous : { status: "unavailable" },
       );
       return null;
+    } finally {
+      if (pass.controller === controller) {
+        pass.controller = null;
+      }
     }
   }, [client]);
 
   useEffect(() => {
-    void refreshState();
-    const timer = setInterval(() => void refreshState(), statePollIntervalMs);
-    return () => clearInterval(timer);
+    const pass = statePass.current;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Each poll is scheduled only once the previous one has settled, so reads
+    // never overlap and cannot arrive out of order.
+    const poll = async () => {
+      await refreshState();
+      if (stopped) {
+        return;
+      }
+      timer = setTimeout(() => void poll(), statePollIntervalMs);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      pass.generation += 1;
+      pass.controller?.abort();
+      pass.controller = null;
+    };
   }, [refreshState]);
 
   const state = query.status === "ready" ? query.state : null;
