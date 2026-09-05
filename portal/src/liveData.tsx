@@ -30,6 +30,12 @@ export type LiveFreshness =
   | "offline"
   | "polling-fallback";
 
+export interface LiveDataSSEFailure {
+  cause: string;
+  endpoint: string;
+  result?: string;
+}
+
 export interface LiveDataConfig {
   invalidationWindowMs: number;
   reconnectBaseDelayMs: number;
@@ -95,7 +101,7 @@ type ModelListener = (
   reason: "initial" | "refresh",
   invalidations?: readonly ModelInvalidation[],
 ) => boolean | void | Promise<boolean | void>;
-type StateListener = (state: LiveFreshness) => void;
+type StateListener = (state: LiveFreshness, failure?: LiveDataSSEFailure) => void;
 
 export interface LiveDataScope {
   gaggle?: string;
@@ -142,12 +148,14 @@ const LAGGING_THRESHOLD_SECONDS = 30;
 interface LiveDataContextValue {
   cache: SessionDataCache;
   freshness: LiveFreshness;
+  lastSSEFailure?: LiveDataSSEFailure;
   /** How current the data is. Independent of `freshness`. */
   dataFreshness: DataFreshness;
   /** Called by the HTTP client for every response carrying a readState. */
   reportReadState: (state: ReadState) => void;
   isFresh: () => boolean;
   refresh: (models?: readonly UpdateModel[]) => void;
+  retryConnection: () => void;
   subscribe: (
     models: readonly UpdateModel[],
     listener: ModelListener,
@@ -189,6 +197,9 @@ export function LiveDataProvider({
     ],
   );
   const [freshness, setFreshness] = useState<LiveFreshness>(() => controller.freshness);
+  const [lastSSEFailure, setLastSSEFailure] = useState<LiveDataSSEFailure | undefined>(
+    () => controller.lastSSEFailure,
+  );
   const [dataFreshness, setDataFreshness] = useState<DataFreshness>({ kind: "unknown" });
 
   const reportReadState = useCallback((state: ReadState) => {
@@ -201,7 +212,10 @@ export function LiveDataProvider({
   useLayoutEffect(() => setReadStateSink(reportReadState), [reportReadState]);
 
   useLayoutEffect(() => {
-    const unsubscribe = controller.subscribeState(setFreshness);
+    const unsubscribe = controller.subscribeState((nextFreshness, failure) => {
+      setFreshness(nextFreshness);
+      setLastSSEFailure(failure);
+    });
     controller.start();
     return () => {
       unsubscribe();
@@ -213,13 +227,15 @@ export function LiveDataProvider({
     () => ({
       cache,
       freshness,
+      lastSSEFailure,
       dataFreshness,
       reportReadState,
       isFresh: controller.isFresh,
       refresh: controller.refresh,
+      retryConnection: controller.retryConnection,
       subscribe: controller.subscribe,
     }),
-    [cache, controller, dataFreshness, freshness, reportReadState],
+    [cache, controller, dataFreshness, freshness, lastSSEFailure, reportReadState],
   );
 
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
@@ -275,6 +291,7 @@ export class LiveDataController {
    */
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private refreshFailureCount = 0;
+  lastSSEFailure: LiveDataSSEFailure | undefined;
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly cache: SessionDataCache;
   private skipNextSnapshotRefresh = false;
@@ -293,6 +310,24 @@ export class LiveDataController {
 
   readonly refresh = (models: readonly UpdateModel[] = ALL_MODELS): void => {
     this.queueRefresh({ cursor: "", models: [...models] }, this.config.invalidationWindowMs);
+  };
+
+  readonly retryConnection = (): void => {
+    this.clearPollingTimer();
+    this.clearReconnectTimer();
+    this.clearInvalidationTimer();
+    this.pendingInvalidations.clear();
+    this.lastQueuedCursor = "";
+    this.cursor = undefined;
+    this.failureCount = 0;
+    this.refreshFailureCount = 0;
+    this.seenEventIds.clear();
+    this.seenEventOrder.length = 0;
+    this.lastSSEFailure = undefined;
+    window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
+    this.closeConnection("manual-retry");
+    this.setFreshness("reconnecting");
+    this.connect("manual-retry");
   };
 
   private queueRefresh(invalidation: ModelInvalidation, delay: number): void {
@@ -323,7 +358,7 @@ export class LiveDataController {
 
   subscribeState(listener: StateListener): () => void {
     this.stateListeners.add(listener);
-    listener(this.freshness);
+    listener(this.freshness, this.lastSSEFailure);
     return () => this.stateListeners.delete(listener);
   }
 
@@ -357,7 +392,11 @@ export class LiveDataController {
     window.removeEventListener("online", this.onOnline);
     window.removeEventListener("offline", this.onOffline);
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
+    this.clearConnectWatchdog();
+    this.clearIdleWatchdog();
     this.closeConnection("provider-stop");
+    this.clearConnectWatchdog();
+    this.clearIdleWatchdog();
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
@@ -447,6 +486,7 @@ export class LiveDataController {
       }
       this.activeStream = stream;
       connectedAt = Date.now();
+      this.lastSSEFailure = undefined;
       this.armIdleWatchdog(generation, controller);
       this.dependencies.diagnostics?.recordSSE({ event: "connect", cause });
       this.clearPollingTimer();
@@ -488,7 +528,7 @@ export class LiveDataController {
       if (connectedAt !== 0 && Date.now() - connectedAt >= this.config.connectionSettledMs) {
         this.failureCount = 0;
       }
-      this.handleDisconnect("stream-error");
+      this.handleDisconnect("stream-error", describeSSEFailure(error));
     } finally {
       this.clearConnectWatchdog(connectTimer);
       this.clearIdleWatchdog();
@@ -514,7 +554,11 @@ export class LiveDataController {
         delayMs: this.config.connectTimeoutMs,
       });
       controller.abort();
-      this.handleDisconnect("connect-timeout");
+      this.handleDisconnect("connect-timeout", {
+        cause: "connect-timeout",
+        endpoint: "/api/v1/events",
+        result: "timeout",
+      });
     }, this.config.connectTimeoutMs);
     this.connectTimer = timer;
     return timer;
@@ -555,7 +599,11 @@ export class LiveDataController {
       // handleDisconnect then applies normal backoff, so a stream that keeps
       // going silent escalates to polling instead of thrashing.
       controller.abort();
-      this.handleDisconnect("stream-idle");
+      this.handleDisconnect("stream-idle", {
+        cause: "stream-idle",
+        endpoint: "/api/v1/events",
+        result: "idle-timeout",
+      });
     }, this.config.streamIdleTimeoutMs);
   }
 
@@ -668,7 +716,8 @@ export class LiveDataController {
     this.scheduleReconnect(0, "stale-cursor");
   }
 
-  private handleDisconnect(cause: string): void {
+  private handleDisconnect(cause: string, failure?: LiveDataSSEFailure): void {
+    this.lastSSEFailure = failure ?? { cause, endpoint: "/api/v1/events" };
     this.closeConnection(cause);
     if (!navigator.onLine) {
       this.clearPollingTimer();
@@ -936,13 +985,24 @@ export class LiveDataController {
     }
     this.freshness = freshness;
     for (const listener of this.stateListeners) {
-      listener(freshness);
+      listener(freshness, this.lastSSEFailure);
     }
   }
 
   private isCurrent(generation: number, controller: AbortController): boolean {
     return this.started && generation === this.generation && !controller.signal.aborted;
   }
+}
+
+function describeSSEFailure(error: unknown): LiveDataSSEFailure {
+  const endpoint = "/api/v1/events";
+  if (error instanceof DaemonApiError) {
+    return { cause: "stream-error", endpoint, result: `HTTP ${error.status}` };
+  }
+  if (error instanceof Error) {
+    return { cause: "stream-error", endpoint, result: error.name };
+  }
+  return { cause: "stream-error", endpoint };
 }
 
 function isStaleCursorError(error: unknown): boolean {

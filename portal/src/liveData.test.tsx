@@ -103,11 +103,71 @@ describe("LiveDataController", () => {
     await settle();
     expect(connectSignal?.aborted).toBe(true);
     expect(controller.freshness).toBe("polling-fallback");
+    expect(controller.lastSSEFailure).toEqual({
+      cause: "connect-timeout",
+      endpoint: "/api/v1/events",
+      result: "timeout",
+    });
     expect(refresh).toHaveBeenCalledWith(
       new Set(["instance", "run", "workflow"]),
       "refresh",
       expect.any(Array),
     );
+
+    controller.stop();
+  });
+
+  it("clears stale fallback state and reconnects from a cursorless stream when retrying", async () => {
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+    ]);
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      failuresBeforePolling: 1,
+    });
+
+    controller.start();
+    await settle();
+    window.sessionStorage.setItem("goobers-live-event-cursor", "session:7");
+
+    controller.retryConnection();
+    await settle();
+
+    expect(window.sessionStorage.getItem("goobers-live-event-cursor")).toBeNull();
+    expect(client.requests[1]?.cursor).toBeUndefined();
+
+    controller.stop();
+  });
+
+  it("leaves polling fallback after a reconnect remains healthy", async () => {
+    const first = new ControlledEventStream();
+    const second = new ControlledEventStream();
+    const client = new ScriptedClient([
+      () => Promise.resolve(first),
+      () => Promise.resolve(second),
+    ]);
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      failuresBeforePolling: 1,
+    });
+
+    controller.start();
+    await settle();
+    first.end();
+    await settle();
+    expect(controller.freshness).toBe("polling-fallback");
+
+    await vi.advanceTimersByTimeAsync(100);
+    await settle();
+    second.push(update("session:9", ["run"]));
+    await settle();
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(controller.freshness).toBe("connected");
+    expect(controller.lastSSEFailure).toBeUndefined();
 
     controller.stop();
   });
