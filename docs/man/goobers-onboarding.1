@@ -14,11 +14,13 @@ explicitly named.
 
 Commands:
   stub-agent-instructions  install agent assets into a config source
+  stub-sample              materialize the getting-started sample tree
 
 Run `goobers onboarding <command> -h` for action flags.
 .fi
 .SH EXAMPLES
 .nf
+goobers onboarding stub-sample --destination ./getting-started-task-api --json
 goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
 .fi
 .SH SEE ALSO

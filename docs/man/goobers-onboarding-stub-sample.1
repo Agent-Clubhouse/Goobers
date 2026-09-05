@@ -1,0 +1,30 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ONBOARDING STUB SAMPLE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers onboarding stub-sample \- materialize the getting-started sample tree
+.SH SYNOPSIS
+\fBgoobers onboarding stub-sample\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <NAME>] [--force] [--json]
+
+Materialize the bundled getting-started sample into a destination tree. The
+action writes only beneath the requested path, refuses conflicting user-owned
+files unless `--force` is set, and optionally seeds starter work items when
+both a repository target and a token are supplied.
+
+Flags:
+  --destination <path>     required sample destination
+  --work-tracking <owner/repo>  optional GitHub repo to seed with starter issues
+  --token-env <NAME>       issue token environment variable (default: GOOBERS_GITHUB_ISSUES_TOKEN)
+  --force                  replace conflicting regular files
+  --json                   emit the versioned action envelope
+
+Exit codes: 0 = created or refreshed the sample, 1 = write or seeding error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers onboarding stub-sample --destination ./getting-started-task-api --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

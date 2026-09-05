@@ -1527,6 +1527,7 @@ explicitly named.
 
 Commands:
   stub-agent-instructions  install agent assets into a config source
+  stub-sample              materialize the getting-started sample tree
 
 Run `goobers onboarding <command> -h` for action flags.
 
@@ -1546,6 +1547,19 @@ Flags:
 
 Exit codes: 0 = installed or already current, 1 = unsafe target, collision,
 drift, or write error, 2 = usage error.
+
+### onboarding stub-sample
+Usage of onboarding stub-sample:
+  -destination string
+    	sample destination
+  -force
+    	replace conflicting regular files
+  -json
+    	emit the versioned action envelope
+  -token-env string
+    	issue token environment variable (default "GOOBERS_GITHUB_ISSUES_TOKEN")
+  -work-tracking string
+    	GitHub owner/repo to seed
 
 ### open-pr
 Usage: goobers open-pr [path]

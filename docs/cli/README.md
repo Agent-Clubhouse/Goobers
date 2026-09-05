@@ -79,6 +79,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers netpol-render`](#goobers-netpol-render) | render per-runner-class NetworkPolicy reference manifests from the runners: inventory |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
+| [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize the getting-started sample tree |
 | [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
@@ -2225,6 +2226,7 @@ explicitly named.
 
 Commands:
   stub-agent-instructions  install agent assets into a config source
+  stub-sample              materialize the getting-started sample tree
 
 Run `goobers onboarding <command> -h` for action flags.
 ~~~
@@ -2232,6 +2234,7 @@ Run `goobers onboarding <command> -h` for action flags.
 **Examples**
 
 ~~~console
+$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
 $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
 ~~~
 
@@ -2261,6 +2264,34 @@ drift, or write error, 2 = usage error.
 
 ~~~console
 $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
+~~~
+
+## `goobers onboarding stub-sample`
+
+materialize the getting-started sample tree
+
+~~~text
+Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <NAME>] [--force] [--json]
+
+Materialize the bundled getting-started sample into a destination tree. The
+action writes only beneath the requested path, refuses conflicting user-owned
+files unless `--force` is set, and optionally seeds starter work items when
+both a repository target and a token are supplied.
+
+Flags:
+  --destination <path>     required sample destination
+  --work-tracking <owner/repo>  optional GitHub repo to seed with starter issues
+  --token-env <NAME>       issue token environment variable (default: GOOBERS_GITHUB_ISSUES_TOKEN)
+  --force                  replace conflicting regular files
+  --json                   emit the versioned action envelope
+
+Exit codes: 0 = created or refreshed the sample, 1 = write or seeding error, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
 ~~~
 
 ## `goobers open-pr`

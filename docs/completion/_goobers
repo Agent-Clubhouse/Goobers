@@ -59,6 +59,7 @@ _goobers_completion()
             ;;
         onboarding)
             case "${words[3]:-}" in
+                stub-sample) flags+=(--destination --work-tracking --token-env --force --json) ;;
                 stub-agent-instructions) flags+=(--source-tree --harness --json) ;;
             esac
             ;;
@@ -271,7 +272,7 @@ _goobers_completion()
     case "${command}" in
         onboarding)
             if (( CURRENT == 3 )); then
-                candidates=(stub-agent-instructions)
+                candidates=(stub-sample stub-agent-instructions)
                 _describe -V 'command' candidates
                 return
             fi

@@ -42,8 +42,22 @@ const onboardingHelp = "Usage: goobers onboarding <command> [flags]\n\n" +
 	"prompt, write secrets, create a remote, or touch a repository that was not\n" +
 	"explicitly named.\n\n" +
 	"Commands:\n" +
-	"  stub-agent-instructions  install agent assets into a config source\n\n" +
+	"  stub-agent-instructions  install agent assets into a config source\n" +
+	"  stub-sample              materialize the getting-started sample tree\n\n" +
 	"Run `goobers onboarding <command> -h` for action flags.\n"
+
+const stubSampleHelp = "Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <NAME>] [--force] [--json]\n\n" +
+	"Materialize the bundled getting-started sample into a destination tree. The\n" +
+	"action writes only beneath the requested path, refuses conflicting user-owned\n" +
+	"files unless `--force` is set, and optionally seeds starter work items when\n" +
+	"both a repository target and a token are supplied.\n\n" +
+	"Flags:\n" +
+	"  --destination <path>     required sample destination\n" +
+	"  --work-tracking <owner/repo>  optional GitHub repo to seed with starter issues\n" +
+	"  --token-env <NAME>       issue token environment variable (default: GOOBERS_GITHUB_ISSUES_TOKEN)\n" +
+	"  --force                  replace conflicting regular files\n" +
+	"  --json                   emit the versioned action envelope\n\n" +
+	"Exit codes: 0 = created or refreshed the sample, 1 = write or seeding error, 2 = usage error.\n"
 
 const stubAgentInstructionsHelp = "Usage: goobers onboarding stub-agent-instructions --source-tree <path> [--harness <name>] [--json]\n\n" +
 	"Install the release-matched Goobers agent toolkit and the selected harness\n" +
@@ -678,7 +692,6 @@ func appendPendingSeedIssues(result *onboardingActionResult, catalog onboardingS
 	}
 }
 
-//nolint:unused // Retained for fixture-level tests after removing the public stub-sample command.
 func seedOnboardingIssues(
 	ctx context.Context,
 	seeder onboardingIssueSeeder,
@@ -774,7 +787,6 @@ func printOnboardingActionResult(stdout io.Writer, result onboardingActionResult
 	pf(stdout, "next: %s\n", result.NextCommand)
 }
 
-//nolint:unused // Retained for fixture-level tests after removing the public stub-sample command.
 func runOnboardingStubSample(args []string, stdout, stderr io.Writer) int {
 	flags := newCLIFlagSet("onboarding stub-sample", flag.ContinueOnError)
 	flags.SetOutput(stderr)
