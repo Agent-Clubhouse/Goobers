@@ -140,6 +140,16 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply product-owned changes"},
 		{name: "replace-modified", desc: "Acknowledge replacement of modified owned files"},
 	},
+	"portal-extension install": {
+		{name: "copilot-home", takesArg: true, desc: "Override the current user's Copilot home"},
+	},
+	"portal-extension status": {
+		{name: "copilot-home", takesArg: true, desc: "Override the current user's Copilot home"},
+	},
+	"portal-extension update": {
+		{name: "copilot-home", takesArg: true, desc: "Override the current user's Copilot home"},
+		{name: "replace-modified", desc: "Replace locally modified extension-owned files"},
+	},
 	"validate": {
 		{name: "json", desc: "Emit a versioned findings envelope"},
 		{name: "github-annotations", desc: "Emit GitHub Actions file annotations"},

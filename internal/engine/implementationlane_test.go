@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1201,7 +1202,7 @@ func TestProjectedEventSeqMatchesProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projectedEvents: %v", err)
 	}
-	dir, err := ProjectRun(t.TempDir(), proj)
+	dir, err := ProjectRun(filepath.Join(t.TempDir(), "runs"), proj)
 	if err != nil {
 		t.Fatalf("ProjectRun: %v", err)
 	}

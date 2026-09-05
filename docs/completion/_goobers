@@ -76,6 +76,13 @@ _goobers_completion()
                 update) flags+=(--dry-run --write --replace-modified) ;;
             esac
             ;;
+        portal-extension)
+            case "${words[3]:-}" in
+                install) flags+=(--copilot-home) ;;
+                status) flags+=(--copilot-home) ;;
+                update) flags+=(--copilot-home --replace-modified) ;;
+            esac
+            ;;
         validate)
             flags+=(--json --github-annotations --check-harness --check-repos --source-tree --strict)
             ;;
@@ -298,6 +305,13 @@ _goobers_completion()
         agent-kit)
             if (( CURRENT == 3 )); then
                 candidates=(install check update)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        portal-extension)
+            if (( CURRENT == 3 )); then
+                candidates=(install status update)
                 _describe -V 'command' candidates
                 return
             fi

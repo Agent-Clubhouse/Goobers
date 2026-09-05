@@ -2,7 +2,7 @@
 // language surface (docs/design/dsl-3.0.md): stage-level runsOn placement
 // requirements, declared repoFrom repo-handoff edges (WF022, reaching
 // definitions), and the restrictions vocabulary. Copied forward from the
-// frozen 2.0 interpreter (internal/workflow/v_next) per dsl-3.0.md §8/D18.
+// frozen 2.0 interpreter (internal/workflow/v_2_0) per dsl-3.0.md §8/D18.
 //
 // This package owns every version-observable rule from parsed API fields to a
 // compiled machine. It is copied forward when a new DSL interpreter is cut.

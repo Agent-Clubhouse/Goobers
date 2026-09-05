@@ -6,7 +6,7 @@
 // algorithm are shared because they are definitionally version-invariant.
 // Everything that assigns meaning to YAML fields, including compilation,
 // validation, feature resolution, and execution-policy projection, belongs to
-// a versioned interpreter package such as v_next. A new DSL version copies
+// a versioned interpreter package such as v_2_0. A new DSL version copies
 // that interpreter forward rather than changing an older version in place.
 package workflow
 

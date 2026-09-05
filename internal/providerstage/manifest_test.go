@@ -9,7 +9,7 @@ import (
 )
 
 // shippedDSLVersions are the DSL versions with a live interpreter today
-// (internal/workflow v_current/v_next). Behavior tests run against each
+// (internal/workflow v_current/v_2_0). Behavior tests run against each
 // shipped view: with the table all-baseline, every view must agree.
 var shippedDSLVersions = []string{"1.4", "2.0"}
 
