@@ -1300,9 +1300,12 @@ cachedVerdictJson, letting the runner skip the reviewer gate's LLM call
 entirely. For a managed PR, however, a matching fail verdict is marked
 stale and not emitted when an operator has cleared goobers:merge-escalated,
 so the stage forces a fresh review instead; --no-verdict-cache skips that
-lookup, always forcing a fresh review. Exit codes: 0 = context gathered
-(possibly empty — no siblings is not an error), 1 = business error,
-2 = usage/IO error.
+lookup, always forcing a fresh review. It also resolves the selected PR's
+base drift deterministically (selectedBaseDrift: current|behind|unknown,
+with selectedMergeBaseSha/selectedBaseTipSha) so the reviewer is told
+whether the base moved instead of inferring it. Exit codes: 0 = context
+gathered (possibly empty — no siblings is not an error), 1 = business
+error, 2 = usage/IO error.
 
 ### init
 Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]

@@ -62,7 +62,9 @@ capability of any kind** — your only output is a verdict, in either mode.
 ## Holistic mode (merge-review's `review` gate)
 
 You are invoked with the SELECTED PR's identity (`selectedNumber`,
-`selectedHeadSha`, `selectedBaseSha`) and every OTHER open goober-authored
+`selectedHeadSha`, `selectedBaseSha`), its deterministic base-drift verdict
+(`selectedBaseDrift`, with `selectedMergeBaseSha`/`selectedBaseTipSha` as its
+evidence), and every OTHER open goober-authored
 PR's state as `siblings` — each with its `number`, `url`, `draft` flag,
 `labels`, `checkState`, and `files` (the paths it touches). For a managed PR,
 resolve and review the attached cumulative `base...HEAD` diff for the SELECTED
@@ -85,10 +87,17 @@ above can never see.
    perfectly-good PR into remediation to reconcile a collision the system
    resolves by sequencing. Reserve `substantive` for an actual defect in the
    SELECTED PR's own diff (see 3).
-2. **Rebase need** — you are not told directly whether the base has moved;
-   if evidence suggests it has (e.g. a sibling merged very recently, or
-   your context notes staleness), file a `rebase-needed` finding rather
-   than guessing at conflict severity.
+2. **Rebase need** — you ARE told directly whether the base has moved:
+   `selectedBaseDrift` is `current`, `behind`, or `unknown`, resolved
+   deterministically from the selected PR's merge-base
+   (`selectedMergeBaseSha`) against the live tip of the base branch
+   (`selectedBaseTipSha`). When it is **`behind`**, the PR is out of date
+   with its base and you MUST file a `rebase-needed` finding — this is not
+   a judgement call. When it is `current`, do not file one. Only when it is
+   `unknown` (the merge-base could not be resolved) fall back to judgement:
+   if other evidence suggests the base moved (e.g. a sibling merged very
+   recently), file `rebase-needed` rather than guessing at conflict
+   severity.
 3. **Actionable finding classes** — classify each concern by the remediation
    task it requires:
    - `conflict` — use only when evidence establishes that an attempted rebase
