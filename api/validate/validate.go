@@ -235,7 +235,7 @@ const (
 	// invocation envelope, and on the engine tier that envelope is a Temporal
 	// activity argument persisted verbatim in durable workflow history. The
 	// supported contract (#2931 ruling, decision record
-	// Goobers-Review/Goobernetes-v1/decisions/0002) is constrain-and-enforce,
+	// docs/design/goobernetes-decisions.md) is constrain-and-enforce,
 	// not scrub-and-transform: inputs carry opaque references only, and
 	// secrets travel through declared credential capabilities, resolved
 	// worker-side at stage start.
