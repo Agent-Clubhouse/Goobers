@@ -57,6 +57,18 @@ func sweepWorktreeRetention(ctx context.Context, l instance.Layout, setup *sched
 	return pruneConfiguredRetention(ctx, l, setup, io.Discard, io.Discard)
 }
 
+func sweepMigrationBackups(l instance.Layout, setup *schedulerSetup, now time.Time) error {
+	if err := journal.PruneMigrationBackups(l.RunsDir(), now); err != nil {
+		return err
+	}
+	for gaggle := range setup.WorktreesByGaggle {
+		if err := journal.PruneMigrationBackups(l.ForGaggle(gaggle).RunsDir(), now); err != nil {
+			return fmt.Errorf("prune migration backups for gaggle %s: %w", gaggle, err)
+		}
+	}
+	return nil
+}
+
 func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *schedulerSetup, stdout, stderr io.Writer) error {
 	cfg := setup.Config.Retention
 	if !cfg.Enabled && !cfg.DryRun {

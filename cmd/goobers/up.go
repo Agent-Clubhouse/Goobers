@@ -1304,6 +1304,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	telemetryRetentionTicker := time.NewTicker(telemetryRetentionSweepInterval)
 	telemetryRetentionTickerDone := make(chan struct{})
 	telemetryRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "telemetry_retention_sweep_failed")
+	migrationBackupCleanupErrors := newSweepErrorReporter(setup.InstanceLog, "migration_backup_cleanup_failed")
 	// Stale journal-generation cleanup is diagnostic, not fatal: it gets its
 	// own reporter so a stranded generation is journaled without failing the
 	// retention sweep that otherwise succeeded (#3654).
@@ -1321,6 +1322,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
 				}
 				telemetryRetentionErrors.report(err)
+				migrationBackupCleanupErrors.report(sweepMigrationBackups(l, setup, now))
 			}
 		}
 	}()
