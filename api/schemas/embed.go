@@ -74,6 +74,9 @@ const SchemaOutput = "schema-output.schema.json"
 // ExplainOutput is the machine-readable envelope emitted by `goobers explain`.
 const ExplainOutput = "explain.schema.json"
 
+// HostedProgress is the GitHub Check Run live-progress contract.
+const HostedProgress = "hosted-progress.schema.json"
+
 // Kind maps a config object kind to its schema file name.
 var Kind = map[string]string{
 	"Manifest": "manifest.schema.json",

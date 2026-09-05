@@ -171,6 +171,7 @@ complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Pr
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l wait-for-daemon -d 'Wait up to 30s for a concurrently starting daemon'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l gaggle -r -d 'Trigger the workflow in this gaggle'
+complete -c goobers -n '__fish_seen_subcommand_from run' -l github-progress -d 'Publish live progress to one GitHub Check Run'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l pr -r -d 'Target an exact pull request for merge-review'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l api -r -d 'Daemon API base URL for a remote daemon'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l request-id -r -d 'Retry-safe delivery identity for an API submission'

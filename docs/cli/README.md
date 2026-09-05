@@ -2817,8 +2817,8 @@ $ goobers respond-to-findings
 trigger a run manually (still honors run conditions)
 
 ~~~text
-Usage: goobers run [--gaggle <name>] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel [--api <url>] <run-id> [path]
@@ -2836,6 +2836,12 @@ completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
 escalated. A successful submission-only mode (such as --no-wait, once
 available) exits 0 because it does not observe a terminal phase.
+--github-progress publishes the versioned hosted-progress contract to one
+GitHub Check Run whenever the journal sequence advances. It requires
+checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,
+cannot be combined with --no-wait or with --api / $GOOBERS_DAEMON_API
+(remote daemon submissions do not publish hosted progress), and does not
+replace the final journal artifact.
 `run abort` marks a stuck non-terminal run aborted directly in its own
 journal — recovery for a run resumeInterruptedRuns can't resolve on its own.
 If a live `goobers up` daemon already holds that run's journal lock, abort
