@@ -249,6 +249,7 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	return runUpContextWithForce(parentCtx, nil, args, stdout, stderr)
 }
 
+//complexitygate:allow journal-backups pruner added to retention sweep; single-use retention dispatcher
 func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, args []string, stdout, stderr io.Writer) int {
 	webhookGate, err := webhookhttp.NewDispatchGate(parentCtx)
 	if err != nil {
