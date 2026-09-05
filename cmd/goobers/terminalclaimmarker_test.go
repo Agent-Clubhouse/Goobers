@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +14,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -205,6 +208,77 @@ func TestTerminalCleanupClaimMarkerFailureStillReleasesLedger(t *testing.T) {
 	}
 	if recorded != 1 {
 		t.Fatalf("%s events = %d, want 1 (events: %+v)", claimMarkerReleaseErrorCode, recorded, events)
+	}
+}
+
+func TestBuildTerminalClaimMarkerReleaseForwardsConfiguredLogin(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: "github",
+		Owner:    "your-org",
+		Name:     "your-repo",
+		Auth: &instance.RepoAuthConfig{
+			Kind: instance.GitHubAuthApp,
+			Slug: "goobers",
+		},
+	}}}
+
+	prevAppSource := newGitHubAppTokenSource
+	newGitHubAppTokenSource = func(instance.RepoRef, credentials.SecretRegistrar, credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
+		return func(context.Context) (string, time.Time, error) {
+			return "app-token", time.Now().Add(time.Hour), nil
+		}, nil
+	}
+	t.Cleanup(func() { newGitHubAppTokenSource = prevAppSource })
+
+	var sawUserCall bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user" {
+			sawUserCall = true
+			http.Error(w, "Resource not accessible by integration", http.StatusForbidden)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	previous := newTerminalClaimMarkerProvider
+	newTerminalClaimMarkerProvider = func(source providers.TokenSource, opts ...func(*providers.GitHubProvider)) workItemClaimReleaser {
+		provider := providers.NewGitHubProvider("", append([]func(*providers.GitHubProvider){func(p *providers.GitHubProvider) { p.BaseURL = server.URL }}, opts...)...)
+		login, err := provider.AuthenticatedLogin(context.Background())
+		if err != nil {
+			t.Fatalf("AuthenticatedLogin on builder-forwarded configured login: %v", err)
+		}
+		if login != "goobers[bot]" {
+			t.Fatalf("GitHub AuthenticatedLogin = %q, want %q", login, "goobers[bot]")
+		}
+		return claimReleaserFunc(func(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+			if req.ID == "" || req.Repository.Owner == "" {
+				t.Fatal("release request was not populated")
+			}
+			return providers.WorkItem{}, nil
+		})
+	}
+	t.Cleanup(func() { newTerminalClaimMarkerProvider = previous })
+
+	registrar, _ := journal.DefaultScrubber()
+	release, _, err := buildTerminalClaimMarkerRelease(cfg, apiv1.RepoRef{}, registrar, nil)
+	if err != nil {
+		t.Fatalf("build terminal claim-marker release: %v", err)
+	}
+	if release == nil {
+		t.Fatal("build terminal claim-marker release: nil func, want non-nil")
+	}
+
+	_, err = release(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"},
+		ID:         "123",
+		RunID:      "run-1",
+	})
+	if err != nil {
+		t.Fatalf("release terminal claim marker: %v", err)
+	}
+	if sawUserCall {
+		t.Fatal("built GitHub provider still hit GET /user when a configured App login was present")
 	}
 }
 
