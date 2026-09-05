@@ -162,6 +162,49 @@ func TestRunnerClassCapacityDetectsAllocatableMismatch(t *testing.T) {
 	}
 }
 
+func TestRunnerClassCapacityAggregatesAllRunnerPodsOnNode(t *testing.T) {
+	client := fake.NewClientset(
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-a"},
+			Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse("4000m"),
+			}},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "runner-1", Namespace: "default", Labels: map[string]string{"goobers.dev/runner-class": "linux-large"}},
+			Spec: corev1.PodSpec{
+				NodeName: "node-a",
+				Containers: []corev1.Container{{
+					Name: "stage",
+					Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("2500m"),
+					}},
+				}},
+			},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "runner-2", Namespace: "default", Labels: map[string]string{"goobers.dev/runner-class": "linux-large"}},
+			Spec: corev1.PodSpec{
+				NodeName: "node-a",
+				Containers: []corev1.Container{{
+					Name: "stage",
+					Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("2500m"),
+					}},
+				}},
+			},
+		},
+	)
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "runner-class-capacity")
+	if result.Status != StatusFail {
+		t.Fatalf("runner-class-capacity = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "5000m") || !strings.Contains(result.Detail, "4000m") {
+		t.Fatalf("detail %q does not aggregate the combined runner-class demand on the node", result.Detail)
+	}
+}
+
 func TestPodHealthFlagsCrashLoopingSidecar(t *testing.T) {
 	client := fake.NewClientset(&corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default"},

@@ -341,6 +341,8 @@ func checkRunnerClassCapacity(ctx context.Context, client kubernetes.Interface, 
 		return result
 	}
 
+	nodeRequests := make(map[string]int64)
+	nodePods := make(map[string][]string)
 	var violations []string
 	checked := 0
 	for _, pod := range pods.Items {
@@ -348,8 +350,7 @@ func checkRunnerClassCapacity(ctx context.Context, client kubernetes.Interface, 
 			continue
 		}
 		checked++
-		allocatable, ok := allocatableCPU[pod.Spec.NodeName]
-		if !ok {
+		if _, ok := allocatableCPU[pod.Spec.NodeName]; !ok {
 			violations = append(violations, fmt.Sprintf("pod %s/%s on unknown node %q", pod.Namespace, pod.Name, pod.Spec.NodeName))
 			continue
 		}
@@ -357,9 +358,8 @@ func checkRunnerClassCapacity(ctx context.Context, client kubernetes.Interface, 
 		for _, container := range pod.Spec.Containers {
 			requested += container.Resources.Requests.Cpu().MilliValue()
 		}
-		if requested > allocatable {
-			violations = append(violations, fmt.Sprintf("pod %s/%s (%s) requests %dm CPU on node %s but allocatable is %dm", pod.Namespace, pod.Name, pod.Labels["goobers.dev/runner-class"], requested, pod.Spec.NodeName, allocatable))
-		}
+		nodeRequests[pod.Spec.NodeName] += requested
+		nodePods[pod.Spec.NodeName] = append(nodePods[pod.Spec.NodeName], pod.Namespace+"/"+pod.Name)
 	}
 	if checked == 0 {
 		result.Status = StatusWarn
@@ -367,15 +367,31 @@ func checkRunnerClassCapacity(ctx context.Context, client kubernetes.Interface, 
 		result.Hint = "a cluster with no covered runner-class pods is not evidence of safety; inspect the node pool or runner-class inventory"
 		return result
 	}
+	for _, nodeName := range sortedKeys(nodeRequests) {
+		allocatable := allocatableCPU[nodeName]
+		requested := nodeRequests[nodeName]
+		if requested > allocatable {
+			violations = append(violations, fmt.Sprintf("node %s has %dm runner-class CPU requested across %d pod(s) (%s) but allocatable is %dm", nodeName, requested, len(nodePods[nodeName]), strings.Join(nodePods[nodeName], ", "), allocatable))
+		}
+	}
 	if len(violations) > 0 {
 		result.Status = StatusFail
-		result.Detail = fmt.Sprintf("checked %d runner-class pod(s); %d request/allocatable mismatch(es): %s", checked, len(violations), strings.Join(violations, "; "))
-		result.Hint = "reduce runner-class CPU requests or provision a node pool whose allocatable CPU covers the class ceiling"
+		result.Detail = fmt.Sprintf("checked %d runner-class pod(s); %d node request/allocatable mismatch(es): %s", checked, len(violations), strings.Join(violations, "; "))
+		result.Hint = "reduce runner-class CPU requests or provision a node pool whose allocatable CPU covers the aggregate class demand"
 		return result
 	}
 	result.Status = StatusPass
-	result.Detail = fmt.Sprintf("checked %d runner-class pod(s); all requests fit their node allocatable CPU", checked)
+	result.Detail = fmt.Sprintf("checked %d runner-class pod(s); all aggregate runner-class requests fit their node allocatable CPU", checked)
 	return result
+}
+
+func sortedKeys(m map[string]int64) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func checkPodHealth(ctx context.Context, client kubernetes.Interface, _ Options) Result {
