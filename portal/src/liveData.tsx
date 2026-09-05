@@ -395,8 +395,6 @@ export class LiveDataController {
     this.clearConnectWatchdog();
     this.clearIdleWatchdog();
     this.closeConnection("provider-stop");
-    this.clearConnectWatchdog();
-    this.clearIdleWatchdog();
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
