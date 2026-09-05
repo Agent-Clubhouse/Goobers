@@ -45,8 +45,8 @@ type workItemClaimReleaser interface {
 // goobers:claimed label mirror.
 type claimMarkerReleaseFunc func(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error)
 
-var newTerminalClaimMarkerProvider = func(source providers.TokenSource) workItemClaimReleaser {
-	return providers.NewGitHubProvider("", providers.WithTokenSource(source))
+var newTerminalClaimMarkerProvider = func(source providers.TokenSource, opts ...func(*providers.GitHubProvider)) workItemClaimReleaser {
+	return providers.NewGitHubProvider("", append([]func(*providers.GitHubProvider){providers.WithTokenSource(source)}, opts...)...)
 }
 
 // buildTerminalClaimMarkerRelease mirrors buildTerminalRunAbortLabeler's shape
@@ -91,12 +91,16 @@ func buildTerminalClaimMarkerRelease(cfg *instance.Config, project apiv1.RepoRef
 	if err != nil {
 		return nil, providers.RepositoryRef{}, fmt.Errorf("build terminal claim-marker credentials: %w", err)
 	}
+	var providerOpts []func(*providers.GitHubProvider)
+	if login := cfg.GitHubBotLogin(repo.Owner, repo.Name); login != "" {
+		providerOpts = append(providerOpts, providers.WithConfiguredLogin(login))
+	}
 	release := func(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
 		set, err := injector.Materialize(ctx, []string{string(capability.GitHubIssuesWrite)})
 		if err != nil {
 			return providers.WorkItem{}, scrubTerminalError(registrar, err)
 		}
-		item, err := newTerminalClaimMarkerProvider(set.For(string(capability.GitHubIssuesWrite))).ReleaseWorkItemClaim(ctx, req)
+		item, err := newTerminalClaimMarkerProvider(set.For(string(capability.GitHubIssuesWrite)), providerOpts...).ReleaseWorkItemClaim(ctx, req)
 		return item, scrubTerminalError(registrar, err)
 	}
 	return release, repo, nil
