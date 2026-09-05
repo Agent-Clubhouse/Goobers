@@ -363,3 +363,80 @@ func typeMentions(t, target reflect.Type) bool {
 		return false
 	}
 }
+
+// TestResultEnvelopeValidate pins #3838's shape: an envelope arriving from
+// outside the runner's own process is accepted only when it matches what
+// result.schema.json declares — a known status, error detail on a failure,
+// and contained, digest-pinned pointers.
+func TestResultEnvelopeValidate(t *testing.T) {
+	digest := Digest([]byte("artifact bytes"))
+	tests := []struct {
+		name    string
+		env     ResultEnvelope
+		wantErr bool
+	}{
+		{name: "success", env: ResultEnvelope{Status: ResultSuccess}},
+		{name: "no-work", env: ResultEnvelope{Status: ResultNoWork}},
+		{
+			name: "failure with detail",
+			env:  ResultEnvelope{Status: ResultFailure, Error: &ErrorInfo{Code: "boom", Message: "it broke"}},
+		},
+		{
+			name: "blocked without error",
+			env:  ResultEnvelope{Status: ResultBlocked},
+		},
+		{
+			name: "artifacts and transcript",
+			env: ResultEnvelope{
+				Status:     ResultSuccess,
+				Artifacts:  []ArtifactPointer{{Path: "artifacts/build/out.txt", Digest: digest}},
+				Transcript: &ArtifactPointer{Path: "artifacts/build/transcript.md", Digest: digest},
+				Integrity:  IntegrityMaintainer,
+			},
+		},
+		{name: "empty status", env: ResultEnvelope{}, wantErr: true},
+		{name: "unknown status", env: ResultEnvelope{Status: ResultStatus("failed")}, wantErr: true},
+		{name: "failure without error", env: ResultEnvelope{Status: ResultFailure}, wantErr: true},
+		{
+			name:    "error without code",
+			env:     ResultEnvelope{Status: ResultFailure, Error: &ErrorInfo{Message: "it broke"}},
+			wantErr: true,
+		},
+		{
+			name:    "error without message",
+			env:     ResultEnvelope{Status: ResultFailure, Error: &ErrorInfo{Code: "boom"}},
+			wantErr: true,
+		},
+		{
+			name:    "escaping artifact path",
+			env:     ResultEnvelope{Status: ResultSuccess, Artifacts: []ArtifactPointer{{Path: "../../etc/passwd", Digest: digest}}},
+			wantErr: true,
+		},
+		{
+			name:    "unpinned artifact",
+			env:     ResultEnvelope{Status: ResultSuccess, Artifacts: []ArtifactPointer{{Path: "artifacts/build/out.txt"}}},
+			wantErr: true,
+		},
+		{
+			name:    "escaping transcript path",
+			env:     ResultEnvelope{Status: ResultSuccess, Transcript: &ArtifactPointer{Path: "/etc/passwd", Digest: digest}},
+			wantErr: true,
+		},
+		{
+			name:    "unknown integrity",
+			env:     ResultEnvelope{Status: ResultSuccess, Integrity: Integrity("perfect")},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.env.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want an error for %+v", tt.env)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for %+v", err, tt.env)
+			}
+		})
+	}
+}
