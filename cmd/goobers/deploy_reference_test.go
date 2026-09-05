@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/app"
+	"github.com/goobers/goobers/internal/netpolrender"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -140,6 +141,41 @@ func TestDeployReferenceWorkerProvidesWritableHarnessHome(t *testing.T) {
 		return volume.Name == "harness-home" && volume.EmptyDir != nil
 	}) {
 		t.Error("harness-home is not backed by an emptyDir")
+	}
+}
+
+func TestDeployReferenceBlobPlaneServicePortMatchesDefaultEndpoint(t *testing.T) {
+	wantPort := int32(netpolrender.DefaultBlobEndpoint().Port)
+
+	serviceRaw, err := os.ReadFile("../../deploy/reference/goobers-system/api-service.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var service corev1.Service
+	if err := yaml.Unmarshal(serviceRaw, &service); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(service.Spec.Ports); got != 1 {
+		t.Fatalf("Service ports = %d, want 1", got)
+	}
+	if got := service.Spec.Ports[0].Port; got != wantPort {
+		t.Fatalf("Service port = %d, want %d from netpolrender.DefaultBlobEndpoint()", got, wantPort)
+	}
+
+	deploymentRaw, err := os.ReadFile("../../deploy/reference/goobers-system/api-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(deploymentRaw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	containers := deployment.Spec.Template.Spec.Containers
+	if len(containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(containers))
+	}
+	if got := containers[0].Ports[0].ContainerPort; got != wantPort {
+		t.Fatalf("API container port = %d, want %d from netpolrender.DefaultBlobEndpoint()", got, wantPort)
 	}
 }
 

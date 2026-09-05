@@ -14,7 +14,7 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 
 | Path | Contents | Shape doc |
 |---|---|---|
-| `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage | §2, §3, §4, §5 |
+| `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`) | §2, §3, §4, §5 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + Temporal-isolation NetworkPolicy | §2, §4, §5 |
