@@ -34,7 +34,7 @@ func TestReconcileRestoresTheDemotionHandoff(t *testing.T) {
 			name: "the stranded live shape is handed back",
 			pr: providers.PullRequestSummary{
 				Number: 3891, HeadSHA: demotedHead,
-				Head:   "goobernetes/implementation/15343165797e1c6868608c46f3ed4c54",
+				Head:   providerBranchNamespace() + "implementation/15343165797e1c6868608c46f3ed4c54",
 				Labels: []string{mergeDemotedLabel},
 			},
 			want:   true,
@@ -121,8 +121,8 @@ func TestReconcileRestoresTheDemotionHandoff(t *testing.T) {
 
 // #4110 removed the "goobers/" literal from postmerge.go's struct field and
 // missed the positional argument in postmergereconcile.go — which is the sweep
-// that actually runs on every merge-review tick. Production's namespace is
-// "goobernetes/". Scan for the literal in any form.
+// that actually runs on every merge-review tick. Scan for a literal namespace
+// in any form.
 func TestNoProductionPathHardCodesTheBranchNamespace(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {

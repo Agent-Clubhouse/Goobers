@@ -438,7 +438,7 @@ const (
 	// well-known OS LABEL, which is why NodeSelectorOSKey above matches and the
 	// toleration did not.
 	//
-	// MEASURED on aks-goobernetes-prod: the node carries
+	// MEASURED in a live cluster: the node carries
 	// `kubernetes.io/os=windows:NoSchedule`, so a stage pod tolerating only the
 	// sig-windows key sat Pending until its deadline —
 	//   0/3 nodes are available: 1 node(s) had untolerated taint(s)

@@ -12,8 +12,8 @@ import (
 )
 
 // envelopesecrets_test.go pins the #2931 invariant the constrain-and-enforce
-// contract rests on (decision record Goobers-Review/Goobernetes-v1/decisions/
-// 0002): the activity arguments the engine hands Temporal — and Temporal
+// contract rests on the decision record in docs/design/goobernetes-decisions.md:
+// the activity arguments the engine hands Temporal — and Temporal
 // persists verbatim in durable history — carry capability NAMES, never
 // resolved credential values. Resolution happens worker-side, at stage start,
 // through credentials.Injector; the engine dispatch boundary has no resolver

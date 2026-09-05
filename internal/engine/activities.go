@@ -70,7 +70,7 @@ type Activities struct {
 	Journal JournalEmitter
 	// Canary is the #2931 fail-closed dispatch canary
 	// (distributed-state-and-coordination.md §11, decision record
-	// Goobers-Review/Goobernetes-v1/decisions/0002): it asserts that no known
+	// docs/design/goobernetes-decisions.md): it asserts that no known
 	// credential value appears in a serialized dispatch envelope, and refuses
 	// to execute the stage when one does. Wire the EXACT-VALUE registry
 	// (journal.RegistryScrubber — the same registry every resolver-issued and

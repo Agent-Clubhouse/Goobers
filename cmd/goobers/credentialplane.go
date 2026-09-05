@@ -22,7 +22,7 @@ import (
 
 // credentialplane.go implements the daemon side of the write API's credential
 // plane (distributed-state-and-coordination.md §11, DS9/DS10; #2931 honored
-// as decided — decision record Goobers-Review/Goobernetes-v1/decisions/0002):
+// as decided — see docs/design/goobernetes-decisions.md):
 // a stage pod, authenticated as its run, resolves short-lived credentials
 // scoped to exactly its stage's declared credential capabilities.
 //

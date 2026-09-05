@@ -33,7 +33,7 @@ func TestSelfHealedEscalationHandsThePRBackToRemediation(t *testing.T) {
 	// escalation snapshot — the exit the label's own comment advertises.
 	released := providers.PullRequestSummary{
 		Number:  3891,
-		Head:    "goobernetes/implementation/15343165797e1c6868608c46f3ed4c54",
+		Head:    providerBranchNamespace() + "implementation/15343165797e1c6868608c46f3ed4c54",
 		HeadSHA: "6b443d5973aa0a2f4e1b0d1c2a3948576e1f0a2b",
 		Labels:  []string{remediationEscalatedLabel, mergeDemotedLabel},
 	}
@@ -68,7 +68,7 @@ func TestSelfHealedEscalationHandsThePRBackToRemediation(t *testing.T) {
 
 // unparkSelfHealedDemotions carried the only hard-coded HeadPrefix left in the
 // tree, "goobers/", while its sibling one sweep above used
-// providerBranchNamespace(). Production's namespace is "goobernetes/", so the
+// providerBranchNamespace(). The configured namespace was not used, so the
 // demotion self-heal listed an empty set for its entire life — every live
 // reconcile-post-merge reported "un-demoted 0 self-healed pr(s)".
 func TestNoStageHardCodesTheBranchNamespace(t *testing.T) {
