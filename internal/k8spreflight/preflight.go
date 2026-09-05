@@ -76,6 +76,9 @@ type Options struct {
 	// Egress lists required outbound host:port targets — git/backlog
 	// provider, model endpoint, sandbox targets (§1/§5).
 	Egress []string
+	// OTLPEndpoint is the OTLP collector endpoint the cluster exports to. When
+	// empty the signal-set check is a skipped warn.
+	OTLPEndpoint string
 	// HTTPClient serves the issuer/registry probes; nil builds one bounded
 	// by Timeout.
 	HTTPClient *http.Client
@@ -119,6 +122,9 @@ func Run(ctx context.Context, client kubernetes.Interface, opts Options) Report 
 		checkGaggleRBAC,
 		checkStorage,
 		checkMixedOSPlacement,
+		checkRunnerClassCapacity,
+		checkPodHealth,
+		checkOTLPSignalSet,
 		checkOIDCIssuer,
 		checkRegistry,
 		checkEgress,

@@ -16,6 +16,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/version"
@@ -34,6 +35,17 @@ func newFakeCluster(t *testing.T) *fake.Clientset {
 			ObjectMeta:  metav1.ObjectMeta{Name: "goobers-files"},
 			Provisioner: "file.csi.azure.com",
 		},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("4000m"),
+			corev1.ResourceMemory: resource.MustParse("8Gi"),
+		}}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "runner-a", Namespace: "default", Labels: map[string]string{"goobers.dev/runner-class": "linux"}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "main",
+			Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("2000m"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
+			}},
+		}}}, Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "main", Ready: true}}}},
 	)
 	discovery, ok := client.Discovery().(*fakediscovery.FakeDiscovery)
 	if !ok {
@@ -85,6 +97,16 @@ func TestRunConformantClusterPasses(t *testing.T) {
 	}))
 	defer registry.Close()
 
+	otlp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/traces", "/v1/metrics", "/v1/logs":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer otlp.Close()
+
 	egress, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -92,9 +114,10 @@ func TestRunConformantClusterPasses(t *testing.T) {
 	defer func() { _ = egress.Close() }()
 
 	report := Run(context.Background(), newFakeCluster(t), Options{
-		OIDCIssuer: issuer.URL,
-		Registry:   registry.URL,
-		Egress:     []string{egress.Addr().String()},
+		OIDCIssuer:   issuer.URL,
+		Registry:     registry.URL,
+		Egress:       []string{egress.Addr().String()},
+		OTLPEndpoint: otlp.URL,
 	})
 
 	if !report.Conformant {
@@ -424,6 +447,72 @@ func TestSkippedProbesWarnWithoutBlocking(t *testing.T) {
 	}
 	if !report.Conformant {
 		t.Fatal("skipped optional probes must not break conformance")
+	}
+}
+
+func TestRunnerClassCapacityRejectsClassAboveNodePool(t *testing.T) {
+	client := fake.NewClientset(
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("4000m"),
+			corev1.ResourceMemory: resource.MustParse("8Gi"),
+		}}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "runner-a", Namespace: "default", Labels: map[string]string{"goobers.dev/runner-class": "linux"}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "main",
+			Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("5000m"),
+				corev1.ResourceMemory: resource.MustParse("9Gi"),
+			}},
+		}}}},
+	)
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "runner-class-capacity")
+	if result.Status != StatusFail {
+		t.Fatalf("runner-class-capacity = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "checked 1 runner class") {
+		t.Fatalf("detail %q does not include the inspected class count", result.Detail)
+	}
+}
+
+func TestPodHealthChecksEveryContainerByName(t *testing.T) {
+	client := fake.NewClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "default"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}, {Name: "sidecar"}}},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", Ready: true},
+			{Name: "sidecar", Ready: false, RestartCount: 2, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}},
+		}},
+	})
+
+	report := Run(context.Background(), client, Options{})
+	result := resultByID(t, report, "pod-health")
+	if result.Status != StatusFail {
+		t.Fatalf("pod-health = %s, want fail", result.Status)
+	}
+	if !strings.Contains(result.Detail, "sidecar") || !strings.Contains(result.Detail, "CrashLoopBackOff") {
+		t.Fatalf("detail %q does not identify the unhealthy container by name", result.Detail)
+	}
+}
+
+func TestOTLPSignalSetPassesWhenCollectorAcceptsAllSignals(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/traces", "/v1/metrics", "/v1/logs":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	report := Run(context.Background(), newFakeCluster(t), Options{OTLPEndpoint: server.URL})
+	result := resultByID(t, report, "otlp-signal-set")
+	if result.Status != StatusPass {
+		t.Fatalf("otlp-signal-set = %s, want pass", result.Status)
+	}
+	if !strings.Contains(result.Detail, "checked 3 signal route") {
+		t.Fatalf("detail %q does not record the checked signal count", result.Detail)
 	}
 }
 
