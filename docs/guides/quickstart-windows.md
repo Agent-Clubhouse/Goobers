@@ -38,7 +38,7 @@ representative successful hosted run on 2026-07-25 used:
 |---|---|
 | Operating system | Microsoft Windows Server 2025, `Microsoft Windows [Version 10.0.26100.32995]`, runner image `windows-2025-vs2026` version `20260714.173.1` |
 | Architecture | `windows/amd64` |
-| Go toolchain | Go 1.26.5 (the version pinned in [`go.mod`](../../go.mod)) |
+| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.6**) |
 | Git | Git for Windows 2.55.0.windows.2 |
 
 Each run uploads a `windows-validation-evidence` artifact containing:

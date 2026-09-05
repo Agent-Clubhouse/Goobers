@@ -37,12 +37,14 @@ taint when creating a Windows pool, and preserve it when replacing or adding nod
 kubectl taint node <windows-node> kubernetes.io/os=windows:NoSchedule
 ```
 
-Karpenter and AKS Node Auto Provisioning (NAP) are deliberately deferred. The current
-worker Deployment does not create one unschedulable pod per stage, and Goobers has no
-pod-level scaling signal for an autoprovisioner to observe. Revisit autoprovisioning
-after a pod-level scaler or pod-per-stage execution model exists. Until then, operators
-choose and manage capacity for both pools according to their own workloads; this
-reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
+Karpenter and AKS Node Auto Provisioning (NAP) remain deferred, and whether an
+autoprovisioner is wanted at all is a separate open decision. The pod-per-stage
+execution model does exist — the `internal/dispatcher` dispatcher (#3513) runs one
+pod per stage, so unschedulable stage pods are an available scaling signal — but no
+autoprovisioning policy has been chosen, sized, or validated against it here. Until
+that decision is taken, operators choose and manage capacity for both pools according
+to their own workloads; this reference sets no fixed capacity, VM SKU, spot policy, or
+scale-to-zero default.
 
 ## Conventions
 

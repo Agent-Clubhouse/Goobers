@@ -488,9 +488,11 @@ and implemented into PRs by the instance running on your own machine.
 
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop: the `reference-workflows/` reference config
-now defines **ten** workflows: backlog curation, docs updater, implementation,
-merge review, PR remediation, quality sprint, self update, test-suite quality,
-Tutor, and work nomination. Together they provide the canonical patterns for curating and
+now defines the full self-hosting workflow set — backlog curation, docs updater,
+implementation, merge review, PR remediation, quality sprint, self update,
+test-suite quality, Tutor, work nomination, and decomposition; the CI-guarded
+inventory in [`reference-workflows/README.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/reference-workflows/README.md)
+is the count of record. Together they provide the canonical patterns for curating and
 implementing work, reviewing, remediating, and **merging PRs autonomously**, and
 maintaining the product and its workforce — a ratified product direction (G2 in
 `docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in
