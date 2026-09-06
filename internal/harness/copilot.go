@@ -828,6 +828,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 	}
 	nativeTranscriptPath := ""
+	usageOutputArg := filepath.Join(".goobers", "copilot-usage.json")
+	usageOutputPath := filepath.Join(req.Workspace, usageOutputArg)
+	if err := os.Remove(usageOutputPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: clear stale usage capture: %w", err)
+	}
+	argv = append(argv, "--usage-output-file", usageOutputArg)
+	defer func() { _ = os.Remove(usageOutputPath) }()
 	if !copilotCommandSelectsSession(argv) {
 		captureID, err := newHarnessSessionID()
 		if err != nil {
@@ -998,6 +1005,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 				out.TranscriptDroppedBytes = native.droppedBytes
 			}
 		}
+	}
+	if metrics, models, ok := readCopilotUsageDocument(usageOutputPath); ok {
+		out.Metrics = metrics
+		out.ModelUsage = models
 	}
 	if runErr != nil {
 		return out, runErr

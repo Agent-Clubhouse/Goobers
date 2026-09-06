@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"math"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -126,10 +127,16 @@ func aggregateBillingUsageAttributes(metrics map[string]float64, modelUsage []Mo
 		if hasExactNanoAIU && float64(exactNanoAIU) == nanoAIU {
 			nanoAIUInt = exactNanoAIU
 		}
+		costBasis := CostBasisVendorReported
+		if hasExactNanoAIU {
+			if basis, ok := commonModelCostBasis(modelUsage); ok {
+				costBasis = basis
+			}
+		}
 		attrs = append(attrs,
 			attribute.Int64(AttrUsageNanoAIU, nanoAIUInt),
 			attribute.String(AttrUsageBillingModel, BillingModelAICredits),
-			attribute.String(AttrUsageCostBasis, CostBasisVendorReported),
+			attribute.String(AttrUsageCostBasis, costBasis),
 		)
 	}
 	if value, ok := metrics[AttrCopilotPremiumRequests]; ok && value != 0 {
@@ -246,6 +253,11 @@ func NanoAIUToUSD(nanoAIU int64) float64 {
 	return float64(nanoAIU) / float64(NanoAIUPerUSD)
 }
 
+// USDToNanoAIU normalizes vendor-reported USD for mixed-provider aggregation.
+func USDToNanoAIU(usd float64) int64 {
+	return int64(math.Round(usd * float64(NanoAIUPerUSD)))
+}
+
 func summedModelNanoAIU(usages []ModelUsage) (int64, bool) {
 	var total int64
 	var measured bool
@@ -256,4 +268,23 @@ func summedModelNanoAIU(usages []ModelUsage) (int64, bool) {
 		}
 	}
 	return total, measured
+}
+
+func commonModelCostBasis(usages []ModelUsage) (string, bool) {
+	var basis string
+	var measured bool
+	for _, usage := range usages {
+		if usage.NanoAIU == nil {
+			continue
+		}
+		if !measured {
+			basis = usage.CostBasis
+			measured = true
+			continue
+		}
+		if usage.CostBasis != basis {
+			return "", false
+		}
+	}
+	return basis, measured && basis != ""
 }
