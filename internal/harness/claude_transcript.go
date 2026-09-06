@@ -58,23 +58,35 @@ type claudeContentBlock struct {
 }
 
 type claudeUsage struct {
-	InputTokens  *int64 `json:"input_tokens"`
-	OutputTokens *int64 `json:"output_tokens"`
+	InputTokens              *int64 `json:"input_tokens"`
+	OutputTokens             *int64 `json:"output_tokens"`
+	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
 }
 
 type claudeModelUsage struct {
-	InputTokens  *int64   `json:"inputTokens"`
-	OutputTokens *int64   `json:"outputTokens"`
-	CostUSD      *float64 `json:"costUSD"`
+	InputTokens              *int64   `json:"inputTokens"`
+	OutputTokens             *int64   `json:"outputTokens"`
+	CacheReadInputTokens     *int64   `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens *int64   `json:"cacheCreationInputTokens"`
+	CostUSD                  *float64 `json:"costUSD"`
 }
 
 type claudeUsageAccumulator struct {
-	inputTokens  int64
-	outputTokens int64
-	costUSD      float64
-	hasInput     bool
-	hasOutput    bool
-	hasCost      bool
+	inputTokens      int64
+	outputTokens     int64
+	cacheReadTokens  int64
+	cacheWriteTokens int64
+	costUSD          float64
+	hasInput         bool
+	hasOutput        bool
+	hasCacheRead     bool
+	hasCacheWrite    bool
+	hasCost          bool
+}
+
+func (u claudeUsageAccumulator) hasTokens() bool {
+	return u.hasInput || u.hasOutput || u.hasCacheRead || u.hasCacheWrite
 }
 
 type claudeTerminalCapture struct {
@@ -304,6 +316,10 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 				continue
 			}
 			if native.Type == "result" {
+				// Only the terminal result envelope is a usage source.
+				// Assistant usage is intentionally ignored: parallel tool
+				// messages can repeat one message ID and /clear can reset
+				// their running totals.
 				invocationResult = invocationResult[:0]
 				for _, event := range events {
 					if event.Content != "" {
@@ -323,15 +339,18 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 						accumulator = &claudeUsageAccumulator{}
 						models[name] = accumulator
 					}
-					accumulateClaudeUsage(accumulator, usage.InputTokens, usage.OutputTokens, usage.CostUSD)
-					accumulateClaudeUsage(&modelTotals, usage.InputTokens, usage.OutputTokens, nil)
+					accumulateClaudeUsage(accumulator, usage.InputTokens, usage.OutputTokens,
+						usage.CacheReadInputTokens, usage.CacheCreationInputTokens, usage.CostUSD)
+					accumulateClaudeUsage(&modelTotals, usage.InputTokens, usage.OutputTokens,
+						usage.CacheReadInputTokens, usage.CacheCreationInputTokens, nil)
 				}
-				if modelTotals.hasInput || modelTotals.hasOutput {
+				if modelTotals.hasTokens() {
 					accumulateClaudeUsageTotals(&aggregate, modelTotals)
 				} else {
-					accumulateClaudeUsage(&aggregate, native.Usage.InputTokens, native.Usage.OutputTokens, nil)
+					accumulateClaudeUsage(&aggregate, native.Usage.InputTokens, native.Usage.OutputTokens,
+						native.Usage.CacheReadInputTokens, native.Usage.CacheCreationInputTokens, nil)
 				}
-				accumulateClaudeUsage(&aggregate, nil, nil, native.TotalCostUSD)
+				accumulateClaudeUsage(&aggregate, nil, nil, nil, nil, native.TotalCostUSD)
 			}
 			for _, event := range events {
 				if event.Role == "assistant" && event.Content != "" {
@@ -487,9 +506,11 @@ func convertClaudeMessage(native claudeStreamMessage) ([]transcriptEvent, bool) 
 				Role:  "assistant",
 				Model: name,
 				Usage: &transcriptUsage{
-					InputTokens:  usage.InputTokens,
-					OutputTokens: usage.OutputTokens,
-					Cost:         usage.CostUSD,
+					InputTokens:      usage.InputTokens,
+					OutputTokens:     usage.OutputTokens,
+					CacheReadTokens:  usage.CacheReadInputTokens,
+					CacheWriteTokens: usage.CacheCreationInputTokens,
+					Cost:             usage.CostUSD,
 				},
 			})
 		}
@@ -498,9 +519,11 @@ func convertClaudeMessage(native claudeStreamMessage) ([]transcriptEvent, bool) 
 			events = append(events, transcriptEvent{
 				Role: "assistant",
 				Usage: &transcriptUsage{
-					InputTokens:  native.Usage.InputTokens,
-					OutputTokens: native.Usage.OutputTokens,
-					Cost:         native.TotalCostUSD,
+					InputTokens:      native.Usage.InputTokens,
+					OutputTokens:     native.Usage.OutputTokens,
+					CacheReadTokens:  native.Usage.CacheReadInputTokens,
+					CacheWriteTokens: native.Usage.CacheCreationInputTokens,
+					Cost:             native.TotalCostUSD,
 				},
 			})
 		}
@@ -547,7 +570,7 @@ func claudeBlockContent(raw json.RawMessage) string {
 	return out.String()
 }
 
-func accumulateClaudeUsage(accumulator *claudeUsageAccumulator, input, output *int64, cost *float64) {
+func accumulateClaudeUsage(accumulator *claudeUsageAccumulator, input, output, cacheRead, cacheWrite *int64, cost *float64) {
 	if input != nil {
 		accumulator.inputTokens += *input
 		accumulator.hasInput = true
@@ -555,6 +578,14 @@ func accumulateClaudeUsage(accumulator *claudeUsageAccumulator, input, output *i
 	if output != nil {
 		accumulator.outputTokens += *output
 		accumulator.hasOutput = true
+	}
+	if cacheRead != nil {
+		accumulator.cacheReadTokens += *cacheRead
+		accumulator.hasCacheRead = true
+	}
+	if cacheWrite != nil {
+		accumulator.cacheWriteTokens += *cacheWrite
+		accumulator.hasCacheWrite = true
 	}
 	if cost != nil {
 		accumulator.costUSD += *cost
@@ -571,18 +602,33 @@ func accumulateClaudeUsageTotals(accumulator *claudeUsageAccumulator, usage clau
 		accumulator.outputTokens += usage.outputTokens
 		accumulator.hasOutput = true
 	}
+	if usage.hasCacheRead {
+		accumulator.cacheReadTokens += usage.cacheReadTokens
+		accumulator.hasCacheRead = true
+	}
+	if usage.hasCacheWrite {
+		accumulator.cacheWriteTokens += usage.cacheWriteTokens
+		accumulator.hasCacheWrite = true
+	}
 }
 
 func claudeMetrics(usage claudeUsageAccumulator) map[string]float64 {
-	metrics := make(map[string]float64, 3)
+	metrics := make(map[string]float64, 6)
 	if usage.hasInput {
 		metrics[telemetry.AttrGenAIUsageInputTokens] = float64(usage.inputTokens)
 	}
 	if usage.hasOutput {
 		metrics[telemetry.AttrGenAIUsageOutputTokens] = float64(usage.outputTokens)
 	}
+	if usage.hasCacheRead {
+		metrics[telemetry.AttrUsageCacheReadTokens] = float64(usage.cacheReadTokens)
+	}
+	if usage.hasCacheWrite {
+		metrics[telemetry.AttrUsageCacheWriteTokens] = float64(usage.cacheWriteTokens)
+	}
 	if usage.hasCost {
 		metrics[telemetry.AttrUsageCostUSD] = usage.costUSD
+		metrics[telemetry.AttrUsageNanoAIU] = float64(telemetry.USDToNanoAIU(usage.costUSD))
 	}
 	if len(metrics) == 0 {
 		return nil
@@ -608,9 +654,19 @@ func claudeModelUsages(models map[string]*claudeUsageAccumulator) []telemetry.Mo
 			value := accumulator.outputTokens
 			usage.OutputTokens = &value
 		}
+		if accumulator.hasCacheRead {
+			value := accumulator.cacheReadTokens
+			usage.CacheReadTokens = &value
+		}
+		if accumulator.hasCacheWrite {
+			value := accumulator.cacheWriteTokens
+			usage.CacheWriteTokens = &value
+		}
 		if accumulator.hasCost {
 			value := accumulator.costUSD
 			usage.CostUSD = &value
+			nanoAIU := telemetry.USDToNanoAIU(value)
+			usage.NanoAIU = &nanoAIU
 			usage.CostBasis = telemetry.CostBasisVendorReported
 		}
 		usages = append(usages, usage)

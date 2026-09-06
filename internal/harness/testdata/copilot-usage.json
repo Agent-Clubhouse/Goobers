@@ -1,0 +1,56 @@
+{
+  "totalPremiumRequestCost": 1.5,
+  "totalUserRequests": 2,
+  "totalNanoAiu": 3000,
+  "tokenDetails": {
+    "input": {"tokenCount": 22},
+    "cache_read": {"tokenCount": 6},
+    "cache_write": {"tokenCount": 3},
+    "output": {"tokenCount": 13}
+  },
+  "totalApiDurationMs": 42,
+  "sessionStartTime": "2026-09-06T22:23:09.589Z",
+  "modelMetrics": {
+    "a-model": {
+      "requests": {"count": 1, "cost": 0.5},
+      "usage": {
+        "inputTokens": 8,
+        "outputTokens": 3,
+        "cacheReadTokens": 2,
+        "cacheWriteTokens": 1,
+        "reasoningTokens": 1
+      },
+      "totalNanoAiu": 1000
+    },
+    "z-model": {
+      "requests": {"count": 1, "cost": 1},
+      "usage": {
+        "inputTokens": 20,
+        "outputTokens": 10,
+        "cacheReadTokens": 4,
+        "cacheWriteTokens": 2,
+        "reasoningTokens": 0
+      },
+      "totalNanoAiu": 2000
+    }
+  },
+  "agentMetrics": {
+    "main": {
+      "totalApiDurationMs": 14,
+      "totalNanoAiu": 1000,
+      "modelMetrics": {
+        "a-model": {"totalNanoAiu": 1000}
+      }
+    },
+    "subagent": {
+      "totalApiDurationMs": 28,
+      "totalNanoAiu": 2000,
+      "modelMetrics": {
+        "z-model": {"totalNanoAiu": 2000}
+      }
+    }
+  },
+  "currentModel": "z-model",
+  "lastCallInputTokens": 20,
+  "lastCallOutputTokens": 10
+}
