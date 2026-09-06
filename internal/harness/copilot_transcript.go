@@ -61,22 +61,26 @@ type copilotErrorData struct {
 }
 
 type copilotShutdownData struct {
-	TotalPremiumRequests *float64 `json:"totalPremiumRequests"`
-	TotalNanoAIU         *int64   `json:"totalNanoAiu"`
-	ModelMetrics         map[string]struct {
-		Requests struct {
-			Count *int64   `json:"count"`
-			Cost  *float64 `json:"cost"`
-		} `json:"requests"`
-		Usage struct {
-			InputTokens      *int64 `json:"inputTokens"`
-			OutputTokens     *int64 `json:"outputTokens"`
-			CacheReadTokens  *int64 `json:"cacheReadTokens"`
-			CacheWriteTokens *int64 `json:"cacheWriteTokens"`
-			ReasoningTokens  *int64 `json:"reasoningTokens"`
-		} `json:"usage"`
-		TotalNanoAIU *int64 `json:"totalNanoAiu"`
-	} `json:"modelMetrics"`
+	TotalPremiumRequests *float64                      `json:"totalPremiumRequests"`
+	TotalNanoAIU         *int64                        `json:"totalNanoAiu"`
+	ModelMetrics         map[string]copilotModelMetric `json:"modelMetrics"`
+}
+
+type copilotModelMetric struct {
+	Requests struct {
+		Count *int64   `json:"count"`
+		Cost  *float64 `json:"cost"`
+	} `json:"requests"`
+	Usage        copilotTokenUsage `json:"usage"`
+	TotalNanoAIU *int64            `json:"totalNanoAiu"`
+}
+
+type copilotTokenUsage struct {
+	InputTokens      *int64 `json:"inputTokens"`
+	OutputTokens     *int64 `json:"outputTokens"`
+	CacheReadTokens  *int64 `json:"cacheReadTokens"`
+	CacheWriteTokens *int64 `json:"cacheWriteTokens"`
+	ReasoningTokens  *int64 `json:"reasoningTokens"`
 }
 
 type transcriptCapture struct {
@@ -229,50 +233,17 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 	var hasPremiumRequests, hasNanoAIU bool
 	for _, model := range models {
 		metric := data.ModelMetrics[model]
-		usage := telemetry.ModelUsage{
-			Model:            model,
-			InputTokens:      metric.Usage.InputTokens,
-			OutputTokens:     metric.Usage.OutputTokens,
-			CacheReadTokens:  metric.Usage.CacheReadTokens,
-			CacheWriteTokens: metric.Usage.CacheWriteTokens,
-			ReasoningTokens:  metric.Usage.ReasoningTokens,
-			CostBasis:        telemetry.CostBasisUnknown,
-		}
-		if metric.Usage.InputTokens != nil {
-			metrics[telemetry.AttrGenAIUsageInputTokens] += float64(*metric.Usage.InputTokens)
-		}
-		if metric.Usage.OutputTokens != nil {
-			metrics[telemetry.AttrGenAIUsageOutputTokens] += float64(*metric.Usage.OutputTokens)
-		}
-		if metric.Usage.CacheReadTokens != nil {
-			metrics[telemetry.AttrUsageCacheReadTokens] += float64(*metric.Usage.CacheReadTokens)
-		}
-		if metric.Usage.CacheWriteTokens != nil {
-			metrics[telemetry.AttrUsageCacheWriteTokens] += float64(*metric.Usage.CacheWriteTokens)
-		}
-		if metric.Usage.ReasoningTokens != nil {
-			metrics[telemetry.AttrUsageReasoningTokens] += float64(*metric.Usage.ReasoningTokens)
-		}
-		if metric.Requests.Cost != nil && *metric.Requests.Cost != 0 {
-			premiumRequests += *metric.Requests.Cost
+		usage := copilotModelUsage(model, metric)
+		addCopilotTokenMetrics(metrics, metric.Usage)
+		if usage.CopilotPremiumRequests != nil {
+			premiumRequests += *usage.CopilotPremiumRequests
 			hasPremiumRequests = true
-			usage.CopilotPremiumRequests = metric.Requests.Cost
-			usage.BillingModel = telemetry.BillingModelPremiumRequests
 		}
-		if metric.TotalNanoAIU != nil {
-			nanoAIU += *metric.TotalNanoAIU
+		if usage.NanoAIU != nil {
+			nanoAIU += *usage.NanoAIU
 			hasNanoAIU = true
-			cost := telemetry.NanoAIUToUSD(*metric.TotalNanoAIU)
-			usage.CostUSD = &cost
-			usage.NanoAIU = metric.TotalNanoAIU
-			usage.BillingModel = telemetry.BillingModelAICredits
-			usage.CostBasis = telemetry.CostBasisVendorReported
 		}
-		if usage.InputTokens != nil || usage.OutputTokens != nil ||
-			usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil ||
-			usage.ReasoningTokens != nil ||
-			usage.CopilotPremiumRequests != nil || usage.CostUSD != nil ||
-			usage.NanoAIU != nil {
+		if hasCopilotModelUsage(usage) {
 			modelUsage = append(modelUsage, usage)
 		}
 	}
@@ -295,6 +266,51 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 		return nil, modelUsage, true
 	}
 	return metrics, modelUsage, true
+}
+
+func copilotModelUsage(model string, metric copilotModelMetric) telemetry.ModelUsage {
+	usage := telemetry.ModelUsage{
+		Model:            model,
+		InputTokens:      metric.Usage.InputTokens,
+		OutputTokens:     metric.Usage.OutputTokens,
+		CacheReadTokens:  metric.Usage.CacheReadTokens,
+		CacheWriteTokens: metric.Usage.CacheWriteTokens,
+		ReasoningTokens:  metric.Usage.ReasoningTokens,
+		CostBasis:        telemetry.CostBasisUnknown,
+	}
+	if metric.Requests.Cost != nil && *metric.Requests.Cost != 0 {
+		usage.CopilotPremiumRequests = metric.Requests.Cost
+		usage.BillingModel = telemetry.BillingModelPremiumRequests
+	}
+	if metric.TotalNanoAIU != nil {
+		cost := telemetry.NanoAIUToUSD(*metric.TotalNanoAIU)
+		usage.CostUSD = &cost
+		usage.NanoAIU = metric.TotalNanoAIU
+		usage.BillingModel = telemetry.BillingModelAICredits
+		usage.CostBasis = telemetry.CostBasisVendorReported
+	}
+	return usage
+}
+
+func addCopilotTokenMetrics(metrics map[string]float64, usage copilotTokenUsage) {
+	addCopilotTokenMetric(metrics, telemetry.AttrGenAIUsageInputTokens, usage.InputTokens)
+	addCopilotTokenMetric(metrics, telemetry.AttrGenAIUsageOutputTokens, usage.OutputTokens)
+	addCopilotTokenMetric(metrics, telemetry.AttrUsageCacheReadTokens, usage.CacheReadTokens)
+	addCopilotTokenMetric(metrics, telemetry.AttrUsageCacheWriteTokens, usage.CacheWriteTokens)
+	addCopilotTokenMetric(metrics, telemetry.AttrUsageReasoningTokens, usage.ReasoningTokens)
+}
+
+func addCopilotTokenMetric(metrics map[string]float64, name string, value *int64) {
+	if value != nil {
+		metrics[name] += float64(*value)
+	}
+}
+
+func hasCopilotModelUsage(usage telemetry.ModelUsage) bool {
+	return usage.InputTokens != nil || usage.OutputTokens != nil ||
+		usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil ||
+		usage.ReasoningTokens != nil || usage.CopilotPremiumRequests != nil ||
+		usage.NanoAIU != nil
 }
 
 func convertCopilotSessionEvent(native copilotSessionEvent) []transcriptEvent {

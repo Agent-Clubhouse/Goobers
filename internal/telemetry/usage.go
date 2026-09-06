@@ -65,7 +65,30 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 		return
 	}
 
-	attrs := make([]attribute.KeyValue, 0, 10)
+	attrs := aggregateTokenUsageAttributes(metrics)
+	attrs = append(attrs, aggregateBillingUsageAttributes(metrics, modelUsage)...)
+	if len(attrs) > 0 {
+		trace.SpanFromContext(ctx).SetAttributes(attrs...)
+	}
+
+	measured := make([]ModelUsage, 0, len(modelUsage))
+	for _, usage := range modelUsage {
+		if usage.Model == "" || !hasModelUsage(usage) {
+			continue
+		}
+		measured = append(measured, usage)
+	}
+	span := trace.SpanFromContext(ctx)
+	if len(measured) == 1 {
+		span.SetAttributes(attribute.String(AttrGenAIResponseModel, measured[0].Model))
+	}
+	for _, usage := range measured {
+		span.AddEvent(GenAIModelUsageEventName, trace.WithAttributes(modelUsageAttributes(usage)...))
+	}
+}
+
+func aggregateTokenUsageAttributes(metrics map[string]float64) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 5)
 	if value, ok := metrics[AttrGenAIUsageInputTokens]; ok {
 		attrs = append(attrs, attribute.Int64(AttrGenAIUsageInputTokens, int64(value)))
 	}
@@ -81,6 +104,11 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 	if value, ok := metrics[AttrUsageReasoningTokens]; ok {
 		attrs = append(attrs, attribute.Int64(AttrUsageReasoningTokens, int64(value)))
 	}
+	return attrs
+}
+
+func aggregateBillingUsageAttributes(metrics map[string]float64, modelUsage []ModelUsage) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 5)
 	nanoAIU, hasNanoAIU := metrics[AttrUsageNanoAIU]
 	exactNanoAIU, hasExactNanoAIU := summedModelNanoAIU(modelUsage)
 	if hasExactNanoAIU && (!hasNanoAIU || float64(exactNanoAIU) == nanoAIU) {
@@ -116,24 +144,7 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 	} else if value, ok := metrics[AttrUsageCostUSD]; ok {
 		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, value))
 	}
-	if len(attrs) > 0 {
-		trace.SpanFromContext(ctx).SetAttributes(attrs...)
-	}
-
-	measured := make([]ModelUsage, 0, len(modelUsage))
-	for _, usage := range modelUsage {
-		if usage.Model == "" || !hasModelUsage(usage) {
-			continue
-		}
-		measured = append(measured, usage)
-	}
-	span := trace.SpanFromContext(ctx)
-	if len(measured) == 1 {
-		span.SetAttributes(attribute.String(AttrGenAIResponseModel, measured[0].Model))
-	}
-	for _, usage := range measured {
-		span.AddEvent(GenAIModelUsageEventName, trace.WithAttributes(modelUsageAttributes(usage)...))
-	}
+	return attrs
 }
 
 // MergeNestedAgentUsage fills measures absent from an adapter's aggregate with
