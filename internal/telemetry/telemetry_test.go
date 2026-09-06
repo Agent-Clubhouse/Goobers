@@ -967,6 +967,7 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"gen_ai.usage.input_tokens",
 		"gen_ai.usage.output_tokens",
 		"goobers.usage.copilot_premium_requests",
+		"goobers.usage.nano_aiu",
 		"goobers.usage.cost_usd",
 		"goobers.worktree.id",
 		"goobers.storage.operation",

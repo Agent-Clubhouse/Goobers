@@ -36,6 +36,7 @@ const (
 	AttrGenAIUsageInputTokens         = string(semconv.GenAIUsageInputTokensKey)
 	AttrGenAIUsageOutputTokens        = string(semconv.GenAIUsageOutputTokensKey)
 	AttrCopilotPremiumRequests        = "goobers.usage.copilot_premium_requests"
+	AttrUsageNanoAIU                  = "goobers.usage.nano_aiu"
 	AttrUsageCostUSD                  = "goobers.usage.cost_usd"
 	AttrWorktreeID                    = "goobers.worktree.id"
 	AttrStorageOperation              = "goobers.storage.operation"
@@ -84,6 +85,7 @@ func AllAttributes() []Attribute {
 		Attribute(AttrGenAIUsageInputTokens),
 		Attribute(AttrGenAIUsageOutputTokens),
 		AttrCopilotPremiumRequests,
+		AttrUsageNanoAIU,
 		AttrUsageCostUSD,
 		AttrWorktreeID,
 		AttrStorageOperation,

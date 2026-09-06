@@ -51,6 +51,7 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 			first.InputTokens == nil || *first.InputTokens != 8 ||
 			first.OutputTokens == nil || *first.OutputTokens != 3 ||
 			first.CopilotPremiumRequests == nil || *first.CopilotPremiumRequests != 0.5 ||
+			first.NanoAIU == nil || *first.NanoAIU != 1000 ||
 			first.CostUSD == nil || *first.CostUSD != 0.00000001 {
 			t.Fatalf("a-model usage = %#v", first)
 		}
@@ -58,6 +59,7 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 			second.InputTokens == nil || *second.InputTokens != 20 ||
 			second.OutputTokens == nil || *second.OutputTokens != 10 ||
 			second.CopilotPremiumRequests == nil || *second.CopilotPremiumRequests != 1.5 ||
+			second.NanoAIU == nil || *second.NanoAIU != 2000 ||
 			second.CostUSD == nil || *second.CostUSD != 0.00000002 {
 			t.Fatalf("z-model usage = %#v", second)
 		}
@@ -99,6 +101,7 @@ func TestCopilotUsagePreservesAbsentAndZero(t *testing.T) {
 		zero.modelUsage[0].InputTokens == nil || *zero.modelUsage[0].InputTokens != 0 ||
 		zero.modelUsage[0].OutputTokens == nil || *zero.modelUsage[0].OutputTokens != 0 ||
 		zero.modelUsage[0].CopilotPremiumRequests == nil || *zero.modelUsage[0].CopilotPremiumRequests != 0 ||
+		zero.modelUsage[0].NanoAIU == nil || *zero.modelUsage[0].NanoAIU != 0 ||
 		zero.modelUsage[0].CostUSD == nil || *zero.modelUsage[0].CostUSD != 0 {
 		t.Fatalf("zero model usage = %#v", zero.modelUsage)
 	}

@@ -105,6 +105,7 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 		attribute.Int(AttrGenAIUsageInputTokens, 1200),
 		attribute.Int(AttrGenAIUsageOutputTokens, 340),
 		attribute.Int(AttrCopilotPremiumRequests, 3),
+		attribute.Int(AttrUsageNanoAIU, 3000),
 		attribute.Float64(AttrUsageCostUSD, 0.42),
 		attribute.String(AttrWorktreeID, runID+"-implement"),
 		attribute.String(AttrStorageOperation, "create"),

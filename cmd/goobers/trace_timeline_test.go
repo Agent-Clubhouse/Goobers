@@ -79,7 +79,7 @@ func TestTraceTimelineCompletedRunTextAndJSON(t *testing.T) {
 		}
 	}
 	transcript := []byte(
-		`{"role":"assistant","model":"gpt-5.6","usage":{"input_tokens":100,"output_tokens":20,"requests":1,"cost":0.25}}` + "\n",
+		`{"role":"assistant","model":"gpt-5.6","usage":{"input_tokens":100,"output_tokens":20,"requests":1,"cost":0.25,"nano_aiu":25000000000}}` + "\n",
 	)
 	if _, err := run.RecordSpan(runID+":implement", "copilot-cli.transcript", transcript); err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestTraceTimelineCompletedRunTextAndJSON(t *testing.T) {
 		"timeline:\n  implement attempts=1",
 		"attempt #1",
 		"gate review=pass -> local-ci",
-		"attempt #1 usage model=gpt-5.6 in=100 out=20 requests=1 cost=0.25",
+		"attempt #1 usage model=gpt-5.6 in=100 out=20 requests=1 cost=0.25 nano-aiu=25000000000",
 		"local-ci attempts=1",
 		"\nevents:\n",
 	} {
@@ -145,7 +145,9 @@ func TestTraceTimelineCompletedRunTextAndJSON(t *testing.T) {
 		implement.Usage[0].InputTokens == nil ||
 		*implement.Usage[0].InputTokens != 100 ||
 		implement.Usage[0].Cost == nil ||
-		*implement.Usage[0].Cost != 0.25 {
+		*implement.Usage[0].Cost != 0.25 ||
+		implement.Usage[0].NanoAIU == nil ||
+		*implement.Usage[0].NanoAIU != 25000000000 {
 		t.Fatalf("implement usage = %+v", implement.Usage)
 	}
 	if got.TerminalCause != nil {

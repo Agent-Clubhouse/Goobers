@@ -64,7 +64,7 @@ type copilotErrorData struct {
 
 type copilotShutdownData struct {
 	TotalPremiumRequests *float64 `json:"totalPremiumRequests"`
-	TotalNanoAIU         *float64 `json:"totalNanoAiu"`
+	TotalNanoAIU         *int64   `json:"totalNanoAiu"`
 	ModelMetrics         map[string]struct {
 		Requests struct {
 			Count *int64   `json:"count"`
@@ -77,7 +77,7 @@ type copilotShutdownData struct {
 			CacheWriteTokens *int64 `json:"cacheWriteTokens"`
 			ReasoningTokens  *int64 `json:"reasoningTokens"`
 		} `json:"usage"`
-		TotalNanoAIU *float64 `json:"totalNanoAiu"`
+		TotalNanoAIU *int64 `json:"totalNanoAiu"`
 	} `json:"modelMetrics"`
 }
 
@@ -226,7 +226,8 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 
 	metrics := make(map[string]float64, 4)
 	var modelUsage []telemetry.ModelUsage
-	var premiumRequests, nanoAIU float64
+	var premiumRequests float64
+	var nanoAIU int64
 	var hasPremiumRequests, hasNanoAIU bool
 	for _, model := range models {
 		metric := data.ModelMetrics[model]
@@ -249,11 +250,13 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 		if metric.TotalNanoAIU != nil {
 			nanoAIU += *metric.TotalNanoAIU
 			hasNanoAIU = true
-			cost := *metric.TotalNanoAIU / nanoAIUPerUSD
+			cost := float64(*metric.TotalNanoAIU) / nanoAIUPerUSD
 			usage.CostUSD = &cost
+			usage.NanoAIU = metric.TotalNanoAIU
 		}
 		if usage.InputTokens != nil || usage.OutputTokens != nil ||
-			usage.CopilotPremiumRequests != nil || usage.CostUSD != nil {
+			usage.CopilotPremiumRequests != nil || usage.CostUSD != nil ||
+			usage.NanoAIU != nil {
 			modelUsage = append(modelUsage, usage)
 		}
 	}
@@ -269,7 +272,7 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 		metrics[telemetry.AttrCopilotPremiumRequests] = premiumRequests
 	}
 	if hasNanoAIU {
-		metrics[telemetry.AttrUsageCostUSD] = nanoAIU / nanoAIUPerUSD
+		metrics[telemetry.AttrUsageCostUSD] = float64(nanoAIU) / nanoAIUPerUSD
 	}
 	if len(metrics) == 0 {
 		return nil, modelUsage, true

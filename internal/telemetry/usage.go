@@ -21,6 +21,7 @@ type ModelUsage struct {
 	InputTokens            *int64
 	OutputTokens           *int64
 	CopilotPremiumRequests *float64
+	NanoAIU                *int64
 	CostUSD                *float64
 }
 
@@ -107,6 +108,7 @@ func hasModelUsage(usage ModelUsage) bool {
 	return usage.InputTokens != nil ||
 		usage.OutputTokens != nil ||
 		usage.CopilotPremiumRequests != nil ||
+		usage.NanoAIU != nil ||
 		usage.CostUSD != nil
 }
 
@@ -120,6 +122,9 @@ func modelUsageAttributes(usage ModelUsage) []attribute.KeyValue {
 	}
 	if usage.CopilotPremiumRequests != nil {
 		attrs = append(attrs, attribute.Float64(AttrCopilotPremiumRequests, *usage.CopilotPremiumRequests))
+	}
+	if usage.NanoAIU != nil {
+		attrs = append(attrs, attribute.Int64(AttrUsageNanoAIU, *usage.NanoAIU))
 	}
 	if usage.CostUSD != nil {
 		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, *usage.CostUSD))
