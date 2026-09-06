@@ -75,6 +75,7 @@ func (p *ADOProvider) postAttributedPullRequestThreadComment(ctx context.Context
 	if len(thread.Comments) == 0 {
 		return Comment{}, fmt.Errorf("ado pull request %s thread create returned no comments", pullID)
 	}
+	p.recordMutation(ctx, "pr", pullID, "comment")
 	return mapADOPullRequestThreadComment(pullID, thread.ID, thread.Comments[0]), nil
 }
 
@@ -133,7 +134,11 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 	if err != nil {
 		return err
 	}
-	return p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"content": body}, nil)
+	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"content": body}, nil); err != nil {
+		return err
+	}
+	p.recordMutation(ctx, "pr", pullID, "comment")
+	return nil
 }
 
 // AddPullRequestLabels applies one or more native Azure DevOps PR labels — the
@@ -162,6 +167,7 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]interface{}{"name": name}, nil); err != nil {
 			return err
 		}
+		p.recordMutation(ctx, "pr", pullID, "label")
 	}
 	return nil
 }
@@ -245,7 +251,11 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 		_ = resp.Body.Close()
 		return nil
 	}
-	return readJSONResponse(resp, http.MethodDelete, endpoint, nil)
+	if err := readJSONResponse(resp, http.MethodDelete, endpoint, nil); err != nil {
+		return err
+	}
+	p.recordMutation(ctx, "pr", pullID, "label")
+	return nil
 }
 
 // AuthenticatedLogin returns the display name of the identity the provider's

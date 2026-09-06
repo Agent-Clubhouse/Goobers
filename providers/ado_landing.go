@@ -293,6 +293,7 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
+	p.recordMutation(ctx, "pr", req.PullID, "merge")
 	return MergePullRequestResult{Number: final.PullRequestID, Merged: true, MergeSHA: final.LastMergeCommit.CommitID}, nil
 }
 

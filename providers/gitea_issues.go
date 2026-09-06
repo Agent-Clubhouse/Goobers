@@ -304,7 +304,14 @@ func (p *GiteaProvider) UpdateComment(ctx context.Context, repo RepositoryRef, c
 	if err != nil {
 		return err
 	}
-	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
+	var comment restComment
+	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, &comment); err != nil {
+		return err
+	}
+	if ref, ok := commentMutationRef(ProviderGitea, repo, comment); ok {
+		p.recordExternalRef(ctx, ref)
+	}
+	return nil
 }
 
 // DeleteComment removes an issue/PR comment. A missing comment is already in
@@ -349,6 +356,12 @@ func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo Reposito
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
 		return Comment{}, err
 	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitea,
+		Ref:       issueRef(repo, id),
+		URL:       comment.HTMLURL,
+		Operation: "comment",
+	})
 	return mapGiteaComment(comment), nil
 }
 
