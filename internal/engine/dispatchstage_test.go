@@ -603,28 +603,28 @@ func TestSelfAndAbsentPlacementsKeepLocalArms(t *testing.T) {
 
 // Decision 003 ruling 3: a placed goobers-CLI stage that still holds a file
 // under the daemon's instance root is refused BEFORE dispatch. The exemplar
-// is select-source, which opens the instance log and leases its parent with a
-// direct claim-ledger open rather than through the claims plane
-// (cmd/goobers/selectsource.go). The refusal carries the named code in the
+// is reconcile-branches, which still opens the instance log directly for its
+// scrubbed decision-annotation writes (cmd/goobers/reconcilebranches.go,
+// Goobers#4344's own follow-up). The refusal carries the named code in the
 // run's failure (stage.finished's ErrorInfo.Code, surfaced here as
 // RunResult.FailureCode), and the dispatcher is never consulted: no activity
 // is executed, so no pod is ever created.
 //
-// This test used to lead with `backlog-query --claim`. That command is now
-// DISPATCHABLE — Goobers#3897 stamps the plane endpoints and bearers and
-// #3898 moved its annotation write and re-sweep state onto planes — and the
-// test immediately below pins that, so the two together cover both directions
-// of the same decision.
+// This test used to lead with `backlog-query --claim`, then select-source.
+// Both are now DISPATCHABLE — Goobers#3897/#3898 stamped the plane endpoints
+// and bearers and moved backlog-query's annotation write and re-sweep state
+// onto planes, and #4342 moved select-source's escalation scan and claim
+// onto planes — and the test immediately below pins the dispatchable
+// direction, so the two together cover both directions of the same decision.
 func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		Start:    "query-backlog",
 		Tasks: []apiv1.Task{
-			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "select the decomposition parent",
-				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "select-source"}, Workspace: apiv1.WorkspaceScratch},
-				Capabilities:  []string{"github:issues:write"},
-				PolicyActions: []string{"claim-backlog-items"}},
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "reconcile stale remote branches",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{"github:branch:delete"}},
 		},
 	}
 	in := runInput("mode-three-instance-root", spec)
@@ -653,7 +653,7 @@ func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "select-source") {
+	if !strings.Contains(result.FailureMessage, "reconcile-branches") {
 		t.Fatalf("failure message = %q, want it to name the refused command", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {

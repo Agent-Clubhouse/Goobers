@@ -159,6 +159,12 @@ type CrossRun interface {
 	// prior run recorded for one of the requested items, or nil when there is
 	// none (#3366).
 	UnpushedWork(ctx context.Context, req UnpushedWorkRequest) (*UnpushedWork, error)
+	// EscalationCandidates returns gaggle's outstanding decomposition
+	// escalation candidates — decomposition.FindEscalationCandidates's own
+	// scan, run where the runs tree actually lives (this instance for File,
+	// the daemon for HTTP) instead of exposed to a pod as raw run-directory
+	// traversal (#4342).
+	EscalationCandidates(ctx context.Context, req EscalationCandidatesRequest) ([]EscalationCandidate, error)
 }
 
 // ConflictTouchRequest asks for base-sync conflict history in one gaggle.
@@ -223,6 +229,36 @@ type UnpushedWork struct {
 // UnpushedWorkResponse is the plane's answer; Work is nil when none exists.
 type UnpushedWorkResponse struct {
 	Work *UnpushedWork `json:"work,omitempty"`
+}
+
+// EscalationCandidatesRequest asks for gaggle's outstanding decomposition
+// escalation candidates (#4342).
+type EscalationCandidatesRequest struct {
+	// RunID is the asking run — the plane's containment key.
+	RunID string `json:"runId"`
+	// Gaggle scopes the walk, as for ConflictTouchRequest.
+	Gaggle string `json:"gaggle,omitempty"`
+}
+
+// EscalationCandidate is decomposition.EscalationCandidate carried over the
+// wire — the same fields, JSON-tagged for transport. Kept as a distinct type
+// rather than adding tags to decomposition.EscalationCandidate directly:
+// internal/decomposition has no wire-format concerns of its own, and this
+// package is the one boundary that does.
+type EscalationCandidate struct {
+	SourceRunID    string    `json:"sourceRunId"`
+	SourceWorkflow string    `json:"sourceWorkflow"`
+	SourceStage    string    `json:"sourceStage"`
+	ErrorCode      string    `json:"errorCode"`
+	ErrorMessage   string    `json:"errorMessage,omitempty"`
+	StartedAt      time.Time `json:"startedAt"`
+	ParentProvider string    `json:"parentProvider"`
+	ParentID       string    `json:"parentId"`
+}
+
+// EscalationCandidatesResponse is the plane's answer.
+type EscalationCandidatesResponse struct {
+	Candidates []EscalationCandidate `json:"candidates"`
 }
 
 // RunPhaseRequest asks for one prior run's terminal phase.

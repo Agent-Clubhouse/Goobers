@@ -125,7 +125,7 @@ func TestRunDeclaredStageMalformedCommandJSONIsAFailureEnvelope(t *testing.T) {
 // supposed to have refused this before a pod existed) is refused HERE too,
 // before any credential resolution or checkout is attempted.
 func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
-	t.Setenv(dispatcher.EnvStageCommand, `["goobers","select-source"]`)
+	t.Setenv(dispatcher.EnvStageCommand, `["goobers","reconcile-branches"]`)
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
@@ -134,7 +134,7 @@ func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
 		t.Fatalf("result = %+v, want an instance_root_required failure", result)
 	}
-	if !strings.Contains(result.Error.Message, "select-source") {
+	if !strings.Contains(result.Error.Message, "reconcile-branches") {
 		t.Fatalf("error message = %q, want it to name the refused command", result.Error.Message)
 	}
 }

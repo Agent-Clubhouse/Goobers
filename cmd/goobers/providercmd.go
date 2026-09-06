@@ -78,8 +78,6 @@ const (
 	claimLockOperationBacklogReconcile     = "backlog-query.reconcile"
 	claimLockOperationBacklogClaim         = "backlog-query.claim"
 	claimLockOperationBacklogRelease       = "backlog-query.release"
-	claimLockOperationSelectSourceClaim    = "select-source.claim"
-	claimLockOperationSelectSourceRelease  = "select-source.release"
 	claimLockOperationPRLookup             = "pr-claim.lookup"
 	claimLockOperationPRAcquire            = "pr-claim.acquire"
 	claimLockOperationPRRelease            = "pr-claim.release"

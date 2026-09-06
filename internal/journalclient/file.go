@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
@@ -279,6 +280,37 @@ func (f *FileCrossRun) ConflictTouches(ctx context.Context, req ConflictTouchReq
 		touches = append(touches, ConflictTouch{RunID: runID, Files: files})
 	}
 	return touches, nil
+}
+
+// EscalationCandidates implements CrossRun by running
+// decomposition.FindEscalationCandidates directly over the gaggle's own
+// readservice.OfflineRuns projection — the SAME function select-source called
+// locally before #4342, so this backend and the HTTP backend (which runs the
+// identical function daemon-side) can never drift from each other or from
+// pre-#4342 local behavior.
+func (f *FileCrossRun) EscalationCandidates(ctx context.Context, req EscalationCandidatesRequest) ([]EscalationCandidate, error) {
+	offline, err := readservice.NewOfflineRuns(f.scoped(req.Gaggle))
+	if err != nil {
+		return nil, err
+	}
+	found, err := decomposition.FindEscalationCandidates(ctx, offline)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]EscalationCandidate, 0, len(found))
+	for _, c := range found {
+		candidates = append(candidates, EscalationCandidate{
+			SourceRunID:    c.SourceRunID,
+			SourceWorkflow: c.SourceWorkflow,
+			SourceStage:    c.SourceStage,
+			ErrorCode:      c.ErrorCode,
+			ErrorMessage:   c.ErrorMessage,
+			StartedAt:      c.StartedAt,
+			ParentProvider: c.ParentProvider,
+			ParentID:       c.ParentID,
+		})
+	}
+	return candidates, nil
 }
 
 // UnpushedDiffMetaArtifactSuffix / UnpushedDiffSchemaPrefix mirror

@@ -149,6 +149,26 @@ func (s *daemonRunJournalService) UnpushedWork(ctx context.Context, request jour
 	return journalclient.UnpushedWorkResponse{Work: work}, nil
 }
 
+// EscalationCandidates answers the gaggle's outstanding decomposition
+// escalation candidates (#4342): the same
+// decomposition.FindEscalationCandidates scan select-source ran directly off
+// disk before this route existed, run here over the SAME FileCrossRun this
+// service backs every other cross-run question with — so a pod and a
+// self-runner select-source can never see a different candidate set.
+func (s *daemonRunJournalService) EscalationCandidates(ctx context.Context, request journalclient.EscalationCandidatesRequest) (journalclient.EscalationCandidatesResponse, error) {
+	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
+		return journalclient.EscalationCandidatesResponse{}, gaggleMismatch("a decomposition escalation-candidates read")
+	}
+	candidates, err := s.crossRun().EscalationCandidates(ctx, journalclient.EscalationCandidatesRequest{
+		RunID:  request.RunID,
+		Gaggle: request.Gaggle,
+	})
+	if err != nil {
+		return journalclient.EscalationCandidatesResponse{}, err
+	}
+	return journalclient.EscalationCandidatesResponse{Candidates: candidates}, nil
+}
+
 // claimedItemIDs lists the items runID currently holds, live or expired —
 // ForRunAll's contract, the same set the same-host caller reads through
 // claimedItemIDsForRun. Held claims only: released history is deliberately NOT

@@ -143,6 +143,7 @@ const clientRoutes = {
   journalRunPhase: apiRoutes.journalRunPhase,
   journalConflictTouches: apiRoutes.journalConflictTouches,
   journalUnpushedWork: apiRoutes.journalUnpushedWork,
+  journalEscalationCandidates: apiRoutes.journalEscalationCandidates,
   // The defect-nomination aggregate plane (#4001, decision 005 R4 as
   // amended): a mode-3 stage pod asks the daemon for the four derived
   // families `goobers telemetry-query` nominates from, with error signatures
