@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"html"
@@ -21,8 +22,9 @@ import (
 
 const (
 	// Name is the platform service name used by Goobers.
-	Name         = "goobers"
-	launchdLabel = "com.agent-clubhouse.goobers"
+	Name              = "goobers"
+	launchdLabel      = "com.agent-clubhouse.goobers"
+	windowsTaskPrefix = `\Goobers\`
 
 	serviceStartupTimeout  = 10 * time.Second
 	serviceStopTimeout     = 50 * time.Second
@@ -41,13 +43,17 @@ var ErrNotInstalled = errors.New("goobers service is not installed")
 
 // Status describes the installed and runtime state of the Goobers service.
 type Status struct {
-	Platform   string `json:"platform"`
-	Supervisor string `json:"supervisor"`
-	Installed  bool   `json:"installed"`
-	Loaded     bool   `json:"loaded"`
-	Running    bool   `json:"running"`
-	State      string `json:"state"`
-	ConfigPath string `json:"configPath,omitempty"`
+	Platform    string `json:"platform"`
+	Supervisor  string `json:"supervisor"`
+	Installed   bool   `json:"installed"`
+	Loaded      bool   `json:"loaded"`
+	Running     bool   `json:"running"`
+	State       string `json:"state"`
+	ConfigPath  string `json:"configPath,omitempty"`
+	Account     string `json:"account,omitempty"`
+	Trigger     string `json:"trigger,omitempty"`
+	TaskName    string `json:"taskName,omitempty"`
+	LastFailure string `json:"lastFailure,omitempty"`
 }
 
 // CommandRunner executes native supervisor commands.
@@ -105,6 +111,13 @@ func New(instanceRoot string) (*Manager, error) {
 			userName = current.Username
 		}
 	}
+	if runtime.GOOS == "windows" {
+		current, currentErr := user.Current()
+		if currentErr != nil {
+			return nil, fmt.Errorf("resolve current user: %w", currentErr)
+		}
+		userName = current.Username
+	}
 	return NewWithConfig(Config{
 		GOOS:         runtime.GOOS,
 		Executable:   executable,
@@ -156,6 +169,108 @@ func (m *Manager) Install(ctx context.Context) (Status, error) {
 	default:
 		panic("validated service platform")
 	}
+}
+
+// InstallTask registers the daemon as a per-user Windows Scheduled Task.
+// Unlike Install, this never creates an SCM service or stores a password.
+func (m *Manager) InstallTask(ctx context.Context) (Status, error) {
+	if m.config.GOOS != "windows" {
+		return Status{}, fmt.Errorf("scheduled task supervision is only supported on Windows")
+	}
+	if m.config.UserName == "" {
+		return Status{}, errors.New("windows user name is required for scheduled task supervision")
+	}
+	status, err := m.statusTask(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	if status.Installed {
+		return Status{}, ErrAlreadyInstalled
+	}
+	task := m.windowsTaskName()
+	arguments := "__service-supervise " + quoteWindowsCommandArg(m.config.InstanceRoot)
+	script := fmt.Sprintf(
+		`$ErrorActionPreference='Stop'; $action=New-ScheduledTaskAction -Execute %s -Argument %s; `+
+			`$trigger=New-ScheduledTaskTrigger -AtLogOn -User %s; `+
+			`$principal=New-ScheduledTaskPrincipal -UserId %s -LogonType Interactive -RunLevel Limited; `+
+			`Register-ScheduledTask -TaskPath %s -TaskName %s -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null`,
+		quotePowerShellLiteral(m.config.Executable),
+		quotePowerShellLiteral(arguments),
+		quotePowerShellLiteral(m.config.UserName),
+		quotePowerShellLiteral(m.config.UserName),
+		quotePowerShellLiteral(windowsTaskPrefix),
+		quotePowerShellLiteral(strings.TrimPrefix(task, windowsTaskPrefix)),
+	)
+	if err := m.runRequired(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script); err != nil {
+		return Status{}, err
+	}
+	if err := m.runRequired(ctx, "schtasks.exe", "/Run", "/TN", task); err != nil {
+		return Status{}, errors.Join(err, m.removeTask(ctx))
+	}
+	status, err = waitUntilRunning(ctx, m.statusTask)
+	if err != nil {
+		return Status{}, errors.Join(err, m.removeTask(ctx))
+	}
+	return status, nil
+}
+
+// UninstallTask stops and removes the per-user Windows Scheduled Task.
+func (m *Manager) UninstallTask(ctx context.Context) error {
+	if m.config.GOOS != "windows" {
+		return fmt.Errorf("scheduled task supervision is only supported on Windows")
+	}
+	status, err := m.statusTask(ctx)
+	if err != nil {
+		return err
+	}
+	if !status.Installed {
+		return nil
+	}
+	if err := m.StopTask(ctx); err != nil {
+		return err
+	}
+	return m.removeTask(ctx)
+}
+
+// StopTask stops the per-user Windows Scheduled Task when it is running.
+func (m *Manager) StopTask(ctx context.Context) error {
+	status, err := m.statusTask(ctx)
+	if err != nil {
+		return err
+	}
+	if !status.Installed {
+		return ErrNotInstalled
+	}
+	if !status.Running {
+		return nil
+	}
+	return m.runRequired(ctx, "schtasks.exe", "/End", "/TN", m.windowsTaskName())
+}
+
+// StartTask starts the installed per-user Windows Scheduled Task.
+func (m *Manager) StartTask(ctx context.Context) (Status, error) {
+	status, err := m.statusTask(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	if !status.Installed {
+		return Status{}, ErrNotInstalled
+	}
+	if status.Running {
+		return status, nil
+	}
+	if err := m.runRequired(ctx, "schtasks.exe", "/Run", "/TN", m.windowsTaskName()); err != nil {
+		return Status{}, err
+	}
+	return waitUntilRunning(ctx, m.statusTask)
+}
+
+// TaskStatus reports the per-user Windows Scheduled Task state.
+func (m *Manager) TaskStatus(ctx context.Context) (Status, error) {
+	if m.config.GOOS != "windows" {
+		return Status{}, fmt.Errorf("scheduled task supervision is only supported on Windows")
+	}
+	return m.statusTask(ctx)
 }
 
 // Uninstall stops and removes the Goobers service.
@@ -488,6 +603,7 @@ func (m *Manager) statusWindows(ctx context.Context) (Status, error) {
 		Platform:   "windows",
 		Supervisor: "windows-service",
 		State:      "not-installed",
+		Account:    "LocalSystem",
 	}
 	output, code, err := m.config.Runner.Run(ctx, "sc.exe", "query", Name)
 	if err != nil {
@@ -504,6 +620,76 @@ func (m *Manager) statusWindows(ctx context.Context) (Status, error) {
 	status.State = windowsServiceState(string(output))
 	status.Running = status.State == "running"
 	return status, nil
+}
+
+func (m *Manager) windowsTaskName() string {
+	sum := sha256.Sum256([]byte(m.config.InstanceRoot))
+	return windowsTaskPrefix + "daemon-" + fmt.Sprintf("%x", sum[:8])
+}
+
+func quotePowerShellLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func (m *Manager) statusTask(ctx context.Context) (Status, error) {
+	status := Status{
+		Platform:   "windows",
+		Supervisor: "windows-scheduled-task",
+		State:      "not-installed",
+		TaskName:   m.windowsTaskName(),
+		Account:    m.config.UserName,
+		Trigger:    "interactive user logon",
+	}
+	output, code, err := m.config.Runner.Run(ctx, "schtasks.exe", "/Query", "/TN", status.TaskName, "/FO", "LIST", "/V")
+	if err != nil {
+		return Status{}, fmt.Errorf("run schtasks.exe: %w", err)
+	}
+	if code != 0 {
+		if strings.Contains(strings.ToLower(string(output)), "does not exist") ||
+			strings.Contains(strings.ToLower(string(output)), "cannot find") {
+			return status, nil
+		}
+		return Status{}, commandError("schtasks.exe", code, output)
+	}
+	status.Installed = true
+	values := parseTaskProperties(string(output))
+	if account := firstProperty(values, "Run As User", "Logon Mode"); account != "" {
+		status.Account = account
+	}
+	state := firstProperty(values, "Status", "Scheduled Task State")
+	status.State = strings.ToLower(state)
+	if status.State == "" {
+		status.State = "ready"
+	}
+	status.Running = status.State == "running"
+	if failure := firstProperty(values, "Last Result", "Last Run Result"); failure != "" && failure != "0" {
+		status.LastFailure = failure
+	}
+	return status, nil
+}
+
+func (m *Manager) removeTask(ctx context.Context) error {
+	return m.runRequired(ctx, "schtasks.exe", "/Delete", "/TN", m.windowsTaskName(), "/F")
+}
+
+func firstProperty(values map[string]string, names ...string) string {
+	for _, name := range names {
+		if value := values[name]; value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseTaskProperties(output string) map[string]string {
+	properties := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if ok {
+			properties[strings.TrimSpace(key)] = strings.TrimSpace(value)
+		}
+	}
+	return properties
 }
 
 func (m *Manager) runRequired(ctx context.Context, name string, args ...string) error {

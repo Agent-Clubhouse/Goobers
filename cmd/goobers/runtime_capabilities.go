@@ -336,6 +336,26 @@ func init() {
 			subcommand("service status", "status", apicontract.ActionReadOnlyNavigation, runServiceStatus).
 				withHelp("report whether the supervised daemon is installed and running", serviceStatusHelp).
 				withExamples("goobers service status", "goobers service status --json"),
+			subcommand("service task-install", "task-install", apicontract.ActionDaemonLifecycle, runServiceTaskInstall).
+				withSynopsis(synopsisByID["service task-install"]).
+				withHelp("install a per-user Windows Scheduled Task supervisor", "Usage: goobers service task-install [path]\n").
+				withExamples("goobers service task-install"),
+			subcommand("service task-uninstall", "task-uninstall", apicontract.ActionDaemonLifecycle, runServiceTaskUninstall).
+				withSynopsis(synopsisByID["service task-uninstall"]).
+				withHelp("remove a per-user Windows Scheduled Task supervisor", "Usage: goobers service task-uninstall [path]\n").
+				withExamples("goobers service task-uninstall"),
+			subcommand("service task-start", "task-start", apicontract.ActionDaemonLifecycle, runServiceTaskStart).
+				withSynopsis(synopsisByID["service task-start"]).
+				withHelp("start a per-user Windows Scheduled Task supervisor", "Usage: goobers service task-start [path]\n").
+				withExamples("goobers service task-start"),
+			subcommand("service task-stop", "task-stop", apicontract.ActionDaemonLifecycle, runServiceTaskStop).
+				withSynopsis(synopsisByID["service task-stop"]).
+				withHelp("stop a per-user Windows Scheduled Task supervisor", "Usage: goobers service task-stop [path]\n").
+				withExamples("goobers service task-stop"),
+			subcommand("service task-status", "task-status", apicontract.ActionReadOnlyNavigation, runServiceTaskStatus).
+				withSynopsis(synopsisByID["service task-status"]).
+				withHelp("report per-user Windows Scheduled Task state and identity", "Usage: goobers service task-status [--json] [path]\n").
+				withExamples("goobers service task-status --json"),
 		).
 			withSynopsis(synopsisByID["service"]).
 			withHelp("install and manage the platform-supervised daemon", serviceHelp).
