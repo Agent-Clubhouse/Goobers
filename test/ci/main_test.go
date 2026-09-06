@@ -172,10 +172,20 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	}
 	want := []string{
 		"fmt-check",
+		"tidy-check",
 		"no-phone-home",
+		"stage-name-lint",
 		"vet",
+		"flake-policy",
+		"complexity",
+		"design-doc-status",
+		"markdown-links",
+		"workflow-inventory",
+		"npm-registry",
+		"go-toolchain",
 		"build-config-sync",
 		"build-goobers",
+		"validate-configs",
 		"build-operator",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -894,11 +904,17 @@ func mergeGateChecks() []check {
 }
 
 // TestEveryMergeCheckHasAGroup guarantees the parallel CI jobs collectively run
-// every merge-gate check: each check names one of the four known groups, and no
+// every merge-gate check: each check names one of the five known groups, and no
 // check is orphaned into a group no job runs.
 func TestEveryMergeCheckHasAGroup(t *testing.T) {
 	t.Parallel()
-	known := map[string]bool{groupChecks: true, groupLint: true, groupUnit: true, groupShipped: true}
+	known := map[string]bool{
+		groupPreflight: true,
+		groupChecks:    true,
+		groupLint:      true,
+		groupUnit:      true,
+		groupShipped:   true,
+	}
 	seen := map[string]bool{}
 	for _, current := range mergeGateChecks() {
 		if !known[current.group] {
@@ -913,14 +929,14 @@ func TestEveryMergeCheckHasAGroup(t *testing.T) {
 	}
 }
 
-// TestGroupPartitionCoversMergeGate proves that concatenating the four groups
+// TestGroupPartitionCoversMergeGate proves that concatenating the five groups
 // reproduces exactly the full merge-gate check set — no check is dropped or
 // double-counted when the monolith fans out across runners.
 func TestGroupPartitionCoversMergeGate(t *testing.T) {
 	t.Parallel()
 	all := mergeGateChecks()
 	var reassembled []string
-	for _, group := range []string{groupChecks, groupLint, groupUnit, groupShipped} {
+	for _, group := range []string{groupPreflight, groupChecks, groupLint, groupUnit, groupShipped} {
 		for _, current := range groupChecksOnly(all, group) {
 			reassembled = append(reassembled, current.label)
 		}
@@ -957,6 +973,22 @@ func TestGroupChecksOnlyIsolatesHeavyweights(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("group %q = %q, want %q", tc.group, got, tc.want)
+		}
+	}
+}
+
+func TestPreflightGroupUsesNodeFreeGoobersBuild(t *testing.T) {
+	t.Parallel()
+	preflight := applyRuntimeToggles(
+		groupChecksOnly(mergeGateChecks(), groupPreflight),
+		func(string) string { return "" },
+	)
+	if args := checkByLabel(t, preflight, "build-goobers").args; slices.Contains(args, "embed_portal") {
+		t.Fatalf("preflight Goobers build requires generated Portal assets: %q", args)
+	}
+	for _, current := range preflight {
+		if current.command == "npm" || current.command == "node" {
+			t.Errorf("preflight check %q invokes Node tool %q", current.label, current.command)
 		}
 	}
 }

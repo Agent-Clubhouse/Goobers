@@ -36,7 +36,7 @@ The stable local contract is `make verify-fast` ⊂ `make ci` ⊂
 
 | Tier | Composition | Use |
 |---|---|---|
-| `make verify-fast` | Format check, `go vet`, and every `cmd/*` Go build | Fast feedback during development and before a push |
+| `make verify-fast` | Node-free format, module hygiene, repository-policy checks, `go vet`, every `cmd/*` Go build, and config validation | Fast feedback during development and before a push |
 | `make ci` | The portable merge gate: fast-tier checks plus module tidiness, flake-policy enforcement, the cyclomatic-complexity baseline gate, shipped-config validation, race tests with coverage, lint, and portal build/test/contract checks | Required before merge; the shipped agent workflows' `local-ci` stages invoke this tier |
 | `make verify-full` | `ci` plus strict declared-dependency integration tests, walking-skeleton e2e, journal conformance, Kubernetes envtest, coverage threshold, native sandbox confinement, and Linux-node/Windows-seam validation | Nightly, on-demand, and release-candidate validation |
 

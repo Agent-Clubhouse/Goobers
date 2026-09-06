@@ -58,10 +58,11 @@ type check struct {
 // Membership is disjoint and exhaustive: every merge-tier check belongs to
 // exactly one group (asserted by TestEveryMergeCheckHasAGroup).
 const (
-	// groupChecks is the fast fan-in: formatting, module hygiene, the
-	// no-phone-home guard, vet, command builds, config validation, and the portal
-	// audit/build/test/contract chain — everything except the three heavyweight
-	// steps below.
+	// groupPreflight is the Node-free admission tier: formatting, repository
+	// policy, vet, command builds, and config validation.
+	groupPreflight = "preflight"
+	// groupChecks owns the Portal, extension, generated-contract, and manifest
+	// checks that run after preflight admits the expensive CI fan-out.
 	groupChecks = "checks"
 	// groupLint is golangci-lint (staticcheck/govet/revive/...) on its own runner.
 	groupLint = "lint"
@@ -74,10 +75,11 @@ const (
 // knownGroups is the set of valid `group NAME` selectors, used to reject a
 // mistyped group before any work runs (independent of working directory).
 var knownGroups = map[string]bool{
-	groupChecks:  true,
-	groupLint:    true,
-	groupUnit:    true,
-	groupShipped: true,
+	groupPreflight: true,
+	groupChecks:    true,
+	groupLint:      true,
+	groupUnit:      true,
+	groupShipped:   true,
 }
 
 type executor interface {
@@ -182,6 +184,9 @@ func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 	lintGOOS := strings.TrimSpace(getenv("GOOBERS_LINT_GOOS"))
 	result := make([]check, 0, len(checks))
 	for _, current := range checks {
+		if current.group == groupPreflight && current.label == "build-goobers" {
+			current.args = removePortalEmbedTag(current.args)
+		}
 		if !raceEnabled {
 			current.args = withoutArg(current.args, "-race")
 		}
@@ -577,6 +582,11 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			group:   groupChecks,
 		},
 	)
+	for i := range result {
+		if isPreflightCheck(result[i].label) {
+			result[i].group = groupPreflight
+		}
+	}
 	return result
 }
 
@@ -606,10 +616,7 @@ func fullChecks(makeCommand string) []check {
 func fastChecks(mergeChecks []check) []check {
 	result := make([]check, 0, len(mergeChecks))
 	for _, current := range mergeChecks {
-		if current.label == "fmt-check" ||
-			current.label == "no-phone-home" ||
-			current.label == "vet" ||
-			strings.HasPrefix(current.label, "build-") {
+		if isPreflightCheck(current.label) {
 			if current.label == "build-goobers" {
 				current.args = removePortalEmbedTag(current.args)
 			}
@@ -617,6 +624,27 @@ func fastChecks(mergeChecks []check) []check {
 		}
 	}
 	return result
+}
+
+func isPreflightCheck(label string) bool {
+	switch label {
+	case "fmt-check",
+		"tidy-check",
+		"no-phone-home",
+		"stage-name-lint",
+		"vet",
+		"flake-policy",
+		"complexity",
+		"design-doc-status",
+		"markdown-links",
+		"workflow-inventory",
+		"npm-registry",
+		"go-toolchain",
+		"validate-configs":
+		return true
+	default:
+		return strings.HasPrefix(label, "build-")
+	}
 }
 
 func removePortalEmbedTag(args []string) []string {
