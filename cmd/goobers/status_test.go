@@ -652,6 +652,144 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 	}
 }
 
+// infraFailedStatusRun builds a terminal run summary that has failed with an
+// infra-classified error, for #4263's sustained-failure-streak alarm tests.
+func infraFailedStatusRun(runID, workflow, gaggle string, at time.Time, message string) runSummary {
+	return runSummary{
+		RunID: runID, Workflow: workflow, Gaggle: gaggle,
+		Phase: journal.PhaseFailed, StartedAt: at, LastActivityAt: at,
+		Operator: readservice.OperatorRunSummary{
+			LatestError: &journal.ErrorDetail{Code: telemetry.ErrCodeInfraWorkspace, Message: message},
+		},
+	}
+}
+
+func successfulStatusRun(runID, workflow, gaggle string, at time.Time) runSummary {
+	return runSummary{
+		RunID: runID, Workflow: workflow, Gaggle: gaggle,
+		Phase: journal.PhaseCompleted, StartedAt: at, LastActivityAt: at,
+	}
+}
+
+// TestBuildStatusFleetSummaryAlarmsOnSustainedInfraFailureStreak is #4263's
+// core regression: 499 consecutive infra failures over 18h at 26-28/hour
+// went undetected for 14h22m because the existing success-rate window only
+// ever samples the last statusSuccessRateWindow (10) terminal runs. A
+// streak well past both that window and statusFailureStreakThreshold must
+// still surface a distinct alarm naming the workflow, the streak length,
+// and the error from when the streak actually began.
+func TestBuildStatusFleetSummaryAlarmsOnSustainedInfraFailureStreak(t *testing.T) {
+	now := time.Date(2026, time.August, 29, 18, 0, 2, 0, time.UTC)
+	workflows := []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "site-build"},
+		Spec:       apiv1.WorkflowSpec{Gaggle: "goobers-site", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}},
+	}}
+	const streakLength = 499
+	firstFailure := now.Add(-time.Duration(streakLength) * 2 * time.Minute)
+	var runs []runSummary
+	for i := 0; i < streakLength; i++ {
+		at := now.Add(-time.Duration(streakLength-i) * 2 * time.Minute)
+		message := "installation not found"
+		if i == 0 {
+			message = "GitHub App installation not found for repository"
+		}
+		runs = append(runs, infraFailedStatusRun(fmt.Sprintf("run-%03d", i), "site-build", "goobers-site", at, message))
+	}
+
+	got, err := buildStatusFleetSummary(workflows, runs, nil, nil, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Workflows) != 1 {
+		t.Fatalf("workflows = %+v", got.Workflows)
+	}
+	streak := got.Workflows[0].FailureStreak
+	if streak == nil {
+		t.Fatal("FailureStreak = nil, want an alarm for a 499-run infra failure streak")
+	}
+	if streak.Length != streakLength {
+		t.Fatalf("streak length = %d, want %d", streak.Length, streakLength)
+	}
+	if !streak.FirstFailedAt.Equal(firstFailure) {
+		t.Fatalf("streak first failed at = %s, want %s", streak.FirstFailedAt, firstFailure)
+	}
+	if streak.FirstError != "GitHub App installation not found for repository" {
+		t.Fatalf("streak first error = %q, want the oldest failure's message, not the most recent", streak.FirstError)
+	}
+
+	var text bytes.Buffer
+	renderStatusFleetSummary(&text, got, now)
+	if !strings.Contains(text.String(), "ALARM: site-build has failed 499 consecutive times (infra)") ||
+		!strings.Contains(text.String(), "GitHub App installation not found") {
+		t.Fatalf("summary text = %q, want an ALARM line naming the workflow, streak length, and first error", text.String())
+	}
+}
+
+// TestBuildStatusFleetSummaryFailureStreakClearsAfterInterleavedSuccess
+// proves #4263's other required behavior: a single success anywhere in the
+// history resets the streak count computed from the most recent run
+// backward, so an old failure run that has since recovered doesn't keep
+// alarming forever.
+func TestBuildStatusFleetSummaryFailureStreakClearsAfterInterleavedSuccess(t *testing.T) {
+	now := time.Date(2026, time.August, 29, 18, 0, 2, 0, time.UTC)
+	workflows := []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "site-build"},
+		Spec:       apiv1.WorkflowSpec{Gaggle: "goobers-site", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}},
+	}}
+	var runs []runSummary
+	// 30 old failures, oldest first — well past the alarm threshold on
+	// their own, but they precede an interleaved success.
+	for i := 0; i < 30; i++ {
+		at := now.Add(-time.Duration(40-i) * time.Minute)
+		runs = append(runs, infraFailedStatusRun(fmt.Sprintf("old-%02d", i), "site-build", "goobers-site", at, "old failure"))
+	}
+	// The interleaved success that must clear the alarm.
+	runs = append(runs, successfulStatusRun("recovered", "site-build", "goobers-site", now.Add(-9*time.Minute)))
+	// A handful of fresh failures after recovery — short of the threshold.
+	for i := 0; i < 5; i++ {
+		at := now.Add(-time.Duration(5-i) * time.Minute)
+		runs = append(runs, infraFailedStatusRun(fmt.Sprintf("new-%02d", i), "site-build", "goobers-site", at, "new failure"))
+	}
+
+	got, err := buildStatusFleetSummary(workflows, runs, nil, nil, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Workflows) != 1 {
+		t.Fatalf("workflows = %+v", got.Workflows)
+	}
+	if streak := got.Workflows[0].FailureStreak; streak != nil {
+		t.Fatalf("FailureStreak = %+v, want nil: the interleaved success should clear the alarm despite 30 older failures", streak)
+	}
+
+	var text bytes.Buffer
+	renderStatusFleetSummary(&text, got, now)
+	if strings.Contains(text.String(), "ALARM:") {
+		t.Fatalf("summary text = %q, want no ALARM line once a success has interleaved", text.String())
+	}
+}
+
+// TestStatusWorkflowFailureStreakIgnoresNonInfraFailures confirms the streak
+// only counts infra-classified failures — a workflow genuinely broken by its
+// own code (a validation or harness failure) must not trip an alarm framed
+// as an infrastructure outage.
+func TestStatusWorkflowFailureStreakIgnoresNonInfraFailures(t *testing.T) {
+	now := time.Date(2026, time.August, 29, 18, 0, 2, 0, time.UTC)
+	var terminal []runSummary
+	for i := 0; i < statusFailureStreakThreshold+5; i++ {
+		at := now.Add(-time.Duration(i) * time.Minute)
+		terminal = append(terminal, runSummary{
+			RunID: fmt.Sprintf("run-%02d", i), Phase: journal.PhaseFailed, StartedAt: at, LastActivityAt: at,
+			Operator: readservice.OperatorRunSummary{
+				LatestError: &journal.ErrorDetail{Code: telemetry.ErrCodeValidationFailed, Message: "bad input"},
+			},
+		})
+	}
+	if streak := statusWorkflowFailureStreak(terminal); streak != nil {
+		t.Fatalf("FailureStreak = %+v, want nil for a non-infra failure streak", streak)
+	}
+}
+
 type statusSchedulerStarter struct {
 	started atomic.Int32
 }
