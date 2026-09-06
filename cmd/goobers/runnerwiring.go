@@ -349,6 +349,17 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		rc.Telemetry = tel
 	}
 	wtMgr.SetPathLengthLimits(pathLimits)
+	// Refreshed unconditionally, exactly like the path-length limits above —
+	// on BOTH the newly-constructed and the reused-manager path (#4405). A
+	// reused Manager's mirror-fetch exclusion previously stayed frozen at
+	// whatever namespace was configured when it was first built: a hot
+	// config reload that changes spec.branchNamespace never reached it,
+	// since WithRunBranchNamespaces above only applies inside the
+	// `wtMgr == nil` branch. SetRunBranchNamespaces accumulates rather than
+	// replaces, so a run still in flight under the OLD namespace stays
+	// protected too — see its own doc comment for why replace-semantics
+	// (SetPathLengthLimits's own shape) is the wrong model here.
+	wtMgr.SetRunBranchNamespaces(branchNamespaces[l.Gaggle()])
 	return rc, wtMgr, nil
 }
 
