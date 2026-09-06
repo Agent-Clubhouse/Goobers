@@ -323,6 +323,7 @@ spec:
       evaluator: agentic
       agentic:
         goober: claude-reviewer
+        workspace: repo
       branches:
         pass: push-branch
         needs-changes: implement

@@ -365,6 +365,7 @@ spec:
       evaluator: agentic
       agentic:
         goober: reviewer
+        workspace: repo
         # #765: retry a transient reviewer-harness failure (a copilot session
         # that wrote no verdict file) within this bound instead of failing the
         # run on the first occurrence. Non-transient errors still fail fast.

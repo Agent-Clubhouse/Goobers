@@ -499,7 +499,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 func isStrictNeutralWarning(code validate.WarningCode) bool {
 	switch code {
 	case validate.WarningDeprecatedDSLVersion, validate.RunnerAVExclusionsUnverified,
-		validate.WarningConnectionRefUnhonored:
+		validate.WarningConnectionRefUnhonored, validate.WarningImplicitWritableWorkspace:
 		return true
 	default:
 		return false

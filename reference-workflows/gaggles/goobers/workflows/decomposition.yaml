@@ -43,6 +43,7 @@ spec:
     - name: design-slices
       type: agentic
       goober: decomposer
+      workspace: repo-readonly
       goal: >-
         Design a coherent set of independently reviewable, single-PR slices
         for the selected parent and write the versioned decomposition plan.

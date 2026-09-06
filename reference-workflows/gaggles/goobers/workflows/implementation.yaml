@@ -463,6 +463,7 @@ spec:
       evaluator: agentic
       agentic:
         goober: reviewer
+        workspace: repo
       branches:
         pass: push-branch
         needs-changes: implement
