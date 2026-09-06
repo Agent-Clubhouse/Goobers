@@ -559,6 +559,24 @@ type DeterministicRun struct {
 	// before the command executes. It is valid only with a repository workspace.
 	// +optional
 	SyncBase bool `json:"syncBase,omitempty" yaml:"syncBase,omitempty"`
+	// InjectRunContext explicitly opts a stage into the run's operational
+	// identity (GOOBERS_RUN_ID, GOOBERS_GAGGLE, GOOBERS_REPO_*, and related
+	// env — internal/executor/env.go) even when Command[0] is not literally
+	// "goobers" (#3484). Without it, only a stage whose command IS the
+	// goobers CLI receives this context — the discriminator every other
+	// deterministic stage relies on to stay isolated from the live run
+	// (#322: a stage running the project's own build/test suite must not
+	// inherit it). A deterministic stage that WRAPS the goobers CLI in
+	// another process (e.g. a Node/Python adapter that shells out to
+	// `goobers apply-verdict` itself) needs the same context its wrapped
+	// call does, but Command[0] names the wrapper, not "goobers" — this is
+	// the explicit escape hatch for exactly that shape, instead of the
+	// executor guessing from argv[0]. Set it only for a stage that reads
+	// GOOBERS_RUN_ID or the other injected vars itself, or forwards them to
+	// a nested goobers invocation; a wrong "true" leaks live run identity
+	// into a stage that does not need it.
+	// +optional
+	InjectRunContext bool `json:"injectRunContext,omitempty" yaml:"injectRunContext,omitempty"`
 }
 
 // NetworkMode selects the network access available to a deterministic command.

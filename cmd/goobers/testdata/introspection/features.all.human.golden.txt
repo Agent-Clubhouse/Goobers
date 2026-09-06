@@ -93,6 +93,7 @@ stage.external-telemetry                                 2.0          ga        
 stage.resultFile                                         2.0          ga               supported        dev
 stage.run.command                                        2.0          ga               supported        dev
 stage.run.env                                            2.0          ga               supported        dev
+stage.run.injectRunContext                               2.0          ga               supported        dev
 stage.run.network.none                                   2.0          ga               supported        dev
 stage.run.script                                         2.0          ga               supported        dev
 stage.run.syncBase                                       2.0          ga               supported        dev
@@ -285,6 +286,7 @@ stage.external-telemetry                                 3.0          ga        
 stage.resultFile                                         3.0          ga               preview          dev
 stage.run.command                                        3.0          ga               preview          dev
 stage.run.env                                            3.0          ga               preview          dev
+stage.run.injectRunContext                               3.0          ga               preview          dev
 stage.run.script                                         3.0          ga               preview          dev
 stage.run.syncBase                                       3.0          ga               preview          dev
 stage.run.workspace.repo                                 3.0          ga               preview          dev
@@ -380,4 +382,4 @@ workflow.terminal.abort                                  3.0          ga        
 workflow.terminal.complete                               3.0          ga               preview          dev
 workflow.terminal.escalate                               3.0          ga               preview          dev
 
-380 feature/version row(s)
+382 feature/version row(s)

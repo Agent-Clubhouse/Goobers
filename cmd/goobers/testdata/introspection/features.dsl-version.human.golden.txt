@@ -93,6 +93,7 @@ stage.external-telemetry                           2.0          ga              
 stage.resultFile                                   2.0          ga               supported        dev
 stage.run.command                                  2.0          ga               supported        dev
 stage.run.env                                      2.0          ga               supported        dev
+stage.run.injectRunContext                         2.0          ga               supported        dev
 stage.run.network.none                             2.0          ga               supported        dev
 stage.run.script                                   2.0          ga               supported        dev
 stage.run.syncBase                                 2.0          ga               supported        dev
@@ -181,4 +182,4 @@ workflow.terminal.abort                            2.0          ga              
 workflow.terminal.complete                         2.0          ga               supported        dev
 workflow.terminal.escalate                         2.0          ga               supported        dev
 
-181 feature/version row(s)
+182 feature/version row(s)
