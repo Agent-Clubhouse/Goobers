@@ -471,6 +471,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       schemaVersion: SCHEMA_VERSION,
       name: "local-dev",
       environment: "dev",
+      instanceRoot: "C:\\Goobers\\instances\\local-dev",
       ready: true,
       status: "ready",
       concurrency: { activeRuns: 1, maxConcurrentRuns: 4 },

@@ -35,7 +35,14 @@ type Manager struct {
 	// so this is a set rather than a single value; every entry ends with "/".
 	// Never empty — NewManager seeds the DefaultBranchNamespace when no option
 	// configures it, so the default-prefix case is unchanged.
-	runBranchNamespaces []string
+	//
+	// Mutable after construction via SetRunBranchNamespaces (#4405), so reads
+	// and writes both go through runBranchNamespacesMu: a config reload that
+	// changes a gaggle's namespace runs concurrently with in-flight runs'
+	// mirror fetches, and a torn read here would be exactly the class of bug
+	// this field exists to prevent.
+	runBranchNamespacesMu sync.RWMutex
+	runBranchNamespaces   []string
 
 	mu        sync.Mutex // guards repoLocks
 	repoLocks map[string]*sync.Mutex
@@ -114,25 +121,73 @@ type ManagerOption func(*Manager)
 // and pr-select filters on, closing #965's silent-revert gap.
 func WithRunBranchNamespaces(namespaces ...string) ManagerOption {
 	return func(m *Manager) {
-		seen := make(map[string]bool, len(namespaces))
-		var out []string
-		for _, ns := range namespaces {
-			if ns == "" {
-				continue
-			}
-			if !strings.HasSuffix(ns, "/") {
-				ns += "/"
-			}
-			if seen[ns] {
-				continue
-			}
-			seen[ns] = true
-			out = append(out, ns)
-		}
-		if len(out) > 0 {
+		if out := normalizeRunBranchNamespaces(namespaces); len(out) > 0 {
 			m.runBranchNamespaces = out
 		}
 	}
+}
+
+// normalizeRunBranchNamespaces trims empties, ensures a single trailing "/",
+// and dedupes, preserving first-seen order — the shared shape both
+// WithRunBranchNamespaces (construction) and SetRunBranchNamespaces (reload)
+// need, so the two can never normalize a namespace two different ways.
+func normalizeRunBranchNamespaces(namespaces []string) []string {
+	seen := make(map[string]bool, len(namespaces))
+	var out []string
+	for _, ns := range namespaces {
+		if ns == "" {
+			continue
+		}
+		if !strings.HasSuffix(ns, "/") {
+			ns += "/"
+		}
+		if seen[ns] {
+			continue
+		}
+		seen[ns] = true
+		out = append(out, ns)
+	}
+	return out
+}
+
+// SetRunBranchNamespaces ADDS namespaces to the manager's mirror-fetch prune
+// exclusion set — it never removes an already-protected namespace.
+//
+// This is deliberately NOT the same shape as SetPathLengthLimits's replace
+// semantics. A config reload that changes spec.branchNamespace must not
+// strand a run still in flight under the OLD namespace (#4405): a run's
+// local-only branch has to stay protected across mirror fetches for its
+// entire lifecycle, not just until the next reload swaps the exclusion out
+// from under it mid-run. Accumulating costs a handful of short strings over
+// a long-lived daemon's lifetime (one entry per distinct namespace it is
+// ever reconfigured to) — negligible against the alternative, which is
+// silently discarding another run's committed work exactly as this issue
+// describes.
+func (m *Manager) SetRunBranchNamespaces(namespaces ...string) {
+	additions := normalizeRunBranchNamespaces(namespaces)
+	if len(additions) == 0 {
+		return
+	}
+	m.runBranchNamespacesMu.Lock()
+	defer m.runBranchNamespacesMu.Unlock()
+	existing := make(map[string]bool, len(m.runBranchNamespaces))
+	for _, ns := range m.runBranchNamespaces {
+		existing[ns] = true
+	}
+	for _, ns := range additions {
+		if !existing[ns] {
+			m.runBranchNamespaces = append(m.runBranchNamespaces, ns)
+			existing[ns] = true
+		}
+	}
+}
+
+// runBranchNamespacesSnapshot returns a copy safe to range over without
+// holding the lock — fetchMirror's own read path.
+func (m *Manager) runBranchNamespacesSnapshot() []string {
+	m.runBranchNamespacesMu.RLock()
+	defer m.runBranchNamespacesMu.RUnlock()
+	return append([]string(nil), m.runBranchNamespaces...)
 }
 
 // WithGitEnvironment configures credentials for remote clone/fetch commands.
@@ -545,7 +600,7 @@ func (m *Manager) fetchMirror(ctx context.Context, repoURL, dir string, narrow b
 		refspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
 	}
 	fetchArgs := append([]string{"fetch", "--prune", "origin"}, refspecs...)
-	for _, ns := range m.runBranchNamespaces {
+	for _, ns := range m.runBranchNamespacesSnapshot() {
 		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
 	}
 	return m.runRemoteGit(ctx, repoURL, dir, fetchArgs...)

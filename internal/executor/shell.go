@@ -512,10 +512,15 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// Its provider read-cache writes are the same correctness-neutral
 	// conditional-GET store backlog-query and backlog-dedupe already carry
 	// into a pod.
-	// reconcile-branches opens the instance log (reconcilebranches.go:155)
-	// and reads OTHER runs' journals by walking layout.RunsDir() with
-	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
-	// three purpose-built gaggle-scoped questions do not answer.
+	// reconcile-branches still opens the instance log directly
+	// (reconcilebranches.go) for its decision-annotation writes — a scrubbed
+	// write carrying a stage-minted credential-redaction registry
+	// (journal.WithScrubber) the shared openStageAnnotator seam has no
+	// client-side hook for yet (#4344's own follow-up). Its OTHER
+	// direct-access point — walking layout.RunsDir() with journal.OpenRead to
+	// resolve a candidate branch's owning run — is fixed (Goobers#4344): it is
+	// now the cross-run journal plane's fourth purpose-built question,
+	// BranchOwnership, alongside RunPhase/ConflictTouches/UnpushedWork.
 	"reconcile-branches": true,
 	// file-issues is deliberately NOT here, and was never here — which was
 	// the defect Goobers#3996 blocker 2 named rather than a decision. It read
@@ -560,14 +565,17 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 //     every other pod stage resolves its declared capabilities. It needs no
 //     ledger, no merge lock and no on-disk journal — only a provider token —
 //     which is why it is the one kind that could leave this refusal.
-//
-// KindExternalTelemetry is deliberately ABSENT and stays refused: its
-// executor is built from the instance's connector configuration
-// (buildExternalTelemetryExecutor, cmd/goobers/runnerwiring_executors.go),
-// which lives under the instance config directory a pod does not have.
+//   - KindExternalTelemetry runs in-process inside dispatch-exec (#4341):
+//     cmd/goobers/dispatchexternaltelemetry.go builds a single-connector
+//     externaltelemetry.Registry from the ONE ConnectorConfig the dispatcher
+//     stamped into the pod's env (non-secret JSON, validated against the
+//     instance's configured connectors at admission time) plus the connector's
+//     auth secret resolved through the credential plane under telemetry:read
+//     — never the instance's full connector configuration tree.
 var stageKindsWithPodExecution = map[string]bool{
-	KindShell:  true,
-	KindCIPoll: true,
+	KindShell:             true,
+	KindCIPoll:            true,
+	KindExternalTelemetry: true,
 }
 
 // StageRequiresInstanceRootCode names, in a stage's failure ErrorInfo.Code,
@@ -581,10 +589,10 @@ const StageRequiresInstanceRootCode = "instance_root_required"
 
 // StageRequiresInstanceRoot reports whether a stage cannot execute in a pod
 // today because it needs the daemon's instance root: either its resolved
-// stage KIND is a built-in with no pod-side execution path
-// (external-telemetry, or any kind this binary does not recognize — see
-// stageKindsWithPodExecution; kind == "", KindShell and KindCIPoll all run in
-// a pod and are never refused here), or its command is a goobers CLI
+// stage KIND is a built-in with no pod-side execution path (any kind this
+// binary does not recognize — see stageKindsWithPodExecution; kind == "",
+// KindShell, KindCIPoll and KindExternalTelemetry all run in a pod and are
+// never refused here), or its command is a goobers CLI
 // subcommand that reads/writes the file claim ledger, a merge lock, or an
 // on-disk run journal — none of which a stage pod has (decision 003 ruling 3;
 // production-lanes-3.0 stillBroken #2).

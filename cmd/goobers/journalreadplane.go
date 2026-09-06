@@ -169,6 +169,32 @@ func (s *daemonRunJournalService) EscalationCandidates(ctx context.Context, requ
 	return journalclient.EscalationCandidatesResponse{Candidates: candidates}, nil
 }
 
+// BranchOwnership answers whether req.TargetRunID's journal actually owns
+// req.Branch, in the asking run's gaggle.
+//
+// Two containment checks, both required, mirroring RunPhase: the asking run
+// must be in the gaggle it names, and so must the target — without the
+// second, a pod could ask about any run on the instance by naming its own
+// gaggle and someone else's run id, learning that run's identity and phase
+// through a plausible-looking branch name it need not actually reference.
+func (s *daemonRunJournalService) BranchOwnership(ctx context.Context, request journalclient.BranchOwnershipRequest) (journalclient.BranchOwnershipResponse, error) {
+	if !apiv1.ValidRunID(request.RunID) || !apiv1.ValidRunID(request.TargetRunID) {
+		return journalclient.BranchOwnershipResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
+			"runId and targetRunId are required and must be valid run ids", nil)
+	}
+	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
+		return journalclient.BranchOwnershipResponse{}, gaggleMismatch("a branch-ownership lookup")
+	}
+	if !s.runJournalGaggleOK(request.Gaggle, request.TargetRunID) {
+		// Deliberately the same refusal a foreign gaggle gets (see RunPhase).
+		return journalclient.BranchOwnershipResponse{}, gaggleMismatch("a branch-ownership lookup")
+	}
+	return s.crossRun().BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: request.RunID, Gaggle: request.Gaggle, TargetRunID: request.TargetRunID,
+		Workflow: request.Workflow, Branch: request.Branch,
+	})
+}
+
 // claimedItemIDs lists the items runID currently holds, live or expired —
 // ForRunAll's contract, the same set the same-host caller reads through
 // claimedItemIDsForRun. Held claims only: released history is deliberately NOT

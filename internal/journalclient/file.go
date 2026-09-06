@@ -134,7 +134,7 @@ var _ Reader = (*File)(nil)
 
 // --- cross-run, same-host ---------------------------------------------------
 
-// FileCrossRun answers the three cross-run questions from the instance's own
+// FileCrossRun answers the cross-run questions from the instance's own
 // run directories. It is BOTH the same-host CLI path and the daemon's own
 // implementation behind the plane routes, so the two cannot drift: the plane
 // handler contains the request to a gaggle and then asks exactly this.
@@ -311,6 +311,78 @@ func (f *FileCrossRun) EscalationCandidates(ctx context.Context, req EscalationC
 		})
 	}
 	return candidates, nil
+}
+
+// BranchOwnership implements CrossRun by opening the target run's own
+// journal and checking it actually recorded owning the branch — the same
+// checks reconcile-branches's own inspectBranchOwner made directly before
+// #4344, moved here so the file and HTTP backends answer identically.
+func (f *FileCrossRun) BranchOwnership(ctx context.Context, req BranchOwnershipRequest) (BranchOwnershipResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return BranchOwnershipResponse{}, err
+	}
+	ambiguous := func(detail string) (BranchOwnershipResponse, error) {
+		return BranchOwnershipResponse{Reason: "ambiguous-ownership", Detail: detail}, nil
+	}
+	unreadable := func(detail string) (BranchOwnershipResponse, error) {
+		return BranchOwnershipResponse{Reason: "run-journal-unreadable", Detail: detail}, nil
+	}
+	layout := f.scoped(req.Gaggle)
+	dir, err := layout.FindRunDir(req.TargetRunID)
+	if err != nil {
+		return ambiguous(fmt.Sprintf("open owning run %s: %v", req.TargetRunID, err))
+	}
+	reader, err := journal.OpenRead(dir)
+	if err != nil {
+		return ambiguous(fmt.Sprintf("open owning run %s: %v", req.TargetRunID, err))
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return ambiguous(fmt.Sprintf("read owning run %s identity: %v", req.TargetRunID, err))
+	}
+	if id.RunID != req.TargetRunID || id.Workflow != req.Workflow || id.StartedAt.IsZero() {
+		return ambiguous(fmt.Sprintf("branch %q does not match owning run identity", req.Branch))
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return unreadable(fmt.Sprintf("read owning run %s events: %v", req.TargetRunID, err))
+	}
+	owned := false
+	var terminalAt time.Time
+	for _, event := range events {
+		if event.Type == journal.EventRefTouched && event.ExternalRef != nil &&
+			event.ExternalRef.Provider == "github" && event.ExternalRef.Kind == "branch" && event.ExternalRef.ID == req.Branch {
+			owned = true
+		}
+		if event.Type == journal.EventRunFinished {
+			terminalAt = event.Time
+		}
+	}
+	if !owned {
+		return ambiguous(fmt.Sprintf("owning run %s has no journaled reference to branch %q", req.TargetRunID, req.Branch))
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return unreadable(fmt.Sprintf("read owning run %s phase: %v", req.TargetRunID, err))
+	}
+	if terminalBranchOwnershipPhase(phase) && terminalAt.IsZero() {
+		return unreadable(fmt.Sprintf("owning run %s has no timestamped terminal event", req.TargetRunID))
+	}
+	return BranchOwnershipResponse{Owner: &BranchOwnership{
+		Workflow: req.Workflow, RunID: req.TargetRunID, StartedAt: id.StartedAt, TerminalAt: terminalAt, Phase: string(phase),
+	}}, nil
+}
+
+// terminalBranchOwnershipPhase mirrors reconcile-branches's own
+// terminalBranchRunPhase — duplicated rather than imported to avoid a
+// cmd/goobers dependency from this package.
+func terminalBranchOwnershipPhase(phase journal.RunPhase) bool {
+	switch phase {
+	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+		return true
+	default:
+		return false
+	}
 }
 
 // UnpushedDiffMetaArtifactSuffix / UnpushedDiffSchemaPrefix mirror

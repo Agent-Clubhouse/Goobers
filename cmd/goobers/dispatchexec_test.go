@@ -139,24 +139,25 @@ func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
 	}
 }
 
-// The kind-based half of the same backstop: inputs.kind=external-telemetry
-// has no pod-side execution path regardless of GOOBERS_INSTANCE_ROOT (its
-// executor is built from the instance's connector configuration, which lives
-// under a config directory a pod does not have), and the dispatcher stamps a
-// declared input as GOOBERS_INPUT_<KEY> exactly as the local executor does
-// (buildStageEnv), so GOOBERS_INPUT_KIND is what a real external-telemetry
-// pod would actually carry.
+// The kind-based half of the same backstop: an unrecognized inputs.kind has
+// no pod-side execution path regardless of GOOBERS_INSTANCE_ROOT (the
+// allowlist direction — internal/executor/shell.go's
+// stageKindsWithPodExecution — refuses anything not explicitly admitted),
+// and the dispatcher stamps a declared input as GOOBERS_INPUT_<KEY> exactly
+// as the local executor does (buildStageEnv), so GOOBERS_INPUT_KIND is what
+// a real pod would actually carry.
 //
-// ci-poll used to be this test's subject and deliberately is not any more:
-// #3881 gave it an in-pod path (dispatchcipoll.go), and
+// ci-poll used to be this test's subject and deliberately is not any more
+// (#3881 gave it an in-pod path, dispatchcipoll.go); external-telemetry
+// followed at #4341 (dispatchexternaltelemetry.go).
 // TestRunDeclaredStageNoLongerRefusesCIPoll is the ablation that pins the
-// removal.
+// ci-poll removal.
 func TestRunDeclaredStageRefusesKindWithoutInstanceRoot(t *testing.T) {
-	t.Setenv(dispatcher.EnvStageCommand, `["goobers","external-telemetry"]`)
+	t.Setenv(dispatcher.EnvStageCommand, `["goobers","some-future-kind"]`)
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
-	t.Setenv("GOOBERS_INPUT_KIND", "external-telemetry")
+	t.Setenv("GOOBERS_INPUT_KIND", "some-future-kind")
 
 	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {

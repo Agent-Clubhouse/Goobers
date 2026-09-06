@@ -826,6 +826,27 @@ func (c *Config) GitHubBotLogins() map[string]string {
 	return logins
 }
 
+// ExternalTelemetryConnectorsByName indexes every configured external
+// telemetry connector by its own Name, with Auth.Token cleared — a
+// credential REFERENCE (an env/file name), never a secret value, but still
+// not this process's to hand to a pod: the pod resolves the actual secret
+// through the credential plane instead (#4341), exactly as every other pod
+// capability does. Threaded at wiring (workerdispatch.go) the same way
+// GitHubBotLogins is, and for the same reason: only the daemon can read the
+// instance config, so it resolves this once here rather than a pod trying
+// and failing to read a config directory it does not have.
+func (c *Config) ExternalTelemetryConnectorsByName() map[string]externaltelemetry.ConnectorConfig {
+	if c == nil || len(c.ExternalTelemetry.Connectors) == 0 {
+		return nil
+	}
+	connectors := make(map[string]externaltelemetry.ConnectorConfig, len(c.ExternalTelemetry.Connectors))
+	for _, connector := range c.ExternalTelemetry.Connectors {
+		connector.Auth.Token = nil
+		connectors[connector.Name] = connector
+	}
+	return connectors
+}
+
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {

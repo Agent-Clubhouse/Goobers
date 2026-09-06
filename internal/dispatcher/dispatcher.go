@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -153,6 +154,18 @@ type Config struct {
 	// an EMPTY login, which the pod reads as "resolved: none declared" and
 	// serves through GET /user exactly as the local substrate does.
 	BotLogins map[string]string
+	// ExternalTelemetryConnectors is the instance config's declared external
+	// telemetry connectors, keyed by their own Name — i.e. a map built from
+	// instance.Config.ExternalTelemetry.Connectors, threaded at wiring
+	// (workerdispatch.go) exactly like BotLogins above and for the same class
+	// of reason: this process can read the instance config and a stage pod
+	// cannot (#4341). Only the ONE connector a stage's inputs.connector names
+	// is ever stamped to that stage's own pod — never this whole map — so a
+	// pod never learns another connector's configuration. Auth.Token (a
+	// credential REFERENCE, never a secret value) is stripped before
+	// stamping; the pod resolves the actual secret through the credential
+	// plane instead, exactly as every other pod capability does.
+	ExternalTelemetryConnectors map[string]externaltelemetry.ConnectorConfig
 	// TmpfsSizeLimit overrides DefaultTmpfsSizeLimit; zero uses the default.
 	TmpfsSizeLimit resource.Quantity
 	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.

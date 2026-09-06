@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -30,7 +30,9 @@ const (
 
 type branchReconcileOptions struct {
 	Repository providers.RepositoryRef
-	RunsDir    string
+	CrossRun   journalclient.CrossRun
+	RunID      string
+	Gaggle     string
 	Prefix     string
 	After      string
 	Limit      int
@@ -154,11 +156,23 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = log.Close() }()
 
+	crossRun, err := stageCrossRunJournal(root, func(msg string) { pf(stderr, "warning: %s\n", msg) })
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	report, err := reconcileRemoteBranches(ctx, provider, log, branchReconcileOptions{
 		Repository: repo,
-		RunsDir:    layoutFor(root).RunsDir(),
+		CrossRun:   crossRun,
+		// RunID is only the plane's containment key: the HTTP backend fills
+		// it from its own environment-derived config regardless of what is
+		// sent here, and the file backend never reads it at all, so no
+		// GOOBERS_RUN_ID requirement is added by this stage.
+		RunID:      os.Getenv(executor.RunIDEnvVar),
+		Gaggle:     providerGaggle(),
 		Prefix:     prefix,
 		After:      *after,
 		Limit:      *limit,
@@ -232,7 +246,7 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 		report.Scanned++
 		report.NextAfter = branch.Name
 
-		owner, reason, inspectErr := inspectBranchOwner(opts.RunsDir, opts.Prefix, branch.Name)
+		owner, reason, inspectErr := inspectBranchOwner(ctx, opts.CrossRun, opts.RunID, opts.Gaggle, opts.Prefix, branch.Name)
 		if inspectErr != nil {
 			report.Preserved++
 			report.Ambiguous++
@@ -434,7 +448,12 @@ func reconcileRemoteBranches(ctx context.Context, provider providers.BranchRecon
 	return report, nil
 }
 
-func inspectBranchOwner(runsDir, prefix, branch string) (branchReconcileOwner, string, error) {
+// inspectBranchOwner resolves branch's <workflow>/<run-id> and asks the
+// cross-run journal plane whether that run actually owns it (#4344) — the
+// daemon's own decomposition FindEscalationCandidates-style question, run
+// where the runs tree actually lives rather than a pod opening another run's
+// journal directly.
+func inspectBranchOwner(ctx context.Context, crossRun journalclient.CrossRun, runID, gaggle, prefix, branch string) (branchReconcileOwner, string, error) {
 	relative, ok := strings.CutPrefix(branch, prefix)
 	if !ok {
 		return branchReconcileOwner{}, "ambiguous-ownership", fmt.Errorf("branch %q is outside prefix %q", branch, prefix)
@@ -443,47 +462,29 @@ func inspectBranchOwner(runsDir, prefix, branch string) (branchReconcileOwner, s
 	if len(parts) != 2 || parts[0] == "" || !apiv1.ValidRunID(parts[1]) {
 		return branchReconcileOwner{}, "ambiguous-ownership", fmt.Errorf("branch %q does not match %s<workflow>/<run-id>", branch, prefix)
 	}
-	workflow, runID := parts[0], parts[1]
-	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	workflow, targetRunID := parts[0], parts[1]
+	response, err := crossRun.BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: runID, Gaggle: gaggle, TargetRunID: targetRunID, Workflow: workflow, Branch: branch,
+	})
 	if err != nil {
-		return branchReconcileOwner{}, "ambiguous-ownership", fmt.Errorf("open owning run %s: %w", runID, err)
+		return branchReconcileOwner{}, "ambiguous-ownership", fmt.Errorf("branch ownership lookup for %s: %w", targetRunID, err)
 	}
-	id, err := rd.Identity()
-	if err != nil {
-		return branchReconcileOwner{}, "ambiguous-ownership", fmt.Errorf("read owning run %s identity: %w", runID, err)
-	}
-	if id.RunID != runID || id.Workflow != workflow || id.StartedAt.IsZero() {
-		return branchReconcileOwner{}, "ambiguous-ownership", fmt.Errorf("branch %q does not match owning run identity", branch)
-	}
-	events, err := rd.Events()
-	if err != nil {
-		return branchReconcileOwner{}, "run-journal-unreadable", fmt.Errorf("read owning run %s events: %w", runID, err)
-	}
-	owned := false
-	var terminalAt time.Time
-	for _, event := range events {
-		if event.Type == journal.EventRefTouched && event.ExternalRef != nil &&
-			event.ExternalRef.Provider == string(providers.ProviderGitHub) &&
-			event.ExternalRef.Kind == "branch" && event.ExternalRef.ID == branch {
-			owned = true
+	if response.Owner == nil {
+		reason := response.Reason
+		if reason == "" {
+			reason = "ambiguous-ownership"
 		}
-		if event.Type == journal.EventRunFinished {
-			terminalAt = event.Time
+		detail := response.Detail
+		if detail == "" {
+			detail = fmt.Sprintf("owning run %s did not confirm ownership of branch %q", targetRunID, branch)
 		}
+		return branchReconcileOwner{}, reason, errors.New(detail)
 	}
-	if !owned {
-		return branchReconcileOwner{}, "ambiguous-ownership", fmt.Errorf("owning run %s has no journaled reference to branch %q", runID, branch)
+	owner := branchReconcileOwner{
+		Workflow: response.Owner.Workflow, RunID: response.Owner.RunID,
+		StartedAt: response.Owner.StartedAt, TerminalAt: response.Owner.TerminalAt, Phase: journal.RunPhase(response.Owner.Phase),
 	}
-	phase, err := rd.Phase()
-	if err != nil {
-		return branchReconcileOwner{}, "run-journal-unreadable", fmt.Errorf("read owning run %s phase: %w", runID, err)
-	}
-	if terminalBranchRunPhase(phase) && terminalAt.IsZero() {
-		return branchReconcileOwner{}, "run-journal-unreadable", fmt.Errorf("owning run %s has no timestamped terminal event", runID)
-	}
-	return branchReconcileOwner{
-		Workflow: workflow, RunID: runID, StartedAt: id.StartedAt, TerminalAt: terminalAt, Phase: phase,
-	}, "", nil
+	return owner, "", nil
 }
 
 func terminalBranchRunPhase(phase journal.RunPhase) bool {

@@ -165,6 +165,9 @@ type CrossRun interface {
 	// the daemon for HTTP) instead of exposed to a pod as raw run-directory
 	// traversal (#4342).
 	EscalationCandidates(ctx context.Context, req EscalationCandidatesRequest) ([]EscalationCandidate, error)
+	// BranchOwnership answers whether TargetRunID's journal actually owns
+	// Branch, and if so its identity and terminal/ref facts (#4344).
+	BranchOwnership(ctx context.Context, req BranchOwnershipRequest) (BranchOwnershipResponse, error)
 }
 
 // ConflictTouchRequest asks for base-sync conflict history in one gaggle.
@@ -277,6 +280,52 @@ type RunPhaseRequest struct {
 type RunPhaseResponse struct {
 	RunID string `json:"runId"`
 	Phase string `json:"phase"`
+}
+
+// BranchOwnershipRequest asks whether TargetRunID's journal actually owns
+// Branch — reconcile-branches's own check before a candidate branch is
+// preserved or deleted (#4344).
+type BranchOwnershipRequest struct {
+	// RunID is the asking run — the plane's containment key.
+	RunID string `json:"runId"`
+	// Gaggle scopes the lookup, as for RunPhaseRequest.
+	Gaggle string `json:"gaggle,omitempty"`
+	// TargetRunID is the run id parsed out of the branch name
+	// (<prefix><workflow>/<run-id>). It must belong to the same gaggle as
+	// RunID.
+	TargetRunID string `json:"targetRunId"`
+	// Workflow is the workflow name parsed out of the branch name; it must
+	// match TargetRunID's own recorded workflow, or ownership is refused.
+	Workflow string `json:"workflow"`
+	// Branch is the full branch name TargetRunID must have journaled a
+	// ref.touched event naming, or ownership is refused.
+	Branch string `json:"branch"`
+}
+
+// BranchOwnership is the owning run's identity and terminal/ref facts —
+// nothing else about the run crosses the boundary.
+type BranchOwnership struct {
+	Workflow   string    `json:"workflow"`
+	RunID      string    `json:"runId"`
+	StartedAt  time.Time `json:"startedAt"`
+	TerminalAt time.Time `json:"terminalAt,omitempty"`
+	Phase      string    `json:"phase"`
+}
+
+// BranchOwnershipResponse is the plane's answer. Owner is nil when ownership
+// could not be established; Reason then names why
+// ("ambiguous-ownership"/"run-journal-unreadable"), matching
+// reconcile-branches's own pre-existing outcome vocabulary so callers keep
+// reporting the same reasons regardless of backend. Detail is the
+// human-readable explanation reconcile-branches journals alongside the
+// reason; it is data, not a Go error — an unresolved ownership question is
+// reconcile-branches's ordinary "preserve this branch" outcome, not a
+// request failure, so it must reach both backends as a 200 answer rather
+// than surface as an HTTP error status.
+type BranchOwnershipResponse struct {
+	Owner  *BranchOwnership `json:"owner,omitempty"`
+	Reason string           `json:"reason,omitempty"`
+	Detail string           `json:"detail,omitempty"`
 }
 
 // DefaultMaxInlineDiffBytes bounds an inline stranded diff when a caller

@@ -202,17 +202,21 @@ type stageOutcome struct {
 //
 // A DETERMINISTIC stage may still not be a command: `inputs.kind` selects a
 // built-in Go executor, and the declared command is a placeholder the local
-// path never shells out either (internal/executor's TaskExecutor). ci-poll is
-// the one such kind with a pod-side path today (decision 005 C5, #3881); every
-// other kind is refused before dispatch and again by runDeclaredStage's
-// backstop, so falling through to the placeholder command is unreachable for
-// them rather than merely unlikely.
+// path never shells out either (internal/executor's TaskExecutor). ci-poll
+// (decision 005 C5, #3881) and external-telemetry (#4341) are the two such
+// kinds with a pod-side path today; every other kind is refused before
+// dispatch and again by runDeclaredStage's backstop, so falling through to
+// the placeholder command is unreachable for them rather than merely
+// unlikely.
 func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
 		return runAgenticStage(ctx, stdout, stderr)
 	}
-	if strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) == executor.KindCIPoll {
+	switch strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) {
+	case executor.KindCIPoll:
 		return stageOutcome{Result: runCIPollStage(ctx, stderr)}
+	case executor.KindExternalTelemetry:
+		return stageOutcome{Result: runExternalTelemetryStage(ctx, stderr)}
 	}
 	return stageOutcome{Result: runDeclaredStage(ctx, stdout, stderr)}
 }
