@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+type adoMutationRecorder struct {
+	refs []ExternalRef
+}
+
+func (r *adoMutationRecorder) RecordExternalRef(_ context.Context, ref ExternalRef) {
+	r.refs = append(r.refs, ref)
+}
+
 func TestADOProviderPostPullRequestThreadComment(t *testing.T) {
 	type threadComment struct {
 		ParentCommentID int    `json:"parentCommentId"`
@@ -41,7 +49,11 @@ func TestADOProviderPostPullRequestThreadComment(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	recorder := &adoMutationRecorder{}
+	provider := NewADOProvider("org", "project", "token",
+		func(p *ADOProvider) { p.BaseURL = server.URL },
+	)
+	provider.SetMutationRecorder(recorder)
 	comment, err := provider.PostPullRequestThreadComment(
 		context.Background(),
 		RepositoryRef{Name: "repo", Project: "project"},
@@ -70,6 +82,10 @@ func TestADOProviderPostPullRequestThreadComment(t *testing.T) {
 	}
 	if comment.Body != "goobers merge-review verdict-json {...}" {
 		t.Fatalf("comment.Body = %q", comment.Body)
+	}
+	if len(recorder.refs) != 1 || recorder.refs[0].Provider != ProviderADO ||
+		recorder.refs[0].Ref != "ado#42" || recorder.refs[0].Operation != "comment" {
+		t.Fatalf("mutation refs = %#v", recorder.refs)
 	}
 	if comment.CreatedAt == nil || comment.CreatedAt.UTC().Format("2006-01-02T15:04:05Z") != "2026-08-08T10:00:00Z" {
 		t.Fatalf("comment.CreatedAt = %v", comment.CreatedAt)

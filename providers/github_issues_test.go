@@ -435,6 +435,31 @@ func TestGitHubCreateWorkItemCommentReturnsIdentity(t *testing.T) {
 	}
 }
 
+func TestGitHubCreateWorkItemCommentRecordsMutation(t *testing.T) {
+	recorder := &recordingRecorder{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		writeJSON(t, w, map[string]interface{}{
+			"id": 81, "body": "prepared", "html_url": "https://github.test/comments/81",
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", WithMutationRecorder(recorder), func(p *GitHubProvider) { p.BaseURL = server.URL })
+	if _, err := provider.CreateWorkItemComment(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "7", "prepared"); err != nil {
+		t.Fatalf("CreateWorkItemComment: %v", err)
+	}
+	ref, ok := recorder.last()
+	if !ok {
+		t.Fatal("CreateWorkItemComment recorded no external ref")
+	}
+	if ref.Provider != ProviderGitHub || ref.Ref != "acme/app#7" || ref.Operation != "comment" || ref.URL != "https://github.test/comments/81" {
+		t.Fatalf("recorded ref = %+v, want provider=github ref=acme/app#7 operation=comment url=https://github.test/comments/81", ref)
+	}
+}
+
 func TestGitHubAttachWorkItemChildGuardsRevisions(t *testing.T) {
 	const revision = "2026-08-03T12:00:00Z"
 	var posts int

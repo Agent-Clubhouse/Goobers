@@ -854,6 +854,12 @@ func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo Reposit
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
 		return Comment{}, err
 	}
+	p.recordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderGitHub,
+		Ref:       issueRef(repo, id),
+		URL:       comment.HTMLURL,
+		Operation: "comment",
+	})
 	return mapGitHubComment(comment), nil
 }
 

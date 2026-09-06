@@ -146,7 +146,27 @@ func postAttributedComment(ctx context.Context, c restDoer, baseURL string, attr
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, nil)
+	var ref restComment
+	if err := c.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &ref); err != nil {
+		return err
+	}
+	switch typed := c.(type) {
+	case *GitHubProvider:
+		typed.recordExternalRef(ctx, ExternalRef{
+			Provider:  ProviderGitHub,
+			Ref:       issueRef(repo, id),
+			URL:       ref.HTMLURL,
+			Operation: "comment",
+		})
+	case *GiteaProvider:
+		typed.recordExternalRef(ctx, ExternalRef{
+			Provider:  ProviderGitea,
+			Ref:       issueRef(repo, id),
+			URL:       ref.HTMLURL,
+			Operation: "comment",
+		})
+	}
+	return nil
 }
 
 // pullRequestComments lists a pull request's issue comments, optionally

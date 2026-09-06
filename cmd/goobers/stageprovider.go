@@ -116,6 +116,11 @@ func newProviderForStage(root string, repo providers.RepositoryRef, readOnly boo
 	if err != nil {
 		return nil, err
 	}
+	if recorder := stageProviderMutationRecorder(cfg); recorder != nil {
+		if ado, ok := provider.(*providers.ADOProvider); ok {
+			ado.SetMutationRecorder(recorder)
+		}
+	}
 	configureStageAttribution(provider, root)
 	return provider, nil
 }
@@ -240,6 +245,12 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 }
 
 func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
+	if recorder := stageProviderMutationRecorder(cfg); recorder != nil {
+		if cfg.openPR {
+			return buildADOProviderForOpenPRWithRecorder(cfg.root, cfg.repo, recorder)
+		}
+		return buildADOProviderForStageWithRecorder(cfg.root, cfg.repo, recorder)
+	}
 	if cfg.openPR {
 		return newADOProviderForOpenPR(cfg.root, cfg.repo)
 	}
