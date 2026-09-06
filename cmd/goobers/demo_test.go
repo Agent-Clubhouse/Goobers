@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -151,6 +152,7 @@ func TestDemoProviderCommandAndErrors(t *testing.T) {
 }
 
 func TestInitDemoBannerGolden(t *testing.T) {
+	withDemoNetworkNoneProbe(t, func(context.Context) error { return nil })
 	root := filepath.Join(t.TempDir(), "tour")
 	var stdout, stderr bytes.Buffer
 	code := runInitWithInputForOS([]string{"--demo", root}, strings.NewReader(""), &stdout, &stderr, "linux")
@@ -254,9 +256,11 @@ func TestInitInsecureRequiresDemo(t *testing.T) {
 }
 
 // TestInitDemoInsecureIsANoOpOnSupportedPlatforms proves --insecure changes
-// nothing on Linux/macOS: no warning banner, byte-identical to plain --demo
-// apart from the flag itself.
+// nothing on a Linux/macOS host that actually has working network:none
+// isolation: no warning banner, byte-identical to plain --demo apart from
+// the flag itself.
 func TestInitDemoInsecureIsANoOpOnSupportedPlatforms(t *testing.T) {
+	withDemoNetworkNoneProbe(t, func(context.Context) error { return nil })
 	root := filepath.Join(t.TempDir(), "tour")
 	var stdout, stderr bytes.Buffer
 	code := runInitWithInputForOS([]string{"--demo", "--insecure", root}, strings.NewReader(""), &stdout, &stderr, "linux")
@@ -265,6 +269,97 @@ func TestInitDemoInsecureIsANoOpOnSupportedPlatforms(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "WITHOUT enforced network isolation") {
 		t.Fatalf("linux --demo --insecure unexpectedly warned about isolation:\n%s", stdout.String())
+	}
+}
+
+// withDemoNetworkNoneProbe overrides demoNetworkNoneProbe for the duration
+// of the calling test, restoring it afterward.
+func withDemoNetworkNoneProbe(t *testing.T, probe func(context.Context) error) {
+	t.Helper()
+	original := demoNetworkNoneProbe
+	demoNetworkNoneProbe = probe
+	t.Cleanup(func() { demoNetworkNoneProbe = original })
+}
+
+// TestInitDemoRejectsLinuxRestrictedUserNS proves #4267's fix: `goobers init
+// --demo` on a Linux host that restricts unprivileged user namespaces fails
+// with a diagnostic naming the missing capability and both remedies, instead
+// of scaffolding a demo that will later die with a bare EPERM.
+func TestInitDemoRejectsLinuxRestrictedUserNS(t *testing.T) {
+	withDemoNetworkNoneProbe(t, func(context.Context) error {
+		return fmt.Errorf("executor: network isolation probe: %w", syscall.EPERM)
+	})
+	root := filepath.Join(t.TempDir(), "tour")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS([]string{"--demo", root}, strings.NewReader(""), &stdout, &stderr, "linux")
+	if code != 2 {
+		t.Fatalf("init --demo (restricted userns): code = %d, want 2, stdout = %q", code, stdout.String())
+	}
+	for _, want := range []string{"unprivileged user namespaces", "restricted", "--insecure"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("init --demo stderr = %q, want it to contain %q", stderr.String(), want)
+		}
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("init --demo stdout = %q, want empty", stdout.String())
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("rejected demo created its target: %v", err)
+	}
+}
+
+// TestInitDemoInsecureScaffoldsOnLinuxRestrictedUserNS proves --insecure lifts
+// the Linux userns-restricted refusal the same way it already does for an
+// unsupported platform (#1545): the demo scaffolds anyway, with a warning
+// naming the same GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE escape hatch the
+// executor honors at run time (#4267).
+func TestInitDemoInsecureScaffoldsOnLinuxRestrictedUserNS(t *testing.T) {
+	withDemoNetworkNoneProbe(t, func(context.Context) error {
+		return fmt.Errorf("executor: network isolation probe: %w", syscall.EPERM)
+	})
+	root := filepath.Join(t.TempDir(), "tour")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS([]string{"--demo", "--insecure", root}, strings.NewReader(""), &stdout, &stderr, "linux")
+	if code != 0 {
+		t.Fatalf("init --demo --insecure (restricted userns): code = %d, stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("init --demo --insecure stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "created  config") {
+		t.Fatalf("init --demo --insecure did not scaffold config:\n%s", stdout.String())
+	}
+	for _, want := range []string{
+		"WITHOUT enforced network isolation",
+		"unprivileged\nuser namespaces are restricted",
+		"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1",
+		"goobers preflight",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("init --demo --insecure output missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "instance.yaml")); err != nil {
+		t.Fatalf("insecure demo did not create its target: %v", err)
+	}
+}
+
+// TestInitDemoProceedsWhenLinuxProbeFailsForOtherReasons proves only the
+// EPERM shape counts as the userns-restricted capability gap (#4267): any
+// other probe failure (e.g. a missing /bin/true) is left for the demo run
+// itself to surface, not treated as this specific, actionable case.
+func TestInitDemoProceedsWhenLinuxProbeFailsForOtherReasons(t *testing.T) {
+	withDemoNetworkNoneProbe(t, func(context.Context) error {
+		return errors.New("executor: network isolation probe: exec: \"/bin/true\": file does not exist")
+	})
+	root := filepath.Join(t.TempDir(), "tour")
+	var stdout, stderr bytes.Buffer
+	code := runInitWithInputForOS([]string{"--demo", root}, strings.NewReader(""), &stdout, &stderr, "linux")
+	if code != 0 {
+		t.Fatalf("init --demo: code = %d, stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "restricted") {
+		t.Fatalf("init --demo stdout unexpectedly named the userns-restricted case:\n%s", stdout.String())
 	}
 }
 
