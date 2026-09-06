@@ -303,9 +303,10 @@ func reconcileOpenPullRequestParks(
 		ctx, provider, repo, 0, demotedCandidates, stderr,
 	)
 	handed, handoffErrs := restoreDemotionHandoffFrom(ctx, provider, repo, namespaced, stderr)
-	pf(stdout, "open-pr reconciliation: unparked %d resolved sibling(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s), re-handed %d demoted pr(s) to remediation\n",
-		len(resolved), len(escalated), len(demoted), len(handed))
-	return append(append(append(resolvedErrs, escalationErrs...), demotionErrs...), handoffErrs...)
+	closedMoot, mootErrs := closeMootParkedPRsFrom(ctx, provider, repo, 0, namespaced, stdout, stderr)
+	pf(stdout, "open-pr reconciliation: unparked %d resolved sibling(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s), re-handed %d demoted pr(s) to remediation, closed %d moot parked pr(s)\n",
+		len(resolved), len(escalated), len(demoted), len(handed), len(closedMoot))
+	return append(append(append(append(resolvedErrs, escalationErrs...), demotionErrs...), handoffErrs...), mootErrs...)
 }
 
 func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix string) []providers.PullRequestSummary {

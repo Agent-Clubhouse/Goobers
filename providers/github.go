@@ -300,6 +300,7 @@ type githubIssue struct {
 	Title                    string                          `json:"title"`
 	Body                     string                          `json:"body"`
 	State                    string                          `json:"state"`
+	StateReason              string                          `json:"state_reason"`
 	Locked                   bool                            `json:"locked"`
 	Comments                 int                             `json:"comments"`
 	HTMLURL                  string                          `json:"html_url"`
@@ -567,6 +568,7 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Body:           issue.Body,
 		Labels:         labels,
 		State:          issue.State,
+		StateReason:    issue.StateReason,
 		Status:         statusFromLabels(labels, issue.State),
 		Assignee:       assignee,
 		Links:          links,
