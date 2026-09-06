@@ -178,6 +178,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"fix": {
 		{name: "to", takesArg: true, desc: "Target DSL version"},
+		{name: "instance-schema", desc: "Add the schemaVersion a runners: inventory requires"},
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
