@@ -88,6 +88,7 @@ spec:
         signals using its resolvable journal evidence, and write a single
         finding.md artifact naming the exact config change to propose and
         why (with evidence links).
+      workspace: repo-readonly
       capabilities:
         - telemetry:read
         - journal:read

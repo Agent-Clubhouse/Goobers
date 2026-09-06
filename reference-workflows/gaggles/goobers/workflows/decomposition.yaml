@@ -46,6 +46,7 @@ spec:
       goal: >-
         Design a coherent set of independently reviewable, single-PR slices
         for the selected parent and write the versioned decomposition plan.
+      workspace: repo-readonly
       inputs:
         artifactFile: "plan.json"
       contextFrom:

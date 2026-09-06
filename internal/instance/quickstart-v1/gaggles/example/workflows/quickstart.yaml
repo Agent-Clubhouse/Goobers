@@ -44,6 +44,7 @@ spec:
       type: agentic
       goober: reviewer
       goal: Review the committed tutorial change and report focused feedback.
+      workspace: repo
       capabilities:
         - agent:model
       next: local-ci
