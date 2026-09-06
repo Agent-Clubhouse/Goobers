@@ -704,9 +704,24 @@ func TestPrepareDashboardAPIRefusesAuthenticatedDaemonAttach(t *testing.T) {
 func TestPrepareDashboardAPIProbesTLSDaemonOverHTTPS(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
-	daemon := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+	// This test deliberately makes the probe reject the daemon's self-signed
+	// certificate, so the server-side handshake failure below ("remote
+	// error: tls: bad certificate") is the expected outcome, not a fixture
+	// bug (#4366) — but net/http's default server logs it to os.Stderr
+	// regardless, which local-ci's log-scanning classifiers have mistaken
+	// for a genuine failure signature (#4362/#4367). Route it to a discard
+	// logger instead of leaving Config.ErrorLog nil (httptest.NewServer's
+	// default is log.Default(), i.e. stderr), so this expected rejection
+	// never pollutes local-ci output. Deliberately not asserted on: the
+	// server logs it from its own connection goroutine, asynchronously with
+	// respect to the client returning below, so capturing and asserting on
+	// it would add exactly the kind of timing-dependent check this fixture
+	// fix exists to avoid.
+	daemon := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.WriteHeader(http.StatusOK)
 	}))
+	daemon.Config.ErrorLog = log.New(io.Discard, "", 0)
+	daemon.StartTLS()
 	defer daemon.Close()
 	setAPIListenAddress(t, root, strings.TrimPrefix(daemon.URL, "https://"))
 	config, err := instance.LoadConfig(layout.ConfigFile())
