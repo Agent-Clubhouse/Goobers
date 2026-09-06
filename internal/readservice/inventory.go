@@ -419,12 +419,12 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 			ActiveRuns: activeTotal,
 		},
 		Warnings:          append([]validate.CodedWarning{}, inventory.warnings...),
-			Maintenance:     maintenance,
+		Maintenance:       maintenance,
 		MemoryHighWater:   memoryHighWater,
 		MemoryGateEnabled: !memoryGateDisabled,
 		FsyncDisabled:     journal.FsyncDisabled(),
 		FleetEnrolled:     fleetEnrolled,
-		}, nil
+	}, nil
 }
 
 // Gaggles returns configured gaggles sorted by identity.
