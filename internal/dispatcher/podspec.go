@@ -134,6 +134,21 @@ const (
 	//     local substrate would have said "" too.
 	//   - PRESENT AND SET: the login, applied as providers.WithConfiguredLogin.
 	ProviderBotLoginEnv = "GOOBERS_PROVIDER_BOT_LOGIN"
+	// ExternalTelemetryConnectorEnv carries the ONE connector's non-secret
+	// ConnectorConfig, JSON-encoded, that an inputs.kind=external-telemetry
+	// stage's inputs.connector names — resolved daemon-side at dispatch,
+	// where the instance config is readable, exactly like ProviderBotLoginEnv
+	// above (#4341). Auth.Token is never populated here: it is a credential
+	// REFERENCE the pod has no use for, since the pod resolves the actual
+	// secret through the credential plane under telemetry:read instead.
+	//
+	// Stamped ONLY for an external-telemetry stage naming a connector this
+	// process actually has configured — never unconditionally, and never the
+	// whole connector map. A stage whose inputs.connector names nothing
+	// configured gets no stamp at all, which the pod's own executor
+	// construction (dispatchexternaltelemetry.go) refuses loudly rather than
+	// silently defaulting to an empty connector.
+	ExternalTelemetryConnectorEnv = "GOOBERS_EXTERNAL_TELEMETRY_CONNECTOR"
 	// EnvBlobEndpoint is the network blob endpoint URL the pod fetches/puts
 	// artifact digests against (decision 010) — present on EVERY runner
 	// class, restricted included (§2a: it is the class's own data path).
@@ -400,6 +415,15 @@ const (
 	executorBaseBranchEnv         = "GOOBERS_BASE_BRANCH"
 	executorTriggerRefEnv         = "GOOBERS_TRIGGER_REF"
 	executorNeedsHumanAssigneeEnv = "GOOBERS_NEEDS_HUMAN_ASSIGNEE"
+	// executorInputKindKey, executorKindExternalTelemetry and
+	// executorInputTelemetryConnector restate executor.InputKind (itself
+	// boundedwait.InputKind), executor.KindExternalTelemetry, and
+	// executor.InputTelemetryConnector for the same layering reason as the
+	// block above. Pinned against the originals by
+	// TestExternalTelemetryConnectorEnvNamesMatchExecutor.
+	executorInputKindKey            = "kind"
+	executorKindExternalTelemetry   = "external-telemetry"
+	executorInputTelemetryConnector = "connector"
 )
 
 // Workspace and temp paths — the base-image contract half of the mount
@@ -1111,6 +1135,9 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		// different facts on the far side.
 		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: providerBotLogin(cfg, attempt)})
 	}
+	if stamp := externalTelemetryConnectorStamp(cfg, attempt); stamp != "" {
+		env = append(env, corev1.EnvVar{Name: ExternalTelemetryConnectorEnv, Value: stamp})
+	}
 	if ws := strings.TrimSpace(attempt.Workspace); ws != "" {
 		env = append(env, corev1.EnvVar{Name: EnvStageWorkspace, Value: ws})
 	}
@@ -1175,6 +1202,38 @@ func providerBotLogin(cfg Config, attempt Attempt) string {
 		return ""
 	}
 	return cfg.BotLogins[instance.GitHubBotLoginKey(owner, name)]
+}
+
+// externalTelemetryConnectorStamp JSON-encodes the ONE connector this
+// attempt's inputs.connector names, from cfg.ExternalTelemetryConnectors —
+// the daemon-resolved index a pod cannot build itself (#4341). "" for any
+// stage that is not inputs.kind=external-telemetry, for one that names no
+// connector, and for one that names a connector this process has no
+// configuration for: the pod's own executor construction
+// (dispatchexternaltelemetry.go) refuses loudly on a missing stamp rather
+// than this function guessing at a diagnostic it cannot deliver.
+func externalTelemetryConnectorStamp(cfg Config, attempt Attempt) string {
+	if attempt.Inputs[executorInputKindKey] != executorKindExternalTelemetry {
+		return ""
+	}
+	name := strings.TrimSpace(attempt.Inputs[executorInputTelemetryConnector])
+	if name == "" {
+		return ""
+	}
+	connector, ok := cfg.ExternalTelemetryConnectors[name]
+	if !ok {
+		return ""
+	}
+	// Cleared HERE too, not only by the config-side helper that is meant to
+	// have already done it (instance.Config.ExternalTelemetryConnectorsByName):
+	// a stage pod must never receive a credential reference, and this is the
+	// one place that decides what actually crosses the boundary.
+	connector.Auth.Token = nil
+	encoded, err := json.Marshal(connector)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // planeEnv is the MACHINE PLANE stamp (Goobers#3897): the endpoint/bearer
