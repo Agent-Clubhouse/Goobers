@@ -750,12 +750,12 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 		return fmt.Errorf("read stale marker: %w", markerErr)
 	}
 	if err := retryOnFileLock(ctx, func() error {
-		return runGit(ctx, repoDir, "worktree", "remove", "--force", path)
+		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", path)
 	}); err != nil {
 		if err := retryOnFileLock(ctx, func() error { return os.RemoveAll(path) }); err != nil {
 			return fmt.Errorf("remove stale worktree directory: %w", err)
 		}
-		if err := runGit(ctx, repoDir, "worktree", "prune"); err != nil {
+		if err := runCleanupGit(ctx, repoDir, "worktree prune", "worktree", "prune"); err != nil {
 			return fmt.Errorf("prune stale worktree registration: %w", err)
 		}
 	}
@@ -823,7 +823,7 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	}
 
 	if err := retryOnFileLock(ctx, func() error {
-		return runGit(ctx, repoDir, "worktree", "remove", "--force", wt.Path)
+		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", wt.Path)
 	}); err != nil {
 		if worktreeMeasured && markerErr == nil {
 			if usageErr := writeMarker(markerPath, mk); usageErr != nil {

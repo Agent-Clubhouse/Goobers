@@ -428,8 +428,21 @@ func TestBaseEnvWithNilMatchesBaseEnv(t *testing.T) {
 }
 
 func TestValidName(t *testing.T) {
-	valid := []string{"DOTNET_ROOT", "npm_config_cache", "_FOO", "A1_B2", "PATH", "x"}
-	invalid := []string{"", "1FOO", "FOO=BAR", "FOO BAR", "FOO-BAR", "FOO.BAR", "npm_config_//x/:_t"}
+	valid := []string{
+		"DOTNET_ROOT", "npm_config_cache", "_FOO", "A1_B2", "PATH", "x",
+		// Windows "x86" twins (#3753): parentheses are standard in these
+		// names on every Windows install, and the sanctioned envPassthrough
+		// escape hatch must be able to express them.
+		"ProgramFiles(x86)", "CommonProgramFiles(x86)", "FOO(1)", "FOO(A_1)",
+	}
+	invalid := []string{
+		"", "1FOO", "FOO=BAR", "FOO BAR", "FOO-BAR", "FOO.BAR", "npm_config_//x/:_t",
+		// The parenthesized extension is narrowly scoped: exactly one
+		// trailing group, same charset inside, no metacharacters smuggled
+		// through it.
+		"(FOO)", "FOO(BAR)BAZ", "FOO()", "FOO(BAR", "FOO)BAR(",
+		"FOO($cmd)", "FOO(BAR;BAZ)", "FOO(BAR BAZ)", "FOO((BAR))",
+	}
 	for _, name := range valid {
 		if !ValidName(name) {
 			t.Errorf("ValidName(%q) = false, want true", name)
