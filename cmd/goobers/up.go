@@ -1393,20 +1393,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// `goobers claim`/release could wait indefinitely with no trigger-side
 	// misbehavior of its own. Its own ticker gives claims the same isolation
 	// cancelTicker/applyTicker already have from each other below.
-	claimAdminTicker := time.NewTicker(delegationSweepInterval)
-	claimAdminTickerDone := make(chan struct{})
-	go func() {
-		defer close(claimAdminTickerDone)
-		defer claimAdminTicker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-claimAdminTicker.C:
-				claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
-			}
-		}
-	}()
+	claimAdminTickerDone := startPeriodicSweep(ctx, delegationSweepInterval, func() {
+		claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
+	})
 
 	// #831's cancel sweep runs on its own ticker so a slow (wedged-stage)
 	// cancellation never delays the trigger/claim delegation sweeps above.

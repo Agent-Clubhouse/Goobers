@@ -524,6 +524,30 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 	return sweepErr
 }
 
+// startPeriodicSweep runs sweep on a fresh goroutine every interval until ctx
+// is done, then stops the ticker and closes the returned channel. Factored
+// out (rather than inlined at each call site, as runUpContextWithForce's
+// older tickers are) so adding one more periodic sweep — the claims ticker
+// #4323 splits off the trigger-delegation ticker — doesn't grow that
+// already-large function's cyclomatic complexity.
+func startPeriodicSweep(ctx context.Context, interval time.Duration, sweep func()) (done chan struct{}) {
+	ticker := time.NewTicker(interval)
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sweep()
+			}
+		}
+	}()
+	return done
+}
+
 // pendingTriggerQueueStats reports how many *.request.json files currently
 // sit under schedulerDir/pending-triggers and the age of the oldest one, so
 // an operator (`goobers status`) can see a growing backlog before it turns
