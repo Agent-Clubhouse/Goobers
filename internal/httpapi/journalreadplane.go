@@ -51,6 +51,9 @@ type RunJournalService interface {
 	// UnpushedWork answers the stranded-diff question for the asking run's
 	// OWN claimed items, which the implementation derives rather than trusts.
 	UnpushedWork(ctx context.Context, req journalclient.UnpushedWorkRequest) (journalclient.UnpushedWorkResponse, error)
+	// EscalationCandidates answers the gaggle's outstanding decomposition
+	// escalation candidates (#4342).
+	EscalationCandidates(ctx context.Context, req journalclient.EscalationCandidatesRequest) (journalclient.EscalationCandidatesResponse, error)
 }
 
 // WithRunJournalService enables the cross-run journal-plane routes.
@@ -198,6 +201,36 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 		if err != nil {
 			writePlaneError(w, errorLog, "read prior unpushed work", err)
 			return
+		}
+		writeJSON(w, http.StatusOK, response)
+	})
+
+	router.Handle(apicontract.RouteJournalEscalationCandidates, func(w http.ResponseWriter, request *http.Request) {
+		if unavailable(w) {
+			return
+		}
+		if status, code, message := validateMutationTransport(request); status != 0 {
+			writeError(w, status, code, message)
+			return
+		}
+		var input journalclient.EscalationCandidatesRequest
+		if err := decodeWriteRequest(request, &input); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+			return
+		}
+		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
+			return
+		}
+		if !podBodyRunContained(w, request, input.RunID, "read its gaggle's decomposition escalation candidates") {
+			return
+		}
+		response, err := service.EscalationCandidates(request.Context(), input)
+		if err != nil {
+			writePlaneError(w, errorLog, "read decomposition escalation candidates", err)
+			return
+		}
+		if response.Candidates == nil {
+			response.Candidates = []journalclient.EscalationCandidate{}
 		}
 		writeJSON(w, http.StatusOK, response)
 	})

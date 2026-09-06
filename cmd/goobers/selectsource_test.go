@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -33,7 +35,7 @@ type selectSourceRunOptions struct {
 
 func buildSelectSourceRun(t *testing.T, root string, opts selectSourceRunOptions) {
 	t.Helper()
-	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+	run, err := journal.Create(instance.NewLayout(root).ForGaggle("goobers").RunsDir(), journal.RunIdentity{
 		RunID:           opts.runID,
 		Workflow:        "implementation",
 		WorkflowVersion: 1,
@@ -94,6 +96,7 @@ func nonRetryableEscalationEvents(code, message string) []journal.Event {
 func decompositionInstanceEnv(t *testing.T, root string) {
 	t.Helper()
 	t.Setenv("GOOBERS_RUN_ID", "decomposition-run-1")
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	t.Setenv("GOOBERS_WORKFLOW", "decomposition")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", providers.LabelApproved)
 }
@@ -146,10 +149,7 @@ func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open claim ledger: %v", err)
 	}
-	entry, ok := ledger.LookupScoped(localscheduler.ClaimKey{Gaggle: "", Provider: "github", ExternalID: "501"})
-	if !ok {
-		entry, ok = ledger.Lookup("501")
-	}
+	entry, ok := ledger.LookupScoped(localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "501"})
 	if !ok || entry.RunID != "decomposition-run-1" {
 		t.Fatalf("ledger entry for 501 = %+v, ok=%v, want held by decomposition-run-1", entry, ok)
 	}
@@ -170,7 +170,7 @@ func TestSelectSourceFailsClosedWithoutTrustLabel(t *testing.T) {
 
 func TestSelectSourceExcludesResumedThenCompletedRun(t *testing.T) {
 	root := t.TempDir()
-	run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+	run, err := journal.Create(instance.NewLayout(root).ForGaggle("goobers").RunsDir(), journal.RunIdentity{
 		RunID: "resumed-1", Workflow: "implementation", WorkflowVersion: 1, Gaggle: "goobers",
 		Trigger:   journal.Trigger{Kind: journal.TriggerSchedule},
 		StartedAt: time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC),
@@ -492,16 +492,22 @@ func TestSelectSourceFailsClosedOnIneligibleParent(t *testing.T) {
 }
 
 // TestSelectSourceClaimPreventsDoubleClaim uses a fresh ledger snapshot for
-// every attempt, matching separate select-source processes racing on one file.
+// every attempt, matching separate select-source processes racing on one
+// file — through the same claims-plane seam (openStageClaimLedger) select-
+// source itself now claims through (#4342), so this proves the production
+// path's own mutual exclusion rather than a bespoke helper's.
 func TestSelectSourceClaimPreventsDoubleClaim(t *testing.T) {
 	root := t.TempDir()
-	schedulerDir := filepath.Join(root, "scheduler")
-	instanceLog, _, err := journal.OpenInstanceLog(schedulerDir)
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := fileClaimLedger(layout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = instanceLog.Close() }()
-	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "555"}
+	ctx := context.Background()
+	key := claimsclient.Key{Gaggle: "goobers", Provider: "github", ExternalID: "555"}
 
 	const attempts = 8
 	var wg sync.WaitGroup
@@ -510,14 +516,7 @@ func TestSelectSourceClaimPreventsDoubleClaim(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ok, _, err := claimSelectSourceParent(
-				schedulerDir,
-				instanceLog,
-				key,
-				"decomposition-run-"+itoa(i),
-				"decomposition",
-				time.Hour,
-			)
+			ok, _, err := ledger.ClaimScoped(ctx, key, "decomposition-run-"+itoa(i), "decomposition", time.Hour)
 			if err != nil {
 				t.Errorf("claim run %d: %v", i, err)
 				return

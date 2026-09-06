@@ -37,13 +37,14 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// allowlist cannot become a way to smuggle one past the list below.
 		// (merge-pr was this case's subject until Goobers#3897/#3898; it is
 		// now plane-served end to end, so the exemplar moved to a command
-		// that still holds an instance-root file.)
-		{name: "ci-poll kind over a ledger command is still refused", cmd: []string{"goobers", "select-source"}, kind: "ci-poll", want: true},
+		// that still holds an instance-root file. select-source moved off this
+		// list at Goobers#4342, so the exemplar moved again, to a command that
+		// still holds one.)
+		{name: "ci-poll kind over a ledger command is still refused", cmd: []string{"goobers", "reconcile-branches"}, kind: "ci-poll", want: true},
 
 		// --- STILL REFUSED: a direct instance-root file no plane serves ---
 		// Each of these names the specific file in shell.go's map comment.
 		{name: "issue-close-out (journal read plane)", cmd: []string{"goobers", "issue-close-out"}, want: false},
-		{name: "select-source (instance log + direct claim ledger)", cmd: []string{"goobers", "select-source"}, want: true},
 		{name: "reconcile-branches (instance log + RunsDir walk)", cmd: []string{"goobers", "reconcile-branches"}, want: true},
 
 		// --- NO LONGER REFUSED: every stateful access is plane-served
@@ -75,6 +76,11 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// of a direct file-ledger open.
 		{name: "publish-batch (claims plane target lease + parent release)", cmd: []string{"goobers", "publish-batch"}, want: false},
 		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: false},
+		// select-source is Goobers#4342's subject: its escalation scan is now
+		// the cross-run journal plane's fourth question
+		// (EscalationCandidates) instead of a direct RunsDir walk, and its
+		// parent claim/release go through openStageClaimLedger.
+		{name: "select-source (journal plane scan + claims plane claim/release)", cmd: []string{"goobers", "select-source"}, want: false},
 		// gather-pr-context is Goobers#3989's subject, and the only entry that
 		// needed THREE seams at once: its remediation no-op record is a keyed
 		// scheduler-state key, its PR-claim resolution is the claims plane, and

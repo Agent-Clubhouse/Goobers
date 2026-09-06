@@ -476,6 +476,25 @@ func (h *HTTP) ConflictTouches(ctx context.Context, req ConflictTouchRequest) ([
 	return response.Touches, nil
 }
 
+// EscalationCandidates implements CrossRun over POST /journal/escalation-candidates.
+func (h *HTTP) EscalationCandidates(ctx context.Context, req EscalationCandidatesRequest) ([]EscalationCandidate, error) {
+	scope, err := h.gaggle(req.Gaggle)
+	if err != nil {
+		return nil, err
+	}
+	var response EscalationCandidatesResponse
+	if err := h.post(ctx, apicontract.JournalEscalationCandidatesPath, EscalationCandidatesRequest{
+		RunID:  h.cfg.RunID,
+		Gaggle: scope,
+	}, &response); err != nil {
+		return nil, err
+	}
+	if response.Candidates == nil {
+		return []EscalationCandidate{}, nil
+	}
+	return response.Candidates, nil
+}
+
 // UnpushedWork implements CrossRun over POST /journal/unpushed-work.
 //
 // The item list rides along for diagnostics only: the daemon derives the

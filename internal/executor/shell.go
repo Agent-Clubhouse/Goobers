@@ -480,11 +480,15 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// arm, which is claims.lock, and the daemon serves a pod's compare-and-swap
 	// under that same lock. remediation-checkpoint, which shares the guard,
 	// clears with it.
-	// select-source opens the instance log (selectsource.go:99), walks the
-	// instance's runs tree through readservice.NewOfflineRuns (:89), and
-	// leases the parent with withClaimLock + localscheduler.OpenClaimLedger
-	// directly (:219-224, :240-243) rather than through the claims seam.
-	"select-source": true,
+	// select-source is NOT here any more (Goobers#4342). Its escalation scan
+	// — previously readservice.NewOfflineRuns walking the instance's runs
+	// tree directly — is now the daemon's own decomposition.
+	// FindEscalationCandidates run behind the cross-run journal plane
+	// (journalclient.CrossRun.EscalationCandidates, apicontract's
+	// JournalEscalationCandidatesPath), the same fourth purpose-built
+	// question added alongside RunPhase/ConflictTouches/UnpushedWork. Its
+	// parent claim/release goes through openStageClaimLedger like every other
+	// migrated command instead of localscheduler.OpenClaimLedger directly.
 	// publish-batch is NOT here any more (Goobers#4340). Its decomposition
 	// TARGET LEASE — previously a decomposition.FileTargetLeaser over
 	// SchedulerDir()/decomposition-target-locks, a directory with no plane at
