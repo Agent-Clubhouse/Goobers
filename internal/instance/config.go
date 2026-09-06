@@ -2624,10 +2624,6 @@ func IsLoopbackListenAddress(address string) bool {
 	return validateLoopbackListenAddress(address) == nil
 }
 
-// WriteConfig marshals cfg as YAML and writes it to path. The write goes
-// through a staged temp file and rename (journal.WriteFileAtomic): instance.yaml
-// is the first file the daemon reads on every start, so a crash or full disk
-// mid-write must never leave a truncated one behind.
 // stampRunnersSchemaVersion records the schema revision a runners: inventory
 // implies before the config is written out.
 //
@@ -2650,6 +2646,10 @@ func stampRunnersSchemaVersion(cfg *Config) {
 	cfg.SchemaVersion = &version
 }
 
+// WriteConfig marshals cfg as YAML and writes it to path. The write goes
+// through a staged temp file and rename (journal.WriteFileAtomic): instance.yaml
+// is the first file the daemon reads on every start, so a crash or full disk
+// mid-write must never leave a truncated one behind.
 func WriteConfig(path string, cfg *Config) error {
 	yamlBytes, err := marshalConfig(cfg)
 	if err != nil {
