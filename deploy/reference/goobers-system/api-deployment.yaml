@@ -113,6 +113,20 @@ spec:
             # volume must remain single-node mounted.
             - name: journal
               mountPath: /var/lib/goobers
+            # #3839: the daemon's SpanSource reads worker-executed agentic
+            # stage spans from internal/instance/instance.go's BlobStoreDir()
+            # — <instance-root>/blobstore, i.e. /var/lib/goobers/blobstore —
+            # which is NOT part of the journal PVC above. Mounting the SAME
+            # blobs PVC the worker's --blob-store already writes to
+            # (worker-deployment.yaml) here, nested inside the instance root,
+            # makes both sides resolve to the same underlying bytes without
+            # changing the journal PVC's RWO access mode: this mountPath and
+            # the worker's /var/lib/goobers-blobs mountPath are two different
+            # paths onto the SAME PVC root. Without this mount a
+            # worker-executed stage's span is written correctly but the
+            # daemon can never read it, and reports span_unavailable forever.
+            - name: blobs
+              mountPath: /var/lib/goobers/blobstore
             # Copilot keeps runtime state under $HOME/.copilot. The container
             # root stays read-only; this state lasts for the life of the pod.
             - name: harness-home
@@ -133,5 +147,11 @@ spec:
         - name: journal
           persistentVolumeClaim:
             claimName: goobers-journal
+        # Same PVC the worker mounts as /var/lib/goobers-blobs (#3839) — see
+        # the blobs volumeMount comment above for why this must be the same
+        # claim, not a second one.
+        - name: blobs
+          persistentVolumeClaim:
+            claimName: goobers-blobs
         - name: harness-home
           emptyDir: {}

@@ -20,6 +20,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"approve-issue":                 {requiredCapabilities: []capability.Capability{capability.GitHubIssuesApprove}},
 	"assign-milestone":              {requiredCapabilities: []capability.Capability{capability.GitHubMilestonesWrite}},
 	"claim-backlog-items":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"cancel-pending-ci":             {requiredCapabilities: []capability.Capability{capability.ProviderCICancel}},
 	"clear-healed-demotions":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"clear-healed-escalations":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"clear-remediation":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
@@ -69,6 +70,7 @@ var policyActionContracts = map[string]policyActionContract{
 var commandPolicyActions = map[string][]string{
 	"apply-verdict":          {"publish-review", "route-provider-verdict", "close-pr"},
 	"backlog-assignment":     {"update-issue"},
+	"cancel-pending-ci":      {"cancel-pending-ci"},
 	"check-issue-staleness":  {"route-verdict"},
 	"file-issues":            {"create-issue", "label-issue", "comment-on-issue"},
 	"gather-sibling-context": {"flag-scope-drift", "route-verdict"},

@@ -75,15 +75,21 @@ type Link struct {
 
 // WorkItem is the flat scheduler-facing backlog model shared across providers.
 type WorkItem struct {
-	Provider       ProviderKind           `json:"provider"`
-	ID             string                 `json:"id"`
-	ExternalID     string                 `json:"externalId,omitempty"`
-	Revision       string                 `json:"revision,omitempty"`
-	Type           string                 `json:"type,omitempty"`
-	Title          string                 `json:"title"`
-	Body           string                 `json:"body,omitempty"`
-	Labels         []string               `json:"labels,omitempty"`
-	State          string                 `json:"state,omitempty"`
+	Provider   ProviderKind `json:"provider"`
+	ID         string       `json:"id"`
+	ExternalID string       `json:"externalId,omitempty"`
+	Revision   string       `json:"revision,omitempty"`
+	Type       string       `json:"type,omitempty"`
+	Title      string       `json:"title"`
+	Body       string       `json:"body,omitempty"`
+	Labels     []string     `json:"labels,omitempty"`
+	State      string       `json:"state,omitempty"`
+	// StateReason is the provider's own reason a closed item is closed (e.g.
+	// GitHub's "completed" vs. "not_planned"). Empty for a provider with no
+	// such concept or for an item that is not closed — callers that need to
+	// distinguish "done" from "dropped as out of scope" must treat empty as
+	// unknown, never as either answer.
+	StateReason    string                 `json:"stateReason,omitempty"`
 	Status         WorkItemStatus         `json:"status,omitempty"`
 	Assignee       string                 `json:"assignee,omitempty"`
 	Links          []Link                 `json:"links,omitempty"`
@@ -433,6 +439,35 @@ const (
 	CheckStatePassing CheckState = "passing"
 	CheckStateFailing CheckState = "failing"
 )
+
+// CancelPendingChecksRequest identifies the exact reviewed PR head whose
+// still-running CI may be canceled. PullID and HeadSHA are both required so
+// providers can re-check the live PR head before mutating anything.
+type CancelPendingChecksRequest struct {
+	Repository RepositoryRef `json:"repository"`
+	PullID     string        `json:"pullId"`
+	HeadSHA    string        `json:"headSha"`
+	Limit      int           `json:"limit,omitempty"`
+}
+
+// CancelPendingChecksResult is a bounded audit summary. IDs are provider-native
+// workflow/check run identifiers and never contain logs or credentials.
+type CancelPendingChecksResult struct {
+	Examined int      `json:"examined"`
+	Canceled []string `json:"canceled,omitempty"`
+	Skipped  []string `json:"skipped,omitempty"`
+}
+
+// PullRequestHeadMovedError prevents a mutation selected for an older head
+// from affecting the PR's current CI.
+type PullRequestHeadMovedError struct {
+	Expected string
+	Actual   string
+}
+
+func (e PullRequestHeadMovedError) Error() string {
+	return fmt.Sprintf("pull request head moved from %s to %s", e.Expected, e.Actual)
+}
 
 // MergeableStateUnstable is GitHub's mergeable_state value meaning the PR is
 // mergeable and the only failing or pending checks are NON-required (advisory /

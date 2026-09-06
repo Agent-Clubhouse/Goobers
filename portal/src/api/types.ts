@@ -273,12 +273,17 @@ export interface Freshness {
 export interface Instance extends ContractVersion {
   name: string;
   environment: Environment;
+  instanceRoot: string;
   ready: boolean;
   status: InstanceStatus;
   concurrency: Concurrency;
   counts: InventoryCounts;
   warnings: ValidationWarning[];
   maintenance?: MaintenanceStatus;
+  memoryHighWater?: number;
+  memoryGateEnabled: boolean;
+  fsyncDisabled: boolean;
+  fleetEnrolled: boolean;
 }
 
 export type MaintenanceState = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";

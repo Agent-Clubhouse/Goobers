@@ -10,7 +10,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,6 +75,15 @@ var delegationSweepInterval = 2 * time.Second
 // heartbeatInterval is a var so daemon tests do not wait a full minute.
 var heartbeatInterval = time.Minute
 
+// apiReadCacheLockSweepInterval bounds how often a running daemon re-sweeps
+// stale api-read-cache per-list-key lock files (cleanStaleAPIReadCacheLocks,
+// apireadcache.go). Well under apiReadCacheStaleLockAge (24h) so a lock
+// crosses the staleness cutoff and gets reclaimed within one interval of
+// becoming eligible, rather than waiting on incidental re-construction of the
+// cache from an unrelated poller (#4251). Var, not const, so tests can shrink
+// it rather than waiting out a real hour.
+var apiReadCacheLockSweepInterval = time.Hour
+
 const sweepErrorReportEvery = 12
 
 var httpShutdownGrace = 5 * time.Second
@@ -133,6 +141,36 @@ func sweepOrphanedEphemeralTmp(cfg *instance.Config, log *journal.InstanceLog) {
 	}
 	_, sweepErr := ephemeraltmp.SweepOrphans("")
 	newSweepErrorReporter(log, "ephemeral_tmp_sweep_failed").report(sweepErr)
+}
+
+// startAPIReadCacheLockSweepTicker starts the periodic re-sweep of stale
+// api-read-cache per-list-key lock files and returns the channel that closes
+// once its goroutine has stopped (for the shutdown join in runUpContext).
+//
+// #4251: cleanStaleAPIReadCacheLocks no longer gates itself to once per
+// process (apireadcache.go), so this ticker is what actually makes that
+// removal matter for a daemon whose own cache-construction call sites
+// (stage dispatch, open-PR polling, counter evaluation) might otherwise go
+// quiet for longer than apiReadCacheStaleLockAge between calls. Same
+// never-write-to-stdout footing as the other periodic sweeps in
+// runUpContext; the sweep itself is fail-open with no error to report
+// (apireadcache.go's own doc: "must never fail cache construction").
+func startAPIReadCacheLockSweepTicker(ctx context.Context, l instance.Layout) <-chan struct{} {
+	ticker := time.NewTicker(apiReadCacheLockSweepInterval)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanStaleAPIReadCacheLocks(l.SchedulerDir())
+			}
+		}
+	}()
+	return done
 }
 
 func (r *sweepErrorReporter) report(err error) {
@@ -400,13 +438,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	release, err := acquireDaemonLock(lockPath, root, livenessTimeout, &daemonBehavior{
-		WatchConfig:           *watchConfig,
-		Diagnostics:           *diagnostics,
-		DrainTimeoutNanos:     int64(*drainTimeout),
-		SkipPreflight:         *skipPreflight,
-		DisableReadModelReads: *disableReadModelReads,
-	})
+	behavior := buildStartupDaemonBehavior(stdout, startupConfig.RunConditions,
+		*watchConfig, *diagnostics, *skipPreflight, *disableReadModelReads, *drainTimeout)
+	release, err := acquireDaemonLock(lockPath, root, livenessTimeout, behavior)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -1445,6 +1479,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}()
 
+	apiReadCacheLockSweepTickerDone := startAPIReadCacheLockSweepTicker(ctx, l)
+
 	// #343's daemon-side half: periodically sweep for delegated trigger
 	// requests a short-lived `goobers run` invocation dropped after finding
 	// this daemon already holding up.lock (rundelegate.go), and dispatch
@@ -1735,6 +1771,7 @@ daemonLoop:
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-startupRetentionSweepDone
+	<-apiReadCacheLockSweepTickerDone
 	<-delegationTickerDone
 	<-claimAdminTickerDone
 	<-cancelTickerDone
@@ -1894,7 +1931,7 @@ func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localschedul
 	if setup.OpenPRRefresher != nil {
 		options = append(options, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
 	}
-	if gate := daemonMemoryGate(); gate != nil {
+	if gate := daemonMemoryGate(setup.RunConditions); gate != nil {
 		options = append(options, localscheduler.WithMemoryGate(gate))
 	}
 	options = append(options, additionalOptions...)
@@ -1914,24 +1951,55 @@ func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localschedul
 const memoryHighWaterEnv = "GOOBERS_MEMORY_HIGH_WATER"
 
 // daemonMemoryGate builds the cgroup-aware admission gate, or nil if it is
-// disabled. An unparseable value is not an error: the daemon must still start,
-// and it falls back to the built-in threshold rather than to a number that
-// would refuse every run.
-//
-// The value is parsed BEFORE the off-switch is tested, so every spelling of
-// zero ("0", "0.0", "00") disables the gate. String-matching "0" first would
-// send "0.0" down the parse path, where it succeeds as 0 and is then clamped
-// back up to the default — silently enabling the gate for an operator who was
-// trying to turn it off.
-func daemonMemoryGate() localscheduler.MemoryGate {
-	setting := strings.TrimSpace(os.Getenv(memoryHighWaterEnv))
-	if strings.EqualFold(setting, "off") {
-		return nil
+// disabled. rc.MemoryHighWater is the instance-level default;
+// GOOBERS_MEMORY_HIGH_WATER overrides it for the specific container/pod the
+// daemon was actually given (#4218) — the same YAML-then-env layering used
+// elsewhere in this package (ResolveEngineConfig, ResolveOTLPConfig).
+// instance.RunConditions.ResolveMemoryHighWater does the actual parsing so
+// `status` and the /api/v1/instance payload can report the same effective
+// value without re-deriving these rules.
+// buildStartupDaemonBehavior resolves the memory-gate and fsync settings
+// (#4218), warns on stdout when fsync is disabled, and assembles the
+// daemonBehavior published into up.lock. Pulled out of
+// runUpContextWithForce to keep that function's cyclomatic complexity from
+// re-accreting past its baseline.
+func buildStartupDaemonBehavior(
+	stdout io.Writer,
+	runConditions instance.RunConditions,
+	watchConfig, diagnostics, skipPreflight, disableReadModelReads bool,
+	drainTimeout time.Duration,
+) *daemonBehavior {
+	resolvedMemoryHighWater, memoryGateDisabled, _ := runConditions.ResolveMemoryHighWater(os.LookupEnv)
+	if warning := fsyncDisabledWarning(); warning != "" {
+		pln(stdout, warning)
 	}
-	highWater, err := strconv.ParseFloat(setting, 64)
-	if setting == "" || err != nil {
-		highWater = 0 // Clamped to the package default.
-	} else if highWater == 0 {
+	return &daemonBehavior{
+		WatchConfig:           watchConfig,
+		Diagnostics:           diagnostics,
+		DrainTimeoutNanos:     int64(drainTimeout),
+		SkipPreflight:         skipPreflight,
+		DisableReadModelReads: disableReadModelReads,
+		MemoryHighWater:       resolvedMemoryHighWater,
+		MemoryGateDisabled:    memoryGateDisabled,
+		FsyncDisabled:         journal.FsyncDisabled(),
+	}
+}
+
+// fsyncDisabledWarning returns a startup warning when GOOBERS_DISABLE_FSYNC
+// is set, or "" when it is not. Journal durability fsyncs skipped this way
+// were previously invisible outside the daemon's own environment (#4218);
+// this makes the daemon say so once, at the point an operator is most
+// likely to be watching its stdout.
+func fsyncDisabledWarning() string {
+	if !journal.FsyncDisabled() {
+		return ""
+	}
+	return "WARN: GOOBERS_DISABLE_FSYNC is set — journal durability fsyncs are skipped; a crash can lose the tail of an in-flight run"
+}
+
+func daemonMemoryGate(rc instance.RunConditions) localscheduler.MemoryGate {
+	highWater, disabled, _ := rc.ResolveMemoryHighWater(os.LookupEnv)
+	if disabled {
 		return nil
 	}
 	return localscheduler.NewCgroupMemoryGate(highWater)

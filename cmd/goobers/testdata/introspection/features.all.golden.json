@@ -540,6 +540,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "stage.run.injectRunContext",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "stage.run.network.none",
       "stability": "ga",
       "sinceVersion": "dev"

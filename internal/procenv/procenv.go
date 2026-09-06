@@ -113,11 +113,24 @@ var Vars = []string{
 var Prefixes = []string{"LC_"}
 
 // envNamePattern is the POSIX portable env var name shape
-// (IEEE Std 1003.1 §8.1): a letter or underscore followed by letters, digits,
-// or underscores. It rejects names carrying '=', NUL, or shell metacharacters,
-// so an instance-config-declared passthrough name (BaseEnvWith) can never
-// smuggle an assignment or a second var into the child env.
-var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+// (IEEE Std 1003.1 §8.1) — a letter or underscore followed by letters,
+// digits, or underscores — with one narrow, deliberate extension: an
+// optional trailing parenthesized alphanumeric/underscore group, to admit
+// the standard Windows "x86" twins (ProgramFiles(x86),
+// CommonProgramFiles(x86)) that every Windows install carries (#3753).
+// Windows permits '(' and ')' in environment variable names; POSIX does
+// not, but this repo's env-passthrough validation is the only gate a name
+// passes through before being carried into a stage's environment, so the
+// extension has to be threaded through here rather than accepted globally.
+//
+// The parenthesized group is restricted to the same charset as the rest of
+// the name (no spaces, '$', ';', or other shell metacharacters), so this
+// still rejects '=', NUL, and shell metacharacters exactly as before — an
+// instance-config-declared passthrough name (BaseEnvWith) can never smuggle
+// an assignment or a second var into the child env. It is also anchored to
+// EXACTLY one such group at the END of the name, not parentheses anywhere,
+// so "FOO(BAR)BAZ" and "(FOO)" remain invalid.
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\([A-Za-z0-9_]+\))?$`)
 
 // ValidName reports whether name is a well-formed environment variable name
 // safe to add to the allowlist. Instance-config validation uses it to fail

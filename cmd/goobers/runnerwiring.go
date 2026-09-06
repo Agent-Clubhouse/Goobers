@@ -349,6 +349,17 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		rc.Telemetry = tel
 	}
 	wtMgr.SetPathLengthLimits(pathLimits)
+	// Refreshed unconditionally, exactly like the path-length limits above —
+	// on BOTH the newly-constructed and the reused-manager path (#4405). A
+	// reused Manager's mirror-fetch exclusion previously stayed frozen at
+	// whatever namespace was configured when it was first built: a hot
+	// config reload that changes spec.branchNamespace never reached it,
+	// since WithRunBranchNamespaces above only applies inside the
+	// `wtMgr == nil` branch. SetRunBranchNamespaces accumulates rather than
+	// replaces, so a run still in flight under the OLD namespace stays
+	// protected too — see its own doc comment for why replace-semantics
+	// (SetPathLengthLimits's own shape) is the wrong model here.
+	wtMgr.SetRunBranchNamespaces(branchNamespaces[l.Gaggle()])
 	return rc, wtMgr, nil
 }
 
@@ -663,7 +674,7 @@ func (e *workflowCompileError) Unwrap() error {
 // WF-016); no registry is wired at the instance level yet, so this pins
 // version 1 for every workflow, matching run.go's existing limitation until a
 // follow-up introduces one.
-func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string, harnessCommand map[string][]string, deferModelDiscovery bool) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, envPassthrough []string, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error)) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
@@ -673,8 +684,14 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	// or admission probes the wrong runtime (bare copilot on a wrapper-only
 	// host, or a divergent bare install beside the wrapper).
 	//
+	// modelCredential (#4292) is the same instance-configured agent:model
+	// resolver the daemon-startup harness preflight already uses — passing nil
+	// here left admission-time model discovery with no way to see a
+	// file/keychain/store-sourced credential, so every deployment had to also
+	// deliver the token as a raw ambient env var just to satisfy discovery.
+	//
 	// It never executes a stage, so it binds no runner restriction.
-	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", deferModelDiscovery, nil, false)
+	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", deferModelDiscovery, modelCredential, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}

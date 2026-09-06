@@ -20,11 +20,12 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// executor.CIPollExecutor in-process in the pod
 		// (cmd/goobers/dispatchcipoll.go) with provider:pr:write resolved from
 		// the credential plane, so the kind no longer needs the daemon's
-		// instance root. external-telemetry stays: its executor is built from
-		// the instance's connector configuration, which lives under a config
-		// directory a stage pod does not have.
+		// instance root. external-telemetry LEFT it too (#4341): the
+		// dispatcher stamps the one named connector's non-secret config and
+		// dispatch-exec resolves its auth secret from the credential plane,
+		// exactly as ci-poll resolves its provider token.
 		{name: "ci-poll kind runs in a pod", cmd: []string{"goobers", "ci-poll"}, kind: "ci-poll", want: false},
-		{name: "external-telemetry kind", cmd: []string{"goobers", "external-telemetry"}, kind: "external-telemetry", want: true},
+		{name: "external-telemetry kind runs in a pod", cmd: []string{"goobers", "external-telemetry"}, kind: "external-telemetry", want: false},
 		// The allowlist direction, stated as a test: a kind this binary has
 		// never heard of (a newer engine dispatching to an older pod image) is
 		// refused rather than dispatched into a pod that would silently run the
@@ -37,15 +38,14 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// allowlist cannot become a way to smuggle one past the list below.
 		// (merge-pr was this case's subject until Goobers#3897/#3898; it is
 		// now plane-served end to end, so the exemplar moved to a command
-		// that still holds an instance-root file.)
-		{name: "ci-poll kind over a ledger command is still refused", cmd: []string{"goobers", "select-source"}, kind: "ci-poll", want: true},
+		// that still holds an instance-root file. select-source moved off this
+		// list at Goobers#4342, so the exemplar moved again, to a command that
+		// still holds one.)
+		{name: "ci-poll kind over a ledger command is still refused", cmd: []string{"goobers", "reconcile-branches"}, kind: "ci-poll", want: true},
 
 		// --- STILL REFUSED: a direct instance-root file no plane serves ---
 		// Each of these names the specific file in shell.go's map comment.
 		{name: "issue-close-out (journal read plane)", cmd: []string{"goobers", "issue-close-out"}, want: false},
-		{name: "select-source (instance log + direct claim ledger)", cmd: []string{"goobers", "select-source"}, want: true},
-		{name: "publish-batch (SchedulerDir/decomposition-target-locks)", cmd: []string{"goobers", "publish-batch"}, want: true},
-		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: true},
 		{name: "reconcile-branches (instance log + RunsDir walk)", cmd: []string{"goobers", "reconcile-branches"}, want: true},
 
 		// --- NO LONGER REFUSED: every stateful access is plane-served
@@ -70,6 +70,18 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		{name: "post-merge (scheduler-state plane)", cmd: []string{"goobers", "post-merge"}, want: false},
 		{name: "validate-plan (journal read plane)", cmd: []string{"goobers", "validate-plan"}, want: false},
 		{name: "gate-removal-guard (journal read plane)", cmd: []string{"goobers", "gate-removal-guard"}, want: false},
+		// publish-batch is Goobers#4340's subject: its target lease is now a
+		// distinctly-keyed claims-plane lease (claimsPlaneTargetLeaser) instead
+		// of a FileTargetLeaser over a local-only lock directory, and its
+		// parent claim release goes through the same claims-plane seam instead
+		// of a direct file-ledger open.
+		{name: "publish-batch (claims plane target lease + parent release)", cmd: []string{"goobers", "publish-batch"}, want: false},
+		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: false},
+		// select-source is Goobers#4342's subject: its escalation scan is now
+		// the cross-run journal plane's fourth question
+		// (EscalationCandidates) instead of a direct RunsDir walk, and its
+		// parent claim/release go through openStageClaimLedger.
+		{name: "select-source (journal plane scan + claims plane claim/release)", cmd: []string{"goobers", "select-source"}, want: false},
 		// gather-pr-context is Goobers#3989's subject, and the only entry that
 		// needed THREE seams at once: its remediation no-op record is a keyed
 		// scheduler-state key, its PR-claim resolution is the claims plane, and

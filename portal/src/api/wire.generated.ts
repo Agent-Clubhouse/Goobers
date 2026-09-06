@@ -79,6 +79,7 @@ export const goWireFixtures = {
     "schemaVersion": "v1",
     "name": "fixture",
     "environment": "dev",
+    "instanceRoot": "/instances/fixture",
     "ready": true,
     "status": "degraded",
     "concurrency": {
@@ -98,7 +99,10 @@ export const goWireFixtures = {
         "scope": "Workflow/implementation",
         "explanation": "fixture warning"
       }
-    ]
+    ],
+    "memoryGateEnabled": false,
+    "fsyncDisabled": false,
+    "fleetEnrolled": false
   },
   "portalConfig": {
     "brand": {

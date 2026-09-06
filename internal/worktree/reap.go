@@ -91,6 +91,17 @@ func (m *Manager) Reap(ctx context.Context, opts ReapOptions) ([]ReapResult, []R
 		key := rd.Name()
 		found, warned, err := m.reapRepo(ctx, key, opts)
 		if err != nil {
+			// A cleanup git subprocess timing out on one repository (#4325)
+			// must not stop every other repository's genuine orphans from
+			// being reaped — record it and keep going, same as the
+			// unreadable-marker case just below.
+			var timeoutErr *GitCleanupTimeoutError
+			if errors.As(err, &timeoutErr) {
+				warnings = append(warnings, ReapWarning{Path: timeoutErr.Path, Err: err})
+				results = append(results, found...)
+				warnings = append(warnings, warned...)
+				continue
+			}
 			return results, warnings, err
 		}
 		results = append(results, found...)
@@ -160,6 +171,14 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 
 		path := filepath.Join(m.runsDirForKey(key), directory)
 		if err := m.reapOne(ctx, key, path, markerPath, &mk); err != nil {
+			// A cleanup git subprocess timeout (#4325) skips this one
+			// worktree — reported for retry on the next sweep — rather
+			// than aborting every other worktree still queued for reaping.
+			var timeoutErr *GitCleanupTimeoutError
+			if errors.As(err, &timeoutErr) {
+				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)})
+				continue
+			}
 			return results, warnings, fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)
 		}
 		results = append(results, ReapResult{RunID: mk.RunID, Path: path, Reason: reason})
@@ -167,6 +186,11 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 
 	markerless, markerlessWarnings, err := m.reapMarkerlessWorktrees(ctx, key, seen, opts)
 	if err != nil {
+		var timeoutErr *GitCleanupTimeoutError
+		if errors.As(err, &timeoutErr) {
+			warnings = append(warnings, ReapWarning{Path: timeoutErr.Path, Err: err})
+			return results, warnings, nil
+		}
 		return results, warnings, err
 	}
 	results = append(results, markerless...)
@@ -216,6 +240,11 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 		}
 		registered, err := worktreeRegistered(ctx, m.repoDirForKey(key), path)
 		if err != nil {
+			var timeoutErr *GitCleanupTimeoutError
+			if errors.As(err, &timeoutErr) {
+				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: inspect markerless run %s: %w", worktreeID, err)})
+				continue
+			}
 			return results, warnings, fmt.Errorf("worktree: inspect markerless run %s: %w", worktreeID, err)
 		}
 		if !registered {
@@ -233,6 +262,11 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 		}
 		markerPath := m.markerPath(key, worktreeID)
 		if err := m.reapOne(ctx, key, path, markerPath, ownershipMarker); err != nil {
+			var timeoutErr *GitCleanupTimeoutError
+			if errors.As(err, &timeoutErr) {
+				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap markerless run %s: %w", worktreeID, err)})
+				continue
+			}
 			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", worktreeID, err)
 		}
 		results = append(results, ReapResult{RunID: worktreeID, Path: path, Reason: ReapReasonMarkerless})
@@ -268,12 +302,12 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 			return err
 		}
 	}
-	if err := runGit(ctx, repoDir, "worktree", "remove", "--force", path); err != nil {
+	if err := runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", path); err != nil {
 		// The worktree directory itself may already be gone (e.g. the crash
 		// happened mid-remove); prune the administrative metadata instead of
 		// failing the whole reap pass.
 		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-			if pruneErr := runGit(ctx, repoDir, "worktree", "prune"); pruneErr != nil {
+			if pruneErr := runCleanupGit(ctx, repoDir, "worktree prune", "worktree", "prune"); pruneErr != nil {
 				return pruneErr
 			}
 		} else if statErr != nil {
@@ -301,7 +335,7 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 }
 
 func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error) {
-	out, err := gitOutput(ctx, repoDir, "worktree", "list", "--porcelain")
+	out, err := runCleanupGitOutput(ctx, repoDir, "worktree list", "worktree", "list", "--porcelain")
 	if err != nil {
 		return false, err
 	}

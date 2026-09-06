@@ -227,7 +227,7 @@ func (p *GitHubProvider) Capabilities() CapabilitySet {
 		CapPRReviewSubmit, CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRUpdateBranch, CapBranchDelete,
-		CapRepoPolicyRead,
+		CapRepoPolicyRead, CapCICancel,
 		CapBacklogBlockers,
 	)
 }
@@ -323,6 +323,7 @@ type githubIssue struct {
 	Title                    string                          `json:"title"`
 	Body                     string                          `json:"body"`
 	State                    string                          `json:"state"`
+	StateReason              string                          `json:"state_reason"`
 	Locked                   bool                            `json:"locked"`
 	Comments                 int                             `json:"comments"`
 	HTMLURL                  string                          `json:"html_url"`
@@ -541,6 +542,7 @@ type githubActionsRun struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`
+	HeadSHA    string `json:"head_sha"`
 }
 
 type githubCheckAnnotation struct {
@@ -590,6 +592,7 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Body:           issue.Body,
 		Labels:         labels,
 		State:          issue.State,
+		StateReason:    issue.StateReason,
 		Status:         statusFromLabels(labels, issue.State),
 		Assignee:       assignee,
 		Links:          links,

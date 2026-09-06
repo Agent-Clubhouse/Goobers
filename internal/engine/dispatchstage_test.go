@@ -603,28 +603,28 @@ func TestSelfAndAbsentPlacementsKeepLocalArms(t *testing.T) {
 
 // Decision 003 ruling 3: a placed goobers-CLI stage that still holds a file
 // under the daemon's instance root is refused BEFORE dispatch. The exemplar
-// is select-source, which opens the instance log and leases its parent with a
-// direct claim-ledger open rather than through the claims plane
-// (cmd/goobers/selectsource.go). The refusal carries the named code in the
+// is reconcile-branches, which still opens the instance log directly for its
+// scrubbed decision-annotation writes (cmd/goobers/reconcilebranches.go,
+// Goobers#4344's own follow-up). The refusal carries the named code in the
 // run's failure (stage.finished's ErrorInfo.Code, surfaced here as
 // RunResult.FailureCode), and the dispatcher is never consulted: no activity
 // is executed, so no pod is ever created.
 //
-// This test used to lead with `backlog-query --claim`. That command is now
-// DISPATCHABLE — Goobers#3897 stamps the plane endpoints and bearers and
-// #3898 moved its annotation write and re-sweep state onto planes — and the
-// test immediately below pins that, so the two together cover both directions
-// of the same decision.
+// This test used to lead with `backlog-query --claim`, then select-source.
+// Both are now DISPATCHABLE — Goobers#3897/#3898 stamped the plane endpoints
+// and bearers and moved backlog-query's annotation write and re-sweep state
+// onto planes, and #4342 moved select-source's escalation scan and claim
+// onto planes — and the test immediately below pins the dispatchable
+// direction, so the two together cover both directions of the same decision.
 func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		Start:    "query-backlog",
 		Tasks: []apiv1.Task{
-			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "select the decomposition parent",
-				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "select-source"}, Workspace: apiv1.WorkspaceScratch},
-				Capabilities:  []string{"github:issues:write"},
-				PolicyActions: []string{"claim-backlog-items"}},
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "reconcile stale remote branches",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{"github:branch:delete"}},
 		},
 	}
 	in := runInput("mode-three-instance-root", spec)
@@ -653,7 +653,7 @@ func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "select-source") {
+	if !strings.Contains(result.FailureMessage, "reconcile-branches") {
 		t.Fatalf("failure message = %q, want it to name the refused command", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
@@ -710,27 +710,27 @@ func TestModeThreeDispatchesTheClaimingBacklogQuery(t *testing.T) {
 	}
 }
 
-// The kind-based half of the same refusal: a placed
-// `inputs.kind: external-telemetry` stage has no pod-side execution path at
-// all (no CLI subcommand backs it, and its executor is constructed from the
-// instance's connector configuration, which a pod has no config directory to
-// read) and must be refused exactly like a ledger command, never dispatched
-// to find out.
+// The kind-based half of the same refusal: a placed stage declaring a kind
+// this binary does not recognize (a newer engine dispatching to an older
+// pod image) has no pod-side execution path by construction and must be
+// refused exactly like a ledger command, never dispatched to find out.
 //
-// ci-poll was this test's subject until #3881 and deliberately is not any
-// more: it now HAS a pod-side path (cmd/goobers/dispatchcipoll.go), and
-// TestModeThreeDispatchesCIPollToAPod below is the ablation that pins the
-// removal. external-telemetry keeps the kind arm of the refusal honest.
+// ci-poll was this test's subject until #3881, and external-telemetry until
+// #4341; both deliberately are not any more — they now HAVE a pod-side path
+// (cmd/goobers/dispatchcipoll.go, cmd/goobers/dispatchexternaltelemetry.go),
+// and TestModeThreeDispatchesCIPollToAPod below is one of the ablations that
+// pins the removal. An unrecognized kind keeps the kind arm of the refusal
+// honest — the allowlist direction (Goobers#4341/internal/executor/shell.go)
+// means anything not explicitly admitted stays refused by construction.
 func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		Start:    "await-ci",
 		Tasks: []apiv1.Task{
-			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "publish telemetry",
-				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "external-telemetry"}, Workspace: apiv1.WorkspaceScratch},
-				Inputs:       map[string]string{"kind": "external-telemetry"},
-				Capabilities: []string{"telemetry:read"}},
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "run an unrecognized built-in kind",
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "some-future-kind"}, Workspace: apiv1.WorkspaceScratch},
+				Inputs: map[string]string{"kind": "some-future-kind"}},
 		},
 	}
 	in := runInput("mode-three-instance-root-kind", spec)
@@ -754,11 +754,11 @@ func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "external-telemetry") {
+	if !strings.Contains(result.FailureMessage, "some-future-kind") {
 		t.Fatalf("failure message = %q, want it to name the refused kind", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
-		t.Fatal("a kind=external-telemetry stage must never reach the dispatcher")
+		t.Fatal("a stage declaring an unrecognized kind must never reach the dispatcher")
 	}
 }
 
@@ -835,8 +835,8 @@ func TestModeThreeDispatchesCIPollToAPod(t *testing.T) {
 // with no pod-side path at run time. dispatchRemoteTask must read the
 // resolved value out of env.Inputs (which runTask overlays from inputsFrom
 // before routing), not the task's static Inputs alone — otherwise a
-// dynamically-resolved external-telemetry kind sails past this
-// guard, a pod is created, and only the pod-entrypoint backstop catches it.
+// dynamically-resolved unrecognized kind sails past this guard, a pod is
+// created, and only the pod-entrypoint backstop catches it.
 func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
@@ -858,7 +858,7 @@ func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	}}
 	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{"resolvedKind": "external-telemetry"},
+		Outputs: map[string]interface{}{"resolvedKind": "some-future-kind"},
 	}}
 	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
 
@@ -876,11 +876,11 @@ func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q (a kind resolved dynamically via inputsFrom must be refused exactly like a statically-declared one)", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "external-telemetry") {
+	if !strings.Contains(result.FailureMessage, "some-future-kind") {
 		t.Fatalf("failure message = %q, want it to name the dynamically-resolved kind", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
-		t.Fatal("a dynamically-resolved kind=external-telemetry stage must never reach the dispatcher")
+		t.Fatal("a dynamically-resolved unrecognized kind must never reach the dispatcher")
 	}
 }
 
@@ -1078,6 +1078,49 @@ func TestDispatchStageNonCLIStageCarriesNoRunContext(t *testing.T) {
 	}
 	if len(got.RunContext) != 0 {
 		t.Fatalf("non-CLI stage must carry no run context, got %v", got.RunContext)
+	}
+}
+
+// TestDispatchStageInjectRunContextOptInCarriesRunContext is #3484's mode-3
+// regression guard: a deterministic stage whose command wraps the goobers
+// CLI in another process (command[0] is not "goobers") carries no run
+// context by default — same as TestDispatchStageNonCLIStageCarriesNoRunContext
+// — but does once it declares Task.Run.InjectRunContext, mirroring the local
+// runner's identical opt-in (internal/executor/shell.go).
+func TestDispatchStageInjectRunContextOptInCarriesRunContext(t *testing.T) {
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	store := surrenderStore(t)
+	putSurrendered(t, store, "run-wrapper", "apply-verdict", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	a := &Activities{Dispatcher: fake, Surrenders: store}
+	input := dispatchInput("run-wrapper", "apply-verdict", 1)
+	input.Run = &apiv1.DeterministicRun{
+		Command:          []string{"node", "scripts/review-freshness.mjs"},
+		Workspace:        apiv1.WorkspaceScratch,
+		InjectRunContext: true,
+	}
+	input.Envelope.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers"}
+	input.Envelope.BranchNamespace = "goobernetes/"
+	input.Envelope.BaseBranch = "main"
+
+	if _, err := a.DispatchStage(context.Background(), input); err != nil {
+		t.Fatalf("a wrapper stage that opts in must dispatch: %v", err)
+	}
+	got := fake.attempts[0]
+	if !got.CLIStage {
+		t.Fatal("InjectRunContext=true must mark the attempt a CLI stage, or the pod strips the run identity it needs")
+	}
+	for name, want := range map[string]string{
+		executor.RepoProviderEnvVar:    "github",
+		executor.RepoOwnerEnvVar:       "Agent-Clubhouse",
+		executor.RepoNameEnvVar:        "Goobers",
+		executor.BranchNamespaceEnvVar: "goobernetes/",
+		executor.BaseBranchEnvVar:      "main",
+	} {
+		if got.RunContext[name] != want {
+			t.Errorf("RunContext[%s] = %q, want %q", name, got.RunContext[name], want)
+		}
 	}
 }
 

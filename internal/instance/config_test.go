@@ -2593,6 +2593,17 @@ func TestConfigValidate(t *testing.T) {
 			cfg:  Config{Runner: RunnerConfig{EnvPassthrough: []string{"DOTNET_ROOT", "MY_TOOL_HOME", "npm_config_cache"}}},
 		},
 		{
+			// #3753: the sanctioned envPassthrough escape hatch must be able
+			// to express the standard Windows "x86" twins.
+			name: "runner env passthrough windows x86 twin accepted",
+			cfg:  Config{Runner: RunnerConfig{EnvPassthrough: []string{"ProgramFiles(x86)", "CommonProgramFiles(x86)"}}},
+		},
+		{
+			name:    "runner env passthrough unbalanced parenthesis rejected",
+			cfg:     Config{Runner: RunnerConfig{EnvPassthrough: []string{"FOO(BAR"}}},
+			wantErr: "runner.envPassthrough[0]",
+		},
+		{
 			name:    "runner env passthrough with assignment rejected",
 			cfg:     Config{Runner: RunnerConfig{EnvPassthrough: []string{"FOO=BAR"}}},
 			wantErr: "runner.envPassthrough[0]",
@@ -3670,5 +3681,117 @@ func TestWriteConfigFailureLeavesExistingFileIntact(t *testing.T) {
 	}
 	if string(got) != string(original) {
 		t.Fatalf("instance.yaml = %q, want it unmodified", got)
+	}
+}
+
+func TestRunConditionsResolveMemoryHighWater(t *testing.T) {
+	lookupEnv := func(value string, set bool) func(string) (string, bool) {
+		return func(string) (string, bool) { return value, set }
+	}
+
+	for name, tc := range map[string]struct {
+		rc             RunConditions
+		env            string
+		envSet         bool
+		wantHighWater  float64
+		wantDisabled   bool
+		wantOverridden bool
+	}{
+		"unset env keeps the YAML default": {
+			rc:            RunConditions{MemoryHighWater: 0.8},
+			envSet:        false,
+			wantHighWater: 0.8,
+		},
+		"unset env and unset YAML falls back to the package default": {
+			envSet:        false,
+			wantHighWater: 0,
+		},
+		"env overrides the YAML default": {
+			rc:             RunConditions{MemoryHighWater: 0.8},
+			env:            "0.5",
+			envSet:         true,
+			wantHighWater:  0.5,
+			wantOverridden: true,
+		},
+		"env off disables the gate regardless of the YAML default": {
+			rc:             RunConditions{MemoryHighWater: 0.8},
+			env:            "off",
+			envSet:         true,
+			wantDisabled:   true,
+			wantOverridden: true,
+		},
+		"env OFF is case-insensitive": {
+			env:            "OFF",
+			envSet:         true,
+			wantDisabled:   true,
+			wantOverridden: true,
+		},
+		"env zero disables the gate": {
+			rc:             RunConditions{MemoryHighWater: 0.8},
+			env:            "0",
+			envSet:         true,
+			wantDisabled:   true,
+			wantOverridden: true,
+		},
+		"empty env falls back to the YAML default": {
+			rc:            RunConditions{MemoryHighWater: 0.8},
+			env:           "",
+			envSet:        true,
+			wantHighWater: 0.8,
+		},
+		"unparseable env falls back to the YAML default": {
+			rc:            RunConditions{MemoryHighWater: 0.8},
+			env:           "nine tenths",
+			envSet:        true,
+			wantHighWater: 0.8,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			highWater, disabled, overridden := tc.rc.ResolveMemoryHighWater(lookupEnv(tc.env, tc.envSet))
+			if highWater != tc.wantHighWater {
+				t.Errorf("highWater = %v, want %v", highWater, tc.wantHighWater)
+			}
+			if disabled != tc.wantDisabled {
+				t.Errorf("disabled = %v, want %v", disabled, tc.wantDisabled)
+			}
+			if overridden != tc.wantOverridden {
+				t.Errorf("overridden = %v, want %v", overridden, tc.wantOverridden)
+			}
+		})
+	}
+}
+
+// TestExternalTelemetryConnectorsByName is #4341's dispatcher-side lookup:
+// the index the dispatcher stamps a stage pod from must clear Auth.Token,
+// never hand a credential reference to a caller that has no business
+// resolving secrets itself, and must be nil (not an empty map) when nothing
+// is configured, matching GitHubBotLogins' own nil-means-nothing contract.
+func TestExternalTelemetryConnectorsByName(t *testing.T) {
+	cfg := &Config{ExternalTelemetry: externaltelemetry.Configuration{
+		Connectors: []externaltelemetry.ConnectorConfig{
+			{
+				Name: "adx-prod", Kind: "adx", Version: "v1",
+				Auth: externaltelemetry.AuthConfig{Mode: externaltelemetry.AuthBearerToken, Token: &externaltelemetry.CredentialRef{Env: "ADX_TOKEN"}},
+			},
+			{Name: "ambient-connector", Kind: "fake", Version: "v1"},
+		},
+	}}
+	index := cfg.ExternalTelemetryConnectorsByName()
+	if len(index) != 2 {
+		t.Fatalf("index has %d entries, want 2", len(index))
+	}
+	if connector := index["adx-prod"]; connector.Auth.Token != nil {
+		t.Fatalf("index[adx-prod].Auth.Token = %+v, want nil — a credential reference must not cross into this index", connector.Auth.Token)
+	}
+	if _, ok := index["ambient-connector"]; !ok {
+		t.Fatal("index is missing ambient-connector")
+	}
+
+	if index := (&Config{}).ExternalTelemetryConnectorsByName(); index != nil {
+		t.Fatalf("index = %v for a config with no connectors, want nil", index)
+	}
+	var nilConfig *Config
+	if index := nilConfig.ExternalTelemetryConnectorsByName(); index != nil {
+		t.Fatalf("index = %v for a nil *Config, want nil", index)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -181,6 +182,208 @@ func TestDetectStageFailureRateRequiresMinSamples(t *testing.T) {
 	for _, f := range findings {
 		if f.Kind == FindingStageFailureRate {
 			t.Fatalf("stage flagged below MinSamples: %+v", f)
+		}
+	}
+}
+
+// appendRunFailedTerminalMarker journals the universal terminal-cause error
+// event (internal/runner/run.go's failTerminal/finishStageFailure: Type:
+// EventError, Error.Code: "run_failed") that accompanies every failed run's
+// real-cause error event — reproducing the exact self-clustering shape
+// #3916 is about. seq must be past the run's last seeded event.
+func appendRunFailedTerminalMarker(t *testing.T, runsDir, runID string, seq int, ts time.Time) {
+	t.Helper()
+	path := filepath.Join(runsDir, runID, fileEvents)
+	line := eventLine(seq, ts, `"type":"error","error":{"code":"run_failed","message":"run failed"}`) + "\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("append run_failed marker: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(line); err != nil {
+		t.Fatalf("append run_failed marker: %v", err)
+	}
+}
+
+// TestDetectErrorSignaturesExcludeRunFailedSelfCluster is the regression
+// test for #3916 defect 1: run_failed is journaled on EVERY failed run
+// alongside the real cause, so left unfiltered it self-clusters into its
+// own noise finding duplicating almost the same run set as the real cause.
+func TestDetectErrorSignaturesExcludeRunFailedSelfCluster(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	for i := 0; i < 5; i++ {
+		runID := fmt.Sprintf("%032d", i)
+		startedAt := base.Add(time.Duration(i) * time.Hour)
+		seedStatsRun(t, runsDir, runID, "implement", "failed", startedAt, true, "provider.rate_limit")
+		// seedStatsRun's failing path ends at seq 7 (run.started..run.finished);
+		// the terminal marker lands one seq after, exactly where
+		// failTerminal/finishStageFailure would append it in a real run.
+		appendRunFailedTerminalMarker(t, runsDir, runID, 8, startedAt.Add(10*time.Second))
+	}
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	var rateLimit *Finding
+	for i := range findings {
+		if findings[i].Kind != FindingErrorSignature {
+			continue
+		}
+		if findings[i].Subject == "run_failed" {
+			t.Fatalf("run_failed self-clustered into its own error-signature finding: %+v", findings[i])
+		}
+		if findings[i].Subject == "provider.rate_limit" {
+			rateLimit = &findings[i]
+		}
+	}
+	if rateLimit == nil {
+		t.Fatalf("provider.rate_limit (the real cause) was not flagged, findings: %+v", findings)
+	}
+	if rateLimit.Metrics["count"] != 5 {
+		t.Errorf("count = %v, want 5", rateLimit.Metrics["count"])
+	}
+}
+
+// seedErrorClassOverrideRun writes a minimal failed run whose single error
+// event carries the same code as any other caller's but an explicit
+// runner.errorClass override — the same mechanism failTerminal uses
+// (internal/telemetry/rollup/ingest.go's errorCodeAndClass) — so two runs
+// can share a code while landing in different (code, error_class) buckets.
+func seedErrorClassOverrideRun(t *testing.T, runsDir, runID string, startedAt time.Time, code, errorClass string) {
+	t.Helper()
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(minimalRunYAML(runID, startedAt), "workflow: wf", "workflow: implement"))
+	lines := []string{
+		eventLine(1, startedAt, `"type":"run.started"`),
+		eventLine(2, startedAt.Add(time.Second), `"type":"stage.started","stage":"deploy","attempt":1`),
+		eventLine(3, startedAt.Add(2*time.Second), `"type":"error","stage":"deploy","attempt":1,"error":{"code":"`+code+`","message":"seeded"},"runner":{"errorClass":"`+errorClass+`"}`),
+		eventLine(4, startedAt.Add(3*time.Second), `"type":"stage.finished","stage":"deploy","attempt":1,"status":"failure"`),
+		eventLine(5, startedAt.Add(4*time.Second), `"type":"run.finished","status":"failed"`),
+	}
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+}
+
+// TestDetectErrorSignaturesDistinguishesSameCodeDifferentErrorClass is the
+// regression test for #3916 defect 2: two (code, error_class) signatures
+// sharing a code were previously indistinguishable on the wire because
+// Subject carried only the code — a nominator handed two byte-identical
+// Subject rows for genuinely different failure classes.
+func TestDetectErrorSignaturesDistinguishesSameCodeDifferentErrorClass(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+	const sharedCode = "github_auth_failed"
+
+	for i := 0; i < 5; i++ {
+		seedErrorClassOverrideRun(t, runsDir, fmt.Sprintf("a%031d", i), base.Add(time.Duration(i)*time.Hour), sharedCode, "app-auth")
+	}
+	for i := 0; i < 5; i++ {
+		seedErrorClassOverrideRun(t, runsDir, fmt.Sprintf("b%031d", i), base.Add(time.Duration(i+10)*time.Hour), sharedCode, "pat-auth")
+	}
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	byClass := map[string]*Finding{}
+	for i := range findings {
+		if findings[i].Kind != FindingErrorSignature || findings[i].Subject != sharedCode {
+			continue
+		}
+		byClass[findings[i].ErrorClass] = &findings[i]
+	}
+	appAuth, appAuthOK := byClass["app-auth"]
+	patAuth, patAuthOK := byClass["pat-auth"]
+	if !appAuthOK || !patAuthOK {
+		t.Fatalf("expected two distinguishable %s findings (app-auth, pat-auth), got: %+v", sharedCode, findings)
+	}
+	if appAuth.Subject != sharedCode || patAuth.Subject != sharedCode {
+		t.Fatalf("both findings must keep the shared Subject: app-auth=%q pat-auth=%q", appAuth.Subject, patAuth.Subject)
+	}
+	if len(appAuth.FlaggedRuns) != 5 || len(patAuth.FlaggedRuns) != 5 {
+		t.Fatalf("each class's runs must not cross-contaminate: app-auth=%d pat-auth=%d", len(appAuth.FlaggedRuns), len(patAuth.FlaggedRuns))
+	}
+}
+
+// TestDetectErrorSignatureFlaggedRunsCarryResolvableSeq is the regression
+// test for #3916 defect 3: flagged_runs must name the exact run_errors
+// event a nominator can cite, not just the run id — errorSignatureRuns
+// previously discarded seq entirely (queryRunIDs's shared scan has no seq
+// column to give it). This confirms the returned Seq is non-zero AND
+// resolves to the actual seeded "error" event in that run's journal, not
+// an arbitrary or off-by-one value.
+func TestDetectErrorSignatureFlaggedRunsCarryResolvableSeq(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	// Alpha-prefixed, not "%032d": a purely-numeric run id can round-trip
+	// through SQLite's dynamic column typing with its leading zeros
+	// stripped, which is an unrelated pre-existing quirk of the fixture
+	// helpers this test must not trip over — it needs the exact id back to
+	// open the run's own journal directory below.
+	for i := 0; i < 5; i++ {
+		seedStatsRun(t, runsDir, fmt.Sprintf("r%031d", i), "implement", "failed", base.Add(time.Duration(i)*time.Hour), true, "provider.rate_limit")
+	}
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	var rateLimit *Finding
+	for i := range findings {
+		if findings[i].Kind == FindingErrorSignature && findings[i].Subject == "provider.rate_limit" {
+			rateLimit = &findings[i]
+		}
+	}
+	if rateLimit == nil {
+		t.Fatalf("provider.rate_limit not flagged, findings: %+v", findings)
+	}
+	if len(rateLimit.FlaggedRuns) != 5 {
+		t.Fatalf("FlaggedRuns = %d, want 5", len(rateLimit.FlaggedRuns))
+	}
+	for _, pointer := range rateLimit.FlaggedRuns {
+		if pointer.Seq == 0 {
+			t.Fatalf("flagged run %s carries no seq: %+v", pointer.RunID, pointer)
+		}
+		// seedStatsRun's failing path journals the error event at seq 5
+		// (run.started=1, stage.started=2, stage.finished=3, stage.started=4,
+		// error=5, stage.finished=6, run.finished=7) — verify the returned
+		// seq actually names THAT event, not an arbitrary non-zero number.
+		events, err := journal.OpenRead(filepath.Join(runsDir, pointer.RunID))
+		if err != nil {
+			t.Fatalf("open journal for %s: %v", pointer.RunID, err)
+		}
+		all, err := events.Events()
+		if err != nil {
+			t.Fatalf("read events for %s: %v", pointer.RunID, err)
+		}
+		var resolved *journal.Event
+		for i := range all {
+			if all[i].Seq == pointer.Seq {
+				resolved = &all[i]
+				break
+			}
+		}
+		if resolved == nil {
+			t.Fatalf("seq %d for run %s does not resolve to any journaled event", pointer.Seq, pointer.RunID)
+		}
+		if resolved.Type != journal.EventError || resolved.Error == nil || resolved.Error.Code != "provider.rate_limit" {
+			t.Fatalf("seq %d for run %s resolved to %+v, want the provider.rate_limit error event", pointer.Seq, pointer.RunID, resolved)
 		}
 	}
 }

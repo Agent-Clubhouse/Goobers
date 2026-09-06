@@ -476,6 +476,25 @@ func (h *HTTP) ConflictTouches(ctx context.Context, req ConflictTouchRequest) ([
 	return response.Touches, nil
 }
 
+// EscalationCandidates implements CrossRun over POST /journal/escalation-candidates.
+func (h *HTTP) EscalationCandidates(ctx context.Context, req EscalationCandidatesRequest) ([]EscalationCandidate, error) {
+	scope, err := h.gaggle(req.Gaggle)
+	if err != nil {
+		return nil, err
+	}
+	var response EscalationCandidatesResponse
+	if err := h.post(ctx, apicontract.JournalEscalationCandidatesPath, EscalationCandidatesRequest{
+		RunID:  h.cfg.RunID,
+		Gaggle: scope,
+	}, &response); err != nil {
+		return nil, err
+	}
+	if response.Candidates == nil {
+		return []EscalationCandidate{}, nil
+	}
+	return response.Candidates, nil
+}
+
 // UnpushedWork implements CrossRun over POST /journal/unpushed-work.
 //
 // The item list rides along for diagnostics only: the daemon derives the
@@ -497,6 +516,28 @@ func (h *HTTP) UnpushedWork(ctx context.Context, req UnpushedWorkRequest) (*Unpu
 		return nil, err
 	}
 	return response.Work, nil
+}
+
+// BranchOwnership implements CrossRun over POST /journal/branch-ownership.
+func (h *HTTP) BranchOwnership(ctx context.Context, req BranchOwnershipRequest) (BranchOwnershipResponse, error) {
+	if strings.TrimSpace(req.TargetRunID) == "" {
+		return BranchOwnershipResponse{}, errors.New("journalclient: target run id is required")
+	}
+	scope, err := h.gaggle(req.Gaggle)
+	if err != nil {
+		return BranchOwnershipResponse{}, err
+	}
+	var response BranchOwnershipResponse
+	if err := h.post(ctx, apicontract.JournalBranchOwnershipPath, BranchOwnershipRequest{
+		RunID:       h.cfg.RunID,
+		Gaggle:      scope,
+		TargetRunID: req.TargetRunID,
+		Workflow:    req.Workflow,
+		Branch:      req.Branch,
+	}, &response); err != nil {
+		return BranchOwnershipResponse{}, err
+	}
+	return response, nil
 }
 
 var _ CrossRun = (*HTTP)(nil)

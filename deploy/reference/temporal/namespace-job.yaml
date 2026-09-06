@@ -1,0 +1,75 @@
+# Registers the Temporal namespace the reference worker/engine connect to
+# (#4287). The OSS Temporal Helm chart stands up a cluster with NO
+# namespaces — "Namespace default is not found" is not a misconfiguration,
+# it is the chart's shipped state, discovered live (Infra ledger M-24) and
+# hand-fixed with a one-off `tctl` call that was never turned into a
+# rebuild-safe step. This Job is that step.
+#
+# Idempotent by construction: `namespace describe` succeeds (exit 0, no-op)
+# once the namespace already exists, so re-running this Job on every chart
+# upgrade or cluster rebuild is always safe — it registers on first run and
+# is a silent no-op on every run after.
+#
+# Run AFTER the Temporal chart (frontend must be reachable) and BEFORE the
+# worker/engine deployments (../goobers-system/) — see the bring-up order in
+# ../README.md's Temporal section.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: goobers-temporal-namespace
+  namespace: goobers-temporal
+spec:
+  # Reruns (chart upgrade, cluster rebuild) must not fail on an
+  # already-registered namespace; backoffLimit bounds a genuine failure
+  # (frontend unreachable) rather than retrying forever.
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: register-namespace
+          # CHANGE-ME: pin to the admin-tools image matching the Temporal
+          # server version this chart deploys (values.yaml header — chart
+          # 0.62.0 at time of writing). The chart's own admintools: pod (also
+          # configured in values.yaml) already carries a compatible tctl; this
+          # image tag should track it.
+          image: temporalio/admin-tools:1.25.1
+          env:
+            # Same default the worker/engine connect to
+            # (internal/instance/config.go: DefaultTemporalNamespace) unless
+            # GOOBERS_TEMPORAL_NAMESPACE/TEMPORAL_NAMESPACE overrides it in
+            # ../goobers-system/worker-deployment.yaml — keep these in sync.
+            - name: TEMPORAL_NAMESPACE
+              value: default # CHANGE-ME: must match the worker/engine's namespace
+            - name: TEMPORAL_ADDRESS
+              value: temporal-frontend.goobers-temporal:7233
+            # #2931: short retention bounds how long any secret-shaped literal
+            # that slips past SEC001 (a warning, not an error) stays
+            # discoverable in Temporal history. CHANGE-ME per your compliance
+            # posture; 168h (7 days) is the value hand-typed live per Infra
+            # ledger M-24 and is the floor this reference ships.
+            - name: RETENTION
+              value: "168h" # CHANGE-ME: see #2931
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              if tctl --address "$TEMPORAL_ADDRESS" --namespace "$TEMPORAL_NAMESPACE" namespace describe >/dev/null 2>&1; then
+                echo "namespace $TEMPORAL_NAMESPACE already registered"
+                exit 0
+              fi
+              tctl --address "$TEMPORAL_ADDRESS" --namespace "$TEMPORAL_NAMESPACE" namespace register --retention "$RETENTION"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

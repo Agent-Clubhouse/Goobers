@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -380,6 +379,14 @@ func pruneMergedBranches(ctx context.Context, managers []*Manager, opts Retentio
 			results = append(results, repoResults...)
 			warnings = append(warnings, repoWarnings...)
 			if err != nil {
+				// A cleanup git subprocess timeout in one repository (#4325)
+				// must not stop merged-branch pruning in every other
+				// repository — record it and move on.
+				var timeoutErr *GitCleanupTimeoutError
+				if errors.As(err, &timeoutErr) {
+					warnings = append(warnings, RetentionWarning{Path: repoDir, Err: err})
+					continue
+				}
 				return results, warnings, err
 			}
 		}
@@ -417,6 +424,7 @@ func pruneRepoMergedBranches(ctx context.Context, manager *Manager, repoDir stri
 
 	var results []RetentionResult
 	var warnings []RetentionWarning
+branches:
 	for _, branch := range runs {
 		terminal := false
 		if opts.IsRunTerminal != nil {
@@ -444,6 +452,18 @@ func pruneRepoMergedBranches(ctx context.Context, manager *Manager, repoDir stri
 		for _, base := range bases {
 			merged, err = commitIsAncestor(ctx, repoDir, branch.tip, base.tip)
 			if err != nil {
+				// A cleanup git subprocess timeout (#4325) skips only this
+				// one branch — reported for retry on the next sweep —
+				// rather than aborting every other branch still queued for
+				// merged-branch pruning in this repository.
+				var timeoutErr *GitCleanupTimeoutError
+				if errors.As(err, &timeoutErr) {
+					warnings = append(warnings, RetentionWarning{
+						Path: "refs/heads/" + branch.name,
+						Err:  fmt.Errorf("worktree: inspect whether branch %s is merged into %s: %w", branch.name, base.name, err),
+					})
+					continue branches
+				}
 				return results, warnings, fmt.Errorf("worktree: inspect whether branch %s is merged into %s: %w", branch.name, base.name, err)
 			}
 			if merged {
@@ -460,7 +480,7 @@ func pruneRepoMergedBranches(ctx context.Context, manager *Manager, repoDir stri
 		}
 		if opts.Delete {
 			DeleteBranchHook()
-			if err := runGit(ctx, repoDir, "branch", "-D", "--", branch.name); err != nil {
+			if err := runCleanupGit(ctx, repoDir, "branch delete", "branch", "-D", "--", branch.name); err != nil {
 				result.Err = err
 			} else {
 				result.Deleted = true
@@ -472,7 +492,7 @@ func pruneRepoMergedBranches(ctx context.Context, manager *Manager, repoDir stri
 }
 
 func localBranches(ctx context.Context, repoDir string) ([]localBranch, error) {
-	out, err := gitOutput(ctx, repoDir, "for-each-ref", "--format=%(refname:short)%00%(objectname)", "refs/heads")
+	out, err := runCleanupGitOutput(ctx, repoDir, "for-each-ref", "for-each-ref", "--format=%(refname:short)%00%(objectname)", "refs/heads")
 	if err != nil || out == "" {
 		return nil, err
 	}
@@ -490,7 +510,7 @@ func localBranches(ctx context.Context, repoDir string) ([]localBranch, error) {
 }
 
 func (m *Manager) runIDForBranch(branch string) (string, bool) {
-	namespaces := append([]string(nil), m.runBranchNamespaces...)
+	namespaces := m.runBranchNamespacesSnapshot()
 	sort.Slice(namespaces, func(i, j int) bool {
 		if len(namespaces[i]) != len(namespaces[j]) {
 			return len(namespaces[i]) > len(namespaces[j])
@@ -513,14 +533,15 @@ func (m *Manager) runIDForBranch(branch string) (string, bool) {
 }
 
 func commitIsAncestor(ctx context.Context, repoDir, ancestor, descendant string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs([]string{"merge-base", "--is-ancestor", ancestor, descendant})...)
-	cmd.Dir = repoDir
-	err := cmd.Run()
+	_, err := runCleanupGitOutput(ctx, repoDir, "merge-base --is-ancestor", "merge-base", "--is-ancestor", ancestor, descendant)
 	if err == nil {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	// Exit code 1 is merge-base --is-ancestor's normal "not an ancestor"
+	// result, not a failure — distinct from a *GitCleanupTimeoutError or any
+	// other git error, both of which fall through to the caller unchanged.
+	var gitErr *gitCommandError
+	if errors.As(err, &gitErr) && gitErr.exitCode == 1 {
 		return false, nil
 	}
 	return false, err

@@ -112,6 +112,15 @@ const adoAccessRequiredInspection: GuidedRepositoryInspection = {
   },
 };
 
+const adoReadyInspection: GuidedRepositoryInspection = {
+  ...adoAuthRequiredInspection,
+  auth: {
+    kind: "azure-cli",
+    ready: true,
+    identity: "azure-user@example.com",
+  },
+};
+
 type RouteHandler = (init?: RequestInit) => { status?: number; body: unknown };
 
 function clientWith(routes: Record<string, RouteHandler>): GuidedClient {
@@ -208,6 +217,54 @@ describe("GettingStartedPage", () => {
     expect(progress).toHaveAttribute("aria-valuenow", "1");
   });
 
+  it("provides focused documentation links for wizard decisions and follow-up", async () => {
+    const pages = [
+      [0, "Learn how gaggles, goobers, workflows, and desired state fit together"],
+      [2, "Learn what the Instance directory contains"],
+      [3, "Learn how gaggles and workflow anatomy fit together"],
+      [4, "Learn how labels, backlog eligibility, and assignment scope work"],
+      [5, "Learn which provider credentials and permissions are required"],
+      [8, "Learn how validation and testing protect configuration changes"],
+      [9, "Learn how to inspect runs, journals, claims, and workcopies"],
+    ] as const;
+
+    for (const [page, linkName] of pages) {
+      window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(page));
+      const client = clientWith({
+        "/guided/state": () => ({
+          body: guidedState({ instanceExists: page >= 2, connected: { repo: "acme/widgets" } }),
+        }),
+        "/guided/actions/complete": () => ({ body: { complete: true } }),
+      });
+      const view = render(<GettingStartedPage client={client} />);
+      expect(await screen.findByRole("link", { name: linkName })).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it("links completion to customization, validation, debugging, and Instance operations", async () => {
+    window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(9));
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({
+            body: guidedState({ instanceExists: true, connected: { repo: "acme/widgets" } }),
+          }),
+          "/guided/actions/complete": () => ({ body: { complete: true } }),
+        })}
+      />,
+    );
+
+    for (const linkName of [
+      "Learn how to customize gaggles and workflows with an agent",
+      "Learn how to inspect runs, journals, claims, and workcopies",
+      "Learn how to debug runs and understand no-work outcomes",
+      "Learn more about Instance layout and operational data",
+    ]) {
+      expect(await screen.findByRole("link", { name: linkName })).toBeInTheDocument();
+    }
+  });
+
   it("discovers the repository and submits provider-aware guided options", async () => {
     const user = userEvent.setup();
     const initBodies: unknown[] = [];
@@ -234,6 +291,11 @@ describe("GettingStartedPage", () => {
     await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
     await user.click(screen.getByRole("button", { name: "Inspect clone" }));
     expect(await screen.findByText("GitHub CLI authentication is ready as octocat.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "Learn how repository discovery and onboarding fit together",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByText("trunk")).toBeInTheDocument();
     expect(screen.getByText("npm run ci")).toBeInTheDocument();
     expect(screen.getByText("node@20")).toBeInTheDocument();
@@ -424,6 +486,36 @@ describe("GettingStartedPage", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
+  });
+
+  it("links Azure DevOps runtime guidance to the provider authentication guide", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => ({ body: adoReadyInspection }),
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+    await screen.findByText("Azure CLI authentication is ready as azure-user@example.com.");
+
+    for (let page = 0; page < 4; page += 1) {
+      await user.click(screen.getByRole("button", { name: "Continue" }));
+    }
+
+    expect(
+      screen.getByRole("link", {
+        name: "Learn which provider credentials and permissions are required",
+      }),
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/ado-authentication.md",
+    );
   });
 
   it("directs Azure DevOps access failures to account access checks", async () => {

@@ -31,6 +31,13 @@ func fsyncDisabled() bool {
 	return os.Getenv(envDisableFsync) == "1"
 }
 
+// FsyncDisabled reports whether GOOBERS_DISABLE_FSYNC is set for this
+// process, for a caller outside this package that needs to warn an operator
+// the setting is active (#4218) rather than to skip a sync itself.
+func FsyncDisabled() bool {
+	return fsyncDisabled()
+}
+
 // syncFile fsyncs f unless fsync is disabled for this process.
 func syncFile(f *os.File) error {
 	if fsyncDisabled() {

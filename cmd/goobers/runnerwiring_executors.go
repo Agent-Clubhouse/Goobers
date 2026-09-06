@@ -71,7 +71,7 @@ const claudeModelEnv = "ANTHROPIC_API_KEY"
 // credentialedCapabilities are the canonical capabilities (internal/capability,
 // issue #74) a repo's token can satisfy; telemetry:read needs no credential.
 var credentialedCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesRead, capability.GitHubIssuesWrite, capability.GitHubMilestonesWrite, capability.GitHubIssuesApprove, capability.ProviderPRWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.ProviderCICancel, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 	// ADO PR completion authority is repo-token-backed like the GitHub grants
 	// above; only stages that declare ado:pr:complete receive its credential,
 	// preserving the decider/executor isolation (merge-review completes; the
@@ -95,7 +95,7 @@ const daemonIdentityRefName = "daemon-identity"
 // authors ordinary PRs/issues — an instance that wants those on the daemon
 // identity too can still say so explicitly via credentials:.
 var daemonIdentityCapabilities = []capability.Capability{
-	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.GitHubBranchDelete, capability.GitHubPRMerge,
+	capability.RepoPush, capability.GitHubIssuesWrite, capability.GitHubPRWrite, capability.GitHubPRReview, capability.ProviderCICancel, capability.GitHubBranchDelete, capability.GitHubPRMerge,
 }
 
 // buildEnvCapabilities maps each capability the Copilot adapter injects to the
@@ -347,6 +347,11 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	// declares nothing and this stays false, which is the zero-declaration
 	// invariance the architecture requires (§11 item 1).
 	shell.EphemeralTmp = input.Config.SelfRunnerEnforces(instance.RunnerRestrictionTmpEphemeral)
+	// #4273: the self runner has no filesystem confinement, so a stage
+	// command naming one of this instance's own credential-referenced paths
+	// directly is refused before exec rather than allowed to read key
+	// material a minted, short-lived token exists to avoid exposing.
+	shell.GuardedCredentialPaths = instance.GuardedCredentialPaths(input.Config)
 	if input.ProjectConfigured && input.ConfiguredProject.LargeRepo {
 		shell.DefaultEnv = map[string]string{"MSBUILDDISABLENODEREUSE": "1"}
 	}

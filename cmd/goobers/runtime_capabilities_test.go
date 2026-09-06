@@ -92,6 +92,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// machine-seam-in-flight because a stage pod calls them mid-run to
 		// decide what to do next — the same class as claims/list.
 		"journalRunPhase": true, "journalConflictTouches": true, "journalUnpushedWork": true,
+		"journalEscalationCandidates": true, "journalBranchOwnership": true,
 	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {

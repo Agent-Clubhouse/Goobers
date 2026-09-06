@@ -140,6 +140,11 @@
           "type": "string",
           "enum": ["instruction-or-skill", "workflow-or-gate", "targeted-test-mapping", "code-issue"],
           "description": "The single governed action family allowed to consume this learning cluster."
+        },
+        "error_class": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Normalized error category (e.g. infra, timeout) for an error-signature finding — the other half of the (code, error_class) clustering key that subject alone cannot carry, since two findings can share a code but differ only in error_class."
         }
       },
       "allOf": [
@@ -204,7 +209,8 @@
           "controlAfter": 0,
           "intervalAvailable": false,
           "promotionEligible": false,
-          "promotionSource": "correlational-fallback"
+          "promotionSource": "correlational-fallback",
+          "hasCohortData": false
         }
       ],
       "additionalProperties": false,
@@ -221,7 +227,8 @@
         "controlAfter",
         "intervalAvailable",
         "promotionEligible",
-        "promotionSource"
+        "promotionSource",
+        "hasCohortData"
       ],
       "properties": {
         "node": {
@@ -287,6 +294,10 @@
           "type": "string",
           "minLength": 1,
           "description": "Identified causal strategy, or correlational-fallback when ineligible."
+        },
+        "hasCohortData": {
+          "type": "boolean",
+          "description": "Whether an experiment actually ran on this node (non-zero cohort counts), distinguishing a genuine identification failure from a node that has never had a versioned changepoint or routed identity recorded at all."
         }
       },
       "allOf": [

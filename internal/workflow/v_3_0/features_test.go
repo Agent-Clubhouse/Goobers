@@ -696,7 +696,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 				Name: "shell-repo", Type: apiv1.TaskDeterministic, Goal: "shell",
 				Run: &apiv1.DeterministicRun{
 					Command: []string{"true"}, Env: map[string]string{"CI": "true"},
-					Workspace: apiv1.WorkspaceRepo, SyncBase: true,
+					Workspace: apiv1.WorkspaceRepo, SyncBase: true, InjectRunContext: true,
 				},
 				// The DSL 3.0 repo-handoff surface: a declared edge from the
 				// producing agentic stage, and the committing-script opt-in.
@@ -1145,6 +1145,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"stage.run.script",
 		"stage.run.env",
 		"stage.run.syncBase",
+		"stage.run.injectRunContext",
 		"stage.run.workspace.repo",
 		"stage.run.workspace.scratch",
 		"stage.workspace",

@@ -229,7 +229,8 @@
             "env": { "type": "object", "description": "Explicit environment variables added to the runner's minimal environment and scoped credentials.", "additionalProperties": { "type": "string" } },
             "network": { "type": "string", "enum": ["none"], "description": "Network policy for the command. Set to none to deny network access." },
             "workspace": { "type": "string", "enum": ["repo", "scratch", "repo-readonly"], "description": "Workspace provisioned for the command: writable repository, empty scratch directory, or detached read-only repository." },
-            "syncBase": { "type": "boolean", "description": "Whether to merge the freshly fetched base ref into an existing run branch before execution. Valid only for a writable repository workspace." }
+            "syncBase": { "type": "boolean", "description": "Whether to merge the freshly fetched base ref into an existing run branch before execution. Valid only for a writable repository workspace." },
+            "injectRunContext": { "type": "boolean", "description": "Explicitly inject the run's operational identity (GOOBERS_RUN_ID, GOOBERS_GAGGLE, and related env) even though command[0] is not the goobers CLI. For a deterministic stage that wraps the goobers CLI in another process and needs the same context its nested invocation would receive." }
           },
           "oneOf": [
             { "required": ["command"] },
@@ -272,6 +273,7 @@
               "provider:pr:write",
               "github:pr:write",
               "github:pr:review",
+              "provider:ci:cancel",
               "github:branch:delete",
               "github:pr:merge",
               "contents:read",
@@ -308,6 +310,7 @@
               "approve-issue",
               "assign-milestone",
               "claim-backlog-items",
+              "cancel-pending-ci",
               "clear-healed-demotions",
               "clear-healed-escalations",
               "clear-remediation",

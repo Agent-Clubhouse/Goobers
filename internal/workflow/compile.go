@@ -220,18 +220,20 @@ var v30Interpreter = versionedInterpreter{
 }
 
 type compileConfig struct {
-	goobers                       map[string]apiv1.GooberSpec
-	goobersSet                    bool
-	knownChecks                   []string
-	knownChecksSet                bool
-	knownHarnesses                []string
-	knownHarnessesSet             bool
-	allowPreviewFeatures          bool
-	previewFeaturesSet            bool
-	gaggleRequiredCapabilities    []string
-	gaggleRequiredCapabilitiesSet bool
-	gaggleRunsOn                  *apiv1.GaggleRunsOn
-	gaggleRunsOnSet               bool
+	goobers                             map[string]apiv1.GooberSpec
+	goobersSet                          bool
+	knownChecks                         []string
+	knownChecksSet                      bool
+	knownHarnesses                      []string
+	knownHarnessesSet                   bool
+	knownExternalTelemetryConnectors    []string
+	knownExternalTelemetryConnectorsSet bool
+	allowPreviewFeatures                bool
+	previewFeaturesSet                  bool
+	gaggleRequiredCapabilities          []string
+	gaggleRequiredCapabilitiesSet       bool
+	gaggleRunsOn                        *apiv1.GaggleRunsOn
+	gaggleRunsOnSet                     bool
 }
 
 // Option customizes compilation.
@@ -258,6 +260,17 @@ func WithKnownHarnesses(names []string) Option {
 	return func(config *compileConfig) {
 		config.knownHarnesses = names
 		config.knownHarnessesSet = true
+	}
+}
+
+// WithKnownExternalTelemetryConnectors supplies the connector names actually
+// configured on this instance (#4341), so an unresolvable connector is
+// rejected at compile time with a specific diagnostic instead of only at run
+// time, deep inside a pod's executor construction.
+func WithKnownExternalTelemetryConnectors(names []string) Option {
+	return func(config *compileConfig) {
+		config.knownExternalTelemetryConnectors = names
+		config.knownExternalTelemetryConnectorsSet = true
 	}
 }
 
@@ -355,6 +368,9 @@ func compileNext(def Definition, config compileConfig) (*Machine, error) {
 	if config.knownHarnessesSet {
 		opts = append(opts, v20.WithKnownHarnesses(config.knownHarnesses))
 	}
+	if config.knownExternalTelemetryConnectorsSet {
+		opts = append(opts, v20.WithKnownExternalTelemetryConnectors(config.knownExternalTelemetryConnectors))
+	}
 	if config.previewFeaturesSet {
 		opts = append(opts, v20.WithPreviewFeatures(config.allowPreviewFeatures))
 	}
@@ -377,6 +393,9 @@ func compileV30(def Definition, config compileConfig) (*Machine, error) {
 	}
 	if config.knownHarnessesSet {
 		opts = append(opts, v30.WithKnownHarnesses(config.knownHarnesses))
+	}
+	if config.knownExternalTelemetryConnectorsSet {
+		opts = append(opts, v30.WithKnownExternalTelemetryConnectors(config.knownExternalTelemetryConnectors))
 	}
 	if config.previewFeaturesSet {
 		opts = append(opts, v30.WithPreviewFeatures(config.allowPreviewFeatures))

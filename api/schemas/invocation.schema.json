@@ -91,6 +91,7 @@
           "provider:pr:write",
           "github:pr:write",
           "github:pr:review",
+          "provider:ci:cancel",
           "github:branch:delete",
           "github:pr:merge",
           "contents:read",

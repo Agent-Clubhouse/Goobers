@@ -232,6 +232,24 @@ type ShellExecutor struct {
 	// lifetime of those bytes and not their location. Set by tests, and
 	// available to a deployment that mounts its scratch medium elsewhere.
 	EphemeralTmpRoot string
+	// GuardedCredentialPaths names on-disk paths this instance's config
+	// references as a credential source (instance.GuardedCredentialPaths) —
+	// a repo/workflow-source/daemon-identity token or GitHub App private key
+	// file. A stage on the `self` runner has NO filesystem confinement
+	// (there is no execution path that translates a runsOn restriction into
+	// executor isolation, internal/runnersolve's `enforces` doc comment), so
+	// a stage command that names one of these paths, verbatim, in its argv
+	// or environment is refused before exec rather than allowed to read the
+	// key material a minted, short-lived token exists to avoid exposing
+	// (#4273).
+	//
+	// This is deliberately narrow, not filesystem confinement: it does not
+	// stop a stage that reaches the same file through indirection (a script
+	// with the path hardcoded inside it, `find`, a symlink) — see
+	// docs/requirements/security.md SEC-049 for the documented boundary.
+	// Empty by default: an unset caller (e.g. an existing test) gets
+	// unchanged behavior.
+	GuardedCredentialPaths []string
 }
 
 type builtinErrorReport struct {
@@ -263,6 +281,69 @@ func NewShellExecutor(injector *credentials.Injector, rec ArtifactRecorder) (*Sh
 // build/test suite (`make ci`) is not a goobers-CLI stage on either axis.
 func StageInvokesGoobersCLI(command []string) bool {
 	return len(command) > 0 && command[0] == "goobers"
+}
+
+// credentialRefusalEventAppender is the journal seam for the credential-read
+// refusal event (#4273) — structurally satisfied by (*internal/journal.Run
+// ).Append, mirroring internal/harness.EventAppender's shape. A Journal that
+// only implements ArtifactRecorder (e.g. a test double) simply does not get
+// the event journaled; the refusal itself does not depend on it.
+type credentialRefusalEventAppender interface {
+	Append(ev journal.Event) error
+}
+
+// refuseGuardedCredentialAccess reports whether cmd's finalized argv/env
+// names one of e.GuardedCredentialPaths directly (#4273), journaling the
+// refusal when so. Factored out of Run to keep the credential-path check's
+// own branching out of Run's cyclomatic complexity; callers must return the
+// envelope unmodified when refused is true.
+func (e *ShellExecutor) refuseGuardedCredentialAccess(cmd *exec.Cmd, taskID string) (result apiv1.ResultEnvelope, refused bool) {
+	guardedPath, refused := stageReferencesGuardedPath(cmd.Args, cmd.Env, e.GuardedCredentialPaths)
+	if !refused {
+		return apiv1.ResultEnvelope{}, false
+	}
+	message := fmt.Sprintf("stage command or environment names guarded credential path %q directly", guardedPath)
+	if appender, ok := e.Journal.(credentialRefusalEventAppender); ok {
+		_ = appender.Append(journal.Event{
+			Type:  journal.EventCredentialReadRefused,
+			Stage: taskID,
+			Error: &journal.ErrorDetail{Code: "credential_read_refused", Message: message},
+		})
+	}
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Error:   &apiv1.ErrorInfo{Code: "credential_read_refused", Message: message, Retryable: false},
+		Summary: "refused: stage command references a guarded credential path directly",
+	}, true
+}
+
+// stageReferencesGuardedPath reports the first path in guarded that appears,
+// verbatim, as a full command-line argument or as the exact value of an
+// environment variable in args/env — the deterministic executor's narrow,
+// config-derived tripwire against a stage naming a credential file directly
+// (#4273). Exact-value matching, not substring: a guarded path that happens
+// to be a substring of an unrelated, longer argument must not misfire.
+//
+// This does not catch indirection — a script with the path hardcoded inside
+// it, discovery via `find`, or a symlink — see
+// docs/requirements/security.md SEC-049 for the documented boundary.
+func stageReferencesGuardedPath(args, env, guarded []string) (string, bool) {
+	for _, path := range guarded {
+		if path == "" {
+			continue
+		}
+		for _, arg := range args {
+			if arg == path {
+				return path, true
+			}
+		}
+		for _, kv := range env {
+			if _, value, ok := strings.Cut(kv, "="); ok && value == path {
+				return path, true
+			}
+		}
+	}
+	return "", false
 }
 
 // stageCommandsRequiringInstanceConfig are goobers subcommands that read the
@@ -399,16 +480,26 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// arm, which is claims.lock, and the daemon serves a pod's compare-and-swap
 	// under that same lock. remediation-checkpoint, which shares the guard,
 	// clears with it.
-	// select-source opens the instance log (selectsource.go:99), walks the
-	// instance's runs tree through readservice.NewOfflineRuns (:89), and
-	// leases the parent with withClaimLock + localscheduler.OpenClaimLedger
-	// directly (:219-224, :240-243) rather than through the claims seam.
-	"select-source": true,
-	// publish-batch leases decomposition targets with a FileTargetLeaser over
-	// SchedulerDir()/decomposition-target-locks (publishbatch.go:116), opens
-	// the instance log (:145), and shares select-source's direct parent
-	// release (:154). The target-lock directory has no plane at all.
-	"publish-batch": true,
+	// select-source is NOT here any more (Goobers#4342). Its escalation scan
+	// — previously readservice.NewOfflineRuns walking the instance's runs
+	// tree directly — is now the daemon's own decomposition.
+	// FindEscalationCandidates run behind the cross-run journal plane
+	// (journalclient.CrossRun.EscalationCandidates, apicontract's
+	// JournalEscalationCandidatesPath), the same fourth purpose-built
+	// question added alongside RunPhase/ConflictTouches/UnpushedWork. Its
+	// parent claim/release goes through openStageClaimLedger like every other
+	// migrated command instead of localscheduler.OpenClaimLedger directly.
+	// publish-batch is NOT here any more (Goobers#4340). Its decomposition
+	// TARGET LEASE — previously a decomposition.FileTargetLeaser over
+	// SchedulerDir()/decomposition-target-locks, a directory with no plane at
+	// all — is now claimsPlaneTargetLeaser, a distinctly-keyed claims-plane
+	// lease reached through the same openStageClaimLedger seam every other
+	// pod-capable claim uses (decompositiontargetlease.go). The distinct key
+	// (decompositionTargetLeaseExternalID, not the bare item id) keeps this
+	// lease from ever colliding with — or being released alongside — the
+	// parent's own select-source claim, which uses the item id directly. The
+	// parent claim release itself now goes through the same seam instead of
+	// select-source's direct file-ledger release.
 	// backlog-health is NOT here any more (Goobers#3948). Its claim read is on
 	// the claims plane, its implementation-outcome evidence read is on the
 	// telemetry plane, and the last thing that held it — the READY-TRANSITION
@@ -421,10 +512,15 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// Its provider read-cache writes are the same correctness-neutral
 	// conditional-GET store backlog-query and backlog-dedupe already carry
 	// into a pod.
-	// reconcile-branches opens the instance log (reconcilebranches.go:155)
-	// and reads OTHER runs' journals by walking layout.RunsDir() with
-	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
-	// three purpose-built gaggle-scoped questions do not answer.
+	// reconcile-branches still opens the instance log directly
+	// (reconcilebranches.go) for its decision-annotation writes — a scrubbed
+	// write carrying a stage-minted credential-redaction registry
+	// (journal.WithScrubber) the shared openStageAnnotator seam has no
+	// client-side hook for yet (#4344's own follow-up). Its OTHER
+	// direct-access point — walking layout.RunsDir() with journal.OpenRead to
+	// resolve a candidate branch's owning run — is fixed (Goobers#4344): it is
+	// now the cross-run journal plane's fourth purpose-built question,
+	// BranchOwnership, alongside RunPhase/ConflictTouches/UnpushedWork.
 	"reconcile-branches": true,
 	// file-issues is deliberately NOT here, and was never here — which was
 	// the defect Goobers#3996 blocker 2 named rather than a decision. It read
@@ -469,14 +565,17 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 //     every other pod stage resolves its declared capabilities. It needs no
 //     ledger, no merge lock and no on-disk journal — only a provider token —
 //     which is why it is the one kind that could leave this refusal.
-//
-// KindExternalTelemetry is deliberately ABSENT and stays refused: its
-// executor is built from the instance's connector configuration
-// (buildExternalTelemetryExecutor, cmd/goobers/runnerwiring_executors.go),
-// which lives under the instance config directory a pod does not have.
+//   - KindExternalTelemetry runs in-process inside dispatch-exec (#4341):
+//     cmd/goobers/dispatchexternaltelemetry.go builds a single-connector
+//     externaltelemetry.Registry from the ONE ConnectorConfig the dispatcher
+//     stamped into the pod's env (non-secret JSON, validated against the
+//     instance's configured connectors at admission time) plus the connector's
+//     auth secret resolved through the credential plane under telemetry:read
+//     — never the instance's full connector configuration tree.
 var stageKindsWithPodExecution = map[string]bool{
-	KindShell:  true,
-	KindCIPoll: true,
+	KindShell:             true,
+	KindCIPoll:            true,
+	KindExternalTelemetry: true,
 }
 
 // StageRequiresInstanceRootCode names, in a stage's failure ErrorInfo.Code,
@@ -490,10 +589,10 @@ const StageRequiresInstanceRootCode = "instance_root_required"
 
 // StageRequiresInstanceRoot reports whether a stage cannot execute in a pod
 // today because it needs the daemon's instance root: either its resolved
-// stage KIND is a built-in with no pod-side execution path
-// (external-telemetry, or any kind this binary does not recognize — see
-// stageKindsWithPodExecution; kind == "", KindShell and KindCIPoll all run in
-// a pod and are never refused here), or its command is a goobers CLI
+// stage KIND is a built-in with no pod-side execution path (any kind this
+// binary does not recognize — see stageKindsWithPodExecution; kind == "",
+// KindShell, KindCIPoll and KindExternalTelemetry all run in a pod and are
+// never refused here), or its command is a goobers CLI
 // subcommand that reads/writes the file claim ledger, a merge lock, or an
 // on-disk run journal — none of which a stage pod has (decision 003 ruling 3;
 // production-lanes-3.0 stillBroken #2).
@@ -564,6 +663,13 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 // or a transient built-in provider outage) — ARCHITECTURE.md invariant 6, fail
 // closed rather than degrade. Other declared-command failures are normal
 // ResultFailure envelopes.
+//
+// The #4273 guarded-credential-path refusal adds one unavoidable early-return
+// branch here; the check itself is fully factored into
+// refuseGuardedCredentialAccess/stageReferencesGuardedPath, so this is the
+// minimum a caller of that helper can add.
+//
+//complexitygate:allow #4273 guarded-credential-path refusal, see above
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	if env.Workspace == "" {
 		// exec.Cmd treats Dir == "" as "run in the daemon's own working
@@ -601,7 +707,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// run env leaks into its own test suite (#322). This is the same
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
-	injectRunContext := StageInvokesGoobersCLI(command)
+	//
+	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that
+	// WRAPS the goobers CLI in another process (command[0] names the
+	// wrapper, not "goobers") but still needs the same context its nested
+	// invocation does — declared per-stage rather than guessed from argv[0].
+	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
 	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
 	for key, value := range e.DefaultEnv {
 		declaredEnv[key] = value
@@ -707,6 +818,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd := exec.Command(invokeName, invokeArgs...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
+	if result, refused := e.refuseGuardedCredentialAccess(cmd, env.TaskID); refused {
+		return result, nil
+	}
 	// Configure tree ownership before the network isolation below layers its
 	// own SysProcAttr fields on: on unix proc puts the stage in a NEW SESSION
 	// (Setsid, not Setpgid) with no controlling terminal, so a stage that

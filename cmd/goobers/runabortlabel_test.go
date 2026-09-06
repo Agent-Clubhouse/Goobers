@@ -77,6 +77,13 @@ func TestLabelAbortedRunPRLabelsThePROnlyWhenAborted(t *testing.T) {
 		wantCalls int
 	}{
 		{name: "aborted run with a PR gets labeled", phase: journal.PhaseAborted, prID: "42", wantCalls: 1},
+		// #3490: a run that fails or escalates after opening a PR orphans it
+		// exactly as an abort does — CI may never settle green, so pr-select
+		// (which requires CheckStatePassing) can never pick it up on its own.
+		// Labeling it here on every non-completed terminal phase gives it the
+		// same reachable-exclusion disposition an abort already gets.
+		{name: "failed run with a PR gets labeled", phase: journal.PhaseFailed, prID: "42", wantCalls: 1},
+		{name: "escalated run with a PR gets labeled", phase: journal.PhaseEscalated, prID: "42", wantCalls: 1},
 		{name: "completed run is left alone", phase: journal.PhaseCompleted, prID: "42", wantCalls: 0},
 		{name: "aborted run without a PR has nothing to label", phase: journal.PhaseAborted, prID: "", wantCalls: 0},
 	}

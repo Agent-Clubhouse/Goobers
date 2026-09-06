@@ -94,6 +94,16 @@ type Finding struct {
 	// NominationGuardrails is required for credit-assignment findings and
 	// omitted for detection families that do not enter the self-healing loop.
 	NominationGuardrails *NominationGuardrails `json:"nomination_guardrails,omitempty"`
+	// ErrorClass is populated only for FindingErrorSignature: the normalized
+	// error category (telemetry.ErrorClass, e.g. "infra"/"timeout") half of
+	// the (code, error_class) clustering key that Subject alone cannot carry
+	// (#3916) — two findings sharing a code but differing only in error_class
+	// were otherwise indistinguishable on the wire. Kept as its own field
+	// rather than folded into Subject so the defect-plane redaction boundary
+	// (cmd/goobers/telemetrydefectplane.go's redactFindingForPlane), which
+	// normalizes Subject through a restricted identifier charset, is
+	// unaffected.
+	ErrorClass string `json:"error_class,omitempty"`
 }
 
 // Thresholds are the config-tunable detection knobs a telemetry-query
@@ -344,6 +354,17 @@ func (db *DB) stageFailingRuns(req StatsRequest, stage string, limit int) ([]Jou
 	return queryRunIDs(context.Background(), db, query, args)
 }
 
+// errorSignatureTerminalCauseCode is the universal per-run terminal marker
+// (internal/runner/run.go's failTerminal/finishStageFailure,
+// internal/engine/journal.go's runFailedCause) journaled once for EVERY
+// failed run, distinct from whatever real code caused the failure. Grouped
+// like any other code by TopErrorSignatures, it self-clusters into its own
+// error-signature finding that duplicates almost the same run set as the
+// real cause's signature — noise, not a second independent pattern (#3916).
+// infraFailedRunsSubquery's own use of this code (aggregates.go) is
+// unaffected: this exclusion is scoped to error-signature detection only.
+const errorSignatureTerminalCauseCode = "run_failed"
+
 // detectErrorSignatures flags recurring (code, error_class) patterns
 // occurring at least th.MinErrorSignatureCount times — reuses
 // TopErrorSignatures, adding threshold-based flagging and a bounded list
@@ -355,6 +376,9 @@ func (db *DB) detectErrorSignatures(req StatsRequest, th Thresholds) ([]Finding,
 	}
 	var out []Finding
 	for _, sig := range sigs {
+		if sig.Code == errorSignatureTerminalCauseCode {
+			continue
+		}
 		if sig.Count < th.MinErrorSignatureCount {
 			continue
 		}
@@ -370,25 +394,59 @@ func (db *DB) detectErrorSignatures(req StatsRequest, th Thresholds) ([]Finding,
 			},
 			Threshold:   float64(th.MinErrorSignatureCount),
 			FlaggedRuns: runs,
+			ErrorClass:  sig.ErrorClass,
 		})
 	}
 	return out, nil
 }
 
+// errorSignatureRuns names the runs contributing to one (code, error_class)
+// signature, each pointing at the exact run_errors event (by seq) so a
+// nominator can cite precise evidence instead of guessing which of a run's
+// events matched (#3916) — queryRunIDs's shared 2-column scan has no seq
+// column to give here, so this reads e.seq directly rather than going
+// through that helper.
 func (db *DB) errorSignatureRuns(req StatsRequest, code, errorClass string, limit int) ([]JournalPointer, error) {
 	where, args := statsWhere("r.workflow", "r.gaggle", "e.occurred_at", req)
 	clause := "e.code = ? AND e.error_class = ?"
 	if where != "" {
 		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
 	}
+	// GROUP BY run_id, not DISTINCT: a run can journal the same (code,
+	// error_class) more than once (recurring across attempts), and each row
+	// needs a single representative seq — MAX(e.seq) names that run's LATEST
+	// occurrence of this signature, the most relevant evidence pointer.
 	query := fmt.Sprintf(`
-		SELECT DISTINCT e.run_id, e.occurred_at FROM run_errors e
+		SELECT e.run_id, MAX(e.seq) AS seq, MAX(e.occurred_at) AS last_occurred_at
+		FROM run_errors e
 		JOIN runs r ON r.run_id = e.run_id
 		WHERE %s
-		ORDER BY e.occurred_at DESC, e.run_id DESC
+		GROUP BY e.run_id
+		ORDER BY last_occurred_at DESC, e.run_id DESC
 		LIMIT ?`, clause)
 	args = append(append([]any{}, args...), code, errorClass, limit)
-	return queryRunIDs(context.Background(), db, query, args)
+
+	rows, err := db.readDB().QueryContext(context.Background(), query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query error signature runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []JournalPointer
+	for rows.Next() {
+		var runID string
+		var seq sql.NullInt64
+		var lastOccurredAt sql.NullString
+		if err := rows.Scan(&runID, &seq, &lastOccurredAt); err != nil {
+			return nil, fmt.Errorf("rollup: scan error signature run: %w", err)
+		}
+		pointer := JournalPointer{RunID: runID}
+		if seq.Valid && seq.Int64 > 0 {
+			pointer.Seq = uint64(seq.Int64)
+		}
+		out = append(out, pointer)
+	}
+	return out, rows.Err()
 }
 
 func (db *DB) detectCICheckFailures(req StatsRequest, th Thresholds) ([]Finding, error) {

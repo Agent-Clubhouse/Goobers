@@ -1,0 +1,49 @@
+# Dispatcher RBAC (#4286): stage pods themselves need "no token mount, no
+# RBAC grants at all" (../serviceaccount.yaml) — but SOMETHING has to create,
+# watch and delete those pods, and that something is the mode-3 dispatcher
+# running inside the WORKER, not a stage pod. Without this grant, a worker
+# that dispatches into this gaggle namespace gets a `Forbidden` whose cause
+# is a file this tree never shipped.
+#
+# Binds the EXISTING goobers-worker ServiceAccount from goobers-system — not
+# an invented one. A prior proposal bound a never-created
+# `goobers-dispatcher` ServiceAccount, which would have produced the exact
+# same Forbidden at first dispatch, just with "correct-looking RBAC in the
+# repo" (live-proven trap, recorded in Goobernetes-Infra's
+# cluster/gaggle-e2e/rbac.yaml header).
+#
+# Verb set is exactly internal/dispatcher/kubepods.go's own PodAPI — that
+# file's doc comment states it as a closed set on purpose ("exactly the §4
+# verb set ... nothing wider, so the dispatcher RBAC stays the narrow Role
+# the design renders"); TestDispatcherRBACMatchesKubePodAPIVerbSet pins this
+# Role against it so the two cannot drift silently.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: goobers-dispatcher
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "delete", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: goobers-dispatcher
+subjects:
+  # The worker's OWN ServiceAccount (../../goobers-system/worker-rbac.yaml),
+  # bound cross-namespace — not a new identity. One worker dispatches into
+  # ONE namespace at a time (--dispatch-namespace takes a single value; see
+  # ../../goobers-system/worker-deployment.yaml), so stamping a second gaggle
+  # from ../examples/ means binding this same ServiceAccount again in that
+  # gaggle's namespace too.
+  - kind: ServiceAccount
+    name: goobers-worker
+    namespace: goobers-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: goobers-dispatcher

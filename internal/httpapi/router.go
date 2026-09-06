@@ -193,7 +193,9 @@ func podPlanePath(path string) (scope string, ok bool) {
 		return ScopeCredential, true
 	case apicontract.JournalRunPhasePath,
 		apicontract.JournalConflictTouchesPath,
-		apicontract.JournalUnpushedWorkPath:
+		apicontract.JournalUnpushedWorkPath,
+		apicontract.JournalEscalationCandidatesPath,
+		apicontract.JournalBranchOwnershipPath:
 		return ScopeJournal, true
 	default:
 		return "", false

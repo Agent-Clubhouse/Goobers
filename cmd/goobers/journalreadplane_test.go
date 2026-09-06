@@ -216,6 +216,173 @@ func TestDaemonConflictTouchesStaysInsideTheGaggle(t *testing.T) {
 	}
 }
 
+// seedEscalatedRun writes a real escalated run (#4342's fixture, factored out
+// of buildSelectSourceRun so it can be parameterized by gaggle): a claimed
+// parent, a non-retryable implement failure, and a terminal Escalated phase —
+// exactly the shape decomposition.FindEscalationCandidates looks for.
+func seedEscalatedRun(t *testing.T, layout instance.Layout, gaggle, runID, parentID string) {
+	t.Helper()
+	run, err := journal.Create(layout.ForGaggle(gaggle).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create run %s: %v", runID, err)
+	}
+	appendEvent := func(event journal.Event) {
+		t.Helper()
+		if err := run.Append(event); err != nil {
+			t.Fatalf("append event for %s: %v", runID, err)
+		}
+	}
+	appendEvent(journal.Event{Type: journal.EventStageStarted, Stage: "query-backlog", Attempt: 1})
+	appendEvent(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Attempt: 1,
+		Status: "success", Outputs: map[string]any{"id": parentID, "provider": "github", "title": "an escalated issue"},
+	})
+	for _, event := range nonRetryableEscalationEvents("ISSUE_OVER_SCOPE", "too large") {
+		appendEvent(event)
+	}
+	appendEvent(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)})
+	if err := run.Close(); err != nil {
+		t.Fatalf("close run %s: %v", runID, err)
+	}
+}
+
+// seedBranchOwningRun writes a real run that journaled owning branch — a
+// ref.touched event naming it — and finished at terminalAt.
+func seedBranchOwningRun(t *testing.T, layout instance.Layout, gaggle, runID, workflow, branch string) {
+	t.Helper()
+	run, err := journal.Create(layout.ForGaggle(gaggle).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: workflow, WorkflowVersion: 1, Gaggle: gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create run %s: %v", runID, err)
+	}
+	if err := run.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "branch", ID: branch},
+	}); err != nil {
+		t.Fatalf("append ref.touched for %s: %v", runID, err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatalf("append run.finished for %s: %v", runID, err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close run %s: %v", runID, err)
+	}
+}
+
+// TestDaemonEscalationCandidatesStaysInsideTheGaggle is #4342's containment
+// evidence for the fourth cross-run question: a pod must learn only its own
+// gaggle's escalation candidates, never another gaggle's — the same property
+// TestDaemonConflictTouchesStaysInsideTheGaggle proves for its own route.
+func TestDaemonEscalationCandidatesStaysInsideTheGaggle(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	// journal.Create writes a real, schema-valid run.yaml on its own;
+	// seedCrossRunRun's is deliberately minimal for the routes that only
+	// check its EXISTENCE, but EscalationCandidates is the first cross-run
+	// route that also LISTS runs (readservice.OfflineRuns.ListRuns), which
+	// validates every run.yaml's schema — so the asking run is built the
+	// same way seedEscalatedRun's candidates are, not via seedCrossRunRun.
+	askingRun, err := journal.Create(layout.ForGaggle(crossRunTestGaggle).RunsDir(), journal.RunIdentity{
+		RunID: "asking-run", Workflow: "implementation", WorkflowVersion: 1, Gaggle: crossRunTestGaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create asking run: %v", err)
+	}
+	if err := askingRun.Close(); err != nil {
+		t.Fatalf("close asking run: %v", err)
+	}
+	seedEscalatedRun(t, layout, crossRunTestGaggle, "escalated-mine", "501")
+	seedEscalatedRun(t, layout, "other-gaggle", "escalated-theirs", "999")
+
+	service := newDaemonRunJournalService(layout, nil)
+	response, err := service.EscalationCandidates(context.Background(), journalclient.EscalationCandidatesRequest{
+		RunID: "asking-run", Gaggle: crossRunTestGaggle,
+	})
+	if err != nil {
+		t.Fatalf("escalation candidates: %v", err)
+	}
+	if len(response.Candidates) != 1 || response.Candidates[0].ParentID != "501" {
+		t.Fatalf("candidates = %+v, want only this gaggle's escalated parent 501", response.Candidates)
+	}
+	for _, candidate := range response.Candidates {
+		if candidate.ParentID == "999" {
+			t.Fatal("another gaggle's escalation candidate crossed the boundary")
+		}
+	}
+}
+
+// TestDaemonEscalationCandidatesRefusesAskingRunOutsideItsGaggle mirrors
+// TestDaemonRunPhaseRefusesRunsOutsideTheAskingRunsGaggle for the fourth
+// question: the ASKING run itself must belong to the gaggle it claims.
+func TestDaemonEscalationCandidatesRefusesAskingRunOutsideItsGaggle(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedEscalatedRun(t, layout, crossRunTestGaggle, "escalated-mine", "501")
+
+	service := newDaemonRunJournalService(layout, nil)
+	_, err := service.EscalationCandidates(context.Background(), journalclient.EscalationCandidatesRequest{
+		RunID: "impostor-run", Gaggle: crossRunTestGaggle,
+	})
+	if err == nil {
+		t.Fatal("an asking run with no run.yaml in the claimed gaggle was admitted")
+	}
+}
+
+// TestDaemonBranchOwnershipConfirmsARealOwner is the success path: the target
+// run journaled owning the branch, so the daemon answers its identity and
+// terminal/ref facts.
+func TestDaemonBranchOwnershipConfirmsARealOwner(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
+	seedBranchOwningRun(t, layout, crossRunTestGaggle, "owning-run", "implementation", "goobers/implementation/owning-run")
+
+	service := newDaemonRunJournalService(layout, nil)
+	response, err := service.BranchOwnership(context.Background(), journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: crossRunTestGaggle,
+		TargetRunID: "owning-run", Workflow: "implementation", Branch: "goobers/implementation/owning-run",
+	})
+	if err != nil {
+		t.Fatalf("branch ownership: %v", err)
+	}
+	if response.Owner == nil || response.Owner.RunID != "owning-run" || response.Owner.Phase != string(journal.PhaseCompleted) ||
+		response.Owner.TerminalAt.IsZero() {
+		t.Fatalf("owner = %+v, want owning-run/completed with a nonzero terminal time", response.Owner)
+	}
+}
+
+// TestDaemonBranchOwnershipRefusesRunsOutsideTheAskingRunsGaggle mirrors
+// TestDaemonRunPhaseRefusesRunsOutsideTheAskingRunsGaggle for the fifth
+// question: both the asking run and the target run must belong to the
+// claimed gaggle.
+func TestDaemonBranchOwnershipRefusesRunsOutsideTheAskingRunsGaggle(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
+	seedBranchOwningRun(t, layout, "other-gaggle", "foreign-owner", "implementation", "goobers/implementation/foreign-owner")
+
+	service := newDaemonRunJournalService(layout, nil)
+	ctx := context.Background()
+
+	// The target run belongs to a different gaggle than the one claimed.
+	if _, err := service.BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: crossRunTestGaggle,
+		TargetRunID: "foreign-owner", Workflow: "implementation", Branch: "goobers/implementation/foreign-owner",
+	}); err == nil {
+		t.Fatal("a foreign gaggle's run answered branch ownership")
+	}
+
+	// The asking run itself is not in the gaggle it claims.
+	if _, err := service.BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: "other-gaggle",
+		TargetRunID: "foreign-owner", Workflow: "implementation", Branch: "goobers/implementation/foreign-owner",
+	}); err == nil {
+		t.Fatal("an asking run outside the named gaggle was served")
+	}
+}
+
 // TestDaemonRunJournalServiceSatisfiesThePlaneInterface keeps the wiring
 // honest: the daemon implementation is what the route calls.
 func TestDaemonRunJournalServiceSatisfiesThePlaneInterface(t *testing.T) {

@@ -35,7 +35,7 @@
       "items": { "$ref": "#/$defs/credentialGrant" }
     },
     "daemonIdentity": {
-      "description": "Distinct bot identity for the daemon's own authored pull requests, reviews, merges, and comments (UNOP-7). Omitted keeps every mutation on the repository token. Configuring it backs the standard daemon-mutation capability set (repo:push, github:issues:write, github:pr:write, github:pr:review, github:branch:delete, github:pr:merge) without declaring each one under credentials; an explicit credentials entry for one of those still wins.",
+      "description": "Distinct bot identity for the daemon's own authored pull requests, reviews, merges, CI cancellation, and comments (UNOP-7). Omitted keeps every mutation on the repository token. Configuring it backs the standard daemon-mutation capability set (repo:push, github:issues:write, github:pr:write, github:pr:review, provider:ci:cancel, github:branch:delete, github:pr:merge) without declaring each one under credentials; an explicit credentials entry for one of those still wins.",
       "$ref": "#/$defs/daemonIdentity"
     },
     "secretStores": {
@@ -339,6 +339,7 @@
             "provider:pr:write",
             "github:pr:write",
             "github:pr:review",
+            "provider:ci:cancel",
             "github:branch:delete",
             "github:pr:merge",
             "contents:read",
@@ -511,9 +512,9 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-            "description": "A POSIX-shaped environment variable name. Malformed names are rejected at load rather than mis-split at stage launch.",
-            "examples": ["NUGET_CONFIG_FILE"]
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\([A-Za-z0-9_]+\\))?$",
+            "description": "A POSIX-shaped environment variable name, or one of the standard Windows \"x86\" twins such as ProgramFiles(x86)/CommonProgramFiles(x86) (#3753). Malformed names are rejected at load rather than mis-split at stage launch.",
+            "examples": ["NUGET_CONFIG_FILE", "ProgramFiles(x86)"]
           }
         },
         "defaultStageTimeout": {
@@ -807,6 +808,13 @@
           "description": "Bounds cross-process claim-ledger lock acquisition, so a wedged holder cannot convoy stage dispatch or terminal cleanup. Empty defaults to 30 seconds.",
           "$ref": "#/$defs/duration",
           "examples": ["30s"]
+        },
+        "memoryHighWater": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of the container's memory limit above which the cgroup-aware admission gate refuses new runs. Zero or omitted uses the built-in default. GOOBERS_MEMORY_HIGH_WATER overrides this at daemon startup for the specific container the daemon was actually given (\"off\" disables the gate); `goobers status` and the /api/v1/instance payload report the effective value, whichever source set it.",
+          "examples": [0.85]
         }
       }
     },

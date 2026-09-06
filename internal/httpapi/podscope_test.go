@@ -55,6 +55,8 @@ func podRouteTable() []struct {
 		{"journal run-phase", http.MethodPost, apicontract.JournalRunPhasePath, ScopeJournal},
 		{"journal conflict-touches", http.MethodPost, apicontract.JournalConflictTouchesPath, ScopeJournal},
 		{"journal unpushed-work", http.MethodPost, apicontract.JournalUnpushedWorkPath, ScopeJournal},
+		{"journal escalation-candidates", http.MethodPost, apicontract.JournalEscalationCandidatesPath, ScopeJournal},
+		{"journal branch-ownership", http.MethodPost, apicontract.JournalBranchOwnershipPath, ScopeJournal},
 		{"journal emit", http.MethodPost, "/api/v1/runs/run-1/journal/emit", ScopeJournal},
 		{"run events read", http.MethodGet, "/api/v1/runs/run-1/events", ScopeJournal},
 		{"run stage attempts read", http.MethodGet, "/api/v1/runs/run-1/stages/build/attempts", ScopeJournal},

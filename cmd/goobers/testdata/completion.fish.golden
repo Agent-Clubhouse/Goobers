@@ -113,6 +113,8 @@ complete -c goobers -n '__fish_seen_subcommand_from doctor' -l report -r -a 'tex
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l oidc-issuer -r -d 'OIDC issuer URL'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l registry -r -d 'Container registry host'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l egress -r -d 'Outbound host and port targets'
+complete -c goobers -n '__fish_seen_subcommand_from doctor' -l temporal-hostport -r -d 'Temporal frontend host:port'
+complete -c goobers -n '__fish_seen_subcommand_from doctor' -l temporal-namespace -r -d 'Temporal namespace'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l timeout -r -d 'Per-probe timeout'
 complete -c goobers -n '__fish_seen_subcommand_from netpol-render' -l out -r -d 'Directory to write the rendered manifest set into'
 complete -c goobers -n '__fish_seen_subcommand_from netpol-render' -l check -d 'Validate provenance markers, the coverage ratchet, and output freshness'

@@ -47,6 +47,28 @@ func TestMergeReviewEligibilityPolicy(t *testing.T) {
 	}
 }
 
+func TestMergeReviewCheckStateEligible(t *testing.T) {
+	tests := []struct {
+		name         string
+		state        providers.CheckState
+		allowPending bool
+		want         bool
+	}{
+		{"passing by default", providers.CheckStatePassing, false, true},
+		{"pending blocked by default", providers.CheckStatePending, false, false},
+		{"pending when opted in", providers.CheckStatePending, true, true},
+		{"failing remains blocked", providers.CheckStateFailing, true, false},
+		{"unknown remains blocked", providers.CheckState(""), true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mergeReviewCheckStateEligible(tt.state, tt.allowPending); got != tt.want {
+				t.Fatalf("mergeReviewCheckStateEligible(%q, %t) = %t, want %t", tt.state, tt.allowPending, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.authenticatedLogin = "shared-review-bot"

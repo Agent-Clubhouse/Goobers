@@ -142,6 +142,52 @@ func createActiveRun(t *testing.T, layout instance.Layout, runID, gaggle, workfl
 	}
 }
 
+func TestInstanceReportsMemoryGateFsyncAndFleetState(t *testing.T) {
+	// make ci runs the whole suite with GOOBERS_DISABLE_FSYNC=1 (journal
+	// fsync disabled for speed under disk-saturated CI hosts), so this test
+	// must not assume that variable starts unset — pin both states
+	// explicitly via t.Setenv rather than relying on ambient env.
+	t.Setenv("GOOBERS_DISABLE_FSYNC", "0")
+
+	layout := instance.NewLayout(t.TempDir())
+	service, err := NewLocal(LocalSources{
+		Layout:        layout,
+		Config:        &instance.Config{RunConditions: instance.RunConditions{MemoryHighWater: 0.8}},
+		Definitions:   testDefinitions(),
+		FleetEnrolled: func(string) bool { return true },
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.Instance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MemoryHighWater != 0.8 || !got.MemoryGateEnabled {
+		t.Fatalf("memory gate state = %v/%t, want 0.8/enabled", got.MemoryHighWater, got.MemoryGateEnabled)
+	}
+	if !got.FleetEnrolled {
+		t.Fatal("FleetEnrolled = false, want true")
+	}
+	if got.FsyncDisabled {
+		t.Fatal("FsyncDisabled = true, want false with GOOBERS_DISABLE_FSYNC=0")
+	}
+
+	t.Setenv("GOOBERS_MEMORY_HIGH_WATER", "off")
+	t.Setenv("GOOBERS_DISABLE_FSYNC", "1")
+	got, err = service.Instance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MemoryGateEnabled {
+		t.Fatal("MemoryGateEnabled = true, want false with GOOBERS_MEMORY_HIGH_WATER=off")
+	}
+	if !got.FsyncDisabled {
+		t.Fatal("FsyncDisabled = false, want true with GOOBERS_DISABLE_FSYNC=1")
+	}
+}
+
 func TestInstanceInventoryEmptyReadyAndWarningStates(t *testing.T) {
 	empty, _ := newInventoryService(t, testDefinitions(), nil)
 	got, err := empty.Instance(context.Background())

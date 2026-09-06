@@ -192,6 +192,17 @@ const (
 	// the asking run's items from its own claim ledger rather than trusting
 	// the request, so a pod cannot ask about an item it does not hold.
 	JournalUnpushedWorkPath = V1Prefix + "/journal/unpushed-work"
+	// JournalEscalationCandidatesPath answers "which runs in this gaggle are
+	// outstanding decomposition escalation candidates" — select-source's own
+	// scan (decomposition.FindEscalationCandidates), run daemon-side instead
+	// of exposed to a pod as raw run-directory traversal (#4342).
+	JournalEscalationCandidatesPath = V1Prefix + "/journal/escalation-candidates"
+	// JournalBranchOwnershipPath answers "does this run's journal actually
+	// own this branch, and if so its identity and terminal/ref facts" —
+	// reconcile-branches's own check before a candidate branch is preserved
+	// or deleted, run daemon-side instead of a pod opening another run's
+	// journal directly (#4344).
+	JournalBranchOwnershipPath = V1Prefix + "/journal/branch-ownership"
 )
 
 // DigestHeader names the content address of the body RunArtifactPath served.
@@ -273,9 +284,11 @@ const (
 	RouteGaggleStatePut RouteID = "gaggleStatePut"
 
 	// The cross-run journal plane (decision 005 R1, finding 002 C4).
-	RouteJournalRunPhase        RouteID = "journalRunPhase"
-	RouteJournalConflictTouches RouteID = "journalConflictTouches"
-	RouteJournalUnpushedWork    RouteID = "journalUnpushedWork"
+	RouteJournalRunPhase             RouteID = "journalRunPhase"
+	RouteJournalConflictTouches      RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork         RouteID = "journalUnpushedWork"
+	RouteJournalEscalationCandidates RouteID = "journalEscalationCandidates"
+	RouteJournalBranchOwnership      RouteID = "journalBranchOwnership"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -472,6 +485,8 @@ var v1Routes = []Route{
 	{ID: RouteJournalRunPhase, Method: http.MethodPost, Path: JournalRunPhasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalEscalationCandidates, Method: http.MethodPost, Path: JournalEscalationCandidatesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.

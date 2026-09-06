@@ -103,6 +103,21 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   endpoint may have a default. Opt-in does not permit a maintainer-facing
   collection path: this repository MUST contain no such path, enabled or
   disabled. Users own their data and may choose to self-report it.
+- **SEC-049 (MUST):** *(Tiers 1–2)* A deterministic stage's command or environment
+  MUST NOT be allowed to reference, verbatim, an on-disk path `instance.yaml`
+  names as a credential source (a repo/workflow-source/daemon-identity token or
+  GitHub App private key file, `internal/instance.GuardedCredentialPaths`) — the
+  `self` runner has no filesystem confinement (`SEC-044` is not yet wired to the
+  deterministic path, and even where the agentic sandbox IS enforced it only
+  confines writes, not reads), so a stage that names one of these paths directly
+  can read key material a minted, short-lived token exists to avoid exposing.
+  **This is a narrow, config-derived tripwire, not filesystem confinement**: it
+  refuses a stage that names a guarded path as a literal command-line argument or
+  environment-variable value, before exec. It does NOT stop a stage that reaches
+  the same file through indirection — a script with the path hardcoded inside
+  it, `find`, or a symlink — which requires the full sandbox/read-confinement
+  work `SEC-044` already tracks as in progress. The refusal is journaled
+  (`credential.read.refused`) so an operator can see it fire.
 
 ### Isolation
 

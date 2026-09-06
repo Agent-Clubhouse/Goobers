@@ -149,6 +149,52 @@ func (s *daemonRunJournalService) UnpushedWork(ctx context.Context, request jour
 	return journalclient.UnpushedWorkResponse{Work: work}, nil
 }
 
+// EscalationCandidates answers the gaggle's outstanding decomposition
+// escalation candidates (#4342): the same
+// decomposition.FindEscalationCandidates scan select-source ran directly off
+// disk before this route existed, run here over the SAME FileCrossRun this
+// service backs every other cross-run question with — so a pod and a
+// self-runner select-source can never see a different candidate set.
+func (s *daemonRunJournalService) EscalationCandidates(ctx context.Context, request journalclient.EscalationCandidatesRequest) (journalclient.EscalationCandidatesResponse, error) {
+	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
+		return journalclient.EscalationCandidatesResponse{}, gaggleMismatch("a decomposition escalation-candidates read")
+	}
+	candidates, err := s.crossRun().EscalationCandidates(ctx, journalclient.EscalationCandidatesRequest{
+		RunID:  request.RunID,
+		Gaggle: request.Gaggle,
+	})
+	if err != nil {
+		return journalclient.EscalationCandidatesResponse{}, err
+	}
+	return journalclient.EscalationCandidatesResponse{Candidates: candidates}, nil
+}
+
+// BranchOwnership answers whether req.TargetRunID's journal actually owns
+// req.Branch, in the asking run's gaggle.
+//
+// Two containment checks, both required, mirroring RunPhase: the asking run
+// must be in the gaggle it names, and so must the target — without the
+// second, a pod could ask about any run on the instance by naming its own
+// gaggle and someone else's run id, learning that run's identity and phase
+// through a plausible-looking branch name it need not actually reference.
+func (s *daemonRunJournalService) BranchOwnership(ctx context.Context, request journalclient.BranchOwnershipRequest) (journalclient.BranchOwnershipResponse, error) {
+	if !apiv1.ValidRunID(request.RunID) || !apiv1.ValidRunID(request.TargetRunID) {
+		return journalclient.BranchOwnershipResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
+			"runId and targetRunId are required and must be valid run ids", nil)
+	}
+	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {
+		return journalclient.BranchOwnershipResponse{}, gaggleMismatch("a branch-ownership lookup")
+	}
+	if !s.runJournalGaggleOK(request.Gaggle, request.TargetRunID) {
+		// Deliberately the same refusal a foreign gaggle gets (see RunPhase).
+		return journalclient.BranchOwnershipResponse{}, gaggleMismatch("a branch-ownership lookup")
+	}
+	return s.crossRun().BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: request.RunID, Gaggle: request.Gaggle, TargetRunID: request.TargetRunID,
+		Workflow: request.Workflow, Branch: request.Branch,
+	})
+}
+
 // claimedItemIDs lists the items runID currently holds, live or expired —
 // ForRunAll's contract, the same set the same-host caller reads through
 // claimedItemIDsForRun. Held claims only: released history is deliberately NOT

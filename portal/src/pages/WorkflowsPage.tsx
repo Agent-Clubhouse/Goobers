@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { DaemonClient, Goober, RunSummary, WorkflowSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
@@ -12,6 +13,7 @@ import { routeHash } from "../routing";
 import { Icon } from "../ui/Icon";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
+import { manualRunCommand } from "../manualRunCommand";
 
 export function WorkflowsPage({
   client,
@@ -76,6 +78,7 @@ function WorkflowInventory({
             inventory={inventory}
             key={inventory.gaggle.name}
             runs={snapshot.runs}
+            instanceRoot={snapshot.instance.instanceRoot}
           />
         ))
       )}
@@ -85,9 +88,11 @@ function WorkflowInventory({
 
 function GaggleSection({
   inventory,
+  instanceRoot,
   runs,
 }: {
   inventory: GaggleInventory;
+  instanceRoot: string;
   runs: RunSummary[];
 }) {
   const { gaggle } = inventory;
@@ -139,6 +144,9 @@ function GaggleSection({
           <h3>Workflow inventory</h3>
           <span className="section-count">{inventory.workflows.length}</span>
         </div>
+        <p className="inline-empty">
+          Copying a manual-run command prepares it for your terminal; it does not start a workflow.
+        </p>
         {inventory.workflows.length === 0 ? (
           <div className="inline-empty inline-empty-recovery">
             <strong>No workflows are configured for this gaggle.</strong>
@@ -202,6 +210,13 @@ function GaggleSection({
                     ) : (
                       <small>No recorded runs</small>
                     )}
+                    <CopyManualRunCommand
+                      command={manualRunCommand(
+                        workflow.identity.gaggle,
+                        workflow.identity.name,
+                        instanceRoot,
+                      )}
+                    />
                   </span>
                 </DataRow>
               );
@@ -226,6 +241,43 @@ function GaggleSection({
         )}
       </div>
     </section>
+  );
+}
+
+function CopyManualRunCommand({ command }: { command: string }) {
+  const [status, setStatus] = useState<"idle" | "success" | "failure">("idle");
+
+  async function copyCommand() {
+    try {
+      await navigator.clipboard.writeText(command);
+      setStatus("success");
+    } catch {
+      setStatus("failure");
+    }
+  }
+
+  return (
+    <span className="manual-run-copy">
+      <button
+        aria-label={status === "success" ? "Manual run command copied" : "Copy manual run command"}
+        className="secondary-button"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void copyCommand();
+        }}
+        type="button"
+      >
+        {status === "success" ? "Copied" : "Copy command"}
+      </button>
+      <span aria-live="polite" className="sr-only">
+        {status === "success"
+          ? "Manual run command copied to the clipboard."
+          : status === "failure"
+            ? "Could not copy the manual run command. Copy the command from the workflow row."
+            : ""}
+      </span>
+    </span>
   );
 }
 

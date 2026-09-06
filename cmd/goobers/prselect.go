@@ -48,6 +48,11 @@ func mergeReviewHeadPrefixes() []string {
 	return splitLabelList(raw)
 }
 
+func mergeReviewCheckStateEligible(state providers.CheckState, allowPending bool) bool {
+	return state == providers.CheckStatePassing ||
+		(allowPending && state == providers.CheckStatePending)
+}
+
 // runPRSelect implements `goobers pr-select` (issues #359 and #481):
 // merge-review's selection stage. Picks at most one eligible PR per run — the same
 // one-per-run shape backlog-query uses for issues (design doc §3's
@@ -55,8 +60,10 @@ func mergeReviewHeadPrefixes() []string {
 // a single run. The selected PR is leased in the shared PR claim namespace so
 // concurrent merge-review and pr-remediation runs cannot select it together.
 const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
-	"Select at most one open, non-draft, green-CI PR for merge-review to\n" +
-	"evaluate this cycle (a workflow stage). authorScope defaults to goobers;\n" +
+	"Select at most one open, non-draft PR for merge-review to evaluate this\n" +
+	"cycle (a workflow stage). CI must be passing unless allowPendingChecks is\n" +
+	"true; known failing and unknown states are never eligible. authorScope\n" +
+	"defaults to goobers;\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
 	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
 	"PRs labeled goobers:no-merge-review or goobers:run-aborted are always\n" +
@@ -112,6 +119,11 @@ func runPRSelectCore(
 		return 1
 	}
 	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
+	allowPendingChecks, err := strconv.ParseBool(providerInput("allowPendingChecks", "false"))
+	if err != nil {
+		pf(stderr, "error: allowPendingChecks must be true or false\n")
+		return 1
+	}
 	// abortedRunLabel and LabelNeedsHuman are always excluded, never
 	// operator-overridable via the excludeLabels input, same as
 	// noMergeReviewLabel: a cancelled run's PR must stay ineligible for
@@ -196,12 +208,13 @@ func runPRSelectCore(
 		if pr.Draft {
 			continue
 		}
-		if pr.CheckState != providers.CheckStatePassing {
+		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
 			continue
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			continue
 		}
+
 		if authorScope == authorScopeAny &&
 			!isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) &&
 			advisoryAlreadyDispatched(advisedHeads, pr) {

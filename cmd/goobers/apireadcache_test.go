@@ -778,3 +778,61 @@ func TestNewAPIReadCacheCleanupSkipsHeldLock(t *testing.T) {
 		t.Fatalf("held (even if old) list lock was removed out from under its holder: %v", err)
 	}
 }
+
+// TestCleanStaleAPIReadCacheLocksSweepsAcrossRepeatedCallsWithoutRestart is the
+// regression test for #4251: the sweep used to be gated by a per-schedulerDir
+// sync.Once, so only the FIRST call in a process's lifetime ever did
+// anything — a long-lived daemon whose own cache-construction call sites
+// (stage dispatch, open-PR polling, counter evaluation) recur throughout its
+// uptime, plus the new apiReadCacheLockSweepTicker (up.go), got no benefit
+// from any call after the first. This proves the sweep now does real work on
+// every call: a lock created fresh, then aged past the staleness cutoff
+// in-place (no process restart, no second newAPIReadCache — exactly what a
+// long-lived daemon between periodic ticks looks like), is reclaimed by a
+// SECOND direct call once it crosses the cutoff, and the directory stays
+// bounded across both passes.
+func TestCleanStaleAPIReadCacheLocksSweepsAcrossRepeatedCallsWithoutRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := apiReadListLockPath(dir, "aging-key")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First pass: fresh, so a sweep right after creation must leave it alone —
+	// this is what an already-once-per-process sweep already got right, and
+	// establishes there's nothing to clean up yet.
+	cleanStaleAPIReadCacheLocks(dir)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("fresh lock removed on first sweep: %v", err)
+	}
+
+	// Age it past the cutoff IN PLACE — no new process, no new newAPIReadCache
+	// call, just time passing while this same process keeps running, exactly
+	// the daemon-uptime shape the bug was about.
+	staleTime := time.Now().Add(-apiReadCacheStaleLockAge - time.Hour)
+	if err := os.Chtimes(path, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second pass, same process, no restart: with the old sync.Once gate this
+	// would have been a silent no-op forever. It must now reclaim the file.
+	cleanStaleAPIReadCacheLocks(dir)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("lock aged past the cutoff survived a second sweep in the same process: err=%v", err)
+	}
+
+	// A third pass on an already-clean directory must stay a no-op — the
+	// sweep is safe to call as often as the ticker likes.
+	entriesBefore, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanStaleAPIReadCacheLocks(dir)
+	entriesAfter, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entriesBefore) != len(entriesAfter) {
+		t.Fatalf("directory entry count changed on a no-op sweep: before=%d after=%d", len(entriesBefore), len(entriesAfter))
+	}
+}

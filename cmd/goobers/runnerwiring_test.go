@@ -1023,6 +1023,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				nil,
 				nil,
 				false,
+				nil,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -1046,6 +1047,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 		nil,
 		nil,
 		false,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -1059,6 +1061,53 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 	if resolvedGoobers["coder"].Model != "" ||
 		len(resolvedGoobers["coder"].HarnessOptions) != 0 {
 		t.Fatalf("resolved goober = %+v, want harness default without admission-only options", resolvedGoobers["coder"])
+	}
+}
+
+// TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery is #4292's
+// wiring regression guard: compiledMachinesWithWarnings used to hardcode nil
+// for the admission registry's model credential, so a file/keychain/store-
+// sourced agent:model grant was invisible to config-admission-time model
+// discovery — the same discovery daemon startup runs at workflow load — even
+// though the daemon-startup harness preflight already consulted it. With no
+// ambient token set and a modelCredential resolver passed in, discovery must
+// see it.
+func TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	lister := &runnerWiringModelLister{responses: [][]harness.CopilotModelInfo{
+		{{ID: "gpt-5.4"}},
+	}}
+	previousLister := copilotModelLister
+	copilotModelLister = lister
+	t.Cleanup(func() { copilotModelLister = previousLister })
+
+	credentialCalls := 0
+	_, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(
+		&instance.ConfigSet{},
+		map[string]apiv1.GooberSpec{
+			"coder": {Harness: apiv1.HarnessCopilot, Model: "gpt-5.4"},
+		},
+		nil,
+		nil,
+		false,
+		func(context.Context) (string, error) {
+			credentialCalls++
+			return "pat-from-file-ref", nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("compiledMachinesWithWarnings: %v", err)
+	}
+	if len(warnings) != 0 || resolvedGoobers["coder"].Model != "gpt-5.4" {
+		t.Fatalf("admission = goober %+v warnings %+v, want the requested model verified, not left unverified", resolvedGoobers["coder"], warnings)
+	}
+	if credentialCalls == 0 {
+		t.Fatal("modelCredential resolver was never consulted by admission-time discovery")
+	}
+	if !slices.Contains(lister.env, "COPILOT_GITHUB_TOKEN=pat-from-file-ref") {
+		t.Fatalf("model discovery env = %v, want the resolved file-ref credential", lister.env)
 	}
 }
 
@@ -1097,6 +1146,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		[]string{"COPILOT_HOME"},
 		nil,
 		false,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -2270,7 +2320,9 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4716,4 +4768,55 @@ func TestBuildDeterministicExecutorBindsSelfRunnerEphemeralTmp(t *testing.T) {
 			t.Fatalf("GOCACHE = %q, want the ambient %q unchanged for an instance that declares nothing", gocache, daemonCache)
 		}
 	})
+}
+
+// TestBuildDeterministicExecutorRefusesGuardedCredentialPath is the
+// composition-level regression test for #4273: buildDeterministicExecutor
+// must actually wire instance.GuardedCredentialPaths(input.Config) onto the
+// shell executor it builds, not just leave the mechanism sitting unused. A
+// repo config with a file-backed GitHub App private key ref, run end-to-end
+// through the built executor, must refuse a stage command naming that path.
+func TestBuildDeterministicExecutorRefusesGuardedCredentialPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script exercises Unix shell semantics")
+	}
+	keyPath := filepath.Join(t.TempDir(), "github-app-key.pem")
+	if err := os.WriteFile(keyPath, []byte("not a real key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widgets",
+			Auth: &instance.RepoAuthConfig{
+				Kind:       instance.GitHubAuthApp,
+				PrivateKey: &instance.TokenRef{File: keyPath},
+			},
+		}},
+	}
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		Config:           cfg,
+		Resolver:         resolver,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		InstanceRoot:     t.TempDir(),
+		ArtifactRecorder: runnerWiringArtifactRecorder{},
+		SecretRegistrar:  journal.NewRegistryScrubber(),
+	})
+	if err != nil {
+		t.Fatalf("buildDeterministicExecutor: %v", err)
+	}
+	result, err := got.Run(context.Background(), apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: t.TempDir()},
+		apiv1.DeterministicRun{Command: []string{"cat", keyPath}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "credential_read_refused" {
+		t.Fatalf("result = %+v, want a credential_read_refused failure — the wiring did not connect "+
+			"instance.GuardedCredentialPaths through to the built executor", result)
+	}
 }

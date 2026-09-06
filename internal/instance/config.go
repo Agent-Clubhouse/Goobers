@@ -826,6 +826,27 @@ func (c *Config) GitHubBotLogins() map[string]string {
 	return logins
 }
 
+// ExternalTelemetryConnectorsByName indexes every configured external
+// telemetry connector by its own Name, with Auth.Token cleared — a
+// credential REFERENCE (an env/file name), never a secret value, but still
+// not this process's to hand to a pod: the pod resolves the actual secret
+// through the credential plane instead (#4341), exactly as every other pod
+// capability does. Threaded at wiring (workerdispatch.go) the same way
+// GitHubBotLogins is, and for the same reason: only the daemon can read the
+// instance config, so it resolves this once here rather than a pod trying
+// and failing to read a config directory it does not have.
+func (c *Config) ExternalTelemetryConnectorsByName() map[string]externaltelemetry.ConnectorConfig {
+	if c == nil || len(c.ExternalTelemetry.Connectors) == 0 {
+		return nil
+	}
+	connectors := make(map[string]externaltelemetry.ConnectorConfig, len(c.ExternalTelemetry.Connectors))
+	for _, connector := range c.ExternalTelemetry.Connectors {
+		connector.Auth.Token = nil
+		connectors[connector.Name] = connector
+	}
+	return connectors
+}
+
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {
@@ -1334,6 +1355,56 @@ type RunConditions struct {
 	// ClaimsLockTimeout bounds cross-process claim-ledger lock acquisition.
 	// Empty defaults to 30 seconds.
 	ClaimsLockTimeout string `json:"claimsLockTimeout,omitempty" yaml:"claimsLockTimeout,omitempty"`
+	// MemoryHighWater is the cgroup-aware admission gate's threshold, a
+	// fraction (0 to 1) of the container's memory limit above which new run
+	// admission is refused (#4218). Omitted or 0 disables the gate by
+	// default. GOOBERS_MEMORY_HIGH_WATER, resolved by
+	// ResolveMemoryHighWater, overrides this value at daemon startup — the
+	// process-local knob for the container the daemon was actually given,
+	// which this same instance.yaml, deployed unchanged across
+	// differently-provisioned pods, cannot know in advance.
+	MemoryHighWater float64 `json:"memoryHighWater,omitempty" yaml:"memoryHighWater,omitempty"`
+}
+
+// memoryHighWaterEnv names the environment variable ResolveMemoryHighWater
+// checks for an override (#4218). Mirrors the historical
+// GOOBERS_MEMORY_HIGH_WATER the daemon has read directly since #3949; now
+// resolved here so a read-only reporter (status, the /api/v1/instance
+// payload) can agree with the daemon on the same effective value without
+// re-deriving the parsing rules itself.
+const memoryHighWaterEnv = "GOOBERS_MEMORY_HIGH_WATER"
+
+// ResolveMemoryHighWater resolves the effective admission-gate threshold:
+// RunConditions.MemoryHighWater is the default, GOOBERS_MEMORY_HIGH_WATER
+// overrides it when lookupEnv reports it set. "off" (case-insensitive) or a
+// value parsing to exactly zero disables the gate entirely. overridden
+// reports whether the environment variable actually took effect, for a
+// caller that wants to say so explicitly rather than silently.
+//
+// An unparseable env value is treated as unset rather than an error: the
+// daemon must still start, falling back to the YAML/default value rather
+// than to a number that would refuse every run.
+func (c RunConditions) ResolveMemoryHighWater(lookupEnv func(string) (string, bool)) (highWater float64, disabled bool, overridden bool) {
+	highWater = c.MemoryHighWater
+	raw, ok := lookupEnv(memoryHighWaterEnv)
+	if !ok {
+		return highWater, false, false
+	}
+	setting := strings.TrimSpace(raw)
+	if strings.EqualFold(setting, "off") {
+		return 0, true, true
+	}
+	// An empty or unparseable override is not an error: the daemon must
+	// still start, falling back to the YAML/default value rather than to a
+	// number that would refuse every run.
+	parsed, err := strconv.ParseFloat(setting, 64)
+	if setting == "" || err != nil {
+		return highWater, false, false
+	}
+	if parsed == 0 {
+		return 0, true, true
+	}
+	return parsed, false, true
 }
 
 // RunControls returns the instance layer of the run-control hierarchy.

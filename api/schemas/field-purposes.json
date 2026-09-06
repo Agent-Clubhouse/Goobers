@@ -32,7 +32,9 @@
     "schemaVersion": "Compatibility version of the toolkit-manifest payload."
   },
   "candidate-findings-v1": {
+    "causalCredit[].hasCohortData": "Whether an experiment actually ran on this node, distinguishing a genuine identification failure from a node with no versioned changepoint or routed identity recorded at all.",
     "findings": "Deterministically selected telemetry anomalies proposed for follow-up work.",
+    "findings[].error_class": "Normalized error category for an error-signature finding, distinguishing findings that share a code but differ in error_class.",
     "findings[].flagged_runs": "Run-journal references that provide evidence for the anomaly.",
     "findings[].kind": "Stable anomaly category detected by the telemetry query.",
     "findings[].metrics": "Measured values that caused the candidate to be selected.",

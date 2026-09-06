@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	workflowservice "go.temporal.io/api/workflowservice/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -115,10 +117,15 @@ func TestRunConformantClusterPasses(t *testing.T) {
 	defer func() { _ = egress.Close() }()
 
 	report := Run(context.Background(), newFakeCluster(t), Options{
-		OIDCIssuer:   issuer.URL,
-		Registry:     registry.URL,
-		Egress:       []string{egress.Addr().String()},
-		OTLPEndpoint: otlp.URL,
+		OIDCIssuer:        issuer.URL,
+		Registry:          registry.URL,
+		Egress:            []string{egress.Addr().String()},
+		OTLPEndpoint:      otlp.URL,
+		TemporalHostPort:  "temporal-frontend.goobers-temporal:7233",
+		TemporalNamespace: "default",
+		DialTemporal: func(context.Context, string) (temporalNamespaceDescriber, error) {
+			return &fakeTemporalDescriber{wantNamespace: "default"}, nil
+		},
 	})
 
 	if !report.Conformant {
@@ -615,6 +622,105 @@ func TestEgressUnreachableTargetFails(t *testing.T) {
 	}
 	if report.Conformant {
 		t.Fatal("unreachable required egress must not be conformant")
+	}
+}
+
+func TestTemporalNamespaceSkippedWhenUnconfigured(t *testing.T) {
+	report := Run(context.Background(), newFakeCluster(t), Options{})
+	result := resultByID(t, report, "temporal-namespace")
+	if result.Status != StatusWarn || result.Severity != SeverityOptional {
+		t.Fatalf("temporal-namespace = %s/%s, want optional warn when unconfigured", result.Status, result.Severity)
+	}
+	if !report.Conformant {
+		t.Fatal("an unconfigured optional probe must not block conformance")
+	}
+}
+
+// fakeTemporalDescriber lets a test assert exactly which namespace the check
+// asked about, without dialing a live Temporal server.
+type fakeTemporalDescriber struct {
+	wantNamespace string
+	err           error
+	closed        bool
+}
+
+func (f *fakeTemporalDescriber) DescribeNamespace(_ context.Context, in *workflowservice.DescribeNamespaceRequest) (*workflowservice.DescribeNamespaceResponse, error) {
+	if in.Namespace != f.wantNamespace {
+		return nil, fmt.Errorf("unexpected namespace %q, want %q", in.Namespace, f.wantNamespace)
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &workflowservice.DescribeNamespaceResponse{}, nil
+}
+
+func (f *fakeTemporalDescriber) Close() { f.closed = true }
+
+func TestTemporalNamespaceRegisteredPasses(t *testing.T) {
+	fake := &fakeTemporalDescriber{wantNamespace: "default"}
+	report := Run(context.Background(), newFakeCluster(t), Options{
+		TemporalHostPort: "temporal-frontend.goobers-temporal:7233",
+		DialTemporal: func(context.Context, string) (temporalNamespaceDescriber, error) {
+			return fake, nil
+		},
+	})
+	result := resultByID(t, report, "temporal-namespace")
+	if result.Status != StatusPass {
+		t.Fatalf("temporal-namespace = %s, want pass; detail=%q", result.Status, result.Detail)
+	}
+	if !report.Conformant {
+		t.Fatal("a registered namespace must be conformant")
+	}
+	if !fake.closed {
+		t.Fatal("the Temporal client was never closed")
+	}
+}
+
+func TestTemporalNamespaceMissingFailsWithApplyHint(t *testing.T) {
+	fake := &fakeTemporalDescriber{wantNamespace: "default", err: errors.New("temporal: namespace default is not found")}
+	report := Run(context.Background(), newFakeCluster(t), Options{
+		TemporalHostPort: "temporal-frontend.goobers-temporal:7233",
+		DialTemporal: func(context.Context, string) (temporalNamespaceDescriber, error) {
+			return fake, nil
+		},
+	})
+	result := resultByID(t, report, "temporal-namespace")
+	if result.Status != StatusFail || result.Severity != SeverityRequired {
+		t.Fatalf("temporal-namespace = %s/%s, want required fail", result.Status, result.Severity)
+	}
+	if !strings.Contains(result.Hint, "namespace-job.yaml") {
+		t.Fatalf("hint = %q, want it to point at the namespace-registration Job", result.Hint)
+	}
+	if report.Conformant {
+		t.Fatal("a missing required namespace must not be conformant")
+	}
+}
+
+func TestTemporalNamespaceUnreachableFrontendFails(t *testing.T) {
+	report := Run(context.Background(), newFakeCluster(t), Options{
+		TemporalHostPort: "temporal-frontend.goobers-temporal:7233",
+		DialTemporal: func(context.Context, string) (temporalNamespaceDescriber, error) {
+			return nil, errors.New("dial tcp: connection refused")
+		},
+	})
+	result := resultByID(t, report, "temporal-namespace")
+	if result.Status != StatusFail || result.Severity != SeverityRequired {
+		t.Fatalf("temporal-namespace = %s/%s, want required fail", result.Status, result.Severity)
+	}
+}
+
+func TestTemporalNamespaceDefaultsToDefaultNamespace(t *testing.T) {
+	fake := &fakeTemporalDescriber{wantNamespace: "default"}
+	report := Run(context.Background(), newFakeCluster(t), Options{
+		TemporalHostPort: "temporal-frontend.goobers-temporal:7233",
+		// TemporalNamespace deliberately left empty.
+		DialTemporal: func(context.Context, string) (temporalNamespaceDescriber, error) {
+			return fake, nil
+		},
+	})
+	result := resultByID(t, report, "temporal-namespace")
+	if result.Status != StatusPass {
+		t.Fatalf("temporal-namespace = %s, want pass against the default namespace; detail=%q", result.Status, result.Detail)
 	}
 }
 

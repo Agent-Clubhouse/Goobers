@@ -1444,6 +1444,92 @@ func (p *GitHubProvider) actionsRunsForRef(ctx context.Context, repo RepositoryR
 	return runs, nil
 }
 
+// CancelPendingChecks cancels a bounded set of GitHub Actions runs for the
+// exact reviewed PR head. The live PR-head check closes the selection-to-action
+// race before any cancellation is attempted.
+func (p *GitHubProvider) CancelPendingChecks(ctx context.Context, req CancelPendingChecksRequest) (CancelPendingChecksResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return CancelPendingChecksResult{}, err
+	}
+	if strings.TrimSpace(req.PullID) == "" {
+		return CancelPendingChecksResult{}, errPullIDRequired
+	}
+	if strings.TrimSpace(req.HeadSHA) == "" {
+		return CancelPendingChecksResult{}, fmt.Errorf("head sha is required")
+	}
+	limit := req.Limit
+	if limit == 0 {
+		limit = 25
+	}
+	if limit < 1 || limit > 100 {
+		return CancelPendingChecksResult{}, fmt.Errorf("limit must be between 1 and 100")
+	}
+
+	current, err := p.GetPullRequest(ctx, req.Repository, req.PullID)
+	if err != nil {
+		return CancelPendingChecksResult{}, fmt.Errorf("verify pull request head: %w", err)
+	}
+	if current.State != "open" || current.Merged {
+		return CancelPendingChecksResult{}, fmt.Errorf("pull request %s is no longer open", req.PullID)
+	}
+	if current.HeadSHA != req.HeadSHA {
+		return CancelPendingChecksResult{}, PullRequestHeadMovedError{Expected: req.HeadSHA, Actual: current.HeadSHA}
+	}
+
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "actions", "runs")
+	if err != nil {
+		return CancelPendingChecksResult{}, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{
+		"head_sha": []string{req.HeadSHA},
+		"per_page": []string{strconv.Itoa(limit)},
+		"page":     []string{"1"},
+	})
+	if err != nil {
+		return CancelPendingChecksResult{}, err
+	}
+	var page githubActionsRunsResponse
+	if err := p.do(ctx, http.MethodGet, endpoint, nil, &page); err != nil {
+		return CancelPendingChecksResult{}, fmt.Errorf("list actions runs for reviewed head: %w", err)
+	}
+
+	result := CancelPendingChecksResult{Examined: len(page.WorkflowRuns)}
+	for _, run := range page.WorkflowRuns {
+		id := strconv.FormatInt(run.ID, 10)
+		if run.HeadSHA != req.HeadSHA {
+			result.Skipped = append(result.Skipped, id)
+			continue
+		}
+		if strings.EqualFold(run.Status, "completed") {
+			result.Skipped = append(result.Skipped, id)
+			continue
+		}
+		cancelEndpoint, err := joinURL(
+			p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name,
+			"actions", "runs", id, "cancel",
+		)
+		if err != nil {
+			return result, err
+		}
+		if err := p.do(ctx, http.MethodPost, cancelEndpoint, nil, nil); err != nil {
+			var responseErr *providerResponseError
+			if errors.As(err, &responseErr) &&
+				(responseErr.statusCode == http.StatusConflict || responseErr.statusCode == http.StatusUnprocessableEntity) {
+				result.Skipped = append(result.Skipped, id)
+				continue
+			}
+			return result, fmt.Errorf("cancel actions run %s: %w", id, err)
+		}
+		result.Canceled = append(result.Canceled, id)
+		p.recordExternalRef(ctx, ExternalRef{
+			Provider:  ProviderGitHub,
+			Ref:       fmt.Sprintf("%s/%s@%s", req.Repository.Owner, req.Repository.Name, req.HeadSHA),
+			Operation: "cancel-ci",
+		})
+	}
+	return result, nil
+}
+
 func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo RepositoryRef, checkRunID int64) ([]CheckAnnotation, error) {
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "check-runs", strconv.FormatInt(checkRunID, 10), "annotations")
 	if err != nil {

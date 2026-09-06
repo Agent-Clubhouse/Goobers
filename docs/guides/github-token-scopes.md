@@ -20,8 +20,10 @@ and complete these fields before generating the token:
 3. **Repository permissions:** grant only the permissions required by the
    selected workflow. The getting-started quickstart needs **Contents: Read
    and write**, **Issues: Read and write**, and **Pull requests: Read and
-   write**. Add **Actions: Read-only** and **Commit statuses: Read-only** only
-   for workflows that poll hosted CI.
+   write**. Add **Actions: Read-only** and **Commit statuses: Read-only** for
+   workflows that only poll hosted CI. Use **Actions: Read and write** when
+   `merge-review` is configured to cancel obsolete pending runs after a
+   non-pass verdict.
 4. Select **Generate token**, copy it once, and store it in the environment
    variable named by the Goobers configuration. Never paste the token into
    YAML, source code, issue text, or a browser wizard.
@@ -66,6 +68,7 @@ to verify the two-token boundary against disposable repositories.
 | `provider:pr:write` | Pull requests: Read and write, Commit statuses: Read-only, Actions: Read | Provider-neutral pull-request stages such as `ci-poll`; credentials route only to the configured repository provider. GitHub's fine-grained PAT UI has no separate Checks permission to grant, so a private repo whose CI is entirely GitHub Actions-based is otherwise unreadable on this token type: `commits/{ref}/status` reports empty (Actions doesn't bridge into legacy statuses) and `commits/{ref}/check-runs` 403s. Also granting **Actions: Read** lets `checkDetails` fall back to `GET /actions/runs` automatically on that specific 403 (#2685), restoring CI visibility without any config change. |
 | `github:pr:write` | Pull requests: Read and write, Contents: Read and write | GitHub-specific stages that open or update PRs. |
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
+| `provider:ci:cancel` | Actions: Read and write | Cancel a bounded set of pending GitHub Actions runs only after re-checking the open PR and its exact reviewed head SHA. Providers without a safe cancellation API report unsupported without changing the published verdict. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
 | `configrepo:read` | Contents: Read-only | Runner-only access to the workflow-config repo. Configure only through `workflowSource.token`; stages cannot declare or source it through `credentials`. |
@@ -82,7 +85,7 @@ degrades a native Review into a comment/label handoff (#870). `daemonIdentity`
 (UNOP-7/#1295, #1780) generalizes that: one `instance.yaml` block backs the
 *whole* daemon-mutation capability set — `repo:push`, `github:issues:write`,
 `github:pr:write`, `github:pr:review`, `github:branch:delete`,
-`github:pr:merge` — with one distinct machine-account identity, instead of
+`github:pr:merge`, `provider:ci:cancel` — with one distinct machine-account identity, instead of
 repeating a `credentials:` entry per capability:
 
 ```yaml

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -689,6 +691,44 @@ const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
+// statusCompiledHarnessWarnings compiles the workflow set exactly as
+// runRunTable's caller already did, threading in the same instance-configured
+// agent:model resolver admission uses elsewhere (#4292) so a
+// file/keychain/store-sourced credential is visible to `status`'s own
+// admission-time model discovery, not just an ambient env var. Folds its own
+// and the compile call's error handling into one non-zero exit code, so
+// runRunTable itself gains a single branch rather than two.
+func statusCompiledHarnessWarnings(
+	cfg *instance.Config,
+	configDir string,
+	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
+	cliWarnings []validate.CodedWarning,
+	stderr io.Writer,
+) ([]gooberHarnessWarning, int) {
+	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		pf(stderr, "error: invalid secretStores: %v\n", err)
+		return nil, 1
+	}
+	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		pf(stderr, "error: invalid credentials: %v\n", err)
+		return nil, 1
+	}
+	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		false, modelCredential,
+	)
+	if err != nil {
+		printValidationWarnings(stderr, cliWarnings)
+		pf(stderr, "error: invalid workflow: %v\n", err)
+		return nil, 1
+	}
+	return harnessWarnings, 0
+}
+
 func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	fs := newCLIFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -806,14 +846,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
 	}
-	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
-		false,
-	)
-	if err != nil {
-		printValidationWarnings(stderr, report.CLIWarnings())
-		pf(stderr, "error: invalid workflow: %v\n", err)
-		return 1
+	harnessWarnings, code := statusCompiledHarnessWarnings(cfg, l.ConfigDir(), set, goobers, instructions, report.CLIWarnings(), stderr)
+	if code != 0 {
+		return code
 	}
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		pf(stderr, "error: append harness validation warnings: %v\n", err)
@@ -1311,6 +1346,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				identity.PID, uptime.Truncate(time.Second), identity.Version,
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
+			reportFleetEnrollment(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 			return 1
 		}
@@ -1318,6 +1354,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			identity.PID, uptime.Truncate(time.Second), identity.Version,
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
+		reportFleetEnrollment(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 		return 0
 	}
@@ -1354,14 +1391,44 @@ func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {
 	if behavior.DrainTimeoutNanos > 0 {
 		drainTimeout = time.Duration(behavior.DrainTimeoutNanos).String()
 	}
+	memoryHighWater := "disabled"
+	if !behavior.MemoryGateDisabled {
+		memoryHighWater = strconv.FormatFloat(behavior.MemoryHighWater, 'g', -1, 64)
+	}
 	pf(stdout,
-		"daemon behavior: watch-config=%t, diagnostics=%t, drain-timeout=%s, skip-preflight=%t, disable-read-model-reads=%t\n",
+		"daemon behavior: watch-config=%t, diagnostics=%t, drain-timeout=%s, skip-preflight=%t, disable-read-model-reads=%t, memory-high-water=%s, fsync-disabled=%t\n",
 		behavior.WatchConfig,
 		behavior.Diagnostics,
 		drainTimeout,
 		behavior.SkipPreflight,
 		behavior.DisableReadModelReads,
+		memoryHighWater,
+		behavior.FsyncDisabled,
 	)
+}
+
+// reportFleetEnrollment prints whether this instance is enrolled with a
+// Fleet service (#4218). Enrollment is a filesystem-only check
+// (fleet.LoadAssociation), independently readable by this process without
+// going through the daemon — previously it was visible only via the
+// separate `goobers fleet status` subcommand, so an operator reading
+// `goobers status` alone had no indication either way.
+func reportFleetEnrollment(instanceRoot string, stdout io.Writer) {
+	storage, err := newFleetStorage()
+	if err != nil {
+		pf(stdout, "fleet: unavailable (%v)\n", err)
+		return
+	}
+	association, err := storage.LoadAssociation(instanceRoot)
+	if errors.Is(err, fleet.ErrNotAssociated) {
+		pln(stdout, "fleet: not enrolled")
+		return
+	}
+	if err != nil {
+		pf(stdout, "fleet: unavailable (%v)\n", err)
+		return
+	}
+	pf(stdout, "fleet: enrolled as %q (%s)\n", association.DisplayName, association.CanonicalURI)
 }
 
 func daemonLivenessLabel(liveness daemonstate.Liveness) string {

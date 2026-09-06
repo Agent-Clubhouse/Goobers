@@ -117,6 +117,9 @@ The shipped configuration has three credential paths:
 - **Contents:** read and write (managed branches, opt-in merge, and merged
   branch cleanup).
 - **Checks / statuses:** read (CI-poll needs to see check results).
+- **Actions:** read and write (`merge-review` admits pending CI for review and,
+  after publishing a managed non-pass verdict, cancels only still-running
+  Actions runs pinned to that exact reviewed head).
 
 `GOOBERS_GITHUB_REVIEW_TOKEN` is a fine-grained PAT with **Pull requests:
 read and write**, owned by a different GitHub identity. GitHub does not allow
@@ -140,6 +143,7 @@ not turn a model verdict directly into a merge:
 | `elect-gate` | Resolves overlapping sibling ordering; election never bypasses verdict publication. |
 | `advisory-verdict` | Makes PRs outside managed branch prefixes review-only. |
 | `published-verdict` | Requires the native, separately authenticated review decision to be `pass`. |
+| `cancel-pending-ci` | On a managed non-pass verdict, cancels a bounded set of pending Actions runs only when the PR still points at the exact reviewed SHA; failures never undo the verdict. |
 | `scope-gate` | Prevents an oversized or parked PR from reaching the landing command. |
 | `merge-opt-out-gate` | Honors a late `goobers:no-merge-review` opt-out. |
 | `merge-gate` | Routes only an actual merge or queue enrollment onward; refusals remain unmerged. |

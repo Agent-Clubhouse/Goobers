@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/mergeresolve"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -534,6 +535,17 @@ func failRebasePR(
 			locationsJSON = string(data)
 		}
 	}
+	// An infra-classified failure (a git subprocess we ran ourselves, a
+	// network blip, a rate limit) never reached a real conflict/substantive
+	// verdict about the PR's content — forwarding policy's pre-failure
+	// causes here would attribute this stage's own tooling fault to the PR
+	// (#4173). remediation-checkpoint reads rebaseInfrastructureFailure to
+	// treat this cycle as a no-cost tick instead of an escalation.
+	infraFault := telemetry.ClassifyError(code).InfraFault()
+	remediationCauses := formatRemediationCauses(policy.policyResult.causes)
+	if infraFault {
+		remediationCauses = ""
+	}
 	payload := map[string]interface{}{
 		"selectedNumber":              selectedNumber,
 		"head":                        head,
@@ -542,9 +554,10 @@ func failRebasePR(
 		"conflictLocations":           locationsJSON,
 		"attemptedHeadSha":            attemptedHeadSHA,
 		"rebaseBaseSha":               rebaseBaseSHA,
-		"remediationCauses":           formatRemediationCauses(policy.policyResult.causes),
+		"remediationCauses":           remediationCauses,
 		"policyExcluded":              strconv.FormatBool(policy.policyExcluded),
 		"policyExcludedReason":        policy.excludedReason,
+		"rebaseInfrastructureFailure": strconv.FormatBool(infraFault),
 		executor.OutputErrorCode:      code,
 		executor.OutputErrorMessage:   err.Error(),
 		executor.OutputErrorRetryable: retryable,
