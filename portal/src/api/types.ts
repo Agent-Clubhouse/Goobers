@@ -278,6 +278,10 @@ export interface Instance extends ContractVersion {
   concurrency: Concurrency;
   counts: InventoryCounts;
   warnings: ValidationWarning[];
+  memoryHighWater?: number;
+  memoryGateEnabled: boolean;
+  fsyncDisabled: boolean;
+  fleetEnrolled: boolean;
 }
 
 export interface Concurrency {

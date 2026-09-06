@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -1326,6 +1328,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				identity.PID, uptime.Truncate(time.Second), identity.Version,
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
+			reportFleetEnrollment(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 			return 1
 		}
@@ -1333,6 +1336,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			identity.PID, uptime.Truncate(time.Second), identity.Version,
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
+		reportFleetEnrollment(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 		return 0
 	}
@@ -1369,14 +1373,44 @@ func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {
 	if behavior.DrainTimeoutNanos > 0 {
 		drainTimeout = time.Duration(behavior.DrainTimeoutNanos).String()
 	}
+	memoryHighWater := "disabled"
+	if !behavior.MemoryGateDisabled {
+		memoryHighWater = strconv.FormatFloat(behavior.MemoryHighWater, 'g', -1, 64)
+	}
 	pf(stdout,
-		"daemon behavior: watch-config=%t, diagnostics=%t, drain-timeout=%s, skip-preflight=%t, disable-read-model-reads=%t\n",
+		"daemon behavior: watch-config=%t, diagnostics=%t, drain-timeout=%s, skip-preflight=%t, disable-read-model-reads=%t, memory-high-water=%s, fsync-disabled=%t\n",
 		behavior.WatchConfig,
 		behavior.Diagnostics,
 		drainTimeout,
 		behavior.SkipPreflight,
 		behavior.DisableReadModelReads,
+		memoryHighWater,
+		behavior.FsyncDisabled,
 	)
+}
+
+// reportFleetEnrollment prints whether this instance is enrolled with a
+// Fleet service (#4218). Enrollment is a filesystem-only check
+// (fleet.LoadAssociation), independently readable by this process without
+// going through the daemon — previously it was visible only via the
+// separate `goobers fleet status` subcommand, so an operator reading
+// `goobers status` alone had no indication either way.
+func reportFleetEnrollment(instanceRoot string, stdout io.Writer) {
+	storage, err := newFleetStorage()
+	if err != nil {
+		pf(stdout, "fleet: unavailable (%v)\n", err)
+		return
+	}
+	association, err := storage.LoadAssociation(instanceRoot)
+	if errors.Is(err, fleet.ErrNotAssociated) {
+		pln(stdout, "fleet: not enrolled")
+		return
+	}
+	if err != nil {
+		pf(stdout, "fleet: unavailable (%v)\n", err)
+		return
+	}
+	pf(stdout, "fleet: enrolled as %q (%s)\n", association.DisplayName, association.CanonicalURI)
 }
 
 func daemonLivenessLabel(liveness daemonstate.Liveness) string {

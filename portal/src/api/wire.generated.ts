@@ -98,7 +98,10 @@ export const goWireFixtures = {
         "scope": "Workflow/implementation",
         "explanation": "fixture warning"
       }
-    ]
+    ],
+    "memoryGateEnabled": false,
+    "fsyncDisabled": false,
+    "fleetEnrolled": false
   },
   "portalConfig": {
     "brand": {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -75,6 +77,17 @@ type Instance struct {
 	Concurrency   Concurrency             `json:"concurrency"`
 	Counts        InventoryCounts         `json:"counts"`
 	Warnings      []validate.CodedWarning `json:"warnings"`
+	// MemoryHighWater, MemoryGateEnabled, and FsyncDisabled surface
+	// GOOBERS_MEMORY_HIGH_WATER and GOOBERS_DISABLE_FSYNC (#4218), settings
+	// that were previously invisible outside the daemon process's own
+	// environment.
+	MemoryHighWater   float64 `json:"memoryHighWater,omitempty"`
+	MemoryGateEnabled bool    `json:"memoryGateEnabled"`
+	FsyncDisabled     bool    `json:"fsyncDisabled"`
+	// FleetEnrolled reports whether this instance is associated with a Fleet
+	// service (fleet.LoadAssociation), a filesystem-only check independent
+	// of daemon state.
+	FleetEnrolled bool `json:"fleetEnrolled"`
 }
 
 // InventoryCounts summarizes configured definitions and active runs.
@@ -371,8 +384,15 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		}
 	}
 	maxConcurrent := 0
+	var runConditions instance.RunConditions
 	if s.sources.Config != nil {
-		maxConcurrent = s.sources.Config.RunConditions.MaxParallelRuns
+		runConditions = s.sources.Config.RunConditions
+		maxConcurrent = runConditions.MaxParallelRuns
+	}
+	memoryHighWater, memoryGateDisabled, _ := runConditions.ResolveMemoryHighWater(os.LookupEnv)
+	fleetEnrolled := false
+	if s.sources.FleetEnrolled != nil {
+		fleetEnrolled = s.sources.FleetEnrolled(s.sources.Layout.Root)
 	}
 	return Instance{
 		APIVersion:    APIVersion,
@@ -391,7 +411,11 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 			Workflows:  len(inventory.definitions.Workflows),
 			ActiveRuns: activeTotal,
 		},
-		Warnings: append([]validate.CodedWarning{}, inventory.warnings...),
+		Warnings:          append([]validate.CodedWarning{}, inventory.warnings...),
+		MemoryHighWater:   memoryHighWater,
+		MemoryGateEnabled: !memoryGateDisabled,
+		FsyncDisabled:     journal.FsyncDisabled(),
+		FleetEnrolled:     fleetEnrolled,
 	}, nil
 }
 

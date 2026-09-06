@@ -1601,6 +1601,18 @@ func pollUntilRunTerminal(t *testing.T, runDir string, cancel context.CancelFunc
 	}
 }
 
+func TestFsyncDisabledWarning(t *testing.T) {
+	t.Setenv("GOOBERS_DISABLE_FSYNC", "1")
+	if warning := fsyncDisabledWarning(); !strings.Contains(warning, "GOOBERS_DISABLE_FSYNC") {
+		t.Fatalf("fsyncDisabledWarning() = %q, want it to name GOOBERS_DISABLE_FSYNC", warning)
+	}
+
+	t.Setenv("GOOBERS_DISABLE_FSYNC", "0")
+	if warning := fsyncDisabledWarning(); warning != "" {
+		t.Fatalf("fsyncDisabledWarning() = %q, want empty when unset", warning)
+	}
+}
+
 func TestDaemonMemoryGateHonoursItsEnvironmentOverride(t *testing.T) {
 	for name, tc := range map[string]struct {
 		setting string
@@ -1618,7 +1630,7 @@ func TestDaemonMemoryGateHonoursItsEnvironmentOverride(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(memoryHighWaterEnv, tc.setting)
-			gate := daemonMemoryGate()
+			gate := daemonMemoryGate(instance.RunConditions{})
 			if tc.wantNil && gate != nil {
 				t.Fatalf("daemonMemoryGate() = %v, want nil for %q", gate, tc.setting)
 			}
@@ -1637,7 +1649,7 @@ func TestDaemonMemoryGateHonoursItsEnvironmentOverride(t *testing.T) {
 // readings.
 func TestDaemonMemoryGateIsSafeToConsultAnywhere(t *testing.T) {
 	t.Setenv(memoryHighWaterEnv, "")
-	gate := daemonMemoryGate()
+	gate := daemonMemoryGate(instance.RunConditions{})
 	if gate == nil {
 		t.Fatal("daemonMemoryGate() = nil, want a gate by default")
 	}
@@ -1668,7 +1680,7 @@ func TestDaemonMemoryGateTreatsEverySpellingOfZeroAsOff(t *testing.T) {
 	for _, setting := range []string{"0", "0.0", "0.00", "00", "off", "OFF", " 0.0 "} {
 		t.Run(setting, func(t *testing.T) {
 			t.Setenv(memoryHighWaterEnv, setting)
-			if gate := daemonMemoryGate(); gate != nil {
+			if gate := daemonMemoryGate(instance.RunConditions{}); gate != nil {
 				t.Fatalf("daemonMemoryGate() = %v, want nil for %q", gate, setting)
 			}
 		})

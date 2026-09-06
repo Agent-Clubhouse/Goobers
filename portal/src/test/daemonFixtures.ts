@@ -483,6 +483,10 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           explanation: "Workflow definition uses a preview field.",
         },
       ],
+      memoryHighWater: 0.85,
+      memoryGateEnabled: true,
+      fsyncDisabled: false,
+      fleetEnrolled: false,
     },
     gaggles: { items: [coreGaggle, toolsGaggle], page: page(2) },
     goobers: {

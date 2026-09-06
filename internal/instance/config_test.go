@@ -3672,3 +3672,80 @@ func TestWriteConfigFailureLeavesExistingFileIntact(t *testing.T) {
 		t.Fatalf("instance.yaml = %q, want it unmodified", got)
 	}
 }
+
+func TestRunConditionsResolveMemoryHighWater(t *testing.T) {
+	lookupEnv := func(value string, set bool) func(string) (string, bool) {
+		return func(string) (string, bool) { return value, set }
+	}
+
+	for name, tc := range map[string]struct {
+		rc             RunConditions
+		env            string
+		envSet         bool
+		wantHighWater  float64
+		wantDisabled   bool
+		wantOverridden bool
+	}{
+		"unset env keeps the YAML default": {
+			rc:            RunConditions{MemoryHighWater: 0.8},
+			envSet:        false,
+			wantHighWater: 0.8,
+		},
+		"unset env and unset YAML falls back to the package default": {
+			envSet:        false,
+			wantHighWater: 0,
+		},
+		"env overrides the YAML default": {
+			rc:             RunConditions{MemoryHighWater: 0.8},
+			env:            "0.5",
+			envSet:         true,
+			wantHighWater:  0.5,
+			wantOverridden: true,
+		},
+		"env off disables the gate regardless of the YAML default": {
+			rc:             RunConditions{MemoryHighWater: 0.8},
+			env:            "off",
+			envSet:         true,
+			wantDisabled:   true,
+			wantOverridden: true,
+		},
+		"env OFF is case-insensitive": {
+			env:            "OFF",
+			envSet:         true,
+			wantDisabled:   true,
+			wantOverridden: true,
+		},
+		"env zero disables the gate": {
+			rc:             RunConditions{MemoryHighWater: 0.8},
+			env:            "0",
+			envSet:         true,
+			wantDisabled:   true,
+			wantOverridden: true,
+		},
+		"empty env falls back to the YAML default": {
+			rc:            RunConditions{MemoryHighWater: 0.8},
+			env:           "",
+			envSet:        true,
+			wantHighWater: 0.8,
+		},
+		"unparseable env falls back to the YAML default": {
+			rc:            RunConditions{MemoryHighWater: 0.8},
+			env:           "nine tenths",
+			envSet:        true,
+			wantHighWater: 0.8,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			highWater, disabled, overridden := tc.rc.ResolveMemoryHighWater(lookupEnv(tc.env, tc.envSet))
+			if highWater != tc.wantHighWater {
+				t.Errorf("highWater = %v, want %v", highWater, tc.wantHighWater)
+			}
+			if disabled != tc.wantDisabled {
+				t.Errorf("disabled = %v, want %v", disabled, tc.wantDisabled)
+			}
+			if overridden != tc.wantOverridden {
+				t.Errorf("overridden = %v, want %v", overridden, tc.wantOverridden)
+			}
+		})
+	}
+}

@@ -31,6 +31,16 @@ type daemonBehavior struct {
 	DrainTimeoutNanos     int64 `json:"drainTimeoutNanos"`
 	SkipPreflight         bool  `json:"skipPreflight"`
 	DisableReadModelReads bool  `json:"disableReadModelReads"`
+	// MemoryHighWater, MemoryGateDisabled, and FsyncDisabled surface
+	// GOOBERS_MEMORY_HIGH_WATER and GOOBERS_DISABLE_FSYNC (#4218), which
+	// were previously visible only by reading the live daemon's own
+	// environment. A separate `goobers status` invocation can only see this
+	// process through up.lock, so the resolved values are published here at
+	// startup rather than re-read from the environment by a process that
+	// does not have it.
+	MemoryHighWater    float64 `json:"memoryHighWater,omitempty"`
+	MemoryGateDisabled bool    `json:"memoryGateDisabled,omitempty"`
+	FsyncDisabled      bool    `json:"fsyncDisabled,omitempty"`
 }
 
 type lockHolderKind string

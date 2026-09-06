@@ -35,6 +35,9 @@ const instance: Instance = {
   concurrency: { activeRuns: 0, maxConcurrentRuns: 1 },
   counts: { gaggles: 0, goobers: 0, workflows: 0, activeRuns: 0 },
   warnings: [],
+  memoryGateEnabled: true,
+  fsyncDisabled: false,
+  fleetEnrolled: false,
 };
 
 function fixtures(): DaemonFixtures {
