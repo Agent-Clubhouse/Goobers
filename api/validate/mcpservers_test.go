@@ -218,22 +218,25 @@ func TestValidateDirRejectsWildcardMCPTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, writeErr := f.WriteString(`
-  tools: ["*"]
-  mcpServers:
+	// Replace the fixture's existing tools: block with a wildcard rather than
+	// appending a second tools: key (#3643: a duplicate key is now a hard
+	// error, so this test can no longer rely on last-key-wins to smuggle the
+	// wildcard past the original declaration).
+	const original = "  tools:\n    - github\n    - shell\n"
+	if !strings.Contains(string(raw), original) {
+		t.Fatalf("fixture %s does not contain expected tools: block", path)
+	}
+	updated := strings.Replace(string(raw), original, "  tools: [\"*\"]\n", 1)
+	updated += `  mcpServers:
     - name: issue-context
       command: context-server
-`)
-	closeErr := f.Close()
-	if writeErr != nil {
-		t.Fatal(writeErr)
-	}
-	if closeErr != nil {
-		t.Fatal(closeErr)
+`
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	report, err := newV(t).ValidateDir(root)

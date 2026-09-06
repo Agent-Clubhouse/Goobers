@@ -33,6 +33,7 @@ import (
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workcopyroot"
 	wf "github.com/goobers/goobers/internal/workflow"
@@ -764,7 +765,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			if strings.TrimSpace(document.content) == "" {
 				continue
 			}
-			jb, err := yaml.YAMLToJSON([]byte(document.content))
+			jb, err := strictyaml.YAMLToJSON([]byte(document.content))
 			if err != nil {
 				parseFailureCount++
 				r.addLocated(errorInvalidYAML, Error, rel,

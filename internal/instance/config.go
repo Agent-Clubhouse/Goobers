@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/speechnotify"
+	"github.com/goobers/goobers/internal/strictyaml"
 )
 
 // APIVersion and Kind for instance.yaml. Mirrors the config-as-code
@@ -1917,7 +1918,7 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	jsonBytes, err := yaml.YAMLToJSON(raw)
+	jsonBytes, err := strictyaml.YAMLToJSON(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}

@@ -117,6 +117,36 @@ func TestSweepStalledRunsCancelsWedgedLiveEngineRun(t *testing.T) {
 // to the projection loop's own: no engine, no live journal service — and
 // with one, emissions land in the configured gaggle's runs directory while
 // unknown gaggles are refused.
+// TestEngineTopologyChanged is the #3642 regression: buildLiveJournalWriter
+// and launchEngineProjection each compute their runsDirs map once at boot
+// from configuredGaggleNames(set) and are never rebuilt on config reload, so
+// a gaggle added or removed while the engine is enabled must be rejected —
+// the same restart-required pattern webhookListenerTopologyChanged already
+// uses for a webhook listener topology change — rather than silently running
+// with no journal or projection support for the new/removed gaggle.
+func TestEngineTopologyChanged(t *testing.T) {
+	web := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "web"}}}}
+	webAndAPI := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
+		{ObjectMeta: metav1.ObjectMeta{Name: "web"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "api"}},
+	}}
+	noEngine := &instance.Config{}
+	withEngine := &instance.Config{Engine: &instance.EngineConfig{HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "q"}}
+
+	if engineTopologyChanged(web, web, withEngine) {
+		t.Error("identical gaggle sets reported as changed")
+	}
+	if !engineTopologyChanged(web, webAndAPI, withEngine) {
+		t.Error("added gaggle not reported as a topology change while the engine is enabled")
+	}
+	if !engineTopologyChanged(webAndAPI, web, withEngine) {
+		t.Error("removed gaggle not reported as a topology change while the engine is enabled")
+	}
+	if engineTopologyChanged(web, webAndAPI, noEngine) {
+		t.Error("gaggle change reported as a topology change with the engine disabled")
+	}
+}
+
 func TestNewLiveJournalWriterRequiresEngineConfiguration(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "web"}}}}
