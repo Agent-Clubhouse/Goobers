@@ -1194,6 +1194,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// pollOnce reloads and roll back their on-disk edit on rejection.
 	workflowMutations.AttachReloader(reloader)
 
+	// #3969/#4420 follow-up: this MUST run before crash-resume below, not
+	// after. Resuming a run dispatches its next stage in a background
+	// goroutine tracked by wg (joined far later, near shutdown) — if the
+	// sweep ran after resume started, a resumed run's stage could call
+	// ephemeraltmp.Establish and create a brand-new, live
+	// goobers-ephemeral-tmp-* directory before or during the sweep, which
+	// SweepOrphans cannot distinguish from a genuine prior-generation orphan
+	// and would delete out from under an in-flight build. Running it here
+	// preserves the invariant SweepOrphans' own doc requires: called before
+	// this process has established any Scope of its own.
+	sweepOrphanedEphemeralTmp(setup.Config, setup.InstanceLog)
+
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
 	// (#23 AC: restart via Runner.Resume). A run whose workflow no longer
@@ -1255,8 +1267,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return sweepPendingCancelRequests(l.SchedulerDir(), setup.RunnerRegistry, setup.InstanceLog, sched.ReleaseRun, time.Now)
 	}
 	cancelSweepErrors.report(cancelSweep())
-
-	sweepOrphanedEphemeralTmp(setup.Config, setup.InstanceLog)
 
 	// #459's daemon-side half: on operator request (`goobers apply`), run
 	// exactly one config-reload check now instead of waiting for
