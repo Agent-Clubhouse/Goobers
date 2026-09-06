@@ -20,11 +20,12 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// executor.CIPollExecutor in-process in the pod
 		// (cmd/goobers/dispatchcipoll.go) with provider:pr:write resolved from
 		// the credential plane, so the kind no longer needs the daemon's
-		// instance root. external-telemetry stays: its executor is built from
-		// the instance's connector configuration, which lives under a config
-		// directory a stage pod does not have.
+		// instance root. external-telemetry LEFT it too (#4341): the
+		// dispatcher stamps the one named connector's non-secret config and
+		// dispatch-exec resolves its auth secret from the credential plane,
+		// exactly as ci-poll resolves its provider token.
 		{name: "ci-poll kind runs in a pod", cmd: []string{"goobers", "ci-poll"}, kind: "ci-poll", want: false},
-		{name: "external-telemetry kind", cmd: []string{"goobers", "external-telemetry"}, kind: "external-telemetry", want: true},
+		{name: "external-telemetry kind runs in a pod", cmd: []string{"goobers", "external-telemetry"}, kind: "external-telemetry", want: false},
 		// The allowlist direction, stated as a test: a kind this binary has
 		// never heard of (a newer engine dispatching to an older pod image) is
 		// refused rather than dispatched into a pod that would silently run the

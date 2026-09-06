@@ -37,10 +37,10 @@ import (
 // cannot fabricate — a PR-provider token — and the pod already has the route
 // for that: the daemon's credential plane, resolved at stage start from the
 // capability NAMES the dispatcher stamped (dispatchexec.go's
-// resolveStageCredentials, DS9/DS10). So `external-telemetry` stays refused
-// (its executor is built from the instance's connector configuration, which
-// lives under a config directory a pod has none of) and only `ci-poll` leaves
-// the refusal list.
+// resolveStageCredentials, DS9/DS10). `external-telemetry` needed the same
+// treatment for its ONE connector's configuration, closed by #4341's
+// dispatch-time stamp (dispatchexternaltelemetry.go) rather than by this
+// file.
 //
 // ---------------------------------------------------------------------------
 // NAMED, ACCEPTED DEGRADATION: THE PRE-DISPATCH QUOTA CONSULT IS LOST.

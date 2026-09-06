@@ -21,6 +21,11 @@ Subcommands:
   stop        halt the running service without disabling or removing it
   status      report whether the service is installed and running
 
+On Windows, use `service task-install`, `service task-start`,
+`service task-stop`, `service task-status`, and `service task-uninstall`
+for the per-user Scheduled Task supervisor. `service install` creates a
+machine SCM service as LocalSystem and requires explicit acknowledgement.
+
 Run `goobers service install -h`, `goobers service uninstall -h`,
 `goobers service start -h`, `goobers service stop -h`, or
 `goobers service status -h` for details. Default path is ".".

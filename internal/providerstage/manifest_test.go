@@ -256,3 +256,22 @@ func TestResultFile(t *testing.T) {
 		t.Fatalf("ResultFile(publish-batch) = %q, %v, want published-batch.json, true", got, ok)
 	}
 }
+
+// TestSupportsResultFile pins the tri-state classification #4415's admission
+// check relies on: a command with a default ResultFile resolves Always, an
+// explicit ResultFileSupport override wins regardless of ResultFile, and a
+// command with neither resolves Unsupported.
+func TestSupportsResultFile(t *testing.T) {
+	if got, ok := SupportsResultFile("merge-queue-poll"); !ok || got != ResultFileAlways {
+		t.Fatalf("SupportsResultFile(merge-queue-poll) = %v, %v, want ResultFileAlways, true", got, ok)
+	}
+	if got, ok := SupportsResultFile("reconcile-branches"); !ok || got != ResultFileOptional {
+		t.Fatalf("SupportsResultFile(reconcile-branches) = %v, %v, want ResultFileOptional, true", got, ok)
+	}
+	if got, ok := SupportsResultFile("record-merge-refusal"); !ok || got != ResultFileUnsupported {
+		t.Fatalf("SupportsResultFile(record-merge-refusal) = %v, %v, want ResultFileUnsupported, true", got, ok)
+	}
+	if got, ok := SupportsResultFile("does-not-exist"); ok || got != ResultFileUnsupported {
+		t.Fatalf("SupportsResultFile(does-not-exist) = %v, %v, want ResultFileUnsupported, false", got, ok)
+	}
+}

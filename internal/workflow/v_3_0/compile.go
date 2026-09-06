@@ -21,11 +21,12 @@ import (
 var builtinManifest = providerstage.ForVersion(DSLVersion)
 
 type options struct {
-	goobers              map[string]apiv1.GooberSpec
-	knownChecks          map[string]bool
-	knownHarnesses       map[string]bool
-	allowPreviewFeatures *bool
-	gaggleRunsOn         *apiv1.GaggleRunsOn
+	goobers                          map[string]apiv1.GooberSpec
+	knownChecks                      map[string]bool
+	knownHarnesses                   map[string]bool
+	knownExternalTelemetryConnectors map[string]bool
+	allowPreviewFeatures             *bool
+	gaggleRunsOn                     *apiv1.GaggleRunsOn
 }
 
 // Option customizes compilation.
@@ -60,6 +61,15 @@ func WithKnownChecks(names []string) Option {
 // admission use the same source of truth.
 func WithKnownHarnesses(names []string) Option {
 	return func(o *options) { o.knownHarnesses = toSet(names) }
+}
+
+// WithKnownExternalTelemetryConnectors supplies the connector names actually
+// configured on this instance, so Compile can catch a task naming a
+// connector nobody configured at compile time instead of only at run time
+// (#4341). Nil performs no such check — the same "runtime path" default
+// WithKnownChecks and WithKnownHarnesses use.
+func WithKnownExternalTelemetryConnectors(names []string) Option {
+	return func(o *options) { o.knownExternalTelemetryConnectors = toSet(names) }
 }
 
 // WithGaggleRunsOn supplies the workflow's gaggle-level placement floor
@@ -240,7 +250,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, scheduleProblems(def)...)
 	problems = append(problems, gateOutcomeProblems(def, o.knownChecks)...)
 	problems = append(problems, triggerFieldProblems(def)...)
-	problems = append(problems, admissionProblems(def, o.goobers, o.knownHarnesses, true)...)
+	problems = append(problems, admissionProblems(def, o.goobers, o.knownHarnesses, o.knownExternalTelemetryConnectors, true)...)
 	problems = append(problems, removedSurfaceProblems(def)...)
 	problems = append(problems, runsOnProblems(def, o.gaggleRunsOn)...)
 	problems = append(problems, osTokenProblems(def, o.gaggleRunsOn)...)
@@ -505,7 +515,52 @@ func reachabilityProblems(m *Machine) []string {
 // admissionProblems reports capability and harness violations. Built-in task
 // requirements are intrinsic to the workflow and always checked; goober grant
 // and harness checks require the referenced goober definitions.
-func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
+// externalTelemetryConnectorProblem is admissionProblems' connector-existence
+// check (#4341), factored out to keep admissionProblems under the
+// complexity gate rather than growing its inline branch count.
+// knownExternalTelemetryConnectors == nil disables the check.
+func externalTelemetryConnectorProblem(t apiv1.Task, knownExternalTelemetryConnectors map[string]bool) string {
+	if t.Inputs["kind"] != "external-telemetry" || knownExternalTelemetryConnectors == nil {
+		return ""
+	}
+	connector := t.Inputs["connector"]
+	if connector == "" {
+		return fmt.Sprintf("task %q with inputs.kind=%q must declare inputs.connector", t.Name, "external-telemetry")
+	}
+	if !knownExternalTelemetryConnectors[connector] {
+		return fmt.Sprintf("task %q references unknown external telemetry connector %q; this instance has no such connector configured", t.Name, connector)
+	}
+	return ""
+}
+
+// resultFileContractProblem rejects a shell stage declaring inputs.resultFile
+// or expectedOutputs for a built-in subcommand that never produces a result
+// file (providerstage.ResultFileUnsupported): the declared postcondition can
+// never be satisfied at runtime, so admission catches it statically instead
+// of a downstream stage's inputsFrom silently reading nothing (#4415). A
+// subcommand absent from the manifest (providerstage covers only commands
+// with declared capability requirements) is unclassified rather than
+// unsupported, so SupportsResultFile's ok=false is treated as permissive.
+func resultFileContractProblem(t apiv1.Task, subcommand string) string {
+	declaresResultFile := strings.TrimSpace(t.Inputs["resultFile"]) != ""
+	if !declaresResultFile && len(t.ExpectedOutputs) == 0 {
+		return ""
+	}
+	support, ok := providerstage.SupportsResultFile(subcommand)
+	if !ok || support != providerstage.ResultFileUnsupported {
+		return ""
+	}
+	declaration := "inputs.resultFile"
+	if !declaresResultFile {
+		declaration = "expectedOutputs"
+	}
+	return fmt.Sprintf(
+		"task %q invokes built-in subcommand %q via %s, but %q never produces a result file",
+		t.Name, subcommand, declaration, subcommand,
+	)
+}
+
+func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, knownExternalTelemetryConnectors map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
 	maxConcurrentRuns := def.Spec.Readiness.MaxConcurrentRuns
 	if maxConcurrentRuns <= 0 {
@@ -563,6 +618,9 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 					))
 				}
 			}
+			if problem := resultFileContractProblem(t, subcommand); problem != "" {
+				problems = append(problems, problem)
+			}
 		}
 		if t.Inputs["kind"] == "ci-poll" && !capabilities[string(capability.ProviderPRWrite)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "ci-poll", capability.ProviderPRWrite))
@@ -573,6 +631,9 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		}
 		if t.Inputs["kind"] == "external-telemetry" && !capabilities[string(capability.TelemetryRead)] {
 			problems = append(problems, fmt.Sprintf("task %q with inputs.kind=%q must declare capability %q", t.Name, "external-telemetry", capability.TelemetryRead))
+		}
+		if problem := externalTelemetryConnectorProblem(t, knownExternalTelemetryConnectors); problem != "" {
+			problems = append(problems, problem)
 		}
 		for _, c := range t.Capabilities {
 			if capability.Known(c) && !capability.StageDeclarable(c) {

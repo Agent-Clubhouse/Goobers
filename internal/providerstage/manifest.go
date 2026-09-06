@@ -67,10 +67,34 @@ func (u CapabilityUse) RequiresExactCapability() bool {
 	return u.exact
 }
 
+// ResultFileSupport classifies whether a built-in command produces a result
+// file a workflow stage can declare via inputs.resultFile/expectedOutputs.
+type ResultFileSupport int
+
+const (
+	// ResultFileUnsupported means the command never writes a result file: a
+	// stage declaring inputs.resultFile or expectedOutputs for it can never
+	// be satisfied at runtime.
+	ResultFileUnsupported ResultFileSupport = iota
+	// ResultFileAlways means the command always writes its result file.
+	ResultFileAlways
+	// ResultFileOptional means the command writes a result file only under
+	// some invocations (flag- or input-dependent), so a stage may declare
+	// inputs.resultFile but must not assume it is unconditional.
+	ResultFileOptional
+)
+
 // Command describes one built-in provider-chain command.
 type Command struct {
 	ResultFile   string
 	Capabilities []CapabilityUse
+
+	// ResultFileSupport overrides the ResultFile-string inference in
+	// effectiveSupport for a command whose support is Optional despite (or
+	// instead of) having a default ResultFile name. Leave zero (which
+	// resolves to Unsupported by iota) for a command whose support is fully
+	// determined by whether ResultFile is set.
+	ResultFileSupport ResultFileSupport
 
 	mutatesClaimLedger bool
 	claimMutationFlags []string
@@ -374,6 +398,7 @@ var commands = map[string]Command{
 		},
 	},
 	"reconcile-branches": {
+		ResultFileSupport: ResultFileOptional,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so stale branch reconciliation fails at runtime"),
 		},
@@ -384,6 +409,7 @@ var commands = map[string]Command{
 		},
 	},
 	"telemetry-query": {
+		ResultFileSupport: ResultFileOptional,
 		Capabilities: []CapabilityUse{
 			required(capability.TelemetryRead, "telemetry access is not admitted, so the connector would read telemetry without declared authority at runtime"),
 			requiredWhenFlagEquals(capability.GitHubPRWrite, "--format", "tutor-live-verification", "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime"),
@@ -516,6 +542,40 @@ func ResultFile(command string) (string, bool) {
 		return "", false
 	}
 	return entry.ResultFile, true
+}
+
+// effectiveSupport resolves c's result-file support: an explicit
+// ResultFileSupport wins, otherwise support is inferred from ResultFile.
+func (c Command) effectiveSupport() ResultFileSupport {
+	switch c.ResultFileSupport {
+	case ResultFileOptional, ResultFileAlways:
+		return c.ResultFileSupport
+	default:
+		if c.ResultFile != "" {
+			return ResultFileAlways
+		}
+		return ResultFileUnsupported
+	}
+}
+
+// SupportsResultFile reports whether command produces a result file (and, if
+// so, whether unconditionally), ignoring version linkage (see Commands): a
+// stage's inputs.resultFile/expectedOutputs declaration is a runtime/tooling
+// concern, not an admission-version-gated one. The second return is false
+// when command is not in the manifest at all — this manifest deliberately
+// covers only commands with declared capability requirements (see the
+// package comment and internal/builtincmd's own doc comment), so an absent
+// command is unclassified, not unsupported: a caller must treat "unknown"
+// as permissive rather than folding it into ResultFileUnsupported, or every
+// capability-free built-in (check-fail-first, docs-churn, mcp-io, ...) would
+// wrongly reject a resultFile/expectedOutputs declaration it can never
+// actually satisfy or refute from this table.
+func SupportsResultFile(command string) (ResultFileSupport, bool) {
+	entry, ok := Lookup(command)
+	if !ok {
+		return ResultFileUnsupported, false
+	}
+	return entry.effectiveSupport(), true
 }
 
 func (u CapabilityUse) required(args []string) bool {

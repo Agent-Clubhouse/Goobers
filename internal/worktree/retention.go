@@ -510,7 +510,7 @@ func localBranches(ctx context.Context, repoDir string) ([]localBranch, error) {
 }
 
 func (m *Manager) runIDForBranch(branch string) (string, bool) {
-	namespaces := append([]string(nil), m.runBranchNamespaces...)
+	namespaces := m.runBranchNamespacesSnapshot()
 	sort.Slice(namespaces, func(i, j int) bool {
 		if len(namespaces[i]) != len(namespaces[j]) {
 			return len(namespaces[i]) > len(namespaces[j])

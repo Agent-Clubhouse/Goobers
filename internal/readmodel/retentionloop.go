@@ -43,11 +43,23 @@ type RetentionOptions struct {
 
 // RetentionStats are the loop's observable counters.
 type RetentionStats struct {
-	Passes        int
-	AgedOut       int
-	ChangesPruned int64
-	Failures      int
-	LastPassAt    time.Time
+	Passes          int
+	AgedOut         int
+	ChangesPruned   int64
+	Failures        int
+	LastPassAt      time.Time
+	State           string
+	Kind            string
+	Trigger         string
+	StartedAt       time.Time
+	LastProgressAt  time.Time
+	CurrentPhase    string
+	Candidates      int
+	Removed         int
+	Failed          int
+	LastCompletedAt time.Time
+	LastResult      string
+	LastError       string
 }
 
 const (
@@ -71,7 +83,13 @@ func NewRetentionLoop(
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	return &RetentionLoop{store: store, writer: writer, window: window, options: options}
+	return &RetentionLoop{
+		store:   store,
+		writer:  writer,
+		window:  window,
+		options: options,
+		stats:   RetentionStats{State: "none", Kind: "retention-sweep"},
+	}
 }
 
 // Run applies retention until the context ends.
@@ -99,17 +117,33 @@ func (l *RetentionLoop) Run(ctx context.Context) {
 // which is a cost, not a correctness problem — whereas taking the daemon down
 // over it would turn a cost into an outage.
 func (l *RetentionLoop) pass(ctx context.Context) {
+	startedAt := time.Now().UTC()
 	l.mu.Lock()
 	l.stats.Passes++
 	l.stats.LastPassAt = time.Now().UTC()
+	l.stats.State = "running"
+	l.stats.Kind = "retention-sweep"
+	l.stats.Trigger = "periodic"
+	if l.stats.Passes == 1 {
+		l.stats.Trigger = "startup"
+	}
+	l.stats.StartedAt = startedAt
+	l.stats.LastProgressAt = startedAt
+	l.stats.CurrentPhase = "projection-retention"
+	l.stats.Candidates = 0
+	l.stats.Removed = 0
+	l.stats.Failed = 0
+	l.stats.LastError = ""
 	l.mu.Unlock()
 
 	if l.window.Bounded() {
 		result, err := l.store.ApplyRetention(ctx, l.writer, l.window, l.options.Batch)
 		if err != nil {
+			l.finish(ctx, startedAt, err)
 			if !errors.Is(err, context.Canceled) {
 				l.mu.Lock()
 				l.stats.Failures++
+				l.stats.Failed++
 				l.mu.Unlock()
 				l.options.Logger.Warn("projection retention pass failed", "error", err)
 			}
@@ -117,6 +151,9 @@ func (l *RetentionLoop) pass(ctx context.Context) {
 		}
 		l.mu.Lock()
 		l.stats.AgedOut += result.AgedOut
+		l.stats.Candidates = result.AgedOut + result.Skipped
+		l.stats.Removed = result.AgedOut
+		l.stats.LastProgressAt = time.Now().UTC()
 		l.mu.Unlock()
 		if result.AgedOut > 0 {
 			l.options.Logger.Info("projection retention aged out runs",
@@ -130,9 +167,11 @@ func (l *RetentionLoop) pass(ctx context.Context) {
 	// from.
 	pruned, err := l.writer.PruneChangeFeed(ctx, l.options.ChangeFeedKeep)
 	if err != nil {
+		l.finish(ctx, startedAt, err)
 		if !errors.Is(err, context.Canceled) {
 			l.mu.Lock()
 			l.stats.Failures++
+			l.stats.Failed++
 			l.mu.Unlock()
 			l.options.Logger.Warn("change feed prune failed", "error", err)
 		}
@@ -141,6 +180,36 @@ func (l *RetentionLoop) pass(ctx context.Context) {
 	l.mu.Lock()
 	l.stats.ChangesPruned += pruned
 	l.mu.Unlock()
+	l.finish(ctx, startedAt, nil)
+}
+
+func (l *RetentionLoop) finish(ctx context.Context, startedAt time.Time, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stats.LastProgressAt = time.Now().UTC()
+	l.stats.LastCompletedAt = l.stats.LastProgressAt
+	switch {
+	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		l.stats.State = "cancelled"
+		l.stats.LastResult = "cancelled"
+	case err != nil:
+		l.stats.State = "failed"
+		l.stats.LastResult = "failed"
+		l.stats.LastError = sanitizeRetentionError(err)
+	default:
+		l.stats.State = "completed"
+		l.stats.LastResult = "completed"
+	}
+	l.stats.StartedAt = startedAt
+}
+
+func sanitizeRetentionError(err error) string {
+	const maxErrorLength = 256
+	message := err.Error()
+	if len(message) > maxErrorLength {
+		return message[:maxErrorLength]
+	}
+	return message
 }
 
 // Stats returns a snapshot of the counters.

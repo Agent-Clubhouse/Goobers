@@ -96,7 +96,9 @@ _goobers_completion()
             ;;
         service)
             case "${COMP_WORDS[2]:-}" in
+                install) flags+=" --confirm-local-system --acknowledge-local-system" ;;
                 status) flags+=" --json" ;;
+                task-status) flags+=" --json" ;;
             esac
             ;;
         engine-start)
@@ -295,7 +297,7 @@ _goobers_completion()
             ;;
         service)
             if (( COMP_CWORD == 2 )); then
-                candidates="install uninstall stop start status"
+                candidates="install uninstall stop start status task-install task-uninstall task-start task-stop task-status"
             fi
             ;;
         run)

@@ -56,9 +56,9 @@ internal/runner/run.go	parseReceiptInputInspection	43
 internal/telemetry/rollup/ingest.go	insertEvents	51
 internal/workflow/ir/ir.go	Validate	69
 internal/workflow/v_2_0/calibratedsimulation.go	SimulateGraph	40
-internal/workflow/v_2_0/compile.go	admissionProblems	60
+internal/workflow/v_2_0/compile.go	admissionProblems	62
 internal/workflow/v_2_0/features.go	addTaskFeatures	42
-internal/workflow/v_3_0/compile.go	admissionProblems	60
+internal/workflow/v_3_0/compile.go	admissionProblems	62
 internal/workflow/v_3_0/features.go	addTaskFeatures	49
 internal/worktree/pinned.go	(*Manager).AcquirePinned	44
 internal/worktree/pinned.go	(*Manager).preparePinned	44
