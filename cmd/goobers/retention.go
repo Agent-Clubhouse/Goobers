@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -18,6 +19,65 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
+
+// errRetentionSweepAlreadyRunning is returned by retentionSweepGate.run when
+// a sweep is already in flight. Not a failure: the caller's own error
+// reporter treats it as a no-op rather than a degraded-maintenance failure
+// (#4373's "concurrent ... sweep requests coalesce or return a typed
+// already-running result").
+var errRetentionSweepAlreadyRunning = errors.New("worktree retention sweep already running")
+
+// retentionSweepGate ensures at most one worktree/branch retention sweep
+// runs at a time, shared across the startup-triggered background sweep and
+// the periodic ticker (#4373: "startup, periodic, and operator-triggered
+// sweeps must share the same exclusion mechanism"). A sweep already running
+// wins; a concurrent caller is told so immediately rather than queuing
+// behind it or blocking.
+type retentionSweepGate struct {
+	mu      sync.Mutex
+	running bool
+}
+
+func (g *retentionSweepGate) run(fn func() error) error {
+	g.mu.Lock()
+	if g.running {
+		g.mu.Unlock()
+		return errRetentionSweepAlreadyRunning
+	}
+	g.running = true
+	g.mu.Unlock()
+	defer func() {
+		g.mu.Lock()
+		g.running = false
+		g.mu.Unlock()
+	}()
+	return fn()
+}
+
+// startDeferredRetentionSweep launches the broad worktree/branch retention
+// sweep deferred until API readiness (#4373) when ready is true, coalescing
+// against the periodic ticker via gate so at most one sweep ever runs at a
+// time — a concurrent already-running result is not a failure. It always
+// returns a channel that closes once the sweep (if any) is done, closed
+// immediately when ready is false, so a caller can unconditionally wait on
+// it without knowing which case applied.
+func startDeferredRetentionSweep(ctx context.Context, l instance.Layout, setup *schedulerSetup, gate *retentionSweepGate, reporter *sweepErrorReporter, ready bool) <-chan struct{} {
+	done := make(chan struct{})
+	if !ready {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		err := gate.run(func() error {
+			return pruneConfiguredRetention(ctx, l, setup, io.Discard, io.Discard)
+		})
+		if !errors.Is(err, errRetentionSweepAlreadyRunning) {
+			reporter.report(err)
+		}
+	}()
+	return done
+}
 
 // journalGraceAge bounds how long a retained worktree whose owning run
 // journal has vanished entirely (e.g. telemetry retention deleted it first)
