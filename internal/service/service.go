@@ -178,7 +178,7 @@ func (m *Manager) InstallTask(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("scheduled task supervision is only supported on Windows")
 	}
 	if m.config.UserName == "" {
-		return Status{}, errors.New("Windows user name is required for scheduled task supervision")
+		return Status{}, errors.New("windows user name is required for scheduled task supervision")
 	}
 	status, err := m.statusTask(ctx)
 	if err != nil {
@@ -203,6 +203,7 @@ func (m *Manager) InstallTask(ctx context.Context) (Status, error) {
 	return status, nil
 }
 
+// UninstallTask stops and removes the per-user Windows Scheduled Task.
 func (m *Manager) UninstallTask(ctx context.Context) error {
 	if m.config.GOOS != "windows" {
 		return fmt.Errorf("scheduled task supervision is only supported on Windows")
@@ -220,6 +221,7 @@ func (m *Manager) UninstallTask(ctx context.Context) error {
 	return m.removeTask(ctx)
 }
 
+// StopTask stops the per-user Windows Scheduled Task when it is running.
 func (m *Manager) StopTask(ctx context.Context) error {
 	status, err := m.statusTask(ctx)
 	if err != nil {
@@ -234,6 +236,7 @@ func (m *Manager) StopTask(ctx context.Context) error {
 	return m.runRequired(ctx, "schtasks.exe", "/End", "/TN", m.windowsTaskName())
 }
 
+// StartTask starts the installed per-user Windows Scheduled Task.
 func (m *Manager) StartTask(ctx context.Context) (Status, error) {
 	status, err := m.statusTask(ctx)
 	if err != nil {
@@ -251,6 +254,7 @@ func (m *Manager) StartTask(ctx context.Context) (Status, error) {
 	return waitUntilRunning(ctx, m.statusTask)
 }
 
+// TaskStatus reports the per-user Windows Scheduled Task state.
 func (m *Manager) TaskStatus(ctx context.Context) (Status, error) {
 	if m.config.GOOS != "windows" {
 		return Status{}, fmt.Errorf("scheduled task supervision is only supported on Windows")
