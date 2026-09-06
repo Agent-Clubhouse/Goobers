@@ -291,6 +291,10 @@ func newGooberDigestIndex(
 				// GooberSpec.Model, digest it, and refuse every attempt of
 				// every run as a mismatch.
 				true,
+				// nil, not built: DeferDiscovery (above) short-circuits before
+				// any credential is ever consulted, so resolving one here would
+				// be pure overhead on this hot per-reload path (#4292).
+				nil,
 				func(gaggle string, _ map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
 					return skillPackages[gaggle], nil
 				},

@@ -17,9 +17,22 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
+
+// tutorConfigVersionsModelCredential builds the same instance-configured
+// agent:model resolver admission uses elsewhere (#4292), so Tutor's own
+// version-axis model discovery sees a file/keychain/store-sourced credential
+// instead of only an ambient env var.
+func tutorConfigVersionsModelCredential(cfg *instance.Config) (func(ctx context.Context) (string, error), error) {
+	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		return nil, fmt.Errorf("load secret stores for Tutor version resolution: %w", err)
+	}
+	return agentModelCredentialResolver(cfg, stores)
+}
 
 const (
 	tutorHoldoutSchemaVersion     = "goobers.dev/tutor-live-verification/v1"
@@ -125,11 +138,15 @@ func prepareTutorHoldout(
 	if err != nil {
 		return nil, fmt.Errorf("load instance config for Tutor version resolution: %w", err)
 	}
-	oldVersions, err := tutorConfigVersions(instance.NewLayout(root).ConfigDir(), gaggle, targetNames, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
+	tutorModelCredential, err := tutorConfigVersionsModelCredential(cfg)
+	if err != nil {
+		return nil, err
+	}
+	oldVersions, err := tutorConfigVersions(instance.NewLayout(root).ConfigDir(), gaggle, targetNames, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, tutorModelCredential)
 	if err != nil {
 		return nil, fmt.Errorf("resolve live pre-promotion versions: %w", err)
 	}
-	newVersions, err := tutorConfigVersions(sourceTree, gaggle, targetNames, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
+	newVersions, err := tutorConfigVersions(sourceTree, gaggle, targetNames, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, tutorModelCredential)
 	if err != nil {
 		return nil, fmt.Errorf("resolve proposed post-promotion versions: %w", err)
 	}
@@ -342,7 +359,7 @@ func workflowUsesGoober(workflow apiv1.Workflow, goober string) bool {
 	return false
 }
 
-func tutorConfigVersions(configDir, gaggle string, names, envPassthrough []string, harnessCommand map[string][]string) (map[string]tutorVersionAxes, error) {
+func tutorConfigVersions(configDir, gaggle string, names, envPassthrough []string, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (map[string]tutorVersionAxes, error) {
 	set, report, err := instance.LoadConfigDir(configDir)
 	if err != nil {
 		return nil, &configReportError{report: report, err: err}
@@ -354,7 +371,7 @@ func tutorConfigVersions(configDir, gaggle string, names, envPassthrough []strin
 	}
 	machines, gooberDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, envPassthrough, harnessCommand,
-		false,
+		false, modelCredential,
 	)
 	if err != nil {
 		return nil, err
@@ -598,8 +615,12 @@ func reconcileTutorHoldoutTargets(root string, record *tutorHoldoutRecord) (map[
 	if err != nil {
 		return nil, fmt.Errorf("load instance config for Tutor reconciliation: %w", err)
 	}
+	tutorModelCredential, err := tutorConfigVersionsModelCredential(cfg)
+	if err != nil {
+		return nil, err
+	}
 	liveVersions, err := tutorConfigVersions(
-		instance.NewLayout(root).ConfigDir(), record.Gaggle, names, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		instance.NewLayout(root).ConfigDir(), record.Gaggle, names, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, tutorModelCredential,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("resolve live reconciled Tutor config: %w", err)

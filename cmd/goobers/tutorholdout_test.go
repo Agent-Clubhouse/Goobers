@@ -494,6 +494,7 @@ func TestVerifyTutorHoldoutUsesPinnedTransitionNotLatest(t *testing.T) {
 		[]string{workflowName},
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -602,7 +603,7 @@ func TestVerifyTutorHoldoutUsesFinalAmendedTransitionAfterInterveningPromotion(t
 	if err := os.WriteFile(workflowPath, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	finalVersions, err := tutorConfigVersions(liveConfig, "example", []string{workflowName}, nil, nil)
+	finalVersions, err := tutorConfigVersions(liveConfig, "example", []string{workflowName}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1113,6 +1114,7 @@ func testLiveTutorAxes(t *testing.T, root, workflow string) tutorVersionAxes {
 		instance.NewLayout(root).ConfigDir(),
 		"example",
 		[]string{workflow},
+		nil,
 		nil,
 		nil,
 	)

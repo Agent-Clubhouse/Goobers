@@ -724,19 +724,22 @@ func buildSchedulerDefinitions(
 	if err != nil {
 		return nil, err
 	}
+	// Built once and threaded into both admission (#4292 — model discovery at
+	// config-load time previously saw no resolver at all) and the preflight
+	// sign-in probe below, so both consult the exact same credential source.
+	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		return nil, err
+	}
 	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
-		true,
+		true, modelCredential,
 	)
 	if err != nil {
 		return nil, err
 	}
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
-	}
-	modelCredential, err := agentModelCredentialResolver(cfg, stores)
-	if err != nil {
-		return nil, err
 	}
 	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, modelCredential)
 	if err != nil {

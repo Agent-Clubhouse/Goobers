@@ -675,6 +675,44 @@ const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
+// statusCompiledHarnessWarnings compiles the workflow set exactly as
+// runRunTable's caller already did, threading in the same instance-configured
+// agent:model resolver admission uses elsewhere (#4292) so a
+// file/keychain/store-sourced credential is visible to `status`'s own
+// admission-time model discovery, not just an ambient env var. Folds its own
+// and the compile call's error handling into one non-zero exit code, so
+// runRunTable itself gains a single branch rather than two.
+func statusCompiledHarnessWarnings(
+	cfg *instance.Config,
+	configDir string,
+	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
+	cliWarnings []validate.CodedWarning,
+	stderr io.Writer,
+) ([]gooberHarnessWarning, int) {
+	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		pf(stderr, "error: invalid secretStores: %v\n", err)
+		return nil, 1
+	}
+	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		pf(stderr, "error: invalid credentials: %v\n", err)
+		return nil, 1
+	}
+	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
+		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		false, modelCredential,
+	)
+	if err != nil {
+		printValidationWarnings(stderr, cliWarnings)
+		pf(stderr, "error: invalid workflow: %v\n", err)
+		return nil, 1
+	}
+	return harnessWarnings, 0
+}
+
 func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	fs := newCLIFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -792,14 +830,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: invalid workflow: %v\n", err)
 		return 1
 	}
-	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		l.ConfigDir(), set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
-		false,
-	)
-	if err != nil {
-		printValidationWarnings(stderr, report.CLIWarnings())
-		pf(stderr, "error: invalid workflow: %v\n", err)
-		return 1
+	harnessWarnings, code := statusCompiledHarnessWarnings(cfg, l.ConfigDir(), set, goobers, instructions, report.CLIWarnings(), stderr)
+	if code != 0 {
+		return code
 	}
 	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
 		pf(stderr, "error: append harness validation warnings: %v\n", err)

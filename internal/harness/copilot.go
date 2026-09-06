@@ -367,7 +367,30 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	}
 	discoveryCtx, cancel := context.WithTimeout(ctx, copilotModelDiscoveryTimeout)
 	defer cancel()
-	models, err := lister.ListModels(discoveryCtx, command, baseEnv(c.ExtraEnvAllowlist))
+	// #4292: this call used to build its env from baseEnv() alone, with no
+	// credential of any kind — unlike Preflight's AuthCheckArgs probe below,
+	// which already falls back to the resolver. That left config admission
+	// (workflow load) unable to see a file/keychain/store-sourced agent:model
+	// credential at all, forcing every deployment to also deliver the token as
+	// a raw ambient env var just so discovery could authenticate. Same
+	// ambient-first, resolver-fallback order as the auth-check probe: an
+	// explicit ambient var is the more headless-friendly signal when present,
+	// but its absence must not silently leave discovery unauthenticated when a
+	// resolver is configured.
+	discoveryEnv := baseEnv(c.ExtraEnvAllowlist)
+	tok := ambientCopilotToken()
+	if tok == "" && c.ModelCredential != nil {
+		resolved, credErr := c.ModelCredential(discoveryCtx)
+		if credErr != nil {
+			c.modelsErr = fmt.Errorf("resolve agent:model credential for model discovery: %w", credErr)
+			return nil, c.modelsErr
+		}
+		tok = resolved
+	}
+	if tok != "" {
+		discoveryEnv = overrideEnv(discoveryEnv, "COPILOT_GITHUB_TOKEN", tok)
+	}
+	models, err := lister.ListModels(discoveryCtx, command, discoveryEnv)
 	if err != nil {
 		c.modelsErr = err
 		return nil, err
