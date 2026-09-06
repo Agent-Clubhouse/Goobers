@@ -81,7 +81,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	client := &dispatcher.SurrenderPutClient{BaseURL: daemonAPI, Token: podToken}
+	client := &dispatcher.SurrenderPutClient{BaseURL: daemonAPI, Token: podToken, RetryDeadline: surrenderRetryDeadline(dispatchStageTimeout())}
 
 	// #3480: a Windows stage pod says once, in its OWN log, whether the
 	// workspace, temp and profile it is about to write-then-read are
@@ -151,6 +151,39 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// dispatchStageTimeout reads the stage's effective declared timeout, falling
+// back to dispatcher.DefaultStageTimeout when unset or invalid — the same
+// rule runDeclaredStage and surrenderRetryDeadline both apply, so a stage's
+// timeout means one thing everywhere it is read in this process. Named
+// distinctly from providercmd.go's own stageTimeout(), which reports the
+// executor's timeout input for a provider subcommand, an unrelated concept
+// that happens to share the obvious name.
+func dispatchStageTimeout() time.Duration {
+	if declared, err := time.ParseDuration(os.Getenv(dispatcher.EnvStageTimeout)); err == nil && declared > 0 {
+		return declared
+	}
+	return dispatcher.DefaultStageTimeout
+}
+
+// surrenderRetryFloor bounds how long the surrender PUT retries even for a
+// stage declaring a shorter timeout than this — a routine daemon restart
+// (#3809) can outlast a short stage's own timeout, and the result is worth
+// protecting regardless of how quickly the stage itself ran.
+const surrenderRetryFloor = 10 * time.Minute
+
+// surrenderRetryDeadline bounds how long the surrender PUT retries before
+// giving up, derived from the stage's own timeout (#4260): a stage that ran
+// longer represents more sunk cost (model spend already incurred) worth
+// protecting through a longer control-plane outage. The surrender PUT
+// already rides its own background context, unbounded by the stage's
+// timeout (see runDispatchExecContext) — this is what re-introduces a bound.
+func surrenderRetryDeadline(stageTimeout time.Duration) time.Duration {
+	if stageTimeout < surrenderRetryFloor {
+		return surrenderRetryFloor
+	}
+	return stageTimeout
 }
 
 // stageOutcome is what one pod stage produced and owes the surrender plane:
@@ -233,10 +266,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		))
 	}
 
-	timeout := dispatcher.DefaultStageTimeout
-	if declared, err := time.ParseDuration(os.Getenv(dispatcher.EnvStageTimeout)); err == nil && declared > 0 {
-		timeout = declared
-	}
+	timeout := dispatchStageTimeout()
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
