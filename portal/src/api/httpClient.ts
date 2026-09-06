@@ -153,6 +153,12 @@ const clientRoutes = {
   // one — but the exhaustiveness check requires the full contract here as it
   // grows.
   telemetryDefectAggregates: apiRoutes.telemetryDefectAggregates,
+  // The config-digest plane (#4153): a worker asks the daemon which config
+  // tree is in force so it can tell that its own has diverged. Pod-facing
+  // like the planes above and never called by the portal, but listed for the
+  // same reason they are — the exhaustiveness check below requires the full
+  // contract as it grows.
+  configDigest: apiRoutes.configDigest,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {

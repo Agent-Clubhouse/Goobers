@@ -35,6 +35,7 @@ type ADOProvider struct {
 	secretRegistrar  SecretRegistrar
 	rateObserver     RateLimitObserver
 	quotaObserver    QuotaObserver
+	mutationRecorder MutationRecorder
 	maxRetries       int
 	maxRateLimitWait time.Duration
 	now              func() time.Time
@@ -43,6 +44,23 @@ type ADOProvider struct {
 
 	stateMu         sync.RWMutex
 	stateCategories map[string][]adoWorkItemState
+}
+
+// SetMutationRecorder configures the recorder after provider construction,
+// allowing stage authentication factories to remain backward compatible.
+func (p *ADOProvider) SetMutationRecorder(recorder MutationRecorder) {
+	p.mutationRecorder = recorder
+}
+
+func (p *ADOProvider) recordMutation(ctx context.Context, kind, id, operation string) {
+	if p.mutationRecorder == nil {
+		return
+	}
+	p.mutationRecorder.RecordExternalRef(ctx, ExternalRef{
+		Provider:  ProviderADO,
+		Ref:       "ado#" + id,
+		Operation: operation,
+	})
 }
 
 // NewADOProvider constructs an Azure DevOps provider with optional overrides.

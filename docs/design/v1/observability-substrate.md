@@ -88,12 +88,17 @@ they must not *contradict* the journal.
 Agentic stage spans adopt the **OTel GenAI semantic conventions**:
 `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`,
 `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, with tool calls as span
-events. Two Goobers-specific extensions (no semconv equivalent):
+events. Goobers-specific usage extensions (no semconv equivalent):
 
 - `goobers.usage.copilot_premium_requests` — Copilot's billing unit; adapters report
-  the billing unit their harness actually has, rather than pretending everything is
-  tokens.
-- `goobers.usage.cost_usd` — populated when the adapter can derive it; never guessed.
+  it only when a legacy annual plan reports a non-zero value.
+- `goobers.usage.nano_aiu` — exact AI-credit usage in billionths of one AI credit.
+- `goobers.usage.cache_read_tokens`, `goobers.usage.cache_write_tokens`, and
+  `goobers.usage.reasoning_tokens` — separately metered token classes.
+- `goobers.usage.billing_model` — `ai_credits` or `premium_requests`.
+- `goobers.usage.cost_basis` — `vendor_reported` or `unknown`.
+- `goobers.usage.cost_usd` — derived from nano-AIU when available; never an
+  independently authoritative value.
 
 The same numbers land in `ResultEnvelope.Metrics` under these canonical names — the
 envelope remains what gates/runner act on; spans remain the observability view. The

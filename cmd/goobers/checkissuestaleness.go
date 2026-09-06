@@ -67,6 +67,7 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	prProvider, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
+		withStageProviderMutations("pr"),
 	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

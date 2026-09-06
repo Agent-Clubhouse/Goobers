@@ -4825,4 +4825,17 @@ func TestBuildDeterministicExecutorRefusesGuardedCredentialPath(t *testing.T) {
 		t.Fatalf("result = %+v, want a credential_read_refused failure — the wiring did not connect "+
 			"instance.GuardedCredentialPaths through to the built executor", result)
 	}
+
+	// The `script:` shape through the same built executor. This is the form a
+	// stage reading a credential file would actually take, and the form the
+	// first version of the guard let through: a script body is one argv word,
+	// so a whole-word comparison never matched it.
+	result, err = got.Run(context.Background(), apiv1.InvocationEnvelope{TaskID: "task-2", Workspace: t.TempDir()},
+		apiv1.DeterministicRun{Script: "cat " + keyPath + " > /dev/null"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "credential_read_refused" {
+		t.Fatalf("script result = %+v, want a credential_read_refused failure", result)
+	}
 }

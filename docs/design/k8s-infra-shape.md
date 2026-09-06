@@ -64,6 +64,27 @@ vendor-neutral form.
   verified safe for cross-client `flock` and SQLite WAL. Provisioner names alone do not
   establish either property. Temporal workflow identity enforces run ownership at tier 3,
   but does not replace the instance root's other file locks.
+- **The daemon is single-writer, and therefore single-replica (#3809).** The journal,
+  intake DB, read model and telemetry DB share one ReadWriteOnce volume, so a second
+  `goobers-api` replica cannot mount it. This is a defensible design for a run journal,
+  but plan around its consequences rather than around HA:
+  - **No HA.** A node failure takes the daemon down until the disk detaches and
+    re-attaches elsewhere — minutes on Azure Disk — and the run journal is unavailable
+    throughout.
+  - **Every upgrade is downtime.** A rolling update cannot bring up a second pod while
+    the first holds the volume, so a deploy is necessarily stop-then-start.
+  - **The restart window is not fixed.** Startup resumes interrupted runs — roughly two
+    minutes on a busy instance — and grows with run volume, so the outage lengthens as
+    the instance gets busier. Gate deploy automation on `/readyz` (#3806) rather than on
+    the rollout reporting success, which it does while the new daemon is still starting.
+  - **The blast radius is the whole instance.** The daemon is also the credential,
+    journal, blob and surrender plane for every in-flight stage pod.
+
+  What makes that last point survivable is that the pod-side clients for those planes
+  RETRY with bounded backoff across a restart rather than failing on the first refused
+  connection (#4260 for surrender/blob/journal, #3809 for credentials). A restart is a
+  routine event; a routine event does not fail in-flight work. Nothing here makes the
+  control plane highly available, and no deployment should be planned as though it were.
 - **Temporal persistence:** PostgreSQL (managed recommended); sizing guidance: modest —
   history is bounded per run and projected out; retention window configurable.
 - **Telemetry:** OTLP export; reference substrate ADX, vendor-neutral form = any OTLP
@@ -109,6 +130,39 @@ vendor-neutral form.
   `kubernetes.io/os=windows:NoSchedule` taint. Windows workloads select
   `kubernetes.io/os: windows` and tolerate that taint. This defense in depth prevents an
   unpinned Linux pod from attaching a Linux filesystem volume to a Windows node.
+
+### 7.1 Bounding a self-placed stage's memory (#4070)
+
+Stage subprocesses that run on the `self` runner execute **inside the API pod's
+own memory cgroup**. Without a bound, one heavy stage can get the control-plane
+daemon OOM-killed and take every in-flight run with it — observed three times in
+one week in production, with single children at 4.8, 9.8 and 9.9 GiB against a
+10Gi pod limit while the daemon's own footprint stayed under 300Mi.
+
+`runner.stageMemoryLimit` bounds one stage. Enforcing it through a cgroup —
+the only mechanism that bounds *resident* memory, which is what the kernel
+OOM-kills on — needs two things from the deployment that are **not** container
+defaults:
+
+1. **`/sys/fs/cgroup` mounted read-write** in the API container. Docker and
+   Kubernetes mount it read-only unless asked.
+2. **The daemon running in a sub-cgroup**, with `memory` listed in its
+   *parent's* `cgroup.subtree_control`.
+
+The second is not a preference. cgroup v2's "no internal processes" rule means
+a cgroup that holds processes can never delegate a controller to its own
+children, so the daemon's cgroup cannot bound children of itself; a bounded
+stage is created **beside** the daemon, under a parent that delegates `memory`
+precisely because the daemon is not in it. At the cgroup-namespace root — where
+`/proc/self/cgroup` reads `0::/`, the Kubernetes default — there is no reachable
+parent and no bound can be created at all.
+
+Where those are absent the daemon does not fail: it reports at startup that
+stages are unbounded (or that a configured limit cannot be enforced) and runs
+exactly as before. An explicitly configured limit may also be applied through
+`RLIMIT_AS`, which bounds address space rather than resident memory and is
+therefore a proxy — verify such a value against a real stage before relying on
+it.
 
 ## 8. Deliverables filed from this doc
 

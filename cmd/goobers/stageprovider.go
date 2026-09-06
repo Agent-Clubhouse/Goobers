@@ -116,6 +116,11 @@ func newProviderForStage(root string, repo providers.RepositoryRef, readOnly boo
 	if err != nil {
 		return nil, err
 	}
+	if recorder := stageProviderMutationRecorder(cfg); recorder != nil {
+		if ado, ok := provider.(*providers.ADOProvider); ok {
+			ado.SetMutationRecorder(recorder)
+		}
+	}
 	configureStageAttribution(provider, root)
 	return provider, nil
 }

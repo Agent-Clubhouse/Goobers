@@ -339,6 +339,16 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	shell.InstanceRoot = input.InstanceRoot
 	shell.ScratchDir = input.ScratchDir
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
+	// #4070: bound what one stage subprocess may take, so a heavy stage
+	// cannot evict the daemon it shares a memory cgroup with. Resolved (and
+	// validated) at config load; an instance that sets no limit gets zero,
+	// which enforces nothing and leaves stage execution exactly as before.
+	stageMemory, err := input.Config.Runner.ResolveStageMemoryBound()
+	if err != nil {
+		return nil, err
+	}
+	shell.StageMemoryLimitBytes = stageMemory.MaxBytes
+	shell.AllowStageMemoryAddressSpaceFallback = stageMemory.AllowAddressSpaceFallback
 	// The self runner's declared `tmp:ephemeral` is a RUNNER PROPERTY
 	// (docs/design/goobernetes-restrictions.md §5): every stage this executor
 	// runs is placed on self, so every one of them runs under the effect once
@@ -347,10 +357,11 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	// declares nothing and this stays false, which is the zero-declaration
 	// invariance the architecture requires (§11 item 1).
 	shell.EphemeralTmp = input.Config.SelfRunnerEnforces(instance.RunnerRestrictionTmpEphemeral)
-	// #4273: the self runner has no filesystem confinement, so a stage
-	// command naming one of this instance's own credential-referenced paths
-	// directly is refused before exec rather than allowed to read key
-	// material a minted, short-lived token exists to avoid exposing.
+	// #4273: the self runner has no filesystem confinement, so a stage whose
+	// declared command, inline script, or environment names one of this
+	// instance's own credential-referenced paths is refused before exec
+	// rather than allowed to read key material a minted, short-lived token
+	// exists to avoid exposing.
 	shell.GuardedCredentialPaths = instance.GuardedCredentialPaths(input.Config)
 	if input.ProjectConfigured && input.ConfiguredProject.LargeRepo {
 		shell.DefaultEnv = map[string]string{"MSBUILDDISABLENODEREUSE": "1"}
