@@ -243,7 +243,7 @@ func init() {
 		command("fix", apicontract.ActionConfigTime, runFix).
 			withSynopsis(synopsisByID["fix"]).
 			withHelp("mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)", fixHelp).
-			withExamples("goobers fix --to 2.0", "goobers fix --to 2.0 --write ./instance"),
+			withExamples("goobers fix --to 2.0", "goobers fix --to 2.0 --write ./instance", "goobers fix --instance-schema --write ./instance"),
 		command("doctor", apicontract.ActionReadOnlyNavigation, runDoctor).
 			withSynopsis(synopsisByID["doctor"]).
 			withHelp("preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions", doctorHelp).

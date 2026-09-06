@@ -102,6 +102,7 @@ complete -c goobers -n '__fish_seen_subcommand_from lint' -l check-repos -d 'Ver
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l source-tree -d 'Lint a checked-in config source tree'
 complete -c goobers -n '__fish_seen_subcommand_from lint' -l strict -d 'Treat config warnings as validation errors'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l to -r -d 'Target DSL version'
+complete -c goobers -n '__fish_seen_subcommand_from fix' -l instance-schema -d 'Add the schemaVersion a runners: inventory requires'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l write -d 'Apply migrations in place'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l k8s -d 'Preflight a Kubernetes cluster'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l repo -d 'Compare repository forge policy with GitHub'

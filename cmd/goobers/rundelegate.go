@@ -148,11 +148,16 @@ func suppressExcessOutstanding(parsed []*pendingTriggerRequest) map[string]bool 
 // workflow. Priority requests are internal, targeted, and fire-and-forget;
 // ordinary delegated requests retain the request/response protocol.
 type triggerRequest struct {
-	Workflow  string    `json:"workflow"`
-	Gaggle    string    `json:"gaggle,omitempty"`
-	PR        int       `json:"pr,omitempty"`
-	SourceRun string    `json:"sourceRun,omitempty"`
-	Priority  bool      `json:"priority,omitempty"`
+	Workflow  string `json:"workflow"`
+	Gaggle    string `json:"gaggle,omitempty"`
+	PR        int    `json:"pr,omitempty"`
+	SourceRun string `json:"sourceRun,omitempty"`
+	Priority  bool   `json:"priority,omitempty"`
+	// Key is the idempotency key (#4326). When set, the request FILE is named
+	// from it, so two producers submitting the same logical ask publish to one
+	// path and the atomic rename collapses them. Empty on delegated requests,
+	// whose caller is blocked on a per-id response file.
+	Key       string    `json:"key,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	Deadline  time.Time `json:"deadline,omitempty"`
 }
@@ -218,6 +223,7 @@ func writePriorityTriggerRequest(schedulerDir, gaggle, workflow, sourceRun strin
 		Gaggle:    gaggle,
 		SourceRun: sourceRun,
 		Priority:  true,
+		Key:       triggerRequestIdempotencyKey(gaggle, workflow, sourceRun),
 		CreatedAt: createdAt,
 		Deadline:  deadline,
 	})
@@ -236,6 +242,16 @@ func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (reques
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	if err := os.MkdirAll(reqDir, 0o755); err != nil {
 		return "", fmt.Errorf("delegate: create pending-triggers dir: %w", err)
+	}
+	// A keyed request's id — and therefore its published filename — is derived
+	// from the key, so repeat submissions of one logical ask converge on a
+	// single file instead of accumulating (#4326).
+	keyedID := ""
+	if req.Key != "" {
+		keyedID = keyedRequestID(req.Key)
+	}
+	if err := admitTriggerSubmission(reqDir, keyedID); err != nil {
+		return "", err
 	}
 	f, err := os.CreateTemp(reqDir, ".pending-*")
 	if err != nil {
@@ -261,6 +277,9 @@ func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (reques
 		return "", fmt.Errorf("delegate: close trigger request: %w", err)
 	}
 	requestID = strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
+	if keyedID != "" {
+		requestID = keyedID
+	}
 	finalPath := filepath.Join(reqDir, requestID+requestSuffix)
 	if err := durability.ReplaceFile(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
@@ -357,7 +376,7 @@ func triggerRequestDeadline(req triggerRequest) time.Time {
 // run — the same "don't replay an ambiguous firing" principle Scheduler's
 // own trigger.fired-before-dispatch ordering already applies (see dispatch's
 // doc comment in scheduler.go).
-func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *localscheduler.Scheduler, now func() time.Time) error {
+func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal.InstanceLog, sched *localscheduler.Scheduler, now func() time.Time) error {
 	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
 	entries, exists, err := readDirectory(reqDir)
 	if !exists {
@@ -384,6 +403,11 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		}
 		requestEntries = append(requestEntries, e)
 	}
+	// Total depth is reported from the entries this sweep already read, so the
+	// visibility costs no extra directory walk, and BEFORE the per-cycle bound
+	// truncates the batch — the number that matters is the backlog the
+	// producer built, not the slice this pass happens to examine (#4326).
+	reportPendingTriggerDepth(log, len(requestEntries))
 	// os.ReadDir (readDirectory's underlying call) returns entries sorted by
 	// filename, so bounding here consistently defers the same (lexically
 	// later) requests to the next cycle rather than starving them at random —

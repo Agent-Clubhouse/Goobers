@@ -318,6 +318,31 @@ type RunnerConfig struct {
 	//
 	// Per-stage timeoutSeconds still wins; this only moves the floor.
 	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
+	// StageMemoryLimit caps the memory ONE stage subprocess may use, as a
+	// Kubernetes quantity ("8Gi"). It exists because stage subprocesses share
+	// the daemon's own memory cgroup, so a heavy stage can — and repeatedly
+	// did — get the control-plane daemon OOM-killed (#4070): production saw
+	// the pod's anonymous memory go 559Mi to 7.4Gi in ~60s while the daemon's
+	// heap sat at 13Mi, and single children measured 4.8, 9.8 and 9.9 GiB.
+	//
+	// The admission-side memory gate (#3949) cannot cover this: it refuses to
+	// START new runs while the cgroup is hot, and in every one of those
+	// incidents the killing allocation was a stage ALREADY RUNNING.
+	//
+	// EMPTY IS NOT UNBOUNDED. Left empty, the bound is DERIVED from the pod's
+	// own cgroup memory limit less a reserve for the daemon, and applied only
+	// through a child cgroup — an RSS bound the kernel enforces in the same
+	// unit it OOM-kills on. Set explicitly, the number is also allowed to be
+	// applied through RLIMIT_AS where no cgroup can be delegated. That
+	// asymmetry is deliberate: RLIMIT_AS bounds ADDRESS SPACE, which runtimes
+	// reserve far more of than they touch, so it is safe to apply to a number
+	// an operator chose and unsafe to apply to one derived on their behalf.
+	//
+	// Outside a container, or where the memory controller is not delegated to
+	// child cgroups, there may be no mechanism at all; the daemon reports
+	// which one is in force at startup rather than letting a green config
+	// imply a protection that is not there.
+	StageMemoryLimit string `json:"stageMemoryLimit,omitempty" yaml:"stageMemoryLimit,omitempty"`
 	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
 	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
 	// keep the built-in default (["copilot"] / ["claude"]).
@@ -2624,6 +2649,28 @@ func IsLoopbackListenAddress(address string) bool {
 	return validateLoopbackListenAddress(address) == nil
 }
 
+// stampRunnersSchemaVersion records the schema revision a runners: inventory
+// implies before the config is written out.
+//
+// Without it the product can WRITE a config it then REFUSES to READ: any code
+// path that appends a runners: entry to a config loaded from a file with no
+// schemaVersion (the shape every pre-Goobernetes install is on) would produce
+// a file the strict loader rejects on the pairing rule (#4217). A writer that
+// emits input its own loader will not accept is a bug regardless of which
+// rule does the rejecting, so the revision is stamped here, at the single
+// point every write funnels through, rather than at each call site.
+//
+// Only a runners:-bearing config is stamped. A legacy config still round-trips
+// with neither field, which is what keeps the zero-change upgrade (decision
+// record D3) byte-identical for every existing install.
+func stampRunnersSchemaVersion(cfg *Config) {
+	if cfg == nil || len(cfg.Runners) == 0 || cfg.SchemaVersion != nil {
+		return
+	}
+	version := InstanceSchemaVersionRunners
+	cfg.SchemaVersion = &version
+}
+
 // WriteConfig marshals cfg as YAML and writes it to path. The write goes
 // through a staged temp file and rename (journal.WriteFileAtomic): instance.yaml
 // is the first file the daemon reads on every start, so a crash or full disk
@@ -2644,6 +2691,7 @@ func WriteConfig(path string, cfg *Config) error {
 }
 
 func marshalConfig(cfg *Config) ([]byte, error) {
+	stampRunnersSchemaVersion(cfg)
 	jsonBytes, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal instance config: %w", err)

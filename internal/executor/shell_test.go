@@ -1523,3 +1523,110 @@ func TestShellExecutor_SelfBinResolvesGoobersToken(t *testing.T) {
 		t.Fatalf("without SelfBin, bare \"goobers\" must fail at exec_start: %+v", result2)
 	}
 }
+
+// TestShellExecutor_RefusesScriptBodyNamingGuardedCredentialPath closes the
+// hole the first version of this tripwire left wide open (#4273). That version
+// compared each guarded path against whole argv WORDS of the assembled command.
+// A `script:` stage — the shape a stage reading a credential file would
+// actually take — arrives as one string ("cat /creds/key.pem"), which equals no
+// guarded path, so the most obvious attack ran unrefused while the guard
+// reported itself as present.
+func TestShellExecutor_RefusesScriptBodyNamingGuardedCredentialPath(t *testing.T) {
+	exec, rec := newPortableTestExecutor(t, nil)
+	keyPath := filepath.Join(t.TempDir(), "github-app-key.pem")
+	if err := os.WriteFile(keyPath, []byte("not a real key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widgets",
+			Auth: &instance.RepoAuthConfig{
+				Kind:       "github-app",
+				PrivateKey: &instance.TokenRef{File: keyPath},
+			},
+		}},
+	}
+	exec.GuardedCredentialPaths = instance.GuardedCredentialPaths(cfg)
+
+	result, err := exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Script: "cat " + keyPath + " > /dev/null",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "credential_read_refused" {
+		t.Fatalf("result = %+v, want a credential_read_refused failure for a script body naming the guarded path", result)
+	}
+	if _, ok := rec.recorded["task-1/stdout.log"]; ok {
+		t.Fatal("stage ran and produced output; the refusal must fire BEFORE exec, not after")
+	}
+	if len(rec.events) != 1 || rec.events[0].Type != journal.EventCredentialReadRefused {
+		t.Fatalf("journaled events = %+v, want exactly one credential.read.refused event", rec.events)
+	}
+
+	// A script that names no guarded path still runs: the refusal is scoped to
+	// the path, not to script stages.
+	result, err = exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Script: "echo unaffected",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success for a script that never names the guarded path", result.Status)
+	}
+}
+
+// TestStageReferencesGuardedPathMatchesWholeTokens pins the matcher's two
+// halves against each other. Substring matching alone would refuse stages that
+// read nothing sensitive (a longer path that merely CONTAINS a guarded one);
+// whole-string matching alone misses everything embedded in a script body. Only
+// the token boundary gets both, so both directions are asserted here rather
+// than just the one the fix was written for.
+func TestStageReferencesGuardedPathMatchesWholeTokens(t *testing.T) {
+	const guarded = "/creds/token"
+	for _, tc := range []struct {
+		name string
+		word string
+		want bool
+	}{
+		{"exact argument", "/creds/token", true},
+		{"inside a script body", "cat /creds/token", true},
+		{"single-quoted in a script", "cat '/creds/token'", true},
+		{"double-quoted in a script", `TOKEN="$(cat "/creds/token")"`, true},
+		{"in a PATH-shaped list", "/usr/bin:/creds/token", true},
+		{"at the end of a pipeline", "cat /creds/token|base64", true},
+		{"longer sibling path", "cat /creds/token.bak", false},
+		{"guarded path is a suffix of a longer one", "cat /backup/creds/token", false},
+		{"different leading component", "cat /other/creds/token-file", false},
+		{"unrelated command", "echo hello", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, got := stageReferencesGuardedPath([]string{tc.word}, nil, []string{guarded})
+			if got != tc.want {
+				t.Fatalf("stageReferencesGuardedPath(%q) = %v (%q), want %v", tc.word, got, path, tc.want)
+			}
+		})
+	}
+
+	// The environment half matches on VALUES, and on the same token rule: a
+	// variable pointing at the path is refused, one pointing at a neighbour is
+	// not.
+	if _, refused := stageReferencesGuardedPath(nil, []string{"KEY=/creds/token"}, []string{guarded}); !refused {
+		t.Fatal("an env value naming the guarded path must be refused")
+	}
+	if _, refused := stageReferencesGuardedPath(nil, []string{"KEY=/creds/token.bak"}, []string{guarded}); refused {
+		t.Fatal("an env value naming a different, longer path must not be refused")
+	}
+	// An env NAME that happens to contain the path is not a read of it.
+	if _, refused := stageReferencesGuardedPath(nil, []string{"/creds/token=unset"}, []string{guarded}); refused {
+		t.Fatal("only env VALUES are matched; a name-shaped match is not a credential read")
+	}
+	// No guarded paths configured is the default-instance shape: never refuse.
+	if _, refused := stageReferencesGuardedPath([]string{"cat /creds/token"}, nil, nil); refused {
+		t.Fatal("with no guarded paths configured, nothing may be refused")
+	}
+}

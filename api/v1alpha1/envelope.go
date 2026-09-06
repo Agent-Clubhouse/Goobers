@@ -302,6 +302,8 @@ type ResultEnvelope struct {
 	Summary string `json:"summary,omitempty"`
 	// Metrics are numeric measures (duration, tokens, cost, custom). Agentic
 	// usage uses gen_ai.usage.input_tokens, gen_ai.usage.output_tokens,
+	// goobers.usage.cache_read_tokens, goobers.usage.cache_write_tokens,
+	// goobers.usage.reasoning_tokens, goobers.usage.nano_aiu,
 	// goobers.usage.copilot_premium_requests, and goobers.usage.cost_usd.
 	// Unavailable measures are omitted; observed zeroes remain present.
 	Metrics map[string]float64 `json:"metrics,omitempty"`

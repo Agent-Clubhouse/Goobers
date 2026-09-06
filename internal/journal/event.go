@@ -182,11 +182,11 @@ const (
 	// only transitions; the refusal is the write API's own record.
 	EventClaimRefused EventType = "claim.refused"
 	// EventCredentialReadRefused records a deterministic stage's command or
-	// environment literally referencing a path instance.yaml names as a
-	// credential source (a repo/workflow-source/daemon-identity token or
-	// GitHub App private key file) — the self runner has no filesystem
-	// confinement, so this is a narrow, config-derived tripwire rather than
-	// real read isolation (#4273; docs/requirements/security.md SEC-049).
+	// environment naming a path instance.yaml references as a credential
+	// source — any file-backed token ref in the loaded config — the self
+	// runner has no filesystem confinement, so this is a narrow,
+	// config-derived tripwire rather than real read isolation (#4273;
+	// docs/requirements/security.md SEC-049).
 	EventCredentialReadRefused EventType = "credential.read.refused"
 	// EventClaimLockSlow records claims-lock contention above the local runner's
 	// diagnostic threshold. Timing, operation, and process details live under

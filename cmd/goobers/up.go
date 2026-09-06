@@ -481,6 +481,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	pf(stdout, "startup: scheduler initialized\n")
+	// #4070: say, every start, whether one stage's memory is bounded. Stage
+	// subprocesses share this daemon's memory cgroup, so an unbounded stage
+	// can OOM-kill the control plane and take every in-flight run with it —
+	// and the evidence self-erases (memory.events resets with the container,
+	// so a post-hoc look reads oom_kill 0 on a pod killed 30 minutes earlier).
+	// A structural hazard that no check fails on is one an operator can only
+	// learn about from the daemon volunteering it.
+	reportStageMemoryBound(setup.Config, stdout, stderr)
 	// #3480: on a Windows host, say once whether the directories this daemon
 	// writes then immediately reads are excluded from real-time scanning.
 	// Advisory — startup continues regardless.
@@ -822,6 +830,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// refused, so this is what OPENS the plane, and a daemon that serves stage
 	// pods at all can always answer which gaggle one of its own runs is in.
 	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(l)))
+	// #4153: publish which config tree is in force, so a worker can detect that
+	// its own has diverged instead of finding out when an agentic gate refuses.
+	configDigests := newConfigDigestPublisher(setup.ConfigDigest)
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithConfigDigest(configDigests.Get))
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)
@@ -1221,6 +1233,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		wg:             &wg,
 		appliedDigest:  setup.ConfigDigest,
 		observedDigest: setup.ConfigDigest,
+		digests:        configDigests,
 	}
 	// The workflow mutation service was built above so the HTTP handler could
 	// register the surface before the reloader existed. Now that it does,
@@ -1288,7 +1301,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
-	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 	// #831's daemon-side half: cancel one live in-flight run on operator request
@@ -1500,7 +1513,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case <-delegationTicker.C:
-				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
 			}
 		}
 	}()

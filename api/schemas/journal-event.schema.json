@@ -443,8 +443,13 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "model": { "description": "Model attributed to the invocation usage.", "type": "string" },
         "inputTokens": { "description": "Input tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
         "outputTokens": { "description": "Output tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
+        "cacheReadTokens": { "description": "Cache-read tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
+        "cacheWriteTokens": { "description": "Cache-write tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
+        "reasoningTokens": { "description": "Reasoning tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
+        "nanoAiu": { "description": "Exact nano-AIU attributed to the invocation.", "type": "integer", "minimum": 0 },
         "costUsd": { "description": "Estimated invocation cost in US dollars.", "type": "number", "minimum": 0 }
       }
     },

@@ -145,12 +145,13 @@ a repository token in the harness environment. When a model grant is
 configured, Goobers injects `COPILOT_GITHUB_TOKEN` alongside the repository
 `GH_TOKEN`, so the existing explicit two-token behavior is unchanged.
 
-The production harness auth preflight runs before the configured capability
-credential is resolved, but since #1996 it can authenticate a clean service or
-CI profile from `COPILOT_GITHUB_TOKEN` in the ambient Goobers process
-environment. The adapter copies that value only into the tool-disabled sign-in
-probe; live stages still receive it through the `agent:model` capability
-boundary. The
+The production harness auth preflight runs before the per-stage capability
+credential is resolved, so it resolves the instance's `agent:model` grant
+directly (#3341, #4292), and falls back to `COPILOT_GITHUB_TOKEN` in the ambient
+Goobers process environment when no grant is configured — which is what lets a
+clean service or CI profile authenticate (#1996). The adapter copies the
+resolved value only into the tool-disabled sign-in probe; live stages still
+receive it through the `agent:model` capability boundary. The
 [hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
 records the original limitation and its correction.
 
@@ -199,12 +200,6 @@ credentials:
       env: GOOBERS_COPILOT_TOKEN     # Copilot Requests: read-only; no repo access
 ```
 
-Also expose the same model token to the Goobers process for preflight:
-
-```sh
-export COPILOT_GITHUB_TOKEN="$GOOBERS_COPILOT_TOKEN"
-```
-
 Each `credentials:` entry sources one capability from its own token ref; an
 entry for a capability the repo token would otherwise back **overrides** it (so
 an issues-only stage never receives a token carrying code or PR authority).
@@ -221,14 +216,25 @@ remain errors.
 
 Verify harness availability before a live run with
 `goobers validate --check-harness`. When `AuthCheckArgs` is configured, its
-authentication probe receives a stored CLI session or an ambient
-`COPILOT_GITHUB_TOKEN`, not the configured `agent:model` credential. A
-`token.file` reference alone is therefore insufficient for daemon startup even
-though Goobers can resolve it for the eventual agentic stage: expose the same
-value to the Goobers process as `COPILOT_GITHUB_TOKEN`. On Kubernetes, mount the
-synced Secret for the file ref and also consume that Secret key through
-`secretKeyRef` for the environment variable. A mis-scoped token then fails
-during the preflight rather than at the first agentic stage.
+authentication probe resolves the **configured `agent:model` credential** —
+whatever ref backs it, including `token.file` — and authenticates with that, so
+a mis-scoped token fails during preflight rather than at the first agentic
+stage. The same is true of admission-time model discovery at workflow load.
+
+A `token.file` reference alone is therefore sufficient (#4292). Earlier
+releases read only the ambient process environment here, which forced every
+Kubernetes deployment to deliver the same token **twice** — once through the
+resolver as a mounted file ref, and once as a plain pod env var outside every
+control the resolver provides. That duplication is no longer needed and should
+be removed: mount the synced Secret for the file ref and stop there.
+
+An ambient `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` remains a
+**fallback for an instance that declares no `agent:model` grant at all** — a
+laptop that exports one in a shell profile keeps working unchanged. When a grant
+IS configured it wins, because it is the credential every stage will actually
+run with: stage environments are built from a default-deny allowlist that
+carries none of those three variables, so a probe that preferred the ambient one
+would validate an account no stage ever uses.
 
 ### Mixed-harness instances (`copilot` + `claude-code` sharing `agent:model`)
 

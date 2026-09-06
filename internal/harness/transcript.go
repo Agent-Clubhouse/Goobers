@@ -27,7 +27,7 @@ type transcriptUsage struct {
 	ReasoningTokens  *int64   `json:"reasoning_tokens,omitempty"`
 	Requests         *int64   `json:"requests,omitempty"`
 	Cost             *float64 `json:"cost,omitempty"`
-	NanoAIU          *float64 `json:"nano_aiu,omitempty"`
+	NanoAIU          *int64   `json:"nano_aiu,omitempty"`
 }
 
 type transcriptTool struct {

@@ -45,7 +45,24 @@ func RecordNestedAgent(ctx context.Context, agent journal.AgentProvenance) {
 	if agent.Usage.OutputTokens != nil {
 		attrs = append(attrs, attribute.Int64(AttrGenAIUsageOutputTokens, *agent.Usage.OutputTokens))
 	}
-	if agent.Usage.CostUSD != nil {
+	if agent.Usage.Model != "" {
+		attrs = append(attrs, attribute.String(AttrGenAIResponseModel, agent.Usage.Model))
+	}
+	if agent.Usage.CacheReadTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrUsageCacheReadTokens, *agent.Usage.CacheReadTokens))
+	}
+	if agent.Usage.CacheWriteTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrUsageCacheWriteTokens, *agent.Usage.CacheWriteTokens))
+	}
+	if agent.Usage.ReasoningTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrUsageReasoningTokens, *agent.Usage.ReasoningTokens))
+	}
+	if agent.Usage.NanoAIU != nil {
+		attrs = append(attrs,
+			attribute.Int64(AttrUsageNanoAIU, *agent.Usage.NanoAIU),
+			attribute.Float64(AttrUsageCostUSD, NanoAIUToUSD(*agent.Usage.NanoAIU)),
+		)
+	} else if agent.Usage.CostUSD != nil {
 		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, *agent.Usage.CostUSD))
 	}
 	options := []trace.EventOption{trace.WithAttributes(attrs...)}

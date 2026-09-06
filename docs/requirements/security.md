@@ -103,21 +103,49 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   endpoint may have a default. Opt-in does not permit a maintainer-facing
   collection path: this repository MUST contain no such path, enabled or
   disabled. Users own their data and may choose to self-report it.
-- **SEC-049 (MUST):** *(Tiers 1–2)* A deterministic stage's command or environment
-  MUST NOT be allowed to reference, verbatim, an on-disk path `instance.yaml`
-  names as a credential source (a repo/workflow-source/daemon-identity token or
-  GitHub App private key file, `internal/instance.GuardedCredentialPaths`) — the
+
+  **Scope of the MUST (#4276).** This clause binds *this repository's own code* —
+  the first-party Go, JavaScript, and TypeScript call sites `go run ./test/nophonehome`
+  parses (see "No-phone-home guard and compliance audit" below). It is not, and
+  structurally cannot be, a claim about a **harness subprocess's** own egress: the
+  Copilot CLI, Claude Code, or any other vendor agent Goobers launches is a
+  third-party binary that ships its own telemetry, and no first-party source parser
+  can see it. Vendor-subprocess telemetry is an **operator-controlled egress
+  decision**, governed by the instance's egress allowlist and the network policy
+  rendered from it (`SEC-030`, `goobers netpol-render`), not by `SEC-048` or its
+  guard. An operator who wants a harness's telemetry blocked blocks the host; an
+  operator who accepts it is making that choice explicitly. Naming the vendor's
+  **API host exactly** rather than allowing its whole domain suffix is what makes
+  that choice explicit rather than incidental — see "Egress allowlist: name hosts,
+  not domain suffixes" in `deploy/reference/README.md`.
+- **SEC-049 (MUST):** *(Tiers 1–2)* A deterministic stage's command, inline
+  script, or environment MUST NOT be allowed to reference an on-disk path
+  `instance.yaml` names as a credential source (a repo/workflow-source/
+  daemon-identity token or GitHub App private key file, the webhook secret, an
+  OTLP collector auth header, or any other file-backed token ref —
+  `internal/instance.GuardedCredentialPaths` enumerates them by walking the
+  loaded config for every file-backed ref, so a newly added one is guarded on
+  arrival rather than when someone remembers to extend a list) — the
   `self` runner has no filesystem confinement (`SEC-044` is not yet wired to the
   deterministic path, and even where the agentic sandbox IS enforced it only
   confines writes, not reads), so a stage that names one of these paths directly
   can read key material a minted, short-lived token exists to avoid exposing.
   **This is a narrow, config-derived tripwire, not filesystem confinement**: it
-  refuses a stage that names a guarded path as a literal command-line argument or
-  environment-variable value, before exec. It does NOT stop a stage that reaches
-  the same file through indirection — a script with the path hardcoded inside
-  it, `find`, or a symlink — which requires the full sandbox/read-confinement
-  work `SEC-044` already tracks as in progress. The refusal is journaled
-  (`credential.read.refused`) so an operator can see it fire.
+  refuses, before exec, a stage whose *declared* command words, inline `script:`
+  body, or environment values name a guarded path as a whole path token. It
+  matches the declaration rather than the assembled argv precisely so a
+  `script:` stage is covered identically on both platforms — a script body is
+  one argv word to `sh -c` on unix and is written to a temp file argv never
+  names at all on Windows. Matching is by token, not by whole string (which
+  missed every script body) and not by bare substring (which would refuse a
+  stage reading an unrelated longer path such as `<guarded>.bak`), and is
+  case-insensitive where the host filesystem is.
+  It does NOT stop a stage that reaches the same file through indirection — a
+  checked-in script file with the path inside it, a path assembled by
+  concatenation at runtime, `find`, or a symlink — which requires the full
+  sandbox/read-confinement work `SEC-044` already tracks as in progress. The
+  refusal is journaled (`credential.read.refused`) so an operator can see it
+  fire.
 
 ### Isolation
 
@@ -191,6 +219,12 @@ analytics, crash-reporting, or other telemetry endpoint to an allowlist. There
 is intentionally no endpoint allowlist. Remove the collection path; for
 legitimate user-owned OTLP export, pass the endpoint from explicit instance or
 environment configuration through the existing exporter seam.
+
+Its reach stops at this repository's source. A harness subprocess (the Copilot
+CLI, Claude Code) is a third-party binary with its own telemetry, invisible to a
+first-party source parser by construction — a green `nophonehome` run says
+nothing about what those processes send, and never did. That surface is bounded
+by the egress allowlist instead; `SEC-048` above states the split.
 
 **Audit (2026-07-26): compliant after closing the low-level SDK-default seam.**
 

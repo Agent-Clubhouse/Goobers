@@ -413,6 +413,11 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		Timeout:            req.Timeout,
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      initialCapture,
+		// #4179. Wired here as well as in the copilot adapter: the stall this
+		// makes visible is a property of the WORKSPACE (a post-rebase module
+		// graph that misses the baked cache), not of any one harness, so an
+		// adapter left out would be the one that goes dark next.
+		Activity: agentTelemetry.activityObserver(),
 	})
 	runErr = processErr
 	invocationResults := []ProcessResult{result}
@@ -445,6 +450,10 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 					Timeout:            remaining,
 					MaxTranscriptBytes: req.MaxTranscriptBytes,
 					StdoutCapture:      recoveryCapture,
+					// The recovery turn runs on what is LEFT of the budget,
+					// so a stall here is if anything more urgent to see than
+					// one in the main session (#4179).
+					Activity: agentTelemetry.activityObserver(),
 				})
 				invocationResults = append(invocationResults, recovery)
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)

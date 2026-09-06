@@ -8,7 +8,7 @@ name: CI
 # parallel. Each parallel job runs one slice via `go run ./test/ci group <name>`:
 #
 # group jobs:
-#   preflight  Node-free format · policy · vet · command builds · config validation
+#   preflight  Node-free fast lint · format · policy · vet · command builds · config validation
 #   checks     portal · extension · generated contracts · manifests
 #   lint       golangci-lint (staticcheck / govet / revive / errcheck / ...)
 #   unit       the -race unit suite, split into shards (Linux) — the long pole
@@ -105,10 +105,10 @@ jobs:
   # for local and full-tier use; only the redundant PR-leg jobs are gone.
 
   # Node-free admission gate. Expensive and scarce-runner jobs do not acquire
-  # runners until formatting, module hygiene, repository policy, vet, command
-  # builds, and config validation pass.
+  # runners until the fast source lint, formatting, module hygiene, repository
+  # policy, vet, command builds, and config validation pass.
   preflight:
-    name: preflight (format · policy · vet · build)
+    name: preflight (lint · format · policy · vet · build)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -132,6 +132,15 @@ jobs:
           done
           echo "::error::go mod download failed after 3 attempts"
           exit 1
+
+      - name: Set up golangci-lint
+        uses: ./.github/actions/setup-golangci-lint
+        timeout-minutes: 8
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: Run fast lint
+        run: make lint-fast
 
       - name: Run preflight
         run: go run ./test/ci group preflight
@@ -339,25 +348,11 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
-      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+      - name: Set up golangci-lint
+        uses: ./.github/actions/setup-golangci-lint
         timeout-minutes: 8
-        # Explicit bash for pipefail: without it the pipeline reports only sh's
-        # status, so a failed curl would feed an empty script to a shell that
-        # exits 0 and the step would "succeed" with no linter installed.
-        shell: bash
-        run: |
-          for attempt in 1 2 3; do
-            if curl -sSfL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 15 \
-                 "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
-                 | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"; then
-              echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-              exit 0
-            fi
-            echo "::warning::golangci-lint install attempt $attempt/3 failed; retrying"
-            sleep $((attempt * 5))
-          done
-          echo "::error::golangci-lint install failed after 3 attempts"
-          exit 1
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
 
       - name: golangci-lint (GOOS=${{ matrix.goos }})
         # GOOBERS_LINT_GOOS sets GOOS for the golangci-lint subprocess only.
