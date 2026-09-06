@@ -314,6 +314,17 @@ func gaggleConfigFingerprint(
 // log writes a reload diagnostic. Never fatal: a worker that stopped serving
 // because its config tree briefly went unreadable would turn a recoverable
 // deploy race into an outage.
+// currentDigest reports the config-tree digest this worker currently serves,
+// or "" before its first snapshot is published. It reads the same published
+// snapshot every attempt is served from, so the digest reported to an operator
+// and the tree actually in use cannot disagree.
+func (w *workerSeams) currentDigest() string {
+	if current := w.snapshot.Load(); current != nil {
+		return current.digest
+	}
+	return ""
+}
+
 func (w *workerSeams) log(format string, args ...any) {
 	if w.logf == nil {
 		return

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -289,6 +290,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		engineRuntime.deps.Journal = emitter
 		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
+
 	}
 
 	if *dispatchNamespace != "" {
@@ -344,6 +346,37 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := signals.SetupSignalContext()
 	defer stop()
+
+	// #4153: the worker's config tree has no live writer, so it can sit
+	// diverged from the daemon's until somebody redeploys — with every agentic
+	// gate refused (gate_pin_missing) in the meantime, and a message telling
+	// the operator to wait for a reload that is not coming. Ask the daemon
+	// which tree is in force and say so.
+	//
+	// The read needs a bearer, and this plane is NOT run-scoped while every
+	// pod bearer is. A worker holding a static GOOBERS_POD_TOKEN (the
+	// single-pod posture) can make the call. A split deployment, which mints
+	// per-run bearers instead and holds no standing token, cannot — and is
+	// told so plainly rather than left to assume it is being checked. Giving
+	// the worker an identity of its own is a change to the pod-auth model
+	// (every pod bearer today proves "I am run X's stage pod"), not something
+	// to infer here.
+	if seams != nil && *daemonAPI != "" {
+		podToken := workerEnvOr("GOOBERS_POD_TOKEN", "")
+		if podToken == "" {
+			pf(stderr, "warning: goobers worker: config-divergence checking is NOT ACTIVE — this read needs a static "+
+				"GOOBERS_POD_TOKEN and none is set. This worker cannot tell whether its config tree matches the "+
+				"daemon's, so remember that a goober-content change merged to the config repo requires a DEPLOY, "+
+				"not just a merge (#4153)\n")
+		} else {
+			divergence := startWorkerDivergenceWatcher(ctx, seams, http.DefaultClient,
+				*daemonAPI, podToken, workerDivergenceCheckInterval)
+			defer divergence.Stop()
+			pf(stdout, "goobers worker: checking config-tree divergence against %s every %s\n",
+				*daemonAPI, workerDivergenceCheckInterval)
+		}
+	}
+
 	pf(stdout, "goobers worker: serving task queue(s) %s on %s (namespace %s); identity %s\n",
 		strings.Join(queues, ", "), *hostPort, *namespace, workerhost.Identity(version.Get().Version))
 	err = runWorkerHost(ctx, host)

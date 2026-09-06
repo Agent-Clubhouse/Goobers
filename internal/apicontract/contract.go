@@ -107,7 +107,15 @@ const (
 	// needs the sweep to have happened before it inspects provider claim
 	// markers, so the plane's answer is "the daemon ran its own recovery",
 	// not "here is a lock you may take".
-	ClaimRecoverPath         = V1Prefix + "/claims/recover"
+	ClaimRecoverPath = V1Prefix + "/claims/recover"
+	// ConfigDigestPath serves the daemon's current config-tree digest so a
+	// worker can tell, on its own, whether its tree has diverged from the
+	// daemon's (#4153). Deliberately its own narrow route rather than a field
+	// on /health: a pod principal is confined to enumerated planes and cannot
+	// reach the read-only navigation routes, and the bare /readyz probe is
+	// kept to booleans and timestamps so its unauthenticated fail-open
+	// exception cannot become an information-disclosure surface.
+	ConfigDigestPath         = V1Prefix + "/config/digest"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunCancelPath is the run-control plane (#3807): ask the daemon to stop
@@ -218,6 +226,7 @@ type RouteID string
 
 // Stable V1 route IDs.
 const (
+	RouteConfigDigest             RouteID = "configDigest"
 	RouteHealth                   RouteID = "health"
 	RouteInstance                 RouteID = "instance"
 	RoutePortalConfig             RouteID = "portalConfig"
@@ -370,6 +379,7 @@ const (
 
 var v1Routes = []Route{
 	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RoutePortalConfig, Method: http.MethodGet, Path: PortalConfigPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
