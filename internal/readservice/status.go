@@ -114,8 +114,53 @@ type WorkItemLookup func(context.Context, string, string) (providers.WorkItem, e
 
 // ListStatusRuns returns every readable run in display order. Individual
 // malformed historical journals are omitted so status remains best-effort.
+//
+// `status`'s callers need the FULL run population, not a page of it: the
+// fleet summary and the in-flight agent probe both aggregate across every
+// run, and only the CLI table itself truncates to --limit (applied locally,
+// after this call returns — see cmd/goobers/status.go's selectStatusRuns).
+// So the fix for #4249 is not to bound this result — it is to stop sourcing
+// it by opening and parsing every run journal (`runSummariesForStage`,
+// os.ReadDir + journal.OpenRead per run) when the read-model projection can
+// answer the same rows with zero journal opens. Falls back to the journal
+// walk only when the projection is unavailable, so an instance without one
+// keeps today's behavior unchanged.
 func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
+	if s.readModelReads && s.sources.ReadModel != nil {
+		return s.listStatusRunsFromReadModel(ctx)
+	}
 	return s.runSummaries(ctx, true)
+}
+
+// listStatusRunsFromReadModel pages through every projected run (§15.9's
+// "list/unrestricted" combination — an empty ListOptions is a supported,
+// indexed query shape, not a fallback) rather than opening a journal per row.
+// The store caps each page at its own maxListLimit regardless of what is
+// requested, so this loops on the returned cursor; even a fleet of 11,040
+// runs is a few dozen indexed queries, not 11,040 file opens.
+func (s *Local) listStatusRunsFromReadModel(ctx context.Context) ([]RunSummary, error) {
+	observedAt := s.now()
+	var (
+		out    []RunSummary
+		cursor readmodel.ListCursor
+	)
+	for {
+		page, err := s.sources.ReadModel.ListRuns(ctx, readmodel.ListOptions{Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range page.Runs {
+			out = append(out, summaryFromReadModel(row, observedAt))
+		}
+		if !page.HasMore {
+			break
+		}
+		cursor = page.Next
+	}
+	if err := s.decorateOperatorClaims(ctx, out, observedAt); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, now time.Time) error {
@@ -236,6 +281,18 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 	if initCompletedAt.IsZero() ||
 		(!firstPROpenAt.IsZero() && firstPROpenAt.Before(initCompletedAt)) {
 		firstPROpenAt = time.Time{}
+	}
+	// #4249: once the persisted rollup already names a firstPROpenAt after
+	// init completed, re-deriving it from a full journal walk on every call
+	// cannot improve on it — only match it, at O(all runs) cost instead of
+	// O(1). upsertTimeToFirstPR (internal/telemetry/rollup/onboarding.go)
+	// only ever narrows this value toward the EARLIEST ref.touched "open"
+	// event it has ingested, and ingestion runs for every run as its outcome
+	// becomes known (resumeInterruptedRunsWithRunners's own doc comment), so
+	// a later-starting run can only ever find a LATER open event, never an
+	// earlier one — the milestone this loop looks for is monotonic once set.
+	if !firstPROpenAt.IsZero() {
+		return telemetry.NewTimeToFirstPRMetric(initCompletedAt, firstPROpenAt), nil
 	}
 	runIDs, err := s.RunIDs(ctx)
 	if err != nil {

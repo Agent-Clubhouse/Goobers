@@ -41,6 +41,18 @@ const (
 	statusNextFireManual       = "manual"
 	statusNextFireEvent        = "event"
 	statusFirstSuccessRefresh  = 10 * time.Second
+	// statusFailureStreakThreshold is the default number of consecutive
+	// infra-classified failures a workflow must accumulate before `goobers
+	// status` surfaces an alarm line (#4263: 499 consecutive failures over
+	// 18h at 26-28/hour went undetected for 14h22m, because the existing
+	// success-rate window only ever looks at the last statusSuccessRateWindow
+	// terminal runs — it reads identically whether those are old-and-mixed
+	// or fresh-and-all-failing). No new configuration surface: tuned against
+	// that measured rate so it trips within roughly 45 minutes of onset at
+	// the pattern's observed frequency, comfortably above a single ordinary
+	// flaky-infra blip's failure count but far short of leaving a gaggle to
+	// run dead for most of a day.
+	statusFailureStreakThreshold = 20
 )
 
 func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -316,6 +328,64 @@ type statusWorkflowSummary struct {
 	SuccessfulRuns    int              `json:"successfulRuns"`
 	SuccessRate       *float64         `json:"successRate"`
 	NextFire          statusNextFire   `json:"nextFire"`
+	// FailureStreak is non-nil only once the streak reaches
+	// statusFailureStreakThreshold (#4263) — most callers should treat a nil
+	// streak as "no alarm", not "no failures".
+	FailureStreak *statusFailureStreak `json:"failureStreak,omitempty"`
+}
+
+// statusFailureStreak names a run of consecutive infra-classified failures
+// for a workflow (#4263), computed over its full terminal-run history rather
+// than the fixed statusSuccessRateWindow — a sustained streak must not go
+// blind once it ages past whatever window a success-rate ratio happens to
+// use. FirstFailedAt/FirstError name the OLDEST run in the streak, since
+// that is when and why the sustained failure actually began, not just its
+// most recent recurrence.
+type statusFailureStreak struct {
+	Length        int       `json:"length"`
+	FirstFailedAt time.Time `json:"firstFailedAt"`
+	FirstError    string    `json:"firstError"`
+}
+
+// statusWorkflowFailureStreak scans terminal runs, most-recent-first, and
+// counts the unbounded run of consecutive infra-classified failures at the
+// head of the list. A single success or non-infra failure ends the streak
+// immediately (#4263's "a single interleaved success clears the alarm").
+// Returns nil below statusFailureStreakThreshold.
+func statusWorkflowFailureStreak(terminal []runSummary) *statusFailureStreak {
+	length := 0
+	var oldest runSummary
+	for _, run := range terminal {
+		if run.Phase != journal.PhaseFailed || run.Operator.LatestError == nil ||
+			!telemetry.ClassifyError(run.Operator.LatestError.Code).InfraFault() {
+			break
+		}
+		length++
+		oldest = run
+	}
+	if length < statusFailureStreakThreshold {
+		return nil
+	}
+	return &statusFailureStreak{
+		Length:        length,
+		FirstFailedAt: statusRunOutcomeTime(oldest),
+		FirstError:    statusErrorMessage(oldest.Operator.LatestError),
+	}
+}
+
+// statusErrorMessage prefers the human-readable message the runner attached
+// to the error, falling back to the stable machine code when the runner
+// didn't supply one — the same fallback readservice.eventErrorReason uses
+// for terminal-run reasons, kept local since it's six lines and the two
+// packages already avoid coupling on internal helpers.
+func statusErrorMessage(detail *journal.ErrorDetail) string {
+	if detail == nil {
+		return ""
+	}
+	if detail.Message != "" {
+		return detail.Message
+	}
+	return detail.Code
 }
 
 type statusNextFire struct {
@@ -424,6 +494,10 @@ func buildStatusFleetSummary(
 			workflowSummary.LastOutcome = terminal[0].Phase
 			workflowSummary.LastOutcomeAt = &lastOutcomeAt
 		}
+		// Computed over the full terminal history, before windowing below —
+		// a sustained streak (#4263) must not depend on a window sized for a
+		// success-rate ratio.
+		workflowSummary.FailureStreak = statusWorkflowFailureStreak(terminal)
 		if len(terminal) > statusSuccessRateWindow {
 			terminal = terminal[:statusSuccessRateWindow]
 		}
@@ -522,6 +596,10 @@ func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now 
 		)
 		if workflow.AdmissionBlocked != "" {
 			pf(stdout, "  %-19.19s blocked: %.45s\n", name, workflow.AdmissionBlocked)
+		}
+		if streak := workflow.FailureStreak; streak != nil {
+			pf(stdout, "ALARM: %s has failed %d consecutive times (infra) since %s: %.80s\n",
+				name, streak.Length, streak.FirstFailedAt.UTC().Format(time.RFC3339), streak.FirstError)
 		}
 	}
 	pf(stdout, "\n")
@@ -1233,12 +1311,14 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				identity.PID, uptime.Truncate(time.Second), identity.Version,
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
+			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 			return 1
 		}
 		pf(stdout, "daemon running: pid %d, uptime %s, version %s, last tick %s ago, live runs %d\n",
 			identity.PID, uptime.Truncate(time.Second), identity.Version,
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
+		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 		return 0
 	}
 	if identity != nil {
@@ -1249,6 +1329,20 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 
 	pf(stdout, "daemon not running; live runs %d\n", liveRuns)
 	return 1
+}
+
+// reportPendingTriggerQueue surfaces #4323's operator-visibility acceptance
+// criterion: a growing pending-trigger backlog (like #4326's incident, which
+// accumulated 1,177 duplicates before anyone noticed) becomes visible in
+// `goobers status` before it starves anything. Silent when the queue is
+// empty — an operator scanning routine status output shouldn't have to parse
+// a "depth 0" line to know nothing is wrong.
+func reportPendingTriggerQueue(schedulerDir string, now time.Time, stdout io.Writer) {
+	depth, oldestAge, err := pendingTriggerQueueStats(schedulerDir, now)
+	if err != nil || depth == 0 {
+		return
+	}
+	pf(stdout, "pending triggers: %d outstanding, oldest %s\n", depth, oldestAge.Truncate(time.Second))
 }
 
 func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {

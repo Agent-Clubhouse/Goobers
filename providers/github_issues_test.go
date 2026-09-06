@@ -116,6 +116,70 @@ func TestGitHubProviderObservesQuotaHeaders(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderLastObservedQuota is the regression test for #4182's
+// admission-check seam: LastObservedQuota must work for every caller, not
+// only one that wired a QuotaObserver — the whole point is that a caller
+// elsewhere in the same process (backlog-query's scanBacklogEligibility) can
+// read the window a call it ALREADY MADE revealed, with no dedicated
+// rate-limit request and no observer wiring of its own.
+func TestGitHubProviderLastObservedQuota(t *testing.T) {
+	var limit, remaining string
+	var cacheHit bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if cacheHit {
+			w.Header().Set(QuotaCacheHitHeader, "true")
+		}
+		if limit != "" {
+			w.Header().Set("X-RateLimit-Limit", limit)
+		}
+		if remaining != "" {
+			w.Header().Set("X-RateLimit-Remaining", remaining)
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	if _, _, known := provider.LastObservedQuota(); known {
+		t.Fatal("LastObservedQuota known before any call, want false")
+	}
+
+	limit, remaining = "5000", "4331"
+	if _, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Provider: ProviderGitHub, Owner: "acme", Name: "web"}, State: "open", Limit: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotLimit, gotRemaining, known := provider.LastObservedQuota(); !known || gotLimit != 5000 || gotRemaining != 4331 {
+		t.Fatalf("LastObservedQuota = (%d, %d, %v), want (5000, 4331, true)", gotLimit, gotRemaining, known)
+	}
+
+	// A later call's window supersedes the earlier one.
+	limit, remaining = "5000", "431"
+	if _, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Provider: ProviderGitHub, Owner: "acme", Name: "web"}, State: "open", Limit: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotLimit, gotRemaining, known := provider.LastObservedQuota(); !known || gotLimit != 5000 || gotRemaining != 431 {
+		t.Fatalf("LastObservedQuota after second call = (%d, %d, %v), want (5000, 431, true)", gotLimit, gotRemaining, known)
+	}
+
+	// A response served from the shared snapshot cache spent no real quota
+	// and carries no meaningful window — quotaFromHeaders already treats
+	// this as unknown (github_http.go), so the cached snapshot must not
+	// silently overwrite the last REAL observation with a stale-looking one.
+	cacheHit = true
+	if _, err := provider.ListWorkItems(context.Background(), ListWorkItemsRequest{
+		Repository: RepositoryRef{Provider: ProviderGitHub, Owner: "acme", Name: "web"}, State: "open", Limit: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotLimit, gotRemaining, known := provider.LastObservedQuota(); !known || gotLimit != 5000 || gotRemaining != 431 {
+		t.Fatalf("LastObservedQuota after cache-hit response = (%d, %d, %v), want the prior real observation (5000, 431, true) unchanged", gotLimit, gotRemaining, known)
+	}
+}
+
 // issueMock is a minimal in-memory GitHub issue backend covering the endpoints the
 // issue operations touch: read issue, list/post comments, add/remove labels, patch.
 type issueMock struct {

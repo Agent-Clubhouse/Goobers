@@ -30,6 +30,12 @@ const BlobPathPrefix = apicontract.V1Prefix + "/blobs/"
 // defaultBlobTimeout bounds one blob transfer when no client is supplied.
 const defaultBlobTimeout = 60 * time.Second
 
+// defaultBlobRetryDeadline bounds Put's retry loop when the caller sets no
+// RetryDeadline of its own. A caller with a tighter context deadline already
+// in force (e.g. dispatchexec.go's 15s write-through batch budget) is
+// unaffected: context.WithTimeout always honors the earlier of the two.
+const defaultBlobRetryDeadline = 60 * time.Second
+
 // BlobClient is the network blob plane client (decision 010): a
 // blobstore.Store implementation that fetches and puts sha256 digests over
 // HTTP from the blob endpoint, authenticated with a stage-scoped credential.
@@ -47,6 +53,11 @@ type BlobClient struct {
 	Token string
 	// Client overrides the HTTP client; nil uses a 60s-timeout default.
 	Client *http.Client
+	// RetryDeadline bounds how long Put retries a transport error or 5xx
+	// response before giving up. Zero uses defaultBlobRetryDeadline. Get and
+	// Has are not retried: a hung fetch or probe fails the caller directly
+	// rather than blocking the fail-soft materialize contract.
+	RetryDeadline time.Duration
 }
 
 func (c *BlobClient) httpClient() *http.Client {
@@ -67,7 +78,7 @@ func (c *BlobClient) blobURL(digest string) (string, error) {
 	return base + BlobPathPrefix + url.PathEscape(digest), nil
 }
 
-func (c *BlobClient) do(ctx context.Context, method, digest string, body io.Reader) (*http.Response, error) {
+func (c *BlobClient) request(ctx context.Context, method, digest string, body io.Reader) (*http.Request, error) {
 	target, err := c.blobURL(digest)
 	if err != nil {
 		return nil, err
@@ -81,6 +92,14 @@ func (c *BlobClient) do(ctx context.Context, method, digest string, body io.Read
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/octet-stream")
+	}
+	return request, nil
+}
+
+func (c *BlobClient) do(ctx context.Context, method, digest string, body io.Reader) (*http.Response, error) {
+	request, err := c.request(ctx, method, digest, body)
+	if err != nil {
+		return nil, err
 	}
 	return c.httpClient().Do(request)
 }
@@ -108,21 +127,36 @@ func (c *BlobClient) Get(ctx context.Context, digest string) ([]byte, error) {
 	}
 }
 
-// Put stores data under digest. The endpoint's write is idempotent by
-// content-address (a present digest is a no-op), which is the property that
-// makes the plane safe to share fleet-wide with no locking.
+// Put stores data under digest, retrying a transport error or 5xx response
+// with jittered backoff until it succeeds, hits a non-retryable refusal, or
+// RetryDeadline elapses. The endpoint's write is idempotent by
+// content-address (a present digest is a no-op), which is what makes the
+// plane safe to retry and to share fleet-wide with no locking.
 func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error {
-	response, err := c.do(ctx, http.MethodPut, digest, bytes.NewReader(data))
-	if err != nil {
+	if _, err := c.blobURL(digest); err != nil {
 		return fmt.Errorf("dispatcher: put blob %s: %w", digest, err)
 	}
-	defer func() { _ = response.Body.Close() }()
-	switch response.StatusCode {
-	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
-		return nil
-	default:
-		return fmt.Errorf("dispatcher: put blob %s: endpoint answered %s", digest, response.Status)
+	deadline := c.RetryDeadline
+	if deadline <= 0 {
+		deadline = defaultBlobRetryDeadline
 	}
+	return withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
+		request, err := c.request(ctx, http.MethodPut, digest, bytes.NewReader(data))
+		if err != nil {
+			return false, fmt.Errorf("dispatcher: put blob %s: %w", digest, err)
+		}
+		response, err := c.httpClient().Do(request)
+		if err != nil {
+			return true, fmt.Errorf("dispatcher: put blob %s: %w", digest, err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		switch response.StatusCode {
+		case http.StatusOK, http.StatusCreated, http.StatusNoContent:
+			return false, nil
+		default:
+			return retryableStatus(response.StatusCode), fmt.Errorf("dispatcher: put blob %s: endpoint answered %s", digest, response.Status)
+		}
+	})
 }
 
 // Has reports digest presence via HEAD, so a caller can skip a large Get.

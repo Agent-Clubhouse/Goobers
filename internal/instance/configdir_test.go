@@ -149,6 +149,51 @@ func TestLoadConfigDirInvalid(t *testing.T) {
 	}
 }
 
+// TestLoadConfigDirRejectsDuplicateKey guards #3643 at the config-as-code
+// loader boundary: sigs.k8s.io/yaml's non-strict YAML-to-JSON conversion
+// silently kept the LAST of a duplicate mapping key, so a later duplicate
+// "tools:" here could silently replace the first's tool list while schema
+// validation only ever saw the merged, already-deduplicated document.
+func TestLoadConfigDirRejectsDuplicateKey(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	goober := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(goober)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const original = "  tools:\n    - github\n    - shell\n"
+	if !strings.Contains(string(data), original) {
+		t.Fatalf("fixture %s does not contain expected tools: block", goober)
+	}
+	duplicated := strings.Replace(string(data), original, original+"  tools:\n    - \"*\"\n", 1)
+	if err := os.WriteFile(goober, []byte(duplicated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := LoadConfigDir(root)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
+	}
+	if set != nil {
+		t.Fatalf("expected a nil ConfigSet on invalid config, got %+v", set)
+	}
+	if report == nil || !report.HasErrors() {
+		t.Fatalf("expected a report with errors, got %+v", report)
+	}
+	var found bool
+	for _, issue := range report.Issues {
+		if strings.Contains(issue.Message, `duplicate key "tools"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("report did not name the duplicate key: %+v", report.Issues)
+	}
+}
+
 func TestLoadConfigDirForComparisonReturnsParseableInvalidSet(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {

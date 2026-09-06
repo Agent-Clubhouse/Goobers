@@ -118,6 +118,18 @@ func TestRequireLabels(t *testing.T) {
 			configured: "area:frontend",
 			want:       map[string]string{},
 		},
+		{
+			// #4180: backlog-health reads the same partitioned backlog as
+			// backlog-query, and without this default its ready-pool
+			// measurement counts items outside the gaggle's partition.
+			name: "backlog-health task also receives the default",
+			task: apiv1.Task{
+				Run: &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-health"}},
+			},
+			inputs:     map[string]string{"trustLabel": "goobers:approved"},
+			configured: "goobers:cloud",
+			want:       map[string]string{"trustLabel": "goobers:approved", "requireLabels": "goobers:cloud"},
+		},
 	}
 
 	for _, tt := range tests {

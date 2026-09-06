@@ -1150,8 +1150,13 @@ spec:
                       type: string
                     idleBackoff:
                       description: |-
-                        IdleBackoff reduces no-work polling while preserving the configured
-                        schedule whenever work is available. Omitted uses the default policy.
+                        IdleBackoff reduces no-work polling (type=schedule) or no-work dispatch
+                        (type=webhook, #4262: a burst of webhook deliveries that repeatedly find
+                        no eligible work — e.g. merge-review's pr-select — otherwise dispatches
+                        one run per delivery with no throttle of its own, which can exhaust a
+                        GitHub token's quota shared across every gaggle on the instance) while
+                        preserving responsiveness whenever work is available. Omitted uses the
+                        default policy.
                       properties:
                         ceiling:
                           description: Ceiling defaults to fifteen minutes.
@@ -1217,8 +1222,9 @@ spec:
                   x-kubernetes-validations:
                   - message: trustLabel is supported only for type=backlog-item
                     rule: '!has(self.trustLabel) || self.type == ''backlog-item'''
-                  - message: idleBackoff is supported only for type=schedule
-                    rule: '!has(self.idleBackoff) || self.type == ''schedule'''
+                  - message: idleBackoff is supported only for type=schedule or type=webhook
+                    rule: '!has(self.idleBackoff) || self.type == ''schedule'' ||
+                      self.type == ''webhook'''
                 minItems: 1
                 type: array
                 x-kubernetes-validations:

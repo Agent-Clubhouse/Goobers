@@ -227,6 +227,73 @@ func TestRunDispatchExecContextSurrendersToTheWriteAPI(t *testing.T) {
 	}
 }
 
+// #4260: the surrender retry deadline scales with the stage's own declared
+// timeout, with a floor so even a short-timeout stage gets a meaningful
+// retry window across a routine daemon restart (#3809).
+func TestSurrenderRetryDeadline(t *testing.T) {
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{"shorter than the floor uses the floor", 2 * time.Minute, surrenderRetryFloor},
+		{"zero (unset) uses the floor", 0, surrenderRetryFloor},
+		{"exactly the floor stays at the floor", surrenderRetryFloor, surrenderRetryFloor},
+		{"longer than the floor scales with the stage", 90 * time.Minute, 90 * time.Minute},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := surrenderRetryDeadline(c.timeout); got != c.want {
+				t.Fatalf("surrenderRetryDeadline(%s) = %s, want %s", c.timeout, got, c.want)
+			}
+		})
+	}
+}
+
+// #4260: a stage pod's surrender PUT must survive the daemon restart that
+// happens on every rollout, not discard an already-finished attempt on the
+// first refused or dropped connection.
+func TestRunDispatchExecContextSurrenderRetriesTransientFailure(t *testing.T) {
+	// Two failures against the production backoff (internal/dispatcher's
+	// retryBaseDelay/retryMaxDelay) cost at most ~1.5s of jittered wait —
+	// bounded and worth spending here to exercise the real default rather
+	// than a shrunk one, unlike the dispatcher package's own unit tests
+	// (which shrink the backoff to assert on deadline expiry precisely).
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv(dispatcher.EnvRunID, "run-1")
+	t.Setenv(dispatcher.EnvStage, "probe-builtin")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	// No stdout/stderr: any captured output would also record a stage
+	// artifact through the SAME server via a journal-plane Emit call
+	// (recordStageArtifactsTyped), confounding this test's attempt count —
+	// unlike TestRunDispatchExecContextSurrendersToTheWriteAPI, which only
+	// checks the surrender body and doesn't care how many requests it took.
+	t.Setenv(dispatcher.EnvStageCommand, `["sh","-c","exit 0"]`)
+	t.Setenv(dispatcher.EnvStageScript, "")
+	t.Setenv(dispatcher.EnvStageTimeout, "10s")
+
+	code := runDispatchExecContext(context.Background(), io.Discard, io.Discard)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 once the retried surrender PUT succeeds", code)
+	}
+	if attempts != 3 {
+		t.Fatalf("server saw %d attempts, want 3 (two transient failures, then success)", attempts)
+	}
+}
+
 // A stage that FAILS still surrenders successfully — the wrapper's exit code
 // reports whether it could tell the daemon what happened, not what happened.
 func TestRunDispatchExecContextSurrendersFailureEnvelopeWithExitZero(t *testing.T) {

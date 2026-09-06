@@ -156,35 +156,6 @@ func TestPostRunCommentReconcilesMarkerWithDifferentVisibleText(t *testing.T) {
 	}
 }
 
-func TestCountFailureStreakZeroWhenNoMarker(t *testing.T) {
-	poster := &fakeCommenter{}
-	count, id, err := CountFailureStreak(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 || id != "" {
-		t.Fatalf("want (0, \"\"), got (%d, %q)", count, id)
-	}
-}
-
-func TestCountFailureStreakReadsExistingMarker(t *testing.T) {
-	poster := &fakeCommenter{
-		comments: []providers.Comment{
-			{ID: "99", Body: failureStreakBody(5, "implement", "run-abc", "http://127.0.0.1:8080/#/run/run-abc")},
-		},
-	}
-	count, id, err := CountFailureStreak(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 5 {
-		t.Fatalf("count = %d, want 5", count)
-	}
-	if id != "99" {
-		t.Fatalf("commentID = %q, want %q", id, "99")
-	}
-}
-
 func TestUpsertFailureCommentCreatesWhenNoneExists(t *testing.T) {
 	poster := &fakeCommenter{}
 	if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", 1, "implement", "run-1", "http://127.0.0.1:8080/#/run/run-1"); err != nil {
@@ -235,24 +206,18 @@ func TestUpsertFailureCommentFallsBackWhenEditingUnsupported(t *testing.T) {
 			{ID: "42", Body: failureStreakBody(1, "", "run-1", "http://run-1")},
 		},
 	}
+	latestComment := func() string { return poster.comments[len(poster.comments)-1].Body }
+	if !strings.Contains(latestComment(), `data-count="1"`) {
+		t.Fatalf("latest comment before updates = %q, want data-count=\"1\"", latestComment())
+	}
 	for want := 2; want <= 3; want++ {
-		count, _, err := CountFailureStreak(context.Background(), poster, providers.RepositoryRef{Provider: providers.ProviderADO, Name: "r"}, "1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if count != want-1 {
-			t.Fatalf("count before update = %d, want %d", count, want-1)
-		}
 		if err := UpsertFailureComment(context.Background(), poster, providers.RepositoryRef{Provider: providers.ProviderADO, Name: "r"}, "1", want, "", fmt.Sprintf("run-%d", want), "http://run"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	count, _, err := CountFailureStreak(context.Background(), poster, providers.RepositoryRef{Provider: providers.ProviderADO, Name: "r"}, "1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 3 {
-		t.Fatalf("count after three failures = %d, want 3", count)
+	want := `data-count="3"`
+	if !strings.Contains(latestComment(), want) {
+		t.Fatalf("latest comment after three failures = %q, want %s", latestComment(), want)
 	}
 }
 
@@ -265,12 +230,8 @@ func TestResetFailureCommentResetsExistingMarker(t *testing.T) {
 	if err := ResetFailureComment(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1", "run-ok", "http://run-ok"); err != nil {
 		t.Fatal(err)
 	}
-	count, _, err := CountFailureStreak(context.Background(), poster, providers.RepositoryRef{Name: "r"}, "1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 {
-		t.Fatalf("count after reset = %d, want 0", count)
+	if !strings.Contains(poster.comments[0].Body, `data-count="0"`) {
+		t.Fatalf("comment after reset = %q, want data-count=\"0\"", poster.comments[0].Body)
 	}
 	if len(poster.comments) != 1 {
 		t.Fatalf("comments = %d, want one rolling comment", len(poster.comments))

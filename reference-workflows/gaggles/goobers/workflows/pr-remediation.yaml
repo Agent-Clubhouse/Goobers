@@ -396,7 +396,33 @@ spec:
         - github:pr:write
       policyActions:
         - release-pr-claim
-      next: implement
+      next: warm-module-cache
+
+    # #4179: a stalled Go module download inside the agentic implement session
+    # is indistinguishable, from the run's own journal, from a looping agent —
+    # both present as one lifecycle event and a 90-minute silence, and both
+    # burn the WHOLE agentic budget before failing. `go mod download` (never
+    # "all" — that walks the entire module graph, not just what this repo's
+    # packages and tests actually import) is deterministic, model-free work
+    # with no business competing with reasoning for the same budget, so it
+    # runs here, in a cheap deterministic stage with its OWN short timeout,
+    # BEFORE implement ever starts. A stall here fails this stage loudly and
+    # attributably (executor's own "stage exceeded timeout Xs" — see
+    # internal/executor/shell.go — tagged infrastructure, not "budget
+    # exhausted") long before it could reach the expensive agentic stage. This
+    # is exactly the shape rebase-pr just rebased onto — implement re-enters
+    # here on every guard-before-implement path (first pass, reviewer repass,
+    # and finding-response-validation repass alike), so a base that just moved
+    # underneath this PR gets its own fresh, bounded warm attempt each time.
+    - name: warm-module-cache
+      type: deterministic
+      goal: Download this run's Go module dependencies with a bounded, attributable timeout before the agentic implementation session begins.
+      run:
+        command: ["go", "mod", "download"]
+      timeoutSeconds: 300
+      retry:
+        maxAttempts: 1
+      next: warm-module-cache-gate
 
     # Implementation can outlive its subject. Re-check before spending a
     # reviewer session on work for a PR that has since become terminal.
@@ -807,6 +833,24 @@ spec:
       next: release-escalated-claim
 
   gates:
+    # #4179: same failure-class evaluator local-gate below already uses, same
+    # infra disposition (park-infrastructure-failure — this workflow's own
+    # local-gate already routes its "infra" branch there rather than retrying
+    # in place, so this follows suit). A genuine download failure (bad go.sum,
+    # missing module) is still something the implementer's own session can
+    # react to, so it proceeds to implement rather than parking — only a
+    # network-class stall parks, since retrying the identical stall would just
+    # delay the same outcome.
+    - name: warm-module-cache-gate
+      evaluator: automated
+      automated:
+        check: failure-class
+      branches:
+        pass: implement
+        fail: implement
+        infra: park-infrastructure-failure
+        escalate: park-escalated
+
     # A completed API update is terminal. Every confirmed conflict, substantive
     # finding, failing check, or non-behind candidate enters the existing
     # gather/rebase/agentic path without changing its semantics.

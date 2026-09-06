@@ -137,8 +137,14 @@ func calculateBacklogStaleness(
 	if age < 0 {
 		age = 0
 	}
+	stale := age >= policy.threshold()
+	// Checklist-only tracking parents are maintained through their children.
+	// Their curation comments must not create a zero-day stale-notice loop.
+	if item.HasLabel(providers.LabelTracking) && !item.HasLabel(providers.LabelAutoClose) {
+		stale = false
+	}
 	return backlogStalenessSignal{
-		Stale:                    age >= policy.threshold(),
+		Stale:                    stale,
 		AgeDays:                  int(age / (24 * time.Hour)),
 		ThresholdDays:            policy.thresholdDays,
 		LastMeaningfulActivityAt: lastActivity.UTC(),
