@@ -39,6 +39,7 @@ type remediationProvider interface {
 	UpdateBranch(ctx context.Context, req providers.UpdateBranchRequest) (providers.UpdateBranchResult, error)
 	CIFailures(ctx context.Context, repo providers.RepositoryRef, ref string) ([]providers.CIFailureDetail, error)
 	ListPullRequestReviewThreads(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.PullRequestReviewThreads, error)
+	ClosePullRequest(ctx context.Context, req providers.ClosePullRequestRequest) (providers.ClosePullRequestResult, error)
 }
 
 // Compile-time contract: both concrete backends satisfy the lane surface.

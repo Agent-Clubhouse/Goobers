@@ -75,15 +75,21 @@ type Link struct {
 
 // WorkItem is the flat scheduler-facing backlog model shared across providers.
 type WorkItem struct {
-	Provider       ProviderKind           `json:"provider"`
-	ID             string                 `json:"id"`
-	ExternalID     string                 `json:"externalId,omitempty"`
-	Revision       string                 `json:"revision,omitempty"`
-	Type           string                 `json:"type,omitempty"`
-	Title          string                 `json:"title"`
-	Body           string                 `json:"body,omitempty"`
-	Labels         []string               `json:"labels,omitempty"`
-	State          string                 `json:"state,omitempty"`
+	Provider   ProviderKind `json:"provider"`
+	ID         string       `json:"id"`
+	ExternalID string       `json:"externalId,omitempty"`
+	Revision   string       `json:"revision,omitempty"`
+	Type       string       `json:"type,omitempty"`
+	Title      string       `json:"title"`
+	Body       string       `json:"body,omitempty"`
+	Labels     []string     `json:"labels,omitempty"`
+	State      string       `json:"state,omitempty"`
+	// StateReason is the provider's own reason a closed item is closed (e.g.
+	// GitHub's "completed" vs. "not_planned"). Empty for a provider with no
+	// such concept or for an item that is not closed — callers that need to
+	// distinguish "done" from "dropped as out of scope" must treat empty as
+	// unknown, never as either answer.
+	StateReason    string                 `json:"stateReason,omitempty"`
 	Status         WorkItemStatus         `json:"status,omitempty"`
 	Assignee       string                 `json:"assignee,omitempty"`
 	Links          []Link                 `json:"links,omitempty"`

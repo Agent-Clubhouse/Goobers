@@ -645,6 +645,88 @@ func unparkResolvedSiblingsFrom(ctx context.Context, provider remediationProvide
 	return unparked, errs
 }
 
+// parkedPRRetirementLabels are the park labels a bot PR can get stuck behind
+// forever once pr-select's hard exclusion (prselect.go's excludeLabels)
+// makes it permanently invisible to the ordinary apply-verdict mootness
+// check, mootFailReason (#4034): goobers:needs-human only ever clears by a
+// human removing it, and a needs-remediation/merge-escalated PR is only
+// re-evaluated by the other unpark* sweeps in this file, none of which ask
+// "is my own reason to exist already gone".
+var parkedPRRetirementLabels = []string{providers.LabelNeedsHuman, needsRemediationLabel, remediationEscalatedLabel}
+
+// issueCompletedElsewhere reports whether item is closed for GitHub's
+// "completed" state reason specifically, as opposed to "not_planned" (#4034):
+// a NOT_PLANNED closure means the issue was dropped as out of scope and the
+// PR proposing to resolve it may still carry salvageable work, while a
+// COMPLETED closure means the PR's reason to exist is provably gone. A
+// provider with no state-reason concept, or an item whose reason is simply
+// unrecorded, reports false — fail closed, the same "ambiguous means not
+// moot" posture mootFailReason already takes.
+func issueCompletedElsewhere(item providers.WorkItem) bool {
+	return strings.EqualFold(item.State, "closed") && strings.EqualFold(item.StateReason, "completed")
+}
+
+// parkedPRMootReason reports whether every issue pr's body claims to resolve
+// is now closed as COMPLETED — the #4034 shape: a bot PR parked needs-human
+// (or needs-remediation / merge-escalated) whose entire reason to exist was
+// resolved by a DIFFERENT PR the instance can already see. Since pr is still
+// open, it cannot itself be the PR that closed the issue, so no separate
+// "closed by" lookup is needed: an open PR claiming to resolve an issue that
+// is already closed-COMPLETED is sufficient on its own. Returns "", false for
+// a PR that references no issue, or whose provider lookup fails or is
+// ambiguous for any referenced issue — mirroring mootFailReason's fail-closed
+// posture; one unresolvable or still-open or NOT_PLANNED issue is enough to
+// leave the PR parked exactly as it was.
+func parkedPRMootReason(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (string, bool) {
+	issues := resolvedIssueNumbers(pr.Body)
+	if len(issues) == 0 {
+		return "", false
+	}
+	for _, id := range issues {
+		item, err := provider.GetWorkItem(ctx, repo, id)
+		if err != nil || !issueCompletedElsewhere(item) {
+			return "", false
+		}
+	}
+	return fmt.Sprintf("every issue it exists to close (%s) is already completed by other work", strings.Join(prefixedIssueNumbers(issues), ", ")), true
+}
+
+// closeMootParkedPRsFrom retires (#4034) any open, namespaced PR carrying one
+// of parkedPRRetirementLabels whose entire reason to exist is already
+// resolved elsewhere. Runs from the same post-merge reconciliation sweep as
+// the unpark* family (reconcileOpenPullRequestParks), since that is the one
+// place already revisiting parked PRs on a schedule independent of
+// pr-select's own selection, which permanently excludes these labels.
+// Best-effort per PR, mirroring the other sweeps' error posture: one
+// provider failure is a warning, never fatal to the others or to the merge
+// that triggered this reconciliation pass.
+func closeMootParkedPRsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stdout, stderr io.Writer) (closed []int, errs []error) {
+	for _, pr := range others {
+		if pr.Number == mergedNumber {
+			continue
+		}
+		if !hasAnyLabel(pr.Labels, parkedPRRetirementLabels) {
+			continue
+		}
+		reason, moot := parkedPRMootReason(ctx, provider, repo, pr)
+		if !moot {
+			continue
+		}
+		comment := fmt.Sprintf(
+			"Closing this pull request automatically: %s.\n\nThis change is **no longer needed** rather than wrong — there is no decision for a human to make. Reopen it if that reading is incorrect.",
+			reason)
+		if _, err := provider.ClosePullRequest(ctx, providers.ClosePullRequestRequest{
+			Repository: repo, PullID: strconv.Itoa(pr.Number), Comment: comment,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("close moot parked pr #%d: %w", pr.Number, err))
+			continue
+		}
+		pf(stdout, "closed moot parked pr #%d: %s\n", pr.Number, reason)
+		closed = append(closed, pr.Number)
+	}
+	return closed, errs
+}
+
 // fanOutNeedsRemediation triages every OTHER open PR targeting base and
 // labels needs-remediation only the ones that actually need it (issue #715):
 // conflicted with the base after the merge, or file-overlapping with the
