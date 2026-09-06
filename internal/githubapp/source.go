@@ -214,7 +214,7 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 	mintCtx, cancel := context.WithTimeout(ctx, mintTimeout)
 	defer cancel()
 	endpoint := strings.TrimRight(s.cfg.BaseURL, "/") + "/app/installations/" + url.PathEscape(s.cfg.InstallationID) + "/access_tokens"
-	var reqBody io.Reader
+	var reqPayload []byte
 	if len(s.cfg.Repositories) > 0 {
 		payload, err := json.Marshal(struct {
 			Repositories []string `json:"repositories"`
@@ -222,45 +222,65 @@ func (s *TokenSource) mint(ctx context.Context, now time.Time) (string, time.Tim
 		if err != nil {
 			return "", time.Time{}, fmt.Errorf("githubapp: encode token request: %w", err)
 		}
-		reqBody = bytes.NewReader(payload)
-	}
-	req, err := http.NewRequestWithContext(mintCtx, http.MethodPost, endpoint, reqBody)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("githubapp: build token request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+appJWT)
-	if reqBody != nil {
-		req.Header.Set("Content-Type", "application/json")
+		reqPayload = payload
 	}
 
-	resp, err := s.cfg.HTTPClient.Do(req)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("githubapp: exchange App JWT for installation token: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("githubapp: read token response: %w", err)
-	}
-	if resp.StatusCode != http.StatusCreated {
-		return "", time.Time{}, mintError(resp.StatusCode, body, s.cfg.AppID, s.cfg.InstallationID)
-	}
+	var token string
+	var expiresAt time.Time
+	attempts, err := mintWithRetry(mintCtx, func(ctx context.Context) (bool, error) {
+		var reqBody io.Reader
+		if reqPayload != nil {
+			reqBody = bytes.NewReader(reqPayload)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, reqBody)
+		if err != nil {
+			return false, fmt.Errorf("githubapp: build token request: %w", err)
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Authorization", "Bearer "+appJWT)
+		if reqBody != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
-	var payload struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
+		resp, err := s.cfg.HTTPClient.Do(req)
+		if err != nil {
+			// A transport-level failure (connection reset, dial timeout) is
+			// exactly the class of blip GitHub's own 5xx responses are:
+			// worth one more try, never a sign of misconfiguration.
+			return true, fmt.Errorf("githubapp: exchange App JWT for installation token: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return true, fmt.Errorf("githubapp: read token response: %w", err)
+		}
+		if resp.StatusCode != http.StatusCreated {
+			return mintRetryableStatus(resp.StatusCode), mintError(resp.StatusCode, body, s.cfg.AppID, s.cfg.InstallationID)
+		}
+
+		var payload struct {
+			Token     string    `json:"token"`
+			ExpiresAt time.Time `json:"expires_at"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return false, fmt.Errorf("githubapp: decode installation token response: %w", err)
+		}
+		if strings.TrimSpace(payload.Token) == "" {
+			return false, errors.New("githubapp: installation token response is missing token")
+		}
+		if payload.ExpiresAt.IsZero() || !payload.ExpiresAt.After(now) {
+			return false, errors.New("githubapp: installation token response has an invalid expiry")
+		}
+		token, expiresAt = payload.Token, payload.ExpiresAt
+		return false, nil
+	})
+	if err != nil {
+		if attempts > 1 {
+			return "", time.Time{}, fmt.Errorf("%w (mint attempt %d/%d)", err, attempts, mintMaxAttempts)
+		}
+		return "", time.Time{}, err
 	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", time.Time{}, fmt.Errorf("githubapp: decode installation token response: %w", err)
-	}
-	if strings.TrimSpace(payload.Token) == "" {
-		return "", time.Time{}, errors.New("githubapp: installation token response is missing token")
-	}
-	if payload.ExpiresAt.IsZero() || !payload.ExpiresAt.After(now) {
-		return "", time.Time{}, errors.New("githubapp: installation token response has an invalid expiry")
-	}
-	return payload.Token, payload.ExpiresAt, nil
+	return token, expiresAt, nil
 }
 
 // mintError maps GitHub's failure statuses onto actionable diagnostics. Only
