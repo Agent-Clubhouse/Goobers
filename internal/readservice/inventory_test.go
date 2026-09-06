@@ -143,6 +143,12 @@ func createActiveRun(t *testing.T, layout instance.Layout, runID, gaggle, workfl
 }
 
 func TestInstanceReportsMemoryGateFsyncAndFleetState(t *testing.T) {
+	// make ci runs the whole suite with GOOBERS_DISABLE_FSYNC=1 (journal
+	// fsync disabled for speed under disk-saturated CI hosts), so this test
+	// must not assume that variable starts unset — pin both states
+	// explicitly via t.Setenv rather than relying on ambient env.
+	t.Setenv("GOOBERS_DISABLE_FSYNC", "0")
+
 	layout := instance.NewLayout(t.TempDir())
 	service, err := NewLocal(LocalSources{
 		Layout:        layout,
@@ -165,7 +171,7 @@ func TestInstanceReportsMemoryGateFsyncAndFleetState(t *testing.T) {
 		t.Fatal("FleetEnrolled = false, want true")
 	}
 	if got.FsyncDisabled {
-		t.Fatal("FsyncDisabled = true, want false with GOOBERS_DISABLE_FSYNC unset")
+		t.Fatal("FsyncDisabled = true, want false with GOOBERS_DISABLE_FSYNC=0")
 	}
 
 	t.Setenv("GOOBERS_MEMORY_HIGH_WATER", "off")
