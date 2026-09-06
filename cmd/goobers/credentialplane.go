@@ -12,6 +12,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -228,6 +230,20 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 		}
 	}
 
+	// external-telemetry's connector secret (#4341): the ONE connector this
+	// stage's pinned inputs.connector names, resolved here rather than
+	// through the ordinary grant-injector below — a connector's auth ref
+	// lives in externalTelemetry.connectors, not in a credentials: grant, and
+	// which connector applies varies per stage rather than per gaggle.
+	var connectorCredential *httpapi.MintedCredential
+	if profile.externalTelemetryConnector != "" && containsString(requested, string(capability.TelemetryRead)) {
+		entry, err := s.resolveExternalTelemetryConnectorCredential(ctx, profile.externalTelemetryConnector)
+		if err != nil {
+			return httpapi.CredentialResolveResponse{}, err
+		}
+		connectorCredential = entry
+	}
+
 	scope, ok := defs.Scopes[identity.Gaggle]
 	if !ok {
 		return httpapi.CredentialResolveResponse{}, credentialPlaneError(
@@ -278,6 +294,10 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 		minted = append(minted, entry)
 		materialized = append(materialized, key)
 	}
+	if connectorCredential != nil {
+		minted = append(minted, *connectorCredential)
+		materialized = append(materialized, connectorCredential.Capability)
+	}
 
 	// Audit trail (§11): WHICH capabilities were resolved for WHICH stage —
 	// names only, never values — journaled before the response is written.
@@ -306,6 +326,52 @@ func (s *daemonCredentialService) Resolve(ctx context.Context, request httpapi.C
 		Stage:       request.Stage,
 		Credentials: minted,
 	}, nil
+}
+
+// resolveExternalTelemetryConnectorCredential mints connectorName's auth
+// secret for capability telemetry:read (#4341).
+//
+// This deliberately answers a DIFFERENT question than the ordinary
+// grant-injector: the connector's Auth.Token ref lives in
+// externalTelemetry.connectors, an operator declares it once per connector
+// rather than per gaggle, and it is not a credentials.Grant at all — so it
+// is resolved directly against the instance config rather than threaded
+// through buildCredentials. A connector with no configured Auth.Token (the
+// none/ambient auth modes) mints nothing here, which is correct: the pod's
+// own connector construction (the second #4341 PR) runs with no credential
+// for it, exactly as the local path does today.
+func (s *daemonCredentialService) resolveExternalTelemetryConnectorCredential(ctx context.Context, connectorName string) (*httpapi.MintedCredential, error) {
+	var connector *externaltelemetry.ConnectorConfig
+	for i := range s.config.ExternalTelemetry.Connectors {
+		if s.config.ExternalTelemetry.Connectors[i].Name == connectorName {
+			connector = &s.config.ExternalTelemetry.Connectors[i]
+			break
+		}
+	}
+	if connector == nil {
+		return nil, credentialPlaneError(http.StatusConflict, "connector_unavailable",
+			fmt.Sprintf("external telemetry connector %q is no longer configured", connectorName))
+	}
+	ref := connector.Auth.Token
+	if ref == nil || (ref.Env == "" && ref.File == "") {
+		// No auth secret declared (auth mode none, or ambient credentials the
+		// connector's own factory resolves itself) — nothing to mint.
+		return nil, nil
+	}
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{
+		Name: connectorName, Env: ref.Env, File: ref.File,
+	}})
+	if err != nil {
+		return nil, credentialPlaneError(http.StatusInternalServerError, "credential_wiring_failed",
+			"external telemetry connector credential source could not be constructed")
+	}
+	value, err := resolver.Resolve(ctx, connectorName)
+	if err != nil {
+		return nil, credentialPlaneError(http.StatusBadGateway, "credential_resolution_failed",
+			fmt.Sprintf("external telemetry connector %q credential could not be resolved", connectorName))
+	}
+	s.shared.Register([]byte(value))
+	return &httpapi.MintedCredential{Capability: string(capability.TelemetryRead), Value: value}, nil
 }
 
 // locateRun finds the run directory across the configured gaggles (plus the
@@ -347,6 +413,12 @@ type stageProfile struct {
 	goober       string
 	capabilities []string
 	implicitKeys []string
+	// externalTelemetryConnector is the pinned task's inputs.connector value
+	// (#4341), when set — the name of the ONE externalTelemetry.connectors
+	// entry this stage's telemetry:read resolution must mint, resolved from
+	// the pinned definition rather than trusted from the request the same
+	// way every other implicit grant here is.
+	externalTelemetryConnector string
 }
 
 // stageCredentialProfile derives the profile from the run's PINNED state:
@@ -406,8 +478,9 @@ func gateWorkspaceIsRepoBacked(gate apiv1.Gate) bool {
 func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefinitions, stage string, loadGateCapabilities func() (map[string][]string, bool, error)) (stageProfile, error) {
 	if task, ok := machine.Task(stage); ok {
 		profile := stageProfile{
-			goober:       task.Goober,
-			capabilities: append([]string(nil), task.Capabilities...),
+			goober:                     task.Goober,
+			capabilities:               append([]string(nil), task.Capabilities...),
+			externalTelemetryConnector: task.Inputs[executor.InputTelemetryConnector],
 		}
 		if task.Goober != "" {
 			spec, ok := defs.Goobers[task.Goober]
