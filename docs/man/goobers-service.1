@@ -9,14 +9,10 @@ goobers service \- install and manage the platform-supervised daemon
 Usage: goobers service <subcommand> [path]
 
 Install and manage the goobers daemon under the current platform's user
-supervisor: systemd on Linux, launchd on macOS, or a per-user Scheduled Task
-on Windows. The stable service host launches the instance's mutable
+supervisor: systemd on Linux, launchd on macOS, or the Windows Service
+Control Manager. The stable service host launches the instance's mutable
 binary, receives the same graceful-shutdown trigger as a foreground daemon,
 and owns validated self-update handoff, health checks, and rollback.
-
-On Windows, `service install` is a separate machine-service path that runs as
-LocalSystem and cannot inherit user-scoped CLI accounts, Credential Manager,
-LOCALAPPDATA, mapped drives, or user PATH. It requires explicit acknowledgement.
 
 Subcommands:
   install     install, enable, and start the service
@@ -24,11 +20,11 @@ Subcommands:
   start       resume an installed-but-stopped service
   stop        halt the running service without disabling or removing it
   status      report whether the service is installed and running
-  task-install     install a per-user Windows Scheduled Task
-  task-uninstall   remove the per-user Windows Scheduled Task
-  task-start       start the per-user Windows Scheduled Task
-  task-stop        stop the per-user Windows Scheduled Task
-  task-status      report Scheduled Task state and Windows identity
+
+On Windows, use `service task-install`, `service task-start`,
+`service task-stop`, `service task-status`, and `service task-uninstall`
+for the per-user Scheduled Task supervisor. `service install` creates a
+machine SCM service as LocalSystem and requires explicit acknowledgement.
 
 Run `goobers service install -h`, `goobers service uninstall -h`,
 `goobers service start -h`, `goobers service stop -h`, or

@@ -209,7 +209,14 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "health-ticks", takesArg: true, desc: "Required clean heartbeat ticks"},
 		{name: "health-timeout", takesArg: true, desc: "Candidate health window"},
 	},
+	"service install": {
+		{name: "confirm-local-system", desc: "Confirm an interactive LocalSystem installation"},
+		{name: "acknowledge-local-system", desc: "Acknowledge LocalSystem limitations for non-interactive installation"},
+	},
 	"service status": {
+		{name: "json", desc: "Emit JSON"},
+	},
+	"service task-status": {
 		{name: "json", desc: "Emit JSON"},
 	},
 	"engine-start": {

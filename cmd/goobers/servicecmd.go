@@ -33,7 +33,7 @@ const serviceHelp = "Usage: goobers service <subcommand> [path]\n\n" +
 	"`goobers service start -h`, `goobers service stop -h`, or\n" +
 	"`goobers service status -h` for details. Default path is \".\".\n"
 
-const serviceInstallHelp = "Usage: goobers service install [path]\n\n" +
+const serviceInstallHelp = "Usage: goobers service install [--confirm-local-system] [--acknowledge-local-system] [path]\n\n" +
 	"Install, enable, and start the goobers daemon for the instance at <path>.\n" +
 	"Linux and macOS install a per-user service so provider credentials retain\n" +
 	"the current user's ownership. Windows installation must run from an\n" +

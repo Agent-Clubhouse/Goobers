@@ -277,6 +277,21 @@ report whether the supervised daemon is installed and running
 \fBgoobers service stop\fR
 halt the running daemon without disabling or removing it
 .TP
+\fBgoobers service task-install\fR
+install a per-user Windows Scheduled Task supervisor
+.TP
+\fBgoobers service task-start\fR
+start a per-user Windows Scheduled Task supervisor
+.TP
+\fBgoobers service task-status\fR
+report per-user Windows Scheduled Task state and identity
+.TP
+\fBgoobers service task-stop\fR
+stop a per-user Windows Scheduled Task supervisor
+.TP
+\fBgoobers service task-uninstall\fR
+remove a per-user Windows Scheduled Task supervisor
+.TP
 \fBgoobers service uninstall\fR
 gracefully stop and remove the supervised daemon
 .TP
@@ -569,6 +584,11 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-service-start\fR(1),
 \fBgoobers-service-status\fR(1),
 \fBgoobers-service-stop\fR(1),
+\fBgoobers-service-task-install\fR(1),
+\fBgoobers-service-task-start\fR(1),
+\fBgoobers-service-task-status\fR(1),
+\fBgoobers-service-task-stop\fR(1),
+\fBgoobers-service-task-uninstall\fR(1),
 \fBgoobers-service-uninstall\fR(1),
 \fBgoobers-set-milestone\fR(1),
 \fBgoobers-signal\fR(1),

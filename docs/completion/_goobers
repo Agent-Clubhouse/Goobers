@@ -124,7 +124,9 @@ _goobers_completion()
             ;;
         service)
             case "${words[3]:-}" in
+                install) flags+=(--confirm-local-system --acknowledge-local-system) ;;
                 status) flags+=(--json) ;;
+                task-status) flags+=(--json) ;;
             esac
             ;;
         engine-start)
@@ -339,7 +341,7 @@ _goobers_completion()
             ;;
         service)
             if (( CURRENT == 3 )); then
-                candidates=(install uninstall stop start status)
+                candidates=(install uninstall stop start status task-install task-uninstall task-start task-stop task-status)
                 _describe -V 'command' candidates
                 return
             fi

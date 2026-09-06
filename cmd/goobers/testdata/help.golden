@@ -151,6 +151,11 @@ Advanced operator commands:
   runs list         alias for the status run table (same flags, no --watch)
   schema            emit a JSON Schema embedded in this build
   self-update       stage and request a supervised binary update
+  service task-install install a per-user Windows Scheduled Task supervisor
+  service task-start start a per-user Windows Scheduled Task supervisor
+  service task-status report per-user Windows Scheduled Task state and identity
+  service task-stop stop a per-user Windows Scheduled Task supervisor
+  service task-uninstall remove a per-user Windows Scheduled Task supervisor
   speech            preflight and test local speech notifications
   telemetry         query, export, prune, or compact run telemetry
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
@@ -2129,12 +2134,17 @@ Subcommands:
   stop        halt the running service without disabling or removing it
   status      report whether the service is installed and running
 
+On Windows, use `service task-install`, `service task-start`,
+`service task-stop`, `service task-status`, and `service task-uninstall`
+for the per-user Scheduled Task supervisor. `service install` creates a
+machine SCM service as LocalSystem and requires explicit acknowledgement.
+
 Run `goobers service install -h`, `goobers service uninstall -h`,
 `goobers service start -h`, `goobers service stop -h`, or
 `goobers service status -h` for details. Default path is ".".
 
 ### service install
-Usage: goobers service install [path]
+Usage: goobers service install [--confirm-local-system] [--acknowledge-local-system] [path]
 
 Install, enable, and start the goobers daemon for the instance at <path>.
 Linux and macOS install a per-user service so provider credentials retain
@@ -2142,6 +2152,11 @@ the current user's ownership. Windows installation must run from an
 elevated terminal. An existing installation is never overwritten; uninstall
 it first when changing the stable host binary or instance path. Product
 binary updates use the self-update workflow instead.
+
+On Windows this creates a LocalSystem SCM service. It cannot access
+user-scoped CLI accounts, Credential Manager, %%LOCALAPPDATA%%, mapped
+drives, or user PATH. Use --confirm-local-system interactively or
+--acknowledge-local-system in scripts after reviewing that warning.
 
 Exit codes: 0 = installed and running, 1 = installation/start error,
 2 = usage error or not an instance root.
@@ -2176,6 +2191,21 @@ Stopping an already-stopped service is a successful no-op.
 
 Exit codes: 0 = stopped (or already stopped), 1 = not installed/stop
 error, 2 = usage error or not an instance root.
+
+### service task-install
+Usage: goobers service task-install [path]
+
+### service task-start
+Usage: goobers service task-start [path]
+
+### service task-status
+Usage: goobers service task-status [--json] [path]
+
+### service task-stop
+Usage: goobers service task-stop [path]
+
+### service task-uninstall
+Usage: goobers service task-uninstall [path]
 
 ### service uninstall
 Usage: goobers service uninstall [path]
