@@ -171,12 +171,8 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 				t.Fatalf("unmarshal %s: %v", file, err)
 			}
 			def := Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
-			machine, err := compileAcknowledged(def, WithGoobers(goobers))
-			if err != nil {
+			if _, err := compileAcknowledged(def, WithGoobers(goobers)); err != nil {
 				t.Fatalf("compile %s against the real reference workflows' goobers: %v", file, err)
-			}
-			if file == "implementation.yaml" {
-				assertReferenceImplementationPreReviewValidation(t, machine)
 			}
 			if file == "backlog-curation.yaml" {
 				if warnings := CheckWarnings(def); len(warnings) != 0 {
@@ -184,49 +180,6 @@ func TestReferenceWorkflowsCompile(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func assertReferenceImplementationPreReviewValidation(t *testing.T, machine *Machine) {
-	t.Helper()
-
-	for _, name := range []string{"implement", "remediate-ci"} {
-		task, ok := machine.Task(name)
-		if !ok {
-			t.Fatalf("%s task not found", name)
-		}
-		if task.Next != "pre-review-validation" {
-			t.Errorf("%s.next = %q, want pre-review-validation", name, task.Next)
-		}
-	}
-
-	preReview, ok := machine.Task("pre-review-validation")
-	if !ok {
-		t.Fatal("pre-review-validation task not found")
-	}
-	if preReview.Run == nil || !slices.Equal(preReview.Run.Command, []string{"make", "verify-fast"}) {
-		t.Errorf("pre-review-validation command = %v, want [make verify-fast]", preReview.Run)
-	}
-	if preReview.Next != "pre-review-gate" {
-		t.Errorf("pre-review-validation.next = %q, want pre-review-gate", preReview.Next)
-	}
-
-	preReviewGate, ok := machine.Gate("pre-review-gate")
-	if !ok {
-		t.Fatal("pre-review-gate not found")
-	}
-	if preReviewGate.Automated == nil || preReviewGate.Automated.Check != "failure-class" {
-		t.Errorf("pre-review-gate automated check = %+v, want failure-class", preReviewGate.Automated)
-	}
-	for outcome, want := range map[string]string{
-		"pass":         "review",
-		"fail":         "implement",
-		"infra":        "pre-review-validation",
-		BranchEscalate: "park-escalated",
-	} {
-		if got, ok := BranchTarget(preReviewGate, outcome); !ok || got != want {
-			t.Errorf("pre-review-gate %s branch = %q,%v; want %q,true", outcome, got, ok, want)
-		}
 	}
 }
 

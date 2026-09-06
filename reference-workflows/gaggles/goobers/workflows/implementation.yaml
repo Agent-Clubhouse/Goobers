@@ -183,7 +183,7 @@ spec:
       # ArtifactPointers, so the result is status + scalar summary only.
       # A recognized non-retryable failure bypasses review evaluation but uses
       # review's escalate control branch below to park the issue first.
-      next: pre-review-validation
+      next: review
 
     # CI check details are provider-authored and therefore remain unapproved.
     # Route them to a distinct remediation consumer that explicitly accepts
@@ -213,21 +213,7 @@ spec:
         maxAttempts: 2
         backoffSeconds: 15
       onTimeout: salvage
-      next: pre-review-validation
-
-    # Catch formatting, vet, build, and fast contract failures before spending
-    # an agentic reviewer turn. The implementer runs this target itself, but
-    # this deterministic checkpoint is authoritative and prevents a mistaken
-    # self-report from advancing directly into review.
-    - name: pre-review-validation
-      type: deterministic
-      goal: Run the fast deterministic validation tier before agentic review.
-      run:
-        command: ["make", "verify-fast"]
-      timeoutSeconds: 600
-      retry:
-        maxAttempts: 1
-      next: pre-review-gate
+      next: review
 
     # The merge tier and required declared-dependency integration gate from
     # CONTRIBUTING.md's "Validation tier contract", run on the implementation
@@ -441,20 +427,6 @@ spec:
         pass: implement
         fail: implement
         infra: warm-module-cache
-        escalate: park-escalated
-
-    # Validation failures return directly to implementation without paying for
-    # a reviewer invocation. Infrastructure failures retry the deterministic
-    # check against the same committed diff under the gate's bounded repass
-    # controls.
-    - name: pre-review-gate
-      evaluator: automated
-      automated:
-        check: failure-class
-      branches:
-        pass: review
-        fail: implement
-        infra: pre-review-validation
         escalate: park-escalated
 
     # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
