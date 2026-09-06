@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -158,9 +159,31 @@ func TestFailedHandlerUsesCachedStreakWithoutCommentListCall(t *testing.T) {
 	if got, err := loadFailureStreakState(l, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2458"); err != nil || got != 3 {
 		t.Fatalf("persisted streak = %d, %v; want 3", got, err)
 	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read failure streak journal: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["annotation"] == failureStreakAnnotation &&
+			event.Runner["key"] == failureStreakKey(providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2458") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("failure streak was not persisted in the instance journal")
+	}
+	if err := clearFailureStreakState(l, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2458"); err != nil {
+		t.Fatalf("journal reset: %v", err)
+	}
+	if got, err := loadFailureStreakState(l, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2458"); err != nil || got != 0 {
+		t.Fatalf("reset streak = %d, %v; want 0", got, err)
+	}
 }
 
-func TestFailedHandlerDoesNotCountWhenStreakReadIsRateLimited(t *testing.T) {
+func TestFailedHandlerDoesNotPersistWhenFailureCommentIsRateLimited(t *testing.T) {
 	const runID = "run-rate-limited"
 	fake := &blockedHandlerFakeCommenter{listErr: &providers.RateLimitError{Provider: providers.ProviderGitHub, Endpoint: "/comments", Status: 403, Remaining: 0, Reset: time.Now().Add(time.Hour)}}
 	prev := newEscalationPoster
@@ -180,18 +203,19 @@ func TestFailedHandlerDoesNotCountWhenStreakReadIsRateLimited(t *testing.T) {
 	}
 	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}}}}
 	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
-	if err := h(context.Background(), runner.FailedOutcome{
+	err = h(context.Background(), runner.FailedOutcome{
 		RunID:   runID,
 		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
 		Stage:   "implement",
 		Code:    telemetry.ErrCodeTimeout,
-	}); err != nil {
-		t.Fatalf("handler: %v", err)
+	})
+	if err == nil {
+		t.Fatal("handler error = nil, want rate-limit failure from the provider mutation")
 	}
 	if len(fake.calls) != 0 {
-		t.Fatalf("provider calls = %d, want 0 when the streak count itself is rate limited", len(fake.calls))
+		t.Fatalf("provider calls = %d, want 0 when the provider is rate limited", len(fake.calls))
 	}
-	if got, err := loadFailureStreakState(l, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2459"); err == nil && got != 0 {
-		t.Fatalf("streak count = %d, want 0 when the count call was rate limited and not incremented", got)
+	if got, err := loadFailureStreakState(l, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2459"); err != nil || got != 0 {
+		t.Fatalf("streak count = %d, %v; want 0 when the provider mutation is rate limited", got, err)
 	}
 }
