@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -103,6 +105,112 @@ func TestBlobClientRequiresCredential(t *testing.T) {
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("x")))
 	if err := client.Put(context.Background(), digest, []byte("x")); err == nil {
 		t.Fatal("unauthenticated Put succeeded")
+	}
+}
+
+// #4260: the pod's artifact write-through must survive the same transient
+// network blips the surrender PUT does.
+func TestBlobClientPutRetriesTransientFailureThenSucceeds(t *testing.T) {
+	shrinkRetryDelays(t)
+	var attempts atomic.Int32
+	const failures = 2
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if attempts.Add(1) <= failures {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(server.Close)
+
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("x")))
+	client := &BlobClient{BaseURL: server.URL, RetryDeadline: time.Second}
+	if err := client.Put(context.Background(), digest, []byte("x")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got := attempts.Load(); got != failures+1 {
+		t.Fatalf("server saw %d attempts, want %d", got, failures+1)
+	}
+}
+
+func TestBlobClientPutHonoursRetryDeadline(t *testing.T) {
+	shrinkRetryDelays(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("x")))
+	client := &BlobClient{BaseURL: server.URL, RetryDeadline: 30 * time.Millisecond}
+	start := time.Now()
+	err := client.Put(context.Background(), digest, []byte("x"))
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected an error once the retry deadline elapsed")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("elapsed = %s, want close to the 30ms retry deadline", elapsed)
+	}
+}
+
+// The blob plane is idempotent by content-address (Put's own doc comment):
+// a lost ack on a write that already landed must not corrupt the stored
+// bytes when the pod retries with the identical digest and data.
+func TestBlobClientRetryAfterLostAckDoesNotCorrupt(t *testing.T) {
+	shrinkRetryDelays(t)
+	server, blobs := fakeBlobEndpoint(t, "stage-scoped-token")
+	// fakeBlobEndpoint's PUT handler already stores-then-200s; wrap it so the
+	// FIRST PUT's response is dropped after the store completes, exactly as
+	// TestSurrenderPutClientRetryAfterLostAckDoesNotDoubleApply does for the
+	// surrender plane.
+	base := server.Config.Handler
+	first := true
+	var puts atomic.Int32
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			base.ServeHTTP(w, r)
+			return
+		}
+		puts.Add(1)
+		rec := httptest.NewRecorder()
+		base.ServeHTTP(rec, r)
+		if first {
+			first = false
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("test server does not support hijacking")
+			}
+			conn, _, herr := hijacker.Hijack()
+			if herr != nil {
+				t.Fatalf("hijack: %v", herr)
+			}
+			_ = conn.Close()
+			return
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+	})
+
+	data := []byte("artifact-bytes")
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+	client := &BlobClient{BaseURL: server.URL, Token: "stage-scoped-token", RetryDeadline: time.Second}
+	if err := client.Put(context.Background(), digest, data); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got := puts.Load(); got != 2 {
+		t.Fatalf("server saw %d PUTs, want 2 (the lost-ack write, then the pod's retry)", got)
+	}
+	stored, ok := blobs.Load(digest)
+	if !ok {
+		t.Fatal("blob was not stored")
+	}
+	if string(stored.([]byte)) != string(data) {
+		t.Fatalf("stored blob = %q, want %q", stored, data)
 	}
 }
 
