@@ -3,58 +3,96 @@
 package executor
 
 import (
+	"errors"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 )
 
-// TestConfigureNoNetworkAllocatesSysProcAttr guards against a real regression
-// found while building the #3397 capability probe: on the live stage path
-// proc.Configure always allocates cmd.SysProcAttr before
-// configureCommandNetwork runs, but ProbeNoNetwork (used by the WSL
-// preflight, cmd/goobers/wslpreflight.go, and by the #3397 test capability
-// probe, test/testsupport/netns) builds a bare *exec.Cmd and calls
-// configureNoNetwork directly. Without this guard, that nil SysProcAttr
-// panics instead of failing (or succeeding) — verified by running the built
-// test binary in a hardened Linux container (cap-drop=ALL,
-// no-new-privileges): before the fix, a nil-pointer-dereference panic; after,
-// a clean EPERM error the caller can classify.
-func TestConfigureNoNetworkAllocatesSysProcAttr(t *testing.T) {
-	cmd := exec.Command("/bin/true")
-	if cmd.SysProcAttr != nil {
-		t.Fatal("precondition: exec.Command must start with a nil SysProcAttr")
-	}
+// TestConfigureNoNetworkAppliesNamespacesByDefault proves the escape hatch
+// is opt-in only: with the env var unset, configureNoNetwork always attempts
+// real isolation (#4267 must not change behavior on a capable host).
+func TestConfigureNoNetworkAppliesNamespacesByDefault(t *testing.T) {
+	t.Setenv(allowUnisolatedNetworkNoneEnv, "")
 
+	cmd := exec.Command("/bin/true")
 	marker, err := configureNoNetwork(cmd)
 	if err != nil {
-		t.Fatalf("configureNoNetwork() error = %v, want nil (allocation only, no syscall yet)", err)
+		t.Fatalf("configureNoNetwork() error = %v", err)
 	}
 	if marker != "" {
-		t.Fatalf("marker = %q, want empty — linux always applies real isolation", marker)
+		t.Fatalf("marker = %q, want empty when isolation is actually applied", marker)
 	}
-	if cmd.SysProcAttr == nil {
-		t.Fatal("configureNoNetwork left cmd.SysProcAttr nil")
-	}
-	if got, want := cmd.SysProcAttr.Cloneflags, uintptr(syscall.CLONE_NEWUSER|syscall.CLONE_NEWNET); got != want {
-		t.Fatalf("Cloneflags = %#x, want %#x", got, want)
+	if cmd.SysProcAttr.Cloneflags&(syscall.CLONE_NEWUSER|syscall.CLONE_NEWNET) == 0 {
+		t.Fatalf("Cloneflags = %v, want CLONE_NEWUSER|CLONE_NEWNET set", cmd.SysProcAttr.Cloneflags)
 	}
 }
 
-// TestConfigureNoNetworkPreservesCallerSysProcAttr asserts the same guard is
-// idempotent-safe: a caller that (like the real stage path, via
-// proc.Configure) already populated SysProcAttr keeps those fields — the nil
-// check must never clobber an existing struct.
-func TestConfigureNoNetworkPreservesCallerSysProcAttr(t *testing.T) {
+// TestConfigureNoNetworkAllowsExplicitTrustedLocalOptIn proves the same
+// escape hatch Windows always needs also works on Linux when explicitly set
+// (#4267's AC3: a real degrade with a recorded marker, not a silent no-op).
+func TestConfigureNoNetworkAllowsExplicitTrustedLocalOptIn(t *testing.T) {
+	t.Setenv(allowUnisolatedNetworkNoneEnv, "1")
 	cmd := exec.Command("/bin/true")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	if _, err := configureNoNetwork(cmd); err != nil {
+	marker, err := configureNoNetwork(cmd)
+	if err != nil {
 		t.Fatalf("configureNoNetwork() error = %v", err)
 	}
-	if !cmd.SysProcAttr.Setsid {
-		t.Fatal("configureNoNetwork clobbered a caller-set SysProcAttr field (Setsid)")
+	if marker != unsupportedNetworkIsolationMarker {
+		t.Fatalf("marker = %q, want %q", marker, unsupportedNetworkIsolationMarker)
 	}
-	if cmd.SysProcAttr.Cloneflags&syscall.CLONE_NEWUSER == 0 {
-		t.Fatal("configureNoNetwork did not layer its Cloneflags onto the existing SysProcAttr")
+	if got := cmd.Env[len(cmd.Env)-1]; got != "GOOBERS_NETWORK_ISOLATION="+unsupportedNetworkIsolationMarker {
+		t.Fatalf("network isolation marker (child env) = %q", got)
+	}
+	if cmd.SysProcAttr.Cloneflags&(syscall.CLONE_NEWUSER|syscall.CLONE_NEWNET) != 0 {
+		t.Fatalf("Cloneflags = %v, want no namespace flags once isolation is skipped", cmd.SysProcAttr.Cloneflags)
+	}
+}
+
+// TestNetworkNoneStartFailureHintNamesRestrictedUserNS proves #4267's
+// diagnostic: a network:none stage's fork/exec EPERM is enriched with text
+// naming the missing capability and both remedies.
+func TestNetworkNoneStartFailureHintNamesRestrictedUserNS(t *testing.T) {
+	startErr := &exec.Error{Name: "goobers", Err: syscall.EPERM}
+	err := describeNetworkNoneStartFailure("none", startErr)
+	if err == nil {
+		t.Fatal("describeNetworkNoneStartFailure() = nil")
+	}
+	for _, want := range []string{
+		"unprivileged user namespaces",
+		"restricted",
+		"sysctl",
+		allowUnisolatedNetworkNoneEnv,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+	if !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("error = %v, want it to still wrap the original EPERM", err)
+	}
+}
+
+// TestNetworkNoneStartFailureHintLeavesOtherFailuresAlone proves only the
+// EPERM shape is diagnosed: an unrelated failure (e.g. a missing binary)
+// passes through with no added, misleading namespace guidance.
+func TestNetworkNoneStartFailureHintLeavesOtherFailuresAlone(t *testing.T) {
+	startErr := &exec.Error{Name: "goobers", Err: syscall.ENOENT}
+	err := describeNetworkNoneStartFailure("none", startErr)
+	if err != startErr { //nolint:errorlint // asserting the identical, unwrapped error comes back, not merely that it's still reachable via errors.Is
+		t.Fatalf("describeNetworkNoneStartFailure() = %v, want the original error unchanged", err)
+	}
+}
+
+// TestNetworkNoneStartFailureHintIgnoresOtherNetworkModes proves the hint
+// only applies to network:none stages — a start failure for any other mode
+// (or none configured) must not be rewritten.
+func TestNetworkNoneStartFailureHintIgnoresOtherNetworkModes(t *testing.T) {
+	startErr := &exec.Error{Name: "goobers", Err: syscall.EPERM}
+	err := describeNetworkNoneStartFailure("", startErr)
+	if err != startErr { //nolint:errorlint // asserting the identical, unwrapped error comes back, not merely that it's still reachable via errors.Is
+		t.Fatalf("describeNetworkNoneStartFailure() = %v, want the original error unchanged for mode \"\"", err)
 	}
 }

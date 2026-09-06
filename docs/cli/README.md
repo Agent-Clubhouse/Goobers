@@ -1926,11 +1926,13 @@ harness, so the generated instance needs no goober.yaml edits to switch;
 omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced; it is
-fail-closed on Windows (no enforced network:none equivalent exists there) unless
---insecure is also given, which scaffolds the demo anyway and reports the
-isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
-the general Windows sandbox policy (#651). Use `goobers preflight` to check and
-launch the fully isolated WSL 2 route instead. --insecure requires --demo.
+fail-closed on Windows (no enforced network:none equivalent exists there), and
+also fail-closed on a Linux host that restricts unprivileged user namespaces
+(#4267), unless --insecure is also given, which scaffolds the demo anyway and
+reports the isolation limitation — an explicit, narrowly-scoped opt-in that does
+not alter the general sandbox policy (#651). Use `goobers preflight` to check
+isolation capability, or (on Windows) launch the fully isolated WSL 2 route
+instead. --insecure requires --demo.
 --allow-ephemeral permits initialization inside a linked or hosted workspace
 only when that location is intentionally persistent; it is refused by default
 to protect GitHub/App sessions whose worktrees may be deleted.
@@ -2544,6 +2546,9 @@ Usage: goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [a
 On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
 goobers binary, Bubblewrap, and working unprivileged user + network namespaces.
+
+On Linux, report whether this host can create the unprivileged user + network
+namespaces network:none isolation relies on (#4267); takes no flags there.
 
 With --launch-wsl, run the trailing Goobers command through that distro after
 the checks pass. Arguments are forwarded directly without shell evaluation,

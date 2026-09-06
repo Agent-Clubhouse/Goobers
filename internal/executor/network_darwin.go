@@ -15,3 +15,8 @@ func configureNoNetwork(cmd *exec.Cmd) (marker string, err error) {
 	// is Windows-only; darwin never needs one).
 	return "", nil
 }
+
+// networkNoneStartFailureHint: darwin's sandbox-exec isolation has no known
+// EPERM-shaped capability gap analogous to Linux's restricted-userns case
+// (#4267), so there is nothing more specific to add here.
+func networkNoneStartFailureHint(error) string { return "" }
