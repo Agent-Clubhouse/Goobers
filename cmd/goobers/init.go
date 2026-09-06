@@ -12,7 +12,10 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
+	stageexecutor "github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
@@ -20,6 +23,48 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 )
+
+// demoNetworkNoneProbe is stageexecutor.ProbeNoNetwork, overridable in tests
+// so the Linux restricted-unprivileged-userns path (#4267) is exercisable
+// without depending on the build host's actual capability.
+var demoNetworkNoneProbe = stageexecutor.ProbeNoNetwork
+
+// demoNetworkNoneRestricted reports whether --demo's enforced network:none
+// isolation is unavailable because this Linux host restricts unprivileged
+// user namespaces (#4267) — the same capability network_linux.go's
+// configureNoNetwork relies on. Only the EPERM shape counts as the
+// capability gap this handles; any other probe failure is a different,
+// unrelated environment problem left for the demo run itself to surface.
+func demoNetworkNoneRestricted(goos string) bool {
+	if goos != "linux" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := demoNetworkNoneProbe(ctx)
+	return err != nil && errors.Is(err, syscall.EPERM)
+}
+
+// checkDemoNetworkIsolation decides whether --demo can proceed given this
+// host's network:none isolation capability. It prints the appropriate
+// refusal itself (unless --insecure lifts it) and returns a non-zero exit
+// code the caller should return immediately; a zero code means either demo
+// wasn't requested, isolation is available, or --insecure opted out of it.
+// The two booleans are also needed later, to print the matching warning
+// once the demo has actually been scaffolded.
+func checkDemoNetworkIsolation(demo, insecure bool, goos string, stderr io.Writer) (exitCode int, demoUnisolated, linuxUserNSRestricted bool) {
+	demoUnisolated = demo && goos != "linux" && goos != "darwin"
+	linuxUserNSRestricted = demo && demoNetworkNoneRestricted(goos)
+	if demoUnisolated && !insecure {
+		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s; run `goobers preflight` for the fully isolated WSL 2 route, or pass --insecure to proceed without isolation\n", goos)
+		return 2, demoUnisolated, linuxUserNSRestricted
+	}
+	if linuxUserNSRestricted && !insecure {
+		pf(stderr, "error: --demo requires unprivileged user namespaces for enforced network isolation, which are restricted on this host; enable them (e.g. `sysctl -w kernel.unprivileged_userns_clone=1`, or the container/security-profile equivalent — run `goobers preflight` for a capability report), or pass --insecure to proceed without isolation\n")
+		return 2, demoUnisolated, linuxUserNSRestricted
+	}
+	return 0, demoUnisolated, linuxUserNSRestricted
+}
 
 const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
@@ -46,11 +91,13 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour\n" +
 	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
 	"demo is supported on Linux and macOS, where network isolation is enforced; it is\n" +
-	"fail-closed on Windows (no enforced network:none equivalent exists there) unless\n" +
-	"--insecure is also given, which scaffolds the demo anyway and reports the\n" +
-	"isolation limitation — an explicit, narrowly-scoped opt-in that does not alter\n" +
-	"the general Windows sandbox policy (#651). Use `goobers preflight` to check and\n" +
-	"launch the fully isolated WSL 2 route instead. --insecure requires --demo.\n" +
+	"fail-closed on Windows (no enforced network:none equivalent exists there), and\n" +
+	"also fail-closed on a Linux host that restricts unprivileged user namespaces\n" +
+	"(#4267), unless --insecure is also given, which scaffolds the demo anyway and\n" +
+	"reports the isolation limitation — an explicit, narrowly-scoped opt-in that does\n" +
+	"not alter the general sandbox policy (#651). Use `goobers preflight` to check\n" +
+	"isolation capability, or (on Windows) launch the fully isolated WSL 2 route\n" +
+	"instead. --insecure requires --demo.\n" +
 	"--allow-ephemeral permits initialization inside a linked or hosted workspace\n" +
 	"only when that location is intentionally persistent; it is refused by default\n" +
 	"to protect GitHub/App sessions whose worktrees may be deleted.\n"
@@ -149,10 +196,9 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		fs.Usage()
 		return 2
 	}
-	demoUnisolated := *demo && goos != "linux" && goos != "darwin"
-	if demoUnisolated && !*insecure {
-		pf(stderr, "error: --demo is supported only on Linux and macOS because enforced network isolation is unavailable on %s; run `goobers preflight` for the fully isolated WSL 2 route, or pass --insecure to proceed without isolation\n", goos)
-		return 2
+	demoIsolationCode, demoUnisolated, linuxUserNSRestricted := checkDemoNetworkIsolation(*demo, *insecure, goos, stderr)
+	if demoIsolationCode != 0 {
+		return demoIsolationCode
 	}
 	if *sourceTree != "" {
 		return seedQuickstartConfigSource(*sourceTree, *harness, *asJSON, stdout, stderr, goos)
@@ -208,6 +254,8 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		pf(stdout, "instance already initialized at %s (nothing to do)\n", abs)
 		if demoUnisolated {
 			pln(stdout, demoInsecureWarning)
+		} else if linuxUserNSRestricted {
+			pln(stdout, demoInsecureWarningLinuxUserNS)
 		}
 		if code := finishInitValidation(root, stdout, stderr); code != 0 {
 			return code
@@ -236,6 +284,8 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	if *demo && demoSeeded {
 		if demoUnisolated {
 			pln(stdout, demoInsecureWarning)
+		} else if linuxUserNSRestricted {
+			pln(stdout, demoInsecureWarningLinuxUserNS)
 		}
 		pf(stdout, demoTourBanner, abs)
 	}
@@ -434,3 +484,18 @@ const demoInsecureWarning = "\nwarning: demo scaffolded WITHOUT enforced network
 	"has no network:none equivalent. Before `goobers run demo`, set\n" +
 	"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 for trusted-local execution only.\n" +
 	"For full isolation instead, run `goobers preflight` and launch the command through WSL 2.\n"
+
+// demoInsecureWarningLinuxUserNS is demoInsecureWarning's Linux analogue: it
+// prints whenever --demo --insecure scaffolds a demo on a Linux host that
+// restricts unprivileged user namespaces (#4267). Scaffolding proceeds
+// unconditionally once --insecure opts in; actually running the demo still
+// needs the same GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE env var every other
+// network:none stage honors on such a host (internal/executor/
+// network_linux.go) — this narrowly lifts the CLI-level refusal to even
+// scaffold, it does not alter enforced isolation on a capable host.
+const demoInsecureWarningLinuxUserNS = "\nwarning: demo scaffolded WITHOUT enforced network isolation — unprivileged\n" +
+	"user namespaces are restricted on this host. Before `goobers run demo`, set\n" +
+	"GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 for trusted-local execution only.\n" +
+	"To enable isolation instead, allow unprivileged user namespaces (e.g.\n" +
+	"`sysctl -w kernel.unprivileged_userns_clone=1`, or the container/security-\n" +
+	"profile equivalent) and re-run `goobers preflight` to confirm.\n"

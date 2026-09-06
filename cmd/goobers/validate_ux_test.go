@@ -255,6 +255,7 @@ func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
 }
 
 func TestValidateAllowsRepositoryFreeScratchOnlyGaggle(t *testing.T) {
+	withDemoNetworkNoneProbe(t, func(context.Context) error { return nil })
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
 		t.Fatalf("init --demo: code=%d stderr=%q", code, stderr)

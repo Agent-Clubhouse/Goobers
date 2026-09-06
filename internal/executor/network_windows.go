@@ -32,3 +32,9 @@ func configureNoNetwork(cmd *exec.Cmd) (marker string, err error) {
 	cmd.Env = append(cmd.Env, "GOOBERS_NETWORK_ISOLATION="+unsupportedNetworkIsolationMarker)
 	return unsupportedNetworkIsolationMarker, nil
 }
+
+// networkNoneStartFailureHint: Windows never reaches Start() with an
+// isolation-shaped failure — configureNoNetwork above already refuses or
+// degrades before Start() is ever called — so there is nothing more
+// specific to add here. (#4267 is Linux-only; see network_linux.go.)
+func networkNoneStartFailureHint(error) string { return "" }

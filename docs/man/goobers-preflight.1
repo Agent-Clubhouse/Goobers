@@ -12,6 +12,9 @@ On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
 goobers binary, Bubblewrap, and working unprivileged user + network namespaces.
 
+On Linux, report whether this host can create the unprivileged user + network
+namespaces network:none isolation relies on (#4267); takes no flags there.
+
 With --launch-wsl, run the trailing Goobers command through that distro after
 the checks pass. Arguments are forwarded directly without shell evaluation,
 the WSL process starts in the current Windows directory, and its exit code is

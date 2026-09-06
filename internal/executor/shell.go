@@ -727,6 +727,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 
 	tree, err := proc.Start(cmd)
 	if err != nil {
+		err = describeNetworkNoneStartFailure(run.Network, err)
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Error:   &apiv1.ErrorInfo{Code: "exec_start", Message: err.Error(), Retryable: false},

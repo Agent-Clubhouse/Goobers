@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"unicode/utf16"
 )
@@ -247,9 +249,9 @@ func TestOnboardingPreflightLaunchesLinuxGoobersAndPreservesExitCode(t *testing.
 }
 
 func TestOnboardingPreflightRejectsUnsupportedHostAndInvalidLaunch(t *testing.T) {
-	t.Run("non-Windows", func(t *testing.T) {
+	t.Run("non-Windows-non-Linux", func(t *testing.T) {
 		deps := readyWSLDeps()
-		deps.hostOS = "linux"
+		deps.hostOS = "darwin"
 		var stdout, stderr bytes.Buffer
 		if code := runOnboardingPreflightWith(nil, &stdout, &stderr, deps); code != 2 {
 			t.Fatalf("code = %d, want 2", code)
@@ -266,6 +268,56 @@ func TestOnboardingPreflightRejectsUnsupportedHostAndInvalidLaunch(t *testing.T)
 			t.Fatalf("code = %d, want 2", code)
 		}
 		if !strings.Contains(stderr.String(), "Usage: goobers preflight") {
+			t.Fatalf("stderr = %q", stderr.String())
+		}
+	})
+}
+
+// TestOnboardingPreflightLinuxCapabilityReport proves #4267's fix: `goobers
+// preflight` on Linux reports the unprivileged-userns capability directly
+// instead of unconditionally exiting 2 as if Linux preflight didn't exist.
+func TestOnboardingPreflightLinuxCapabilityReport(t *testing.T) {
+	t.Run("capable host", func(t *testing.T) {
+		deps := readyWSLDeps()
+		deps.hostOS = "linux"
+		deps.probeNetworkNone = func(context.Context) error { return nil }
+		var stdout, stderr bytes.Buffer
+		if code := runOnboardingPreflightWith(nil, &stdout, &stderr, deps); code != 0 {
+			t.Fatalf("code = %d, want 0, stderr = %q", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "OK") {
+			t.Fatalf("stdout = %q, want capability confirmation", stdout.String())
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("stderr = %q, want empty", stderr.String())
+		}
+	})
+
+	t.Run("restricted userns reports actionable diagnostic", func(t *testing.T) {
+		deps := readyWSLDeps()
+		deps.hostOS = "linux"
+		deps.probeNetworkNone = func(context.Context) error {
+			return fmt.Errorf("executor: network isolation probe: %w", syscall.EPERM)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := runOnboardingPreflightWith(nil, &stdout, &stderr, deps); code != 1 {
+			t.Fatalf("code = %d, want 1, stdout = %q", code, stdout.String())
+		}
+		for _, want := range []string{"unprivileged user namespace", "GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE"} {
+			if !strings.Contains(stderr.String(), want) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr.String(), want)
+			}
+		}
+	})
+
+	t.Run("Windows-only flags rejected on Linux", func(t *testing.T) {
+		deps := readyWSLDeps()
+		deps.hostOS = "linux"
+		var stdout, stderr bytes.Buffer
+		if code := runOnboardingPreflightWith([]string{"--distro", "Ubuntu"}, &stdout, &stderr, deps); code != 2 {
+			t.Fatalf("code = %d, want 2, stdout = %q", code, stdout.String())
+		}
+		if !strings.Contains(stderr.String(), "Windows-only") {
 			t.Fatalf("stderr = %q", stderr.String())
 		}
 	})
