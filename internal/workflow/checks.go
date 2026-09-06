@@ -1,6 +1,9 @@
 package workflow
 
 import (
+	"fmt"
+	"strings"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
@@ -11,6 +14,79 @@ func CheckWarnings(def Definition) []string {
 		return []string{err.Error()}
 	}
 	return interpreter.checkWarnings(def)
+}
+
+// implicitWritableWorkspaceWarnings flags stages whose omitted workspace
+// selects the historical writable run-branch worktree even though their
+// declaration provides no repository-mutation signal.
+func implicitWritableWorkspaceWarnings(def Definition) []string {
+	var warnings []string
+	for _, task := range def.Spec.Tasks {
+		if task.EffectiveWorkspace() != "" {
+			continue
+		}
+		if task.Type == apiv1.TaskAgentic {
+			if !hasRepositoryMutationSignal(task.Capabilities, task.PolicyActions) {
+				warnings = append(warnings, implicitWorkspaceWarning(def.Name, "task", task.Name))
+			}
+			continue
+		}
+		if task.Type == apiv1.TaskDeterministic && task.Run != nil &&
+			deterministicStageAppearsReadOnly(task) &&
+			!hasRepositoryMutationSignal(task.Capabilities, task.PolicyActions) {
+			warnings = append(warnings, implicitWorkspaceWarning(def.Name, "task", task.Name))
+		}
+	}
+	for _, gate := range def.Spec.Gates {
+		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.EffectiveWorkspace() == "" && gate.Agentic != nil {
+			warnings = append(warnings, implicitWorkspaceWarning(def.Name, "gate", gate.Name))
+		}
+	}
+	return warnings
+}
+
+// CheckImplicitWritableWorkspaceWarnings reports advisory workspace defaults
+// separately from the compiler's historical compatibility warnings.
+func CheckImplicitWritableWorkspaceWarnings(def Definition) []string {
+	return implicitWritableWorkspaceWarnings(def)
+}
+
+func implicitWorkspaceWarning(workflow, kind, stage string) string {
+	return fmt.Sprintf(
+		`workflow %q %s %q omits workspace; it defaults to writable workspace: repo (a run-branch worktree). Choose workspace: scratch when no repository is needed, workspace: repo-readonly when only inspecting repository contents, or workspace: repo when writable repository state is intentional`,
+		workflow, kind, stage,
+	)
+}
+
+func hasRepositoryMutationSignal(capabilities, policyActions []string) bool {
+	for _, value := range capabilities {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "repo:push" || strings.HasSuffix(value, ":write") ||
+			strings.HasSuffix(value, ":merge") || strings.HasSuffix(value, ":close") ||
+			strings.HasSuffix(value, ":complete") {
+			return true
+		}
+	}
+	for _, action := range policyActions {
+		action = strings.ToLower(strings.TrimSpace(action))
+		if action != "" && !strings.Contains(action, "read") &&
+			!strings.Contains(action, "inspect") && !strings.Contains(action, "review") {
+			return true
+		}
+	}
+	return false
+}
+
+func deterministicStageAppearsReadOnly(task apiv1.Task) bool {
+	if task.Run == nil || len(task.Run.Command) == 0 {
+		return false
+	}
+	switch strings.ToLower(task.Run.Command[0]) {
+	case "go", "gofmt", "goimports", "git", "goobers":
+		return true
+	default:
+		return false
+	}
 }
 
 // CheckReachability reports unreachable states and loops with no exit.

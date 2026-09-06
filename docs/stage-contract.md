@@ -74,6 +74,16 @@ The runner hands the stage an `InvocationEnvelope`:
   deterministic task with `run.workspace: scratch` receives an empty directory
   and does not resolve a repository.
 
+If a task or agentic gate omits `workspace`, the compatibility default is the
+writable `repo` workspace: a run-branch worktree. This preserves existing
+behavior, but can create disposable local branches and their associated
+checkout/storage and startup-retention cost even for read-only, high-frequency
+stages. `goobers validate` warns when a stage appears non-mutating and relies
+on that default. Choose `workspace: scratch` for provider/scalar work that
+does not need repository contents, `workspace: repo-readonly` for repository
+inspection, or explicitly retain `workspace: repo` when writable repository
+state is intentional.
+
   A run's stages share one **branch**, not one tree: the first repo-backed
   stage creates the run branch (`goobers/<workflow>/<run-id>`) off
   `repoRef.branch`, and every later stage checks that same branch out — now

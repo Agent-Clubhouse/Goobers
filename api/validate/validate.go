@@ -59,6 +59,9 @@ const (
 	WarningPreviewFeature WarningCode = "VER002"
 	// WarningCompatibility identifies a compatibility notice.
 	WarningCompatibility WarningCode = "VER003"
+	// WarningImplicitWritableWorkspace identifies a non-mutating stage that
+	// relies on the historical writable repository workspace default.
+	WarningImplicitWritableWorkspace WarningCode = "WS001"
 	// ErrorRemovedFeature identifies use of a removed DSL feature.
 	ErrorRemovedFeature WarningCode = "VER004"
 	// WarningModelFallback identifies fallback from a requested model.
@@ -2090,6 +2093,9 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			continue
 		}
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckImplicitWritableWorkspaceWarnings(def) {
+		r.addWarning(WarningImplicitWritableWorkspace, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(errorReachability, Error, file, "Workflow", w.Name, "%s", msg)
