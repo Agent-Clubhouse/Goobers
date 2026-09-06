@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"runtime"
 
 	"github.com/goobers/goobers/internal/instance"
 	daemonservice "github.com/goobers/goobers/internal/service"
@@ -24,6 +25,10 @@ const serviceHelp = "Usage: goobers service <subcommand> [path]\n\n" +
 	"  start       resume an installed-but-stopped service\n" +
 	"  stop        halt the running service without disabling or removing it\n" +
 	"  status      report whether the service is installed and running\n\n" +
+	"On Windows, use `service task-install`, `service task-start`,\n" +
+	"`service task-stop`, `service task-status`, and `service task-uninstall`\n" +
+	"for the per-user Scheduled Task supervisor. `service install` creates a\n" +
+	"machine SCM service as LocalSystem and requires explicit acknowledgement.\n\n" +
 	"Run `goobers service install -h`, `goobers service uninstall -h`,\n" +
 	"`goobers service start -h`, `goobers service stop -h`, or\n" +
 	"`goobers service status -h` for details. Default path is \".\".\n"
@@ -35,6 +40,10 @@ const serviceInstallHelp = "Usage: goobers service install [path]\n\n" +
 	"elevated terminal. An existing installation is never overwritten; uninstall\n" +
 	"it first when changing the stable host binary or instance path. Product\n" +
 	"binary updates use the self-update workflow instead.\n\n" +
+	"On Windows this creates a LocalSystem SCM service. It cannot access\n" +
+	"user-scoped CLI accounts, Credential Manager, %%LOCALAPPDATA%%, mapped\n" +
+	"drives, or user PATH. Use --confirm-local-system interactively or\n" +
+	"--acknowledge-local-system in scripts after reviewing that warning.\n\n" +
 	"Exit codes: 0 = installed and running, 1 = installation/start error,\n" +
 	"2 = usage error or not an instance root.\n"
 
@@ -91,7 +100,15 @@ func runService(args []string, stdout, stderr io.Writer) int {
 }
 
 func runServiceInstall(args []string, stdout, stderr io.Writer) int {
-	root, ok := parseServiceRoot("service install", "service install", args, stderr)
+	fs := newCLIFlagSet("service install", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	confirm := fs.Bool("confirm-local-system", false, "confirm the interactive LocalSystem service warning")
+	ack := fs.Bool("acknowledge-local-system", false, "acknowledge LocalSystem and its user-resource limitations")
+	fs.Usage = helpUsage(stderr, "service install")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	root, ok := serviceRootFromFlagSet(fs, stderr)
 	if !ok {
 		return 2
 	}
@@ -100,12 +117,23 @@ func runServiceInstall(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	if runtime.GOOS == "windows" {
+		if _, realManager := manager.(*daemonservice.Manager); realManager && !*confirm && !*ack {
+			pf(stderr, "warning: Windows service install creates a LocalSystem service. LocalSystem cannot inherit the interactive user's GitHub CLI accounts, Copilot/Claude sessions, %%LOCALAPPDATA%%, Credential Manager entries, mapped drives, or user PATH.\n")
+			pf(stderr, "error: rerun interactively with --confirm-local-system or non-interactively with --acknowledge-local-system\n")
+			return 2
+		}
+	}
 	status, err := manager.Install(context.Background())
 	if err != nil {
 		pf(stderr, "error: install service: %v\n", err)
 		return 1
 	}
-	pf(stdout, "service installed and running under %s\n", status.Supervisor)
+	pf(stdout, "service installed and running under %s", status.Supervisor)
+	if status.Account != "" {
+		pf(stdout, " as %s", status.Account)
+	}
+	pln(stdout, "")
 	return 0
 }
 
@@ -177,7 +205,11 @@ func runServiceStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: start service: %v\n", err)
 		return 1
 	}
-	pf(stdout, "service running under %s\n", status.Supervisor)
+	pf(stdout, "service running under %s", status.Supervisor)
+	if status.Account != "" {
+		pf(stdout, " as %s", status.Account)
+	}
+	pln(stdout, "")
 	return 0
 }
 
@@ -215,7 +247,11 @@ func runServiceStatus(args []string, stdout, stderr io.Writer) int {
 		case !status.Installed:
 			pf(stdout, "service is not installed (%s)\n", status.Supervisor)
 		case status.Running:
-			pf(stdout, "service is running under %s\n", status.Supervisor)
+			pf(stdout, "service is running under %s", status.Supervisor)
+			if status.Account != "" {
+				pf(stdout, " as %s", status.Account)
+			}
+			pln(stdout, "")
 		default:
 			pf(stdout, "service is installed but %s under %s\n", status.State, status.Supervisor)
 		}
