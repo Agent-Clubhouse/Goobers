@@ -623,6 +623,18 @@ func (db *DB) stageStats(ctx context.Context, req StatsRequest) ([]StageStats, e
 	branchClauses, branchArgs := branchFilterClauses("sa", req)
 	clauses = append(clauses, branchClauses...)
 	args = append(args, branchArgs...)
+	// An infra-class attempt (journal.AttemptInfra) is a crash/provider-retry
+	// continuation, not a verdict about the stage's own work — the same
+	// "weather, not signal" reasoning ErrorClass.InfraFault documents for the
+	// failure-streak circuit breaker (#3364) applies here: counting it toward
+	// SuccessRate/TotalAttempts/FailedAttempts would inflate a stage's
+	// reported failure rate every time a transient provider hiccup (e.g. a
+	// rate limit) got correctly retried and resolved, even though the retry
+	// mechanism did exactly what it should. Excluded entirely (not counted as
+	// either success or failure) rather than folded into "succeeded", since a
+	// literal crash-interrupted attempt with no verdict of its own is not
+	// evidence the stage worked either.
+	clauses = append(clauses, "(sa.attempt_class IS NULL OR sa.attempt_class != 'infra')")
 	join := ""
 	if agentStatsActive(req) {
 		join = `JOIN agent_invocations ai
