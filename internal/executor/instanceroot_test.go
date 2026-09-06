@@ -44,8 +44,6 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// Each of these names the specific file in shell.go's map comment.
 		{name: "issue-close-out (journal read plane)", cmd: []string{"goobers", "issue-close-out"}, want: false},
 		{name: "select-source (instance log + direct claim ledger)", cmd: []string{"goobers", "select-source"}, want: true},
-		{name: "publish-batch (SchedulerDir/decomposition-target-locks)", cmd: []string{"goobers", "publish-batch"}, want: true},
-		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: true},
 		{name: "reconcile-branches (instance log + RunsDir walk)", cmd: []string{"goobers", "reconcile-branches"}, want: true},
 
 		// --- NO LONGER REFUSED: every stateful access is plane-served
@@ -70,6 +68,13 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		{name: "post-merge (scheduler-state plane)", cmd: []string{"goobers", "post-merge"}, want: false},
 		{name: "validate-plan (journal read plane)", cmd: []string{"goobers", "validate-plan"}, want: false},
 		{name: "gate-removal-guard (journal read plane)", cmd: []string{"goobers", "gate-removal-guard"}, want: false},
+		// publish-batch is Goobers#4340's subject: its target lease is now a
+		// distinctly-keyed claims-plane lease (claimsPlaneTargetLeaser) instead
+		// of a FileTargetLeaser over a local-only lock directory, and its
+		// parent claim release goes through the same claims-plane seam instead
+		// of a direct file-ledger open.
+		{name: "publish-batch (claims plane target lease + parent release)", cmd: []string{"goobers", "publish-batch"}, want: false},
+		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: false},
 		// gather-pr-context is Goobers#3989's subject, and the only entry that
 		// needed THREE seams at once: its remediation no-op record is a keyed
 		// scheduler-state key, its PR-claim resolution is the claims plane, and

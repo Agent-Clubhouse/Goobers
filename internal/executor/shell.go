@@ -485,11 +485,17 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// leases the parent with withClaimLock + localscheduler.OpenClaimLedger
 	// directly (:219-224, :240-243) rather than through the claims seam.
 	"select-source": true,
-	// publish-batch leases decomposition targets with a FileTargetLeaser over
-	// SchedulerDir()/decomposition-target-locks (publishbatch.go:116), opens
-	// the instance log (:145), and shares select-source's direct parent
-	// release (:154). The target-lock directory has no plane at all.
-	"publish-batch": true,
+	// publish-batch is NOT here any more (Goobers#4340). Its decomposition
+	// TARGET LEASE — previously a decomposition.FileTargetLeaser over
+	// SchedulerDir()/decomposition-target-locks, a directory with no plane at
+	// all — is now claimsPlaneTargetLeaser, a distinctly-keyed claims-plane
+	// lease reached through the same openStageClaimLedger seam every other
+	// pod-capable claim uses (decompositiontargetlease.go). The distinct key
+	// (decompositionTargetLeaseExternalID, not the bare item id) keeps this
+	// lease from ever colliding with — or being released alongside — the
+	// parent's own select-source claim, which uses the item id directly. The
+	// parent claim release itself now goes through the same seam instead of
+	// select-source's direct file-ledger release.
 	// backlog-health is NOT here any more (Goobers#3948). Its claim read is on
 	// the claims plane, its implementation-outcome evidence read is on the
 	// telemetry plane, and the last thing that held it — the READY-TRANSITION

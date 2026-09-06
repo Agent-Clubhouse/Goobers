@@ -5,12 +5,10 @@ import (
 	"flag"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
-	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
 )
 
 const publishBatchHelp = "Usage: goobers publish-batch [path]\n\n" +
@@ -91,13 +89,12 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	layout := layoutFor(root)
 	batch, err := (decomposition.Publisher{
 		Provider: provider,
-		Leaser: decomposition.FileTargetLeaser{
-			Directory: filepath.Join(layoutFor(root).SchedulerDir(), "decomposition-target-locks"),
-		},
-		Repo:  repo,
-		RunID: runID,
+		Leaser:   newDecompositionTargetLeaser(layout, providerGaggle(), runID),
+		Repo:     repo,
+		RunID:    runID,
 	}).Publish(ctx, plan)
 	if err != nil {
 		if decomposition.IsPublicationConflict(err) {
@@ -122,17 +119,21 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "publish decomposition batch", err, "published-batch.json")
 	}
 
-	schedulerDir := layoutFor(root).SchedulerDir()
-	instanceLog, _, err := journal.OpenInstanceLog(schedulerDir)
+	instanceLog, closeLog, err := claimLedgerJournal(layout)
 	if err != nil {
-		pf(stderr, "error: open instance log: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer func() { _ = instanceLog.Close() }()
-	key := localscheduler.ClaimKey{
+	defer closeLog()
+	ledger, err := openStageClaimLedger(layout, withClaimJournal(instanceLog)...)
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
+	key := claimsclient.Key{
 		Gaggle: providerGaggle(), Provider: string(repo.Provider), ExternalID: plan.Parent.ID,
 	}
-	if err := releaseSelectSourceParent(schedulerDir, instanceLog, key, runID); err != nil {
+	if err := ledger.ReleaseScoped(ctx, key, runID); err != nil {
 		pf(stderr, "error: release parent claim: %v\n", err)
 		return 1
 	}
