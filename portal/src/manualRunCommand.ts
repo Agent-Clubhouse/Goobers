@@ -1,4 +1,4 @@
-export function quotePowerShell(value: string): string {
+function quotePowerShell(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 

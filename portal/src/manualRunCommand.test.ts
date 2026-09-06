@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { manualRunCommand, quotePowerShell } from "./manualRunCommand";
+import { manualRunCommand } from "./manualRunCommand";
 
 describe("manual run commands", () => {
   it("uses the fully qualified workflow and current instance root", () => {
@@ -12,9 +12,5 @@ describe("manual run commands", () => {
     expect(manualRunCommand("gaggle", "workflow", "C:\\Goobers\\O'Brien instance")).toBe(
       "goobers run gaggle/workflow 'C:\\Goobers\\O''Brien instance'",
     );
-  });
-
-  it("escapes embedded PowerShell quotes", () => {
-    expect(quotePowerShell("C:\\work\\it's")).toBe("'C:\\work\\it''s'");
   });
 });
