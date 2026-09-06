@@ -61,7 +61,7 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 			first.NanoAIU == nil || *first.NanoAIU != 1000 ||
 			first.CostUSD == nil || *first.CostUSD != 0.00000001 ||
 			first.BillingModel != telemetry.BillingModelAICredits ||
-			first.CostBasis != telemetry.CostBasisVendorReported {
+			first.CostBasis != telemetry.CostBasisUnknown {
 			t.Fatalf("a-model usage = %#v", first)
 		}
 		if second.Model != "z-model" ||
@@ -74,7 +74,7 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 			second.NanoAIU == nil || *second.NanoAIU != 2000 ||
 			second.CostUSD == nil || *second.CostUSD != 0.00000002 ||
 			second.BillingModel != telemetry.BillingModelAICredits ||
-			second.CostBasis != telemetry.CostBasisVendorReported {
+			second.CostBasis != telemetry.CostBasisUnknown {
 			t.Fatalf("z-model usage = %#v", second)
 		}
 	}
@@ -118,11 +118,86 @@ func TestCopilotUsagePreservesAbsentAndZero(t *testing.T) {
 		zero.modelUsage[0].NanoAIU == nil || *zero.modelUsage[0].NanoAIU != 0 ||
 		zero.modelUsage[0].CostUSD == nil || *zero.modelUsage[0].CostUSD != 0 ||
 		zero.modelUsage[0].BillingModel != telemetry.BillingModelAICredits ||
-		zero.modelUsage[0].CostBasis != telemetry.CostBasisVendorReported {
+		zero.modelUsage[0].CostBasis != telemetry.CostBasisUnknown {
 		t.Fatalf("zero model usage = %#v", zero.modelUsage)
 	}
 	if _, present := zero.metrics[telemetry.AttrCopilotPremiumRequests]; present {
 		t.Fatalf("zero premium requests must be omitted: %#v", zero.metrics)
+	}
+}
+
+func TestCopilotUsageDocumentGuardsCurrentShape(t *testing.T) {
+	current := readTestData(t, "copilot-usage.json")
+	metrics, models, ok := copilotUsageMetrics(current, true)
+	if !ok {
+		t.Fatal("current --usage-output-file shape was rejected")
+	}
+	if got := metrics[telemetry.AttrUsageNanoAIU]; got != 3000 {
+		t.Fatalf("nano-AIU = %v, want 3000", got)
+	}
+	if got := metrics[telemetry.AttrCopilotPremiumRequests]; got != 1.5 {
+		t.Fatalf("premium request cost = %v, want 1.5", got)
+	}
+	if len(models) != 2 || models[0].CostBasis != telemetry.CostBasisVendorReported {
+		t.Fatalf("authoritative model usage = %#v", models)
+	}
+
+	for _, invalid := range []string{
+		`{"totalNanoAiu":3000,"modelMetrics":{"a":{"totalNanoAiu":3000}}}`,
+		`{"totalNanoAiu":3000,"modelMetrics":{"a":{"totalNanoAiu":2000}},"agentMetrics":{"main":{"totalNanoAiu":3000,"modelMetrics":{}}}}`,
+		`{"totalNanoAiu":"not-an-integer","modelMetrics":{},"agentMetrics":{}}`,
+	} {
+		if _, _, ok := copilotUsageMetrics([]byte(invalid), true); ok {
+			t.Fatalf("unknown or malformed usage shape accepted: %s", invalid)
+		}
+	}
+}
+
+func TestCopilotAdapterPrefersAuthoritativeUsageDocument(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	fallback := []byte(`{"type":"session.shutdown","data":{"totalNanoAiu":99,"modelMetrics":{"fallback":{"usage":{"inputTokens":9},"totalNanoAiu":99}}}}` + "\n")
+	authoritative := []byte(`{
+		"totalPremiumRequestCost": 1,
+		"totalNanoAiu": 3000,
+		"modelMetrics": {
+			"gpt-5.4": {"requests":{"count":1,"cost":1},"usage":{"inputTokens":10,"outputTokens":2,"cacheReadTokens":3,"cacheWriteTokens":0,"reasoningTokens":1},"totalNanoAiu":3000}
+		},
+		"agentMetrics": {
+			"main": {"totalNanoAiu":1000,"modelMetrics":{"gpt-5.4":{"totalNanoAiu":1000}}},
+			"subagent": {"totalNanoAiu":2000,"modelMetrics":{"gpt-5.4":{"totalNanoAiu":2000}}}
+		}
+	}`)
+	runner := &fakeProcessRunner{
+		result: ProcessResult{Transcript: []byte("stdout compatibility floor"), ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
+				return err
+			}
+			if err := writeNativeSessionLog(req, fallback); err != nil {
+				return err
+			}
+			usagePath := commandOptionValue(req.Command, "--usage-output-file")
+			if usagePath == "" {
+				return errors.New("missing --usage-output-file")
+			}
+			return os.WriteFile(filepath.Join(req.Dir, usagePath), authoritative, 0o600)
+		},
+	}
+	out, err := (&CopilotAdapter{Command: []string{"copilot"}, Runner: runner}).Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    pushCredentials(t, "unused", "unused"),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := out.Metrics[telemetry.AttrUsageNanoAIU]; got != 3000 {
+		t.Fatalf("authoritative nano-AIU = %v, want 3000; metrics=%#v", got, out.Metrics)
+	}
+	if len(out.ModelUsage) != 1 || out.ModelUsage[0].CostBasis != telemetry.CostBasisVendorReported {
+		t.Fatalf("authoritative model usage = %#v", out.ModelUsage)
 	}
 }
 
@@ -452,6 +527,7 @@ func mapsEqual(got, want map[string]float64) bool {
 
 func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 	native := readTestData(t, "copilot-session-events.jsonl")
+	usage := readTestData(t, "copilot-usage.json")
 	workspace := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
 	floor := []byte("stdout compatibility floor")
@@ -461,7 +537,10 @@ func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 			if err := WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}); err != nil {
 				return err
 			}
-			return writeNativeSessionLog(req, native)
+			if err := writeNativeSessionLog(req, native); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(req.Dir, commandOptionValue(req.Command, "--usage-output-file")), usage, 0o600)
 		},
 	}
 	adapter := &CopilotAdapter{
@@ -484,6 +563,9 @@ func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 	}
 	if !bytes.Equal(out.Transcript, floor) {
 		t.Fatalf("Transcript = %q, want floor %q", out.Transcript, floor)
+	}
+	if got := out.Metrics[telemetry.AttrUsageNanoAIU]; got != 3000 {
+		t.Fatalf("selected-session authoritative nano-AIU = %v, want 3000", got)
 	}
 }
 

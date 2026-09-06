@@ -64,3 +64,29 @@ func TestMergeNestedAgentUsageIncludesExactCreditAndTokenUsage(t *testing.T) {
 		t.Fatalf("merged usage = %#v", got)
 	}
 }
+
+func TestAggregateBillingUsagePreservesFallbackCostBasis(t *testing.T) {
+	nano := int64(3000)
+	attrs := aggregateBillingUsageAttributes(
+		map[string]float64{AttrUsageNanoAIU: 3000},
+		[]ModelUsage{{
+			Model:        "gpt-5.4",
+			NanoAIU:      &nano,
+			BillingModel: BillingModelAICredits,
+			CostBasis:    CostBasisUnknown,
+		}},
+	)
+	got := make(map[string]any, len(attrs))
+	for _, attr := range attrs {
+		got[string(attr.Key)] = attr.Value.AsInterface()
+	}
+	if got[AttrUsageCostBasis] != CostBasisUnknown {
+		t.Fatalf("cost basis = %#v, want unknown", got[AttrUsageCostBasis])
+	}
+}
+
+func TestUSDToNanoAIURoundsVendorEstimate(t *testing.T) {
+	if got := USDToNanoAIU(0.42); got != 42_000_000_000 {
+		t.Fatalf("USDToNanoAIU(0.42) = %d", got)
+	}
+}

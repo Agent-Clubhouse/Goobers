@@ -828,6 +828,11 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 	}
 	nativeTranscriptPath := ""
+	usageOutputArg := filepath.Join(".goobers", "copilot-usage.json")
+	usageOutputPath := filepath.Join(req.Workspace, usageOutputArg)
+	_ = os.Remove(usageOutputPath)
+	argv = append(argv, "--usage-output-file", usageOutputArg)
+	defer func() { _ = os.Remove(usageOutputPath) }()
 	if !copilotCommandSelectsSession(argv) {
 		captureID, err := newHarnessSessionID()
 		if err != nil {
@@ -999,6 +1004,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			}
 		}
 	}
+	applyCopilotUsageDocument(&out, usageOutputPath)
 	if runErr != nil {
 		return out, runErr
 	}
@@ -1007,6 +1013,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	}
 	out.Payload = payload
 	return out, nil
+}
+
+func applyCopilotUsageDocument(out *Outcome, path string) {
+	if metrics, models, ok := readCopilotUsageDocument(path); ok {
+		out.Metrics = metrics
+		out.ModelUsage = models
+	}
 }
 
 func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResponse bool) ([]byte, error) {

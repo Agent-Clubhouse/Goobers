@@ -16,7 +16,7 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"checking"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"go test ./..."}}]}}`,
 		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok","is_error":false}]}}`,
 		`{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"finished"}]}}`,
-		`{"type":"result","subtype":"success","result":"finished","total_cost_usd":0.42,"usage":{"input_tokens":100,"output_tokens":20},"modelUsage":{"claude-opus-4-6":{"inputTokens":30,"outputTokens":5,"costUSD":0.2},"claude-sonnet-4-6":{"inputTokens":70,"outputTokens":15,"costUSD":0.22}}}`,
+		`{"type":"result","subtype":"success","result":"finished","total_cost_usd":0.42,"usage":{"input_tokens":100,"output_tokens":20},"modelUsage":{"claude-opus-4-6":{"inputTokens":30,"outputTokens":5,"cacheReadInputTokens":7,"cacheCreationInputTokens":3,"costUSD":0.2},"claude-sonnet-4-6":{"inputTokens":70,"outputTokens":15,"cacheReadInputTokens":11,"cacheCreationInputTokens":4,"costUSD":0.22}}}`,
 	}, "\n")
 	capture, ok := convertClaudeStreams([]io.Reader{strings.NewReader(stream)}, []string{"implement the task"}, 1<<20, 0)
 	if !ok {
@@ -31,8 +31,20 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 	if got := capture.metrics[telemetry.AttrUsageCostUSD]; got != 0.42 {
 		t.Fatalf("cost = %v, want 0.42", got)
 	}
+	if got := capture.metrics[telemetry.AttrUsageNanoAIU]; got != 42_000_000_000 {
+		t.Fatalf("normalized nano-AIU = %v, want 42000000000", got)
+	}
+	if got := capture.metrics[telemetry.AttrUsageCacheReadTokens]; got != 18 {
+		t.Fatalf("cache-read tokens = %v, want 18", got)
+	}
+	if got := capture.metrics[telemetry.AttrUsageCacheWriteTokens]; got != 7 {
+		t.Fatalf("cache-write tokens = %v, want 7", got)
+	}
 	if len(capture.modelUsage) != 2 ||
 		capture.modelUsage[0].Model != "claude-opus-4-6" ||
+		capture.modelUsage[0].CostUSD == nil || *capture.modelUsage[0].CostUSD != 0.2 ||
+		capture.modelUsage[0].NanoAIU == nil || *capture.modelUsage[0].NanoAIU != 20_000_000_000 ||
+		capture.modelUsage[0].CostBasis != telemetry.CostBasisVendorReported ||
 		capture.modelUsage[1].Model != "claude-sonnet-4-6" {
 		t.Fatalf("model usage = %+v", capture.modelUsage)
 	}
@@ -59,6 +71,30 @@ func TestConvertClaudeStreamCapturesToolsTranscriptAndUsage(t *testing.T) {
 	}
 	if !sawPrompt || !sawToolStart || !sawToolResult || !sawFinal {
 		t.Fatalf("canonical transcript missing expected events:\n%s", capture.data)
+	}
+}
+
+func TestConvertClaudeStreamIgnoresDuplicateAndResetAssistantTotals(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"assistant","message":{"id":"msg-1","model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":10},"content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{}}]}}`,
+		`{"type":"assistant","message":{"id":"msg-1","model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":10},"content":[{"type":"tool_use","id":"tool-2","name":"Read","input":{}}]}}`,
+		`{"type":"assistant","message":{"id":"msg-2","model":"claude-sonnet-4-6","usage":{"input_tokens":5,"output_tokens":1},"content":[{"type":"text","text":"after clear"}]}}`,
+		`{"type":"result","subtype":"success","result":"finished","total_cost_usd":0.03,"modelUsage":{"claude-sonnet-4-6":{"inputTokens":12,"outputTokens":3,"cacheReadInputTokens":2,"cacheCreationInputTokens":1,"costUSD":0.03}}}`,
+	}, "\n")
+	capture, ok := convertClaudeStreams([]io.Reader{strings.NewReader(stream)}, nil, 1<<20, 0)
+	if !ok {
+		t.Fatal("convertClaudeStreams returned false")
+	}
+	want := map[string]float64{
+		telemetry.AttrGenAIUsageInputTokens:  12,
+		telemetry.AttrGenAIUsageOutputTokens: 3,
+		telemetry.AttrUsageCacheReadTokens:   2,
+		telemetry.AttrUsageCacheWriteTokens:  1,
+		telemetry.AttrUsageCostUSD:           0.03,
+		telemetry.AttrUsageNanoAIU:           3_000_000_000,
+	}
+	if !mapsEqual(capture.metrics, want) {
+		t.Fatalf("usage = %#v, want result-envelope totals %#v", capture.metrics, want)
 	}
 }
 

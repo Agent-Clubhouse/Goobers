@@ -61,9 +61,16 @@ type copilotErrorData struct {
 }
 
 type copilotShutdownData struct {
-	TotalPremiumRequests *float64                      `json:"totalPremiumRequests"`
-	TotalNanoAIU         *int64                        `json:"totalNanoAiu"`
-	ModelMetrics         map[string]copilotModelMetric `json:"modelMetrics"`
+	TotalPremiumRequests    *float64                      `json:"totalPremiumRequests"`
+	TotalPremiumRequestCost *float64                      `json:"totalPremiumRequestCost"`
+	TotalNanoAIU            *int64                        `json:"totalNanoAiu"`
+	ModelMetrics            map[string]copilotModelMetric `json:"modelMetrics"`
+	AgentMetrics            map[string]copilotAgentMetric `json:"agentMetrics"`
+}
+
+type copilotAgentMetric struct {
+	TotalNanoAIU *int64                        `json:"totalNanoAiu"`
+	ModelMetrics map[string]copilotModelMetric `json:"modelMetrics"`
 }
 
 type copilotModelMetric struct {
@@ -158,7 +165,7 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 		}
 		events := convertCopilotSessionEvent(native)
 		if native.Type == "session.shutdown" {
-			if usage, models, ok := copilotUsageMetrics(native.Data); ok {
+			if usage, models, ok := copilotUsageMetrics(native.Data, false); ok {
 				metrics = usage
 				modelUsage = models
 				if len(usage) > 0 {
@@ -214,9 +221,20 @@ func convertCopilotSessionEvents(r io.Reader, limit int64) (transcriptCapture, b
 	}, true
 }
 
-func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.ModelUsage, bool) {
+func readCopilotUsageDocument(path string) (map[string]float64, []telemetry.ModelUsage, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, false
+	}
+	return copilotUsageMetrics(raw, true)
+}
+
+func copilotUsageMetrics(raw json.RawMessage, authoritative bool) (map[string]float64, []telemetry.ModelUsage, bool) {
 	var data copilotShutdownData
 	if json.Unmarshal(raw, &data) != nil {
+		return nil, nil, false
+	}
+	if authoritative && !validCopilotUsageDocument(data) {
 		return nil, nil, false
 	}
 
@@ -233,7 +251,7 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 	var hasPremiumRequests, hasNanoAIU bool
 	for _, model := range models {
 		metric := data.ModelMetrics[model]
-		usage := copilotModelUsage(model, metric)
+		usage := copilotModelUsage(model, metric, authoritative)
 		addCopilotTokenMetrics(metrics, metric.Usage)
 		if usage.CopilotPremiumRequests != nil {
 			premiumRequests += *usage.CopilotPremiumRequests
@@ -249,6 +267,10 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 	}
 	if data.TotalPremiumRequests != nil && *data.TotalPremiumRequests != 0 {
 		premiumRequests = *data.TotalPremiumRequests
+		hasPremiumRequests = true
+	}
+	if data.TotalPremiumRequestCost != nil && *data.TotalPremiumRequestCost != 0 {
+		premiumRequests = *data.TotalPremiumRequestCost
 		hasPremiumRequests = true
 	}
 	if data.TotalNanoAIU != nil {
@@ -268,7 +290,29 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 	return metrics, modelUsage, true
 }
 
-func copilotModelUsage(model string, metric copilotModelMetric) telemetry.ModelUsage {
+func validCopilotUsageDocument(data copilotShutdownData) bool {
+	if data.TotalNanoAIU == nil || data.ModelMetrics == nil || data.AgentMetrics == nil {
+		return false
+	}
+	var modelTotal int64
+	for _, metric := range data.ModelMetrics {
+		if metric.TotalNanoAIU == nil {
+			return false
+		}
+		modelTotal += *metric.TotalNanoAIU
+	}
+	if modelTotal != *data.TotalNanoAIU {
+		return false
+	}
+	for _, agent := range data.AgentMetrics {
+		if agent.TotalNanoAIU == nil || agent.ModelMetrics == nil {
+			return false
+		}
+	}
+	return len(data.AgentMetrics) > 0
+}
+
+func copilotModelUsage(model string, metric copilotModelMetric, authoritative bool) telemetry.ModelUsage {
 	usage := telemetry.ModelUsage{
 		Model:            model,
 		InputTokens:      metric.Usage.InputTokens,
@@ -287,7 +331,9 @@ func copilotModelUsage(model string, metric copilotModelMetric) telemetry.ModelU
 		usage.CostUSD = &cost
 		usage.NanoAIU = metric.TotalNanoAIU
 		usage.BillingModel = telemetry.BillingModelAICredits
-		usage.CostBasis = telemetry.CostBasisVendorReported
+		if authoritative {
+			usage.CostBasis = telemetry.CostBasisVendorReported
+		}
 	}
 	return usage
 }
