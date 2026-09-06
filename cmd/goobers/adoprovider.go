@@ -60,19 +60,6 @@ func buildADOProviderForStage(root string, routed providers.RepositoryRef) (*pro
 	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
-func buildADOProviderForStageWithRecorder(root string, routed providers.RepositoryRef, recorder providers.MutationRecorder) (*providers.ADOProvider, error) {
-	repo, err := adoRepoRefForStage(root, routed)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := adoauth.Provider(repo, nil, nil, nil, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	provider.SetMutationRecorder(recorder)
-	return provider, nil
-}
-
 // open-pr receives PAT credentials through its provider:pr:write capability;
 // the configured PAT environment variable is intentionally absent from the
 // stage's default-deny environment.
@@ -91,26 +78,6 @@ func buildADOProviderForOpenPR(root string, routed providers.RepositoryRef) (*pr
 		repo.Token = instance.TokenRef{Env: executor.CredentialEnvVar(string(capability.ProviderPRWrite))}
 	}
 	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
-}
-
-func buildADOProviderForOpenPRWithRecorder(root string, routed providers.RepositoryRef, recorder providers.MutationRecorder) (*providers.ADOProvider, error) {
-	repo, err := adoRepoRefForStage(root, routed)
-	if err != nil {
-		return nil, err
-	}
-	kind := instance.ADOAuthPAT
-	if repo.Auth != nil {
-		kind = repo.Auth.Kind
-	}
-	if kind == instance.ADOAuthPAT {
-		repo.Token = instance.TokenRef{Env: executor.CredentialEnvVar(string(capability.ProviderPRWrite))}
-	}
-	provider, err := adoauth.Provider(repo, nil, nil, nil, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	provider.SetMutationRecorder(recorder)
-	return provider, nil
 }
 
 // backlogRepoRefForStage resolves the RepositoryRef the work-item (backlog)
