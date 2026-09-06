@@ -873,6 +873,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		Timeout:            req.Timeout,
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      stdoutCapture,
+		// #4179: the session this observes is the one that burned a whole
+		// 5400s budget on a stalled `go mod download` while its journal held
+		// a single lifecycle event.
+		Activity: agentTelemetry.activityObserver(),
 	})
 	runErr = processErr
 	var payload []byte
