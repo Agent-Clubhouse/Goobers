@@ -43,8 +43,14 @@ type StageAttempt struct {
 	ErrorClass             string
 	InputTokens            *int64
 	OutputTokens           *int64
+	CacheReadTokens        *int64
+	CacheWriteTokens       *int64
+	ReasoningTokens        *int64
 	CopilotPremiumRequests *float64
+	NanoAIU                *int64
 	CostUSD                *float64
+	BillingModel           string
+	CostBasis              string
 }
 
 // AgentInvocation is model and harness provenance indexed from an agentic task
@@ -349,7 +355,10 @@ func (db *DB) StageAttempts(ctx context.Context, runID string) ([]StageAttempt, 
 	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT sa.stage, sa.branch, sa.traversal, sa.attempt, COALESCE(ai.model, ''), COALESCE(ai.harness_version, ''),
 		       sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
-		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens, su.copilot_premium_requests, su.cost_usd
+		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens,
+		       su.cache_read_tokens, su.cache_write_tokens, su.reasoning_tokens,
+		       su.copilot_premium_requests, su.nano_aiu, su.cost_usd,
+		       su.billing_model, su.cost_basis
 		FROM stage_attempts sa
 		LEFT JOIN stage_usage su
 			ON su.run_id = sa.run_id AND su.stage = sa.stage AND su.traversal = sa.traversal AND su.branch IS sa.branch
@@ -366,12 +375,15 @@ func (db *DB) StageAttempts(ctx context.Context, runID string) ([]StageAttempt, 
 	for rows.Next() {
 		var s StageAttempt
 		var class, status, startedAt, finishedAt, errCode, errClass sql.NullString
-		var branch, durationMs, inputTokens, outputTokens sql.NullInt64
+		var branch, durationMs, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, nanoAIU sql.NullInt64
 		var premiumRequests, costUSD sql.NullFloat64
+		var billingModel, costBasis sql.NullString
 		if err := rows.Scan(
 			&s.Stage, &branch, &s.Traversal, &s.Attempt, &s.Model, &s.HarnessVersion,
 			&class, &status, &startedAt, &finishedAt, &durationMs,
-			&errCode, &errClass, &inputTokens, &outputTokens, &premiumRequests, &costUSD,
+			&errCode, &errClass, &inputTokens, &outputTokens,
+			&cacheReadTokens, &cacheWriteTokens, &reasoningTokens,
+			&premiumRequests, &nanoAIU, &costUSD, &billingModel, &costBasis,
 		); err != nil {
 			return nil, fmt.Errorf("rollup: scan stage_attempt: %w", err)
 		}
@@ -386,8 +398,14 @@ func (db *DB) StageAttempts(ctx context.Context, runID string) ([]StageAttempt, 
 		s.DurationMs = durationMs.Int64
 		s.InputTokens = optionalInt64(inputTokens)
 		s.OutputTokens = optionalInt64(outputTokens)
+		s.CacheReadTokens = optionalInt64(cacheReadTokens)
+		s.CacheWriteTokens = optionalInt64(cacheWriteTokens)
+		s.ReasoningTokens = optionalInt64(reasoningTokens)
 		s.CopilotPremiumRequests = optionalFloat64(premiumRequests)
+		s.NanoAIU = optionalInt64(nanoAIU)
 		s.CostUSD = optionalFloat64(costUSD)
+		s.BillingModel = billingModel.String
+		s.CostBasis = costBasis.String
 		out = append(out, s)
 	}
 	return out, rows.Err()

@@ -711,4 +711,94 @@ SELECT run_id, seq, gate,
 	occurred_at
 FROM gate_verdicts;
 `,
+	// v22 (#4390): retain the external issue and pull-request relationships
+	// carried by ref.touched independently of the mutation audit log. Multiple
+	// events with the same relationship collapse to one durable attribution;
+	// re-ingestion replaces the complete set for the run.
+	`
+CREATE TABLE IF NOT EXISTS run_cost_attribution (
+	run_id        TEXT NOT NULL,
+	provider      TEXT NOT NULL,
+	external_kind TEXT NOT NULL,
+	external_id   TEXT NOT NULL,
+	relationship TEXT NOT NULL,
+	PRIMARY KEY (run_id, provider, external_kind, external_id, relationship)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_cost_attribution_external
+ON run_cost_attribution(provider, external_kind, external_id, run_id);
+CREATE INDEX IF NOT EXISTS idx_run_cost_attribution_run
+ON run_cost_attribution(run_id);
+`,
+	// v23 (#4390): preserve every canonical usage dimension on both the
+	// attempt aggregate and per-model rows. Recreate-and-copy follows the
+	// established migration pattern so upgraded stores retain prior measures;
+	// new columns remain NULL until journals are re-ingested.
+	`
+ALTER TABLE stage_usage RENAME TO stage_usage_v22;
+ALTER TABLE stage_model_usage RENAME TO stage_model_usage_v22;
+
+CREATE TABLE stage_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	traversal                INTEGER NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	cache_read_tokens        INTEGER,
+	cache_write_tokens       INTEGER,
+	reasoning_tokens         INTEGER,
+	copilot_premium_requests REAL,
+	nano_aiu                 INTEGER,
+	cost_usd                 REAL,
+	billing_model            TEXT,
+	cost_basis               TEXT,
+	branch                   INTEGER,
+	PRIMARY KEY (run_id, stage, traversal)
+);
+
+INSERT INTO stage_usage (
+	run_id, stage, traversal, attempt, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd, branch
+)
+SELECT
+	run_id, stage, traversal, attempt, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd, branch
+FROM stage_usage_v22;
+
+CREATE TABLE stage_model_usage (
+	run_id                   TEXT NOT NULL,
+	stage                    TEXT NOT NULL,
+	traversal                INTEGER NOT NULL,
+	attempt                  INTEGER NOT NULL,
+	model                    TEXT NOT NULL,
+	input_tokens             INTEGER,
+	output_tokens            INTEGER,
+	cache_read_tokens        INTEGER,
+	cache_write_tokens       INTEGER,
+	reasoning_tokens         INTEGER,
+	copilot_premium_requests REAL,
+	nano_aiu                 INTEGER,
+	cost_usd                 REAL,
+	billing_model            TEXT,
+	cost_basis               TEXT,
+	PRIMARY KEY (run_id, stage, traversal, model)
+);
+
+INSERT INTO stage_model_usage (
+	run_id, stage, traversal, attempt, model, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd
+)
+SELECT
+	run_id, stage, traversal, attempt, model, input_tokens, output_tokens,
+	copilot_premium_requests, cost_usd
+FROM stage_model_usage_v22;
+
+DROP TABLE stage_usage_v22;
+DROP TABLE stage_model_usage_v22;
+
+CREATE INDEX idx_stage_usage_run ON stage_usage(run_id);
+CREATE INDEX idx_stage_usage_branch ON stage_usage(branch, run_id);
+CREATE INDEX idx_stage_model_usage_run ON stage_model_usage(run_id);
+`,
 }
