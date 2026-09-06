@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -25,6 +26,7 @@ type fakeRecorder struct {
 	recorded  map[string][]byte
 	integrity map[string]apiv1.Integrity
 	maxBytes  map[string]int
+	events    []journal.Event
 }
 
 func newFakeRecorder() *fakeRecorder {
@@ -33,6 +35,13 @@ func newFakeRecorder() *fakeRecorder {
 		integrity: map[string]apiv1.Integrity{},
 		maxBytes:  map[string]int{},
 	}
+}
+
+// Append satisfies credentialRefusalEventAppender so tests can assert the
+// #4273 refusal event fired.
+func (f *fakeRecorder) Append(ev journal.Event) error {
+	f.events = append(f.events, ev)
+	return nil
 }
 
 func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
@@ -219,6 +228,100 @@ func TestShellExecutor_RunScript(t *testing.T) {
 	}
 	if len(files) != len(before) {
 		t.Fatalf("temporary inline script count = %d, want prior count %d: %v", len(files), len(before), files)
+	}
+}
+
+// TestShellExecutor_RefusesCommandReferencingGuardedCredentialPath is #4273's
+// regression test: the self runner has no filesystem confinement, so
+// GuardedCredentialPaths is the narrow tripwire against a stage command
+// naming a credential-referenced path directly. The guarded path here is
+// derived from a real instance.Config (a repo's GitHub App private key file
+// ref) via instance.GuardedCredentialPaths, per the issue's own requirement
+// that the test not hardcode the path independently of config.
+func TestShellExecutor_RefusesCommandReferencingGuardedCredentialPath(t *testing.T) {
+	exec, rec := newPortableTestExecutor(t, nil)
+	keyPath := filepath.Join(t.TempDir(), "github-app-key.pem")
+	if err := os.WriteFile(keyPath, []byte("not a real key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{
+			{
+				Provider: "github",
+				Owner:    "acme",
+				Name:     "widgets",
+				Auth: &instance.RepoAuthConfig{
+					Kind:       "github-app",
+					PrivateKey: &instance.TokenRef{File: keyPath},
+				},
+			},
+		},
+	}
+	exec.GuardedCredentialPaths = instance.GuardedCredentialPaths(cfg)
+	if len(exec.GuardedCredentialPaths) != 1 || exec.GuardedCredentialPaths[0] != keyPath {
+		t.Fatalf("GuardedCredentialPaths = %v, want exactly [%s]", exec.GuardedCredentialPaths, keyPath)
+	}
+
+	result, err := exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Command: []string{"cat", keyPath},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %v, want failure — the stage must never execute against a guarded credential path", result.Status)
+	}
+	if result.Error == nil || result.Error.Code != "credential_read_refused" {
+		t.Fatalf("error = %+v, want code credential_read_refused", result.Error)
+	}
+	if _, ok := rec.recorded["task-1/stdout.log"]; ok {
+		t.Fatal("stage ran and produced output; the refusal must fire BEFORE exec, not after")
+	}
+	if len(rec.events) != 1 || rec.events[0].Type != journal.EventCredentialReadRefused {
+		t.Fatalf("journaled events = %+v, want exactly one credential.read.refused event", rec.events)
+	}
+
+	// An unrelated command that never names the guarded path must still run
+	// normally — the refusal is scoped to the literal path, not the stage.
+	result, err = exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", "echo unaffected"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success for a command that never names the guarded path", result.Status)
+	}
+}
+
+// TestShellExecutor_RefusesEnvironmentReferencingGuardedCredentialPath covers
+// the environment-variable half of the same tripwire (#4273): a stage
+// command that never names the path as an argument, but whose declared
+// run.env points a variable at it directly, must still be refused before a
+// tool the stage invokes could read that variable's value.
+func TestShellExecutor_RefusesEnvironmentReferencingGuardedCredentialPath(t *testing.T) {
+	exec, _ := newPortableTestExecutor(t, nil)
+	keyPath := filepath.Join(t.TempDir(), "workflow-source-token")
+	if err := os.WriteFile(keyPath, []byte("not a real token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{
+		WorkflowSource: &instance.WorkflowSource{
+			Kind:  "git",
+			Token: &instance.TokenRef{File: keyPath},
+		},
+	}
+	exec.GuardedCredentialPaths = instance.GuardedCredentialPaths(cfg)
+
+	result, err := exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", "cat \"$SECRET_FILE\""},
+		Env:     map[string]string{"SECRET_FILE": keyPath},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "credential_read_refused" {
+		t.Fatalf("result = %+v, want a credential_read_refused failure", result)
 	}
 }
 
