@@ -206,7 +206,7 @@ func CheckTriggerFields(def Definition) []string {
 // validator can report each one once at its Goober source instead of repeating
 // it for every workflow.
 func CheckWorkflowAdmission(def Definition, goobers map[string]apiv1.GooberSpec) []string {
-	return admissionProblems(def, goobers, nil, false)
+	return admissionProblems(def, goobers, nil, nil, false)
 }
 
 // CheckGateParameters reports invalid required parameters for built-in

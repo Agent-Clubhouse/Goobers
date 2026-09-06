@@ -3760,3 +3760,38 @@ func TestRunConditionsResolveMemoryHighWater(t *testing.T) {
 		})
 	}
 }
+
+// TestExternalTelemetryConnectorsByName is #4341's dispatcher-side lookup:
+// the index the dispatcher stamps a stage pod from must clear Auth.Token,
+// never hand a credential reference to a caller that has no business
+// resolving secrets itself, and must be nil (not an empty map) when nothing
+// is configured, matching GitHubBotLogins' own nil-means-nothing contract.
+func TestExternalTelemetryConnectorsByName(t *testing.T) {
+	cfg := &Config{ExternalTelemetry: externaltelemetry.Configuration{
+		Connectors: []externaltelemetry.ConnectorConfig{
+			{
+				Name: "adx-prod", Kind: "adx", Version: "v1",
+				Auth: externaltelemetry.AuthConfig{Mode: externaltelemetry.AuthBearerToken, Token: &externaltelemetry.CredentialRef{Env: "ADX_TOKEN"}},
+			},
+			{Name: "ambient-connector", Kind: "fake", Version: "v1"},
+		},
+	}}
+	index := cfg.ExternalTelemetryConnectorsByName()
+	if len(index) != 2 {
+		t.Fatalf("index has %d entries, want 2", len(index))
+	}
+	if connector := index["adx-prod"]; connector.Auth.Token != nil {
+		t.Fatalf("index[adx-prod].Auth.Token = %+v, want nil — a credential reference must not cross into this index", connector.Auth.Token)
+	}
+	if _, ok := index["ambient-connector"]; !ok {
+		t.Fatal("index is missing ambient-connector")
+	}
+
+	if index := (&Config{}).ExternalTelemetryConnectorsByName(); index != nil {
+		t.Fatalf("index = %v for a config with no connectors, want nil", index)
+	}
+	var nilConfig *Config
+	if index := nilConfig.ExternalTelemetryConnectorsByName(); index != nil {
+		t.Fatalf("index = %v for a nil *Config, want nil", index)
+	}
+}

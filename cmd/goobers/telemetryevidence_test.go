@@ -265,23 +265,26 @@ func TestBacklogHealthFeedbackOverTheReadPlane(t *testing.T) {
 	}
 }
 
-// TestExternalTelemetryConnectorsStayRefusedOnTheEnginePath pins the half of
-// decision 005 R4 that did NOT move at Goobers#4001.
+// TestExternalTelemetryConnectorsRunOnTheEnginePath updates the half of
+// decision 005 R4 that #4341 moved (#4001 had already moved the other half).
 //
-// `telemetry-query` itself is now dispatchable: it reads a narrow, bounded,
-// gaggle-contained DERIVED-aggregate route
-// (apicontract.TelemetryDefectAggregatesPath) that never exposes the rollup
-// database and normalizes error signatures before they leave the daemon. What
-// stays refused is the EXTERNAL-telemetry connector kind
-// (executor.KindExternalTelemetry): reaching a third-party telemetry vendor
-// with the instance's own credential is not a derived aggregate, no plane
-// serves it, and admitting it would be a separate ruling.
-func TestExternalTelemetryConnectorsStayRefusedOnTheEnginePath(t *testing.T) {
-	if !executor.StageRequiresInstanceRoot(
+// `telemetry-query` reads a narrow, bounded, gaggle-contained
+// DERIVED-aggregate route (apicontract.TelemetryDefectAggregatesPath) that
+// never exposes the rollup database and normalizes error signatures before
+// they leave the daemon. The EXTERNAL-telemetry connector kind
+// (executor.KindExternalTelemetry) is now ALSO pod-capable (#4341): the
+// dispatcher stamps only the ONE non-secret connector configuration a
+// stage's own inputs.connector names, and the connector's auth secret
+// resolves through the credential plane under telemetry:read — never the
+// instance's other connectors, and never a credential reference riding the
+// pod spec. This is what closes it, not a separate ruling admitting raw
+// instance-config access.
+func TestExternalTelemetryConnectorsRunOnTheEnginePath(t *testing.T) {
+	if executor.StageRequiresInstanceRoot(
 		[]string{"goobers", "external-telemetry"},
 		executor.KindExternalTelemetry,
 	) {
-		t.Fatal("kind=external-telemetry must stay refused on the dispatch path")
+		t.Fatal("kind=external-telemetry must run on the dispatch path since #4341")
 	}
 	// The command's own refusal is gone, and gone deliberately: the
 	// defect-nomination lane is pod-pinnable precisely because this is false
