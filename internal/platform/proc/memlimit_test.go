@@ -2,7 +2,9 @@ package proc
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -268,4 +270,58 @@ func TestProbeMemoryBoundReportsUnavailability(t *testing.T) {
 	if mechanism, _ := ProbeMemoryBound(8<<30, true); mechanism != MechanismRlimitAS {
 		t.Errorf("Mechanism = %q with the fallback allowed, want %q", mechanism, MechanismRlimitAS)
 	}
+}
+
+// TestUnboundedStartIsExactlyStart pins the zero-configuration invariant: an
+// instance that sets no runner.stageMemoryLimit — every existing install —
+// must run stages exactly as it always has.
+//
+// This is the assertion that makes the feature safe to ship on by default.
+// The bound is opt-in, so the unconfigured path must not create a cgroup,
+// apply an rlimit, or claim a stage was memory-killed; and Exceeded/Release
+// must be safe to call on the resulting handle, because the executor calls
+// them for every stage regardless.
+func TestUnboundedStartIsExactlyStart(t *testing.T) {
+	// A cgroup tree IS available here, so a bound would be creatable — which
+	// is what makes this a real test of the zero-value guard rather than of
+	// an unsupported host.
+	own := fakeCgroupTree(t, "/daemon", "memory")
+
+	cmd := exec.Command(shellForTest(t), "-c", "exit 0")
+	tree, bound, err := StartBounded(cmd, 0, true)
+	if err != nil {
+		t.Fatalf("StartBounded with no bound: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("stage exited non-zero: %v", err)
+	}
+	_ = tree
+
+	if bound.mechanism != MechanismNone {
+		t.Errorf("mechanism = %q with no bound requested, want %q", bound.mechanism, MechanismNone)
+	}
+	if exceeded, reason := bound.Exceeded(); exceeded || reason != "" {
+		t.Errorf("Exceeded() = (%v, %q) for an unbounded stage", exceeded, reason)
+	}
+	if err := bound.Release(); err != nil {
+		t.Errorf("Release() = %v, want nil", err)
+	}
+	// No stage cgroup was created beside the daemon.
+	entries, err := os.ReadDir(filepath.Dir(own))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), stageCgroupPrefix) {
+			t.Errorf("an unbounded start created stage cgroup %s", e.Name())
+		}
+	}
+}
+
+func shellForTest(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("no POSIX shell on windows; the unbounded path is covered by the platform stub")
+	}
+	return "/bin/sh"
 }
