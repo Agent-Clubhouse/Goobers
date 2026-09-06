@@ -62,6 +62,9 @@ const (
 	// changes reviews. It is separate from GitHubPRWrite so review authority
 	// can use a distinct identity from the PR author.
 	GitHubPRReview Capability = "github:pr:review"
+	// ProviderCICancel grants cancellation of pending provider CI for an exact
+	// reviewed commit. It is separate from PR write and merge authority.
+	ProviderCICancel Capability = "provider:ci:cancel"
 	// GitHubBranchDelete grants deletion of a remote GitHub branch ref —
 	// after a pull request merges and no open pull request uses it as a
 	// base (#605), or when a terminal run's pushed branch never became a
@@ -139,7 +142,7 @@ const (
 func All() []Capability {
 	return []Capability{
 		RepoRead, RepoPush, ConfigRepoRead,
-		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
+		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
 		TelemetryRead, JournalRead, AgentModel,
 	}

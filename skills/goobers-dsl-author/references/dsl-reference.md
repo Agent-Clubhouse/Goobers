@@ -227,6 +227,7 @@ Use only the target release's registry. The current set is:
 | `provider:pr:write` | Perform pull-request operations through the configured repository provider. |
 | `github:pr:write` | Open, inspect, update, or close GitHub pull requests. |
 | `github:pr:review` | Submit provider-native pull-request reviews. |
+| `provider:ci:cancel` | Cancel bounded pending provider CI only for an exact reviewed pull-request head. |
 | `github:branch:delete` | Delete a remote GitHub branch. |
 | `github:pr:merge` | Merge a GitHub pull request. |
 | `contents:read` | Fetch a separately declared reference repository with its repo-scoped read credential. |

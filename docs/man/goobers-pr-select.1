@@ -8,8 +8,10 @@ goobers pr-select \- select one managed or advisory open PR for merge-review (a 
 .nf
 Usage: goobers pr-select [path]
 
-Select at most one open, non-draft, green-CI PR for merge-review to
-evaluate this cycle (a workflow stage). authorScope defaults to goobers;
+Select at most one open, non-draft PR for merge-review to evaluate this
+cycle (a workflow stage). CI must be passing unless allowPendingChecks is
+true; known failing and unknown states are never eligible. authorScope
+defaults to goobers;
 set it to any to admit PRs outside headPrefixes as advisory-only. PRs
 may be filtered by exact author, assignee, and requestedReviewer inputs.
 PRs labeled goobers:no-merge-review or goobers:run-aborted are always

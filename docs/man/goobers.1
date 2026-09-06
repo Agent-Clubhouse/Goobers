@@ -338,6 +338,9 @@ snapshot ready-pool depth and age (a workflow stage)
 \fBgoobers backlog-query\fR
 query/claim one eligible backlog item (a workflow stage)
 .TP
+\fBgoobers cancel-pending-ci\fR
+cancel pending provider CI for an exact reviewed PR head (a workflow stage)
+.TP
 \fBgoobers check-fail-first\fR
 enforce fail-first evidence for a new workflow gate (a workflow stage)
 .TP
@@ -466,6 +469,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-blocked\fR(1),
 \fBgoobers-blocked-clear\fR(1),
 \fBgoobers-blocked-list\fR(1),
+\fBgoobers-cancel-pending-ci\fR(1),
 \fBgoobers-check-fail-first\fR(1),
 \fBgoobers-check-issue-staleness\fR(1),
 \fBgoobers-claims\fR(1),

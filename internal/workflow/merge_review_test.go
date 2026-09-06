@@ -125,6 +125,11 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if got := prSelect.Inputs["authorScope"]; got != "any" {
 				t.Errorf("pr-select authorScope = %q, want any", got)
 			}
+			if tt.name == "reference-workflows" {
+				if got := prSelect.Inputs["allowPendingChecks"]; got != "true" {
+					t.Errorf("pr-select allowPendingChecks = %q, want true", got)
+				}
+			}
 			if want := []string{"number", "head", "base", "advisoryMode"}; !reflect.DeepEqual(prSelect.ExpectedOutputs, want) {
 				t.Errorf("pr-select expectedOutputs = %v, want %v", prSelect.ExpectedOutputs, want)
 			}
@@ -279,8 +284,32 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Errorf("published-verdict check = %+v, want decision == pass", publishedVerdict.Automated)
 			}
 			wantPublishedBranches := map[string]string{"pass": "scope-gate", "fail": TerminalComplete}
+			if tt.name == "reference-workflows" {
+				wantPublishedBranches["fail"] = "cancel-pending-ci"
+			}
 			if !reflect.DeepEqual(publishedVerdict.Branches, wantPublishedBranches) {
 				t.Errorf("published-verdict branches = %v, want %v", publishedVerdict.Branches, wantPublishedBranches)
+			}
+			if tt.name == "reference-workflows" {
+				cancelCI, ok := m.Task("cancel-pending-ci")
+				if !ok {
+					t.Fatal("cancel-pending-ci task not found")
+				}
+				if cancelCI.Run == nil || !reflect.DeepEqual(cancelCI.Run.Command, []string{"goobers", "cancel-pending-ci"}) {
+					t.Errorf("cancel-pending-ci command = %+v", cancelCI.Run)
+				}
+				if !reflect.DeepEqual(cancelCI.InputsFrom, map[string]string{
+					"pullNumber": "selectedNumber",
+					"headSha":    "selectedHeadSha",
+				}) {
+					t.Errorf("cancel-pending-ci inputsFrom = %v", cancelCI.InputsFrom)
+				}
+				if !reflect.DeepEqual(cancelCI.Capabilities, []string{"provider:ci:cancel"}) ||
+					!reflect.DeepEqual(cancelCI.PolicyActions, []string{"cancel-pending-ci"}) ||
+					!cancelCI.ContinueOnError {
+					t.Errorf("cancel-pending-ci contract = capabilities %v actions %v continueOnError %t",
+						cancelCI.Capabilities, cancelCI.PolicyActions, cancelCI.ContinueOnError)
+				}
 			}
 			scopeGate, ok := m.Gate("scope-gate")
 			if !ok {

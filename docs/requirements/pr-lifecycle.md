@@ -64,7 +64,9 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 - **PRL-001 (MUST, Shipped):** `merge-review` MUST select **at most one PR per
   run** (never a batch pass over the open-PR set), from open, non-draft PRs on
   the configured base whose head matches the configured goober branch namespace
-  (default `<namespace>implementation/`), with passing CI. *(All tiers)*
+  (default `<namespace>implementation/`). Passing CI is eligible by default;
+  a workflow MAY explicitly admit pending CI, but known failures and unknown
+  states remain ineligible. *(All tiers)*
 - **PRL-002 (MUST, Shipped):** The selected PR MUST be **leased in a claim
   namespace shared by `merge-review` and `pr-remediation`**, so the two
   workflows can never concurrently act on the same PR; distinct-PR concurrency
@@ -315,6 +317,14 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   instance evaluate the full conjunct set without attempting a merge;
   advisory refusals never accrue toward demotion. Advisory is the recommended
   default for mixed-company repos (V1, PRL-Q1).
+- **PRL-048 (MUST, Shipped):** After publishing a managed non-pass verdict,
+  the workflow MAY cancel provider CI that is still pending for the exact
+  reviewed head SHA. Cancellation MUST re-fetch the open PR, refuse if its
+  head moved, list and mutate a bounded number of runs, ignore completed or
+  mismatched runs, and treat races to completion idempotently. Unsupported,
+  unauthorized, stale-head, and provider-failure outcomes MUST be explicit,
+  bounded, and non-fatal so cancellation can never hide or roll back the
+  already-published verdict. Advisory reviews MUST NOT cancel CI.
 
 ### Remediation loop
 
@@ -504,6 +514,7 @@ therefore have no action row.
 | Comment on and update the driving issue's status (`update-issue`) | `implementation/close-out`, `park-escalated`, `park-needs-human` | `github:issues:write` | Covered |
 | Publish the verdict as a native review (`publish-review`) | `merge-review/apply-verdict` | `github:pr:review` | Covered |
 | Route a verdict through the configured repository provider (`route-provider-verdict`) | `merge-review/apply-verdict` | `provider:pr:write` | Covered |
+| Cancel obsolete pending CI for an exact rejected head (`cancel-pending-ci`) | `merge-review/cancel-pending-ci` | `provider:ci:cancel` | Covered |
 | Route a verdict to remediation, sibling-blocked, or escalation, or invalidate a standing fail verdict after an operator clears escalation (`route-verdict`) | `merge-review/gather-sibling-context`, `pr-remediation/gather-sibling-context` | `github:pr:write` | Covered |
 | Close a moot, duplicate, or byte-identical superseded PR (`close-pr`) | `merge-review/apply-verdict` | `provider:pr:write` | Covered |
 | Park a narrower PR behind a dominant shared-file rewrite (`flag-foundation-coupling`) | `merge-review/pr-select` | `github:pr:write` | Covered |

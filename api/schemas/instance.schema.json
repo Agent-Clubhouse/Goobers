@@ -35,7 +35,7 @@
       "items": { "$ref": "#/$defs/credentialGrant" }
     },
     "daemonIdentity": {
-      "description": "Distinct bot identity for the daemon's own authored pull requests, reviews, merges, and comments (UNOP-7). Omitted keeps every mutation on the repository token. Configuring it backs the standard daemon-mutation capability set (repo:push, github:issues:write, github:pr:write, github:pr:review, github:branch:delete, github:pr:merge) without declaring each one under credentials; an explicit credentials entry for one of those still wins.",
+      "description": "Distinct bot identity for the daemon's own authored pull requests, reviews, merges, CI cancellation, and comments (UNOP-7). Omitted keeps every mutation on the repository token. Configuring it backs the standard daemon-mutation capability set (repo:push, github:issues:write, github:pr:write, github:pr:review, provider:ci:cancel, github:branch:delete, github:pr:merge) without declaring each one under credentials; an explicit credentials entry for one of those still wins.",
       "$ref": "#/$defs/daemonIdentity"
     },
     "secretStores": {
@@ -339,6 +339,7 @@
             "provider:pr:write",
             "github:pr:write",
             "github:pr:review",
+            "provider:ci:cancel",
             "github:branch:delete",
             "github:pr:merge",
             "contents:read",

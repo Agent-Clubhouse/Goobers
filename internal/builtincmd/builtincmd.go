@@ -48,6 +48,7 @@ var names = []string{
 	"backlog-dedupe",
 	"backlog-health",
 	"backlog-query",
+	"cancel-pending-ci",
 	"check-fail-first",
 	"check-issue-staleness",
 	"docs-churn",

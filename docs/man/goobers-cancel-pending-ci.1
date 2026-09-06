@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CANCEL PENDING CI" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers cancel-pending-ci \- cancel pending provider CI for an exact reviewed PR head (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers cancel-pending-ci\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers cancel-pending-ci [path]
+
+Cancel a bounded set of provider CI runs still pending for the exact
+reviewed pull-request head. Requires pullNumber and headSha inputs.
+Unsupported providers and provider failures are reported as explicit
+non-fatal result states so a published review verdict is never hidden.
+.fi
+.SH EXAMPLES
+.nf
+goobers cancel-pending-ci
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

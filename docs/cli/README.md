@@ -129,6 +129,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
 | [`goobers backlog-health`](#goobers-backlog-health) | snapshot ready-pool depth and age (a workflow stage) |
 | [`goobers backlog-query`](#goobers-backlog-query) | query/claim one eligible backlog item (a workflow stage) |
+| [`goobers cancel-pending-ci`](#goobers-cancel-pending-ci) | cancel pending provider CI for an exact reviewed PR head (a workflow stage) |
 | [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
 | [`goobers check-issue-staleness`](#goobers-check-issue-staleness) | route a PR to remediation if its linked issue changed since implementation began (a workflow stage) |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
@@ -552,6 +553,25 @@ Default path is ".". Exit codes: 0 = printed, 2 = usage/IO error.
 ~~~console
 $ goobers blocked list
 $ goobers blocked list --json
+~~~
+
+## `goobers cancel-pending-ci`
+
+cancel pending provider CI for an exact reviewed PR head (a workflow stage)
+
+~~~text
+Usage: goobers cancel-pending-ci [path]
+
+Cancel a bounded set of provider CI runs still pending for the exact
+reviewed pull-request head. Requires pullNumber and headSha inputs.
+Unsupported providers and provider failures are reported as explicit
+non-fatal result states so a published review verdict is never hidden.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers cancel-pending-ci
 ~~~
 
 ## `goobers check-fail-first`
@@ -2517,8 +2537,10 @@ select one managed or advisory open PR for merge-review (a workflow stage)
 ~~~text
 Usage: goobers pr-select [path]
 
-Select at most one open, non-draft, green-CI PR for merge-review to
-evaluate this cycle (a workflow stage). authorScope defaults to goobers;
+Select at most one open, non-draft PR for merge-review to evaluate this
+cycle (a workflow stage). CI must be passing unless allowPendingChecks is
+true; known failing and unknown states are never eligible. authorScope
+defaults to goobers;
 set it to any to admit PRs outside headPrefixes as advisory-only. PRs
 may be filtered by exact author, assignee, and requestedReviewer inputs.
 PRs labeled goobers:no-merge-review or goobers:run-aborted are always
