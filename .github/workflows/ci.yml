@@ -103,8 +103,14 @@ jobs:
   # Their Makefile targets (test-e2e, test-envtest, cover-check) are retained
   # for local and full-tier use; only the redundant PR-leg jobs are gone.
 
-  # Platform-independent unreachable-production-code report. Ran once (it was a
-  # per-OS step of the old monolith; nothing about it is OS-specific).
+  # Unreachable-production-code report. Ran once, on this one runner — not
+  # because the analysis is platform-independent (#4434: a symbol reachable
+  # only via a windows-tagged caller, or only via a unix-tagged one, is
+  # genuinely dead under the other configuration), but because test/deadcode
+  # itself cross-compiles the reachability analysis for every shipped GOOS
+  # from this single host and evaluates each target's report against its own
+  # platform-qualified exemptions — no actual windows-latest/macos-latest
+  # runner is needed.
   deadcode:
     name: dead-code analysis
     if: ${{ github.event_name != 'push' }}
