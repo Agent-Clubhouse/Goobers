@@ -162,6 +162,7 @@ func validateImplementationJournal(runDir string) error {
 		}
 	}
 	want := []string{
+		"stage:preflight-repo-write",
 		"stage:query-backlog",
 		"stage:gather-implement-context",
 		"stage:warm-module-cache",
