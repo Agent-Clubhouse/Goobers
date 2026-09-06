@@ -1288,7 +1288,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
-	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 	// #831's daemon-side half: cancel one live in-flight run on operator request
@@ -1500,7 +1500,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case <-delegationTicker.C:
-				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
 			}
 		}
 	}()
