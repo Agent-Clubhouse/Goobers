@@ -79,6 +79,7 @@ export const goWireFixtures = {
     "schemaVersion": "v1",
     "name": "fixture",
     "environment": "dev",
+    "instanceRoot": "/instances/fixture",
     "ready": true,
     "status": "degraded",
     "concurrency": {

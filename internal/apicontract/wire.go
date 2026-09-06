@@ -289,6 +289,7 @@ func newWireFixtures() wireFixtures {
 			SchemaVersion: readservice.SchemaVersion,
 			Name:          "fixture",
 			Environment:   apiv1.EnvironmentDev,
+			InstanceRoot:  "/instances/fixture",
 			Ready:         true,
 			Status:        readservice.InstanceStatusDegraded,
 			Concurrency: readservice.Concurrency{

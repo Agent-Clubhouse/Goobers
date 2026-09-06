@@ -273,6 +273,7 @@ export interface Freshness {
 export interface Instance extends ContractVersion {
   name: string;
   environment: Environment;
+  instanceRoot: string;
   ready: boolean;
   status: InstanceStatus;
   concurrency: Concurrency;
