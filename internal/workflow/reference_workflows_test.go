@@ -555,6 +555,77 @@ func TestReferenceWorkflowsImplementationCIPollDeclaresRequiredCapability(t *tes
 	t.Fatal("implementation workflow has no inputs.kind=ci-poll task")
 }
 
+// TestReferenceWorkflowsImplementationBoundsModuleDownloadSeparatelyFromImplement
+// is #4179's regression guard: a stalled `go mod download` inside the agentic
+// implement session used to burn the whole implement budget invisibly (one
+// lifecycle event, 90 minutes of silence, indistinguishable from a looping
+// agent). warm-module-cache runs the download deterministically, before
+// implement, under its own short bound.
+func TestReferenceWorkflowsImplementationBoundsModuleDownloadSeparatelyFromImplement(t *testing.T) {
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read implementation workflow: %v", err)
+	}
+	var w apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &w); err != nil {
+		t.Fatalf("unmarshal implementation workflow: %v", err)
+	}
+	tasks := make(map[string]apiv1.Task, len(w.Spec.Tasks))
+	for _, task := range w.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	gather, ok := tasks["gather-implement-context"]
+	if !ok {
+		t.Fatal("gather-implement-context task not found")
+	}
+	if gather.Next != "warm-module-cache" {
+		t.Fatalf("gather-implement-context.next = %q, want warm-module-cache", gather.Next)
+	}
+	warmCache, ok := tasks["warm-module-cache"]
+	if !ok {
+		t.Fatal("warm-module-cache task not found")
+	}
+	if warmCache.Run == nil || !slices.Equal(warmCache.Run.Command, []string{"go", "mod", "download"}) {
+		t.Fatalf("warm-module-cache command = %v, want [go mod download]", warmCache.Run)
+	}
+	if warmCache.TimeoutSeconds <= 0 || warmCache.TimeoutSeconds >= 900 {
+		t.Fatalf("warm-module-cache timeoutSeconds = %d, want a short bound distinct from implement's own budget", warmCache.TimeoutSeconds)
+	}
+	if warmCache.Next != "warm-module-cache-gate" {
+		t.Fatalf("warm-module-cache.next = %q, want warm-module-cache-gate", warmCache.Next)
+	}
+	var gate *apiv1.Gate
+	for i := range w.Spec.Gates {
+		if w.Spec.Gates[i].Name == "warm-module-cache-gate" {
+			gate = &w.Spec.Gates[i]
+			break
+		}
+	}
+	if gate == nil {
+		t.Fatal("warm-module-cache-gate not found")
+	}
+	if gate.Automated == nil || gate.Automated.Check != "failure-class" {
+		t.Fatalf("warm-module-cache-gate automated check = %+v, want failure-class", gate.Automated)
+	}
+	for outcome, want := range map[string]string{
+		"pass":  "implement",
+		"fail":  "implement",
+		"infra": "warm-module-cache",
+	} {
+		if got := gate.Branches[outcome]; got != want {
+			t.Fatalf("warm-module-cache-gate %s branch = %q, want %q", outcome, got, want)
+		}
+	}
+	implement, ok := tasks["implement"]
+	if !ok {
+		t.Fatal("implement task not found")
+	}
+	if implement.TimeoutSeconds != 0 && implement.TimeoutSeconds <= warmCache.TimeoutSeconds {
+		t.Fatalf("implement.timeoutSeconds = %d, want it uncapped or greater than warm-module-cache's %d — the two must stay on separate budgets", implement.TimeoutSeconds, warmCache.TimeoutSeconds)
+	}
+}
+
 func TestReferenceWorkflowsImplementationCheckpointsBeforeStrictIntegration(t *testing.T) {
 	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml")
 	raw, err := os.ReadFile(path)
