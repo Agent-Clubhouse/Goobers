@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,129 @@ func TestStatsAggregatesByWorkflowAndStage(t *testing.T) {
 	}
 	if len(windowed.Runs) != 1 || windowed.Runs[0].TotalRuns != 1 {
 		t.Fatalf("windowed runs = %#v", windowed.Runs)
+	}
+}
+
+// seededAttempt describes one stage.started/stage.finished pair for
+// seedStageAttemptRun: attemptClass mirrors journal.AttemptClass ("infra",
+// "policy", "human", or "" for a first/unclassed attempt), status is
+// "success" or "failure".
+type seededAttempt struct {
+	stage        string
+	attempt      int
+	attemptClass string
+	status       string
+}
+
+// seedStageAttemptRun writes a minimal run journal whose stage.started events
+// carry an explicit attemptClass, for tests exercising stageStats' handling
+// of infra-class attempts (#4195/#3364) that seedStatsRun's fixed build/deploy
+// shape can't express.
+func seedStageAttemptRun(t *testing.T, runsDir, runID, workflow string, startedAt time.Time, attempts []seededAttempt) {
+	t.Helper()
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(minimalRunYAML(runID, startedAt), "workflow: wf", "workflow: "+workflow))
+
+	lines := []string{eventLine(1, startedAt, `"type":"run.started"`)}
+	seq := 2
+	for i, a := range attempts {
+		offset := time.Duration(i*2+1) * time.Second
+		startedRest := `"type":"stage.started","stage":"` + a.stage + `","attempt":` + strconv.Itoa(a.attempt)
+		if a.attemptClass != "" {
+			startedRest += `,"attemptClass":"` + a.attemptClass + `"`
+		}
+		lines = append(lines, eventLine(seq, startedAt.Add(offset), startedRest))
+		seq++
+		finishedRest := `"type":"stage.finished","stage":"` + a.stage + `","attempt":` + strconv.Itoa(a.attempt) +
+			`,"status":"` + a.status + `"`
+		if a.attemptClass != "" {
+			finishedRest += `,"attemptClass":"` + a.attemptClass + `"`
+		}
+		lines = append(lines, eventLine(seq, startedAt.Add(offset+time.Second), finishedRest))
+		seq++
+	}
+	lines = append(lines, eventLine(seq, startedAt.Add(time.Duration(len(attempts)*2+1)*time.Second), `"type":"run.finished","status":"completed"`))
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+}
+
+// TestStageStatsExcludesInfraClassAttempts is #4195's regression: an
+// infra-class attempt (journal.AttemptInfra) — a crash or provider-retry
+// continuation, most commonly a rate-limited GitHub call that got correctly
+// retried — is "weather," not a verdict about the stage's own work
+// (ErrorClass.InfraFault's documented #3364 convention). Before this fix,
+// stageStats counted every stage_attempts row toward SuccessRate regardless
+// of attempt_class, so a stage under transient provider pressure reported an
+// inflated failure rate purely from attempts that were correctly retried and
+// resolved — exactly the pattern #4195 found in pr-select (65/143 "failures"
+// where 8 of 10 sampled runs also carried a github_rate_limited signature).
+// Covers three stages, not just pr-select, since the fix lives in the shared
+// aggregate every stage's failure-rate finding depends on.
+func TestStageStatsExcludesInfraClassAttempts(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	// pr-select: an infra-class failed attempt (rate-limited) immediately
+	// followed by an unclassed success. The infra attempt must not count
+	// toward either succeeded or failed — only the real success should show.
+	seedStageAttemptRun(t, runsDir, "1111111111111111dddddddddddddddd", "merge-review", base, []seededAttempt{
+		{stage: "pr-select", attempt: 1, attemptClass: "infra", status: "failure"},
+		{stage: "pr-select", attempt: 2, attemptClass: "", status: "success"},
+	})
+	// backlog-query: a SOLE infra-class failure (infra retry budget
+	// exhausted with no further attempt in this run). Must be excluded
+	// entirely, not counted as a failure — the stage should report zero
+	// attempts, not "1 total / 1 failed".
+	seedStageAttemptRun(t, runsDir, "2222222222222222dddddddddddddddd", "merge-review", base.Add(time.Hour), []seededAttempt{
+		{stage: "backlog-query", attempt: 1, attemptClass: "infra", status: "failure"},
+	})
+	// gather-pr-context: a genuine (unclassed) failure followed by an
+	// infra-class success. The real failure must still count — this fix
+	// must not accidentally suppress actual defects — while the infra
+	// success is excluded rather than counted toward succeeded.
+	seedStageAttemptRun(t, runsDir, "3333333333333333dddddddddddddddd", "merge-review", base.Add(2*time.Hour), []seededAttempt{
+		{stage: "gather-pr-context", attempt: 1, attemptClass: "", status: "failure"},
+		{stage: "gather-pr-context", attempt: 2, attemptClass: "infra", status: "success"},
+	})
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	all, err := db.Stats(context.Background(), StatsRequest{Workflow: "merge-review"})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+
+	byStage := map[string]StageStats{}
+	for _, s := range all.Stages {
+		byStage[s.Stage] = s
+	}
+
+	prSelect, ok := byStage["pr-select"]
+	if !ok {
+		t.Fatal("pr-select stage stats missing")
+	}
+	if prSelect.TotalAttempts != 1 || prSelect.SucceededAttempts != 1 || prSelect.FailedAttempts != 0 {
+		t.Fatalf("pr-select stats = %#v, want total=1 succeeded=1 failed=0 (the infra attempt excluded)", prSelect)
+	}
+	if prSelect.SuccessRate != 1 {
+		t.Fatalf("pr-select SuccessRate = %v, want 1", prSelect.SuccessRate)
+	}
+
+	if backlogQuery, ok := byStage["backlog-query"]; ok {
+		t.Fatalf("backlog-query stats = %#v, want no entry (its only attempt is infra-class and must be excluded entirely)", backlogQuery)
+	}
+
+	gatherPRContext, ok := byStage["gather-pr-context"]
+	if !ok {
+		t.Fatal("gather-pr-context stage stats missing")
+	}
+	if gatherPRContext.TotalAttempts != 1 || gatherPRContext.FailedAttempts != 1 || gatherPRContext.SucceededAttempts != 0 {
+		t.Fatalf("gather-pr-context stats = %#v, want total=1 failed=1 succeeded=0 (the real failure still counts, the infra success is excluded)", gatherPRContext)
+	}
+	if gatherPRContext.SuccessRate != 0 {
+		t.Fatalf("gather-pr-context SuccessRate = %v, want 0", gatherPRContext.SuccessRate)
 	}
 }
 
