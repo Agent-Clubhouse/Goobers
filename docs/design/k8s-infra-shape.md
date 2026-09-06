@@ -64,6 +64,27 @@ vendor-neutral form.
   verified safe for cross-client `flock` and SQLite WAL. Provisioner names alone do not
   establish either property. Temporal workflow identity enforces run ownership at tier 3,
   but does not replace the instance root's other file locks.
+- **The daemon is single-writer, and therefore single-replica (#3809).** The journal,
+  intake DB, read model and telemetry DB share one ReadWriteOnce volume, so a second
+  `goobers-api` replica cannot mount it. This is a defensible design for a run journal,
+  but plan around its consequences rather than around HA:
+  - **No HA.** A node failure takes the daemon down until the disk detaches and
+    re-attaches elsewhere — minutes on Azure Disk — and the run journal is unavailable
+    throughout.
+  - **Every upgrade is downtime.** A rolling update cannot bring up a second pod while
+    the first holds the volume, so a deploy is necessarily stop-then-start.
+  - **The restart window is not fixed.** Startup resumes interrupted runs — roughly two
+    minutes on a busy instance — and grows with run volume, so the outage lengthens as
+    the instance gets busier. Gate deploy automation on `/readyz` (#3806) rather than on
+    the rollout reporting success, which it does while the new daemon is still starting.
+  - **The blast radius is the whole instance.** The daemon is also the credential,
+    journal, blob and surrender plane for every in-flight stage pod.
+
+  What makes that last point survivable is that the pod-side clients for those planes
+  RETRY with bounded backoff across a restart rather than failing on the first refused
+  connection (#4260 for surrender/blob/journal, #3809 for credentials). A restart is a
+  routine event; a routine event does not fail in-flight work. Nothing here makes the
+  control plane highly available, and no deployment should be planned as though it were.
 - **Temporal persistence:** PostgreSQL (managed recommended); sizing guidance: modest —
   history is bounded per run and projected out; retention window configurable.
 - **Telemetry:** OTLP export; reference substrate ADX, vendor-neutral form = any OTLP

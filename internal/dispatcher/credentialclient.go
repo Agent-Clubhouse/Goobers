@@ -20,6 +20,28 @@ import (
 // fast rather than run without them.
 const defaultCredentialTimeout = 30 * time.Second
 
+// defaultCredentialRetryDeadline bounds the WHOLE resolve loop — across
+// attempts — when the caller sets no RetryDeadline of its own (#3809).
+//
+// The daemon is single-replica by construction: its journal, intake DB, read
+// model and telemetry DB live on a ReadWriteOnce volume, so a second replica
+// cannot mount it. Every upgrade is therefore stop-then-start, and startup
+// resumes interrupted runs — roughly two minutes on a busy instance, and
+// growing with run volume. A restart is a ROUTINE event, and a routine event
+// should not fail in-flight work.
+//
+// Before this, a stage whose credential resolve landed in that window failed
+// outright: the plane's own doc notes recovery came from spending a FRESH POD,
+// which is a whole dispatch cycle to survive something that lasts seconds to
+// minutes.
+//
+// Three minutes covers the observed restart window with margin while staying
+// well inside a stage's own timeout. It does not slow the failure that
+// matters: a refusal the plane will repeat (403 capability_undeclared, 409
+// gate_pin_missing, 400 invalid_request) is classified non-retryable and still
+// fails immediately.
+const defaultCredentialRetryDeadline = 3 * time.Minute
+
 // MintedCredential mirrors httpapi.MintedCredential. Restated rather than
 // imported: internal/httpapi is the SERVER, and a pod-side client that imports
 // its server would drag the whole daemon surface into the stage binary.
@@ -41,6 +63,9 @@ type CredentialResolveClient struct {
 	Token string
 	// Client overrides the HTTP client; nil uses a bounded default.
 	Client *http.Client
+	// RetryDeadline bounds how long Resolve retries a transport error or 5xx
+	// response before giving up. Zero uses defaultCredentialRetryDeadline.
+	RetryDeadline time.Duration
 }
 
 // CredentialResolveRefusal is the credential plane's own answer to a resolve —
@@ -117,14 +142,53 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 	if client == nil {
 		client = &http.Client{Timeout: defaultCredentialTimeout}
 	}
+	deadline := c.RetryDeadline
+	if deadline <= 0 {
+		deadline = defaultCredentialRetryDeadline
+	}
+
+	// Retrying a resolve is safe by construction: it is a READ of what this
+	// run's stage is entitled to, and the plane mints a fresh short-lived
+	// credential per call rather than consuming a one-shot grant. A repeated
+	// resolve can only return the same entitlement again.
+	var credentials []MintedCredential
+	retryErr := withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
+		// A fresh request per attempt: an *http.Request body is consumed by
+		// the first send, so a retried request would post an empty body and
+		// be refused as invalid — a self-inflicted non-retryable failure.
+		attempt := request.Clone(ctx)
+		attempt.Body = io.NopCloser(bytes.NewReader(body))
+		resolved, retryable, err := c.resolveOnce(client, attempt, endpoint)
+		if err != nil {
+			return retryable, err
+		}
+		credentials = resolved
+		return false, nil
+	})
+	if retryErr != nil {
+		return nil, retryErr
+	}
+	return credentials, nil
+}
+
+// resolveOnce performs one resolve attempt and classifies its failure.
+//
+// The classification is the plane's existing one, not a new vocabulary: a
+// refusal the plane will repeat for every pod of this stage is a configuration
+// outcome and must fail fast, while a plane that could not answer (5xx,
+// including 503 credentials_unavailable) or could not be reached at all is the
+// control-plane restart this retry exists to ride out.
+func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.Request, endpoint string) ([]MintedCredential, bool, error) {
 	resp, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("dispatcher: credential resolve to %s: %w", endpoint, err)
+		// A transport fault never reached the plane: a refused dial or a
+		// dropped connection is exactly what a restarting daemon looks like.
+		return nil, true, fmt.Errorf("dispatcher: credential resolve to %s: %w", endpoint, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("dispatcher: read credential resolve response: %w", err)
+		return nil, true, fmt.Errorf("dispatcher: read credential resolve response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		// The body may name the refused capability, which is the whole
@@ -134,21 +198,21 @@ func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage stri
 		if len(detail) > 400 {
 			detail = detail[:400] + "…"
 		}
-		return nil, &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
+		return nil, retryableStatus(resp.StatusCode), &CredentialResolveRefusal{Status: resp.StatusCode, Detail: detail}
 	}
 	var decoded struct {
 		Credentials []MintedCredential `json:"credentials"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return nil, fmt.Errorf("dispatcher: decode credential resolve response: %w", err)
+		return nil, false, fmt.Errorf("dispatcher: decode credential resolve response: %w", err)
 	}
 	// A granted capability that resolved to an EMPTY value is a fault, not a
 	// silent no-op: the stage would run believing it was credentialed and fail
 	// somewhere far away, against the provider.
 	for _, cred := range decoded.Credentials {
 		if strings.TrimSpace(cred.Value) == "" {
-			return nil, fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)
+			return nil, false, fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)
 		}
 	}
-	return decoded.Credentials, nil
+	return decoded.Credentials, false, nil
 }
