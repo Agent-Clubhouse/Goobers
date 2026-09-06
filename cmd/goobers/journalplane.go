@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"time"
 
 	"github.com/goobers/goobers/internal/blobstore"
@@ -12,6 +13,23 @@ import (
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 )
+
+// engineTopologyChanged reports whether next's gaggle set differs from
+// current's (#3642). buildLiveJournalWriter's runsDirs and
+// launchEngineProjection's runsDirs (engineprojection.go) are each computed
+// once from configuredGaggleNames(set) at boot and never rebuilt on config
+// reload, so a gaggle added or removed after boot would otherwise run with
+// no journal or projection support until a restart, silently — a reload
+// that changes the engine-visible gaggle set must instead be rejected the
+// same way webhookListenerTopologyChanged already rejects a webhook
+// listener topology change. A nil/disabled engine has no such boot-pinned
+// consumer, so only matters while EngineProjectionEnabled.
+func engineTopologyChanged(current, next *instance.ConfigSet, cfg *instance.Config) bool {
+	if !cfg.EngineProjectionEnabled() {
+		return false
+	}
+	return !slices.Equal(configuredGaggleNames(current), configuredGaggleNames(next))
+}
 
 // journalplane.go wires the daemon side of the write API's journal plane
 // (distributed-state-and-coordination.md §7/§8, DS4/DS5): the live journal

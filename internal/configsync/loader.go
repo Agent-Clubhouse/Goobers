@@ -22,7 +22,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -30,6 +29,7 @@ import (
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/yamldoc"
 )
 
@@ -276,7 +276,7 @@ func (l *Loader) assemble(docs []rawDoc) (*RenderSet, error) {
 		switch d.kind {
 		case "Manifest":
 			var m v1alpha1.Manifest
-			if err := yaml.Unmarshal(d.yaml, &m); err != nil {
+			if err := strictyaml.Unmarshal(d.yaml, &m); err != nil {
 				return nil, fmt.Errorf("parse Manifest %s: %w", d.name, err)
 			}
 			if manifest != nil {
@@ -285,19 +285,19 @@ func (l *Loader) assemble(docs []rawDoc) (*RenderSet, error) {
 			manifest = &m
 		case "Gaggle":
 			var g v1alpha1.Gaggle
-			if err := yaml.Unmarshal(d.yaml, &g); err != nil {
+			if err := strictyaml.Unmarshal(d.yaml, &g); err != nil {
 				return nil, fmt.Errorf("parse Gaggle %s: %w", d.name, err)
 			}
 			gaggles = append(gaggles, g)
 		case "Goober":
 			var g v1alpha1.Goober
-			if err := yaml.Unmarshal(d.yaml, &g); err != nil {
+			if err := strictyaml.Unmarshal(d.yaml, &g); err != nil {
 				return nil, fmt.Errorf("parse Goober %s: %w", d.name, err)
 			}
 			goobers = append(goobers, g)
 		case "Workflow":
 			var w v1alpha1.Workflow
-			if err := yaml.Unmarshal(d.yaml, &w); err != nil {
+			if err := strictyaml.Unmarshal(d.yaml, &w); err != nil {
 				return nil, fmt.Errorf("parse Workflow %s: %w", d.name, err)
 			}
 			w.DSLVersion = d.dslVersion
