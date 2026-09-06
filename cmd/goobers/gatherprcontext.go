@@ -308,7 +308,6 @@ func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter,
 	if record.Attempts < remediationNoopLimit {
 		return true, writeNoWorkResult(stdout, stderr, fmt.Sprintf("PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle", pr.Number, digest))
 	}
-	generation := nextEscalationGeneration(state, pr.HeadSHA)
 	base := pr.BaseSHA
 	if a.features.liveBaseTip {
 		base, err = a.baseTip(ctx, pr.Base)
@@ -328,7 +327,14 @@ func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter,
 	state.EscalatedHeadSHA = pr.HeadSHA
 	state.EscalatedBaseSHA = base
 	state.EscalationCauses = nil
-	state.EscalationGeneration = generation
+	// Re-confirming an already-parked, still-unchanged head is not a fresh
+	// remediation attempt reaching a new verdict — it is the same finding
+	// observed again. Leave EscalationGeneration exactly as the prior
+	// escalation recorded it (never call nextEscalationGeneration here):
+	// bumping it would misreport this no-op tick as another re-run-and-fail
+	// cycle, the same misattribution #4173 fixes for rebase-pr's own
+	// infra-fault path, reached here by a different route (#4174).
+	state.NoopGuardRepark = true
 	if err := a.park(ctx, pr, prior, renderRemediationComment(state)); err != nil {
 		return true, failGatherPRAdapter(stderr, err)
 	}

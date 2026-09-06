@@ -228,6 +228,14 @@ type remediationState struct {
 	// fails closed on an empty watermark so a fleet upgrade never retriggers
 	// every PR that already carries a human comment.
 	LastSeenCommentAt string `json:"lastSeenCommentAt,omitempty"`
+	// NoopGuardRepark marks a record written by the gather-pr-context
+	// unchanged-digest guard's re-park path (recordGatherPRContextDigestNoop),
+	// as opposed to an ordinary remediation-checkpoint escalation. That guard
+	// requires TWO goobers:merge-escalated clears to release a park — the
+	// first cheaply no-ops (#716/#2378) — so the single-clear exit text
+	// renderRemediationComment otherwise renders is wrong for this record
+	// (#4174). It never gates any budget or escalation decision itself.
+	NoopGuardRepark bool `json:"noopGuardRepark,omitempty"`
 }
 
 // remediationStatePattern matches the machine-readable payload
@@ -318,10 +326,18 @@ func renderRemediationComment(state remediationState) string {
 		if escalationBaseAdvanceUnparks(state) {
 			unpark = "this PR's head or base changes"
 		}
-		prose = fmt.Sprintf(
-			"**pr-remediation escalated**\n\n%s. Parked until %s, or a human removes `%s`.",
-			state.EscalatedReason, unpark, remediationEscalatedLabel,
-		)
+		exit := fmt.Sprintf("Parked until %s, or a human removes `%s`.", unpark, remediationEscalatedLabel)
+		if state.NoopGuardRepark {
+			// The unchanged-digest guard requires TWO label clears to release
+			// this park: the first is a cheap no-op (#716/#2378) so a stray
+			// bot re-label doesn't undo an operator's intent, and only the
+			// second actually triggers a fresh remediation attempt.
+			exit = fmt.Sprintf(
+				"Parked until %s, or a human removes `%s` (this guard needs the label removed twice — the first removal is a no-op check, the second releases the park).",
+				unpark, remediationEscalatedLabel,
+			)
+		}
+		prose = fmt.Sprintf("**pr-remediation escalated**\n\n%s. %s", state.EscalatedReason, exit)
 		if state.EscalationGeneration > 1 {
 			prose += fmt.Sprintf(
 				"\n\nThis is escalation %d for this unchanged head — remediation has already re-run and re-escalated it %d times.",
@@ -1306,6 +1322,15 @@ type remediationCheckpointMode struct {
 	forcedOutcome    remediationEscalationOutcome
 	causes           []remediationCause
 	budgets          remediationBudgets
+	// rebaseInfrastructureFailure is set when rebase-pr's own attempt failed
+	// on an infra fault (a git subprocess we ran, a network blip) rather than
+	// reaching a real conflict/substantive verdict about the PR (#4173).
+	// rebase-pr already withholds remediationCauses on that path, so mode.causes
+	// stays empty here too — this field is what lets runRemediationCheckpointCore
+	// tell that empty-causes apart from an ordinary clean cycle and skip the
+	// digest-stall/escalation machinery instead of misreading a rebase retry's
+	// unchanged diff as a stalled remediation attempt.
+	rebaseInfrastructureFailure bool
 }
 
 func resolveRemediationCheckpointMode(flags remediationCheckpointFlags, features remediationCheckpointFeatures, stderr io.Writer) (remediationCheckpointMode, int, bool) {
@@ -1331,12 +1356,18 @@ func resolveRemediationCheckpointMode(flags remediationCheckpointFlags, features
 		pf(stderr, "error: invalid policyExcluded input: %v\n", err)
 		return remediationCheckpointMode{}, 1, false
 	}
+	rebaseInfrastructureFailure, err := strconv.ParseBool(providerInput("rebaseInfrastructureFailure", "false"))
+	if err != nil {
+		pf(stderr, "error: invalid rebaseInfrastructureFailure input: %v\n", err)
+		return remediationCheckpointMode{}, 1, false
+	}
 	mode := remediationCheckpointMode{
-		reason:           flags.escalateReason,
-		policyExcluded:   policyExcluded,
-		conflicted:       conflicted,
-		attemptedHeadSHA: attemptedHeadSHA,
-		forcedOutcome:    flags.forcedOutcome,
+		reason:                      flags.escalateReason,
+		policyExcluded:              policyExcluded,
+		conflicted:                  conflicted,
+		attemptedHeadSHA:            attemptedHeadSHA,
+		forcedOutcome:               flags.forcedOutcome,
+		rebaseInfrastructureFailure: rebaseInfrastructureFailure,
 	}
 	if mode.reason == "" && policyExcluded {
 		mode.reason = providerInput("policyExcludedReason", "declared remediation policy excludes the only detected cause(s)")
@@ -1378,6 +1409,20 @@ func (env *remediationCheckpointRunEnv) recordSequencingOnlyWait() int {
 		return 1
 	}
 	pf(env.stdout, "PR #%d is blocked only on sibling sequencing — waiting without consuming remediation budget\n", env.selectedNumber)
+	return 0
+}
+
+// recordInfrastructureNoop records a cycle in which rebase-pr's own attempt
+// failed on an infra fault rather than reaching any verdict about the PR
+// (#4173). Unlike recordSequencingOnlyWait, it deliberately leaves
+// needsRemediationLabel in place: the fault is on our side, and clearing the
+// label would keep this PR from being reselected for the retry that a
+// transient infra fault is expected to clear on its own.
+func (env *remediationCheckpointRunEnv) recordInfrastructureNoop() int {
+	if err := writeCheckpointResult(env.stderr, false, env.selectedNumber, env.current.Head, env.current.HeadSHA, remediationEscalation{}); err != nil {
+		return 1
+	}
+	pf(env.stdout, "PR #%d: rebase-pr failed on an infrastructure fault — waiting for a retry without consuming remediation budget or attributing a cause\n", env.selectedNumber)
 	return 0
 }
 
@@ -1839,6 +1884,9 @@ func runRemediationCheckpointCore(
 	}
 	if !mode.forced && sequencingOnlyCheckpointWait(env.current.Labels, mode.causes) {
 		return env.recordSequencingOnlyWait()
+	}
+	if !mode.forced && mode.rebaseInfrastructureFailure {
+		return env.recordInfrastructureNoop()
 	}
 	if !mode.forced {
 		if env.features.CheckoutToken == nil {
