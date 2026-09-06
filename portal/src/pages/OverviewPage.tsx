@@ -361,6 +361,11 @@ function Overview({
 
 function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
   const hasLastCompletedSweep = Boolean(maintenance.lastCompletedAt || maintenance.lastResult);
+  const phase = maintenance.currentPhase ? ` · ${maintenance.currentPhase}` : "";
+  const lastProgressLabel = maintenance.lastProgressAt
+    ? ` · last progress ${formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago`
+    : "";
+
   switch (maintenance.state) {
     case "running":
       return (
@@ -372,6 +377,8 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
               for {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.startedAt)))}
             </span>
           )}
+          {lastProgressLabel && <span>{lastProgressLabel}</span>}
+          {phase && <span>{phase}</span>}
           <span>
             {" "}
             · {maintenance.removed} removed, {maintenance.candidates} candidates
@@ -383,6 +390,12 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
         <div className="maintenance-indicator maintenance-indicator-error" role="alert">
           <strong>Retention sweep failed</strong>
           {maintenance.errorSummary && <span> · {maintenance.errorSummary}</span>}
+          {maintenance.lastProgressAt && (
+            <span>
+              {" "}
+              · last progress {formatTimestamp(maintenance.lastProgressAt)}
+            </span>
+          )}
         </div>
       );
     case "completed":
@@ -395,6 +408,8 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
               · latest at {formatTimestamp(maintenance.lastCompletedAt)}
             </span>
           )}
+          {lastProgressLabel && <span>{lastProgressLabel}</span>}
+          {phase && <span>{phase}</span>}
           <span>
             {" "}
             · {maintenance.removed} removed, {maintenance.candidates} candidates

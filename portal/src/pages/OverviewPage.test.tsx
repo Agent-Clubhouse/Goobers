@@ -98,6 +98,27 @@ describe("overview page", () => {
     expect(await screen.findByText("Retention sweep cancelled")).toBeInTheDocument();
   });
 
+  it("renders live sweep progress with elapsed and recent activity details", async () => {
+    const running = populatedDaemonFixtures();
+    running.instance.maintenance = {
+      kind: "retention-sweep",
+      state: "running",
+      trigger: "startup",
+      startedAt: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+      lastProgressAt: new Date(Date.now() - 15 * 1000).toISOString(),
+      currentPhase: "projection-retention",
+      candidates: 23,
+      removed: 12,
+      failures: 0,
+      lastResult: "running",
+    };
+
+    render(<App client={new FixtureDaemonClient(running)} />);
+    expect(await screen.findByText("Retention sweep running")).toBeInTheDocument();
+    expect(screen.getByText(/last progress/i)).toBeInTheDocument();
+    expect(screen.getByText(/projection-retention/i)).toBeInTheDocument();
+  });
+
   it("renders the latest completed sweep when no sweep is running", async () => {
     const noSweep = populatedDaemonFixtures();
     noSweep.instance.maintenance = {
