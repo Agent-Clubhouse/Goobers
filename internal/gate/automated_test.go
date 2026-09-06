@@ -251,6 +251,19 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeFail,
 		},
 		{
+			// #4362/#4367: a test deliberately presents an untrusted loopback
+			// certificate to prove the client rejects it; net/http's server
+			// logs the resulting handshake rejection regardless, and that
+			// noise can end up in a captured failure's tail without being
+			// the actual cause of the nonzero exit.
+			name: "loopback TLS test fixture handshake noise",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; stderr: 2026/09/05 21:50:50 http: TLS handshake error from 127.0.0.1:63600: remote error: tls: bad certificate"},
+			},
+			want: OutcomeInfra,
+		},
+		{
 			name: "typed business failure with contention words",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,

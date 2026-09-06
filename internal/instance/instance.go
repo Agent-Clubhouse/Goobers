@@ -18,6 +18,12 @@ const (
 	TelemetryDBName   = "telemetry.db"
 	ReadDBName        = "read.db"
 	ConfigFileName    = "instance.yaml"
+	// DaemonLogFileName is the single merged, ordered log a supervised daemon
+	// (currently: the Windows service supervisor) writes its own and its
+	// child daemon's stdout/stderr into, replacing separate stdout/stderr
+	// files that scatter one chronological startup story across two files
+	// (#4368).
+	DaemonLogFileName = "daemon.log"
 	// DocsUpdaterDirName is the SchedulerDir subdirectory holding the
 	// docs-updater workflow's per-workflow durable state — the docs-drift
 	// watermark (#1015). It lives under the instance-wide scheduler dir, not
@@ -101,6 +107,9 @@ func (l Layout) RunsDir() string { return filepath.Join(l.runtimeRoot(), RunsDir
 // SchedulerDir is the path to the instance journal (scheduler decisions +
 // claim ledger, §4/§7).
 func (l Layout) SchedulerDir() string { return filepath.Join(l.Root, SchedulerDirName) }
+
+// DaemonLogFile is the path to the merged supervised-daemon log (#4368).
+func (l Layout) DaemonLogFile() string { return filepath.Join(l.Root, DaemonLogFileName) }
 
 // WorkcopiesDir is the path to this layout's managed working copies.
 func (l Layout) WorkcopiesDir() string {
