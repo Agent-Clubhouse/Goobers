@@ -108,12 +108,17 @@ func runCommentMarker(runID string, seq uint64) string {
 
 const failureStreakMarker = "<!-- goobers:failure-streak"
 
+var ErrFailureStreakRateLimited = errors.New("failure streak count call rate limited")
+
 // CountFailureStreak returns the number of consecutive terminal failures
 // recorded on an item by scanning for the failure-streak comment marker.
 // Returns 0 when no streak comment exists.
 func CountFailureStreak(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string) (int, string, error) {
 	comments, err := poster.ListComments(ctx, repository, itemID)
 	if err != nil {
+		if providers.IsTransientError(err) && strings.Contains(strings.ToLower(err.Error()), providers.ErrorCodeRateLimited) {
+			return 0, "", ErrFailureStreakRateLimited
+		}
 		return 0, "", fmt.Errorf("list comments for failure streak: %w", err)
 	}
 	var latestCount int

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -405,6 +407,73 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 
 const failureStreakThreshold = 3
 
+type failureStreakState struct {
+	Count     int       `json:"count"`
+	RunID     string    `json:"runId,omitempty"`
+	Stage     string    `json:"stage,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+}
+
+func failureStreakStatePath(l instance.Layout, repo providers.RepositoryRef, itemID string) string {
+	name := strings.NewReplacer("/", "__", "\\", "__", ":", "__", "..", "__").Replace(string(repo.Provider) + "__" + repo.Owner + "__" + repo.Name + "__" + itemID)
+	return filepath.Join(l.SchedulerDir(), "failure-streaks", name+".json")
+}
+
+func loadFailureStreakState(l instance.Layout, repo providers.RepositoryRef, itemID string) (int, error) {
+	path := failureStreakStatePath(l, repo, itemID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	var state failureStreakState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return 0, fmt.Errorf("decode failure streak state: %w", err)
+	}
+	if state.Count < 0 {
+		state.Count = 0
+	}
+	return state.Count, nil
+}
+
+func writeFailureStreakState(l instance.Layout, repo providers.RepositoryRef, itemID string, count int, runID, stage string) error {
+	path := failureStreakStatePath(l, repo, itemID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir failure streak state dir: %w", err)
+	}
+	state := failureStreakState{Count: count, RunID: runID, Stage: stage, UpdatedAt: time.Now().UTC()}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("encode failure streak state: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write failure streak state: %w", err)
+	}
+	return nil
+}
+
+func clearFailureStreakState(l instance.Layout, repo providers.RepositoryRef, itemID string) error {
+	path := failureStreakStatePath(l, repo, itemID)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("clear failure streak state: %w", err)
+	}
+	return nil
+}
+
+func isFailureStreakRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rl *providers.RateLimitError
+	if errors.As(err, &rl) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, providers.ErrorCodeRateLimited) ||
+		strings.Contains(msg, "x-ratelimit-remaining: 0") ||
+		strings.Contains(msg, "x-ratelimit-remaining=0") ||
+		strings.Contains(msg, "status 403") && strings.Contains(msg, "remaining 0")
+}
+
 // applyCircuitBreaker increments the failure streak for each claimed item and
 // parks the issue (needs-human + remove ready) once the threshold is reached.
 // Shared by buildFailedHandler (PhaseFailed) and buildTerminalCircuitBreaker
@@ -429,15 +498,30 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 		return errors.Join(errs...)
 	}
 	for _, itemID := range itemIDs {
-		prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)
-		if countErr != nil {
-			errs = append(errs, fmt.Errorf("count failure streak on %s#%s: %w", repoRef.Name, itemID, countErr))
-			continue
+		prevCount, cacheErr := loadFailureStreakState(l, repoRef, itemID)
+		if cacheErr != nil {
+			if !os.IsNotExist(cacheErr) {
+				errs = append(errs, fmt.Errorf("load failure streak state on %s#%s: %w", repoRef.Name, itemID, cacheErr))
+				continue
+			}
+			var countErr error
+			prevCount, _, countErr = gate.CountFailureStreak(ctx, poster, repoRef, itemID)
+			if countErr != nil {
+				if errors.Is(countErr, gate.ErrFailureStreakRateLimited) || isFailureStreakRateLimited(countErr) {
+					continue
+				}
+				errs = append(errs, fmt.Errorf("count failure streak on %s#%s: %w", repoRef.Name, itemID, countErr))
+				continue
+			}
 		}
 		count := prevCount + 1
 
 		if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, stage, runID, runURL); err != nil {
 			errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
+			continue
+		}
+		if err := writeFailureStreakState(l, repoRef, itemID, count, runID, stage); err != nil {
+			errs = append(errs, fmt.Errorf("persist failure streak state on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 
 		if count >= failureStreakThreshold {
@@ -468,6 +552,9 @@ func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 	for _, itemID := range itemIDs {
 		if err := gate.ResetFailureComment(ctx, poster, repoRef, itemID, runID, runURL); err != nil {
 			errs = append(errs, fmt.Errorf("reset failure streak on %s#%s: %w", repoRef.Name, itemID, err))
+		}
+		if err := clearFailureStreakState(l, repoRef, itemID); err != nil {
+			errs = append(errs, fmt.Errorf("reset failure streak state on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 	}
 	// A completed run resets the streak that motivated any still-pending park

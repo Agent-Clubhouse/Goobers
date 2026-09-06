@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/providers"
 )
 
 // failedHandlerDispositionFixture seeds a repo-backed instance with one claim
@@ -116,5 +117,81 @@ func TestFailedHandlerStillCountsWorkFailures(t *testing.T) {
 				t.Fatalf("provider calls = %d, want 1 (a work failure still leaves its countable trace)", len(fake.calls))
 			}
 		})
+	}
+}
+
+func TestFailedHandlerUsesCachedStreakWithoutCommentListCall(t *testing.T) {
+	const runID = "run-cached-streak"
+	fake := &blockedHandlerFakeCommenter{}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("2458", runID, "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+	if err := writeFailureStreakState(l, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2458", 2, "run-older", "implement"); err != nil {
+		t.Fatalf("write cached streak: %v", err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}}}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if err := h(context.Background(), runner.FailedOutcome{
+		RunID:   runID,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement",
+		Code:    telemetry.ErrCodeTimeout,
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if len(fake.calls) != 2 {
+		t.Fatalf("provider calls = %d, want 2 (cached count increments once and reaches the threshold label update)", len(fake.calls))
+	}
+	if got, err := loadFailureStreakState(l, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2458"); err != nil || got != 3 {
+		t.Fatalf("persisted streak = %d, %v; want 3", got, err)
+	}
+}
+
+func TestFailedHandlerDoesNotCountWhenStreakReadIsRateLimited(t *testing.T) {
+	const runID = "run-rate-limited"
+	fake := &blockedHandlerFakeCommenter{listErr: &providers.RateLimitError{Provider: providers.ProviderGitHub, Endpoint: "/comments", Status: 403, Remaining: 0, Reset: time.Now().Add(time.Hour)}}
+	prev := newEscalationPoster
+	newEscalationPoster = func(string) gate.Commenter { return fake }
+	t.Cleanup(func() { newEscalationPoster = prev })
+
+	l := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("OpenClaimLedger: %v", err)
+	}
+	if ok, _, err := ledger.Claim("2459", runID, "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}}}}
+	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
+	if err := h(context.Background(), runner.FailedOutcome{
+		RunID:   runID,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Stage:   "implement",
+		Code:    telemetry.ErrCodeTimeout,
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("provider calls = %d, want 0 when the streak count itself is rate limited", len(fake.calls))
+	}
+	if got, err := loadFailureStreakState(l, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}, "2459"); err == nil && got != 0 {
+		t.Fatalf("streak count = %d, want 0 when the count call was rate limited and not incremented", got)
 	}
 }
