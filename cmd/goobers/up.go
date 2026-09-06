@@ -76,6 +76,15 @@ var delegationSweepInterval = 2 * time.Second
 // heartbeatInterval is a var so daemon tests do not wait a full minute.
 var heartbeatInterval = time.Minute
 
+// apiReadCacheLockSweepInterval bounds how often a running daemon re-sweeps
+// stale api-read-cache per-list-key lock files (cleanStaleAPIReadCacheLocks,
+// apireadcache.go). Well under apiReadCacheStaleLockAge (24h) so a lock
+// crosses the staleness cutoff and gets reclaimed within one interval of
+// becoming eligible, rather than waiting on incidental re-construction of the
+// cache from an unrelated poller (#4251). Var, not const, so tests can shrink
+// it rather than waiting out a real hour.
+var apiReadCacheLockSweepInterval = time.Hour
+
 const sweepErrorReportEvery = 12
 
 var httpShutdownGrace = 5 * time.Second
@@ -1445,6 +1454,29 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}()
 
+	// #4251: cleanStaleAPIReadCacheLocks no longer gates itself to once per
+	// process (apireadcache.go), so this ticker is what actually makes that
+	// removal matter for a daemon whose own cache-construction call sites
+	// (stage dispatch, open-PR polling, counter evaluation) might otherwise
+	// go quiet for longer than apiReadCacheStaleLockAge between calls. Same
+	// never-write-to-stdout footing as the tickers above; the sweep itself is
+	// fail-open with no error to report (apireadcache.go's own doc: "must
+	// never fail cache construction").
+	apiReadCacheLockSweepTicker := time.NewTicker(apiReadCacheLockSweepInterval)
+	apiReadCacheLockSweepTickerDone := make(chan struct{})
+	go func() {
+		defer close(apiReadCacheLockSweepTickerDone)
+		defer apiReadCacheLockSweepTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-apiReadCacheLockSweepTicker.C:
+				cleanStaleAPIReadCacheLocks(l.SchedulerDir())
+			}
+		}
+	}()
+
 	// #343's daemon-side half: periodically sweep for delegated trigger
 	// requests a short-lived `goobers run` invocation dropped after finding
 	// this daemon already holding up.lock (rundelegate.go), and dispatch
@@ -1725,6 +1757,7 @@ daemonLoop:
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-startupRetentionSweepDone
+	<-apiReadCacheLockSweepTickerDone
 	<-delegationTickerDone
 	<-cancelTickerDone
 	<-applyTickerDone
