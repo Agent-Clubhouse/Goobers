@@ -1293,12 +1293,14 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				identity.PID, uptime.Truncate(time.Second), identity.Version,
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
+			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 			return 1
 		}
 		pf(stdout, "daemon running: pid %d, uptime %s, version %s, last tick %s ago, live runs %d\n",
 			identity.PID, uptime.Truncate(time.Second), identity.Version,
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
+		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 		return 0
 	}
 	if identity != nil {
@@ -1309,6 +1311,20 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 
 	pf(stdout, "daemon not running; live runs %d\n", liveRuns)
 	return 1
+}
+
+// reportPendingTriggerQueue surfaces #4323's operator-visibility acceptance
+// criterion: a growing pending-trigger backlog (like #4326's incident, which
+// accumulated 1,177 duplicates before anyone noticed) becomes visible in
+// `goobers status` before it starves anything. Silent when the queue is
+// empty — an operator scanning routine status output shouldn't have to parse
+// a "depth 0" line to know nothing is wrong.
+func reportPendingTriggerQueue(schedulerDir string, now time.Time, stdout io.Writer) {
+	depth, oldestAge, err := pendingTriggerQueueStats(schedulerDir, now)
+	if err != nil || depth == 0 {
+		return
+	}
+	pf(stdout, "pending triggers: %d outstanding, oldest %s\n", depth, oldestAge.Truncate(time.Second))
 }
 
 func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {
