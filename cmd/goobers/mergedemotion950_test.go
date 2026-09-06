@@ -227,8 +227,8 @@ func TestElectionIneligibleSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("electionIneligibleSet: %v", err)
 	}
-	if !reflect.DeepEqual(set, map[int]bool{5: true, 7: true, 9: true}) {
-		t.Fatalf("electionIneligibleSet = %v, want active escalations #5/#9 and needs-human #7", set)
+	if !reflect.DeepEqual(set, map[int]bool{5: true, 7: true, 8: true, 9: true}) {
+		t.Fatalf("electionIneligibleSet = %v, want active escalations #5/#8/#9 and needs-human #7", set)
 	}
 }
 

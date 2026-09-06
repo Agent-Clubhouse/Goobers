@@ -95,6 +95,13 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
 
 ## Relationships
 
+The `GET /api/v1/instance` response includes a bounded `maintenance` snapshot
+for the retention sweep. The snapshot reports its kind, startup or periodic
+trigger, state (`none`, `queued`, `running`, `completed`, `failed`, or
+`cancelled`), timestamps, current phase, counters, last result, and sanitized
+error summary. It contains no credentials, authenticated URLs, environment
+values, or per-candidate history; CLI status adapters use the same model.
+
 - Scaffolded by → **`goobers init`** (tiers 1–2) or deployed from the **`infra` repo**
   via release pipeline (tier 3), with the **`config` repo/directory** as reconciled
   desired state (Deployment spec).

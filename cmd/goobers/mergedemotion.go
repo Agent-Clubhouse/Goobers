@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/goobers/goobers/providers"
@@ -150,12 +149,12 @@ func demotedSet(ctx context.Context, provider remediationProvider, repo provider
 
 // electionIneligibleSet returns open PRs that are currently parked outside the
 // autonomous landing loop. Active escalations are snapshot-validated so a
-// self-healed PR immediately becomes eligible again. The no-lander escalation
-// is deliberately retained as a blocker because it asks a human to choose the
-// cluster's landing order rather than asking the runner to drain around one PR.
+// self-healed PR immediately becomes eligible again. This includes no-lander
+// escalations: retaining an ineligible deterministic winner in the candidate
+// set prevents every healthy sibling from landing and makes the requested
+// human intervention a cluster-wide deadlock rather than a hold on one PR.
 func electionIneligibleSet(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
 	out := map[int]bool{}
-	var verdictAuthor string
 	for _, pr := range prs {
 		if hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
 			out[pr.Number] = true
@@ -171,35 +170,9 @@ func electionIneligibleSet(ctx context.Context, provider remediationProvider, re
 		if !blocked {
 			continue
 		}
-		comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
-		if err != nil {
-			return nil, err
-		}
-		if verdictAuthor == "" {
-			verdictAuthor, err = provider.AuthenticatedLogin(ctx)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if hasNoLanderEscalation(comments, verdictAuthor) {
-			continue
-		}
 		out[pr.Number] = true
 	}
 	return out, nil
-}
-
-func hasNoLanderEscalation(comments []providers.Comment, verdictAuthor string) bool {
-	for i := len(comments) - 1; i >= 0; i-- {
-		if !isTrustedMergeReviewStatusComment(comments[i].Author, comments[i].Body, verdictAuthor) {
-			continue
-		}
-		verdict, ok := parseVerdictComment(comments[i].Body)
-		if ok {
-			return verdict.Decision == "fail" && strings.HasPrefix(verdict.Rationale, noLanderEscalationPrefix)
-		}
-	}
-	return false
 }
 
 func unionPRSets(sets ...map[int]bool) map[int]bool {

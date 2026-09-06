@@ -419,6 +419,53 @@ func TestFailureClass(t *testing.T) {
 			},
 			want: OutcomeFail,
 		},
+
+		// Windows sharing-violation family (#4416): real-time antivirus
+		// scanning holding a transient lock on a just-written file.
+		{
+			name: "windows sharing violation from os.PathError",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: remove C:\ws\.git\index: The process cannot access the file because it is being used by another process.`},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "windows node EBUSY resource lock",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: Error: EBUSY: resource busy or locked, rename 'C:\ws\out.tmp' -> 'C:\ws\out.json'`},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "windows git unable to unlink a locked file",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 128; failure: error: unable to unlink 'src/app.go': Permission denied`},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			// Must NOT misclassify a genuine permission bug as the Windows
+			// lock condition: a bare denial with no lock-specific phrase, and
+			// none of the existing filesystem-errno group's required pairings
+			// (no "mkdir", no "eacces:").
+			name: "genuine permission bug is not a sharing violation",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; failure: open /etc/shadow: permission denied"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "genuine authorization denial is not a sharing violation",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; failure: PUT https://api.example.com/v1/widgets: 403 access is denied for this credential"},
+			},
+			want: OutcomeFail,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inputs, inputErr := AutomatedInputs(tc.result)

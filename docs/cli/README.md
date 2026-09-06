@@ -102,6 +102,11 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers service start`](#goobers-service-start) | resume an installed-but-stopped daemon |
 | [`goobers service status`](#goobers-service-status) | report whether the supervised daemon is installed and running |
 | [`goobers service stop`](#goobers-service-stop) | halt the running daemon without disabling or removing it |
+| [`goobers service task-install`](#goobers-service-task-install) | install a per-user Windows Scheduled Task supervisor |
+| [`goobers service task-start`](#goobers-service-task-start) | start a per-user Windows Scheduled Task supervisor |
+| [`goobers service task-status`](#goobers-service-task-status) | report per-user Windows Scheduled Task state and identity |
+| [`goobers service task-stop`](#goobers-service-task-stop) | stop a per-user Windows Scheduled Task supervisor |
+| [`goobers service task-uninstall`](#goobers-service-task-uninstall) | remove a per-user Windows Scheduled Task supervisor |
 | [`goobers service uninstall`](#goobers-service-uninstall) | gracefully stop and remove the supervised daemon |
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
@@ -3295,6 +3300,11 @@ Subcommands:
   stop        halt the running service without disabling or removing it
   status      report whether the service is installed and running
 
+On Windows, use `service task-install`, `service task-start`,
+`service task-stop`, `service task-status`, and `service task-uninstall`
+for the per-user Scheduled Task supervisor. `service install` creates a
+machine SCM service as LocalSystem and requires explicit acknowledgement.
+
 Run `goobers service install -h`, `goobers service uninstall -h`,
 `goobers service start -h`, `goobers service stop -h`, or
 `goobers service status -h` for details. Default path is ".".
@@ -3313,7 +3323,7 @@ $ goobers service uninstall
 install, enable, and start the supervised daemon
 
 ~~~text
-Usage: goobers service install [path]
+Usage: goobers service install [--confirm-local-system] [--acknowledge-local-system] [path]
 
 Install, enable, and start the goobers daemon for the instance at <path>.
 Linux and macOS install a per-user service so provider credentials retain
@@ -3321,6 +3331,11 @@ the current user's ownership. Windows installation must run from an
 elevated terminal. An existing installation is never overwritten; uninstall
 it first when changing the stable host binary or instance path. Product
 binary updates use the self-update workflow instead.
+
+On Windows this creates a LocalSystem SCM service. It cannot access
+user-scoped CLI accounts, Credential Manager, %%LOCALAPPDATA%%, mapped
+drives, or user PATH. Use --confirm-local-system interactively or
+--acknowledge-local-system in scripts after reviewing that warning.
 
 Exit codes: 0 = installed and running, 1 = installation/start error,
 2 = usage error or not an instance root.
@@ -3398,6 +3413,76 @@ error, 2 = usage error or not an instance root.
 ~~~console
 $ goobers service stop
 $ goobers service stop ./instance
+~~~
+
+## `goobers service task-install`
+
+install a per-user Windows Scheduled Task supervisor
+
+~~~text
+Usage: goobers service task-install [path]
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service task-install
+~~~
+
+## `goobers service task-start`
+
+start a per-user Windows Scheduled Task supervisor
+
+~~~text
+Usage: goobers service task-start [path]
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service task-start
+~~~
+
+## `goobers service task-status`
+
+report per-user Windows Scheduled Task state and identity
+
+~~~text
+Usage: goobers service task-status [--json] [path]
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service task-status --json
+~~~
+
+## `goobers service task-stop`
+
+stop a per-user Windows Scheduled Task supervisor
+
+~~~text
+Usage: goobers service task-stop [path]
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service task-stop
+~~~
+
+## `goobers service task-uninstall`
+
+remove a per-user Windows Scheduled Task supervisor
+
+~~~text
+Usage: goobers service task-uninstall [path]
+~~~
+
+**Examples**
+
+~~~console
+$ goobers service task-uninstall
 ~~~
 
 ## `goobers service uninstall`

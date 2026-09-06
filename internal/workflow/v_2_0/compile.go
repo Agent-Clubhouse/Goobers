@@ -509,6 +509,33 @@ func externalTelemetryConnectorProblem(t apiv1.Task, knownExternalTelemetryConne
 	return ""
 }
 
+// resultFileContractProblem rejects a shell stage declaring inputs.resultFile
+// or expectedOutputs for a built-in subcommand that never produces a result
+// file (providerstage.ResultFileUnsupported): the declared postcondition can
+// never be satisfied at runtime, so admission catches it statically instead
+// of a downstream stage's inputsFrom silently reading nothing (#4415). A
+// subcommand absent from the manifest (providerstage covers only commands
+// with declared capability requirements) is unclassified rather than
+// unsupported, so SupportsResultFile's ok=false is treated as permissive.
+func resultFileContractProblem(t apiv1.Task, subcommand string) string {
+	declaresResultFile := strings.TrimSpace(t.Inputs["resultFile"]) != ""
+	if !declaresResultFile && len(t.ExpectedOutputs) == 0 {
+		return ""
+	}
+	support, ok := providerstage.SupportsResultFile(subcommand)
+	if !ok || support != providerstage.ResultFileUnsupported {
+		return ""
+	}
+	declaration := "inputs.resultFile"
+	if !declaresResultFile {
+		declaration = "expectedOutputs"
+	}
+	return fmt.Sprintf(
+		"task %q invokes built-in subcommand %q via %s, but %q never produces a result file",
+		t.Name, subcommand, declaration, subcommand,
+	)
+}
+
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, knownExternalTelemetryConnectors map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
 	maxConcurrentRuns := def.Spec.Readiness.MaxConcurrentRuns
@@ -566,6 +593,9 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 						t.Name, subcommand, use.Capability, credential, use.Consequence,
 					))
 				}
+			}
+			if problem := resultFileContractProblem(t, subcommand); problem != "" {
+				problems = append(problems, problem)
 			}
 		}
 		if t.Inputs["kind"] == "ci-poll" && !capabilities[string(capability.ProviderPRWrite)] {

@@ -38,6 +38,7 @@ type SchedulerStatus struct {
 	RefusedWorkflows []WorkflowRefusalStatus
 	RefillOccupancy  []RefillOccupancyStatus
 	Retention        *RetentionStatus
+	Maintenance      *MaintenanceStatus
 }
 
 // WorkflowRefusalStatus is one boot-refused workflow and its solver
@@ -69,6 +70,23 @@ type RetentionStatus struct {
 	Passes int `json:"passes"`
 	// LastPassAt is the time of the most recent retention pass, if any.
 	LastPassAt *time.Time `json:"lastPassAt,omitempty"`
+}
+
+// MaintenanceStatus is the bounded, canonical read model for a retention
+// sweep. It contains counters, not per-candidate history or filesystem paths.
+type MaintenanceStatus struct {
+	Kind            string     `json:"kind"`
+	State           string     `json:"state"`
+	Trigger         string     `json:"trigger"`
+	StartedAt       *time.Time `json:"startedAt,omitempty"`
+	LastProgressAt  *time.Time `json:"lastProgressAt,omitempty"`
+	CurrentPhase    string     `json:"currentPhase,omitempty"`
+	Candidates      int        `json:"candidates"`
+	Removed         int        `json:"removed"`
+	Failures        int        `json:"failures"`
+	LastCompletedAt *time.Time `json:"lastCompletedAt,omitempty"`
+	LastResult      string     `json:"lastResult,omitempty"`
+	ErrorSummary    string     `json:"errorSummary,omitempty"`
 }
 
 // DaemonRestartStatus correlates the latest daemon lifetime with runs selected
@@ -386,8 +404,38 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		}
 		status.Retention = &retention
 	}
+	if s.sources.RetentionStats != nil {
+		status.Maintenance = maintenanceStatus(s.sources.RetentionStats())
+	}
 
 	return status, nil
+}
+
+func maintenanceStatus(stats readmodel.RetentionStats) *MaintenanceStatus {
+	status := &MaintenanceStatus{
+		Kind:         stats.Kind,
+		State:        stats.State,
+		Trigger:      stats.Trigger,
+		CurrentPhase: stats.CurrentPhase,
+		Candidates:   stats.Candidates,
+		Removed:      stats.Removed,
+		Failures:     stats.Failed,
+		LastResult:   stats.LastResult,
+		ErrorSummary: stats.LastError,
+	}
+	if !stats.StartedAt.IsZero() {
+		value := stats.StartedAt
+		status.StartedAt = &value
+	}
+	if !stats.LastProgressAt.IsZero() {
+		value := stats.LastProgressAt
+		status.LastProgressAt = &value
+	}
+	if !stats.LastCompletedAt.IsZero() {
+		value := stats.LastCompletedAt
+		status.LastCompletedAt = &value
+	}
+	return status
 }
 
 type restartRun struct {

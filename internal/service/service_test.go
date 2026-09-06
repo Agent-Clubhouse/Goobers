@@ -191,6 +191,7 @@ func TestWindowsInstallStatusAndUninstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if !status.Installed || !status.Running || status.State != "running" {
 		t.Fatalf("status = %+v", status)
 	}
@@ -219,6 +220,70 @@ func TestWindowsInstallStatusAndUninstall(t *testing.T) {
 	last := runner.calls[len(runner.calls)-1]
 	if last.name != "sc.exe" || !reflect.DeepEqual(last.args, []string{"delete", "goobers"}) {
 		t.Fatalf("last command = %#v", last)
+	}
+}
+
+func TestWindowsScheduledTaskInstallUsesCurrentUserAndLogonTrigger(t *testing.T) {
+	const running = "TaskName: \\Goobers\\daemon\n" +
+		"Run As User: CONTOSO\\alice\nStatus: Running\nLast Result: 0\n"
+	runner := &fakeRunner{responses: []commandResponse{
+		{output: "ERROR: The system cannot find the file specified.", code: 1},
+		{},
+		{},
+		{output: running, repeat: serviceReadinessChecks},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "windows",
+		Executable:   `C:\Program Files\goobers\goobers.exe`,
+		InstanceRoot: `C:\Users\alice\AppData\Local\Goobers`,
+		UserName:     `CONTOSO\alice`,
+		Runner:       runner,
+	})
+
+	status, err := manager.InstallTask(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Supervisor != "windows-scheduled-task" || status.Account != `CONTOSO\alice` ||
+		status.Trigger != "interactive user logon" || !status.Running {
+		t.Fatalf("status = %+v", status)
+	}
+	create := runner.calls[1]
+	if create.name != "powershell.exe" {
+		t.Fatalf("create command = %#v", create)
+	}
+	args := strings.Join(create.args, " ")
+	for _, want := range []string{
+		"-NoProfile", "-NonInteractive", "Register-ScheduledTask",
+		"New-ScheduledTaskTrigger -AtLogOn", "New-ScheduledTaskPrincipal",
+		"-LogonType Interactive", "-RunLevel Limited", "__service-supervise",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("create command = %q, missing %q", args, want)
+		}
+	}
+	if strings.Contains(strings.ToLower(args), "password") {
+		t.Fatalf("create command must not request or persist a password: %q", args)
+	}
+}
+
+func TestWindowsScheduledTaskStatusReportsLastFailure(t *testing.T) {
+	runner := &fakeRunner{responses: []commandResponse{{
+		output: "Run As User: CONTOSO\\alice\nStatus: Ready\nLast Result: 2147942402\n",
+	}}}
+	manager := newTestManager(t, Config{
+		GOOS:         "windows",
+		Executable:   `C:\goobers.exe`,
+		InstanceRoot: `C:\Users\alice\AppData\Local\Goobers`,
+		UserName:     `CONTOSO\alice`,
+		Runner:       runner,
+	})
+	status, err := manager.TaskStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Installed || status.Running || status.LastFailure != "2147942402" {
+		t.Fatalf("status = %+v", status)
 	}
 }
 

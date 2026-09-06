@@ -423,7 +423,7 @@ func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
 			return true
 		}
 	}
-	return failureclass.IsDependencyTransportDenial(message)
+	return failureclass.IsDependencyTransportDenial(message) || failureclass.IsWindowsSharingViolation(message)
 }
 
 func containsAll(message string, tokens []string) bool {
