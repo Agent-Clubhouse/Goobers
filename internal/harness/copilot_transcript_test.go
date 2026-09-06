@@ -37,7 +37,11 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 		wantMetrics := map[string]float64{
 			telemetry.AttrGenAIUsageInputTokens:  28,
 			telemetry.AttrGenAIUsageOutputTokens: 13,
+			telemetry.AttrUsageCacheReadTokens:   6,
+			telemetry.AttrUsageCacheWriteTokens:  3,
+			telemetry.AttrUsageReasoningTokens:   1,
 			telemetry.AttrCopilotPremiumRequests: 2,
+			telemetry.AttrUsageNanoAIU:           3000,
 			telemetry.AttrUsageCostUSD:           0.00000003,
 		}
 		if !mapsEqual(got.metrics, wantMetrics) {
@@ -50,15 +54,27 @@ func TestConvertCopilotSessionEventsFixture(t *testing.T) {
 		if first.Model != "a-model" ||
 			first.InputTokens == nil || *first.InputTokens != 8 ||
 			first.OutputTokens == nil || *first.OutputTokens != 3 ||
+			first.CacheReadTokens == nil || *first.CacheReadTokens != 2 ||
+			first.CacheWriteTokens == nil || *first.CacheWriteTokens != 1 ||
+			first.ReasoningTokens == nil || *first.ReasoningTokens != 1 ||
 			first.CopilotPremiumRequests == nil || *first.CopilotPremiumRequests != 0.5 ||
-			first.CostUSD == nil || *first.CostUSD != 0.00000001 {
+			first.NanoAIU == nil || *first.NanoAIU != 1000 ||
+			first.CostUSD == nil || *first.CostUSD != 0.00000001 ||
+			first.BillingModel != telemetry.BillingModelAICredits ||
+			first.CostBasis != telemetry.CostBasisVendorReported {
 			t.Fatalf("a-model usage = %#v", first)
 		}
 		if second.Model != "z-model" ||
 			second.InputTokens == nil || *second.InputTokens != 20 ||
 			second.OutputTokens == nil || *second.OutputTokens != 10 ||
+			second.CacheReadTokens == nil || *second.CacheReadTokens != 4 ||
+			second.CacheWriteTokens == nil || *second.CacheWriteTokens != 2 ||
+			second.ReasoningTokens != nil ||
 			second.CopilotPremiumRequests == nil || *second.CopilotPremiumRequests != 1.5 ||
-			second.CostUSD == nil || *second.CostUSD != 0.00000002 {
+			second.NanoAIU == nil || *second.NanoAIU != 2000 ||
+			second.CostUSD == nil || *second.CostUSD != 0.00000002 ||
+			second.BillingModel != telemetry.BillingModelAICredits ||
+			second.CostBasis != telemetry.CostBasisVendorReported {
 			t.Fatalf("z-model usage = %#v", second)
 		}
 	}
@@ -87,7 +103,7 @@ func TestCopilotUsagePreservesAbsentAndZero(t *testing.T) {
 	for _, name := range []string{
 		telemetry.AttrGenAIUsageInputTokens,
 		telemetry.AttrGenAIUsageOutputTokens,
-		telemetry.AttrCopilotPremiumRequests,
+		telemetry.AttrUsageNanoAIU,
 		telemetry.AttrUsageCostUSD,
 	} {
 		value, present := zero.metrics[name]
@@ -98,9 +114,15 @@ func TestCopilotUsagePreservesAbsentAndZero(t *testing.T) {
 	if len(zero.modelUsage) != 1 ||
 		zero.modelUsage[0].InputTokens == nil || *zero.modelUsage[0].InputTokens != 0 ||
 		zero.modelUsage[0].OutputTokens == nil || *zero.modelUsage[0].OutputTokens != 0 ||
-		zero.modelUsage[0].CopilotPremiumRequests == nil || *zero.modelUsage[0].CopilotPremiumRequests != 0 ||
-		zero.modelUsage[0].CostUSD == nil || *zero.modelUsage[0].CostUSD != 0 {
+		zero.modelUsage[0].CopilotPremiumRequests != nil ||
+		zero.modelUsage[0].NanoAIU == nil || *zero.modelUsage[0].NanoAIU != 0 ||
+		zero.modelUsage[0].CostUSD == nil || *zero.modelUsage[0].CostUSD != 0 ||
+		zero.modelUsage[0].BillingModel != telemetry.BillingModelAICredits ||
+		zero.modelUsage[0].CostBasis != telemetry.CostBasisVendorReported {
 		t.Fatalf("zero model usage = %#v", zero.modelUsage)
+	}
+	if _, present := zero.metrics[telemetry.AttrCopilotPremiumRequests]; present {
+		t.Fatalf("zero premium requests must be omitted: %#v", zero.metrics)
 	}
 }
 
@@ -109,7 +131,11 @@ func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
 	want := map[string]float64{
 		telemetry.AttrGenAIUsageInputTokens:  28,
 		telemetry.AttrGenAIUsageOutputTokens: 13,
+		telemetry.AttrUsageCacheReadTokens:   6,
+		telemetry.AttrUsageCacheWriteTokens:  3,
+		telemetry.AttrUsageReasoningTokens:   1,
 		telemetry.AttrCopilotPremiumRequests: 2,
+		telemetry.AttrUsageNanoAIU:           3000,
 		telemetry.AttrUsageCostUSD:           0.00000003,
 	}
 
@@ -128,6 +154,7 @@ func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
 				telemetry.AttrGenAIUsageInputTokens:  1,
 				telemetry.AttrGenAIUsageOutputTokens: 2,
 				telemetry.AttrCopilotPremiumRequests: 0.5,
+				telemetry.AttrUsageNanoAIU:           1000,
 				telemetry.AttrUsageCostUSD:           0.00000001,
 			},
 			wantModels:    "gpt-5.4",
@@ -204,7 +231,9 @@ func TestCopilotUsageMatchesEnvelopeAndSpan(t *testing.T) {
 			var spanModel string
 			for _, attr := range spans[0].Attributes() {
 				switch string(attr.Key) {
-				case telemetry.AttrGenAIUsageInputTokens, telemetry.AttrGenAIUsageOutputTokens:
+				case telemetry.AttrGenAIUsageInputTokens, telemetry.AttrGenAIUsageOutputTokens,
+					telemetry.AttrUsageCacheReadTokens, telemetry.AttrUsageCacheWriteTokens,
+					telemetry.AttrUsageReasoningTokens, telemetry.AttrUsageNanoAIU:
 					gotSpan[string(attr.Key)] = float64(attr.Value.AsInt64())
 				case telemetry.AttrCopilotPremiumRequests, telemetry.AttrUsageCostUSD:
 					gotSpan[string(attr.Key)] = attr.Value.AsFloat64()
@@ -344,6 +373,7 @@ func TestCopilotAdapterKeepsStdoutWhenNativeLogOnlyHasUsage(t *testing.T) {
 	}
 	wantMetrics := map[string]float64{
 		telemetry.AttrCopilotPremiumRequests: 2,
+		telemetry.AttrUsageNanoAIU:           3000,
 		telemetry.AttrUsageCostUSD:           0.00000003,
 	}
 	if !mapsEqual(out.Metrics, wantMetrics) {

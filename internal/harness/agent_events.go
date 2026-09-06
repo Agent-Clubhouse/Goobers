@@ -93,6 +93,12 @@ func (e *adapterAgentEmitter) finish(out *Outcome, runErr *error) {
 		resolvedModel = e.resolvedModel
 	}
 	event := e.lifecycleEvent(lifecycle, metrics, resolvedModel, e.resolvedEffort)
+	if event.Agent != nil && !e.hasNestedAgents {
+		event.Agent.Usage = agentUsage(metrics, out.ModelUsage...)
+		if event.Agent.Usage.Model == "" {
+			event.Agent.Usage.Model = resolvedModel
+		}
+	}
 	if event.Agent != nil && e.hasNestedAgents {
 		event.Agent.Coordinator = true
 		event.Agent.Worker = false
@@ -175,7 +181,7 @@ func adapterAgentID(req RunRequest, plugin string) string {
 	return plugin + ":" + req.Envelope.TaskID
 }
 
-func agentUsage(metrics map[string]float64) journal.AgentUsage {
+func agentUsage(metrics map[string]float64, models ...telemetry.ModelUsage) journal.AgentUsage {
 	var usage journal.AgentUsage
 	if value, ok := metrics[telemetry.AttrGenAIUsageInputTokens]; ok {
 		v := int64(value)
@@ -185,8 +191,65 @@ func agentUsage(metrics map[string]float64) journal.AgentUsage {
 		v := int64(value)
 		usage.OutputTokens = &v
 	}
-	if value, ok := metrics[telemetry.AttrUsageCostUSD]; ok {
+	if value, ok := metrics[telemetry.AttrUsageCacheReadTokens]; ok {
+		v := int64(value)
+		usage.CacheReadTokens = &v
+	}
+	if value, ok := metrics[telemetry.AttrUsageCacheWriteTokens]; ok {
+		v := int64(value)
+		usage.CacheWriteTokens = &v
+	}
+	if value, ok := metrics[telemetry.AttrUsageReasoningTokens]; ok {
+		v := int64(value)
+		usage.ReasoningTokens = &v
+	}
+	if value, ok := metrics[telemetry.AttrUsageNanoAIU]; ok {
+		v := int64(value)
+		usage.NanoAIU = &v
+		cost := telemetry.NanoAIUToUSD(v)
+		usage.CostUSD = &cost
+	} else if value, ok := metrics[telemetry.AttrUsageCostUSD]; ok {
 		usage.CostUSD = &value
+	}
+	if len(models) == 1 {
+		usage.Model = models[0].Model
+	}
+	var exactCacheRead, exactCacheWrite, exactReasoning, exactNanoAIU int64
+	var hasExactCacheRead, hasExactCacheWrite, hasExactReasoning, hasExactNanoAIU bool
+	for _, model := range models {
+		if model.CacheReadTokens != nil {
+			exactCacheRead += *model.CacheReadTokens
+			hasExactCacheRead = true
+		}
+		if model.CacheWriteTokens != nil {
+			exactCacheWrite += *model.CacheWriteTokens
+			hasExactCacheWrite = true
+		}
+		if model.ReasoningTokens != nil {
+			exactReasoning += *model.ReasoningTokens
+			hasExactReasoning = true
+		}
+		if model.NanoAIU != nil {
+			exactNanoAIU += *model.NanoAIU
+			hasExactNanoAIU = true
+		}
+	}
+	if hasExactCacheRead {
+		usage.CacheReadTokens = &exactCacheRead
+	}
+	if hasExactCacheWrite {
+		usage.CacheWriteTokens = &exactCacheWrite
+	}
+	if hasExactReasoning {
+		usage.ReasoningTokens = &exactReasoning
+	}
+	if hasExactNanoAIU {
+		aggregate, hasAggregate := metrics[telemetry.AttrUsageNanoAIU]
+		if !hasAggregate || float64(exactNanoAIU) == aggregate {
+			usage.NanoAIU = &exactNanoAIU
+			cost := telemetry.NanoAIUToUSD(exactNanoAIU)
+			usage.CostUSD = &cost
+		}
 	}
 	return usage
 }
