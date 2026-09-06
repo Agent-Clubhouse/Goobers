@@ -149,6 +149,62 @@ func refuseGooberPin(refusal *gooberPinRefusal) error {
 	return invoke.InfrastructureFailure(refusal)
 }
 
+// refuseGooberPinLocked builds a refusal for a pin no candidate tree
+// resolved, reports it (#4153 — see reportGooberPinRefusalLocked), and
+// returns the classified error. Callers must hold w.mu.
+func (w *workerSeams) refuseGooberPinLocked(gaggle, workflowName, pin string, served []string, unverifiable error) error {
+	refusal := &gooberPinRefusal{
+		Code:     gooberPinMissingCode,
+		Gaggle:   gaggle,
+		Workflow: workflowName,
+		Expected: pin,
+		Served:   served,
+	}
+	if len(served) == 0 && unverifiable != nil {
+		refusal.Code = gooberPinUnverifiableCode
+		refusal.Detail = unverifiable.Error()
+	}
+	w.reportGooberPinRefusalLocked(refusal)
+	return refuseGooberPin(refusal)
+}
+
+// reportGooberPinRefusalLocked logs the FIRST occurrence of each distinct
+// (gaggle, workflow, expected digest) pin refusal.
+//
+// #4153: this refusal is deliberately classified INFRASTRUCTURE-retriable
+// because the expected fix is a reload away (#3884's comment above). That
+// assumption breaks when the worker's config tree has no writer at all — a
+// workflowSource edit lands on the daemon and nothing ever re-seeds this
+// pod's tree — and the retry then never converges. Previously nothing said
+// so: an operator saw only a stage retrying out of its infrastructure budget,
+// with no signal distinguishing "a reload is en route" from "no reload is
+// coming." Logging the first refusal for each distinct expected digest turns
+// that silent, unbounded retry into a surfaced, alertable condition, without
+// deciding which design (#4153's sketch-1, or #3290's configMirrorPath)
+// eventually removes the divergence itself. Callers must hold w.mu.
+func (w *workerSeams) reportGooberPinRefusalLocked(refusal *gooberPinRefusal) {
+	identity := localscheduler.WorkflowIdentity{Gaggle: refusal.Gaggle, Workflow: refusal.Workflow}
+	if w.lastPinRefusal == nil {
+		w.lastPinRefusal = map[localscheduler.WorkflowIdentity]string{}
+	}
+	if w.lastPinRefusal[identity] == refusal.Expected {
+		return
+	}
+	w.lastPinRefusal[identity] = refusal.Expected
+	w.log("worker goober pin: %v", refusal)
+}
+
+// clearGooberPinRefusalLocked forgets a dedup entry once its digest resolves,
+// so a LATER refusal for the same (gaggle, workflow) — even one that pins the
+// very same digest again, a tree edited and reverted — is reported again
+// rather than assumed still-silenced. Callers must hold w.mu.
+func (w *workerSeams) clearGooberPinRefusalLocked(gaggle, workflowName string) {
+	if w.lastPinRefusal == nil {
+		return
+	}
+	delete(w.lastPinRefusal, localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: workflowName})
+}
+
 // gooberDigestIndex is one config snapshot's (gaggle, workflow) →
 // goober-digest table, computed at most once and only if something actually
 // asks. Lazy because the compile it runs is not free and an unpinned worker
@@ -358,21 +414,11 @@ func (w *workerSeams) forPinnedGaggle(gaggle, workflowName, pin string) (*gaggle
 		if digest != pin {
 			continue
 		}
+		w.clearGooberPinRefusalLocked(gaggle, workflowName)
 		return w.seamsFromLocked(snapshot, gaggle)
 	}
 
-	refusal := &gooberPinRefusal{
-		Code:     gooberPinMissingCode,
-		Gaggle:   gaggle,
-		Workflow: workflowName,
-		Expected: pin,
-		Served:   served,
-	}
-	if len(served) == 0 && unverifiable != nil {
-		refusal.Code = gooberPinUnverifiableCode
-		refusal.Detail = unverifiable.Error()
-	}
-	return nil, refuseGooberPin(refusal)
+	return nil, w.refuseGooberPinLocked(gaggle, workflowName, pin, served, unverifiable)
 }
 
 // seamsFromLocked returns the gaggle's kit as built from one specific
@@ -440,21 +486,11 @@ func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerC
 			served = append(served, digest)
 		}
 		if digest == pin {
+			w.clearGooberPinRefusalLocked(gaggle, workflowName)
 			return snapshot, nil
 		}
 	}
-	refusal := &gooberPinRefusal{
-		Code:     gooberPinMissingCode,
-		Gaggle:   gaggle,
-		Workflow: workflowName,
-		Expected: pin,
-		Served:   served,
-	}
-	if len(served) == 0 && unverifiable != nil {
-		refusal.Code = gooberPinUnverifiableCode
-		refusal.Detail = unverifiable.Error()
-	}
-	return nil, refuseGooberPin(refusal)
+	return nil, w.refuseGooberPinLocked(gaggle, workflowName, pin, served, unverifiable)
 }
 
 func containsString(values []string, want string) bool {
