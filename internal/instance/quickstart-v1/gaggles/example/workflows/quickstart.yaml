@@ -43,7 +43,7 @@ spec:
     - name: review
       type: agentic
       goober: reviewer
-      workspace: repo-readonly
+      workspace: repo
       goal: Review the committed tutorial change and report focused feedback.
       capabilities:
         - agent:model

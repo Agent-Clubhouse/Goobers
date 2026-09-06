@@ -60,7 +60,7 @@ spec:
       evaluator: agentic
       agentic:
         goober: python-reviewer
-        workspace: repo-readonly
+        workspace: repo
       branches:
         pass: local-ci
         needs-changes: implement

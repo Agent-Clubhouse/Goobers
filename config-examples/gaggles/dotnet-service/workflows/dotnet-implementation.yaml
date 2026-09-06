@@ -77,7 +77,7 @@ spec:
       evaluator: agentic
       agentic:
         goober: dotnet-reviewer
-        workspace: repo-readonly
+        workspace: repo
       branches:
         pass: local-ci
         needs-changes: implement

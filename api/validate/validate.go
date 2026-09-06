@@ -2094,12 +2094,11 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
-	for _, msg := range wf.CheckImplicitWritableWorkspaceWarnings(def, ix.gooberSpecs()) {
-		r.addWarning(WarningImplicitWritableWorkspace, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
-	}
+	ix.addImplicitWritableWorkspaceWarnings(r, def, file, w)
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(errorReachability, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+
 	// Outbox declarations and mirror roots (#3662): an escaping or empty
 	// outbox entry, or a relative mirror root, only fails at artifact export
 	// — after the stage has already done its work — so it is refused here.
@@ -2212,6 +2211,12 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
+}
+
+func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+	for _, msg := range wf.CheckImplicitWritableWorkspaceWarnings(def, ix.gooberSpecs()) {
+		r.addWarning(WarningImplicitWritableWorkspace, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
+	}
 }
 
 // checkWorkflowsCompile closes the admission gap between canonical config
