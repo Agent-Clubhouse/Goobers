@@ -61,8 +61,21 @@ func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) 
 	if status.ProviderQuotaResumeAt == nil || !now.Before(*status.ProviderQuotaResumeAt) {
 		return ""
 	}
+
 	return "GitHub quota exhausted — resuming dispatch at " +
 		status.ProviderQuotaResumeAt.UTC().Format(time.RFC3339) + "\n"
+}
+
+func maintenanceStatusLine(status readservice.SchedulerStatus) string {
+	if status.Maintenance == nil || status.Maintenance.State == "none" {
+		return ""
+	}
+	if status.Maintenance.State == "running" {
+		return fmt.Sprintf("Retention sweep running: %d removed, %d candidates\n",
+			status.Maintenance.Removed, status.Maintenance.Candidates)
+	}
+	return fmt.Sprintf("Retention sweep %s: %d removed, %d candidates\n",
+		status.Maintenance.State, status.Maintenance.Removed, status.Maintenance.Candidates)
 }
 
 // refusedWorkflowStatusLines surfaces the workflows the startup constraint
@@ -255,6 +268,7 @@ type statusJSONOutput struct {
 	Warnings      []validate.CodedWarning          `json:"warnings"`
 	TimeToFirstPR *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
 	DaemonRestart *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
+	Maintenance   *readservice.MaintenanceStatus   `json:"maintenance,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -942,6 +956,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			renderStatusFleetSummary(&text, summary, now)
 			text.WriteString(daemonRestartStatusLine(status, now))
 			text.WriteString(providerQuotaStatusLine(status, now))
+			text.WriteString(maintenanceStatusLine(status))
 			text.WriteString(refusedWorkflowStatusLines(status))
 		} else {
 			summary, summaryErr := loadFleetSummary(runs, readservice.SchedulerStatus{}, now)
@@ -1031,6 +1046,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	if *jsonOutput {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
+		var maintenance *readservice.MaintenanceStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var parked *statusParkedBacklog
 		if supportsWatch {
@@ -1040,6 +1056,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			}
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
+				maintenance = status.Maintenance
 				refusedWorkflows = status.RefusedWorkflows
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
@@ -1056,6 +1073,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			Warnings:         warnings,
 			TimeToFirstPR:    timeToFirstPR,
 			DaemonRestart:    daemonRestart,
+			Maintenance:      maintenance,
 			RefusedWorkflows: refusedWorkflows,
 			Summary:          fleetSummary,
 			ParkedBacklog:    parked,

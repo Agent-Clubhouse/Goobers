@@ -78,6 +78,7 @@ type Instance struct {
 	Concurrency   Concurrency             `json:"concurrency"`
 	Counts        InventoryCounts         `json:"counts"`
 	Warnings      []validate.CodedWarning `json:"warnings"`
+	Maintenance   *MaintenanceStatus      `json:"maintenance,omitempty"`
 	// MemoryHighWater, MemoryGateEnabled, and FsyncDisabled surface
 	// GOOBERS_MEMORY_HIGH_WATER and GOOBERS_DISABLE_FSYNC (#4218), settings
 	// that were previously invisible outside the daemon process's own
@@ -395,6 +396,10 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if s.sources.FleetEnrolled != nil {
 		fleetEnrolled = s.sources.FleetEnrolled(s.sources.Layout.Root)
 	}
+	var maintenance *MaintenanceStatus
+	if s.sources.RetentionStats != nil {
+		maintenance = maintenanceStatus(s.sources.RetentionStats())
+	}
 	return Instance{
 		APIVersion:    APIVersion,
 		SchemaVersion: SchemaVersion,
@@ -414,6 +419,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 			ActiveRuns: activeTotal,
 		},
 		Warnings:          append([]validate.CodedWarning{}, inventory.warnings...),
+		Maintenance:       maintenance,
 		MemoryHighWater:   memoryHighWater,
 		MemoryGateEnabled: !memoryGateDisabled,
 		FsyncDisabled:     journal.FsyncDisabled(),

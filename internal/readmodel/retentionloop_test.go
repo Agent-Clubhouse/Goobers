@@ -31,6 +31,56 @@ func TestUnboundedProjectionPassStillPrunesChangeFeed(t *testing.T) {
 	if loop.Stats().ChangesPruned != 1 {
 		t.Errorf("changes pruned = %d, want 1", loop.Stats().ChangesPruned)
 	}
+	stats := loop.Stats()
+	if stats.State != "completed" || stats.Trigger != "startup" || stats.Kind != "retention-sweep" {
+		t.Fatalf("maintenance status = %+v, want completed startup retention-sweep", stats)
+	}
+}
+
+func TestRetentionLoopMaintenanceStates(t *testing.T) {
+	ctx := context.Background()
+
+	store := openTestStore(t)
+	loop := NewRetentionLoop(store, store, UnboundedRetention(), RetentionOptions{})
+	if got := loop.Stats().State; got != "none" {
+		t.Fatalf("fresh maintenance state = %q, want none", got)
+	}
+	if got := loop.Stats().Kind; got != "retention-sweep" {
+		t.Fatalf("fresh maintenance kind = %q, want retention-sweep", got)
+	}
+
+	loop.pass(ctx)
+	stats := loop.Stats()
+	if stats.State != "completed" || stats.Trigger != "startup" {
+		t.Fatalf("startup maintenance status = %+v, want completed startup", stats)
+	}
+
+	loop.pass(ctx)
+	stats = loop.Stats()
+	if stats.State != "completed" || stats.Trigger != "periodic" {
+		t.Fatalf("periodic maintenance status = %+v, want completed periodic", stats)
+	}
+
+	store = openTestStore(t)
+	loop = NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{})
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	loop.pass(ctx)
+	stats = loop.Stats()
+	if stats.State != "failed" || stats.LastResult != "failed" {
+		t.Fatalf("failed maintenance status = %+v, want failed failed", stats)
+	}
+
+	store = openTestStore(t)
+	loop = NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{})
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	loop.pass(ctxCancelled)
+	stats = loop.Stats()
+	if stats.State != "cancelled" || stats.LastResult != "cancelled" {
+		t.Fatalf("cancelled maintenance status = %+v, want cancelled cancelled", stats)
+	}
 }
 
 // TestBoundedLoopRunsAPassOnStart pins that an instance down past its window
@@ -87,6 +137,9 @@ func TestPassFailureIsCountedNotFatal(t *testing.T) {
 		t.Error("a failing pass was not counted; a retention loop silently doing nothing " +
 			"looks identical to one with nothing to do")
 	}
+	if got := loop.Stats().State; got != "failed" {
+		t.Errorf("maintenance state = %q, want failed", got)
+	}
 }
 
 // TestCancelledPassIsNotCountedAsAFailure pins that shutdown is not an error.
@@ -109,5 +162,8 @@ func TestCancelledPassIsNotCountedAsAFailure(t *testing.T) {
 	if loop.Stats().Failures != 0 {
 		t.Errorf("a cancelled pass counted %d failures; the counter would be non-zero on "+
 			"every clean shutdown", loop.Stats().Failures)
+	}
+	if got := loop.Stats().State; got != "cancelled" {
+		t.Errorf("maintenance state = %q, want cancelled", got)
 	}
 }
