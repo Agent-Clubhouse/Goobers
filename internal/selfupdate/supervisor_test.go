@@ -116,6 +116,43 @@ func TestEnsureCurrentBinaryDoesNotReplaceNewerActiveVersion(t *testing.T) {
 	}
 }
 
+func TestDaemonOutputMergesAndRedactsStreams(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr strings.Builder
+	output, err := openDaemonOutput(root, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+
+	stdoutWriter := output.child(&stdout)
+	stderrWriter := output.child(&stderr)
+	if _, err := stdoutWriter.Write([]byte("startup: scheduler initialized\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stderrWriter.Write([]byte("Authorization: Bearer ghp_123456789012345678901234567890123456\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "scheduler", "daemon.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := string(data)
+	if !strings.Contains(logged, "scheduler initialized") || !strings.Contains(logged, "REDACTED") {
+		t.Fatalf("daemon log = %q, want merged startup and redacted error output", logged)
+	}
+	if strings.Contains(logged, "ghp_123456789012345678901234567890123456") {
+		t.Fatalf("daemon log contains bearer token: %q", logged)
+	}
+	if !strings.Contains(stdout.String(), "scheduler initialized") || strings.Contains(stdout.String(), "Authorization") {
+		t.Fatalf("foreground stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "REDACTED") {
+		t.Fatalf("foreground stderr = %q, want redacted output", stderr.String())
+	}
+}
+
 func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 	root, now, _ := setupSupervisorRequest(t)
 	lockPath := filepath.Join(root, "scheduler", "up.lock")

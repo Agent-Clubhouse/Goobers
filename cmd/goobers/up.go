@@ -1071,10 +1071,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	cancelPlane.AttachRelease(sched.ReleaseRun)
 
+	pf(stdout, "startup: phase=api-readiness status=starting address=%s\n", apiListenAddress(setup.Config))
 	if err := apiServer.Start(); err != nil {
+		pf(stderr, "startup: phase=api-readiness status=failure address=%s error=%v\n", apiListenAddress(setup.Config), err)
 		pf(stderr, "error: start HTTP API: %v\n", err)
 		return 1
 	}
+	pf(stdout, "startup: phase=api-readiness status=ready address=%s\n", apiServer.Address())
 	if webhookServer != nil {
 		if err := webhookServer.Start(); err != nil {
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)

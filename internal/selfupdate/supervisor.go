@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	hashiversion "github.com/hashicorp/go-version"
@@ -52,6 +53,57 @@ type execProcess struct {
 	done chan error
 }
 
+type daemonOutput struct {
+	mu         sync.Mutex
+	file       *os.File
+	foreground io.Writer
+	scrubber   journal.Scrubber
+	sink       *daemonOutput
+}
+
+func (o *daemonOutput) Write(p []byte) (int, error) {
+	sink := o
+	if o.sink != nil {
+		sink = o.sink
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+
+	scrubbed := sink.scrubber.Scrub(p)
+	timestamped := append([]byte(time.Now().UTC().Format(time.RFC3339Nano)+" "), scrubbed...)
+	if _, err := sink.file.Write(timestamped); err != nil {
+		return 0, err
+	}
+	if o.foreground != nil {
+		if _, err := o.foreground.Write(scrubbed); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+func openDaemonOutput(root string, stdout, stderr io.Writer) (*daemonOutput, error) {
+	if err := os.MkdirAll(filepath.Join(root, "scheduler"), 0o755); err != nil {
+		return nil, fmt.Errorf("create daemon log directory: %w", err)
+	}
+	file, err := os.OpenFile(filepath.Join(root, "scheduler", "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open daemon log: %w", err)
+	}
+	return &daemonOutput{
+		file:     file,
+		scrubber: journal.NewPatternScrubber(),
+	}, nil
+}
+
+func (o *daemonOutput) child(foreground io.Writer) io.Writer {
+	return &daemonOutput{foreground: foreground, sink: o}
+}
+
+func (o *daemonOutput) Close() error {
+	return o.file.Close()
+}
+
 func (execLauncher) Start(binary, root string, stdout, stderr io.Writer) (process, error) {
 	command := exec.Command(binary, "up", root)
 	command.Stdout, command.Stderr, command.Env = stdout, stderr, os.Environ()
@@ -83,6 +135,11 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 		return fmt.Errorf("open supervisor journal: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, log.Close()) }()
+	output, err := openDaemonOutput(opts.Root, opts.Stdout, opts.Stderr)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, output.Close()) }()
 
 	request, pending, err := pendingRequest(opts.Root)
 	if err != nil {
@@ -97,7 +154,7 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 			return err
 		}
 	}
-	process, err := opts.Launcher.Start(currentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
+	process, err := opts.Launcher.Start(currentBinary(opts.Root, opts.GOOS), opts.Root, output.child(opts.Stdout), output.child(opts.Stderr))
 	if err != nil {
 		return fmt.Errorf("start supervised daemon: %w", err)
 	}
@@ -107,7 +164,7 @@ func RunSupervisor(ctx context.Context, opts SupervisorOptions) (retErr error) {
 	for {
 		if pending {
 			if request.Status != "rollback" {
-				process, err = performUpdate(ctx, opts, log, process, &request)
+				process, err = performUpdate(ctx, opts, log, process, &request, output)
 				if err != nil {
 					if errors.Is(err, context.Canceled) {
 						return stopForService(process, opts)
@@ -148,6 +205,7 @@ func performUpdate(
 	log *journal.InstanceLog,
 	process process,
 	request *Request,
+	output *daemonOutput,
 ) (process, error) {
 	if request.Status == "requested" {
 		if err := ensureUpdateEvent(opts.Root, log, journal.EventDaemonUpdateDrainStarted, *request, "draining before binary handoff"); err != nil {
@@ -165,12 +223,12 @@ func performUpdate(
 	}
 	_ = os.Remove(stopRequestPath(opts.Root))
 
-	candidate, baseline, err := startCandidate(opts, log, request)
+	candidate, baseline, err := startCandidate(opts, log, request, output)
 	if err != nil {
 		if request.Status != "monitoring" {
 			return candidate, err
 		}
-		return rollbackAndRestart(opts, log, request, candidate, err.Error())
+		return rollbackAndRestart(opts, log, request, candidate, err.Error(), output)
 	}
 	alive, reason, err := monitorCandidate(ctx, opts, log, candidate, baseline, request)
 	if err != nil {
@@ -182,7 +240,7 @@ func performUpdate(
 	if !alive {
 		candidate = nil
 	}
-	return rollbackAndRestart(opts, log, request, candidate, reason)
+	return rollbackAndRestart(opts, log, request, candidate, reason, output)
 }
 
 func monitorCandidate(
@@ -238,7 +296,7 @@ func monitorCandidate(
 	}
 }
 
-func startCandidate(opts SupervisorOptions, log *journal.InstanceLog, request *Request) (process, time.Time, error) {
+func startCandidate(opts SupervisorOptions, log *journal.InstanceLog, request *Request, output *daemonOutput) (process, time.Time, error) {
 	if err := setStatus(opts.Root, request, "activating"); err != nil {
 		return nil, time.Time{}, err
 	}
@@ -255,7 +313,7 @@ func startCandidate(opts SupervisorOptions, log *journal.InstanceLog, request *R
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("read candidate heartbeat baseline: %w", err)
 	}
-	process, err := opts.Launcher.Start(currentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
+	process, err := opts.Launcher.Start(currentBinary(opts.Root, opts.GOOS), opts.Root, output.child(opts.Stdout), output.child(opts.Stderr))
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("candidate binary failed to start: %w", err)
 	}
@@ -297,6 +355,7 @@ func rollbackAndRestart(
 	request *Request,
 	process process,
 	reason string,
+	output *daemonOutput,
 ) (process, error) {
 	if process != nil {
 		if err := RequestDaemonStop(opts.Root); err != nil {
@@ -313,7 +372,7 @@ func rollbackAndRestart(
 	if err := markRollback(opts.Root, log, request, reason); err != nil {
 		return nil, err
 	}
-	restored, err := opts.Launcher.Start(currentBinary(opts.Root, opts.GOOS), opts.Root, opts.Stdout, opts.Stderr)
+	restored, err := opts.Launcher.Start(currentBinary(opts.Root, opts.GOOS), opts.Root, output.child(opts.Stdout), output.child(opts.Stderr))
 	if err != nil {
 		return nil, fmt.Errorf("restart retained previous binary: %w", err)
 	}
