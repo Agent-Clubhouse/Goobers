@@ -184,14 +184,18 @@ type CopilotAdapter struct {
 	ExtraEnvAllowlist []string
 	// ModelCredential resolves the instance's configured agent:model tokenRef
 	// (file/keychain/store — env is already covered by ambientCopilotToken)
-	// for the Preflight sign-in probe, which has no RunRequest and so cannot
-	// go through the normal credentialEnv/req.Credentials resolution path.
-	// Nil is valid: preflight then reflects only ambient env or the CLI's own
-	// cached login, exactly as before this field existed. Consulted only when
-	// no ambient env var is already set; an error it returns fails Preflight
-	// outright rather than being swallowed, since a misconfigured tokenRef
-	// must surface as an actionable error, not silently fall back to a stale
-	// cached login.
+	// for the two config-time paths that have no RunRequest and so cannot go
+	// through the normal credentialEnv/req.Credentials resolution: the
+	// Preflight sign-in probe and admission-time model discovery.
+	//
+	// Non-nil means the instance HAS an agent:model grant
+	// (cmd/goobers.agentModelCredentialResolver returns nil when it has none),
+	// and it is then the authority — see copilotModelToken for why it outranks
+	// an ambient env var. Nil is valid: both paths then reflect only ambient
+	// env or the CLI's own cached login, exactly as before this field existed.
+	// An error it returns fails the caller outright rather than being
+	// swallowed, since a misconfigured tokenRef must surface as an actionable
+	// error, not silently fall back to a stale cached login.
 	ModelCredential func(ctx context.Context) (string, error)
 	// InstanceRoot is exposed to the agentic subprocess so a goobers CLI command
 	// it invokes can resolve instance configuration outside the stage worktree.
@@ -368,24 +372,17 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	discoveryCtx, cancel := context.WithTimeout(ctx, copilotModelDiscoveryTimeout)
 	defer cancel()
 	// #4292: this call used to build its env from baseEnv() alone, with no
-	// credential of any kind — unlike Preflight's AuthCheckArgs probe below,
-	// which already falls back to the resolver. That left config admission
-	// (workflow load) unable to see a file/keychain/store-sourced agent:model
-	// credential at all, forcing every deployment to also deliver the token as
-	// a raw ambient env var just so discovery could authenticate. Same
-	// ambient-first, resolver-fallback order as the auth-check probe: an
-	// explicit ambient var is the more headless-friendly signal when present,
-	// but its absence must not silently leave discovery unauthenticated when a
-	// resolver is configured.
+	// credential of any kind, leaving config admission (workflow load) unable
+	// to see a file/keychain/store-sourced agent:model credential — which
+	// forced every deployment to also deliver the token as a raw ambient env
+	// var just so discovery could authenticate. It now takes the same token
+	// the auth-check probe below does, on the same resolver-first order (see
+	// copilotModelToken).
 	discoveryEnv := baseEnv(c.ExtraEnvAllowlist)
-	tok := ambientCopilotToken()
-	if tok == "" && c.ModelCredential != nil {
-		resolved, credErr := c.ModelCredential(discoveryCtx)
-		if credErr != nil {
-			c.modelsErr = fmt.Errorf("resolve agent:model credential for model discovery: %w", credErr)
-			return nil, c.modelsErr
-		}
-		tok = resolved
+	tok, credErr := c.copilotModelToken(discoveryCtx)
+	if credErr != nil {
+		c.modelsErr = fmt.Errorf("resolve agent:model credential for model discovery: %w", credErr)
+		return nil, c.modelsErr
 	}
 	if tok != "" {
 		discoveryEnv = overrideEnv(discoveryEnv, "COPILOT_GITHUB_TOKEN", tok)
@@ -545,30 +542,17 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if len(c.AuthCheckArgs) > 0 {
 		command := resolveHarnessCommand(c.Command)
 		// Preflight has no RunRequest, so it cannot resolve the agent:model
-		// credential the way credentialEnv does at run time — the sign-in probe
-		// would only ever reflect an ambient CLI login and would fail a valid
-		// headless-PAT setup (COPILOT_GITHUB_TOKEN provided via env), then burn
-		// the whole run at the first agentic stage. When a copilot model token is
-		// present in the ambient environment, carry it into the probe so the
-		// check reflects the same auth the run will use. ModelCredential covers
-		// the file/keychain/store-sourced case: an ambient env var still wins
-		// (it's the more explicit, headless-friendly signal), but absent one, a
-		// configured agent:model tokenRef is resolved and used instead of
-		// silently falling through to whatever the CLI has cached from its own
-		// prior interactive login — a different, possibly wrong, account (#3341).
-		// A ModelCredential resolution failure fails preflight outright rather
-		// than being swallowed: a misconfigured agent:model tokenRef (bad path,
-		// unreadable file, empty secret) must surface as an actionable error, not
-		// silently degrade into the exact stale-cached-login confusion this
-		// resolver exists to fix.
+		// credential the way credentialEnv does at run time — left to itself the
+		// sign-in probe would reflect only whatever the CLI cached from its own
+		// prior interactive login, a different and possibly wrong account
+		// (#3341), and would fail a valid headless setup outright. Carry the
+		// instance's configured credential into the probe instead, falling back
+		// to an ambient env var when the instance declares no grant; see
+		// copilotModelToken for why that order and not the reverse (#4292).
 		authEnv := baseEnv(c.ExtraEnvAllowlist)
-		tok := ambientCopilotToken()
-		if tok == "" && c.ModelCredential != nil {
-			resolved, err := c.ModelCredential(ctx)
-			if err != nil {
-				return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: resolve agent:model credential: %w", err)
-			}
-			tok = resolved
+		tok, err := c.copilotModelToken(ctx)
+		if err != nil {
+			return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: resolve agent:model credential: %w", err)
 		}
 		if tok != "" {
 			authEnv = overrideEnv(authEnv, "COPILOT_GITHUB_TOKEN", tok)
@@ -584,6 +568,37 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		}
 	}
 	return PreflightInfo{Version: version}, nil
+}
+
+// copilotModelToken resolves the token the config-time Copilot probes (the
+// sign-in preflight and admission-time model discovery) should authenticate
+// with: the instance's configured agent:model credential when it has one, and
+// otherwise whatever the ambient process environment carries.
+//
+// The order is resolver-first, and that is the whole point (#4292). Stage
+// execution never reads the ambient environment for this: baseEnv is a
+// default-deny allowlist that does not carry COPILOT_GITHUB_TOKEN, GH_TOKEN or
+// GITHUB_TOKEN at all, so the run authenticates with the resolver's credential
+// and nothing else. A probe that preferred an ambient var would therefore
+// validate an account the run will not use — preflight green, run wrong or
+// failed — which is the same wrong-account confusion (#3341) that put a
+// resolver on this path to begin with, just entered from the other side.
+//
+// It also ends the double delivery the issue reports: with the resolver
+// authoritative, a Kubernetes deployment can drop the duplicate plain env var
+// from its pod spec and keep the one credential the resolver can scope, rotate
+// and audit. The ambient read stays as the documented fallback for a local or
+// laptop instance that declares no agent:model grant and exports GH_TOKEN in a
+// shell profile — that instance is unchanged.
+//
+// A resolution error is returned, never swallowed: a misconfigured tokenRef
+// (bad path, unreadable file, empty secret) must fail loudly rather than
+// degrade into whatever login the CLI happens to have cached.
+func (c *CopilotAdapter) copilotModelToken(ctx context.Context) (string, error) {
+	if c.ModelCredential != nil {
+		return c.ModelCredential(ctx)
+	}
+	return ambientCopilotToken(), nil
 }
 
 // ambientCopilotToken returns a Copilot model token found in the ambient
