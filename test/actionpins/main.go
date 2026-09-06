@@ -37,11 +37,18 @@ func verify(root string) error {
 				continue
 			}
 			reference := match[1]
-			action, sha, ok := strings.Cut(reference, "@")
-			if !ok || action == "" || !commitSHA.MatchString(sha) {
+			if !isPinnedActionReference(reference) {
 				return fmt.Errorf("%s:%d: action %q must use a full 40-character commit SHA", relativePath, lineNumber+1, reference)
 			}
 		}
 	}
 	return nil
+}
+
+func isPinnedActionReference(reference string) bool {
+	if strings.HasPrefix(reference, "./") {
+		return true
+	}
+	action, sha, ok := strings.Cut(reference, "@")
+	return ok && action != "" && commitSHA.MatchString(sha)
 }
