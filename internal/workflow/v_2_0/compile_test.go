@@ -1010,6 +1010,90 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 	}
 }
 
+// TestCompileRejectsResultFileForUnsupportedBuiltin is #4415's regression:
+// record-merge-refusal never writes a result file (internal/providerstage's
+// manifest entry has neither ResultFile nor an explicit ResultFileSupport),
+// so a stage declaring inputs.resultFile or expectedOutputs for it promises a
+// postcondition that can never be satisfied at runtime. Always- and
+// Optional-support commands are unaffected: the manifest resolves their
+// support to something other than Unsupported, so the new check stays quiet.
+func TestCompileRejectsResultFileForUnsupportedBuiltin(t *testing.T) {
+	definition := func(name string, task apiv1.Task) Definition {
+		return Definition{Name: name, Version: 1, Spec: apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  task.Name,
+			Tasks:  []apiv1.Task{task},
+		}}
+	}
+	refusalTask := apiv1.Task{
+		Name:          "record-refusal",
+		Type:          apiv1.TaskDeterministic,
+		Goal:          "record a merge refusal",
+		Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "record-merge-refusal"}},
+		Capabilities:  []string{string(capability.GitHubPRWrite)},
+		PolicyActions: []string{"record-merge-refusal", "demote-pr"},
+	}
+
+	t.Run("resultFile declaration rejected", func(t *testing.T) {
+		task := refusalTask
+		task.Inputs = map[string]string{"resultFile": "refusal-result.json"}
+		_, err := compileAcknowledged(definition("refusal-declares-resultfile", task))
+		want := `task "record-refusal" invokes built-in subcommand "record-merge-refusal" via inputs.resultFile, but "record-merge-refusal" never produces a result file`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Compile error = %v, want containing %q", err, want)
+		}
+	})
+
+	t.Run("expectedOutputs declaration rejected", func(t *testing.T) {
+		task := refusalTask
+		task.ExpectedOutputs = []string{"refusalRecorded"}
+		_, err := compileAcknowledged(definition("refusal-declares-expectedoutputs", task))
+		want := `task "record-refusal" invokes built-in subcommand "record-merge-refusal" via expectedOutputs, but "record-merge-refusal" never produces a result file`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Compile error = %v, want containing %q", err, want)
+		}
+	})
+
+	t.Run("no declaration compiles", func(t *testing.T) {
+		if _, err := compileAcknowledged(definition("refusal-bare", refusalTask)); err != nil {
+			t.Fatalf("record-merge-refusal with no resultFile/expectedOutputs should compile: %v", err)
+		}
+	})
+
+	t.Run("always-support command may declare resultFile", func(t *testing.T) {
+		mergeTask := apiv1.Task{
+			Name: "merge",
+			Type: apiv1.TaskDeterministic,
+			Goal: "merge the pull request",
+			Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "merge-pr"}},
+			Capabilities: []string{
+				string(capability.GitHubPRMerge),
+				string(capability.GitHubBranchDelete),
+			},
+			PolicyActions: []string{"merge-pr", "delete-branch"},
+			Inputs:        map[string]string{"resultFile": "merge-result.json"},
+		}
+		if _, err := compileAcknowledged(definition("merge-declares-resultfile", mergeTask)); err != nil {
+			t.Fatalf("merge-pr (Always result-file support) with resultFile declared should compile: %v", err)
+		}
+	})
+
+	t.Run("optional-support command may declare expectedOutputs", func(t *testing.T) {
+		reconcileTask := apiv1.Task{
+			Name:            "reconcile",
+			Type:            apiv1.TaskDeterministic,
+			Goal:            "reconcile stale branches",
+			Run:             &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches"}},
+			Capabilities:    []string{string(capability.GitHubBranchDelete)},
+			Inputs:          map[string]string{"resultFile": "reconcile-result.json"},
+			ExpectedOutputs: []string{"deletedBranches"},
+		}
+		if _, err := compileAcknowledged(definition("reconcile-declares-expectedoutputs", reconcileTask)); err != nil {
+			t.Fatalf("reconcile-branches (Optional result-file support) with resultFile+expectedOutputs declared should compile: %v", err)
+		}
+	})
+}
+
 func TestCompileExternalTelemetryRequiresTelemetryRead(t *testing.T) {
 	for _, tc := range []struct {
 		name string

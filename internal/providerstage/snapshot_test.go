@@ -49,6 +49,7 @@ type snapshotCapabilityUse struct {
 type snapshotCommand struct {
 	Command            string                  `json:"command"`
 	ResultFile         string                  `json:"resultFile,omitempty"`
+	ResultFileSupport  ResultFileSupport       `json:"resultFileSupport,omitempty"`
 	MutatesClaimLedger bool                    `json:"mutatesClaimLedger,omitempty"`
 	ClaimMutationFlags []string                `json:"claimMutationFlags,omitempty"`
 	SinceDSL           string                  `json:"sinceDSL,omitempty"`
@@ -86,6 +87,7 @@ func renderManifestSnapshot(table map[string]Command) ([]byte, error) {
 		entries = append(entries, snapshotCommand{
 			Command:            name,
 			ResultFile:         entry.ResultFile,
+			ResultFileSupport:  entry.ResultFileSupport,
 			MutatesClaimLedger: entry.mutatesClaimLedger,
 			ClaimMutationFlags: entry.claimMutationFlags,
 			SinceDSL:           entry.sinceDSL,
@@ -266,6 +268,11 @@ func TestRenderManifestSnapshotReflectsEveryExposedSurface(t *testing.T) {
 			entry := table["backlog-dedupe"]
 			entry.ResultFile = "other.json"
 			table["backlog-dedupe"] = entry
+		}},
+		{"result file support overridden", func(table map[string]Command) {
+			entry := table["reconcile-branches"]
+			entry.ResultFileSupport = ResultFileAlways
+			table["reconcile-branches"] = entry
 		}},
 		{"mutatesClaimLedger flipped", func(table map[string]Command) {
 			entry := table["select-source"]
