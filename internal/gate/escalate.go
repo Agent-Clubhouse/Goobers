@@ -108,50 +108,6 @@ func runCommentMarker(runID string, seq uint64) string {
 
 const failureStreakMarker = "<!-- goobers:failure-streak"
 
-// CountFailureStreak returns the number of consecutive terminal failures
-// recorded on an item by scanning for the failure-streak comment marker.
-// Returns 0 when no streak comment exists.
-func CountFailureStreak(ctx context.Context, poster Commenter, repository providers.RepositoryRef, itemID string) (int, string, error) {
-	comments, err := poster.ListComments(ctx, repository, itemID)
-	if err != nil {
-		return 0, "", fmt.Errorf("list comments for failure streak: %w", err)
-	}
-	var latestCount int
-	var latestID string
-	foundMarker := false
-	for _, c := range comments {
-		if strings.Contains(c.Body, failureStreakMarker) {
-			// Providers without comment editing may retain older marker
-			// comments after each update. The newest marker is authoritative.
-			latestCount = parseStreakCount(c.Body)
-			latestID = c.ID
-			foundMarker = true
-		}
-	}
-	if foundMarker {
-		return latestCount, latestID, nil
-	}
-	return 0, "", nil
-}
-
-func parseStreakCount(body string) int {
-	const prefix = "data-count=\""
-	idx := strings.Index(body, prefix)
-	if idx < 0 {
-		return 0
-	}
-	rest := body[idx+len(prefix):]
-	end := strings.IndexByte(rest, '"')
-	if end < 0 {
-		return 0
-	}
-	n, err := strconv.Atoi(rest[:end])
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
 func failureStreakBody(count int, stage, latestRunID, latestRunURL string) string {
 	stageInfo := ""
 	if stage != "" {
