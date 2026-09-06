@@ -37,6 +37,52 @@ func TestUnboundedProjectionPassStillPrunesChangeFeed(t *testing.T) {
 	}
 }
 
+func TestRetentionLoopMaintenanceStates(t *testing.T) {
+	ctx := context.Background()
+
+	store := openTestStore(t)
+	loop := NewRetentionLoop(store, store, UnboundedRetention(), RetentionOptions{})
+	if got := loop.Stats().State; got != "none" {
+		t.Fatalf("fresh maintenance state = %q, want none", got)
+	}
+	if got := loop.Stats().Kind; got != "retention-sweep" {
+		t.Fatalf("fresh maintenance kind = %q, want retention-sweep", got)
+	}
+
+	loop.pass(ctx)
+	stats := loop.Stats()
+	if stats.State != "completed" || stats.Trigger != "startup" {
+		t.Fatalf("startup maintenance status = %+v, want completed startup", stats)
+	}
+
+	loop.pass(ctx)
+	stats = loop.Stats()
+	if stats.State != "completed" || stats.Trigger != "periodic" {
+		t.Fatalf("periodic maintenance status = %+v, want completed periodic", stats)
+	}
+
+	store = openTestStore(t)
+	loop = NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{})
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	loop.pass(ctx)
+	stats = loop.Stats()
+	if stats.State != "failed" || stats.LastResult != "failed" {
+		t.Fatalf("failed maintenance status = %+v, want failed failed", stats)
+	}
+
+	store = openTestStore(t)
+	loop = NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{})
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	loop.pass(ctxCancelled)
+	stats = loop.Stats()
+	if stats.State != "cancelled" || stats.LastResult != "cancelled" {
+		t.Fatalf("cancelled maintenance status = %+v, want cancelled cancelled", stats)
+	}
+}
+
 // TestBoundedLoopRunsAPassOnStart pins that an instance down past its window
 // catches up immediately rather than after a full interval.
 //

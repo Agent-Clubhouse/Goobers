@@ -63,6 +63,58 @@ describe("overview page", () => {
     ).toBeInTheDocument();
     expect(active.queryByText(/Blockers:/)).not.toBeInTheDocument();
   });
+
+  it("renders a completed retention sweep status", async () => {
+    const completed = populatedDaemonFixtures();
+    completed.instance.maintenance = {
+      kind: "retention-sweep",
+      state: "completed",
+      trigger: "periodic",
+      lastCompletedAt: "2026-09-05T21:30:00Z",
+      candidates: 7,
+      removed: 4,
+      failures: 0,
+      lastResult: "completed",
+    };
+
+    render(<App client={new FixtureDaemonClient(completed)} />);
+    expect(await screen.findByText("Retention sweep completed")).toBeInTheDocument();
+  });
+
+  it("renders a cancelled retention sweep status", async () => {
+    const cancelled = populatedDaemonFixtures();
+    cancelled.instance.maintenance = {
+      kind: "retention-sweep",
+      state: "cancelled",
+      trigger: "periodic",
+      lastCompletedAt: "2026-09-05T21:28:00Z",
+      candidates: 0,
+      removed: 0,
+      failures: 0,
+      lastResult: "cancelled",
+    };
+
+    render(<App client={new FixtureDaemonClient(cancelled)} />);
+    expect(await screen.findByText("Retention sweep cancelled")).toBeInTheDocument();
+  });
+
+  it("renders the latest completed sweep when no sweep is running", async () => {
+    const noSweep = populatedDaemonFixtures();
+    noSweep.instance.maintenance = {
+      kind: "retention-sweep",
+      state: "none",
+      trigger: "periodic",
+      lastCompletedAt: "2026-09-05T21:25:00Z",
+      candidates: 0,
+      removed: 0,
+      failures: 0,
+      lastResult: "completed",
+    };
+
+    render(<App client={new FixtureDaemonClient(noSweep)} />);
+    expect(await screen.findByText("No retention sweep running")).toBeInTheDocument();
+    expect(screen.getByText(/last completed at/i)).toBeInTheDocument();
+  });
 });
 
 // #3658: a phase whose query failed used to render as an empty group, so the

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { DaemonClient, RunSummary } from "../api/types";
+import type { DaemonClient, MaintenanceStatus, RunSummary } from "../api/types";
 import { useAttentionCollapsed } from "../attentionCollapse";
 import { useAttentionDismissals } from "../attentionDismissals";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
@@ -359,6 +359,92 @@ function Overview({
   );
 }
 
+function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
+  const hasLastCompletedSweep = Boolean(maintenance.lastCompletedAt || maintenance.lastResult);
+  switch (maintenance.state) {
+    case "running":
+      return (
+        <div className="maintenance-indicator" role="status" aria-live="polite">
+          <strong>Retention sweep running</strong>
+          {maintenance.startedAt && (
+            <span>
+              {" "}
+              for {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.startedAt)))}
+            </span>
+          )}
+          <span>
+            {" "}
+            · {maintenance.removed} removed, {maintenance.candidates} candidates
+          </span>
+        </div>
+      );
+    case "failed":
+      return (
+        <div className="maintenance-indicator maintenance-indicator-error" role="alert">
+          <strong>Retention sweep failed</strong>
+          {maintenance.errorSummary && <span> · {maintenance.errorSummary}</span>}
+        </div>
+      );
+    case "completed":
+      return (
+        <div className="maintenance-indicator" role="status" aria-live="polite">
+          <strong>Retention sweep completed</strong>
+          {maintenance.lastCompletedAt && (
+            <span>
+              {" "}
+              · latest at {formatTimestamp(maintenance.lastCompletedAt)}
+            </span>
+          )}
+          <span>
+            {" "}
+            · {maintenance.removed} removed, {maintenance.candidates} candidates
+          </span>
+        </div>
+      );
+    case "cancelled":
+      return (
+        <div className="maintenance-indicator" role="status" aria-live="polite">
+          <strong>Retention sweep cancelled</strong>
+          {maintenance.lastCompletedAt && (
+            <span>
+              {" "}
+              · latest at {formatTimestamp(maintenance.lastCompletedAt)}
+            </span>
+          )}
+        </div>
+      );
+    case "queued":
+      return (
+        <div className="maintenance-indicator" role="status" aria-live="polite">
+          <strong>Retention sweep queued</strong>
+          {maintenance.lastCompletedAt && (
+            <span>
+              {" "}
+              · last completed at {formatTimestamp(maintenance.lastCompletedAt)}
+            </span>
+          )}
+        </div>
+      );
+    case "none":
+      if (!hasLastCompletedSweep) {
+        return null;
+      }
+      return (
+        <div className="maintenance-indicator" role="status" aria-live="polite">
+          <strong>No retention sweep running</strong>
+          {maintenance.lastCompletedAt && (
+            <span>
+              {" "}
+              · last completed at {formatTimestamp(maintenance.lastCompletedAt)}
+            </span>
+          )}
+        </div>
+      );
+    default:
+      return null;
+  }
+}
+
 function InstanceStrip({
   overview,
   standalone,
@@ -369,6 +455,8 @@ function InstanceStrip({
   const healthy = standalone || overview.health.healthy;
   const tickAge = overview.health.freshness.lastTickAgeMillis;
   const lastTickAt = overview.health.freshness.lastSchedulerTickAt;
+  const maintenance = overview.instance.maintenance;
+
   return (
     <section
       aria-label={standalone ? "Local instance status and counts" : "Daemon connection and instance counts"}
@@ -404,30 +492,7 @@ function InstanceStrip({
           </span>
         )}
       </div>
-      {overview.instance.maintenance?.state === "running" && (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep running</strong>
-          {overview.instance.maintenance.startedAt && (
-            <span>
-              {" "}
-              for {formatDuration(Math.max(0, Date.now() - Date.parse(overview.instance.maintenance.startedAt)))}
-            </span>
-          )}
-          <span>
-            {" "}
-            · {overview.instance.maintenance.removed} removed,{" "}
-            {overview.instance.maintenance.candidates} candidates
-          </span>
-        </div>
-      )}
-      {overview.instance.maintenance?.state === "failed" && (
-        <div className="maintenance-indicator maintenance-indicator-error" role="alert">
-          <strong>Retention sweep failed</strong>
-          {overview.instance.maintenance.errorSummary && (
-            <span> · {overview.instance.maintenance.errorSummary}</span>
-          )}
-        </div>
-      )}
+      {maintenance && renderMaintenanceStatus(maintenance)}
       <dl>
         <div>
           <dt>Workflows</dt>
