@@ -232,6 +232,24 @@ type ShellExecutor struct {
 	// lifetime of those bytes and not their location. Set by tests, and
 	// available to a deployment that mounts its scratch medium elsewhere.
 	EphemeralTmpRoot string
+	// GuardedCredentialPaths names on-disk paths this instance's config
+	// references as a credential source (instance.GuardedCredentialPaths) —
+	// a repo/workflow-source/daemon-identity token or GitHub App private key
+	// file. A stage on the `self` runner has NO filesystem confinement
+	// (there is no execution path that translates a runsOn restriction into
+	// executor isolation, internal/runnersolve's `enforces` doc comment), so
+	// a stage command that names one of these paths, verbatim, in its argv
+	// or environment is refused before exec rather than allowed to read the
+	// key material a minted, short-lived token exists to avoid exposing
+	// (#4273).
+	//
+	// This is deliberately narrow, not filesystem confinement: it does not
+	// stop a stage that reaches the same file through indirection (a script
+	// with the path hardcoded inside it, `find`, a symlink) — see
+	// docs/requirements/security.md SEC-049 for the documented boundary.
+	// Empty by default: an unset caller (e.g. an existing test) gets
+	// unchanged behavior.
+	GuardedCredentialPaths []string
 }
 
 type builtinErrorReport struct {
@@ -263,6 +281,69 @@ func NewShellExecutor(injector *credentials.Injector, rec ArtifactRecorder) (*Sh
 // build/test suite (`make ci`) is not a goobers-CLI stage on either axis.
 func StageInvokesGoobersCLI(command []string) bool {
 	return len(command) > 0 && command[0] == "goobers"
+}
+
+// credentialRefusalEventAppender is the journal seam for the credential-read
+// refusal event (#4273) — structurally satisfied by (*internal/journal.Run
+// ).Append, mirroring internal/harness.EventAppender's shape. A Journal that
+// only implements ArtifactRecorder (e.g. a test double) simply does not get
+// the event journaled; the refusal itself does not depend on it.
+type credentialRefusalEventAppender interface {
+	Append(ev journal.Event) error
+}
+
+// refuseGuardedCredentialAccess reports whether cmd's finalized argv/env
+// names one of e.GuardedCredentialPaths directly (#4273), journaling the
+// refusal when so. Factored out of Run to keep the credential-path check's
+// own branching out of Run's cyclomatic complexity; callers must return the
+// envelope unmodified when refused is true.
+func (e *ShellExecutor) refuseGuardedCredentialAccess(cmd *exec.Cmd, taskID string) (result apiv1.ResultEnvelope, refused bool) {
+	guardedPath, refused := stageReferencesGuardedPath(cmd.Args, cmd.Env, e.GuardedCredentialPaths)
+	if !refused {
+		return apiv1.ResultEnvelope{}, false
+	}
+	message := fmt.Sprintf("stage command or environment names guarded credential path %q directly", guardedPath)
+	if appender, ok := e.Journal.(credentialRefusalEventAppender); ok {
+		_ = appender.Append(journal.Event{
+			Type:  journal.EventCredentialReadRefused,
+			Stage: taskID,
+			Error: &journal.ErrorDetail{Code: "credential_read_refused", Message: message},
+		})
+	}
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Error:   &apiv1.ErrorInfo{Code: "credential_read_refused", Message: message, Retryable: false},
+		Summary: "refused: stage command references a guarded credential path directly",
+	}, true
+}
+
+// stageReferencesGuardedPath reports the first path in guarded that appears,
+// verbatim, as a full command-line argument or as the exact value of an
+// environment variable in args/env — the deterministic executor's narrow,
+// config-derived tripwire against a stage naming a credential file directly
+// (#4273). Exact-value matching, not substring: a guarded path that happens
+// to be a substring of an unrelated, longer argument must not misfire.
+//
+// This does not catch indirection — a script with the path hardcoded inside
+// it, discovery via `find`, or a symlink — see
+// docs/requirements/security.md SEC-049 for the documented boundary.
+func stageReferencesGuardedPath(args, env, guarded []string) (string, bool) {
+	for _, path := range guarded {
+		if path == "" {
+			continue
+		}
+		for _, arg := range args {
+			if arg == path {
+				return path, true
+			}
+		}
+		for _, kv := range env {
+			if _, value, ok := strings.Cut(kv, "="); ok && value == path {
+				return path, true
+			}
+		}
+	}
+	return "", false
 }
 
 // stageCommandsRequiringInstanceConfig are goobers subcommands that read the
@@ -564,6 +645,13 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 // or a transient built-in provider outage) — ARCHITECTURE.md invariant 6, fail
 // closed rather than degrade. Other declared-command failures are normal
 // ResultFailure envelopes.
+//
+// The #4273 guarded-credential-path refusal adds one unavoidable early-return
+// branch here; the check itself is fully factored into
+// refuseGuardedCredentialAccess/stageReferencesGuardedPath, so this is the
+// minimum a caller of that helper can add.
+//
+//complexitygate:allow #4273 guarded-credential-path refusal, see above
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	if env.Workspace == "" {
 		// exec.Cmd treats Dir == "" as "run in the daemon's own working
@@ -707,6 +795,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd := exec.Command(invokeName, invokeArgs...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
+	if result, refused := e.refuseGuardedCredentialAccess(cmd, env.TaskID); refused {
+		return result, nil
+	}
 	// Configure tree ownership before the network isolation below layers its
 	// own SysProcAttr fields on: on unix proc puts the stage in a NEW SESSION
 	// (Setsid, not Setpgid) with no controlling terminal, so a stage that

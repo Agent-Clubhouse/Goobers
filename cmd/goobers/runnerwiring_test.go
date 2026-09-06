@@ -4769,3 +4769,54 @@ func TestBuildDeterministicExecutorBindsSelfRunnerEphemeralTmp(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildDeterministicExecutorRefusesGuardedCredentialPath is the
+// composition-level regression test for #4273: buildDeterministicExecutor
+// must actually wire instance.GuardedCredentialPaths(input.Config) onto the
+// shell executor it builds, not just leave the mechanism sitting unused. A
+// repo config with a file-backed GitHub App private key ref, run end-to-end
+// through the built executor, must refuse a stage command naming that path.
+func TestBuildDeterministicExecutorRefusesGuardedCredentialPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script exercises Unix shell semantics")
+	}
+	keyPath := filepath.Join(t.TempDir(), "github-app-key.pem")
+	if err := os.WriteFile(keyPath, []byte("not a real key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widgets",
+			Auth: &instance.RepoAuthConfig{
+				Kind:       instance.GitHubAuthApp,
+				PrivateKey: &instance.TokenRef{File: keyPath},
+			},
+		}},
+	}
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildDeterministicExecutor(deterministicExecutorInput{
+		Config:           cfg,
+		Resolver:         resolver,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		InstanceRoot:     t.TempDir(),
+		ArtifactRecorder: runnerWiringArtifactRecorder{},
+		SecretRegistrar:  journal.NewRegistryScrubber(),
+	})
+	if err != nil {
+		t.Fatalf("buildDeterministicExecutor: %v", err)
+	}
+	result, err := got.Run(context.Background(), apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: t.TempDir()},
+		apiv1.DeterministicRun{Command: []string{"cat", keyPath}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "credential_read_refused" {
+		t.Fatalf("result = %+v, want a credential_read_refused failure — the wiring did not connect "+
+			"instance.GuardedCredentialPaths through to the built executor", result)
+	}
+}
