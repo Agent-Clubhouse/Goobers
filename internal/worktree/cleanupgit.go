@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -88,9 +87,14 @@ func runCleanupGitOutput(ctx context.Context, dir, op string, args ...string) (s
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	var stdout, combined bytes.Buffer
-	cmd.Stdout = io.MultiWriter(&stdout, &combined)
-	cmd.Stderr = &combined
+	// Separate buffers, not a shared one: os/exec copies stdout and stderr
+	// on two independent goroutines, and bytes.Buffer is not safe for
+	// concurrent writes from both at once (caught by -race in CI). The
+	// error path below concatenates them after Wait has returned, once
+	// there is no concurrent writer left.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	tree, err := proc.Start(cmd)
 	if err != nil {
@@ -122,7 +126,8 @@ func runCleanupGitOutput(ctx context.Context, dir, op string, args ...string) (s
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
-		return "", &gitCommandError{args: args, cause: err, output: combined.Bytes(), exitCode: exitCode}
+		combined := append(append([]byte{}, stdout.Bytes()...), stderr.Bytes()...)
+		return "", &gitCommandError{args: args, cause: err, output: combined, exitCode: exitCode}
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
