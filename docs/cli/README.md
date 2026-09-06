@@ -1627,7 +1627,13 @@ $ goobers file-issues
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
 
 ~~~text
-Usage: goobers fix --to <version> [--write] [path]
+Usage: goobers fix (--to <version> | --instance-schema) [--write] [path]
+
+Exactly one mode is required per invocation.
+
+--to <version> mechanically migrates workflows; --instance-schema repairs
+instance.yaml's schema revision. They are separate remedies over separate
+files, so they are never combined in one run.
 
 Mechanically migrate every workflow in a config directory (default path
 ".") from its current dslVersion to <version>, one registered version
@@ -1640,6 +1646,18 @@ silent multi-step rewrite. Never runs automatically; this is always an
 author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
 migrate), 1 = one or more workflows could not be migrated,
 2 = usage/IO error.
+
+--instance-schema is the one-line remedy for the instance.yaml load
+refusal "runners: requires schemaVersion 2" (#4217): a config that
+declares a runners: inventory must also declare the schema revision that
+introduced it, so an older binary refuses the file outright instead of
+loading it and silently dropping the whole inventory. It inserts
+"schemaVersion: 2" after the apiVersion:/kind: header and changes
+nothing else — comments, ordering and formatting survive byte for byte,
+because this repairs a file the strict loader currently refuses to parse.
+A schemaVersion line that is present but wrong is reported, never
+rewritten: that is a deliberate operator value, not an omission. Prints a
+diff by default; --write applies it. Cannot be combined with --to.
 ~~~
 
 **Examples**
@@ -1647,6 +1665,7 @@ migrate), 1 = one or more workflows could not be migrated,
 ~~~console
 $ goobers fix --to 2.0
 $ goobers fix --to 2.0 --write ./instance
+$ goobers fix --instance-schema --write ./instance
 ~~~
 
 ## `goobers fleet`

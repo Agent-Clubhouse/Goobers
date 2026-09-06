@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,6 +81,48 @@ func TestStageProviderRegistryIncludesBuiltInProviders(t *testing.T) {
 		if stageProviderFactories[kind] == nil {
 			t.Errorf("provider %q is not registered", kind)
 		}
+	}
+}
+
+func TestNewProviderForStageWiresADOMutationRecorder(t *testing.T) {
+	root := initDemo(t)
+	t.Chdir(root)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/org/project/_apis/git/repositories/repo/pullrequests/42/threads" {
+			t.Fatalf("request = %s %s, want POST /org/project/_apis/git/repositories/repo/pullrequests/42/threads", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":7,"comments":[{"id":1,"content":"ok","commentType":"text","author":{"displayName":"Goobers Bot","uniqueName":"bot@example.com","id":"author-guid"},"publishedDate":"2026-08-08T10:00:00Z"}]}`))
+	}))
+	defer server.Close()
+
+	previous := stageProviderFactories[providers.ProviderADO]
+	t.Cleanup(func() { stageProviderFactories[providers.ProviderADO] = previous })
+	stageProviderFactories[providers.ProviderADO] = func(cfg stageProviderConfig) (providers.Provider, error) {
+		return providers.NewADOProvider(cfg.repo.Owner, cfg.repo.Project, "token", func(p *providers.ADOProvider) {
+			p.BaseURL = server.URL
+		}), nil
+	}
+
+	provider, err := newProviderForStage(root, providers.RepositoryRef{
+		Provider: providers.ProviderADO,
+		Owner:    "org",
+		Project:  "project",
+		Name:     "repo",
+	}, false, withStageProviderMutations("pr"))
+	if err != nil {
+		t.Fatalf("newProviderForStage: %v", err)
+	}
+	if _, err := provider.(*providers.ADOProvider).PostPullRequestThreadComment(context.Background(), providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "project", Name: "repo"}, "42", "ok"); err != nil {
+		t.Fatalf("PostPullRequestThreadComment: %v", err)
+	}
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	if !strings.Contains(string(data), `"provider":"ado"`) || !strings.Contains(string(data), `"kind":"pr"`) || !strings.Contains(string(data), `"id":"42"`) {
+		t.Fatalf("sidecar = %s, want provider=ado kind=pr id=42", string(data))
 	}
 }
 

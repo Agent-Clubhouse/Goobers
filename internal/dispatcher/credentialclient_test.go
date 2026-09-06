@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCredentialResolveReturnsMintedValues(t *testing.T) {
@@ -100,7 +101,11 @@ func TestCredentialResolveTransportFaultIsNotARefusal(t *testing.T) {
 	addr := listener.Addr().String()
 	_ = listener.Close()
 
-	client := &CredentialResolveClient{BaseURL: "http://" + addr}
+	// A short RetryDeadline: a transport fault is now RETRIED (a refused dial
+	// is what a restarting single-replica daemon looks like, #3809), so
+	// without one this test would sit out the full default deadline to assert
+	// something about classification.
+	client := &CredentialResolveClient{BaseURL: "http://" + addr, RetryDeadline: 30 * time.Millisecond}
 	_, err = client.Resolve(context.Background(), "run-1", "s", []string{"contents:write"})
 	if err == nil {
 		t.Fatal("Resolve against a closed listener must fail")
@@ -152,5 +157,97 @@ func TestCredentialResolveRejectsEmptyValue(t *testing.T) {
 	client := &CredentialResolveClient{BaseURL: server.URL}
 	if _, err := client.Resolve(context.Background(), "run-1", "s", []string{"contents:write"}); err == nil {
 		t.Fatal("an empty credential value must be an error, not a silent no-op")
+	}
+}
+
+// TestCredentialResolveRidesOutARestart is #3809's item (3) for the third and
+// last unretried plane: a daemon restart is a ROUTINE event (the daemon is
+// single-replica by construction, so every upgrade is stop-then-start), and a
+// routine event must not fail in-flight work.
+//
+// Before this, a resolve that landed in the restart window failed outright —
+// the plane's own doc noted that recovery came from spending a FRESH POD,
+// a whole dispatch cycle to survive something that lasts seconds to minutes.
+func TestCredentialResolveRidesOutARestart(t *testing.T) {
+	origBase, origMax := retryBaseDelay, retryMaxDelay
+	retryBaseDelay, retryMaxDelay = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { retryBaseDelay, retryMaxDelay = origBase, origMax })
+
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			// What a restarting control plane answers with.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"code":"credentials_unavailable"}`))
+			return
+		}
+		// The body must survive being retried: an *http.Request body is
+		// consumed by the first send, so a naive retry posts an empty body
+		// and is refused as invalid — a self-inflicted non-retryable failure.
+		var decoded struct {
+			RunID        string   `json:"runId"`
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&decoded); err != nil {
+			t.Errorf("attempt %d posted an undecodable body: %v", attempts, err)
+		}
+		if decoded.RunID != "run-1" || len(decoded.Capabilities) != 1 {
+			t.Errorf("attempt %d posted %+v, want the original request replayed intact", attempts, decoded)
+		}
+		_, _ = w.Write([]byte(`{"credentials":[{"capability":"contents:write","value":"tok"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := &CredentialResolveClient{BaseURL: server.URL, RetryDeadline: 5 * time.Second}
+	credentials, err := client.Resolve(context.Background(), "run-1", "s", []string{"contents:write"})
+	if err != nil {
+		t.Fatalf("Resolve did not survive a restarting plane: %v", err)
+	}
+	if attempts < 3 {
+		t.Fatalf("attempts = %d, want the resolve to have been retried", attempts)
+	}
+	if len(credentials) != 1 || credentials[0].Value != "tok" {
+		t.Fatalf("credentials = %+v, want the minted value once the plane recovered", credentials)
+	}
+}
+
+// A refusal the plane will repeat for every pod of this stage must still fail
+// FAST. Retrying a configuration outcome would turn a clear diagnostic into a
+// timeout, and spend the retry budget reproducing an answer that cannot change.
+func TestCredentialResolveDoesNotRetryARefusal(t *testing.T) {
+	for _, status := range []int{
+		http.StatusForbidden,  // capability_undeclared
+		http.StatusConflict,   // gate_pin_missing
+		http.StatusBadRequest, // invalid_request
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var attempts int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				attempts++
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"code":"capability_undeclared"}`))
+			}))
+			t.Cleanup(server.Close)
+
+			client := &CredentialResolveClient{BaseURL: server.URL, RetryDeadline: 5 * time.Second}
+			start := time.Now()
+			_, err := client.Resolve(context.Background(), "run-1", "s", []string{"contents:write"})
+			if err == nil {
+				t.Fatal("a plane refusal was not reported as an error")
+			}
+			var refusal *CredentialResolveRefusal
+			if !errors.As(err, &refusal) || refusal.Status != status {
+				t.Fatalf("err = %v, want a typed refusal carrying status %d", err, status)
+			}
+			if attempts != 1 {
+				t.Errorf("attempts = %d, want exactly 1 — a repeatable refusal must not be retried", attempts)
+			}
+			// Guard the intent rather than a wall-clock threshold: one attempt
+			// is the assertion above; this only catches a deadline being burnt.
+			if elapsed := time.Since(start); elapsed > 4*time.Second {
+				t.Errorf("a refusal took %s; it must fail fast, not spend the retry deadline", elapsed)
+			}
+		})
 	}
 }

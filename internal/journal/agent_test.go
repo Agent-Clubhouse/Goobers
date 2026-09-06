@@ -211,6 +211,73 @@ func TestRollupAgentUsageForRunSumsDeduplicatedStages(t *testing.T) {
 	}
 }
 
+func TestRollupAgentUsagePreservesCanonicalFieldsAndMeasuredZero(t *testing.T) {
+	now := time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC)
+	zero, one, two, three, four, five := int64(0), int64(1), int64(2), int64(3), int64(4), int64(5)
+	events := []Event{
+		agentLifecycleEvent(now, "worker-a", "", "run", "work", 1, AgentCompleted, AgentUsage{
+			Model: "gpt-5.6", InputTokens: &one, OutputTokens: &two,
+			CacheReadTokens: &three, CacheWriteTokens: &four,
+			ReasoningTokens: &five, NanoAIU: &zero,
+		}),
+		agentLifecycleEvent(now.Add(time.Second), "worker-b", "", "run", "work", 1, AgentCompleted, AgentUsage{
+			Model: "gpt-5.6", InputTokens: &two, OutputTokens: &three,
+			CacheReadTokens: &four, CacheWriteTokens: &five,
+			ReasoningTokens: &one, NanoAIU: &five,
+		}),
+	}
+
+	usage := RollupAgentUsage(events)
+	if usage.Model != "gpt-5.6" ||
+		usage.InputTokens == nil || *usage.InputTokens != 3 ||
+		usage.OutputTokens == nil || *usage.OutputTokens != 5 ||
+		usage.CacheReadTokens == nil || *usage.CacheReadTokens != 7 ||
+		usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 9 ||
+		usage.ReasoningTokens == nil || *usage.ReasoningTokens != 6 ||
+		usage.NanoAIU == nil || *usage.NanoAIU != 5 {
+		t.Fatalf("canonical usage rollup = %#v", usage)
+	}
+}
+
+func TestAgentUsageReadsLegacyJSON(t *testing.T) {
+	var usage AgentUsage
+	if err := json.Unmarshal([]byte(`{"inputTokens":3,"outputTokens":1,"costUsd":0.25}`), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens == nil || *usage.InputTokens != 3 ||
+		usage.OutputTokens == nil || *usage.OutputTokens != 1 ||
+		usage.CostUSD == nil || *usage.CostUSD != 0.25 ||
+		usage.NanoAIU != nil || usage.CacheReadTokens != nil {
+		t.Fatalf("legacy usage = %#v", usage)
+	}
+}
+
+func TestAgentUsageRoundTripPreservesCanonicalFields(t *testing.T) {
+	zero, one, two, three := int64(0), int64(1), int64(2), int64(3)
+	want := AgentUsage{
+		Model: "gpt-5.6", InputTokens: &one, OutputTokens: &two,
+		CacheReadTokens: &three, CacheWriteTokens: &zero,
+		ReasoningTokens: &one, NanoAIU: &zero,
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got AgentUsage
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Model != want.Model ||
+		got.InputTokens == nil || *got.InputTokens != one ||
+		got.OutputTokens == nil || *got.OutputTokens != two ||
+		got.CacheReadTokens == nil || *got.CacheReadTokens != three ||
+		got.CacheWriteTokens == nil || *got.CacheWriteTokens != zero ||
+		got.ReasoningTokens == nil || *got.ReasoningTokens != one ||
+		got.NanoAIU == nil || *got.NanoAIU != zero {
+		t.Fatalf("round-trip usage = %#v, raw=%s", got, raw)
+	}
+}
+
 func TestValidateAgentEventRejectsUnsupportedAndIncompleteEvents(t *testing.T) {
 	if err := ValidateAgentEvent(Event{Type: EventStageStarted}); err == nil {
 		t.Fatal("expected unsupported event type to fail")

@@ -202,9 +202,17 @@ because the daemon cannot honour the declared restrictions in-process either.
 
 ## 3. The runner surface: `runners:` inventory
 
+`schemaVersion: 2` is REQUIRED whenever `runners:` is declared, not optional
+(#4217). That pairing is what makes the strict load strict on both halves: an
+older binary refuses the unknown `schemaVersion` field, and this binary refuses
+a `runners:` block that does not declare it, so neither one ever loads the file
+and silently drops the inventory. An instance that adopts `runners:` — or that
+already declared one under an earlier build, where the pairing was unenforced —
+adds the line with `goobers fix --instance-schema [--write]`.
+
 ```yaml
 # instance.yaml
-schemaVersion: 2                  # new (D8); absent = 1 = pre-Goobernetes schema
+schemaVersion: 2                  # REQUIRED with runners: (D8, #4217); absent = 1 = pre-Goobernetes schema
 runners:
   - name: self                    # the daemon host itself
     host: self
@@ -575,7 +583,10 @@ Landing 3.0 touches the shipped multi-version machinery, all of it designed for 
 5. An instance with only the legacy singular `runner:` block loads as the implicit `self`
    entry and behaves byte-identically to the previous release; the same file plus
    `schemaVersion: 2` and a second runner entry loads on the new binary and hard-fails on
-   the old one (strict loading, by design).
+   the old one (strict loading, by design). The converse is also enforced (#4217): that
+   file with the second runner entry and NO `schemaVersion: 2` is refused on the new
+   binary, since accepting it is what would let the old binary drop the inventory
+   silently.
 6. An os-unspecified stage on a mixed Linux+Windows inventory places on a Linux-class
    runner; on a Windows-only instance it runs there; a `runsOn.os: macOS` stage on a cloud
    instance fails validation.

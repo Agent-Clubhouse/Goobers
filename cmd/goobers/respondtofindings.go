@@ -158,7 +158,7 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := remediationStageProvider(root, repo, token, false)
+	provider, err := remediationStageProviderWithRecorder(root, repo, token, false, sidecarMutationRecorder{kind: "pr"})
 	if err != nil {
 		pf(stderr, "error: construct remediation provider: %v\n", err)
 		return 1

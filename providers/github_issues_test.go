@@ -221,7 +221,13 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 			var body map[string]string
 			decodeJSON(t, r, &body)
 			m.nextID++
-			c := map[string]interface{}{"id": m.nextID, "body": body["body"], "user": map[string]string{"login": "goobers"}}
+			c := map[string]interface{}{
+				"id":        m.nextID,
+				"body":      body["body"],
+				"user":      map[string]string{"login": "goobers"},
+				"html_url":  fmt.Sprintf("https://github.test/acme/app/issues/7#issuecomment-%d", m.nextID),
+				"issue_url": "https://api.github.test/repos/acme/app/issues/7",
+			}
 			m.comments = append(m.comments, c)
 			writeJSON(t, w, c)
 		default:
@@ -432,6 +438,31 @@ func TestGitHubCreateWorkItemCommentReturnsIdentity(t *testing.T) {
 	}
 	if comment.ID != "81" || comment.Body != "prepared" {
 		t.Fatalf("comment = %#v", comment)
+	}
+}
+
+func TestGitHubCreateWorkItemCommentRecordsMutation(t *testing.T) {
+	recorder := &recordingRecorder{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		writeJSON(t, w, map[string]interface{}{
+			"id": 81, "body": "prepared", "html_url": "https://github.test/comments/81",
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", WithMutationRecorder(recorder), func(p *GitHubProvider) { p.BaseURL = server.URL })
+	if _, err := provider.CreateWorkItemComment(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "7", "prepared"); err != nil {
+		t.Fatalf("CreateWorkItemComment: %v", err)
+	}
+	ref, ok := recorder.last()
+	if !ok {
+		t.Fatal("CreateWorkItemComment recorded no external ref")
+	}
+	if ref.Provider != ProviderGitHub || ref.Ref != "acme/app#7" || ref.Operation != "comment" || ref.URL != "https://github.test/comments/81" {
+		t.Fatalf("recorded ref = %+v, want provider=github ref=acme/app#7 operation=comment url=https://github.test/comments/81", ref)
 	}
 }
 
@@ -803,7 +834,7 @@ func TestGitHubUpdateWorkItemRejectsInvalidMilestone(t *testing.T) {
 // TestGitHubUpdateCommentEditsInPlace is #716's sticky-comment primitive: a
 // caller with an existing comment's ID edits its body via PATCH rather than
 // posting a new one — GitHub's comment-edit endpoint, not previously wired.
-func TestGitHubUpdateCommentEditsInPlace(t *testing.T) {
+func TestGitHubUpdateCommentEditsInPlaceAndRecordsMutation(t *testing.T) {
 	m := newIssueMock()
 	p, repo := newIssueProvider(t, m)
 
@@ -814,6 +845,8 @@ func TestGitHubUpdateCommentEditsInPlace(t *testing.T) {
 	commentID := fmt.Sprint(m.comments[0]["id"])
 	m.mu.Unlock()
 
+	recorder := &recordingRecorder{}
+	p.recorder = recorder
 	if err := p.UpdateComment(context.Background(), repo, commentID, "edited body"); err != nil {
 		t.Fatalf("UpdateComment: %v", err)
 	}
@@ -825,6 +858,14 @@ func TestGitHubUpdateCommentEditsInPlace(t *testing.T) {
 	}
 	if m.comments[0]["body"] != "edited body" {
 		t.Fatalf("comment body = %v, want %q", m.comments[0]["body"], "edited body")
+	}
+	ref, ok := recorder.last()
+	if !ok {
+		t.Fatal("UpdateComment recorded no external ref")
+	}
+	if ref.Provider != ProviderGitHub || ref.Ref != "acme/app#7" ||
+		ref.Operation != "comment" || ref.URL != "https://github.test/acme/app/issues/7#issuecomment-1" {
+		t.Fatalf("recorded ref = %+v, want github PR 7 comment mutation", ref)
 	}
 }
 

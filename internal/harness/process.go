@@ -110,6 +110,17 @@ func transcriptTruncationMarker(dropped int64) []byte {
 	return []byte(fmt.Sprintf("\n[transcript truncated: %d bytes dropped]\n", dropped))
 }
 
+// observedBytes is everything the process has produced so far, retained plus
+// dropped. Dropped is included deliberately: a session chatty enough to pass
+// the transcript cap is emphatically not stalled, and reporting only the
+// retained length would make it look frozen at exactly the cap (#4179). Safe
+// to call concurrently with Write, for the same reason as Bytes.
+func (b *syncBuffer) observedBytes() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return int64(b.buf.Len()) + b.dropped
+}
+
 func (b *syncBuffer) retainedBytes() []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -155,6 +166,14 @@ type ProcessRequest struct {
 	// StdoutCapture receives stdout before transcript truncation. The caller
 	// must keep this sink bounded; capture errors do not affect the subprocess.
 	StdoutCapture io.Writer
+	// Activity, when set, is called once per ActivityInterval while the
+	// process runs, reporting whether its output moved (#4179). Purely
+	// observational: it runs on its own goroutine, never on the output-copy
+	// path, and nothing it does can fail or delay the subprocess.
+	Activity ActivityObserver
+	// ActivityInterval is the sampling period; non-positive means
+	// DefaultActivityInterval. Ignored when Activity is nil.
+	ActivityInterval time.Duration
 }
 
 // ProcessResult is what a harness subprocess produced.
@@ -238,7 +257,15 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	cmd.Env = env
 
 	buf := newTranscriptBuffer(req.MaxTranscriptBytes)
-	buf.progress = func() { invoke.ReportProgress(runCtx) }
+	// The transcript buffer sees BOTH streams (see cmd.Stdout/cmd.Stderr
+	// below), so this is the one place that observes all of the session's
+	// output — which is why the liveness tracker hangs off it rather than off
+	// either stream alone.
+	tracker := newActivityTracker(time.Now())
+	buf.progress = func() {
+		invoke.ReportProgress(runCtx)
+		tracker.observe(time.Now())
+	}
 	stderr := newTranscriptBuffer(req.MaxTranscriptBytes)
 	cmd.Stdout = stdoutCaptureWriter{transcript: buf, capture: req.StdoutCapture}
 	cmd.Stderr = stdoutCaptureWriter{transcript: buf, capture: stderr}
@@ -249,6 +276,13 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	if err != nil {
 		return ProcessResult{ExitCode: -1}, fmt.Errorf("harness: start %v: %w", req.Command, err)
 	}
+
+	// Sample the session's output while it runs, so a stall is written into
+	// the journal as it happens rather than inferred afterwards from a
+	// transcript artifact (#4179). Stopped before the result is assembled
+	// below, so no liveness mark can land after the stage's terminal event.
+	sampler := startActivitySampler(runCtx, tracker, req.ActivityInterval, buf.observedBytes, req.Activity)
+	defer sampler.stop()
 
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
@@ -279,6 +313,12 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 			// forever — see groupKillWaitDelay's doc.
 		}
 	}
+
+	// Explicitly, not just on the deferred call: the terminal agent event is
+	// emitted by the caller as soon as Run returns, and a liveness mark
+	// arriving after "completed" would be worse than none at all. stop is
+	// idempotent, so the defer above remains the safety net for early returns.
+	sampler.stop()
 
 	result := ProcessResult{
 		Transcript:             buf.Bytes(),

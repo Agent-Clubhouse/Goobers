@@ -30,9 +30,14 @@ const (
 // AgentUsage contains observed usage. Nil values mean that the adapter did not
 // report that measure; zero is an observed zero.
 type AgentUsage struct {
-	InputTokens  *int64   `json:"inputTokens,omitempty"`
-	OutputTokens *int64   `json:"outputTokens,omitempty"`
-	CostUSD      *float64 `json:"costUsd,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	InputTokens      *int64   `json:"inputTokens,omitempty"`
+	OutputTokens     *int64   `json:"outputTokens,omitempty"`
+	CacheReadTokens  *int64   `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens *int64   `json:"cacheWriteTokens,omitempty"`
+	ReasoningTokens  *int64   `json:"reasoningTokens,omitempty"`
+	NanoAIU          *int64   `json:"nanoAiu,omitempty"`
+	CostUSD          *float64 `json:"costUsd,omitempty"`
 }
 
 // AgentProvenance is invocation-local identity and the latest known state of a
@@ -297,11 +302,26 @@ func newerAgentEvent(candidate *AgentProvenance, current *AgentProvenance) bool 
 }
 
 func mergeAgentUsage(dst *AgentUsage, src AgentUsage) {
+	if dst.Model == "" {
+		dst.Model = src.Model
+	}
 	if dst.InputTokens == nil {
 		dst.InputTokens = src.InputTokens
 	}
 	if dst.OutputTokens == nil {
 		dst.OutputTokens = src.OutputTokens
+	}
+	if dst.CacheReadTokens == nil {
+		dst.CacheReadTokens = src.CacheReadTokens
+	}
+	if dst.CacheWriteTokens == nil {
+		dst.CacheWriteTokens = src.CacheWriteTokens
+	}
+	if dst.ReasoningTokens == nil {
+		dst.ReasoningTokens = src.ReasoningTokens
+	}
+	if dst.NanoAIU == nil {
+		dst.NanoAIU = src.NanoAIU
 	}
 	if dst.CostUSD == nil {
 		dst.CostUSD = src.CostUSD
@@ -309,6 +329,9 @@ func mergeAgentUsage(dst *AgentUsage, src AgentUsage) {
 }
 
 func addAgentUsage(dst *AgentUsage, src AgentUsage) {
+	if dst.Model == "" {
+		dst.Model = src.Model
+	}
 	if src.InputTokens != nil {
 		if dst.InputTokens == nil {
 			dst.InputTokens = new(int64)
@@ -321,6 +344,10 @@ func addAgentUsage(dst *AgentUsage, src AgentUsage) {
 		}
 		*dst.OutputTokens += *src.OutputTokens
 	}
+	addAgentUsageInt64(&dst.CacheReadTokens, src.CacheReadTokens)
+	addAgentUsageInt64(&dst.CacheWriteTokens, src.CacheWriteTokens)
+	addAgentUsageInt64(&dst.ReasoningTokens, src.ReasoningTokens)
+	addAgentUsageInt64(&dst.NanoAIU, src.NanoAIU)
 	if src.CostUSD != nil {
 		if dst.CostUSD == nil {
 			dst.CostUSD = new(float64)
@@ -329,12 +356,34 @@ func addAgentUsage(dst *AgentUsage, src AgentUsage) {
 	}
 }
 
+func addAgentUsageInt64(dst **int64, src *int64) {
+	if src == nil {
+		return
+	}
+	if *dst == nil {
+		*dst = new(int64)
+	}
+	**dst += *src
+}
+
 func validateAgentUsage(usage AgentUsage) error {
 	if usage.InputTokens != nil && *usage.InputTokens < 0 {
 		return fmt.Errorf("negative input tokens")
 	}
 	if usage.OutputTokens != nil && *usage.OutputTokens < 0 {
 		return fmt.Errorf("negative output tokens")
+	}
+	if usage.CacheReadTokens != nil && *usage.CacheReadTokens < 0 {
+		return fmt.Errorf("negative cache-read tokens")
+	}
+	if usage.CacheWriteTokens != nil && *usage.CacheWriteTokens < 0 {
+		return fmt.Errorf("negative cache-write tokens")
+	}
+	if usage.ReasoningTokens != nil && *usage.ReasoningTokens < 0 {
+		return fmt.Errorf("negative reasoning tokens")
+	}
+	if usage.NanoAIU != nil && *usage.NanoAIU < 0 {
+		return fmt.Errorf("negative nano-AIU")
 	}
 	if usage.CostUSD != nil && *usage.CostUSD < 0 {
 		return fmt.Errorf("negative cost")

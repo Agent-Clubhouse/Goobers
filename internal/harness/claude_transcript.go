@@ -611,6 +611,7 @@ func claudeModelUsages(models map[string]*claudeUsageAccumulator) []telemetry.Mo
 		if accumulator.hasCost {
 			value := accumulator.costUSD
 			usage.CostUSD = &value
+			usage.CostBasis = telemetry.CostBasisVendorReported
 		}
 		usages = append(usages, usage)
 	}

@@ -79,9 +79,14 @@ Instrumentation is OpenTelemetry throughout; **only the exporter changes per tie
   (`gen_ai.*`) (design D2). The registry is code + drift-guarded by test.
 - **TEL-041 (MUST):** *(All tiers)* Agentic stages MUST report usage the harness
   exposes — `gen_ai.usage.input_tokens`/`output_tokens`,
-  `goobers.usage.copilot_premium_requests`, `goobers.usage.cost_usd` — in
-  `ResultEnvelope.Metrics` and on the stage span. Missing data is *absent*, never
-  zero. Once usage is reported, the runner MUST enforce declared
+  `goobers.usage.cache_read_tokens`, `goobers.usage.cache_write_tokens`,
+  `goobers.usage.reasoning_tokens`, `goobers.usage.nano_aiu`,
+  `goobers.usage.billing_model`, `goobers.usage.cost_basis`,
+  `goobers.usage.copilot_premium_requests`, `goobers.usage.cost_usd` — as
+  typed span attributes and, for numeric measures, in `ResultEnvelope.Metrics`.
+  Missing data is *absent*, never zero; `cost_usd` is derived from nano-AIU when
+  nano-AIU is available, and premium requests are emitted only when non-zero.
+  Once usage is reported, the runner MUST enforce declared
   `Limits.MaxTokens`/`MaxCostUSD` (fail with `budget-exceeded`, branch per policy).
 - **TEL-042 (MUST):** *(All tiers)* Every agentic stage attempt MUST capture at
   minimum the **composed invocation prompt and final output** as a scrubbed,

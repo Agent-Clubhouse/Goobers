@@ -239,6 +239,58 @@ On Windows the same control is expressed through ACLs rather than mode bits, and
 a copied file inherits a grant to `S-1-5-11` (Authenticated Users). Break
 inheritance: `icacls <file> /inheritance:r /grant:r '<principal>:F'`.
 
+### Egress allowlist: name hosts, not domain suffixes
+
+This is the **HTTP proxy's** host allowlist (the `egress-allowlist` ConfigMap a
+Squid or equivalent forward proxy reads), not `instance.yaml`'s `egress.allowlist`,
+which is CIDR groups rendered into NetworkPolicies by `goobers netpol-render`. A
+CIDR cannot separate two hosts behind one vendor's shared front end; only the
+proxy sees the hostname, so the choice below can only be made here.
+
+An agentic stage's egress allowlist exists to admit **the model endpoint**. A
+domain-suffix entry does more than that: the vendors that serve the model API
+also serve their CLI's own analytics and crash-reporting hosts from siblings
+under the same suffix, so one entry written as `.<vendor>.com` — with a comment
+saying "the model endpoint" — silently admits the harness's telemetry too.
+
+This is not hypothetical. On a live instance, 96h of the egress proxy's access
+log carried 119,094 tunneled `CONNECT`s with **zero** `TCP_DENIED`: 19 to the
+vendor's API host and 3 to its telemetry host, both riding the same
+suffix entry (#4276). Nothing was misconfigured and nothing was blocked — that
+is precisely the problem: the allowlist could not express the difference, so no
+one ever made the choice.
+
+Write the entry as the exact API host instead (the repo/backlog provider, OIDC,
+and registry hosts your instance reaches are separate entries alongside it —
+this snippet shows only the model-endpoint line the suffix trap lives on):
+
+```
+# egress-allowlist ConfigMap (see the subPath note below for how to mount it)
+#
+# Model endpoint for the harness this instance actually runs — one exact host,
+# not a suffix. The image ships the Copilot CLI as the default harness; a
+# Claude Code harness uses the Anthropic host instead. List only what you run.
+api.githubcopilot.com
+#api.anthropic.com
+#
+# Each vendor CLI's own analytics/crash-reporting hosts are siblings under the
+# SAME domain suffix and are deliberately NOT listed. A suffix entry
+# (.githubcopilot.com, .anthropic.com) admits them silently and reads, in the
+# manifest, exactly like the line above. Admit one only by writing its exact
+# hostname here, as a deliberate, reviewable line.
+```
+
+`SEC-048` ("no phone-home") does **not** cover this: its guard parses this
+repository's own Go/JS/TS call sites and cannot see a third-party harness
+subprocess's egress at all (`docs/requirements/security.md`, SEC-048's scope
+paragraph). Vendor-subprocess telemetry is an operator decision, and this
+allowlist is where the operator makes it.
+
+Derive the exact host set from evidence, not from a vendor doc page: run the
+harness through the proxy with the API host allowlisted and read the denials out
+of the proxy's own log. A denial names the host it blocked; a suffix entry never
+tells you what it let through.
+
 ### `subPath` ConfigMap mounts never receive updates
 
 A `subPath` volumeMount looks identical to a whole-file or whole-directory mount

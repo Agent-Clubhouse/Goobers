@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 // mutationSidecarDeterministic simulates a provider-chain subcommand
@@ -88,6 +89,56 @@ func TestDispatchTaskProjectsMutationSidecarIntoRefTouched(t *testing.T) {
 	op, _ := found.Runner["operation"].(string)
 	if op != "open" {
 		t.Fatalf("ref.touched Runner[operation] = %q, want open", op)
+	}
+}
+
+func TestCommentOnlyRunPersistsPullRequestMutation(t *testing.T) {
+	const runID = "run-comment-only"
+	machine := fixtureMachine(t)
+	fact := `{"provider":"github","kind":"pr","id":"4384","url":"https://github.com/Agent-Clubhouse/Goobers/pull/4384","operation":"comment"}`
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return mutationSidecarDeterministic{fact: fact}, nil
+	}, gate.NewAutomatedEvaluator())
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerItem, Ref: "pr-4384"},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+
+	db, err := rollup.Open(filepath.Join(t.TempDir(), "telemetry.db"))
+	if err != nil {
+		t.Fatalf("open rollup: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.IngestRun(context.Background(), filepath.Join(runsDir, runID)); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	mutations, err := db.ProviderMutations(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ProviderMutations: %v", err)
+	}
+	var pullRequestMutations []rollup.ProviderMutation
+	for _, mutation := range mutations {
+		if mutation.Kind == "pr" {
+			pullRequestMutations = append(pullRequestMutations, mutation)
+		}
+	}
+	if len(pullRequestMutations) != 1 {
+		t.Fatalf("ProviderMutations = %#v, want one PR comment mutation", mutations)
+	}
+	mutation := pullRequestMutations[0]
+	if mutation.Provider != "github" || mutation.Kind != "pr" ||
+		mutation.ExternalID != "4384" || mutation.Operation != "comment" {
+		t.Fatalf("ProviderMutations[0] = %#v, want github PR 4384 comment", mutation)
 	}
 }
 

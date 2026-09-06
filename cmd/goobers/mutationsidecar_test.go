@@ -89,12 +89,18 @@ func TestBacklogQueryClaimWritesMutationSidecar(t *testing.T) {
 	}
 
 	facts := readMutationFacts(t, workDir)
-	if len(facts) != 1 {
-		t.Fatalf("mutation facts = %#v, want exactly 1", facts)
-	}
-	f := facts[0]
-	if f.Provider != "github" || f.Kind != "issue" || f.ID != "7" {
-		t.Fatalf("unexpected mutation fact: %+v", f)
+	for _, operation := range []string{"comment", "claim"} {
+		found := false
+		for _, fact := range facts {
+			if fact.Provider == "github" && fact.Kind == "issue" &&
+				fact.ID == "7" && fact.Operation == operation {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("mutation facts = %#v, want github issue 7 %s mutation", facts, operation)
+		}
 	}
 }
 
