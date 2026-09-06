@@ -15,12 +15,18 @@ import (
 const GenAIModelUsageEventName = "goobers.gen_ai.model_usage"
 
 const (
-	BillingModelAICredits             = "ai_credits"
-	BillingModelPremiumRequests       = "premium_requests"
-	CostBasisVendorReported           = "vendor_reported"
-	CostBasisUnknown                  = "unknown"
-	NanoAIUPerAICredit          int64 = 1_000_000_000
-	NanoAIUPerUSD               int64 = 100_000_000_000
+	// BillingModelAICredits identifies AI-credit billing.
+	BillingModelAICredits = "ai_credits"
+	// BillingModelPremiumRequests identifies legacy premium-request billing.
+	BillingModelPremiumRequests = "premium_requests"
+	// CostBasisVendorReported identifies vendor-reported cost data.
+	CostBasisVendorReported = "vendor_reported"
+	// CostBasisUnknown identifies usage without an authoritative cost basis.
+	CostBasisUnknown = "unknown"
+	// NanoAIUPerAICredit is the number of nano-AIU in one AI credit.
+	NanoAIUPerAICredit int64 = 1_000_000_000
+	// NanoAIUPerUSD is the number of nano-AIU represented by one US dollar.
+	NanoAIUPerUSD int64 = 100_000_000_000
 )
 
 // ModelUsage preserves one model's observed usage. Nil measures are unknown;
@@ -235,6 +241,7 @@ func modelUsageAttributes(usage ModelUsage) []attribute.KeyValue {
 	return attrs
 }
 
+// NanoAIUToUSD converts exact nano-AIU into its derived USD display value.
 func NanoAIUToUSD(nanoAIU int64) float64 {
 	return float64(nanoAIU) / float64(NanoAIUPerUSD)
 }
