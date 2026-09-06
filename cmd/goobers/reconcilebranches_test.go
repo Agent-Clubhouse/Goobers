@@ -85,6 +85,10 @@ func (runsDirCrossRun) UnpushedWork(context.Context, journalclient.UnpushedWorkR
 	panic("runsDirCrossRun: UnpushedWork not implemented; reconcile-branches tests only exercise BranchOwnership")
 }
 
+func (runsDirCrossRun) EscalationCandidates(context.Context, journalclient.EscalationCandidatesRequest) ([]journalclient.EscalationCandidate, error) {
+	panic("runsDirCrossRun: EscalationCandidates not implemented; reconcile-branches tests only exercise BranchOwnership")
+}
+
 type fakeBranchReconcileProvider struct {
 	branches              []providers.BranchSummary
 	listErr               error
