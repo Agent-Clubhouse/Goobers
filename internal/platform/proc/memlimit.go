@@ -73,39 +73,6 @@ type MemoryBound struct {
 	impl   memoryBoundImpl
 }
 
-// Mechanism reports how this bound is enforced.
-func (b *MemoryBound) Mechanism() Mechanism {
-	if b == nil {
-		return MechanismNone
-	}
-	return b.mechanism
-}
-
-// MaxBytes reports the bound applied, or 0 when nothing is enforced.
-func (b *MemoryBound) MaxBytes() uint64 {
-	if b == nil || b.mechanism == MechanismNone {
-		return 0
-	}
-	return b.maxBytes
-}
-
-// Describe renders the bound for a startup line or a stage failure, naming the
-// mechanism and — when there is none — why.
-//
-// It exists because a memory bound that is silently absent is worse than no
-// bound at all: an operator reading a green config concludes the control plane
-// is protected. The only honest report says which of the two mechanisms is in
-// force, or states plainly that neither is.
-func (b *MemoryBound) Describe() string {
-	if b == nil || b.mechanism == MechanismNone {
-		if b != nil && b.detail != "" {
-			return "per-stage memory bound: NOT ENFORCED (" + b.detail + ")"
-		}
-		return "per-stage memory bound: NOT ENFORCED"
-	}
-	return fmt.Sprintf("per-stage memory bound: %d bytes via %s", b.maxBytes, b.mechanism)
-}
-
 // Exceeded reports whether the child died because it breached this bound, and
 // a named reason to journal when it did.
 //
@@ -122,7 +89,15 @@ func (b *MemoryBound) Exceeded() (bool, string) {
 	if b == nil || b.mechanism == MechanismNone || b.impl == nil {
 		return false, ""
 	}
-	return b.impl.exceeded(b.maxBytes)
+	exceeded, reason := b.impl.exceeded(b.maxBytes)
+	if !exceeded {
+		return false, ""
+	}
+	// The mechanism is part of the finding, not decoration: it is what tells a
+	// reader whether the bound that fired measures resident memory (a cgroup)
+	// or merely correlates with it (RLIMIT_AS), and therefore how much to
+	// trust the number in deciding what to change.
+	return true, fmt.Sprintf("%s [bound enforced via %s]", reason, b.mechanism)
 }
 
 // Release frees the bound's resources. Safe on a nil bound and idempotent, so

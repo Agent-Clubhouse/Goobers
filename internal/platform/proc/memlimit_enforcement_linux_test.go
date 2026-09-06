@@ -66,7 +66,7 @@ func TestStageMemoryBoundKillsAnOverAllocatingChild(t *testing.T) {
 		t.Fatalf("StartBounded: %v", err)
 	}
 	t.Cleanup(func() { _ = boundHandle.Release() })
-	if got := boundHandle.Mechanism(); got != MechanismCgroup {
+	if got := boundHandle.mechanism; got != MechanismCgroup {
 		t.Fatalf("Mechanism() = %q, want %q — the enforcement path was not taken", got, MechanismCgroup)
 	}
 

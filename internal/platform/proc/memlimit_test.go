@@ -145,7 +145,9 @@ func TestStageCgroupExceededReadsTheKernelKillCounter(t *testing.T) {
 	if !exceeded {
 		t.Fatal("Exceeded() false after the kernel recorded an oom_kill")
 	}
-	for _, want := range []string{"exceeded its", "per-stage memory bound", "#4070", "runner.stageMemoryLimit"} {
+	// The mechanism belongs in the finding: it tells a reader whether the
+	// bound that fired measures resident memory or merely correlates with it.
+	for _, want := range []string{"exceeded its", "per-stage memory bound", "#4070", "runner.stageMemoryLimit", string(MechanismCgroup)} {
 		if !strings.Contains(reason, want) {
 			t.Errorf("reason %q does not mention %q", reason, want)
 		}
@@ -160,34 +162,20 @@ func TestRlimitBoundNeverClaimsTheKill(t *testing.T) {
 	if exceeded, reason := bound.Exceeded(); exceeded || reason != "" {
 		t.Errorf("Exceeded() = (%v, %q), want no claim under an address-space bound", exceeded, reason)
 	}
-	if bound.Mechanism() != MechanismRlimitAS {
-		t.Errorf("Mechanism() = %q", bound.Mechanism())
+	if bound.mechanism != MechanismRlimitAS {
+		t.Errorf("mechanism = %q", bound.mechanism)
 	}
 }
 
-// A bound that is silently absent is worse than no bound: an operator reading
-// a green config concludes the control plane is protected. Describe must say
-// which mechanism is in force, or state plainly that none is and why.
-func TestDescribeReportsWhetherAnythingIsEnforced(t *testing.T) {
-	if got := (*MemoryBound)(nil).Describe(); !strings.Contains(got, "NOT ENFORCED") {
-		t.Errorf("nil bound Describe() = %q, want an explicit not-enforced report", got)
-	}
-	if got := (*MemoryBound)(nil).MaxBytes(); got != 0 {
-		t.Errorf("nil bound MaxBytes() = %d, want 0", got)
+// A nil bound must be usable without a nil check at the call site: the
+// executor defers Release unconditionally and asks Exceeded on every stage,
+// including the ones that were never bounded.
+func TestNilBoundIsSafeToUse(t *testing.T) {
+	if exceeded, reason := (*MemoryBound)(nil).Exceeded(); exceeded || reason != "" {
+		t.Errorf("nil bound Exceeded() = (%v, %q), want no claim", exceeded, reason)
 	}
 	if err := (*MemoryBound)(nil).Release(); err != nil {
 		t.Errorf("nil bound Release() = %v, want nil so callers can defer unconditionally", err)
-	}
-
-	unavailable := unenforcedBound("the memory controller is not delegated")
-	got := unavailable.Describe()
-	if !strings.Contains(got, "NOT ENFORCED") || !strings.Contains(got, "not delegated") {
-		t.Errorf("Describe() = %q, want the reason a bound is absent", got)
-	}
-
-	enforced := &MemoryBound{mechanism: MechanismCgroup, maxBytes: 8 << 30}
-	if got := enforced.Describe(); !strings.Contains(got, string(MechanismCgroup)) || !strings.Contains(got, "8589934592") {
-		t.Errorf("Describe() = %q, want the mechanism and the bound", got)
 	}
 }
 
