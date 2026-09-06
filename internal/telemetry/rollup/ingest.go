@@ -375,30 +375,8 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			}
 
 		case eventRefTouched:
-			if ev.ExternalRef == nil {
-				continue
-			}
-			relationship := operationFromRunner(ev.Runner)
-			if relationship == "" {
-				relationship = "touched"
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT OR IGNORE INTO run_cost_attribution
-					(run_id, provider, external_kind, external_id, relationship)
-				VALUES (?, ?, ?, ?, ?)`,
-				runID, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID, relationship); err != nil {
-				return fmt.Errorf("rollup: insert cost attribution seq %d: %w", ev.Seq, err)
-			}
-			rj, err := runnerJSON(ev.Runner)
-			if err != nil {
+			if err := insertRefTouched(ctx, tx, runID, ev); err != nil {
 				return err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO provider_mutations (run_id, seq, provider, kind, external_id, url, operation, occurred_at, runner_json)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID,
-				nullIfEmpty(ev.ExternalRef.URL), nullIfEmpty(operationFromRunner(ev.Runner)), formatTime(ev.Time), rj); err != nil {
-				return fmt.Errorf("rollup: insert provider_mutation seq %d: %w", ev.Seq, err)
 			}
 		}
 	}
@@ -413,6 +391,35 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			nullIfEmpty(a.errorCode), nullIfEmpty(a.errorClass), a.runnerJSON, k.branch); err != nil {
 			return fmt.Errorf("rollup: insert stage_attempt %s traversal %d: %w", k.stage, k.traversal, err)
 		}
+	}
+	return nil
+}
+
+func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalEvent) error {
+	if ev.ExternalRef == nil {
+		return nil
+	}
+	relationship := operationFromRunner(ev.Runner)
+	if relationship == "" {
+		relationship = "touched"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO run_cost_attribution
+			(run_id, provider, external_kind, external_id, relationship)
+		VALUES (?, ?, ?, ?, ?)`,
+		runID, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID, relationship); err != nil {
+		return fmt.Errorf("rollup: insert cost attribution seq %d: %w", ev.Seq, err)
+	}
+	rj, err := runnerJSON(ev.Runner)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO provider_mutations (run_id, seq, provider, kind, external_id, url, operation, occurred_at, runner_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID,
+		nullIfEmpty(ev.ExternalRef.URL), nullIfEmpty(operationFromRunner(ev.Runner)), formatTime(ev.Time), rj); err != nil {
+		return fmt.Errorf("rollup: insert provider_mutation seq %d: %w", ev.Seq, err)
 	}
 	return nil
 }

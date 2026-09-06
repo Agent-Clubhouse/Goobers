@@ -227,6 +227,28 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	byID, order, err := loadCostRunReferences(ctx, tx, provider)
+	if err != nil {
+		return nil, err
+	}
+	if err := loadCostAttemptUsage(ctx, tx, provider, byID); err != nil {
+		return nil, err
+	}
+	if err := loadCostModelUsage(ctx, tx, provider, byID); err != nil {
+		return nil, err
+	}
+
+	out := make([]*costRun, 0, len(order))
+	for _, runID := range order {
+		out = append(out, byID[runID])
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("rollup: commit cost query: %w", err)
+	}
+	return out, nil
+}
+
+func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string) (map[string]*costRun, []string, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT r.run_id, r.started_at, a.external_kind, a.external_id
 		FROM runs r
@@ -235,7 +257,7 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 		GROUP BY r.run_id, r.started_at, a.external_kind, a.external_id
 		ORDER BY r.started_at, r.run_id, a.external_kind, a.external_id`, provider)
 	if err != nil {
-		return nil, fmt.Errorf("rollup: query cost-attributed runs: %w", err)
+		return nil, nil, fmt.Errorf("rollup: query cost-attributed runs: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -244,13 +266,13 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 	for rows.Next() {
 		var runID, startedText, kind, externalID string
 		if err := rows.Scan(&runID, &startedText, &kind, &externalID); err != nil {
-			return nil, fmt.Errorf("rollup: scan cost-attributed run: %w", err)
+			return nil, nil, fmt.Errorf("rollup: scan cost-attributed run: %w", err)
 		}
 		run := byID[runID]
 		if run == nil {
 			started, err := time.Parse(time.RFC3339Nano, startedText)
 			if err != nil {
-				return nil, fmt.Errorf("rollup: parse cost run start %q: %w", startedText, err)
+				return nil, nil, fmt.Errorf("rollup: parse cost run start %q: %w", startedText, err)
 			}
 			run = &costRun{id: runID, started: started, issues: map[string]struct{}{}, prs: map[string]struct{}{}}
 			byID[runID] = run
@@ -264,12 +286,15 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rollup: iterate cost-attributed runs: %w", err)
+		return nil, nil, fmt.Errorf("rollup: iterate cost-attributed runs: %w", err)
 	}
 	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("rollup: close cost-attributed runs: %w", err)
+		return nil, nil, fmt.Errorf("rollup: close cost-attributed runs: %w", err)
 	}
+	return byID, order, nil
+}
 
+func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, byID map[string]*costRun) error {
 	usageRows, err := tx.QueryContext(ctx, `
 		SELECT sa.run_id, su.input_tokens, su.output_tokens,
 		       su.cache_read_tokens, su.cache_write_tokens, su.reasoning_tokens,
@@ -285,7 +310,7 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 		)
 		ORDER BY sa.run_id, sa.stage, sa.traversal`, provider)
 	if err != nil {
-		return nil, fmt.Errorf("rollup: query attributed attempt usage: %w", err)
+		return fmt.Errorf("rollup: query attributed attempt usage: %w", err)
 	}
 	defer func() { _ = usageRows.Close() }()
 	for usageRows.Next() {
@@ -297,7 +322,7 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 			&runID, &input, &output, &cacheRead, &cacheWrite, &reasoning,
 			&premium, &nanoAIU, &costUSD, &billingModel, &costBasis,
 		); err != nil {
-			return nil, fmt.Errorf("rollup: scan attributed attempt usage: %w", err)
+			return fmt.Errorf("rollup: scan attributed attempt usage: %w", err)
 		}
 		run := byID[runID]
 		if run == nil {
@@ -310,12 +335,15 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 		run.measures.addRow(input, output, cacheRead, cacheWrite, reasoning, premium, nanoAIU, costUSD, billingModel, costBasis)
 	}
 	if err := usageRows.Err(); err != nil {
-		return nil, fmt.Errorf("rollup: iterate attributed attempt usage: %w", err)
+		return fmt.Errorf("rollup: iterate attributed attempt usage: %w", err)
 	}
 	if err := usageRows.Close(); err != nil {
-		return nil, fmt.Errorf("rollup: close attributed attempt usage: %w", err)
+		return fmt.Errorf("rollup: close attributed attempt usage: %w", err)
 	}
+	return nil
+}
 
+func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, byID map[string]*costRun) error {
 	modelRows, err := tx.QueryContext(ctx, `
 		SELECT smu.run_id, smu.model, smu.input_tokens, smu.output_tokens,
 		       smu.cache_read_tokens, smu.cache_write_tokens, smu.reasoning_tokens,
@@ -328,7 +356,7 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 		)
 		ORDER BY smu.run_id, smu.stage, smu.traversal, smu.model`, provider)
 	if err != nil {
-		return nil, fmt.Errorf("rollup: query attributed model usage: %w", err)
+		return fmt.Errorf("rollup: query attributed model usage: %w", err)
 	}
 	defer func() { _ = modelRows.Close() }()
 	for modelRows.Next() {
@@ -340,7 +368,7 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 			&runID, &model, &input, &output, &cacheRead, &cacheWrite, &reasoning,
 			&premium, &nanoAIU, &costUSD, &billingModel, &costBasis,
 		); err != nil {
-			return nil, fmt.Errorf("rollup: scan attributed model usage: %w", err)
+			return fmt.Errorf("rollup: scan attributed model usage: %w", err)
 		}
 		run := byID[runID]
 		if run == nil {
@@ -361,20 +389,12 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 		modelRun.measures.addRow(input, output, cacheRead, cacheWrite, reasoning, premium, nanoAIU, costUSD, billingModel, costBasis)
 	}
 	if err := modelRows.Err(); err != nil {
-		return nil, fmt.Errorf("rollup: iterate attributed model usage: %w", err)
+		return fmt.Errorf("rollup: iterate attributed model usage: %w", err)
 	}
 	if err := modelRows.Close(); err != nil {
-		return nil, fmt.Errorf("rollup: close attributed model usage: %w", err)
+		return fmt.Errorf("rollup: close attributed model usage: %w", err)
 	}
-
-	out := make([]*costRun, 0, len(order))
-	for _, runID := range order {
-		out = append(out, byID[runID])
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("rollup: commit cost query: %w", err)
-	}
-	return out, nil
+	return nil
 }
 
 func (m *costMeasures) addRow(input, output, cacheRead, cacheWrite, reasoning sql.NullInt64, premium sql.NullFloat64, nanoAIU sql.NullInt64, costUSD sql.NullFloat64, billingModel, costBasis sql.NullString) {
