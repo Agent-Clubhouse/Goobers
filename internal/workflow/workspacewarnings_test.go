@@ -57,6 +57,59 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "gofmt write is mutating",
+			def: Definition{Name: "format", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+				Name: "format", Type: apiv1.TaskDeterministic,
+				Run: &apiv1.DeterministicRun{Command: []string{"gofmt", "-w", "."}},
+			}}}},
+			want: false,
+		},
+		{
+			name: "go generate is mutating",
+			def: Definition{Name: "generate", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+				Name: "generate", Type: apiv1.TaskDeterministic,
+				Run: &apiv1.DeterministicRun{Command: []string{"go", "generate", "./..."}},
+			}}}},
+			want: false,
+		},
+		{
+			name: "goobers mutation is uncertain",
+			def: Definition{Name: "maintain", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+				Name: "reset", Type: apiv1.TaskDeterministic,
+				Run: &apiv1.DeterministicRun{Command: []string{"goobers", "workspace", "reset"}},
+			}}}},
+			want: false,
+		},
+		{
+			name: "agentic task policy action",
+			def: Definition{Name: "docs", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+				Name: "update", Type: apiv1.TaskAgentic,
+				PolicyActions: []string{"modify-repository"},
+			}}}},
+			want: false,
+		},
+		{
+			name: "agentic task goober policy action",
+			def: Definition{Name: "docs", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+				Name: "update", Type: apiv1.TaskAgentic, Goober: "writer",
+			}}}},
+			goobers: map[string]apiv1.GooberSpec{
+				"writer": {PolicyActions: []string{"modify-repository"}},
+			},
+			want: false,
+		},
+		{
+			name: "agentic gate policy action",
+			def: Definition{Name: "review", Spec: apiv1.WorkflowSpec{Gates: []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+			}}}},
+			goobers: map[string]apiv1.GooberSpec{
+				"reviewer": {PolicyActions: []string{"modify-repository"}},
+			},
+			want: false,
+		},
+		{
 			name: "explicit workspace",
 			def: Definition{Name: "declared", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
 				Name: "tests", Type: apiv1.TaskDeterministic,
