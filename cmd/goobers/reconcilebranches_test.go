@@ -15,8 +15,79 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
+
+// runsDirCrossRun answers BranchOwnership by opening runID's journal
+// directly under a flat runs directory — reconcile-branches's own pre-#4344
+// fixture shape, byte-for-byte the same lookup journalclient.FileCrossRun's
+// production implementation makes, just against a directory these tests
+// build directly rather than through an instance.Layout. BranchOwnership
+// itself is exercised for real (both backends) by journalreadplane_test.go
+// and journalclient's own tests; this type exists only so reconcile-branches'
+// SURROUNDING decision logic (preserve/delete/report) keeps its existing,
+// already-large fixture set unchanged.
+type runsDirCrossRun struct{ runsDir string }
+
+func (c runsDirCrossRun) BranchOwnership(_ context.Context, req journalclient.BranchOwnershipRequest) (journalclient.BranchOwnershipResponse, error) {
+	reader, err := journal.OpenRead(filepath.Join(c.runsDir, req.TargetRunID))
+	if err != nil {
+		return journalclient.BranchOwnershipResponse{Reason: "ambiguous-ownership", Detail: err.Error()}, nil
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return journalclient.BranchOwnershipResponse{Reason: "ambiguous-ownership", Detail: err.Error()}, nil
+	}
+	if id.RunID != req.TargetRunID || id.Workflow != req.Workflow || id.StartedAt.IsZero() {
+		return journalclient.BranchOwnershipResponse{Reason: "ambiguous-ownership", Detail: "branch does not match owning run identity"}, nil
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return journalclient.BranchOwnershipResponse{Reason: "run-journal-unreadable", Detail: err.Error()}, nil
+	}
+	owned := false
+	var terminalAt time.Time
+	for _, event := range events {
+		if event.Type == journal.EventRefTouched && event.ExternalRef != nil &&
+			event.ExternalRef.Provider == string(providers.ProviderGitHub) &&
+			event.ExternalRef.Kind == "branch" && event.ExternalRef.ID == req.Branch {
+			owned = true
+		}
+		if event.Type == journal.EventRunFinished {
+			terminalAt = event.Time
+		}
+	}
+	if !owned {
+		return journalclient.BranchOwnershipResponse{Reason: "ambiguous-ownership", Detail: "no journaled reference to this branch"}, nil
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		return journalclient.BranchOwnershipResponse{Reason: "run-journal-unreadable", Detail: err.Error()}, nil
+	}
+	if terminalBranchRunPhase(phase) && terminalAt.IsZero() {
+		return journalclient.BranchOwnershipResponse{Reason: "run-journal-unreadable", Detail: "no timestamped terminal event"}, nil
+	}
+	return journalclient.BranchOwnershipResponse{Owner: &journalclient.BranchOwnership{
+		Workflow: req.Workflow, RunID: req.TargetRunID, StartedAt: id.StartedAt, TerminalAt: terminalAt, Phase: string(phase),
+	}}, nil
+}
+
+func (runsDirCrossRun) RunPhase(context.Context, string) (journal.RunPhase, error) {
+	panic("runsDirCrossRun: RunPhase not implemented; reconcile-branches tests only exercise BranchOwnership")
+}
+
+func (runsDirCrossRun) ConflictTouches(context.Context, journalclient.ConflictTouchRequest) ([]journalclient.ConflictTouch, error) {
+	panic("runsDirCrossRun: ConflictTouches not implemented; reconcile-branches tests only exercise BranchOwnership")
+}
+
+func (runsDirCrossRun) UnpushedWork(context.Context, journalclient.UnpushedWorkRequest) (*journalclient.UnpushedWork, error) {
+	panic("runsDirCrossRun: UnpushedWork not implemented; reconcile-branches tests only exercise BranchOwnership")
+}
+
+func (runsDirCrossRun) EscalationCandidates(context.Context, journalclient.EscalationCandidatesRequest) ([]journalclient.EscalationCandidate, error) {
+	panic("runsDirCrossRun: EscalationCandidates not implemented; reconcile-branches tests only exercise BranchOwnership")
+}
 
 type fakeBranchReconcileProvider struct {
 	branches              []providers.BranchSummary
@@ -184,7 +255,7 @@ func TestReconcileRemoteBranchesDryRunNeverDeletes(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -226,7 +297,7 @@ func TestReconcileRemoteBranchesUsesTerminalTimeForSafetyWindow(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -421,7 +492,7 @@ func TestReconcileRemoteBranchesDeletesOnlySafeOwnedCandidate(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      10,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -486,7 +557,7 @@ func TestReconcileRemoteBranchesPreservesConcurrentlyUpdatedTip(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -525,7 +596,7 @@ func TestReconcileRemoteBranchesPreservesRecentRemoteActivity(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -562,7 +633,7 @@ func TestReconcileRemoteBranchesDryRunPreservesRecentRemoteActivity(t *testing.T
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -596,7 +667,7 @@ func TestReconcileRemoteBranchesPreservesUnknownRemoteActivity(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -635,7 +706,7 @@ func TestReconcileRemoteBranchesRechecksOpenPRBeforeDelete(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -674,7 +745,7 @@ func TestReconcileRemoteBranchesPreservesPushAfterFinalCheck(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -711,7 +782,7 @@ func TestReconcileRemoteBranchesJournalsTipLookupFailure(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -753,7 +824,7 @@ func TestReconcileRemoteBranchesJournalsLookupFailuresAndStopsOnRateLimit(t *tes
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      10,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -796,7 +867,7 @@ func TestReconcileRemoteBranchesJournalsMutationFailureAndContinues(t *testing.T
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      10,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -880,7 +951,7 @@ func TestReconcileRemoteBranchesStopsOnGitHubDeleteRateLimit(t *testing.T) {
 			Name:     "app",
 			URL:      "https://github.example/acme/app.git",
 		},
-		RunsDir:    runsDir,
+		CrossRun: runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		Limit:      10,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -919,7 +990,7 @@ func TestReconcileRemoteBranchesEnforcesBatchBound(t *testing.T) {
 
 	report, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    runsDir,
+		CrossRun:   runsDirCrossRun{runsDir: runsDir}, RunID: "reconcile-run",
 		Prefix:     branchReconcilePrefix,
 		After:      "goobers/implementation/prior",
 		Limit:      2,
@@ -945,7 +1016,6 @@ func TestReconcileRemoteBranchesJournalsSweepRateLimit(t *testing.T) {
 
 	_, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"},
-		RunsDir:    t.TempDir(),
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,
@@ -965,7 +1035,7 @@ func TestInspectBranchOwnerRejectsMismatchedRunIdentity(t *testing.T) {
 	runsDir := t.TempDir()
 	branch := createBranchReconcileRun(t, runsDir, "other-workflow", "identity-run", time.Now(), true, true)
 	requested := providers.BranchName("implementation", "identity-run")
-	if _, reason, err := inspectBranchOwner(runsDir, branchReconcilePrefix, requested); err == nil || reason != "ambiguous-ownership" {
+	if _, reason, err := inspectBranchOwner(context.Background(), runsDirCrossRun{runsDir: runsDir}, "reconcile-run", "", branchReconcilePrefix, requested); err == nil || reason != "ambiguous-ownership" {
 		t.Fatalf("reason = %q, err = %v", reason, err)
 	}
 

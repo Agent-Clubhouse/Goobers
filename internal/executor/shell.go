@@ -512,10 +512,15 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// Its provider read-cache writes are the same correctness-neutral
 	// conditional-GET store backlog-query and backlog-dedupe already carry
 	// into a pod.
-	// reconcile-branches opens the instance log (reconcilebranches.go:155)
-	// and reads OTHER runs' journals by walking layout.RunsDir() with
-	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
-	// three purpose-built gaggle-scoped questions do not answer.
+	// reconcile-branches still opens the instance log directly
+	// (reconcilebranches.go) for its decision-annotation writes — a scrubbed
+	// write carrying a stage-minted credential-redaction registry
+	// (journal.WithScrubber) the shared openStageAnnotator seam has no
+	// client-side hook for yet (#4344's own follow-up). Its OTHER
+	// direct-access point — walking layout.RunsDir() with journal.OpenRead to
+	// resolve a candidate branch's owning run — is fixed (Goobers#4344): it is
+	// now the cross-run journal plane's fourth purpose-built question,
+	// BranchOwnership, alongside RunPhase/ConflictTouches/UnpushedWork.
 	"reconcile-branches": true,
 	// file-issues is deliberately NOT here, and was never here — which was
 	// the defect Goobers#3996 blocker 2 named rather than a decision. It read

@@ -249,6 +249,31 @@ func seedEscalatedRun(t *testing.T, layout instance.Layout, gaggle, runID, paren
 	}
 }
 
+// seedBranchOwningRun writes a real run that journaled owning branch — a
+// ref.touched event naming it — and finished at terminalAt.
+func seedBranchOwningRun(t *testing.T, layout instance.Layout, gaggle, runID, workflow, branch string) {
+	t.Helper()
+	run, err := journal.Create(layout.ForGaggle(gaggle).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: workflow, WorkflowVersion: 1, Gaggle: gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil)
+	if err != nil {
+		t.Fatalf("create run %s: %v", runID, err)
+	}
+	if err := run.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "branch", ID: branch},
+	}); err != nil {
+		t.Fatalf("append ref.touched for %s: %v", runID, err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatalf("append run.finished for %s: %v", runID, err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close run %s: %v", runID, err)
+	}
+}
+
 // TestDaemonEscalationCandidatesStaysInsideTheGaggle is #4342's containment
 // evidence for the fourth cross-run question: a pod must learn only its own
 // gaggle's escalation candidates, never another gaggle's — the same property
@@ -304,6 +329,57 @@ func TestDaemonEscalationCandidatesRefusesAskingRunOutsideItsGaggle(t *testing.T
 	})
 	if err == nil {
 		t.Fatal("an asking run with no run.yaml in the claimed gaggle was admitted")
+	}
+}
+
+// TestDaemonBranchOwnershipConfirmsARealOwner is the success path: the target
+// run journaled owning the branch, so the daemon answers its identity and
+// terminal/ref facts.
+func TestDaemonBranchOwnershipConfirmsARealOwner(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
+	seedBranchOwningRun(t, layout, crossRunTestGaggle, "owning-run", "implementation", "goobers/implementation/owning-run")
+
+	service := newDaemonRunJournalService(layout, nil)
+	response, err := service.BranchOwnership(context.Background(), journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: crossRunTestGaggle,
+		TargetRunID: "owning-run", Workflow: "implementation", Branch: "goobers/implementation/owning-run",
+	})
+	if err != nil {
+		t.Fatalf("branch ownership: %v", err)
+	}
+	if response.Owner == nil || response.Owner.RunID != "owning-run" || response.Owner.Phase != string(journal.PhaseCompleted) ||
+		response.Owner.TerminalAt.IsZero() {
+		t.Fatalf("owner = %+v, want owning-run/completed with a nonzero terminal time", response.Owner)
+	}
+}
+
+// TestDaemonBranchOwnershipRefusesRunsOutsideTheAskingRunsGaggle mirrors
+// TestDaemonRunPhaseRefusesRunsOutsideTheAskingRunsGaggle for the fifth
+// question: both the asking run and the target run must belong to the
+// claimed gaggle.
+func TestDaemonBranchOwnershipRefusesRunsOutsideTheAskingRunsGaggle(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
+	seedBranchOwningRun(t, layout, "other-gaggle", "foreign-owner", "implementation", "goobers/implementation/foreign-owner")
+
+	service := newDaemonRunJournalService(layout, nil)
+	ctx := context.Background()
+
+	// The target run belongs to a different gaggle than the one claimed.
+	if _, err := service.BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: crossRunTestGaggle,
+		TargetRunID: "foreign-owner", Workflow: "implementation", Branch: "goobers/implementation/foreign-owner",
+	}); err == nil {
+		t.Fatal("a foreign gaggle's run answered branch ownership")
+	}
+
+	// The asking run itself is not in the gaggle it claims.
+	if _, err := service.BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: "other-gaggle",
+		TargetRunID: "foreign-owner", Workflow: "implementation", Branch: "goobers/implementation/foreign-owner",
+	}); err == nil {
+		t.Fatal("an asking run outside the named gaggle was served")
 	}
 }
 
