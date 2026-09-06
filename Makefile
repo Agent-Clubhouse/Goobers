@@ -184,6 +184,11 @@ vet:
 lint:
 	$(GOLANGCI_LINT) run
 
+## lint-fast: Run the configured fast golangci-lint subset (including revive).
+.PHONY: lint-fast
+lint-fast:
+	$(GOLANGCI_LINT) run --fast-only
+
 ## vulncheck: Scan reachable Go code for known vulnerabilities.
 .PHONY: vulncheck
 vulncheck:

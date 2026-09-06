@@ -8,12 +8,16 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 func TestAdapterAgentEventsProjectLifecycleAndUsage(t *testing.T) {
 	req := RunRequest{Attempt: 3, Envelope: testEnvelope(t.TempDir(), "agent:model")}
 	events := []journal.Event{adapterAgentEventAt(req, "copilot", journal.AgentCompleted, map[string]float64{
-		"gen_ai.usage.input_tokens": 12,
+		telemetry.AttrGenAIUsageInputTokens: 12,
+		telemetry.AttrUsageCacheReadTokens:  9,
+		telemetry.AttrUsageNanoAIU:          200_000_000_000,
+		telemetry.AttrUsageCostUSD:          99,
 	}, time.Now().UTC())}
 	if len(events) != 1 || events[0].Agent == nil {
 		t.Fatalf("events = %#v", events)
@@ -21,7 +25,10 @@ func TestAdapterAgentEventsProjectLifecycleAndUsage(t *testing.T) {
 	agent := events[0].Agent
 	if agent.Schema == "" || agent.Attempt != 3 || agent.Plugin != "copilot" ||
 		agent.Lifecycle != journal.AgentCompleted || agent.Usage.InputTokens == nil ||
-		*agent.Usage.InputTokens != 12 {
+		*agent.Usage.InputTokens != 12 || agent.Usage.CacheReadTokens == nil ||
+		*agent.Usage.CacheReadTokens != 9 || agent.Usage.NanoAIU == nil ||
+		*agent.Usage.NanoAIU != 200_000_000_000 || agent.Usage.CostUSD == nil ||
+		*agent.Usage.CostUSD != 2 {
 		t.Fatalf("agent = %#v", agent)
 	}
 	if err := journal.ValidateAgentEvent(events[0]); err != nil {

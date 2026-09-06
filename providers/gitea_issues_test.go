@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -351,7 +352,13 @@ func (m *giteaIssueMock) handler(t *testing.T) http.Handler {
 			var body map[string]string
 			decodeJSON(t, r, &body)
 			m.nextCommentID++
-			c := map[string]interface{}{"id": m.nextCommentID, "body": body["body"], "user": map[string]string{"login": m.userLogin}}
+			c := map[string]interface{}{
+				"id":        m.nextCommentID,
+				"body":      body["body"],
+				"user":      map[string]string{"login": m.userLogin},
+				"html_url":  fmt.Sprintf("https://gitea.test/acme/app/issues/7#issuecomment-%d", m.nextCommentID),
+				"issue_url": "https://gitea.test/api/v1/repos/acme/app/issues/7",
+			}
 			m.comments = append(m.comments, c)
 			writeJSON(t, w, c)
 		default:
@@ -636,6 +643,24 @@ func TestGiteaListComments(t *testing.T) {
 	}
 	if comments[0].CreatedAt == nil || !comments[0].CreatedAt.Equal(created) {
 		t.Fatalf("CreatedAt = %v, want %v", comments[0].CreatedAt, created)
+	}
+}
+
+func TestGiteaCreateWorkItemCommentRecordsMutation(t *testing.T) {
+	m := newGiteaIssueMock()
+	recorder := &recordingRecorder{}
+	provider, repo := newGiteaIssueProvider(t, m, WithGiteaMutationRecorder(recorder))
+
+	if _, err := provider.CreateWorkItemComment(context.Background(), repo, "7", "prepared"); err != nil {
+		t.Fatalf("CreateWorkItemComment: %v", err)
+	}
+	ref, ok := recorder.last()
+	if !ok {
+		t.Fatal("CreateWorkItemComment recorded no external ref")
+	}
+	if ref.Provider != ProviderGitea || ref.Ref != "acme/app#7" ||
+		ref.Operation != "comment" || ref.URL != "https://gitea.test/acme/app/issues/7#issuecomment-1" {
+		t.Fatalf("recorded ref = %+v, want gitea PR 7 comment mutation", ref)
 	}
 }
 

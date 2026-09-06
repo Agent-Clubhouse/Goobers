@@ -2,6 +2,7 @@
 
 export const apiRoutes = {
   "health": { method: "GET", path: "/api/v1/health", actionClass: "read-only-navigation" },
+  "configDigest": { method: "GET", path: "/api/v1/config/digest", actionClass: "read-only-navigation" },
   "instance": { method: "GET", path: "/api/v1/instance", actionClass: "read-only-navigation" },
   "portalConfig": { method: "GET", path: "/api/v1/portal/config", actionClass: "read-only-navigation" },
   "gaggles": { method: "GET", path: "/api/v1/gaggles", actionClass: "read-only-navigation" },

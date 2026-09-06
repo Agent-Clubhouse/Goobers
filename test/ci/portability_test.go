@@ -157,6 +157,12 @@ func TestMakefileValidationTiersAreStrictlyNested(t *testing.T) {
 			},
 		},
 		{
+			target: "lint-fast",
+			want: makeTarget{
+				recipes: []string{"$(GOLANGCI_LINT) run --fast-only"},
+			},
+		},
+		{
 			target: "tidy-check",
 			want: makeTarget{
 				recipes: []string{"$(GO) mod tidy -diff"},
@@ -339,10 +345,27 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 	if !strings.Contains(preflight, "go run ./test/ci group preflight") {
 		t.Error("preflight job must run the shared Node-free preflight group")
 	}
+	const setupLint = "uses: ./.github/actions/setup-golangci-lint"
+	if !strings.Contains(preflight, setupLint) {
+		t.Error("preflight job must use the shared golangci-lint installer")
+	}
+	fastLintIndex := strings.Index(preflight, "run: make lint-fast")
+	preflightIndex := strings.Index(preflight, "run: go run ./test/ci group preflight")
+	if fastLintIndex < 0 || fastLintIndex > preflightIndex {
+		t.Error("preflight job must run make lint-fast before the broader preflight group")
+	}
 	for _, forbidden := range []string{"Set up Node", "Playwright", "npm --prefix portal"} {
 		if strings.Contains(preflight, forbidden) {
 			t.Errorf("preflight job contains expensive Node-backed work %q", forbidden)
 		}
+	}
+
+	lint := workflowJob(workflow, "lint")
+	if !strings.Contains(lint, setupLint) {
+		t.Error("platform lint jobs must use the shared golangci-lint installer")
+	}
+	if !strings.Contains(lint, "goos: [linux, darwin, windows]") {
+		t.Error("platform lint matrix must retain Linux, macOS, and Windows build-tag coverage")
 	}
 
 	for _, job := range []string{
@@ -353,6 +376,38 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 		section := workflowJob(workflow, job)
 		if !strings.Contains(section, "needs: [preflight]") {
 			t.Errorf("expensive job %q must wait for preflight admission", job)
+		}
+	}
+}
+
+func TestCIWorkflowSharesGolangCILintSetup(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	const setupLint = "uses: ./.github/actions/setup-golangci-lint"
+	if got := strings.Count(workflow, setupLint); got != 2 {
+		t.Errorf("CI workflow uses shared golangci-lint setup %d times, want preflight plus platform lint", got)
+	}
+	if strings.Contains(workflow, "golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh") {
+		t.Error("CI workflow must not duplicate the golangci-lint download recipe")
+	}
+	if got := strings.Count(workflow, "GOLANGCI_LINT_VERSION: v2.12.2"); got != 1 {
+		t.Errorf("CI workflow declares the golangci-lint version %d times, want one source of truth", got)
+	}
+
+	actionData, err := os.ReadFile(filepath.Join(root, ".github", "actions", "setup-golangci-lint", "action.yml"))
+	if err != nil {
+		t.Fatalf("read shared golangci-lint setup action: %v", err)
+	}
+	action := string(actionData)
+	for _, want := range []string{"GOLANGCI_LINT_VERSION: ${{ inputs.version }}", "golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh"} {
+		if !strings.Contains(action, want) {
+			t.Errorf("shared golangci-lint setup action must contain %q", want)
 		}
 	}
 }

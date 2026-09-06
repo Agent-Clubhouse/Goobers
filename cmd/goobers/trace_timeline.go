@@ -63,7 +63,7 @@ type traceTimelineUsage struct {
 	ReasoningTokens  *int64   `json:"reasoningTokens,omitempty"`
 	Requests         *int64   `json:"requests,omitempty"`
 	Cost             *float64 `json:"cost,omitempty"`
-	NanoAIU          *float64 `json:"nanoAIU,omitempty"`
+	NanoAIU          *int64   `json:"nanoAIU,omitempty"`
 }
 
 type traceTerminalCause struct {
@@ -360,7 +360,7 @@ func transcriptUsage(data []byte) []traceTimelineUsage {
 				ReasoningTokens  *int64   `json:"reasoning_tokens"`
 				Requests         *int64   `json:"requests"`
 				Cost             *float64 `json:"cost"`
-				NanoAIU          *float64 `json:"nano_aiu"`
+				NanoAIU          *int64   `json:"nano_aiu"`
 			} `json:"usage"`
 		}
 		if err := decoder.Decode(&event); err != nil {
@@ -407,7 +407,7 @@ func mergeTimelineUsage(existing, additions []traceTimelineUsage) []traceTimelin
 		mergeUsageInt(&existing[index].ReasoningTokens, addition.ReasoningTokens)
 		mergeUsageInt(&existing[index].Requests, addition.Requests)
 		mergeUsageFloat(&existing[index].Cost, addition.Cost)
-		mergeUsageFloat(&existing[index].NanoAIU, addition.NanoAIU)
+		mergeUsageInt(&existing[index].NanoAIU, addition.NanoAIU)
 	}
 	return existing
 }
@@ -566,7 +566,7 @@ func formatTimelineUsage(usage traceTimelineUsage) string {
 	appendInt("reasoning", usage.ReasoningTokens)
 	appendInt("requests", usage.Requests)
 	appendFloat("cost", usage.Cost)
-	appendFloat("nano-aiu", usage.NanoAIU)
+	appendInt("nano-aiu", usage.NanoAIU)
 	return strings.Join(parts, " ")
 }
 

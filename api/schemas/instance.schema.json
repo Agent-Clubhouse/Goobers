@@ -6,11 +6,21 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "repos"],
+  "allOf": [
+    {
+      "$comment": "The other half of the strict-load contract (#4217): a runners: inventory is schema revision 2, so declaring one without saying so is refused here exactly as the loader refuses it. Without this, editor validation would accept a file the daemon rejects.",
+      "if": { "required": ["runners"] },
+      "then": {
+        "required": ["schemaVersion"],
+        "properties": { "schemaVersion": { "const": 2 } }
+      }
+    }
+  ],
   "properties": {
     "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this instance file." },
     "kind": { "const": "Instance", "description": "Definition kind; always Instance." },
     "schemaVersion": {
-      "description": "Instance-config schema revision — this file's first version field. Absent means 1, the pre-Goobernetes schema every existing install is on; 2 introduces the runners: inventory. Loading is strict on both halves of the contract, so a config that declares 2 and uses runners: hard-fails on an older binary by design instead of being silently misread.",
+      "description": "Instance-config schema revision — this file's first version field. Absent means 1, the pre-Goobernetes schema every existing install is on; 2 introduces the runners: inventory. Loading is strict on BOTH halves of the contract: declaring runners: REQUIRES schemaVersion 2 (the loader refuses the pair otherwise, #4217), so a runners:-bearing config hard-fails on an older binary by design instead of loading there and silently dropping the whole inventory. `goobers fix --instance-schema` adds the line.",
       "type": "integer",
       "enum": [1, 2]
     },
@@ -521,6 +531,11 @@
           "description": "Baseline deadline for a deterministic stage that declares no timeoutSeconds of its own, as a Go duration. Unset keeps the built-in 10 minutes, which is sized for short commands rather than a mature repository's build+test entrypoint: if `make ci` routinely runs 15 minutes, raise this once here instead of stamping timeoutSeconds onto every such stage in every workflow. A stage's own timeoutSeconds always wins; this only moves the floor. Sizing it too low is not free — a timed-out stage is reported retryable, so a workflow that routes the failure to an agent spends a repass on something no diff can fix.",
           "$ref": "#/$defs/duration",
           "examples": ["25m"]
+        },
+        "stageMemoryLimit": {
+          "description": "Memory ONE stage subprocess may use, as a Kubernetes quantity. Stage subprocesses share the daemon's own memory cgroup, so without a bound a single heavy stage can get the control-plane daemon OOM-killed and take every in-flight run with it (#4070); the admission-side memory gate cannot prevent this, because it refuses to START runs while the cgroup is hot and the killing allocation is a stage already running. There is deliberately NO default: the obvious one (pod limit less a daemon reserve) does not survive the recorded incidents, where children of 5.07 and 7.4 GiB killed a 10Gi pod in company with page cache, the daemon, and concurrent sibling stages. Unset, stages run unbounded and the daemon says so at every start. Enforced through a child cgroup where the memory controller is delegated to child cgroups, otherwise through RLIMIT_AS — which bounds ADDRESS SPACE rather than resident memory, so verify a value against a real stage. A breach fails the stage with stage_memory_exceeded rather than killing the daemon.",
+          "type": "string",
+          "examples": ["8Gi", "4Gi"]
         },
         "livenessTimeout": {
           "description": "Maximum age of the scheduler tick heartbeat before the daemon reports itself unhealthy. Empty defaults to 2 minutes; values below 2 seconds are rejected.",

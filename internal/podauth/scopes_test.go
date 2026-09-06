@@ -31,6 +31,7 @@ func TestPodPlaneScopesMatchPodauth(t *testing.T) {
 		{ScopeSurrender, httpapi.ScopeSurrender, "surrender"},
 		{ScopeBlob, httpapi.ScopeBlob, "blob"},
 		{ScopeCredential, httpapi.ScopeCredential, "credential"},
+		{ScopeConfigDigest, httpapi.ScopeConfigDigest, "config-digest"},
 	} {
 		if pair.mine != pair.theirs {
 			t.Errorf("%s scope: podauth signs %q, httpapi authorizes on %q", pair.who, pair.mine, pair.theirs)
@@ -39,7 +40,7 @@ func TestPodPlaneScopesMatchPodauth(t *testing.T) {
 	// And nothing mintable is missing from the restatement.
 	restated := []string{
 		httpapi.ScopeClaims, httpapi.ScopeState, httpapi.ScopeJournal, httpapi.ScopeTelemetry,
-		httpapi.ScopeSurrender, httpapi.ScopeBlob, httpapi.ScopeCredential,
+		httpapi.ScopeSurrender, httpapi.ScopeBlob, httpapi.ScopeCredential, httpapi.ScopeConfigDigest,
 	}
 	for _, scope := range KnownScopes {
 		if !slices.Contains(restated, scope) {

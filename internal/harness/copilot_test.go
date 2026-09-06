@@ -2311,11 +2311,20 @@ func TestCopilotAdapterPreflightUsesModelCredentialWhenNoAmbient(t *testing.T) {
 	}
 }
 
-// TestCopilotAdapterPreflightAmbientEnvWinsOverModelCredential confirms an
-// explicit ambient env var still takes precedence over ModelCredential — the
-// more explicit, headless-friendly signal wins, matching the existing
-// ambient-token behavior this field is layered behind.
-func TestCopilotAdapterPreflightAmbientEnvWinsOverModelCredential(t *testing.T) {
+// TestCopilotAdapterPreflightModelCredentialWinsOverAmbientEnv pins the
+// precedence #4292 corrected: when the instance declares an agent:model grant,
+// that credential is what the probe authenticates with, even with an ambient
+// env var set.
+//
+// The reverse (which is what shipped first) validated a credential the run
+// would never use: stage execution builds its env from procenv's default-deny
+// allowlist, which carries no COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN at
+// all, so an ambient var reaches the probe and nothing else. Preflight would go
+// green against account A while every stage ran as account B — the #3341
+// wrong-account failure, entered from the other side. It also kept every
+// deployment delivering the same token twice, since dropping the duplicate env
+// var was the only way to make the resolver's credential take effect.
+func TestCopilotAdapterPreflightModelCredentialWinsOverAmbientEnv(t *testing.T) {
 	t.Setenv("COPILOT_GITHUB_TOKEN", "pat-from-ambient-env")
 	var authProbeEnv []string
 	credentialCalled := false
@@ -2342,17 +2351,22 @@ func TestCopilotAdapterPreflightAmbientEnvWinsOverModelCredential(t *testing.T) 
 	if _, err := adapter.Preflight(context.Background()); err != nil {
 		t.Fatalf("preflight should pass: %v", err)
 	}
-	if credentialCalled {
-		t.Fatal("ModelCredential should not be consulted when an ambient env var is already set")
+	if !credentialCalled {
+		t.Fatal("ModelCredential must be consulted even when an ambient env var is set — it is the instance's declared credential")
+	}
+	for _, kv := range authProbeEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+			t.Fatalf("auth probe env carries the ambient token; the configured credential must win: %v", authProbeEnv)
+		}
 	}
 	found := false
 	for _, kv := range authProbeEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("auth probe env should carry the ambient token, not ModelCredential's; got %v", authProbeEnv)
+		t.Fatalf("auth probe env should carry the resolved ModelCredential, not the ambient token; got %v", authProbeEnv)
 	}
 }
 
@@ -2436,10 +2450,11 @@ func TestCopilotDiscoverModelsUsesModelCredentialWhenNoAmbient(t *testing.T) {
 	}
 }
 
-// TestCopilotDiscoverModelsAmbientEnvWinsOverModelCredential mirrors the
-// Preflight probe's precedence: an explicit ambient env var still wins over
-// ModelCredential.
-func TestCopilotDiscoverModelsAmbientEnvWinsOverModelCredential(t *testing.T) {
+// TestCopilotDiscoverModelsModelCredentialWinsOverAmbientEnv mirrors the
+// Preflight probe's precedence: the instance's configured agent:model
+// credential outranks an ambient env var, so admission-time discovery
+// authenticates as the same account the run will (#4292).
+func TestCopilotDiscoverModelsModelCredentialWinsOverAmbientEnv(t *testing.T) {
 	t.Setenv("COPILOT_GITHUB_TOKEN", "pat-from-ambient-env")
 	credentialCalled := false
 	lister := &fakeCopilotModelLister{models: testCopilotModelList()}
@@ -2454,17 +2469,22 @@ func TestCopilotDiscoverModelsAmbientEnvWinsOverModelCredential(t *testing.T) {
 	if _, err := adapter.discoverModels(context.Background()); err != nil {
 		t.Fatalf("discoverModels should succeed: %v", err)
 	}
-	if credentialCalled {
-		t.Fatal("ModelCredential should not be consulted when an ambient env var is already set")
+	if !credentialCalled {
+		t.Fatal("ModelCredential must be consulted even when an ambient env var is set — it is the instance's declared credential")
+	}
+	for _, kv := range lister.lastEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+			t.Fatalf("discovery env carries the ambient token; the configured credential must win: %v", lister.lastEnv)
+		}
 	}
 	found := false
 	for _, kv := range lister.lastEnv {
-		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("discovery env should carry the ambient token, not ModelCredential's; got %v", lister.lastEnv)
+		t.Fatalf("discovery env should carry the resolved ModelCredential, not the ambient token; got %v", lister.lastEnv)
 	}
 }
 

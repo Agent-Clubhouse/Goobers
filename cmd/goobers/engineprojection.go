@@ -80,13 +80,21 @@ func launchEngineProjection(ctx context.Context, l instance.Layout, cfg *instanc
 	// does not re-project as a conformance-normative span_unavailable error
 	// event and get filed as a divergence on every agentic run.
 	reconciler = reconciler.WithSpanSource(blobs)
+	// The divergence channel is rate-ceilinged (#4244): a guard that files on
+	// almost every run stops being a signal, so past the ceiling the storm
+	// itself is reported — once, with its count and top signatures — instead
+	// of each of its members. nil when no reporter is wired, which
+	// DivergenceRateLimiter's nil receiver handles.
+	var divergences *engine.DivergenceRateLimiter
 	if liveJournals != nil {
 		// DS5: the reconciler is repair/verify, never a second writer, for
 		// runs the live writer authored — skip open journals, verify complete
 		// ones, and file divergences to the named parity channel.
+		divergences = engine.NewDivergenceRateLimiter(
+			liveJournalDivergenceReporter(instanceLog), engine.DefaultDivergenceRateCeiling, engine.DivergenceRateWindow, nil)
 		reconciler = reconciler.
 			WithLiveJournals(liveJournals).
-			WithDivergenceReporter(liveJournalDivergenceReporter(instanceLog))
+			WithDivergenceReporter(divergences.Report)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -100,6 +108,11 @@ func launchEngineProjection(ctx context.Context, l instance.Layout, cfg *instanc
 				liveJournals.CloseIdle(liveJournalIdleClose)
 			}
 			_, err := reconciler.Reconcile(runCtx)
+			// Summarize anything the ceiling suppressed during THIS pass
+			// while it is still news — the boot sweep files its whole storm
+			// in one pass, and waiting for the window to roll would hold the
+			// count back for an hour (#4244).
+			divergences.Flush()
 			reporter.report(err)
 			select {
 			case <-runCtx.Done():

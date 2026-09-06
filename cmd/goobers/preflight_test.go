@@ -199,3 +199,87 @@ func TestPreflightAgenticHarnessesCatchesSignedOut(t *testing.T) {
 		t.Fatalf("err = %v, want it to mention the sign-in check (the auth probe, not the version check)", err)
 	}
 }
+
+// fileRefPreflightRunner records the environment each probe subprocess would
+// have received and reports success, so the test observes what the preflight
+// authenticates WITH rather than requiring a real, signed-in Copilot CLI.
+type fileRefPreflightRunner struct{ authProbeEnv []string }
+
+func (r *fileRefPreflightRunner) Run(_ context.Context, req harness.ProcessRequest) (harness.ProcessResult, error) {
+	for _, arg := range req.Command {
+		if arg == "auth" {
+			r.authProbeEnv = append([]string(nil), req.Env...)
+		}
+	}
+	return harness.ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}, nil
+}
+
+// TestCopilotPreflightSatisfiedByFileRefOnlyCredential is #4292's acceptance
+// criterion, joined end to end: an instance.yaml whose ONLY delivery of the
+// agent:model token is a `credentials:` file ref — no COPILOT_GITHUB_TOKEN,
+// GH_TOKEN or GITHUB_TOKEN anywhere in the process environment — must satisfy
+// the Copilot sign-in preflight, and the probe must carry that credential.
+//
+// This is the shape the issue reports as broken: the production instance had to
+// deliver the same token twice, once through the resolver and once as a plain
+// pod env var outside every control the resolver provides, because the preflight
+// read only the ambient environment. The two halves are each covered in their
+// own package (agentModelCredentialResolver above; the adapter's precedence in
+// internal/harness), but only their composition proves the configuration a
+// stranger writes actually works — which is what was untrue.
+func TestCopilotPreflightSatisfiedByFileRefOnlyCredential(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	for _, name := range []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tokenPath := filepath.Join(t.TempDir(), "copilot.pat")
+	if err := os.WriteFile(tokenPath, []byte("pat-from-file-ref-only\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{
+		Credentials: []instance.CredentialGrant{{
+			Capability: string(capability.AgentModel),
+			Token:      instance.TokenRef{File: tokenPath},
+		}},
+	}
+	stores, err := secretstore.NewRegistry(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		t.Fatalf("agentModelCredentialResolver: %v", err)
+	}
+	if resolve == nil {
+		t.Fatal("expected a resolver for the configured agent:model grant")
+	}
+
+	runner := &fileRefPreflightRunner{}
+	adapter := &harness.CopilotAdapter{
+		Command:         []string{"echo"},
+		AuthCheckArgs:   []string{"auth", "status"},
+		Runner:          runner,
+		ModelCredential: resolve,
+	}
+	info, err := adapter.Preflight(context.Background())
+	if err != nil {
+		t.Fatalf("preflight must pass with a file-ref-only credentials: entry and no ambient env var: %v", err)
+	}
+	if info.Version == "" {
+		t.Fatal("preflight returned no version")
+	}
+	found := false
+	for _, kv := range runner.authProbeEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref-only" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("sign-in probe env should carry the file-ref credential; got %v", runner.authProbeEnv)
+	}
+}

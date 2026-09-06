@@ -361,7 +361,9 @@ func (c *Config) validateSchemaVersion() error {
 }
 
 // validateRunners checks the runners: inventory fail-first at load, like every
-// other instance.yaml section. It also enforces the supersession rule
+// other instance.yaml section. It enforces the schema-revision pairing that
+// makes schemaVersion strict on both halves (#4217: runners: requires
+// schemaVersion 2), and the supersession rule
 // (decision record D3, dsl-3.0.md §3): a declared inventory owns capability
 // claims, so it cannot coexist with legacy runner.capabilities — while the
 // legacy block's execution settings (envPassthrough, timeouts, harnessCommand)
@@ -369,6 +371,23 @@ func (c *Config) validateSchemaVersion() error {
 func (c *Config) validateRunners() error {
 	if len(c.Runners) == 0 {
 		return nil
+	}
+	// STRICT-LOAD, THE OTHER HALF (#4217). schemaVersion's published contract
+	// (api/schemas/instance.schema.json) is that a runners:-bearing config
+	// hard-fails on a pre-Goobernetes binary rather than being silently
+	// misread. That only holds if declaring runners: also requires declaring
+	// the revision that introduced it: an older binary rejects the unknown
+	// schemaVersion field, a newer one rejects the missing declaration here,
+	// and neither ever drops the inventory quietly. Validating schemaVersion
+	// only when present (validateSchemaVersion) left the field inert — a
+	// runners: inventory loaded cleanly at the legacy revision, which is
+	// exactly the outcome the field exists to prevent.
+	if version := c.EffectiveSchemaVersion(); version < InstanceSchemaVersionRunners {
+		return fmt.Errorf("runners: requires schemaVersion %d, but this instance.yaml resolves schemaVersion %d "+
+			"(absent means %d, the pre-Goobernetes revision) — add the line \"schemaVersion: %d\" at the top level "+
+			"of instance.yaml, or run `goobers fix --instance-schema` to add it; declaring runners: without it would "+
+			"let a pre-Goobernetes binary load this file and silently drop the whole inventory",
+			InstanceSchemaVersionRunners, version, InstanceSchemaVersionLegacy, InstanceSchemaVersionRunners)
 	}
 	if len(c.Runner.Capabilities) > 0 {
 		return fmt.Errorf("runner.capabilities and runners: cannot both be declared — runners: supersedes the " +

@@ -150,3 +150,56 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 		t.Fatalf("ProviderMutations: %v, %#v", err, muts)
 	}
 }
+
+func TestIngestCommentOnlyRunRecordsPullRequestMutation(t *testing.T) {
+	tmp := t.TempDir()
+	runID, err := telemetry.NewRunID()
+	if err != nil {
+		t.Fatalf("generate trace id: %v", err)
+	}
+	run, err := journal.Create(filepath.Join(tmp, "runs"), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "pr-remediation",
+		WorkflowVersion: 1,
+		Gaggle:          "web",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "pr-4384"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	mustAppend := func(event journal.Event) {
+		t.Helper()
+		if err := run.Append(event); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	mustAppend(journal.Event{Type: journal.EventStageStarted, Stage: "respond-to-findings", Attempt: 1})
+	mustAppend(journal.Event{
+		Type:        journal.EventRefTouched,
+		Stage:       "respond-to-findings",
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "4384", URL: "https://github.com/Agent-Clubhouse/Goobers/pull/4384"},
+		Runner:      map[string]any{"operation": "comment"},
+	})
+	mustAppend(journal.Event{Type: journal.EventStageFinished, Stage: "respond-to-findings", Attempt: 1, Status: string(apiv1.ResultSuccess)})
+	mustAppend(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)})
+	if err := run.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(context.Background(), run.Dir()); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	mutations, err := db.ProviderMutations(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ProviderMutations: %v", err)
+	}
+	if len(mutations) != 1 {
+		t.Fatalf("ProviderMutations = %#v, want one PR comment mutation", mutations)
+	}
+	mutation := mutations[0]
+	if mutation.Provider != "github" || mutation.Kind != "pr" ||
+		mutation.ExternalID != "4384" || mutation.Operation != "comment" {
+		t.Fatalf("ProviderMutations[0] = %#v, want github PR 4384 comment", mutation)
+	}
+}
