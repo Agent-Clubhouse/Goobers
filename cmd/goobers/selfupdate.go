@@ -55,10 +55,10 @@ func runSelfUpdateWith(
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
 	}
+	resultFile := providerInput("resultFile", "self-update-result.json")
 	root, err := filepath.Abs(root)
 	if err != nil {
-		pf(stderr, "error: resolve instance root: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "resolve instance root", err, resultFile)
 	}
 	layout := instance.NewLayout(root)
 	if _, err := os.Stat(layout.ConfigFile()); err != nil {
@@ -67,13 +67,11 @@ func runSelfUpdateWith(
 	}
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
-		pf(stderr, "error: load instance config: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "load instance config", err, resultFile)
 	}
 	livenessTimeout, err := cfg.Runner.LivenessTimeoutDuration()
 	if err != nil {
-		pf(stderr, "error: resolve daemon heartbeat interval: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "resolve daemon heartbeat interval", err, resultFile)
 	}
 	heartbeatInterval := livenessTimeout / 2
 	if *healthTimeout == 0 {
@@ -85,14 +83,12 @@ func runSelfUpdateWith(
 	}
 	repo, err := providerRepo(root)
 	if err != nil {
-		pf(stderr, "error: resolve product repository: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "resolve product repository", err, resultFile)
 	}
 	owner, repository := providerInput("owner", repo.Owner), providerInput("repository", repo.Name)
 	workDir, err := os.Getwd()
 	if err != nil {
-		pf(stderr, "error: resolve working directory: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "resolve working directory", err, resultFile)
 	}
 	result, err := prepare(context.Background(), selfupdate.PrepareOptions{
 		Root:              root,
@@ -110,16 +106,14 @@ func runSelfUpdateWith(
 		HeartbeatInterval: heartbeatInterval,
 	})
 	if err != nil {
-		pf(stderr, "error: self-update: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "self-update", err, resultFile)
 	}
-	if err := writeProviderStageResult(providerInput("resultFile", "self-update-result.json"), map[string]interface{}{
+	if err := writeProviderStageResult(resultFile, map[string]interface{}{
 		"updateRequested": result.UpdateRequested,
 		"policy":          result.Policy,
 		"target":          result.Target,
 	}); err != nil {
-		pf(stderr, "error: write self-update result: %v\n", err)
-		return 1
+		return failProviderStage(stderr, "write self-update result", err, resultFile)
 	}
 	if result.UpdateRequested {
 		pf(stdout, "self-update target %s staged; supervisor handoff requested\n", result.Target)
