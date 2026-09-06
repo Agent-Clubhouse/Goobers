@@ -110,6 +110,8 @@ func implementationEvents() []journal.Event {
 	return []journal.Event{
 		{Type: journal.EventStageStarted, Stage: "query-backlog"},
 		{Type: journal.EventStageStarted, Stage: "gather-implement-context"},
+		{Type: journal.EventStageStarted, Stage: "warm-module-cache"},
+		{Type: journal.EventGateEvaluated, Gate: "warm-module-cache-gate", Verdict: "pass"},
 		{Type: journal.EventStageStarted, Stage: "implement"},
 		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "pass"},
 		{Type: journal.EventStageStarted, Stage: "push-branch"},
