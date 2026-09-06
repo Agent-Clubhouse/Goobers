@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -112,6 +113,25 @@ type sweepErrorReporter struct {
 
 func newSweepErrorReporter(log *journal.InstanceLog, code string) *sweepErrorReporter {
 	return &sweepErrorReporter{log: log, code: code, reportEvery: sweepErrorReportEvery}
+}
+
+// sweepOrphanedEphemeralTmp reclaims any `goobers-ephemeral-tmp-*` directory
+// an OOMKill orphaned on a prior generation of this process (#3969) — an
+// OOMKill takes pid 1 with no unwinding, so the deferred Reclaim call that
+// normally cleans one up never runs. Called once, early in daemon startup
+// before this process establishes a Scope of its own, so every such
+// directory already in the temp root belongs to a prior generation, never a
+// live one (see ephemeraltmp.SweepOrphans' own doc for why that invariant
+// does not generalize past this exact call site). Gated on the same
+// declaration that governs whether this daemon ever creates one, so a self
+// runner that does not declare tmp:ephemeral sees no behavior change here
+// either.
+func sweepOrphanedEphemeralTmp(cfg *instance.Config, log *journal.InstanceLog) {
+	if !cfg.SelfRunnerEnforces(instance.RunnerRestrictionTmpEphemeral) {
+		return
+	}
+	_, sweepErr := ephemeraltmp.SweepOrphans("")
+	newSweepErrorReporter(log, "ephemeral_tmp_sweep_failed").report(sweepErr)
 }
 
 func (r *sweepErrorReporter) report(err error) {
@@ -1188,6 +1208,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return sweepPendingCancelRequests(l.SchedulerDir(), setup.RunnerRegistry, setup.InstanceLog, sched.ReleaseRun, time.Now)
 	}
 	cancelSweepErrors.report(cancelSweep())
+
+	sweepOrphanedEphemeralTmp(setup.Config, setup.InstanceLog)
 
 	// #459's daemon-side half: on operator request (`goobers apply`), run
 	// exactly one config-reload check now instead of waiting for

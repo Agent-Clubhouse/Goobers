@@ -79,6 +79,36 @@ func (j *branchJournal) SetMachineState(state string) {
 	j.setMachineState(state)
 }
 
+// appendInterruptedAttemptClosure journals the terminal closure of a branch
+// attempt the crash caught in flight, then — only when a redispatch would
+// actually follow (checkMutation, true unless an agentic budget-exceeded
+// synthetic result already took its place) — refuses to continue if that
+// attempt already touched an external mutation (ref.touched) before the
+// crash cut off its own stage.finished write. Redispatching such an attempt
+// would re-run a non-idempotent side effect (e.g. PR creation) (#3637), so
+// this fails closed instead of the caller falling through to a fresh
+// dispatch.
+func appendInterruptedAttemptClosure(branchJournal *branchJournal, history []journal.Event, state string, attempt int, errorDetail *journal.ErrorDetail, runnerDetail map[string]any, checkMutation bool) error {
+	if err := branchJournal.Append(journal.Event{
+		Type:         journal.EventStageFinished,
+		Stage:        state,
+		Attempt:      attempt,
+		AttemptClass: journal.AttemptInfra,
+		Status:       string(apiv1.ResultFailure),
+		Error:        errorDetail,
+		Runner:       runnerDetail,
+	}); err != nil {
+		return err
+	}
+	if checkMutation && interruptedAttemptMutated(history, state, attempt) {
+		return fmt.Errorf(
+			"runner: refusing to resume stage %q: attempt %d already touched an external mutation before the runner was interrupted; redispatching would duplicate it — reconcile manually, then rerun",
+			state, attempt,
+		)
+	}
+	return nil
+}
+
 type parallelBranchResult struct {
 	index          int
 	status         journal.BranchStatus
@@ -546,15 +576,7 @@ func (r *Runner) runParallelBranch(
 						runnerDetail = nil
 					}
 				}
-				if err := branchJournal.Append(journal.Event{
-					Type:         journal.EventStageFinished,
-					Stage:        state,
-					Attempt:      attempt,
-					AttemptClass: journal.AttemptInfra,
-					Status:       string(apiv1.ResultFailure),
-					Error:        errorDetail,
-					Runner:       runnerDetail,
-				}); err != nil {
+				if err := appendInterruptedAttemptClosure(branchJournal, history, state, attempt, errorDetail, runnerDetail, replayTask == nil); err != nil {
 					result.status, result.err = journal.BranchFailed, err
 					return result
 				}

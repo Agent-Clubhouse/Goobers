@@ -225,6 +225,55 @@ func (s *Scope) rebase(value string) (string, bool) {
 	return filepath.Join(s.dir, rel), true
 }
 
+// SweepOrphans removes every directory left behind under root by a Scope
+// whose owning attempt never reached Reclaim — the case an OOMKill produces,
+// since it takes pid 1 with no unwinding and no deferred Reclaim ever runs
+// (#3969). An empty root means the daemon's own temp root, matching
+// Establish.
+//
+// This is safe to call ONLY from a process at its own startup, before it has
+// established any Scope of its own: such a process owns every directory
+// already named dirPrefix in its temp root by definition, because none of
+// ITS attempts have run yet. Runner `self` is a singleton per the design this
+// package binds (a long-lived daemon process, recreated rather than scaled,
+// per docs/design/goobernetes-restrictions.md §2.4) — the invariant a naive
+// sweep would otherwise need external state to establish. It must never be
+// called by a process racing a live daemon's temp root, or by anything other
+// than that daemon's own startup path.
+//
+// Sweeping is best-effort and continues past a single directory's removal
+// failure — collected and returned, not fatal to the sweep or to daemon
+// startup. The condition this guards against is unbounded disk/page-cache
+// growth, not correctness: a directory a failed removal leaves behind is
+// exactly the pre-existing orphan this function exists to eventually clear,
+// not a new one.
+func SweepOrphans(root string) (removed int, err error) {
+	if root == "" {
+		root = os.TempDir()
+	}
+	root = filepath.Clean(root)
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil {
+		if errors.Is(readErr, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("ephemeraltmp: sweep %q: %w", root, readErr)
+	}
+	var errs []error
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), dirPrefix) {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if removeErr := os.RemoveAll(path); removeErr != nil {
+			errs = append(errs, fmt.Errorf("remove %q: %w", path, removeErr))
+			continue
+		}
+		removed++
+	}
+	return removed, errors.Join(errs...)
+}
+
 // Reclaim destroys the attempt's temp area and nothing else.
 //
 // The guard is not ceremony. This function runs on every stage attempt on a
