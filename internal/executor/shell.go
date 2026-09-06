@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -233,22 +234,21 @@ type ShellExecutor struct {
 	// available to a deployment that mounts its scratch medium elsewhere.
 	EphemeralTmpRoot string
 	// GuardedCredentialPaths names on-disk paths this instance's config
-	// references as a credential source (instance.GuardedCredentialPaths) —
-	// a repo/workflow-source/daemon-identity token or GitHub App private key
-	// file. A stage on the `self` runner has NO filesystem confinement
-	// (there is no execution path that translates a runsOn restriction into
-	// executor isolation, internal/runnersolve's `enforces` doc comment), so
-	// a stage command that names one of these paths, verbatim, in its argv
-	// or environment is refused before exec rather than allowed to read the
-	// key material a minted, short-lived token exists to avoid exposing
-	// (#4273).
+	// references as a credential source — every file-backed token ref in the
+	// loaded config (instance.GuardedCredentialPaths). A stage on the `self`
+	// runner has NO filesystem confinement (there is no execution path that
+	// translates a runsOn restriction into executor isolation,
+	// internal/runnersolve's `enforces` doc comment), so a stage whose
+	// declared command, inline script, or environment names one of these
+	// paths is refused before exec rather than allowed to read the key
+	// material a minted, short-lived token exists to avoid exposing (#4273).
 	//
 	// This is deliberately narrow, not filesystem confinement: it does not
-	// stop a stage that reaches the same file through indirection (a script
-	// with the path hardcoded inside it, `find`, a symlink) — see
-	// docs/requirements/security.md SEC-049 for the documented boundary.
-	// Empty by default: an unset caller (e.g. an existing test) gets
-	// unchanged behavior.
+	// stop a stage that reaches the same file through indirection (a
+	// checked-in script file with the path inside it, a path assembled at
+	// runtime, `find`, a symlink) — see docs/requirements/security.md
+	// SEC-049 for the documented boundary. Empty by default: an unset caller
+	// (e.g. an existing test) gets unchanged behavior.
 	GuardedCredentialPaths []string
 }
 
@@ -292,13 +292,28 @@ type credentialRefusalEventAppender interface {
 	Append(ev journal.Event) error
 }
 
-// refuseGuardedCredentialAccess reports whether cmd's finalized argv/env
-// names one of e.GuardedCredentialPaths directly (#4273), journaling the
-// refusal when so. Factored out of Run to keep the credential-path check's
-// own branching out of Run's cyclomatic complexity; callers must return the
-// envelope unmodified when refused is true.
-func (e *ShellExecutor) refuseGuardedCredentialAccess(cmd *exec.Cmd, taskID string) (result apiv1.ResultEnvelope, refused bool) {
-	guardedPath, refused := stageReferencesGuardedPath(cmd.Args, cmd.Env, e.GuardedCredentialPaths)
+// refuseGuardedCredentialAccess reports whether the stage's DECLARED command
+// or script, or its finalized environment, names one of
+// e.GuardedCredentialPaths (#4273), journaling the refusal when so. Factored
+// out of Run to keep the credential-path check's own branching out of Run's
+// cyclomatic complexity; callers must return the envelope unmodified when
+// refused is true.
+//
+// It reads run rather than the assembled *exec.Cmd deliberately. By the time a
+// stage reaches exec, its declared shape is gone in two different directions: a
+// `script:` stage becomes ["sh","-c",<body>] on unix, and on Windows the body
+// is written to a temp .cmd file that argv never names at all. Checking the
+// declaration is the only form of this check that sees the same text on both
+// platforms — and `script:` is the shape a stage reading a credential file
+// would actually take.
+func (e *ShellExecutor) refuseGuardedCredentialAccess(run apiv1.DeterministicRun, stageEnv []string, taskID string) (result apiv1.ResultEnvelope, refused bool) {
+	// Exactly one of the two is set — DeterministicCommand already rejected a
+	// run that declares both, before Run reaches here.
+	declared := run.Command
+	if run.Script != "" {
+		declared = []string{run.Script}
+	}
+	guardedPath, refused := stageReferencesGuardedPath(declared, stageEnv, e.GuardedCredentialPaths)
 	if !refused {
 		return apiv1.ResultEnvelope{}, false
 	}
@@ -317,34 +332,106 @@ func (e *ShellExecutor) refuseGuardedCredentialAccess(cmd *exec.Cmd, taskID stri
 	}, true
 }
 
-// stageReferencesGuardedPath reports the first path in guarded that appears,
-// verbatim, as a full command-line argument or as the exact value of an
-// environment variable in args/env — the deterministic executor's narrow,
-// config-derived tripwire against a stage naming a credential file directly
-// (#4273). Exact-value matching, not substring: a guarded path that happens
-// to be a substring of an unrelated, longer argument must not misfire.
+// stageReferencesGuardedPath reports the first path in guarded that the stage's
+// declared command words, inline script body, or environment values name — the
+// deterministic executor's narrow, config-derived tripwire against a stage
+// naming a credential file directly (#4273).
 //
-// This does not catch indirection — a script with the path hardcoded inside
-// it, discovery via `find`, or a symlink — see
-// docs/requirements/security.md SEC-049 for the documented boundary.
-func stageReferencesGuardedPath(args, env, guarded []string) (string, bool) {
+// Matching is by whole path TOKEN, not by whole string and not by bare
+// substring. Whole-string equality was the first version and it missed the
+// shape that matters: a `script:` stage's body is one long string, so
+// `cat /creds/app-key.pem` never equalled the guarded path and sailed through.
+// Bare substring would fire on an unrelated longer path that merely contains a
+// guarded one (`/creds/token.bak`, `/backup/creds/token`), refusing a stage
+// that reads nothing sensitive. Requiring a non-path character on both sides of
+// the match gets the first without the second.
+//
+// This still does not catch indirection — a checked-in script file with the
+// path inside it, a path assembled by concatenation at runtime, discovery via
+// `find`, or a symlink. See docs/requirements/security.md SEC-049 for the
+// documented boundary.
+func stageReferencesGuardedPath(words, env, guarded []string) (string, bool) {
+	haystacks := make([]string, 0, len(words)+len(env))
+	haystacks = append(haystacks, words...)
+	for _, kv := range env {
+		if _, value, ok := strings.Cut(kv, "="); ok {
+			haystacks = append(haystacks, value)
+		}
+	}
 	for _, path := range guarded {
 		if path == "" {
 			continue
 		}
-		for _, arg := range args {
-			if arg == path {
-				return path, true
-			}
-		}
-		for _, kv := range env {
-			if _, value, ok := strings.Cut(kv, "="); ok && value == path {
+		for _, haystack := range haystacks {
+			if referencesPathToken(haystack, path) {
 				return path, true
 			}
 		}
 	}
 	return "", false
 }
+
+// referencesPathToken reports whether path appears in text as a whole path
+// token — delimited by something that could not be part of a path (whitespace,
+// a quote, a shell metacharacter, the string's own ends) rather than by a
+// character that would make it a prefix or suffix of some OTHER path.
+//
+// Comparison is case-insensitive on Windows, whose filesystem is: a stage
+// naming C:\creds\Key.pem must not slip past a config that wrote c:\creds\key.pem.
+func referencesPathToken(text, path string) bool {
+	if path == "" || len(text) < len(path) {
+		return false
+	}
+	if pathsAreCaseInsensitive {
+		text, path = strings.ToLower(text), strings.ToLower(path)
+	}
+	for offset := 0; ; {
+		index := strings.Index(text[offset:], path)
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		end := start + len(path)
+		beforeOK := start == 0 || !isPathByte(text[start-1])
+		afterOK := end == len(text) || !isPathByte(text[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		offset = start + 1
+	}
+}
+
+// isPathByte reports whether b could be part of a filesystem path token, for
+// the boundary test above. Deliberately generous — every byte >= 0x80 counts,
+// so a non-ASCII path component is treated as path text rather than as a
+// delimiter that would let a longer path masquerade as a guarded one.
+func isPathByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b >= 0x80:
+		return true
+	}
+	switch b {
+	case '/', '\\', '.', '-', '_', '~', '+':
+		return true
+	}
+	// ':' is deliberately NOT a path byte: it separates entries in a
+	// PATH-shaped value, so treating it as one would let
+	// "/usr/bin:/creds/key.pem" slip past. A Windows drive letter's colon is
+	// unaffected — only the bytes on either side of the WHOLE guarded path are
+	// ever tested, never the ones inside it.
+	return false
+}
+
+// pathsAreCaseInsensitive reports whether this host's filesystem resolves paths
+// without regard to case, in which case the guarded-path match must too: a
+// stage naming C:\creds\Key.pem opens the same file as c:\creds\key.pem, and a
+// case-sensitive comparison would refuse one and admit the other. Windows
+// always; macOS because its default volume format is case-insensitive (a
+// case-sensitive APFS volume only makes this stricter than it needs to be,
+// which fails loud rather than silent).
+var pathsAreCaseInsensitive = runtime.GOOS == "windows" || runtime.GOOS == "darwin"
 
 // stageCommandsRequiringInstanceConfig are goobers subcommands that read the
 // instance CONFIG DIRECTORY — the workflow/gaggle definitions — not just the
@@ -818,7 +905,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd := exec.Command(invokeName, invokeArgs...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
-	if result, refused := e.refuseGuardedCredentialAccess(cmd, env.TaskID); refused {
+	if result, refused := e.refuseGuardedCredentialAccess(run, cmd.Env, env.TaskID); refused {
 		return result, nil
 	}
 	// Configure tree ownership before the network isolation below layers its

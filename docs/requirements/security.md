@@ -118,21 +118,34 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   **API host exactly** rather than allowing its whole domain suffix is what makes
   that choice explicit rather than incidental — see "Egress allowlist: name hosts,
   not domain suffixes" in `deploy/reference/README.md`.
-- **SEC-049 (MUST):** *(Tiers 1–2)* A deterministic stage's command or environment
-  MUST NOT be allowed to reference, verbatim, an on-disk path `instance.yaml`
-  names as a credential source (a repo/workflow-source/daemon-identity token or
-  GitHub App private key file, `internal/instance.GuardedCredentialPaths`) — the
+- **SEC-049 (MUST):** *(Tiers 1–2)* A deterministic stage's command, inline
+  script, or environment MUST NOT be allowed to reference an on-disk path
+  `instance.yaml` names as a credential source (a repo/workflow-source/
+  daemon-identity token or GitHub App private key file, the webhook secret, an
+  OTLP collector auth header, or any other file-backed token ref —
+  `internal/instance.GuardedCredentialPaths` enumerates them by walking the
+  loaded config for every file-backed ref, so a newly added one is guarded on
+  arrival rather than when someone remembers to extend a list) — the
   `self` runner has no filesystem confinement (`SEC-044` is not yet wired to the
   deterministic path, and even where the agentic sandbox IS enforced it only
   confines writes, not reads), so a stage that names one of these paths directly
   can read key material a minted, short-lived token exists to avoid exposing.
   **This is a narrow, config-derived tripwire, not filesystem confinement**: it
-  refuses a stage that names a guarded path as a literal command-line argument or
-  environment-variable value, before exec. It does NOT stop a stage that reaches
-  the same file through indirection — a script with the path hardcoded inside
-  it, `find`, or a symlink — which requires the full sandbox/read-confinement
-  work `SEC-044` already tracks as in progress. The refusal is journaled
-  (`credential.read.refused`) so an operator can see it fire.
+  refuses, before exec, a stage whose *declared* command words, inline `script:`
+  body, or environment values name a guarded path as a whole path token. It
+  matches the declaration rather than the assembled argv precisely so a
+  `script:` stage is covered identically on both platforms — a script body is
+  one argv word to `sh -c` on unix and is written to a temp file argv never
+  names at all on Windows. Matching is by token, not by whole string (which
+  missed every script body) and not by bare substring (which would refuse a
+  stage reading an unrelated longer path such as `<guarded>.bak`), and is
+  case-insensitive where the host filesystem is.
+  It does NOT stop a stage that reaches the same file through indirection — a
+  checked-in script file with the path inside it, a path assembled by
+  concatenation at runtime, `find`, or a symlink — which requires the full
+  sandbox/read-confinement work `SEC-044` already tracks as in progress. The
+  refusal is journaled (`credential.read.refused`) so an operator can see it
+  fire.
 
 ### Isolation
 
