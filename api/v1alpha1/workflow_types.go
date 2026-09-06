@@ -33,7 +33,7 @@ const (
 // Trigger declares one condition under which the scheduler may start a run. A run
 // starts only when a trigger fires AND readiness is satisfied (WF-011).
 // +kubebuilder:validation:XValidation:rule="!has(self.trustLabel) || self.type == 'backlog-item'",message="trustLabel is supported only for type=backlog-item"
-// +kubebuilder:validation:XValidation:rule="!has(self.idleBackoff) || self.type == 'schedule'",message="idleBackoff is supported only for type=schedule"
+// +kubebuilder:validation:XValidation:rule="!has(self.idleBackoff) || self.type == 'schedule' || self.type == 'webhook'",message="idleBackoff is supported only for type=schedule or type=webhook"
 type Trigger struct {
 	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal;webhook
 	// +kubebuilder:validation:Required
@@ -69,8 +69,13 @@ type Trigger struct {
 	// type=schedule.
 	// +optional
 	Schedule string `json:"schedule,omitempty" yaml:"schedule,omitempty"`
-	// IdleBackoff reduces no-work polling while preserving the configured
-	// schedule whenever work is available. Omitted uses the default policy.
+	// IdleBackoff reduces no-work polling (type=schedule) or no-work dispatch
+	// (type=webhook, #4262: a burst of webhook deliveries that repeatedly find
+	// no eligible work — e.g. merge-review's pr-select — otherwise dispatches
+	// one run per delivery with no throttle of its own, which can exhaust a
+	// GitHub token's quota shared across every gaggle on the instance) while
+	// preserving responsiveness whenever work is available. Omitted uses the
+	// default policy.
 	// +optional
 	IdleBackoff *IdleBackoff `json:"idleBackoff,omitempty" yaml:"idleBackoff,omitempty"`
 	// Signal is the named external signal for type=signal.
@@ -91,8 +96,9 @@ type Trigger struct {
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
-// IdleBackoff configures adaptive delay after consecutive scheduled runs find
-// no work. Floor and Ceiling are Go duration strings.
+// IdleBackoff configures adaptive delay after consecutive scheduled runs, or
+// consecutive webhook-triggered dispatches, find no work. Floor and Ceiling
+// are Go duration strings.
 type IdleBackoff struct {
 	// Enabled defaults to true.
 	// +optional
