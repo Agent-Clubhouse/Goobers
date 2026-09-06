@@ -103,6 +103,21 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   endpoint may have a default. Opt-in does not permit a maintainer-facing
   collection path: this repository MUST contain no such path, enabled or
   disabled. Users own their data and may choose to self-report it.
+
+  **Scope of the MUST (#4276).** This clause binds *this repository's own code* —
+  the first-party Go, JavaScript, and TypeScript call sites `go run ./test/nophonehome`
+  parses (see "No-phone-home guard and compliance audit" below). It is not, and
+  structurally cannot be, a claim about a **harness subprocess's** own egress: the
+  Copilot CLI, Claude Code, or any other vendor agent Goobers launches is a
+  third-party binary that ships its own telemetry, and no first-party source parser
+  can see it. Vendor-subprocess telemetry is an **operator-controlled egress
+  decision**, governed by the instance's egress allowlist and the network policy
+  rendered from it (`SEC-030`, `goobers netpol-render`), not by `SEC-048` or its
+  guard. An operator who wants a harness's telemetry blocked blocks the host; an
+  operator who accepts it is making that choice explicitly. Naming the vendor's
+  **API host exactly** rather than allowing its whole domain suffix is what makes
+  that choice explicit rather than incidental — see "Egress allowlist: name hosts,
+  not domain suffixes" in `deploy/reference/README.md`.
 - **SEC-049 (MUST):** *(Tiers 1–2)* A deterministic stage's command or environment
   MUST NOT be allowed to reference, verbatim, an on-disk path `instance.yaml`
   names as a credential source (a repo/workflow-source/daemon-identity token or
@@ -191,6 +206,12 @@ analytics, crash-reporting, or other telemetry endpoint to an allowlist. There
 is intentionally no endpoint allowlist. Remove the collection path; for
 legitimate user-owned OTLP export, pass the endpoint from explicit instance or
 environment configuration through the existing exporter seam.
+
+Its reach stops at this repository's source. A harness subprocess (the Copilot
+CLI, Claude Code) is a third-party binary with its own telemetry, invisible to a
+first-party source parser by construction — a green `nophonehome` run says
+nothing about what those processes send, and never did. That surface is bounded
+by the egress allowlist instead; `SEC-048` above states the split.
 
 **Audit (2026-07-26): compliant after closing the low-level SDK-default seam.**
 
