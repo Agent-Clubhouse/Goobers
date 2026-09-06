@@ -49,7 +49,6 @@ func TestReconcileRemoteBranchesJournalsUntypedSweepRateLimit(t *testing.T) {
 
 	_, err := reconcileRemoteBranches(context.Background(), provider, log, branchReconcileOptions{
 		Repository: providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Name: "app"},
-		RunsDir:    t.TempDir(),
 		Prefix:     branchReconcilePrefix,
 		Limit:      25,
 		MinimumAge: 7 * 24 * time.Hour,

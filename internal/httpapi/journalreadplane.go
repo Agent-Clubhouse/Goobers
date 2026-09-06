@@ -32,13 +32,14 @@ import (
 //     converted readers' input list, and the conservative reading of the
 //     ruling admits only what the ruling enumerated.
 //
-//  2. CROSS-RUN. Three purpose-built, gaggle-scoped questions, each answered
-//     by the daemon from data the daemon derives. A pod never receives another
-//     run's journal, event log, or artifact bytes through these: it receives a
-//     phase string, a list of (run id, file names), or one stranded diff for
-//     an item the DAEMON confirmed the asking run holds. Option 2 (carry
-//     verdicts forward by pointer) cannot serve any of these at all, which is
-//     why R1 chose option 1 for them.
+//  2. CROSS-RUN. Purpose-built, gaggle-scoped questions, each answered by the
+//     daemon from data the daemon derives. A pod never receives another run's
+//     journal, event log, or artifact bytes through these: it receives a
+//     phase string, a list of (run id, file names), one stranded diff for an
+//     item the DAEMON confirmed the asking run holds, or one branch's owning
+//     run identity and terminal/ref facts (BranchOwnership, #4344). Option 2
+//     (carry verdicts forward by pointer) cannot serve any of these at all,
+//     which is why R1 chose option 1 for them.
 
 // RunJournalService is the daemon-side cross-run journal plane. The shipped
 // implementation lives in cmd/goobers; the wire types are journalclient's own
@@ -54,6 +55,9 @@ type RunJournalService interface {
 	// EscalationCandidates answers the gaggle's outstanding decomposition
 	// escalation candidates (#4342).
 	EscalationCandidates(ctx context.Context, req journalclient.EscalationCandidatesRequest) (journalclient.EscalationCandidatesResponse, error)
+	// BranchOwnership answers whether req.TargetRunID's journal actually
+	// owns req.Branch (#4344).
+	BranchOwnership(ctx context.Context, req journalclient.BranchOwnershipRequest) (journalclient.BranchOwnershipResponse, error)
 }
 
 // WithRunJournalService enables the cross-run journal-plane routes.
@@ -231,6 +235,41 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 		}
 		if response.Candidates == nil {
 			response.Candidates = []journalclient.EscalationCandidate{}
+		}
+		writeJSON(w, http.StatusOK, response)
+	})
+
+	router.Handle(apicontract.RouteJournalBranchOwnership, func(w http.ResponseWriter, request *http.Request) {
+		if unavailable(w) {
+			return
+		}
+		if status, code, message := validateMutationTransport(request); status != 0 {
+			writeError(w, status, code, message)
+			return
+		}
+		var input journalclient.BranchOwnershipRequest
+		if err := decodeWriteRequest(request, &input); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+			return
+		}
+		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
+			return
+		}
+		if !apiv1.ValidRunID(strings.TrimSpace(input.TargetRunID)) {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "targetRunId is required and must be a valid run id")
+			return
+		}
+		if strings.TrimSpace(input.Workflow) == "" || strings.TrimSpace(input.Branch) == "" {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workflow and branch are required")
+			return
+		}
+		if !podBodyRunContained(w, request, input.RunID, "read another run's branch ownership") {
+			return
+		}
+		response, err := service.BranchOwnership(request.Context(), input)
+		if err != nil {
+			writePlaneError(w, errorLog, "read branch ownership", err)
+			return
 		}
 		writeJSON(w, http.StatusOK, response)
 	})

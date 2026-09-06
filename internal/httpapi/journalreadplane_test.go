@@ -23,11 +23,13 @@ type fakeRunJournalService struct {
 	touches       journalclient.ConflictTouchResponse
 	work          journalclient.UnpushedWorkResponse
 	candidates    journalclient.EscalationCandidatesResponse
+	ownership     journalclient.BranchOwnershipResponse
 	err           error
 	phaseReqs     []journalclient.RunPhaseRequest
 	touchReqs     []journalclient.ConflictTouchRequest
 	workReqs      []journalclient.UnpushedWorkRequest
 	candidateReqs []journalclient.EscalationCandidatesRequest
+	ownershipReqs []journalclient.BranchOwnershipRequest
 }
 
 func (f *fakeRunJournalService) RunPhase(_ context.Context, req journalclient.RunPhaseRequest) (journalclient.RunPhaseResponse, error) {
@@ -50,8 +52,13 @@ func (f *fakeRunJournalService) EscalationCandidates(_ context.Context, req jour
 	return f.candidates, f.err
 }
 
+func (f *fakeRunJournalService) BranchOwnership(_ context.Context, req journalclient.BranchOwnershipRequest) (journalclient.BranchOwnershipResponse, error) {
+	f.ownershipReqs = append(f.ownershipReqs, req)
+	return f.ownership, f.err
+}
+
 func (f *fakeRunJournalService) calls() int {
-	return len(f.phaseReqs) + len(f.touchReqs) + len(f.workReqs) + len(f.candidateReqs)
+	return len(f.phaseReqs) + len(f.touchReqs) + len(f.workReqs) + len(f.candidateReqs) + len(f.ownershipReqs)
 }
 
 func podHandler(t *testing.T, runID string, reader readservice.Reader, service RunJournalService) http.Handler {
@@ -80,6 +87,7 @@ func crossRunPaths() []string {
 		apicontract.JournalConflictTouchesPath,
 		apicontract.JournalUnpushedWorkPath,
 		apicontract.JournalEscalationCandidatesPath,
+		apicontract.JournalBranchOwnershipPath,
 	}
 }
 
@@ -91,6 +99,7 @@ func TestRunJournalReadRoutesAreInTheContract(t *testing.T) {
 		apicontract.RouteJournalConflictTouches,
 		apicontract.RouteJournalUnpushedWork,
 		apicontract.RouteJournalEscalationCandidates,
+		apicontract.RouteJournalBranchOwnership,
 	} {
 		route, ok := apicontract.V1Route(id)
 		if !ok {
@@ -230,6 +239,7 @@ func TestCrossRunRoutesContainThePodToItsOwnRun(t *testing.T) {
 		apicontract.JournalConflictTouchesPath:      `{"runId":"run-1","gaggle":"web","since":"` + since + `"}`,
 		apicontract.JournalUnpushedWorkPath:         `{"runId":"run-1","gaggle":"web","since":"` + since + `"}`,
 		apicontract.JournalEscalationCandidatesPath: `{"runId":"run-1","gaggle":"web"}`,
+		apicontract.JournalBranchOwnershipPath:      `{"runId":"run-1","targetRunId":"run-9","workflow":"implementation","branch":"goobers/implementation/run-9","gaggle":"web"}`,
 	}
 	for path, body := range ok {
 		response := httptest.NewRecorder()
@@ -238,8 +248,8 @@ func TestCrossRunRoutesContainThePodToItsOwnRun(t *testing.T) {
 			t.Errorf("pod POST %s for its own run: status = %d, body = %s", path, response.Code, response.Body)
 		}
 	}
-	if service.calls() != 4 {
-		t.Fatalf("service saw %d calls, want 4", service.calls())
+	if service.calls() != 5 {
+		t.Fatalf("service saw %d calls, want 5", service.calls())
 	}
 
 	before := service.calls()
@@ -248,6 +258,7 @@ func TestCrossRunRoutesContainThePodToItsOwnRun(t *testing.T) {
 		apicontract.JournalConflictTouchesPath:      `{"runId":"run-2","gaggle":"web","since":"` + since + `"}`,
 		apicontract.JournalUnpushedWorkPath:         `{"runId":"run-2","gaggle":"web","since":"` + since + `"}`,
 		apicontract.JournalEscalationCandidatesPath: `{"runId":"run-2","gaggle":"web"}`,
+		apicontract.JournalBranchOwnershipPath:      `{"runId":"run-2","targetRunId":"run-9","workflow":"implementation","branch":"goobers/implementation/run-9","gaggle":"web"}`,
 	}
 	for path, body := range impostor {
 		response := httptest.NewRecorder()
@@ -270,19 +281,23 @@ func TestCrossRunRoutesRefuseUnscopedAndUnboundedRequests(t *testing.T) {
 	since := time.Now().UTC().Format(time.RFC3339Nano)
 
 	for name, request := range map[string]*http.Request{
-		"phase without gaggle":      jsonRequest(http.MethodPost, apicontract.JournalRunPhasePath, `{"runId":"run-1","targetRunId":"run-9"}`),
-		"phase without target":      jsonRequest(http.MethodPost, apicontract.JournalRunPhasePath, `{"runId":"run-1","gaggle":"web"}`),
-		"phase bad target":          jsonRequest(http.MethodPost, apicontract.JournalRunPhasePath, `{"runId":"run-1","targetRunId":"../etc","gaggle":"web"}`),
-		"touches without gaggle":    jsonRequest(http.MethodPost, apicontract.JournalConflictTouchesPath, `{"runId":"run-1","since":"`+since+`"}`),
-		"touches without since":     jsonRequest(http.MethodPost, apicontract.JournalConflictTouchesPath, `{"runId":"run-1","gaggle":"web"}`),
-		"work without gaggle":       jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","since":"`+since+`"}`),
-		"work without since":        jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","gaggle":"web"}`),
-		"work oversized inline":     jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","gaggle":"web","since":"`+since+`","maxInlineDiffBytes":999999999}`),
-		"work negative inline":      jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","gaggle":"web","since":"`+since+`","maxInlineDiffBytes":-1}`),
-		"candidates without gaggle": jsonRequest(http.MethodPost, apicontract.JournalEscalationCandidatesPath, `{"runId":"run-1"}`),
-		"unknown field":             jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","gaggle":"web","since":"`+since+`","surprise":true}`),
-		"empty body":                jsonRequest(http.MethodPost, apicontract.JournalRunPhasePath, ``),
-		"wrong content type":        httptest.NewRequest(http.MethodPost, apicontract.JournalRunPhasePath, nil),
+		"phase without gaggle":       jsonRequest(http.MethodPost, apicontract.JournalRunPhasePath, `{"runId":"run-1","targetRunId":"run-9"}`),
+		"phase without target":       jsonRequest(http.MethodPost, apicontract.JournalRunPhasePath, `{"runId":"run-1","gaggle":"web"}`),
+		"phase bad target":           jsonRequest(http.MethodPost, apicontract.JournalRunPhasePath, `{"runId":"run-1","targetRunId":"../etc","gaggle":"web"}`),
+		"touches without gaggle":     jsonRequest(http.MethodPost, apicontract.JournalConflictTouchesPath, `{"runId":"run-1","since":"`+since+`"}`),
+		"touches without since":      jsonRequest(http.MethodPost, apicontract.JournalConflictTouchesPath, `{"runId":"run-1","gaggle":"web"}`),
+		"work without gaggle":        jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","since":"`+since+`"}`),
+		"work without since":         jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","gaggle":"web"}`),
+		"work oversized inline":      jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","gaggle":"web","since":"`+since+`","maxInlineDiffBytes":999999999}`),
+		"work negative inline":       jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","gaggle":"web","since":"`+since+`","maxInlineDiffBytes":-1}`),
+		"candidates without gaggle":  jsonRequest(http.MethodPost, apicontract.JournalEscalationCandidatesPath, `{"runId":"run-1"}`),
+		"ownership without gaggle":   jsonRequest(http.MethodPost, apicontract.JournalBranchOwnershipPath, `{"runId":"run-1","targetRunId":"run-9","workflow":"implementation","branch":"b"}`),
+		"ownership without target":   jsonRequest(http.MethodPost, apicontract.JournalBranchOwnershipPath, `{"runId":"run-1","gaggle":"web","workflow":"implementation","branch":"b"}`),
+		"ownership without workflow": jsonRequest(http.MethodPost, apicontract.JournalBranchOwnershipPath, `{"runId":"run-1","targetRunId":"run-9","gaggle":"web","branch":"b"}`),
+		"ownership without branch":   jsonRequest(http.MethodPost, apicontract.JournalBranchOwnershipPath, `{"runId":"run-1","targetRunId":"run-9","gaggle":"web","workflow":"implementation"}`),
+		"unknown field":              jsonRequest(http.MethodPost, apicontract.JournalUnpushedWorkPath, `{"runId":"run-1","gaggle":"web","since":"`+since+`","surprise":true}`),
+		"empty body":                 jsonRequest(http.MethodPost, apicontract.JournalRunPhasePath, ``),
+		"wrong content type":         httptest.NewRequest(http.MethodPost, apicontract.JournalRunPhasePath, nil),
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
