@@ -1023,6 +1023,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				nil,
 				nil,
 				false,
+				nil,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -1046,6 +1047,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 		nil,
 		nil,
 		false,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -1059,6 +1061,53 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 	if resolvedGoobers["coder"].Model != "" ||
 		len(resolvedGoobers["coder"].HarnessOptions) != 0 {
 		t.Fatalf("resolved goober = %+v, want harness default without admission-only options", resolvedGoobers["coder"])
+	}
+}
+
+// TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery is #4292's
+// wiring regression guard: compiledMachinesWithWarnings used to hardcode nil
+// for the admission registry's model credential, so a file/keychain/store-
+// sourced agent:model grant was invisible to config-admission-time model
+// discovery — the same discovery daemon startup runs at workflow load — even
+// though the daemon-startup harness preflight already consulted it. With no
+// ambient token set and a modelCredential resolver passed in, discovery must
+// see it.
+func TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	lister := &runnerWiringModelLister{responses: [][]harness.CopilotModelInfo{
+		{{ID: "gpt-5.4"}},
+	}}
+	previousLister := copilotModelLister
+	copilotModelLister = lister
+	t.Cleanup(func() { copilotModelLister = previousLister })
+
+	credentialCalls := 0
+	_, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(
+		&instance.ConfigSet{},
+		map[string]apiv1.GooberSpec{
+			"coder": {Harness: apiv1.HarnessCopilot, Model: "gpt-5.4"},
+		},
+		nil,
+		nil,
+		false,
+		func(context.Context) (string, error) {
+			credentialCalls++
+			return "pat-from-file-ref", nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("compiledMachinesWithWarnings: %v", err)
+	}
+	if len(warnings) != 0 || resolvedGoobers["coder"].Model != "gpt-5.4" {
+		t.Fatalf("admission = goober %+v warnings %+v, want the requested model verified, not left unverified", resolvedGoobers["coder"], warnings)
+	}
+	if credentialCalls == 0 {
+		t.Fatal("modelCredential resolver was never consulted by admission-time discovery")
+	}
+	if !slices.Contains(lister.env, "COPILOT_GITHUB_TOKEN=pat-from-file-ref") {
+		t.Fatalf("model discovery env = %v, want the resolved file-ref credential", lister.env)
 	}
 }
 
@@ -1097,6 +1146,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		[]string{"COPILOT_HOME"},
 		nil,
 		false,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -2270,7 +2320,9 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		},
 	}
 
-	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false)
+	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, nil, nil, false,
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

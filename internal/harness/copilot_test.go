@@ -66,9 +66,13 @@ type fakeCopilotModelLister struct {
 	responses [][]CopilotModelInfo
 	err       error
 	calls     int
+	// lastEnv captures the env ListModels was invoked with, so a test can
+	// assert what credential (if any) reached the discovery subprocess (#4292).
+	lastEnv []string
 }
 
-func (f *fakeCopilotModelLister) ListModels(context.Context, []string, []string) ([]CopilotModelInfo, error) {
+func (f *fakeCopilotModelLister) ListModels(_ context.Context, _ []string, env []string) ([]CopilotModelInfo, error) {
+	f.lastEnv = env
 	response := f.models
 	if len(f.responses) > 0 {
 		response = f.responses[min(f.calls, len(f.responses)-1)]
@@ -2393,6 +2397,139 @@ func TestCopilotAdapterPreflightFailsOnModelCredentialError(t *testing.T) {
 	}
 	if authProbeRan {
 		t.Fatal("the auth probe should never run with an unresolved agent:model credential")
+	}
+}
+
+// TestCopilotDiscoverModelsUsesModelCredentialWhenNoAmbient is #4292's core
+// regression guard: config-admission-time model discovery used to build its
+// subprocess env from baseEnv() alone, with no credential of any kind —
+// unlike the Preflight auth probe above, which already consulted
+// ModelCredential. That meant a file/keychain/store-sourced agent:model
+// credential — the ONLY credentials: entry an operator declared — was
+// invisible to discovery, forcing every deployment to also deliver the token
+// as a raw ambient env var just so `goobers validate`/daemon startup could
+// authenticate. With no ambient env var set and ModelCredential configured,
+// discovery must resolve and carry that credential.
+func TestCopilotDiscoverModelsUsesModelCredentialWhenNoAmbient(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	lister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: lister,
+		ModelCredential: func(context.Context) (string, error) {
+			return "pat-from-file-ref", nil
+		},
+	}
+	if _, err := adapter.discoverModels(context.Background()); err != nil {
+		t.Fatalf("discoverModels should succeed with a resolved ModelCredential: %v", err)
+	}
+	found := false
+	for _, kv := range lister.lastEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("discovery env should carry the resolved ModelCredential; got %v", lister.lastEnv)
+	}
+}
+
+// TestCopilotDiscoverModelsAmbientEnvWinsOverModelCredential mirrors the
+// Preflight probe's precedence: an explicit ambient env var still wins over
+// ModelCredential.
+func TestCopilotDiscoverModelsAmbientEnvWinsOverModelCredential(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "pat-from-ambient-env")
+	credentialCalled := false
+	lister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: lister,
+		ModelCredential: func(context.Context) (string, error) {
+			credentialCalled = true
+			return "pat-from-file-ref", nil
+		},
+	}
+	if _, err := adapter.discoverModels(context.Background()); err != nil {
+		t.Fatalf("discoverModels should succeed: %v", err)
+	}
+	if credentialCalled {
+		t.Fatal("ModelCredential should not be consulted when an ambient env var is already set")
+	}
+	found := false
+	for _, kv := range lister.lastEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-ambient-env" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("discovery env should carry the ambient token, not ModelCredential's; got %v", lister.lastEnv)
+	}
+}
+
+// TestCopilotDiscoverModelsFailsOnModelCredentialError proves a misconfigured
+// agent:model tokenRef surfaces as an actionable discovery error rather than
+// being silently swallowed and discovery proceeding unauthenticated.
+func TestCopilotDiscoverModelsFailsOnModelCredentialError(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	lister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	credentialErr := errors.New("credentials: token ref \"agent-model\": read \"/nonexistent/copilot.pat\": no such file or directory")
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: lister,
+		ModelCredential: func(context.Context) (string, error) {
+			return "", credentialErr
+		},
+	}
+	_, err := adapter.discoverModels(context.Background())
+	if err == nil {
+		t.Fatal("expected discoverModels to fail closed when ModelCredential resolution errors")
+	}
+	if !errors.Is(err, credentialErr) {
+		t.Fatalf("err = %v, want it to wrap the ModelCredential resolution error", err)
+	}
+	if lister.calls != 0 {
+		t.Fatal("ListModels should never run with an unresolved agent:model credential")
+	}
+}
+
+// TestCopilotResolveConfigFileRefOnlyCredentialsSatisfiesDiscovery is #4292's
+// acceptance-criteria test: a file-ref-only credentials: entry (no ambient
+// env var at all) must satisfy the Copilot config-admission preflight — the
+// same path the daemon takes at workflow load — end to end through the public
+// ResolveConfig entry point, not just the unexported discoverModels method.
+func TestCopilotResolveConfigFileRefOnlyCredentialsSatisfiesDiscovery(t *testing.T) {
+	t.Setenv("COPILOT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	lister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: lister,
+		ModelCredential: func(context.Context) (string, error) {
+			return "pat-from-file-ref", nil
+		},
+	}
+	resolution, err := adapter.ResolveConfig("claude-sonnet-5", nil)
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	for _, warning := range resolution.Warnings {
+		if warning.Kind == ConfigWarningModelUnverified {
+			t.Fatalf("model should be verified via the resolved file-ref credential, not left unverified: %+v", warning)
+		}
+	}
+	found := false
+	for _, kv := range lister.lastEnv {
+		if kv == "COPILOT_GITHUB_TOKEN=pat-from-file-ref" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("discovery env should carry the resolved file-ref credential; got %v", lister.lastEnv)
 	}
 }
 

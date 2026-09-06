@@ -303,9 +303,26 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		diagnostics.add(file, "/spec/instructions", "GBO004", string(validate.Error), err.Error())
 		return 1
 	}
+	// Built once and threaded into admission below and into the optional
+	// live harness preflight further down (#4292): config-load-time model
+	// discovery previously saw no resolver at all, so a file/keychain/store-
+	// sourced agent:model credential was invisible to it, forcing an operator
+	// to also deliver the token as a raw ambient env var just to validate.
+	harnessStores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		pf(stdout, "INVALID secretStores:\n  %v\n", err)
+		diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "INSTANCE002", string(validate.Error), err.Error())
+		return 1
+	}
+	modelCredential, err := agentModelCredentialResolver(cfg, harnessStores)
+	if err != nil {
+		pf(stdout, "INVALID credentials:\n  %v\n", err)
+		diagnostics.add(diagnosticFile(root, configFile), "/credentials", "INSTANCE003", string(validate.Error), err.Error())
+		return 1
+	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
-		options.deferModelDiscovery,
+		options.deferModelDiscovery, modelCredential,
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
@@ -424,18 +441,6 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 
 	if options.checkHarness {
-		harnessStores, err := secretstore.NewRegistry(cfg.SecretStores)
-		if err != nil {
-			pf(stdout, "INVALID secretStores:\n  %v\n", err)
-			diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "INSTANCE002", string(validate.Error), err.Error())
-			return 1
-		}
-		modelCredential, err := agentModelCredentialResolver(cfg, harnessStores)
-		if err != nil {
-			pf(stdout, "INVALID credentials:\n  %v\n", err)
-			diagnostics.add(diagnosticFile(root, configFile), "/credentials", "INSTANCE003", string(validate.Error), err.Error())
-			return 1
-		}
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
 		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, modelCredential, diagnostics) {
