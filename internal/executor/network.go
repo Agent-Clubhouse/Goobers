@@ -44,3 +44,19 @@ func configureCommandNetwork(cmd *exec.Cmd, mode apiv1.NetworkMode) (marker stri
 		return "", fmt.Errorf("executor: unknown network mode %q", mode)
 	}
 }
+
+// describeNetworkNoneStartFailure enriches a network:none stage's fork/exec
+// failure with an actionable diagnosis when the failure shape matches a
+// known, platform-specific cause — currently just Linux's restricted-
+// unprivileged-userns case (#4267), via networkNoneStartFailureHint's
+// per-platform implementation. Any other failure (a missing binary, a
+// permission problem unrelated to namespaces, ...) passes through unchanged.
+func describeNetworkNoneStartFailure(mode apiv1.NetworkMode, err error) error {
+	if mode != apiv1.NetworkNone || err == nil {
+		return err
+	}
+	if hint := networkNoneStartFailureHint(err); hint != "" {
+		return fmt.Errorf("%w: %s", err, hint)
+	}
+	return err
+}
