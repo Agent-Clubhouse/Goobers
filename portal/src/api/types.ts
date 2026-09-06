@@ -278,6 +278,24 @@ export interface Instance extends ContractVersion {
   concurrency: Concurrency;
   counts: InventoryCounts;
   warnings: ValidationWarning[];
+  maintenance?: MaintenanceStatus;
+}
+
+export type MaintenanceState = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface MaintenanceStatus {
+  kind: string;
+  state: MaintenanceState;
+  trigger: "startup" | "periodic" | "manual";
+  startedAt?: string;
+  lastProgressAt?: string;
+  currentPhase?: string;
+  candidates: number;
+  removed: number;
+  failures: number;
+  lastCompletedAt?: string;
+  lastResult?: string;
+  errorSummary?: string;
 }
 
 export interface Concurrency {

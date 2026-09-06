@@ -75,6 +75,7 @@ type Instance struct {
 	Concurrency   Concurrency             `json:"concurrency"`
 	Counts        InventoryCounts         `json:"counts"`
 	Warnings      []validate.CodedWarning `json:"warnings"`
+	Maintenance   *MaintenanceStatus      `json:"maintenance,omitempty"`
 }
 
 // InventoryCounts summarizes configured definitions and active runs.
@@ -374,6 +375,10 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if s.sources.Config != nil {
 		maxConcurrent = s.sources.Config.RunConditions.MaxParallelRuns
 	}
+	var maintenance *MaintenanceStatus
+	if s.sources.RetentionStats != nil {
+		maintenance = maintenanceStatus(s.sources.RetentionStats())
+	}
 	return Instance{
 		APIVersion:    APIVersion,
 		SchemaVersion: SchemaVersion,
@@ -391,7 +396,8 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 			Workflows:  len(inventory.definitions.Workflows),
 			ActiveRuns: activeTotal,
 		},
-		Warnings: append([]validate.CodedWarning{}, inventory.warnings...),
+		Warnings:    append([]validate.CodedWarning{}, inventory.warnings...),
+		Maintenance: maintenance,
 	}, nil
 }
 

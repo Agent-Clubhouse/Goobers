@@ -404,6 +404,30 @@ function InstanceStrip({
           </span>
         )}
       </div>
+      {overview.instance.maintenance?.state === "running" && (
+        <div className="maintenance-indicator" role="status" aria-live="polite">
+          <strong>Retention sweep running</strong>
+          {overview.instance.maintenance.startedAt && (
+            <span>
+              {" "}
+              for {formatDuration(Math.max(0, Date.now() - Date.parse(overview.instance.maintenance.startedAt)))}
+            </span>
+          )}
+          <span>
+            {" "}
+            · {overview.instance.maintenance.removed} removed,{" "}
+            {overview.instance.maintenance.candidates} candidates
+          </span>
+        </div>
+      )}
+      {overview.instance.maintenance?.state === "failed" && (
+        <div className="maintenance-indicator maintenance-indicator-error" role="alert">
+          <strong>Retention sweep failed</strong>
+          {overview.instance.maintenance.errorSummary && (
+            <span> · {overview.instance.maintenance.errorSummary}</span>
+          )}
+        </div>
+      )}
       <dl>
         <div>
           <dt>Workflows</dt>

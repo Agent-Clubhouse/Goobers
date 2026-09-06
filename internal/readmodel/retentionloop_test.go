@@ -31,6 +31,10 @@ func TestUnboundedProjectionPassStillPrunesChangeFeed(t *testing.T) {
 	if loop.Stats().ChangesPruned != 1 {
 		t.Errorf("changes pruned = %d, want 1", loop.Stats().ChangesPruned)
 	}
+	stats := loop.Stats()
+	if stats.State != "completed" || stats.Trigger != "startup" || stats.Kind != "retention-sweep" {
+		t.Fatalf("maintenance status = %+v, want completed startup retention-sweep", stats)
+	}
 }
 
 // TestBoundedLoopRunsAPassOnStart pins that an instance down past its window
@@ -87,6 +91,9 @@ func TestPassFailureIsCountedNotFatal(t *testing.T) {
 		t.Error("a failing pass was not counted; a retention loop silently doing nothing " +
 			"looks identical to one with nothing to do")
 	}
+	if got := loop.Stats().State; got != "failed" {
+		t.Errorf("maintenance state = %q, want failed", got)
+	}
 }
 
 // TestCancelledPassIsNotCountedAsAFailure pins that shutdown is not an error.
@@ -109,5 +116,8 @@ func TestCancelledPassIsNotCountedAsAFailure(t *testing.T) {
 	if loop.Stats().Failures != 0 {
 		t.Errorf("a cancelled pass counted %d failures; the counter would be non-zero on "+
 			"every clean shutdown", loop.Stats().Failures)
+	}
+	if got := loop.Stats().State; got != "cancelled" {
+		t.Errorf("maintenance state = %q, want cancelled", got)
 	}
 }
