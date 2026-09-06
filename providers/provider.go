@@ -158,6 +158,12 @@ type PullRequestStatusPublisher interface {
 	PublishPullRequestStatus(context.Context, PullRequestStatusRequest) (PullRequestStatusResult, error)
 }
 
+// PendingCheckCanceler cancels provider CI still running for one exact PR head.
+// It is optional because not every forge exposes a safe cancellation surface.
+type PendingCheckCanceler interface {
+	CancelPendingChecks(context.Context, CancelPendingChecksRequest) (CancelPendingChecksResult, error)
+}
+
 // PolicyProvider reports a repo's live forge-conformance settings (issue
 // #916, Tier 4 of #903) for `goobers doctor --repo` to diff against a
 // declared instance-config manifest. It is separate from RepoProvider, like

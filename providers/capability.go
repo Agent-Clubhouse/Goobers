@@ -65,6 +65,7 @@ const (
 const (
 	CapRepoPolicyRead  Capability = "repo.policy.read"
 	CapPRStatusPublish Capability = "pr.status.publish"
+	CapCICancel        Capability = "ci.cancel"
 )
 
 // backlog: work-item surfaces. CapBacklogBlockers is declared per-provider
@@ -348,6 +349,19 @@ func (d *Dispatcher) PublishPullRequestStatus(ctx context.Context, req PullReque
 		return PullRequestStatusResult{}, ErrUnsupported{Provider: d.Kind(), Capability: CapPRStatusPublish}
 	}
 	return publisher.PublishPullRequestStatus(ctx, req)
+}
+
+// CancelPendingChecks dispatches to the provider's bounded CI cancellation
+// surface when ci.cancel is declared.
+func (d *Dispatcher) CancelPendingChecks(ctx context.Context, req CancelPendingChecksRequest) (CancelPendingChecksResult, error) {
+	if !d.Capabilities().Has(CapCICancel) {
+		return CancelPendingChecksResult{}, ErrUnsupported{Provider: d.Kind(), Capability: CapCICancel}
+	}
+	canceler, ok := d.Provider.(PendingCheckCanceler)
+	if !ok {
+		return CancelPendingChecksResult{}, ErrUnsupported{Provider: d.Kind(), Capability: CapCICancel}
+	}
+	return canceler.CancelPendingChecks(ctx, req)
 }
 
 // GetRepoPolicy dispatches to the underlying provider's PolicyProvider if

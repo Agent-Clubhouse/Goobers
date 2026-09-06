@@ -74,7 +74,7 @@ spec:
       next: pr-select
 
     # Selection (design doc §3's declarative-selection model, applied to
-    # PRs): one open, non-draft, green-CI PR not carrying a merge-review or
+    # PRs): one open, non-draft PR with no known CI failure and not carrying a merge-review or
     # goobers:no-merge-review label. Implementation, docs-updater, and low-risk
     # Tutor PRs retain the managed lifecycle; any other branch is admitted for
     # advisory review only. pr-select still classifies Tutor diffs and excludes
@@ -88,6 +88,7 @@ spec:
       inputs:
         headPrefixes: "goobers/implementation/,goobers/docs-updater/,goobers/tutor/"
         authorScope: "any"
+        allowPendingChecks: "true"
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
@@ -490,6 +491,28 @@ spec:
         - demote-pr
       # Terminal — the demotion label + sticky comment are the durable output.
 
+    # A managed non-pass verdict makes CI for the reviewed commit obsolete.
+    # Cancellation is exact-SHA, bounded, idempotent, and non-fatal: verdict
+    # publication remains authoritative even when the forge does not support
+    # cancellation or the credential lacks Actions write permission.
+    - name: cancel-pending-ci
+      type: deterministic
+      goal: Cancel obsolete pending CI for the exact rejected pull-request head.
+      run:
+        command: ["goobers", "cancel-pending-ci"]
+      inputsFrom:
+        pullNumber: selectedNumber
+        headSha: selectedHeadSha
+      inputs:
+        maxRuns: "25"
+        resultFile: "cancel-pending-ci-result.json"
+      capabilities:
+        - provider:ci:cancel
+      policyActions:
+        - cancel-pending-ci
+      continueOnError: true
+      next: ""
+
   gates:
     # #2340: check-issue-staleness re-fetches the pinned linked issue and
     # emits issueStale before the expensive agentic review gate runs. A
@@ -609,7 +632,7 @@ spec:
           equals: pass
       branches:
         pass: scope-gate
-        fail: ""
+        fail: cancel-pending-ci
 
     - name: advisory-verdict
       # Outside-prefix PRs receive the published verdict but no remediation

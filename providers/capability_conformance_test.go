@@ -29,6 +29,7 @@ var optionalCapabilityInterfaces = map[Capability]reflect.Type{
 	CapBranchDelete:          reflect.TypeOf((*BranchDeleter)(nil)).Elem(),
 	CapRepoPolicyRead:        reflect.TypeOf((*PolicyProvider)(nil)).Elem(),
 	CapPRStatusPublish:       reflect.TypeOf((*PullRequestStatusPublisher)(nil)).Elem(),
+	CapCICancel:              reflect.TypeOf((*PendingCheckCanceler)(nil)).Elem(),
 	CapBacklogBlockers:       reflect.TypeOf((*WorkItemBlockerChecker)(nil)).Elem(),
 }
 
@@ -99,6 +100,7 @@ func TestADOStillExcludesUnimplementedSurfaces(t *testing.T) {
 		CapPRReviewResolve,
 		CapRepoPolicyRead,
 		CapPRUpdateBranch,
+		CapCICancel,
 	}
 	for _, cap := range excluded {
 		if ado.Has(cap) {

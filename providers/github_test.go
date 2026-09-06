@@ -1376,6 +1376,7 @@ func TestGitHubProviderCheckDetailsFallsBackToActionsRunsOnForbiddenPAT(t *testi
 		if got := r.URL.Query().Get("head_sha"); got != "deadbeef" {
 			t.Fatalf("head_sha query = %q, want deadbeef", got)
 		}
+
 		writeJSON(t, w, map[string]interface{}{
 			"workflow_runs": []map[string]interface{}{
 				{"id": 201, "name": "CI", "status": "completed", "conclusion": "failure", "html_url": "https://ci/actions/201"},
@@ -1405,6 +1406,105 @@ func TestGitHubProviderCheckDetailsFallsBackToActionsRunsOnForbiddenPAT(t *testi
 	}
 	if !reflect.DeepEqual(requested, wantRequests) {
 		t.Fatalf("requested paths = %v, want %v", requested, wantRequests)
+	}
+}
+
+func TestGitHubProviderCancelPendingChecksPinsHeadAndBoundsMutations(t *testing.T) {
+	var canceled []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		writeJSON(t, w, map[string]interface{}{
+			"number": 42, "state": "open", "merged": false,
+			"head": map[string]interface{}{"ref": "feature", "sha": "reviewed"},
+			"base": map[string]interface{}{"ref": "main", "sha": "base"},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.URL.Query().Get("head_sha"); got != "reviewed" {
+			t.Fatalf("head_sha = %q, want reviewed", got)
+		}
+		if got := r.URL.Query().Get("per_page"); got != "5" {
+			t.Fatalf("per_page = %q, want 5", got)
+		}
+		if got := r.URL.Query().Get("page"); got != "1" {
+			t.Fatalf("page = %q, want 1", got)
+		}
+		writeJSON(t, w, map[string]interface{}{"workflow_runs": []map[string]interface{}{
+			{"id": 101, "status": "in_progress", "head_sha": "reviewed"},
+			{"id": 102, "status": "queued", "head_sha": "reviewed"},
+			{"id": 103, "status": "completed", "head_sha": "reviewed"},
+			{"id": 104, "status": "in_progress", "head_sha": "newer"},
+			{"id": 105, "status": "queued"},
+		}})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs/101/cancel", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		canceled = append(canceled, "101")
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs/102/cancel", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		canceled = append(canceled, "102")
+		w.WriteHeader(http.StatusConflict)
+		writeJSON(t, w, map[string]string{"message": "run has already completed"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) {
+		p.BaseURL = server.URL
+		p.maxRetries = 0
+	})
+	result, err := provider.CancelPendingChecks(context.Background(), CancelPendingChecksRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		PullID:     "42",
+		HeadSHA:    "reviewed",
+		Limit:      5,
+	})
+	if err != nil {
+		t.Fatalf("CancelPendingChecks: %v", err)
+	}
+	if result.Examined != 5 ||
+		!reflect.DeepEqual(result.Canceled, []string{"101"}) ||
+		!reflect.DeepEqual(result.Skipped, []string{"102", "103", "104", "105"}) {
+		t.Fatalf("result = %+v", result)
+	}
+	if !reflect.DeepEqual(canceled, []string{"101", "102"}) {
+		t.Fatalf("cancel requests = %v, want [101 102]", canceled)
+	}
+}
+
+func TestGitHubProviderCancelPendingChecksStopsWhenHeadMoved(t *testing.T) {
+	var actionsRequested bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls/42", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"number": 42, "state": "open", "merged": false,
+			"head": map[string]interface{}{"ref": "feature", "sha": "newer"},
+			"base": map[string]interface{}{"ref": "main", "sha": "base"},
+		})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, _ *http.Request) {
+		actionsRequested = true
+		writeJSON(t, w, map[string]interface{}{"workflow_runs": []map[string]interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, err := provider.CancelPendingChecks(context.Background(), CancelPendingChecksRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"},
+		PullID:     "42",
+		HeadSHA:    "reviewed",
+	})
+	var moved PullRequestHeadMovedError
+	if !errors.As(err, &moved) {
+		t.Fatalf("error = %v, want PullRequestHeadMovedError", err)
+	}
+	if actionsRequested {
+		t.Fatal("actions runs were requested after the PR head moved")
 	}
 }
 

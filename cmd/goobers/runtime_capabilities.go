@@ -685,6 +685,10 @@ func init() {
 			withSynopsis(synopsisByID["pr-select"]).
 			withHelp("select one managed or advisory open PR for merge-review (a workflow stage)", prSelectHelp).
 			withExamples("goobers pr-select"),
+		stageCommand("cancel-pending-ci", apicontract.ActionWorkflowExecution, runCancelPendingCI).
+			withSynopsis(synopsisByID["cancel-pending-ci"]).
+			withHelp("cancel pending provider CI for an exact reviewed PR head (a workflow stage)", cancelPendingCIHelp).
+			withExamples("goobers cancel-pending-ci"),
 		stageCommand("check-issue-staleness", apicontract.ActionWorkflowExecution, runCheckIssueStaleness).
 			withSynopsis(synopsisByID["check-issue-staleness"]).
 			withHelp("route a PR to remediation if its linked issue changed since implementation began (a workflow stage)", checkIssueStalenessHelp).
