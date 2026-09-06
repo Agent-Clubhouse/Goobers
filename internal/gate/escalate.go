@@ -159,6 +159,7 @@ func failureStreakBody(count int, stage, latestRunID, latestRunURL string) strin
 	}
 	return fmt.Sprintf(
 		"Goobers: **%d consecutive terminal failure(s)**%s. Latest run: [`%s`](%s). "+
+			"Classification: **genuine/work failure** (infra/transient failures are excluded from this streak). "+
 			"Remove `%s` and re-approve to retry.\n\n"+
 			"<!-- goobers:failure-streak data-count=\"%d\" -->",
 		count, stageInfo, latestRunID, latestRunURL, providers.LabelNeedsHuman, count,

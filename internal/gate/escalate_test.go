@@ -199,6 +199,12 @@ func TestUpsertFailureCommentCreatesWhenNoneExists(t *testing.T) {
 	if !strings.Contains(poster.comments[0].Body, "[`run-1`](http://127.0.0.1:8080/#/run/run-1)") {
 		t.Fatalf("posted comment missing run-details link: %s", poster.comments[0].Body)
 	}
+	if !strings.Contains(poster.comments[0].Body, "Classification: **genuine/work failure**") {
+		t.Fatalf("posted comment missing failure classification: %s", poster.comments[0].Body)
+	}
+	if !strings.Contains(poster.comments[0].Body, "infra/transient failures are excluded") {
+		t.Fatalf("posted comment missing infra exclusion: %s", poster.comments[0].Body)
+	}
 }
 
 func TestUpsertFailureCommentEditsExisting(t *testing.T) {
