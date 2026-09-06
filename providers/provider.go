@@ -164,6 +164,11 @@ type PendingCheckCanceler interface {
 	CancelPendingChecks(context.Context, CancelPendingChecksRequest) (CancelPendingChecksResult, error)
 }
 
+// RepositoryWritePreflighter is documented alongside its dispatch method in
+// repository_write_preflight.go and its interface declaration there — kept
+// out of RepoProvider so the GitHub-only V1 scope (#4414) does not widen
+// every RepoProvider backend, like BranchDeleter and PolicyProvider.
+
 // PolicyProvider reports a repo's live forge-conformance settings (issue
 // #916, Tier 4 of #903) for `goobers doctor --repo` to diff against a
 // declared instance-config manifest. It is separate from RepoProvider, like

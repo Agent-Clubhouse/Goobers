@@ -645,6 +645,10 @@ func init() {
 			withSynopsis(synopsisByID["push-branch"]).
 			withHelp("push the worktree's checked-out branch to origin (a workflow stage)", pushBranchHelp).
 			withExamples("goobers push-branch"),
+		stageCommand("preflight-repo-write", apicontract.ActionWorkflowExecution, runPreflightRepoWrite).
+			withSynopsis(synopsisByID["preflight-repo-write"]).
+			withHelp("check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)", preflightRepoWriteHelp).
+			withExamples("goobers preflight-repo-write"),
 		stageCommand("check-fail-first", apicontract.ActionWorkflowExecution, runCheckFailFirst).
 			withSynopsis(synopsisByID["check-fail-first"]).
 			withHelp("enforce fail-first evidence for a new workflow gate (a workflow stage)", checkFailFirstHelp).

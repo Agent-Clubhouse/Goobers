@@ -504,7 +504,7 @@ func captureImplementationEvidence(t *testing.T, config, workflowName, scenario,
 	if evidenceDir == "" ||
 		config != "reference-workflows" ||
 		workflowName != "goobers/implementation" ||
-		scenario != "01_query-backlog_next" {
+		scenario != "01_preflight-repo-write_next" {
 		return
 	}
 	if err := os.CopyFS(evidenceDir, os.DirFS(runDir)); err != nil {

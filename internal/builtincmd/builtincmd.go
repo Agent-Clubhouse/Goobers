@@ -71,6 +71,7 @@ var names = []string{
 	"pr-claim",
 	"pr-comment-watch",
 	"pr-select",
+	"preflight-repo-write",
 	"publish-batch",
 	"push-branch",
 	"push-remediated",
