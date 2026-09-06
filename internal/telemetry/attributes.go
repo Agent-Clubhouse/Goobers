@@ -37,6 +37,11 @@ const (
 	AttrGenAIUsageOutputTokens        = string(semconv.GenAIUsageOutputTokensKey)
 	AttrCopilotPremiumRequests        = "goobers.usage.copilot_premium_requests"
 	AttrUsageNanoAIU                  = "goobers.usage.nano_aiu"
+	AttrUsageBillingModel             = "goobers.usage.billing_model"
+	AttrUsageCacheReadTokens          = "goobers.usage.cache_read_tokens"
+	AttrUsageCacheWriteTokens         = "goobers.usage.cache_write_tokens"
+	AttrUsageReasoningTokens          = "goobers.usage.reasoning_tokens"
+	AttrUsageCostBasis                = "goobers.usage.cost_basis"
 	AttrUsageCostUSD                  = "goobers.usage.cost_usd"
 	AttrWorktreeID                    = "goobers.worktree.id"
 	AttrStorageOperation              = "goobers.storage.operation"
@@ -86,6 +91,11 @@ func AllAttributes() []Attribute {
 		Attribute(AttrGenAIUsageOutputTokens),
 		AttrCopilotPremiumRequests,
 		AttrUsageNanoAIU,
+		AttrUsageBillingModel,
+		AttrUsageCacheReadTokens,
+		AttrUsageCacheWriteTokens,
+		AttrUsageReasoningTokens,
+		AttrUsageCostBasis,
 		AttrUsageCostUSD,
 		AttrWorktreeID,
 		AttrStorageOperation,

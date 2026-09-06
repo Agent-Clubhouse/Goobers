@@ -98,6 +98,12 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: testIdentity().RunID,
 			Stage: "impl", Attempt: 1, Lifecycle: AgentCompleted,
 			StartedAt: fixedClock()(), UpdatedAt: fixedClock()(),
+			Usage: AgentUsage{
+				Model: "gpt-5.6", InputTokens: ptr(int64(10)), OutputTokens: ptr(int64(2)),
+				CacheReadTokens: ptr(int64(8)), CacheWriteTokens: ptr(int64(1)),
+				ReasoningTokens: ptr(int64(1)), NanoAIU: ptr(int64(2_000_000_000)),
+				CostUSD: ptr(0.02),
+			},
 		}},
 		{Type: EventAgentMessage, PeerMessage: &PeerMessageMetadata{
 			ID: "message-1", SenderID: "worker-1", RecipientID: "coordinator",
@@ -195,6 +201,10 @@ func TestMarshalEventRejectsNotificationWithoutTypedPayload(t *testing.T) {
 			t.Fatalf("marshalEvent accepted %s without its typed payload", eventType)
 		}
 	}
+}
+
+func ptr[T any](value T) *T {
+	return &value
 }
 
 // TestIdentityRefusesUnknownSchema pins #2054: run.yaml is written once at

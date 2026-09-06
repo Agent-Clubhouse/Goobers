@@ -435,10 +435,16 @@ func completeJournalEvent() journal.Event {
 			StartedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 			UpdatedAt: time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC),
 			Budget: journal.AgentUsage{
-				InputTokens: pointer(int64(100)), OutputTokens: pointer(int64(50)), CostUSD: pointer(1.5),
+				Model: "budget-model", InputTokens: pointer(int64(100)), OutputTokens: pointer(int64(50)),
+				CacheReadTokens: pointer(int64(25)), CacheWriteTokens: pointer(int64(10)),
+				ReasoningTokens: pointer(int64(5)), NanoAIU: pointer(int64(150_000_000_000)),
+				CostUSD: pointer(1.5),
 			},
 			Usage: journal.AgentUsage{
-				InputTokens: pointer(int64(80)), OutputTokens: pointer(int64(40)), CostUSD: pointer(1.25),
+				Model: "resolved-model", InputTokens: pointer(int64(80)), OutputTokens: pointer(int64(40)),
+				CacheReadTokens: pointer(int64(20)), CacheWriteTokens: pointer(int64(8)),
+				ReasoningTokens: pointer(int64(4)), NanoAIU: pointer(int64(125_000_000_000)),
+				CostUSD: pointer(1.25),
 			},
 			UsageAggregated: true,
 			Results: []journal.Ref{{

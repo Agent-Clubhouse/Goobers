@@ -14,15 +14,29 @@ import (
 // the harness reported.
 const GenAIModelUsageEventName = "goobers.gen_ai.model_usage"
 
+const (
+	BillingModelAICredits             = "ai_credits"
+	BillingModelPremiumRequests       = "premium_requests"
+	CostBasisVendorReported           = "vendor_reported"
+	CostBasisUnknown                  = "unknown"
+	NanoAIUPerAICredit          int64 = 1_000_000_000
+	NanoAIUPerUSD               int64 = 100_000_000_000
+)
+
 // ModelUsage preserves one model's observed usage. Nil measures are unknown;
 // pointers to zero are measured zeroes.
 type ModelUsage struct {
 	Model                  string
 	InputTokens            *int64
 	OutputTokens           *int64
+	CacheReadTokens        *int64
+	CacheWriteTokens       *int64
+	ReasoningTokens        *int64
 	CopilotPremiumRequests *float64
 	NanoAIU                *int64
 	CostUSD                *float64
+	BillingModel           string
+	CostBasis              string
 }
 
 // IsCanonicalAgentUsageMetric reports whether name is owned by the harness
@@ -32,6 +46,12 @@ func IsCanonicalAgentUsageMetric(name string) bool {
 	case AttrGenAIUsageInputTokens,
 		AttrGenAIUsageOutputTokens,
 		AttrCopilotPremiumRequests,
+		AttrUsageNanoAIU,
+		AttrUsageBillingModel,
+		AttrUsageCacheReadTokens,
+		AttrUsageCacheWriteTokens,
+		AttrUsageReasoningTokens,
+		AttrUsageCostBasis,
 		AttrUsageCostUSD:
 		return true
 	default:
@@ -45,17 +65,55 @@ func RecordAgentUsage(ctx context.Context, metrics map[string]float64, modelUsag
 		return
 	}
 
-	attrs := make([]attribute.KeyValue, 0, 4)
+	attrs := make([]attribute.KeyValue, 0, 10)
 	if value, ok := metrics[AttrGenAIUsageInputTokens]; ok {
 		attrs = append(attrs, attribute.Int64(AttrGenAIUsageInputTokens, int64(value)))
 	}
 	if value, ok := metrics[AttrGenAIUsageOutputTokens]; ok {
 		attrs = append(attrs, attribute.Int64(AttrGenAIUsageOutputTokens, int64(value)))
 	}
-	if value, ok := metrics[AttrCopilotPremiumRequests]; ok {
-		attrs = append(attrs, attribute.Float64(AttrCopilotPremiumRequests, value))
+	if value, ok := metrics[AttrUsageCacheReadTokens]; ok {
+		attrs = append(attrs, attribute.Int64(AttrUsageCacheReadTokens, int64(value)))
 	}
-	if value, ok := metrics[AttrUsageCostUSD]; ok {
+	if value, ok := metrics[AttrUsageCacheWriteTokens]; ok {
+		attrs = append(attrs, attribute.Int64(AttrUsageCacheWriteTokens, int64(value)))
+	}
+	if value, ok := metrics[AttrUsageReasoningTokens]; ok {
+		attrs = append(attrs, attribute.Int64(AttrUsageReasoningTokens, int64(value)))
+	}
+	nanoAIU, hasNanoAIU := metrics[AttrUsageNanoAIU]
+	exactNanoAIU, hasExactNanoAIU := summedModelNanoAIU(modelUsage)
+	if hasExactNanoAIU && (!hasNanoAIU || float64(exactNanoAIU) == nanoAIU) {
+		nanoAIU = float64(exactNanoAIU)
+		hasNanoAIU = true
+	}
+	if hasNanoAIU {
+		nanoAIUInt := int64(nanoAIU)
+		if hasExactNanoAIU && float64(exactNanoAIU) == nanoAIU {
+			nanoAIUInt = exactNanoAIU
+		}
+		attrs = append(attrs,
+			attribute.Int64(AttrUsageNanoAIU, nanoAIUInt),
+			attribute.String(AttrUsageBillingModel, BillingModelAICredits),
+			attribute.String(AttrUsageCostBasis, CostBasisVendorReported),
+		)
+	}
+	if value, ok := metrics[AttrCopilotPremiumRequests]; ok && value != 0 {
+		attrs = append(attrs, attribute.Float64(AttrCopilotPremiumRequests, value))
+		if !hasNanoAIU {
+			attrs = append(attrs,
+				attribute.String(AttrUsageBillingModel, BillingModelPremiumRequests),
+				attribute.String(AttrUsageCostBasis, CostBasisUnknown),
+			)
+		}
+	}
+	if hasNanoAIU {
+		nanoAIUInt := int64(nanoAIU)
+		if hasExactNanoAIU && float64(exactNanoAIU) == nanoAIU {
+			nanoAIUInt = exactNanoAIU
+		}
+		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, NanoAIUToUSD(nanoAIUInt)))
+	} else if value, ok := metrics[AttrUsageCostUSD]; ok {
 		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, value))
 	}
 	if len(attrs) > 0 {
@@ -89,7 +147,19 @@ func MergeNestedAgentUsage(metrics map[string]float64, events []journal.Event) m
 	if usage.OutputTokens != nil {
 		nested[AttrGenAIUsageOutputTokens] = float64(*usage.OutputTokens)
 	}
-	if usage.CostUSD != nil {
+	if usage.CacheReadTokens != nil {
+		nested[AttrUsageCacheReadTokens] = float64(*usage.CacheReadTokens)
+	}
+	if usage.CacheWriteTokens != nil {
+		nested[AttrUsageCacheWriteTokens] = float64(*usage.CacheWriteTokens)
+	}
+	if usage.ReasoningTokens != nil {
+		nested[AttrUsageReasoningTokens] = float64(*usage.ReasoningTokens)
+	}
+	if usage.NanoAIU != nil {
+		nested[AttrUsageNanoAIU] = float64(*usage.NanoAIU)
+		nested[AttrUsageCostUSD] = NanoAIUToUSD(*usage.NanoAIU)
+	} else if usage.CostUSD != nil {
 		nested[AttrUsageCostUSD] = *usage.CostUSD
 	}
 	merged := make(map[string]float64, len(metrics)+len(nested))
@@ -107,9 +177,14 @@ func MergeNestedAgentUsage(metrics map[string]float64, events []journal.Event) m
 func hasModelUsage(usage ModelUsage) bool {
 	return usage.InputTokens != nil ||
 		usage.OutputTokens != nil ||
+		usage.CacheReadTokens != nil ||
+		usage.CacheWriteTokens != nil ||
+		usage.ReasoningTokens != nil ||
 		usage.CopilotPremiumRequests != nil ||
 		usage.NanoAIU != nil ||
-		usage.CostUSD != nil
+		usage.CostUSD != nil ||
+		usage.BillingModel != "" ||
+		usage.CostBasis != ""
 }
 
 func modelUsageAttributes(usage ModelUsage) []attribute.KeyValue {
@@ -120,14 +195,47 @@ func modelUsageAttributes(usage ModelUsage) []attribute.KeyValue {
 	if usage.OutputTokens != nil {
 		attrs = append(attrs, attribute.Int64(AttrGenAIUsageOutputTokens, *usage.OutputTokens))
 	}
-	if usage.CopilotPremiumRequests != nil {
+	if usage.CacheReadTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrUsageCacheReadTokens, *usage.CacheReadTokens))
+	}
+	if usage.CacheWriteTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrUsageCacheWriteTokens, *usage.CacheWriteTokens))
+	}
+	if usage.ReasoningTokens != nil {
+		attrs = append(attrs, attribute.Int64(AttrUsageReasoningTokens, *usage.ReasoningTokens))
+	}
+	if usage.CopilotPremiumRequests != nil && *usage.CopilotPremiumRequests != 0 {
 		attrs = append(attrs, attribute.Float64(AttrCopilotPremiumRequests, *usage.CopilotPremiumRequests))
 	}
 	if usage.NanoAIU != nil {
 		attrs = append(attrs, attribute.Int64(AttrUsageNanoAIU, *usage.NanoAIU))
 	}
-	if usage.CostUSD != nil {
+	if usage.BillingModel != "" {
+		attrs = append(attrs, attribute.String(AttrUsageBillingModel, usage.BillingModel))
+	}
+	if usage.CostBasis != "" {
+		attrs = append(attrs, attribute.String(AttrUsageCostBasis, usage.CostBasis))
+	}
+	if usage.NanoAIU != nil {
+		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, NanoAIUToUSD(*usage.NanoAIU)))
+	} else if usage.CostUSD != nil {
 		attrs = append(attrs, attribute.Float64(AttrUsageCostUSD, *usage.CostUSD))
 	}
 	return attrs
+}
+
+func NanoAIUToUSD(nanoAIU int64) float64 {
+	return float64(nanoAIU) / float64(NanoAIUPerUSD)
+}
+
+func summedModelNanoAIU(usages []ModelUsage) (int64, bool) {
+	var total int64
+	var measured bool
+	for _, usage := range usages {
+		if usage.NanoAIU != nil {
+			total += *usage.NanoAIU
+			measured = true
+		}
+	}
+	return total, measured
 }

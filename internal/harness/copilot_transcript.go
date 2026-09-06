@@ -18,8 +18,6 @@ import (
 const maxCopilotSessionEventBytes = DefaultMaxTranscriptBytes
 
 // Copilot reports billing in nano-AI units: 1e9 nano-AIU is one $0.01 AI credit.
-const nanoAIUPerUSD = 100_000_000_000
-
 type copilotSessionEvent struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
@@ -224,7 +222,7 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 	}
 	sort.Strings(models)
 
-	metrics := make(map[string]float64, 4)
+	metrics := make(map[string]float64, 7)
 	var modelUsage []telemetry.ModelUsage
 	var premiumRequests float64
 	var nanoAIU int64
@@ -232,10 +230,13 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 	for _, model := range models {
 		metric := data.ModelMetrics[model]
 		usage := telemetry.ModelUsage{
-			Model:                  model,
-			InputTokens:            metric.Usage.InputTokens,
-			OutputTokens:           metric.Usage.OutputTokens,
-			CopilotPremiumRequests: metric.Requests.Cost,
+			Model:            model,
+			InputTokens:      metric.Usage.InputTokens,
+			OutputTokens:     metric.Usage.OutputTokens,
+			CacheReadTokens:  metric.Usage.CacheReadTokens,
+			CacheWriteTokens: metric.Usage.CacheWriteTokens,
+			ReasoningTokens:  metric.Usage.ReasoningTokens,
+			CostBasis:        telemetry.CostBasisUnknown,
 		}
 		if metric.Usage.InputTokens != nil {
 			metrics[telemetry.AttrGenAIUsageInputTokens] += float64(*metric.Usage.InputTokens)
@@ -243,24 +244,39 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 		if metric.Usage.OutputTokens != nil {
 			metrics[telemetry.AttrGenAIUsageOutputTokens] += float64(*metric.Usage.OutputTokens)
 		}
-		if metric.Requests.Cost != nil {
+		if metric.Usage.CacheReadTokens != nil {
+			metrics[telemetry.AttrUsageCacheReadTokens] += float64(*metric.Usage.CacheReadTokens)
+		}
+		if metric.Usage.CacheWriteTokens != nil {
+			metrics[telemetry.AttrUsageCacheWriteTokens] += float64(*metric.Usage.CacheWriteTokens)
+		}
+		if metric.Usage.ReasoningTokens != nil {
+			metrics[telemetry.AttrUsageReasoningTokens] += float64(*metric.Usage.ReasoningTokens)
+		}
+		if metric.Requests.Cost != nil && *metric.Requests.Cost != 0 {
 			premiumRequests += *metric.Requests.Cost
 			hasPremiumRequests = true
+			usage.CopilotPremiumRequests = metric.Requests.Cost
+			usage.BillingModel = telemetry.BillingModelPremiumRequests
 		}
 		if metric.TotalNanoAIU != nil {
 			nanoAIU += *metric.TotalNanoAIU
 			hasNanoAIU = true
-			cost := float64(*metric.TotalNanoAIU) / nanoAIUPerUSD
+			cost := telemetry.NanoAIUToUSD(*metric.TotalNanoAIU)
 			usage.CostUSD = &cost
 			usage.NanoAIU = metric.TotalNanoAIU
+			usage.BillingModel = telemetry.BillingModelAICredits
+			usage.CostBasis = telemetry.CostBasisVendorReported
 		}
 		if usage.InputTokens != nil || usage.OutputTokens != nil ||
+			usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil ||
+			usage.ReasoningTokens != nil ||
 			usage.CopilotPremiumRequests != nil || usage.CostUSD != nil ||
 			usage.NanoAIU != nil {
 			modelUsage = append(modelUsage, usage)
 		}
 	}
-	if data.TotalPremiumRequests != nil {
+	if data.TotalPremiumRequests != nil && *data.TotalPremiumRequests != 0 {
 		premiumRequests = *data.TotalPremiumRequests
 		hasPremiumRequests = true
 	}
@@ -272,7 +288,8 @@ func copilotUsageMetrics(raw json.RawMessage) (map[string]float64, []telemetry.M
 		metrics[telemetry.AttrCopilotPremiumRequests] = premiumRequests
 	}
 	if hasNanoAIU {
-		metrics[telemetry.AttrUsageCostUSD] = float64(nanoAIU) / nanoAIUPerUSD
+		metrics[telemetry.AttrUsageNanoAIU] = float64(nanoAIU)
+		metrics[telemetry.AttrUsageCostUSD] = telemetry.NanoAIUToUSD(nanoAIU)
 	}
 	if len(metrics) == 0 {
 		return nil, modelUsage, true
