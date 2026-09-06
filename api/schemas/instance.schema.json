@@ -512,9 +512,9 @@
           "type": "array",
           "items": {
             "type": "string",
-            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-            "description": "A POSIX-shaped environment variable name. Malformed names are rejected at load rather than mis-split at stage launch.",
-            "examples": ["NUGET_CONFIG_FILE"]
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\([A-Za-z0-9_]+\\))?$",
+            "description": "A POSIX-shaped environment variable name, or one of the standard Windows \"x86\" twins such as ProgramFiles(x86)/CommonProgramFiles(x86) (#3753). Malformed names are rejected at load rather than mis-split at stage launch.",
+            "examples": ["NUGET_CONFIG_FILE", "ProgramFiles(x86)"]
           }
         },
         "defaultStageTimeout": {

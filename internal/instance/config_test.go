@@ -2593,6 +2593,17 @@ func TestConfigValidate(t *testing.T) {
 			cfg:  Config{Runner: RunnerConfig{EnvPassthrough: []string{"DOTNET_ROOT", "MY_TOOL_HOME", "npm_config_cache"}}},
 		},
 		{
+			// #3753: the sanctioned envPassthrough escape hatch must be able
+			// to express the standard Windows "x86" twins.
+			name: "runner env passthrough windows x86 twin accepted",
+			cfg:  Config{Runner: RunnerConfig{EnvPassthrough: []string{"ProgramFiles(x86)", "CommonProgramFiles(x86)"}}},
+		},
+		{
+			name:    "runner env passthrough unbalanced parenthesis rejected",
+			cfg:     Config{Runner: RunnerConfig{EnvPassthrough: []string{"FOO(BAR"}}},
+			wantErr: "runner.envPassthrough[0]",
+		},
+		{
 			name:    "runner env passthrough with assignment rejected",
 			cfg:     Config{Runner: RunnerConfig{EnvPassthrough: []string{"FOO=BAR"}}},
 			wantErr: "runner.envPassthrough[0]",
