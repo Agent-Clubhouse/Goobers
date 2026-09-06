@@ -1,6 +1,8 @@
 package instance
 
 import (
+	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -208,6 +210,7 @@ func TestLoadConfigRemoteRunnerAcceptsEngineFromEnvironment(t *testing.T) {
 	_, err := LoadConfig(writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
+schemaVersion: 2
 repos: []
 runners:
   - name: ci-linux
@@ -237,6 +240,7 @@ func TestLoadConfigRemoteRunnerRefusedWithNonConnectionEngineEnvOnly(t *testing.
 			_, err := LoadConfig(writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
+schemaVersion: 2
 repos: []
 runners:
   - name: ci-linux
@@ -253,6 +257,7 @@ func TestRunnersSupersedeLegacyCapabilityClaims(t *testing.T) {
 	_, err := LoadConfig(writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
+schemaVersion: 2
 repos: []
 runner:
   capabilities: [dotnet@8]
@@ -271,6 +276,7 @@ func TestRunnersCoexistWithLegacyExecutionSettings(t *testing.T) {
 	cfg, err := LoadConfig(writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
+schemaVersion: 2
 repos: []
 runner:
   envPassthrough: [NUGET_CONFIG_FILE]
@@ -290,10 +296,15 @@ runners:
 }
 
 func validRunnersBase() *Config {
+	// schemaVersion 2 is mandatory alongside a runners: inventory (#4217), so
+	// the shared base declares it and each case exercises the property it is
+	// actually about rather than re-failing on the pairing rule.
+	runnersSchema := InstanceSchemaVersionRunners
 	return &Config{
-		APIVersion: ConfigAPIVersion,
-		Kind:       ConfigKind,
-		Engine:     &EngineConfig{HostPort: "temporal.internal:7233", Namespace: "default", TaskQueue: "goobers-engine"},
+		APIVersion:    ConfigAPIVersion,
+		Kind:          ConfigKind,
+		SchemaVersion: &runnersSchema,
+		Engine:        &EngineConfig{HostPort: "temporal.internal:7233", Namespace: "default", TaskQueue: "goobers-engine"},
 	}
 }
 
@@ -685,5 +696,126 @@ func TestSelfRunnerRestrictionsAreEmptyWithoutAnInventory(t *testing.T) {
 	}}
 	if remoteOnly.SelfRunnerEnforces(RunnerRestrictionTmpEphemeral) {
 		t.Fatal("an inventory with no self entry must enforce nothing locally")
+	}
+}
+
+// TestRunnersRequireSchemaVersionTwo pins the strict-load pairing #4217 filed:
+// declaring a runners: inventory without schemaVersion: 2 is REFUSED, and the
+// same config with the line loads. Before this, schemaVersion was validated
+// only when present, so a runners: inventory loaded cleanly at the legacy
+// revision — the exact "silently misread on a pre-Goobernetes binary" outcome
+// the field's published schema text claims to prevent.
+func TestRunnersRequireSchemaVersionTwo(t *testing.T) {
+	const body = `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+%s
+repos: []
+runners:
+  - name: self
+    host: self
+    provides:
+      capabilities: [go@1.26]
+`
+	t.Run("refused without schemaVersion", func(t *testing.T) {
+		_, err := LoadConfig(writeInstanceYAML(t, fmt.Sprintf(body, "")))
+		if err == nil {
+			t.Fatal("a runners: inventory with no schemaVersion loaded; want a refusal")
+		}
+		// The refusal must carry the one-line remedy verbatim, because that
+		// string is the operator's whole fix — an error that only says
+		// "invalid" leaves them reading the schema to find one line.
+		for _, want := range []string{`schemaVersion: 2`, "runners: requires schemaVersion 2", "goobers fix --instance-schema"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal = %v, want mention of %q", err, want)
+			}
+		}
+	})
+
+	t.Run("refused with an explicit legacy schemaVersion", func(t *testing.T) {
+		// An explicit `schemaVersion: 1` is a different input from an absent
+		// one (the pointer field distinguishes them) and must be refused on
+		// the same rule rather than slipping past a nil-only check.
+		_, err := LoadConfig(writeInstanceYAML(t, fmt.Sprintf(body, "schemaVersion: 1")))
+		if err == nil || !strings.Contains(err.Error(), "runners: requires schemaVersion 2") {
+			t.Fatalf("error = %v, want the runners/schemaVersion pairing refusal", err)
+		}
+	})
+
+	t.Run("accepted with schemaVersion 2", func(t *testing.T) {
+		cfg, err := LoadConfig(writeInstanceYAML(t, fmt.Sprintf(body, "schemaVersion: 2")))
+		if err != nil {
+			t.Fatalf("runners: with schemaVersion 2 was refused: %v", err)
+		}
+		if got := len(cfg.ResolvedRunners()); got != 1 {
+			t.Errorf("ResolvedRunners() has %d entries, want the 1 declared", got)
+		}
+	})
+
+	t.Run("legacy config with no runners is untouched", func(t *testing.T) {
+		// The pairing rule must not reach a config that never declares
+		// runners: — that is every existing install, and the zero-change
+		// upgrade (decision record D3) depends on it staying loadable.
+		if _, err := LoadConfig(writeInstanceYAML(t, legacyRunnerBody)); err != nil {
+			t.Fatalf("legacy singular runner: block was refused: %v", err)
+		}
+	})
+}
+
+// TestWriteConfigStampsRunnersSchemaVersion pins the write/read invariant the
+// pairing rule made load-bearing (#4217): the product must never WRITE a
+// config its own loader REFUSES. Appending a runners: entry to a config that
+// came from a file with no schemaVersion — the shape every pre-Goobernetes
+// install is on — is exactly how that used to happen.
+func TestWriteConfigStampsRunnersSchemaVersion(t *testing.T) {
+	path := writeInstanceYAML(t, legacyRunnerBody)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SchemaVersion != nil {
+		t.Fatalf("precondition: the legacy fixture already declares schemaVersion %d", *cfg.SchemaVersion)
+	}
+
+	// The legacy singular block's capability claims cannot coexist with a
+	// declared inventory (decision D3), so adopting runners: moves them.
+	cfg.Runner.Capabilities = nil
+	cfg.Runners = []RunnerEntry{{
+		Name: "self", Host: "self",
+		Provides: RunnerProvides{Capabilities: []string{"dotnet@8"}},
+	}}
+	if err := WriteConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// The real assertion is the round trip, not the byte: whatever was
+	// written must LOAD, which is the property that was broken.
+	reloaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("WriteConfig produced a config LoadConfig refuses: %v", err)
+	}
+	if got := reloaded.EffectiveSchemaVersion(); got != InstanceSchemaVersionRunners {
+		t.Errorf("EffectiveSchemaVersion() = %d, want %d", got, InstanceSchemaVersionRunners)
+	}
+}
+
+// TestWriteConfigLeavesLegacyConfigsUnstamped guards the other direction: the
+// stamp must not appear in a config that declares no inventory, or every
+// existing install's file grows a field it never asked for on the next write.
+func TestWriteConfigLeavesLegacyConfigsUnstamped(t *testing.T) {
+	path := writeInstanceYAML(t, legacyRunnerBody)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(written), "schemaVersion") {
+		t.Errorf("a legacy config grew a schemaVersion field on write:\n%s", written)
 	}
 }

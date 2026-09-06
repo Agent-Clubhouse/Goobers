@@ -2624,6 +2624,28 @@ func IsLoopbackListenAddress(address string) bool {
 	return validateLoopbackListenAddress(address) == nil
 }
 
+// stampRunnersSchemaVersion records the schema revision a runners: inventory
+// implies before the config is written out.
+//
+// Without it the product can WRITE a config it then REFUSES to READ: any code
+// path that appends a runners: entry to a config loaded from a file with no
+// schemaVersion (the shape every pre-Goobernetes install is on) would produce
+// a file the strict loader rejects on the pairing rule (#4217). A writer that
+// emits input its own loader will not accept is a bug regardless of which
+// rule does the rejecting, so the revision is stamped here, at the single
+// point every write funnels through, rather than at each call site.
+//
+// Only a runners:-bearing config is stamped. A legacy config still round-trips
+// with neither field, which is what keeps the zero-change upgrade (decision
+// record D3) byte-identical for every existing install.
+func stampRunnersSchemaVersion(cfg *Config) {
+	if cfg == nil || len(cfg.Runners) == 0 || cfg.SchemaVersion != nil {
+		return
+	}
+	version := InstanceSchemaVersionRunners
+	cfg.SchemaVersion = &version
+}
+
 // WriteConfig marshals cfg as YAML and writes it to path. The write goes
 // through a staged temp file and rename (journal.WriteFileAtomic): instance.yaml
 // is the first file the daemon reads on every start, so a crash or full disk
@@ -2644,6 +2666,7 @@ func WriteConfig(path string, cfg *Config) error {
 }
 
 func marshalConfig(cfg *Config) ([]byte, error) {
+	stampRunnersSchemaVersion(cfg)
 	jsonBytes, err := json.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal instance config: %w", err)

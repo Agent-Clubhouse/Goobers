@@ -6,11 +6,21 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "repos"],
+  "allOf": [
+    {
+      "$comment": "The other half of the strict-load contract (#4217): a runners: inventory is schema revision 2, so declaring one without saying so is refused here exactly as the loader refuses it. Without this, editor validation would accept a file the daemon rejects.",
+      "if": { "required": ["runners"] },
+      "then": {
+        "required": ["schemaVersion"],
+        "properties": { "schemaVersion": { "const": 2 } }
+      }
+    }
+  ],
   "properties": {
     "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this instance file." },
     "kind": { "const": "Instance", "description": "Definition kind; always Instance." },
     "schemaVersion": {
-      "description": "Instance-config schema revision — this file's first version field. Absent means 1, the pre-Goobernetes schema every existing install is on; 2 introduces the runners: inventory. Loading is strict on both halves of the contract, so a config that declares 2 and uses runners: hard-fails on an older binary by design instead of being silently misread.",
+      "description": "Instance-config schema revision — this file's first version field. Absent means 1, the pre-Goobernetes schema every existing install is on; 2 introduces the runners: inventory. Loading is strict on BOTH halves of the contract: declaring runners: REQUIRES schemaVersion 2 (the loader refuses the pair otherwise, #4217), so a runners:-bearing config hard-fails on an older binary by design instead of loading there and silently dropping the whole inventory. `goobers fix --instance-schema` adds the line.",
       "type": "integer",
       "enum": [1, 2]
     },

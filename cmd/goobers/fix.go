@@ -16,7 +16,11 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-const fixHelp = "Usage: goobers fix --to <version> [--write] [path]\n\n" +
+const fixHelp = "Usage: goobers fix (--to <version> | --instance-schema) [--write] [path]\n\n" +
+	"Exactly one mode is required per invocation.\n\n" +
+	"--to <version> mechanically migrates workflows; --instance-schema repairs\n" +
+	"instance.yaml's schema revision. They are separate remedies over separate\n" +
+	"files, so they are never combined in one run.\n\n" +
 	"Mechanically migrate every workflow in a config directory (default path\n" +
 	"\".\") from its current dslVersion to <version>, one registered version\n" +
 	"step at a time (DVL-6). Prints a reviewable unified diff per changed\n" +
@@ -27,13 +31,25 @@ const fixHelp = "Usage: goobers fix --to <version> [--write] [path]\n\n" +
 	"silent multi-step rewrite. Never runs automatically; this is always an\n" +
 	"author-run, reviewable change. Exit codes: 0 = migrated (or nothing to\n" +
 	"migrate), 1 = one or more workflows could not be migrated,\n" +
-	"2 = usage/IO error.\n"
+	"2 = usage/IO error.\n\n" +
+	"--instance-schema is the one-line remedy for the instance.yaml load\n" +
+	"refusal \"runners: requires schemaVersion 2\" (#4217): a config that\n" +
+	"declares a runners: inventory must also declare the schema revision that\n" +
+	"introduced it, so an older binary refuses the file outright instead of\n" +
+	"loading it and silently dropping the whole inventory. It inserts\n" +
+	"\"schemaVersion: 2\" after the apiVersion:/kind: header and changes\n" +
+	"nothing else — comments, ordering and formatting survive byte for byte,\n" +
+	"because this repairs a file the strict loader currently refuses to parse.\n" +
+	"A schemaVersion line that is present but wrong is reported, never\n" +
+	"rewritten: that is a deliberate operator value, not an omission. Prints a\n" +
+	"diff by default; --write applies it. Cannot be combined with --to.\n"
 
 func runFix(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("fix", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	to := fs.String("to", "", "target dslVersion to migrate every workflow to (required)")
 	write := fs.Bool("write", false, "apply the migration to each file in place (default: print a diff only)")
+	instanceSchema := fs.Bool("instance-schema", false, "add the schemaVersion line a runners: inventory requires (#4217)")
 	fs.Usage = helpUsage(stderr, "fix")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -43,14 +59,22 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	target := strings.TrimSpace(*to)
+	root := "."
+	if fs.NArg() == 1 {
+		root = fs.Arg(0)
+	}
+	if *instanceSchema {
+		if target != "" {
+			pf(stderr, "error: --instance-schema and --to are separate remedies; run one at a time\n")
+			fs.Usage()
+			return 2
+		}
+		return runFixInstanceSchema(root, *write, stdout, stderr)
+	}
 	if target == "" {
 		pf(stderr, "error: --to <version> is required\n")
 		fs.Usage()
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	layout := instance.NewLayout(root)

@@ -90,7 +90,7 @@ _goobers_completion()
             flags+=(--json --github-annotations --check-harness --check-repos --source-tree --strict)
             ;;
         fix)
-            flags+=(--to --write)
+            flags+=(--to --instance-schema --write)
             ;;
         doctor)
             flags+=(--k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout)
