@@ -235,7 +235,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	}
 
 	// The required aggregate must fail if any merge-gate slice fails. `make ci`
-	// is fanned across parallel jobs (checks/lint/unit/shipped) plus the macOS
+	// is fanned across parallel jobs (preflight/checks/lint/unit/shipped) plus the macOS
 	// and Windows behavioral unit runs and dead-code analysis; those, the
 	// Windows runtime gate, vulnerability scan, journal conformance, and (#2019) the
 	// integration/sandbox/linux-validation jobs must all be depended on — all
@@ -258,7 +258,7 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 		t.Fatal("required-ci aggregate has no needs list")
 	}
 	for _, gate := range []string{
-		"checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "unit-macos",
+		"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "unit-macos",
 		"shipped", "deadcode", "windows-smoke", "vulnerability-scan",
 		"integration", "sandbox", "linux-validation",
 	} {
@@ -326,6 +326,37 @@ func TestCIWorkflowRunsWindowsShippedWorkflowContracts(t *testing.T) {
 	}
 }
 
+func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+
+	preflight := workflowJob(workflow, "preflight")
+	if !strings.Contains(preflight, "go run ./test/ci group preflight") {
+		t.Error("preflight job must run the shared Node-free preflight group")
+	}
+	for _, forbidden := range []string{"Set up Node", "Playwright", "npm --prefix portal"} {
+		if strings.Contains(preflight, forbidden) {
+			t.Errorf("preflight job contains expensive Node-backed work %q", forbidden)
+		}
+	}
+
+	for _, job := range []string{
+		"deadcode", "checks", "deploy-reference", "lint", "darwin-build",
+		"unit", "unit-linux-coverage", "unit-macos", "shipped", "integration",
+		"windows-smoke", "vulnerability-scan", "sandbox", "linux-validation",
+	} {
+		section := workflowJob(workflow, job)
+		if !strings.Contains(section, "needs: [preflight]") {
+			t.Errorf("expensive job %q must wait for preflight admission", job)
+		}
+	}
+}
+
 func TestCIWorkflowKeepsRulesetPinnedRequiredCheckName(t *testing.T) {
 	t.Parallel()
 	root := moduleRoot(t)
@@ -352,7 +383,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		if section == "" {
 			t.Errorf("CI workflow is missing main validation job %q", job)
@@ -400,7 +431,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]",
+		"needs: [preflight, checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]",
 		"issues: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
@@ -410,7 +441,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			t.Errorf("main failure escalation job must contain %q", want)
 		}
 	}
-	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)
@@ -455,7 +486,7 @@ func TestMainFailureEscalationClosesResolvedIssue(t *testing.T) {
 	if !found {
 		t.Fatal("escalate-main-failure must have a step that closes the resolved main failure issue")
 	}
-	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'success'"
 		if !strings.Contains(closeStep, want) {
 			t.Errorf("close step must require %q: only a fully-green push lane resolves the incident", want)

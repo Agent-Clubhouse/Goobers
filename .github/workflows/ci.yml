@@ -8,10 +8,11 @@ name: CI
 # parallel. Each parallel job runs one slice via `go run ./test/ci group <name>`:
 #
 # group jobs:
-#   checks   fmt · tidy · no-phone-home · vet · command builds · config validation · portal
-#   lint     golangci-lint (staticcheck / govet / revive / errcheck / ...)
-#   unit     the -race unit suite, split into shards (Linux) — the long pole
-#   shipped  shipped-workflow contract suite on Linux, macOS, and Windows
+#   preflight  Node-free format · policy · vet · command builds · config validation
+#   checks     portal · extension · generated contracts · manifests
+#   lint       golangci-lint (staticcheck / govet / revive / errcheck / ...)
+#   unit       the -race unit suite, split into shards (Linux) — the long pole
+#   shipped    shipped-workflow contract suite on Linux, macOS, and Windows
 #
 # dedicated jobs: darwin-build, deadcode, deploy-reference, integration,
 #   linux-validation, sandbox, unit-linux-coverage, unit-macos,
@@ -23,7 +24,7 @@ name: CI
 # disagree with test/ci's group constants, or when the union of both lists
 # disagrees with required-ci's `needs:`.
 #
-# Coverage of the merge tier is unchanged: the four groups are a disjoint,
+# Coverage of the merge tier is unchanged: the five groups are a disjoint,
 # exhaustive partition of the checks the monolith used to run serially
 # (asserted by test/ci's group tests).
 #
@@ -103,6 +104,38 @@ jobs:
   # Their Makefile targets (test-e2e, test-envtest, cover-check) are retained
   # for local and full-tier use; only the redundant PR-leg jobs are gone.
 
+  # Node-free admission gate. Expensive and scarce-runner jobs do not acquire
+  # runners until formatting, module hygiene, repository policy, vet, command
+  # builds, and config validation pass.
+  preflight:
+    name: preflight (format · policy · vet · build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      - name: Run preflight
+        run: go run ./test/ci group preflight
+
   # Unreachable-production-code report. Ran once, on this one runner — not
   # because the analysis is platform-independent (#4434: a symbol reachable
   # only via a windows-tagged caller, or only via a unix-tagged one, is
@@ -113,6 +146,7 @@ jobs:
   # runner is needed.
   deadcode:
     name: dead-code analysis
+    needs: [preflight]
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -143,15 +177,12 @@ jobs:
       - name: Dead-code analysis
         run: make deadcode
 
-  # Fast fan-in: formatting, module hygiene, the no-phone-home guard, vet,
-  # command builds, config validation, and the portal build/test/contract
-  # chain. The only slice that needs Node. Runs on Linux only — its work is
-  # either OS-agnostic (fmt, tidy, security guard, portal) or covered for other
-  # platforms by cross-compilation (darwin-build, windows-smoke). Keeping static
-  # analysis off the scarce macOS runners lets the macOS *runtime* jobs run
-  # without queueing behind each other.
+  # Node-backed Portal, extension, generated-contract, and manifest checks.
+  # Preflight already owns the Node-free format, policy, vet, build, and config
+  # slice, so this job does not repeat it.
   checks:
     name: checks
+    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -249,6 +280,7 @@ jobs:
 
   deploy-reference:
     name: deploy reference manifests
+    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -276,6 +308,7 @@ jobs:
   # branches).
   lint:
     name: lint (${{ matrix.goos }})
+    needs: [preflight]
     strategy:
       fail-fast: false
       matrix:
@@ -341,6 +374,7 @@ jobs:
   # runtime is exercised by the unit/shipped/sandbox macOS jobs.
   darwin-build:
     name: darwin gate (build · vet)
+    needs: [preflight]
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -387,6 +421,7 @@ jobs:
   # SemVer-compatibility tests read the latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
+    needs: [preflight]
     strategy:
       fail-fast: false
       matrix:
@@ -475,6 +510,7 @@ jobs:
   # race shards so its coverage profile includes Linux-only files.
   unit-linux-coverage:
     name: unit coverage gate (linux)
+    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -546,6 +582,7 @@ jobs:
   # profile. Race coverage is provided by the Linux shards above.
   unit-macos:
     name: unit behavioral suite (macos)
+    needs: [preflight]
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -692,6 +729,7 @@ jobs:
   # run the same behavioural suite without -race.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
+    needs: [preflight]
     strategy:
       fail-fast: false
       matrix:
@@ -741,6 +779,7 @@ jobs:
 
   integration:
     name: declared-dependency integration
+    needs: [preflight]
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1092,6 +1131,7 @@ jobs:
   # accident — is tracked separately in #2791.
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
+    needs: [preflight]
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -1277,6 +1317,7 @@ jobs:
 
   vulnerability-scan:
     name: Go vulnerability scan
+    needs: [preflight]
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1316,12 +1357,13 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - name: Verify required gates
         env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           DEPLOY_REFERENCE_RESULT: ${{ needs.deploy-reference.result }}
           LINT_RESULT: ${{ needs.lint.result }}
@@ -1348,7 +1390,8 @@ jobs:
               fail=1
             fi
           }
-          check "checks (fmt/tidy/vet/build/portal)" "$CHECKS_RESULT"
+          check "preflight (format/policy/vet/build)" "$PREFLIGHT_RESULT"
+          check "checks (portal/extensions/generated contracts/manifests)" "$CHECKS_RESULT"
           check "deploy reference manifests"          "$DEPLOY_REFERENCE_RESULT"
           check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
@@ -1369,6 +1412,7 @@ jobs:
 
   sandbox:
     name: sandbox confinement (${{ matrix.os }})
+    needs: [preflight]
     if: ${{ github.event_name != 'push' }}
     timeout-minutes: 15
     strategy:
@@ -1430,6 +1474,7 @@ jobs:
   # while the job was still excluded from required-ci's needs list.
   linux-validation:
     name: linux node validation (#636/#639)
+    needs: [preflight]
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1476,7 +1521,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]
+    needs: [preflight, checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -1486,6 +1531,7 @@ jobs:
       - name: File or update critical main failure
         if: >-
           ${{
+            needs.preflight.result == 'failure' ||
             needs.checks.result == 'failure' ||
             needs.deploy-reference.result == 'failure' ||
             needs.lint.result == 'failure' ||
@@ -1541,6 +1587,7 @@ jobs:
       - name: Close resolved main failure
         if: >-
           ${{
+            needs.preflight.result == 'success' &&
             needs.checks.result == 'success' &&
             needs.deploy-reference.result == 'success' &&
             needs.lint.result == 'success' &&
