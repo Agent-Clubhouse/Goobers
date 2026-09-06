@@ -146,12 +146,6 @@ func newAPIReadCache(schedulerDir, snapshotID string, inner providers.HTTPClient
 // runs anywhere close to this long, so a file this old is safe to remove.
 const apiReadCacheStaleLockAge = 24 * time.Hour
 
-// apiReadCacheLockCleanupDone tracks which scheduler dirs have already had
-// their stale per-list-key locks swept in this process, so a long-lived
-// daemon does the directory scan once at startup rather than on every cache
-// construction.
-var apiReadCacheLockCleanupDone sync.Map // schedulerDir -> *sync.Once
-
 // cleanStaleAPIReadCacheLocks removes apiReadListLockPath lock files older
 // than apiReadCacheStaleLockAge. Before removing one it takes a non-blocking
 // lock on it, which both confirms no peer currently holds it and closes the
@@ -159,36 +153,49 @@ var apiReadCacheLockCleanupDone sync.Map // schedulerDir -> *sync.Once
 // the path afterward simply creates a fresh file and locks that instead.
 // Best effort throughout: any error just leaves the file for a later sweep,
 // and this must never fail cache construction.
+//
+// Runs unconditionally on every call — deliberately NOT gated by a
+// once-per-schedulerDir guard (#4251). lock.Release never unlinks its file by
+// design (see the doc above), so every distinct list-request key a scheduler
+// dir has ever seen leaves a permanent zero-byte lock file behind; gating
+// this sweep to run only once per process meant a long-lived daemon's own
+// construction calls (each cache-construction call site — stage dispatch,
+// open-PR polling, counter evaluation — recurs throughout its lifetime) never
+// got a second chance to reclaim them, so locks accrued unbounded between
+// restarts (measured ~14/hour). The scan itself stays cheap and self-limiting
+// regardless of call frequency: it's one os.ReadDir plus a mod-time compare
+// per entry, and only files already past the 24h cutoff are ever touched, so
+// calling it often costs nothing extra on a directory with nothing stale.
+// runUpContext also drives it from apiReadCacheLockSweepTicker so a daemon
+// whose own construction calls happen to be infrequent (or absent, e.g. no
+// open-PR polling configured) still gets a periodic pass.
 func cleanStaleAPIReadCacheLocks(schedulerDir string) {
 	if schedulerDir == "" {
 		return
 	}
-	onceVal, _ := apiReadCacheLockCleanupDone.LoadOrStore(schedulerDir, new(sync.Once))
-	onceVal.(*sync.Once).Do(func() {
-		entries, err := os.ReadDir(schedulerDir)
+	entries, err := os.ReadDir(schedulerDir)
+	if err != nil {
+		return
+	}
+	prefix := apiReadCacheLockName + "."
+	cutoff := time.Now().Add(-apiReadCacheStaleLockAge)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		path := filepath.Join(schedulerDir, name)
+		held, err := tryAcquireAPIReadCacheLock(path, apiReadCacheLockAcquireTimeout, lock.TryAcquire)
 		if err != nil {
-			return
+			continue // a live peer holds it (or it's otherwise unavailable) — leave it
 		}
-		prefix := apiReadCacheLockName + "."
-		cutoff := time.Now().Add(-apiReadCacheStaleLockAge)
-		for _, entry := range entries {
-			name := entry.Name()
-			if entry.IsDir() || !strings.HasPrefix(name, prefix) {
-				continue
-			}
-			info, err := entry.Info()
-			if err != nil || info.ModTime().After(cutoff) {
-				continue
-			}
-			path := filepath.Join(schedulerDir, name)
-			held, err := tryAcquireAPIReadCacheLock(path, apiReadCacheLockAcquireTimeout, lock.TryAcquire)
-			if err != nil {
-				continue // a live peer holds it (or it's otherwise unavailable) — leave it
-			}
-			_ = os.Remove(path)
-			_ = held.Release()
-		}
-	})
+		_ = os.Remove(path)
+		_ = held.Release()
+	}
 }
 
 func (c *apiReadCache) SetQuotaRequestGate(gate providers.QuotaRequestGate) {
