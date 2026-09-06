@@ -36,7 +36,9 @@ describe("workflows page", () => {
     );
 
     await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith("goobers run core/implementation '.'"),
+      expect(writeText).toHaveBeenCalledWith(
+        "goobers run core/implementation 'C:\\Goobers\\instances\\local-dev'",
+      ),
     );
     expect(
       screen.getByText("Manual run command copied to the clipboard."),

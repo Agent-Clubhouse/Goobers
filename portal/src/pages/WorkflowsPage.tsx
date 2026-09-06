@@ -78,6 +78,7 @@ function WorkflowInventory({
             inventory={inventory}
             key={inventory.gaggle.name}
             runs={snapshot.runs}
+            instanceRoot={snapshot.instance.instanceRoot}
           />
         ))
       )}
@@ -87,9 +88,11 @@ function WorkflowInventory({
 
 function GaggleSection({
   inventory,
+  instanceRoot,
   runs,
 }: {
   inventory: GaggleInventory;
+  instanceRoot: string;
   runs: RunSummary[];
 }) {
   const { gaggle } = inventory;
@@ -211,6 +214,7 @@ function GaggleSection({
                       command={manualRunCommand(
                         workflow.identity.gaggle,
                         workflow.identity.name,
+                        instanceRoot,
                       )}
                     />
                   </span>

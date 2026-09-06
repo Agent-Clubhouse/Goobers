@@ -30,6 +30,7 @@ const instance: Instance = {
   schemaVersion: SCHEMA_VERSION,
   name: "fixture",
   environment: "dev",
+  instanceRoot: "C:\\Goobers\\instances\\fixture",
   ready: true,
   status: "ready",
   concurrency: { activeRuns: 0, maxConcurrentRuns: 1 },

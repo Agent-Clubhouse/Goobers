@@ -70,6 +70,7 @@ type Instance struct {
 	SchemaVersion string                  `json:"schemaVersion"`
 	Name          string                  `json:"name"`
 	Environment   apiv1.Environment       `json:"environment"`
+	InstanceRoot  string                  `json:"instanceRoot"`
 	Ready         bool                    `json:"ready"`
 	Status        InstanceStatus          `json:"status"`
 	Concurrency   Concurrency             `json:"concurrency"`
@@ -379,6 +380,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		SchemaVersion: SchemaVersion,
 		Name:          inventory.definitions.Manifest.Spec.Instance.Name,
 		Environment:   inventory.definitions.Manifest.Spec.Instance.Environment,
+		InstanceRoot:  s.sources.Layout.Root,
 		Ready:         ready,
 		Status:        status,
 		Concurrency: Concurrency{
