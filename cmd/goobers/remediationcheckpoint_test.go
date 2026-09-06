@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -792,6 +793,61 @@ func TestSequencingOnlyCheckpointWaitRequiresNoIndependentCause(t *testing.T) {
 		if sequencingOnlyCheckpointWait(labels, []remediationCause{remediationCauseSiblingOverlap, cause}) {
 			t.Fatalf("independent cause %q was treated as sequencing-only", cause)
 		}
+	}
+}
+
+// TestRemediationCheckpointRebaseInfrastructureFailureIsANoCostTick is #4173's
+// checkpoint-side regression: rebase-pr signals rebaseInfrastructureFailure
+// when its own attempt failed on an infra fault, not a real verdict about the
+// PR. remediation-checkpoint must treat that cycle as a no-cost wait — no
+// escalation, no spent budget, no goobers:merge-escalated label — and, unlike
+// the sequencing-only wait, must leave needs-remediation in place so the PR is
+// reselected for the retry a transient infra fault is expected to clear on its
+// own.
+func TestRemediationCheckpointRebaseInfrastructureFailureIsANoCostTick(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 1, LastDiffDigest: "sha256:some-prior-digest",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:   []string{needsRemediationLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "")
+	t.Setenv("GOOBERS_INPUT_REBASEINFRASTRUCTUREFAILURE", "true")
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "infrastructure fault") {
+		t.Fatalf("stdout = %q, want an infrastructure-fault no-cost-tick message", stdout)
+	}
+
+	st.mu.Lock()
+	labels := append([]string(nil), st.labels...)
+	comments := append([]string(nil), st.comments...)
+	st.mu.Unlock()
+	if !slices.Contains(labels, needsRemediationLabel) {
+		t.Fatalf("labels = %v, want needs-remediation left in place for a retry", labels)
+	}
+	if slices.Contains(labels, remediationEscalatedLabel) {
+		t.Fatalf("labels = %v, want no escalation for an infra-fault cycle", labels)
+	}
+	if len(comments) != 1 || comments[0] != priorComment {
+		t.Fatalf("comments = %v, want the prior sticky comment untouched (no cycle recorded)", comments)
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	if result["continueRemediation"] != "false" || result["escalationOutcome"] != "" ||
+		result["remediationAttempted"] != "false" || result["escalationGeneration"] != "0" {
+		t.Fatalf("checkpoint result = %v, want an empty/no-escalation record", result)
 	}
 }
 
