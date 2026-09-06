@@ -347,10 +347,11 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	// declares nothing and this stays false, which is the zero-declaration
 	// invariance the architecture requires (§11 item 1).
 	shell.EphemeralTmp = input.Config.SelfRunnerEnforces(instance.RunnerRestrictionTmpEphemeral)
-	// #4273: the self runner has no filesystem confinement, so a stage
-	// command naming one of this instance's own credential-referenced paths
-	// directly is refused before exec rather than allowed to read key
-	// material a minted, short-lived token exists to avoid exposing.
+	// #4273: the self runner has no filesystem confinement, so a stage whose
+	// declared command, inline script, or environment names one of this
+	// instance's own credential-referenced paths is refused before exec
+	// rather than allowed to read key material a minted, short-lived token
+	// exists to avoid exposing.
 	shell.GuardedCredentialPaths = instance.GuardedCredentialPaths(input.Config)
 	if input.ProjectConfigured && input.ConfiguredProject.LargeRepo {
 		shell.DefaultEnv = map[string]string{"MSBUILDDISABLENODEREUSE": "1"}
