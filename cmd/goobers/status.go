@@ -1446,8 +1446,19 @@ func reportAVExclusionReadiness(l instance.Layout, stdout io.Writer, deps avExcl
 	}
 	var set *instance.ConfigSet
 	if _, statErr := os.Stat(l.ConfigDir()); statErr == nil {
-		if loaded, _, loadErr := instance.LoadConfigDirForComparison(l.ConfigDir()); loadErr == nil {
+		loaded, configReport, loadErr := instance.LoadConfigDirForComparison(l.ConfigDir())
+		switch {
+		case loaded != nil:
 			set = loaded
+			// The gaggles parsed but the directory does not validate — say so
+			// rather than silently reporting coverage over a per-gaggle
+			// inventory the daemon itself would refuse (mirrors doctor's own
+			// note, runDoctorAVExclusions above).
+			if summary := validationIssueSummary(configReport); summary != "" {
+				pf(stdout, "av-exclusions (advisory, daemon): note: %s does not validate (%s); per-gaggle workcopies roots below are read from it as-is\n", l.ConfigDir(), summary)
+			}
+		case loadErr != nil:
+			pf(stdout, "av-exclusions (advisory, daemon): note: %s could not be loaded (%v); per-gaggle workcopies roots are NOT enumerated below\n", l.ConfigDir(), loadErr)
 		}
 	}
 	dirs := daemonAVExclusionDirectories(l, cfg, set, deps)
