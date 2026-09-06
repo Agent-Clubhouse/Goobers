@@ -269,13 +269,16 @@ bin/goobers validate --source-tree --json ./tutorial-config
 ```
 
 The browser wizard is intentionally not an alternative tutorial. Use
-`goobers init --guided --instance-path <durable-instance-root>` when you are ready to configure a real
-repository with the production-oriented canonical workflow modules.
+`goobers init --guided` when you are ready to configure a real repository with
+the production-oriented canonical workflow modules. Guided setup creates one
+durable Goobers Instance beside the application repository by default. The
+Instance contains the active configuration and runtime state; pass
+`--instance-path <durable-instance-root>` only when you want to pin another
+durable location.
 
 The tutorial is complete after this disposable run. Do not promote the
 `quickstart@v1` workflow into production: it intentionally omits safeguards.
-To configure a real repository, use
-`goobers init --guided --instance-path <durable-instance-root>` and
+To configure a real repository, use `goobers init --guided` and
 [Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md).
 
 For reference, the production-oriented path starts from the
@@ -296,7 +299,7 @@ Start the focused browser walkthrough:
 
 ```sh
 export PATH="$PWD/bin:$PATH"
-goobers init --guided --instance-path ~/goobers/instances/my-repository
+goobers init --guided
 ```
 
 When the GitHub Copilot app is already installed, the guided flow also offers
@@ -307,34 +310,43 @@ portal-extension status` and `goobers portal-extension update`.
 
 Provide an existing local Git clone. Getting Started supports GitHub and Azure
 DevOps, discovers repository identity, default branch, CI command, toolchain,
-and existing CLI authentication, then asks only for configuration placement,
-workflow behavior, and agent harness choices that cannot be derived. The
-`--instance-path` value selects the runtime instance root.
+and existing CLI authentication, then asks only for workflow behavior and
+agent harness choices that cannot be derived. The wizard creates one
+neighboring runtime Instance by default. Use
+`--instance-path ~/goobers/instances/my-repository` to pin the runtime root
+explicitly, for example when the checkout is ephemeral.
 
 The workflow choices are adapted from the canonical modules under
 [`config-examples/gaggles/acme-web`](../../config-examples/gaggles/acme-web/),
 not from the deliberately simplified `quickstart@v1` tutorial workflow.
 
-The default configuration location is a peer folder beside the application
-repository. You can instead choose a `goobers` folder inside the repository or
-another local path. Mutable instance state remains outside the application
-repository. Track the configuration folder with Git for review and history.
+The default is one peer Goobers Instance beside the application repository. It
+contains both the active configuration and mutable runtime state, including
+journals, claims, and managed workcopies. A separate reviewed configuration
+source is an advanced opt-in for teams that need repository review or a
+separate permission boundary; it is not the default wizard flow. See
+[instance placement](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/instance-placement.md)
+before choosing that model.
 
 To use an agent instead of the browser, install the release-matched agent
-toolkit and run this prompt from the selected configuration folder:
+toolkit and run this prompt from the target checkout or the directory where the
+neighboring Instance should be created:
 
 ```text
 Use the Goobers Getting Started skill to inspect target repository <path-or-provider-url>,
 derive its default branch, CI command, toolchain, and conventions, and create the
-smallest validated configuration source here. Explain each write and ask only when
-required evidence or behavior cannot be safely derived.
+smallest validated Goobers Instance beside it. Explain each write and ask only
+when required evidence or behavior cannot be safely derived. Use a separate
+reviewed configuration source only if I explicitly choose that advanced model.
 ```
 
 A fresh successful initialization records
 `init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
 
-After validation, setup shows the config-source-to-instance mapping and the
-commands for applying later source edits:
+For the default neighboring Instance, setup shows the commands for inspecting
+and operating that Instance. If you explicitly choose the advanced separate
+reviewed-source model, setup instead shows its source-to-instance mapping and
+the commands for applying later source edits:
 
 ```text
 After editing the checked-in source, validate and materialize it before startup:

@@ -58,7 +58,7 @@ const (
 		"Start the focused browser walkthrough:\n\n" +
 		"```sh\n" +
 		"export PATH=\"$PWD/bin:$PATH\"\n" +
-		"goobers init --guided --instance-path ~/goobers/instances/my-repository\n" +
+		"goobers init --guided\n" +
 		"```\n\n" +
 		"When the GitHub Copilot app is already installed, the guided flow also offers\n" +
 		"the release-matched Goobers Portal canvas extension. Declining does not affect\n" +
@@ -67,9 +67,11 @@ const (
 		"portal-extension status` and `goobers portal-extension update`.\n\n" +
 		"Provide an existing local Git clone. Getting Started supports GitHub and Azure\n" +
 		"DevOps, discovers repository identity, default branch, CI command, toolchain,\n" +
-		"and existing CLI authentication, then asks only for configuration placement,\n" +
-		"workflow behavior, and agent harness choices that cannot be derived. The\n" +
-		"`--instance-path` value selects the runtime instance root.\n\n" +
+		"and existing CLI authentication, then asks only for workflow behavior and\n" +
+		"agent harness choices that cannot be derived. The wizard creates one\n" +
+		"neighboring runtime Instance by default. Use\n" +
+		"`--instance-path ~/goobers/instances/my-repository` to pin the runtime root\n" +
+		"explicitly, for example when the checkout is ephemeral.\n\n" +
 		"The workflow choices are adapted from the canonical modules under\n" +
 		"[`config-examples/gaggles/acme-web`](../../config-examples/gaggles/acme-web/),\n" +
 		"not from the deliberately simplified `quickstart@v1` tutorial workflow.\n\n"
