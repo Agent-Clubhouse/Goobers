@@ -1375,6 +1375,55 @@ func TestReportFleetEnrollment(t *testing.T) {
 	})
 }
 
+func TestReportAVExclusionReadiness(t *testing.T) {
+	t.Run("windows, none excluded", func(t *testing.T) {
+		root := t.TempDir()
+		layout := instance.NewLayout(root)
+		deps := avExclusionDeps{hostOS: "windows", tempDir: filepath.Join(root, "tmp"), query: func(context.Context) ([]string, error) {
+			return nil, nil
+		}}
+		var buf bytes.Buffer
+		reportAVExclusionReadiness(layout, &buf, deps)
+		got := buf.String()
+		for _, want := range []string{"av-exclusions (advisory, daemon)", "0 of", "NOT excluded", "#3480"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("reportAVExclusionReadiness() = %q, want it to contain %q", got, want)
+			}
+		}
+	})
+
+	t.Run("windows, query fails: reports unverified, never a false all-clear", func(t *testing.T) {
+		root := t.TempDir()
+		layout := instance.NewLayout(root)
+		deps := avExclusionDeps{hostOS: "windows", tempDir: filepath.Join(root, "tmp"), query: func(context.Context) ([]string, error) {
+			return nil, errors.New("defender: powershell unavailable")
+		}}
+		var buf bytes.Buffer
+		reportAVExclusionReadiness(layout, &buf, deps)
+		got := buf.String()
+		if !strings.Contains(got, "could not read Microsoft Defender exclusions") {
+			t.Errorf("reportAVExclusionReadiness() = %q, want it to report the query as unverified", got)
+		}
+		if strings.Contains(got, "every enumerated directory is covered") {
+			t.Errorf("reportAVExclusionReadiness() = %q, falsely declared exclusions present despite an unread list", got)
+		}
+	})
+
+	t.Run("off windows: silent, reader never invoked", func(t *testing.T) {
+		root := t.TempDir()
+		layout := instance.NewLayout(root)
+		deps := avExclusionDeps{hostOS: "linux", tempDir: filepath.Join(root, "tmp"), query: func(context.Context) ([]string, error) {
+			t.Fatal("exclusion list must not be read off Windows")
+			return nil, nil
+		}}
+		var buf bytes.Buffer
+		reportAVExclusionReadiness(layout, &buf, deps)
+		if got := buf.String(); got != "" {
+			t.Errorf("reportAVExclusionReadiness() = %q, want empty off Windows", got)
+		}
+	})
+}
+
 func TestReportDaemonBehaviorShowsMemoryGateAndFsyncState(t *testing.T) {
 	for name, tc := range map[string]struct {
 		behavior daemonBehavior

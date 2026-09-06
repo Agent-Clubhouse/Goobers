@@ -18,6 +18,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/avexclusion"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
@@ -1348,6 +1349,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			reportDaemonBehavior(stdout, identity.Behavior)
 			reportFleetEnrollment(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
+			reportAVExclusionReadiness(l, stdout, realAVExclusionDeps())
 			return 1
 		}
 		pf(stdout, "daemon running: pid %d, uptime %s, version %s, last tick %s ago, live runs %d\n",
@@ -1356,6 +1358,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 		reportDaemonBehavior(stdout, identity.Behavior)
 		reportFleetEnrollment(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
+		reportAVExclusionReadiness(l, stdout, realAVExclusionDeps())
 		return 0
 	}
 	if identity != nil {
@@ -1429,6 +1432,56 @@ func reportFleetEnrollment(instanceRoot string, stdout io.Writer) {
 		return
 	}
 	pf(stdout, "fleet: enrolled as %q (%s)\n", association.DisplayName, association.CanonicalURI)
+}
+
+// reportAVExclusionReadiness surfaces #4416's daemon-health acceptance
+// criterion: the AV-exclusion coverage `goobers doctor --av-exclusions`
+// already computes is otherwise invisible between one manual doctor run and
+// the next, so a real-time-scan handle race (#3161–#3164) can go unnoticed
+// until it surfaces as an unrelated git "Permission denied" hours later.
+//
+// The directory inventory comes from daemonAVExclusionDirectories — the same
+// function doctor calls — so this can never enumerate a different set than
+// the operator's own tooling sees. Silent off Windows: a Linux or macOS
+// daemon has no AV-scan race to report, matching hostAVExclusionAdvisory's
+// existing silence at startup.
+//
+// avexclusion.Summary itself is what keeps this from ever falsely declaring
+// exclusions present: when the exclusion list could not be read (Queried
+// false — no Defender, PowerShell unavailable, a transient query failure) it
+// reports "could not read Microsoft Defender exclusions" rather than
+// collapsing that into either verdict, so an operator on an unverified host
+// sees exactly that — not a false all-clear.
+func reportAVExclusionReadiness(l instance.Layout, stdout io.Writer, deps avExclusionDeps) {
+	if deps.hostOS != "windows" {
+		return
+	}
+	var cfg *instance.Config
+	if _, statErr := os.Stat(l.ConfigFile()); statErr == nil {
+		if loaded, loadErr := instance.LoadConfig(l.ConfigFile()); loadErr == nil {
+			cfg = loaded
+		}
+	}
+	var set *instance.ConfigSet
+	if _, statErr := os.Stat(l.ConfigDir()); statErr == nil {
+		loaded, configReport, loadErr := instance.LoadConfigDirForComparison(l.ConfigDir())
+		switch {
+		case loaded != nil:
+			set = loaded
+			// The gaggles parsed but the directory does not validate — say so
+			// rather than silently reporting coverage over a per-gaggle
+			// inventory the daemon itself would refuse (mirrors doctor's own
+			// note, runDoctorAVExclusions above).
+			if summary := validationIssueSummary(configReport); summary != "" {
+				pf(stdout, "av-exclusions (advisory, daemon): note: %s does not validate (%s); per-gaggle workcopies roots below are read from it as-is\n", l.ConfigDir(), summary)
+			}
+		case loadErr != nil:
+			pf(stdout, "av-exclusions (advisory, daemon): note: %s could not be loaded (%v); per-gaggle workcopies roots are NOT enumerated below\n", l.ConfigDir(), loadErr)
+		}
+	}
+	dirs := daemonAVExclusionDirectories(l, cfg, set, deps)
+	report := avExclusionReport(context.Background(), dirs, deps)
+	pln(stdout, avexclusion.Summary("daemon", report))
 }
 
 func daemonLivenessLabel(liveness daemonstate.Liveness) string {
