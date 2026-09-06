@@ -214,6 +214,7 @@ func defectAggregateResponse(artifact candidateFindingsArtifact) telemetryclient
 			IntervalAvailable: estimate.IntervalAvailable,
 			PromotionEligible: estimate.PromotionEligible,
 			PromotionSource:   estimate.PromotionSource,
+			HasCohortData:     estimate.HasCohortData,
 		})
 	}
 	for _, signal := range artifact.PromotionSignals {
@@ -253,6 +254,7 @@ func wireFinding(finding rollup.Finding) telemetryclient.Finding {
 		Signature:         finding.Signature,
 		Classification:    string(finding.Classification),
 		RecommendedAction: finding.RecommendedAction,
+		ErrorClass:        finding.ErrorClass,
 	}
 	for _, pointer := range finding.FlaggedRuns {
 		wire.FlaggedRuns = append(wire.FlaggedRuns, telemetryclient.JournalPointer{
@@ -296,6 +298,7 @@ func rollupFinding(wire telemetryclient.Finding) rollup.Finding {
 		Signature:         wire.Signature,
 		Classification:    apiv1.LearningClassification(wire.Classification),
 		RecommendedAction: wire.RecommendedAction,
+		ErrorClass:        wire.ErrorClass,
 	}
 	if finding.Metrics == nil {
 		finding.Metrics = map[string]float64{}

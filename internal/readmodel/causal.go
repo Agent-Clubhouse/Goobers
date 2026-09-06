@@ -64,6 +64,18 @@ type CausalNodeCredit struct {
 	IntervalAvailable bool                 `json:"intervalAvailable"`
 	PromotionEligible bool                 `json:"promotionEligible"`
 	PromotionSource   string               `json:"promotionSource"`
+	// HasCohortData distinguishes the two structurally different reasons a
+	// node can be Unidentifiable (#4025): false means no experiment has ever
+	// run on this node (no versioned changepoint, or the node has never been
+	// routed through with a recorded identity) — TreatedBefore/After and
+	// ControlBefore/After are all zero because estimateNode was never
+	// reached at all. true means a real experiment DID run (non-zero cohort
+	// counts) but identification still failed for some other reason (cohort
+	// overlap, minimum size, no contemporaneous control). A consumer no
+	// longer has to infer this from whether all four cohort counts happen to
+	// be zero, or parse Caveat's prose to tell "never versioned" apart from
+	// "versioned but unidentifiable".
+	HasCohortData bool `json:"hasCohortData"`
 }
 
 type causalRunFact struct {
@@ -196,12 +208,6 @@ func (s *Store) CausalCredit(ctx context.Context, options CausalOptions) ([]Caus
 	}
 	var observations []CausalObservation
 	var unavailable []CausalNodeCredit
-	allNodes := map[string]struct{}{}
-	for _, run := range runs {
-		for node := range run.nodes {
-			allNodes[node] = struct{}{}
-		}
-	}
 	for node, versions := range identities {
 		nodeHasRandomized := false
 		for _, run := range runs {
@@ -231,8 +237,17 @@ func (s *Store) CausalCredit(ctx context.Context, options CausalOptions) ([]Caus
 				}
 				continue
 			}
-			unavailable = append(unavailable, cannotIdentify(node,
-				"cannot identify: no versioned node changepoint is recorded"))
+			// Suppressed, not reported (#4025): a node with fewer than 2
+			// distinct interventionSignature values across every run in the
+			// window has never had a version/config change to attribute an
+			// effect to — a permanent, structural condition given the
+			// current journal schema (no per-node identity signal exists to
+			// ever populate `identities[node]` past one entry; only a
+			// workflow-level version/digest bump moves it at all), not a
+			// transient recording gap. Reporting "unidentifiable" every
+			// cycle for a node that can NEVER become identifiable under
+			// current instrumentation is pure noise: 38 of 54 nodes were
+			// measured in exactly this bucket, all with zero cohort data.
 			continue
 		}
 		var cutoff time.Time
@@ -253,8 +268,10 @@ func (s *Store) CausalCredit(ctx context.Context, options CausalOptions) ([]Caus
 			}
 		}
 		if cutoff.IsZero() || previous == "" || next == "" {
-			unavailable = append(unavailable, cannotIdentify(node,
-				"cannot identify: no ordered versioned node changepoint is recorded"))
+			// Suppressed for the same reason as the single-version case
+			// above (#4025): 2+ distinct signatures exist, but never in a
+			// clean chronological before/after order across the window —
+			// still zero cohort data, still nothing to attribute.
 			continue
 		}
 		for _, run := range runs {
@@ -282,12 +299,14 @@ func (s *Store) CausalCredit(ctx context.Context, options CausalOptions) ([]Caus
 		}
 	}
 
-	for node := range allNodes {
-		if _, ok := identities[node]; !ok {
-			unavailable = append(unavailable, cannotIdentify(node,
-				"cannot identify: node has no versioned identity"))
-		}
-	}
+	// A node routed through but never producing even one interventionSignature
+	// (identity, workflow version, AND workflow digest all empty/zero on
+	// every run) was previously reported as "no versioned identity" — the
+	// most extreme case of "never versioned", suppressed for the same
+	// reason as the two cases above (#4025): still zero cohort data, still
+	// nothing to attribute. Since it is never added to `identities` at all,
+	// it already never reaches the loop above and needs no explicit handling
+	// here now that this bucket is no longer reported.
 	estimated, err := EstimateCausalCredit(observations, options)
 	if err != nil {
 		return nil, err
@@ -449,12 +468,21 @@ func observationCovariates(run *causalRunFact, node string) map[string]string {
 		"gaggle":   run.gaggle,
 		"workflow": run.workflow,
 	}
-	// Include trigger information as confounders for workload/repo
+	// Include trigger KIND (a small, coarse enum: manual/cron/backlog-item/
+	// webhook/...) as a confounder for workload/repo. Deliberately NOT
+	// trigger REF (#4025): Trigger.Ref is documented (internal/journal/
+	// identity.go) as "a cron expression, signal name, or backlog item id" —
+	// for a backlog- or webhook-triggered run this is effectively unique per
+	// run, since each processes a distinct item. covariatesOverlap requires
+	// every observed value under a covariate key to appear in BOTH the
+	// treated and control cohorts; a near-unique-per-run value guarantees
+	// that never holds, so including it here made cohort overlap
+	// structurally near-impossible regardless of true confounding — a
+	// covariate-selection bug, not a real data-sparsity condition, and the
+	// dominant explanation for 16 of 54 nodes reporting real (non-trivial)
+	// cohorts that nonetheless never overlapped.
 	if run.triggerKind != "" {
 		covariates["trigger_kind"] = run.triggerKind
-	}
-	if run.triggerRef != "" {
-		covariates["trigger_ref"] = run.triggerRef
 	}
 	// Include goober digest as a covariate to capture goober version/configuration changes
 	if run.gooberDigest != "" {
@@ -480,13 +508,6 @@ func interventionSignature(run *causalRunFact, identity string) string {
 		return ""
 	}
 	return fmt.Sprintf("%s|workflow:%d:%s", identity, run.workflowVersion, run.workflowDigest)
-}
-
-func cannotIdentify(node, caveat string) CausalNodeCredit {
-	return CausalNodeCredit{
-		Node: node, Identification: CausalUnidentifiable, Caveat: caveat,
-		PromotionSource: "correlational-fallback",
-	}
 }
 
 func boolFloat(value bool) float64 {
@@ -548,6 +569,10 @@ func EstimateCausalCredit(observations []CausalObservation, options CausalOption
 func estimateNode(observations []CausalObservation, minCohort int, z float64) CausalNodeCredit {
 	result := CausalNodeCredit{
 		Node: observations[0].Node, PromotionSource: "correlational-fallback",
+		// A real experiment ran on this node: it reached observation-building
+		// at all, unlike a cannotIdentify(...) result (whose zero value stays
+		// false — see CausalNodeCredit.HasCohortData's doc).
+		HasCohortData: true,
 	}
 	for _, observation := range observations {
 		if observation.Treated {
