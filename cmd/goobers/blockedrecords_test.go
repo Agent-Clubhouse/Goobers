@@ -1076,6 +1076,103 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 	}
 }
 
+// TestBacklogQueryDefersBlockedRecheckBelowQuotaFloor is the regression test
+// for #4182: filterBlockedEligibility re-verifies every parked item's
+// blocker state via provider calls every cycle, regardless of backlog size —
+// measured burning GitHub REST quota ~1.75x faster than the hourly refill.
+// Below backlogEligibilityQuotaFloor, scanBacklogEligibility must defer that
+// re-verification entirely (spending zero provider calls on it) rather than
+// draining the reserve meant for claims/PR-creation/merge-review, and must
+// resume normal self-healing once quota recovers on a later cycle.
+func TestBacklogQueryDefersBlockedRecheckBelowQuotaFloor(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "closed prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+	server.closeIssue(441)
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	// A pre-migrated, repository-scoped record — the steady-state shape after
+	// any record has survived one ordinary (non-deferred) cycle. Deliberately
+	// NOT the legacy unscoped shape TestBacklogQuerySkipsKnownBlockedThenSelfHeals
+	// seeds: migrating a legacy record to scoped form is filterBlockedEligibility's
+	// OWN side effect (blockedrecords.go), so a deferred cycle — which skips
+	// calling it entirely — must not be the one asked to migrate a record for
+	// the first time; that is a separate, unthrottled concern.
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	recordKey := blockedRecordKey(repo, "510")
+	recs := map[string]blockedRecord{recordKey: {Repository: repo, ItemID: "510", Blockers: []string{"441"}, RunID: "prior-run"}}
+	if err := saveBlockedRecords(blockedRecordsPath(l), recs); err != nil {
+		t.Fatalf("seed blocked.json: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-quota-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	// Quota critically low (5/100 = 5%, below the 10% floor): even though 441
+	// is already closed and 510 would normally self-heal this cycle, the
+	// re-verification must be skipped entirely — the item simply stays
+	// parked for one more cycle rather than spending the reserve.
+	server.setGlobalQuota(100, 5)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("deferred backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := server.issueItemGetRequestCount(); got != 0 {
+		t.Fatalf("issue-item GET requests = %d, want 0 (blocked-record re-verification must be skipped below the quota floor); stderr=%s", got, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var noWork map[string]interface{}
+	if err := json.Unmarshal(data, &noWork); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if noWork["claimed"] != false {
+		t.Fatalf("deferred tick claimed = %v, want false — 510 was never re-verified this cycle", noWork["claimed"])
+	}
+	if recs, err := loadBlockedRecords(blockedRecordsPath(l)); err != nil || len(recs) != 1 {
+		t.Fatalf("blocked.json after deferred tick = %+v (err %v), want the record preserved untouched", recs, err)
+	}
+
+	// Quota recovers well above the floor: the same already-closed blocker is
+	// now re-verified and 510 self-heals in this cycle, exactly as the
+	// un-throttled path already guarantees
+	// (TestBacklogQuerySkipsKnownBlockedThenSelfHeals) — proving the
+	// deferral is transient, not a permanent behavior change.
+	server.setGlobalQuota(100, 50)
+	t.Setenv("GOOBERS_RUN_ID", "run-quota-2")
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("recovered backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := server.issueItemGetRequestCount(); got == 0 {
+		t.Fatal("issue-item GET requests = 0 after quota recovered, want the deferred re-verification to resume")
+	}
+	data, err = os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var claimed map[string]interface{}
+	if err := json.Unmarshal(data, &claimed); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if claimed["id"] != "510" {
+		t.Fatalf("recovered tick claimed id = %v, want 510 (self-heals once re-verified)", claimed["id"])
+	}
+	if recs, _ := loadBlockedRecords(blockedRecordsPath(l)); len(recs) != 0 {
+		t.Fatalf("blocked.json after self-heal = %+v, want empty", recs)
+	}
+}
+
 // TestBacklogQuerySkipsBlockedThenClaimsNextEligible is #1907's repro: a
 // blocked candidate sorts first in FIFO order (it is the older issue), and a
 // separate, wholly unrelated candidate carries no block at all. The run must

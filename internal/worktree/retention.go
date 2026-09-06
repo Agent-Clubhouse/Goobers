@@ -387,6 +387,14 @@ func pruneMergedBranches(ctx context.Context, managers []*Manager, opts Retentio
 	return results, warnings, nil
 }
 
+// DeleteBranchHook runs synchronously immediately before each merged-local-
+// branch deletion git subprocess. Production leaves it at the default no-op;
+// tests override it to simulate a slow (e.g. network-drive-backed) git
+// deletion without a real slow git call, to prove callers that must not
+// block on a broad retention sweep (daemon API readiness, #4373) actually
+// don't.
+var DeleteBranchHook = func() {}
+
 func pruneRepoMergedBranches(ctx context.Context, manager *Manager, repoDir string, opts RetentionOptions) ([]RetentionResult, []RetentionWarning, error) {
 	branches, err := localBranches(ctx, repoDir)
 	if err != nil {
@@ -451,6 +459,7 @@ func pruneRepoMergedBranches(ctx context.Context, manager *Manager, repoDir stri
 			RunID: branch.runID, Branch: branch.name, DryRun: !opts.Delete,
 		}
 		if opts.Delete {
+			DeleteBranchHook()
 			if err := runGit(ctx, repoDir, "branch", "-D", "--", branch.name); err != nil {
 				result.Err = err
 			} else {

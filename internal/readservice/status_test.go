@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -832,6 +833,113 @@ func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
 	}
 }
 
+// seedStatusReadModelRun writes one run row directly into the read model,
+// bypassing the journal entirely — ListStatusRuns' read-model path (#4249)
+// must never need to open one to answer it.
+func seedStatusReadModelRun(t *testing.T, store *readmodel.Store, runID string, startedAt time.Time) {
+	t.Helper()
+	finishedAt := startedAt.Add(time.Minute)
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{
+		Run: readmodel.RunRow{
+			RunID: runID, Gaggle: "goobers", Workflow: "implementation",
+			WorkflowVersion: 1, WorkflowDigest: "sha256:wf",
+			Phase: journal.PhaseCompleted, Terminal: true,
+			StartedAt: startedAt, FinishedAt: &finishedAt,
+			LastActivity: finishedAt, LastSeq: 1,
+			OutcomeVerdict: "pass",
+		},
+	}); err != nil {
+		t.Fatalf("seed read-model run %s: %v", runID, err)
+	}
+}
+
+// TestListStatusRunsUsesReadModelWithZeroJournalOpens is #4249's fix: the
+// status run table used to os.ReadDir every runs root and journal.OpenRead
+// every entry it found (runSummariesForStage) — a cost proportional to total
+// run history, not to what a caller actually asked for, since --limit was
+// applied only after that full walk completed. With the projection enabled,
+// ListStatusRuns must answer from it instead, opening zero journals
+// regardless of how many runs exist — not "O(limit)", literally zero, since
+// the projection's own contract (§14.2) is that a list page needs none.
+func TestListStatusRunsUsesReadModelWithZeroJournalOpens(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const runCount = 25 // stands in for the reported 11,040; the walk's cost scales with this either way
+	base := time.Date(2026, 8, 17, 8, 0, 0, 0, time.UTC)
+	for i := range runCount {
+		seedStatusReadModelRun(t, store, fmt.Sprintf("read-model-run-%03d", i), base.Add(time.Duration(i)*time.Minute))
+	}
+
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		ReadModel:   store,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	before := readprobe.Take()
+	runs, err := service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := readprobe.Take().Sub(before)
+	readprobe.Disable()
+
+	if len(runs) != runCount {
+		t.Fatalf("ListStatusRuns returned %d runs, want %d", len(runs), runCount)
+	}
+	if work.JournalOpens != 0 {
+		t.Fatalf("ListStatusRuns opened %d journals against the read-model path, want 0", work.JournalOpens)
+	}
+}
+
+// TestListStatusRunsFallsBackToJournalWalkWithoutReadModel pins the OTHER
+// half of #4249's fix: an instance with no projection attached must keep
+// today's directory-walk behavior byte-for-byte, not silently return
+// nothing. (TestListStatusRunsSkipsMalformedHistoricalRuns already exercises
+// this same fallback path's content; this test exists to make the
+// zero-journal-opens claim above meaningful by proving the counter actually
+// moves on the path being replaced.)
+func TestListStatusRunsFallsBackToJournalWalkWithoutReadModel(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	for i := range 3 {
+		run, _ := createFixtureRun(
+			t, layout, machine, fmt.Sprintf("walk-run-%d", i), "implementation", "goobers",
+			startedAt.Add(time.Duration(i)*time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
+		)
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	before := readprobe.Take()
+	runs, err := service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := readprobe.Take().Sub(before)
+	readprobe.Disable()
+
+	if len(runs) != 3 {
+		t.Fatalf("ListStatusRuns returned %d runs, want 3", len(runs))
+	}
+	if work.JournalOpens != 3 {
+		t.Fatalf("ListStatusRuns opened %d journals against the fallback walk, want 3 (one per run)", work.JournalOpens)
+	}
+}
+
 func TestListStatusRunsTreatsExecutedTerminalGateAsTerminal(t *testing.T) {
 	service, layout, machine := fixtureService(t)
 	startedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
@@ -1116,6 +1224,86 @@ func TestTimeToFirstPRIgnoresPersistedPROpenBeforeLegacyInitCompletion(t *testin
 	if metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(currentClock.now) ||
 		metric.Milliseconds == nil || *metric.Milliseconds != (5*time.Minute).Milliseconds() {
 		t.Fatalf("TimeToFirstPR after post-init PR = %#v", metric)
+	}
+}
+
+// TestTimeToFirstPRTrustsPersistedMilestoneWithoutScanningJournals is #4249's
+// second fix: once the persisted rollup already names a firstPROpenAt after
+// init completed, TimeToFirstPR must answer from it directly rather than
+// re-deriving the same milestone from a full run-journal walk on every call.
+// Proven here the same way the fail-closed tests prove the OLD behavior: an
+// unreadable run journal is present, and if the scan ran it would surface
+// that error — it must not, once the milestone is already settled.
+func TestTimeToFirstPRTrustsPersistedMilestoneWithoutScanningJournals(t *testing.T) {
+	_, layout, machine := fixtureService(t)
+	initCompletedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	settled, settledClock := createFixtureRun(
+		t, layout, machine, "settled-run", "implementation", "goobers",
+		initCompletedAt.Add(time.Minute), journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	settledClock.now = initCompletedAt.Add(12 * time.Minute)
+	if err := settled.Append(journal.Event{
+		Type:        journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "9"},
+		Runner:      map[string]any{"operation": "open"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settledDir := settled.Dir()
+	if err := settled.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	writeInitCompleted(t, layout, initCompletedAt)
+	// IngestSchedulerLog replays EventInitCompleted from the instance journal
+	// into the milestone row FIRST: IngestRun's own PR-open candidate is only
+	// retained against an ALREADY-recorded init time (ingest.go's merge
+	// gates every candidate on initCompletedAt being non-zero), so ingesting
+	// the run before the scheduler log would silently drop it.
+	if err := db.IngestSchedulerLog(context.Background(), layout.SchedulerDir()); err != nil {
+		t.Fatalf("IngestSchedulerLog: %v", err)
+	}
+	if err := db.IngestRun(context.Background(), settledDir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+
+	// An unrelated run whose journal cannot be parsed. If TimeToFirstPR still
+	// scanned every run after trusting the persisted milestone, this would
+	// surface as an error — the same shape TestTimeToFirstPRFailsClosedOnUnreadableJournal
+	// asserts for the scanning path.
+	unreadable, _ := createFixtureRun(
+		t, layout, machine, "unreadable-run", "implementation", "goobers",
+		initCompletedAt.Add(-time.Hour), journal.Trigger{Kind: journal.TriggerManual}, false,
+	)
+	if err := unreadable.Close(); err != nil {
+		t.Fatal(err)
+	}
+	eventsPath := filepath.Join(layout.RunsDir(), "unreadable-run", "events.jsonl")
+	if err := os.WriteFile(eventsPath, []byte("{]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: testDefinitions(),
+		Telemetry:   db,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metric, err := service.TimeToFirstPR(context.Background())
+	if err != nil {
+		t.Fatalf("TimeToFirstPR = %v, want the persisted milestone without touching unreadable-run's journal", err)
+	}
+	wantOpenAt := initCompletedAt.Add(12 * time.Minute)
+	if metric.FirstPROpenAt == nil || !metric.FirstPROpenAt.Equal(wantOpenAt) {
+		t.Fatalf("FirstPROpenAt = %v, want %v", metric.FirstPROpenAt, wantOpenAt)
 	}
 }
 

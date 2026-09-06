@@ -366,6 +366,157 @@ func TestTokenMintErrorsAreActionableAndSecretFree(t *testing.T) {
 	}
 }
 
+// TestTokenRetriesTransientMintFailure is the #3792 regression: a transient
+// 500 from GitHub's installation-token endpoint must not hard-fail the mint
+// when a retry would have succeeded, matching the acceptance criteria's stub
+// endpoint that returns 500 then 201.
+func TestTokenRetriesTransientMintFailure(t *testing.T) {
+	previousBase, previousMax := mintRetryBaseDelay, mintRetryMaxDelay
+	mintRetryBaseDelay, mintRetryMaxDelay = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { mintRetryBaseDelay, mintRetryMaxDelay = previousBase, previousMax })
+
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"message":"Internal Server Error"}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprintf(w, `{"token":"ghs_after_retry","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+	}))
+	defer srv.Close()
+
+	source, err := New(Config{AppID: "123456", InstallationID: "42", Key: staticKey(pkcs1PEM(appTestKey(t))), BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	token, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token: want the retry to succeed after the transient 500, got error: %v", err)
+	}
+	if token != "ghs_after_retry" {
+		t.Fatalf("Token = %q, want ghs_after_retry", token)
+	}
+	if got := requests.Load(); got < 2 {
+		t.Fatalf("requests = %d, want more than one HTTP attempt observed", got)
+	}
+}
+
+// TestTokenDoesNotRetryTerminalMintFailures guards the other half of #3792:
+// 401/403/404 are configuration faults a retry cannot fix, so the mint must
+// give up after exactly one attempt and keep its existing actionable message.
+func TestTokenDoesNotRetryTerminalMintFailures(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"message":"bad JWT"}`, want: "auth.appId"},
+		{name: "forbidden", status: http.StatusForbidden, body: `{"message":"suspended"}`, want: "permissions"},
+		{name: "not found", status: http.StatusNotFound, body: `{"message":"Not Found"}`, want: "installation 42 not found"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+			source, err := New(Config{AppID: "123456", InstallationID: "42", Key: staticKey(pkcs1PEM(appTestKey(t))), BaseURL: srv.URL})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			_, err = source.Token(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Token error = %v, want a message containing %q", err, tc.want)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("requests = %d, want exactly 1 (terminal failures must not retry)", got)
+			}
+		})
+	}
+}
+
+// TestTokenBoundsRetryAttemptsAndElapsedTime guards the "no unbounded retry
+// loop" acceptance criterion: a persistently-failing endpoint must stop at
+// mintMaxAttempts, in well under mintTimeout, and its terminal error must
+// still name the app and installation.
+func TestTokenBoundsRetryAttemptsAndElapsedTime(t *testing.T) {
+	previousBase, previousMax := mintRetryBaseDelay, mintRetryMaxDelay
+	mintRetryBaseDelay, mintRetryMaxDelay = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { mintRetryBaseDelay, mintRetryMaxDelay = previousBase, previousMax })
+
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, `{"message":"Service Unavailable"}`)
+	}))
+	defer srv.Close()
+
+	source, err := New(Config{AppID: "123456", InstallationID: "42", Key: staticKey(pkcs1PEM(appTestKey(t))), BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	start := time.Now()
+	_, err = source.Token(context.Background())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Token: want a terminal error for a persistently-failing endpoint, got nil")
+	}
+	for _, want := range []string{"app 123456", "installation 42", "status 503"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("terminal error %q does not mention %q", err, want)
+		}
+	}
+	if got := requests.Load(); got != mintMaxAttempts {
+		t.Fatalf("requests = %d, want exactly mintMaxAttempts (%d), no unbounded retry", got, mintMaxAttempts)
+	}
+	if elapsed > mintTimeout {
+		t.Fatalf("elapsed = %s, want well under mintTimeout (%s)", elapsed, mintTimeout)
+	}
+}
+
+// TestTokenRetryHonorsContextCancellation guards the context-deadline half of
+// the "bounded" acceptance criterion: a caller-cancelled context must stop
+// the retry loop promptly rather than spending its full attempt budget.
+func TestTokenRetryHonorsContextCancellation(t *testing.T) {
+	previousBase, previousMax := mintRetryBaseDelay, mintRetryMaxDelay
+	mintRetryBaseDelay, mintRetryMaxDelay = 200*time.Millisecond, time.Second
+	t.Cleanup(func() { mintRetryBaseDelay, mintRetryMaxDelay = previousBase, previousMax })
+
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"message":"Internal Server Error"}`)
+	}))
+	defer srv.Close()
+
+	source, err := New(Config{AppID: "123456", InstallationID: "42", Key: staticKey(pkcs1PEM(appTestKey(t))), BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = source.Token(ctx)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Token: want an error once the context deadline is exceeded, got nil")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("elapsed = %s, want the retry loop to stop promptly once ctx is done", elapsed)
+	}
+	if got := requests.Load(); got >= mintMaxAttempts {
+		t.Fatalf("requests = %d, want the context deadline to cut the loop short of the full attempt budget", got)
+	}
+}
+
 func TestTokenRejectsMalformedMintResponses(t *testing.T) {
 	keyPEM := pkcs1PEM(appTestKey(t))
 	cases := []struct {

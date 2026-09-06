@@ -264,6 +264,44 @@ func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	}
 }
 
+// TestBacklogHealthRespectsPartitionRequireLabels is #4180's regression
+// test: the ready-pool snapshot used to query by trustLabel alone, so an
+// item carrying neither this gaggle's nor a sibling's partition label (or
+// belonging to a sibling instance's own partition) still counted toward
+// ReadyPoolDepth — a starved, unclaimable pool could report healthy. Only
+// the in-partition ready item may count.
+func TestBacklogHealthRespectsPartitionRequireLabels(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(1, "In-partition ready item", "goobers:approved", "goobers:ready", "goobers:cloud")
+	server.addIssue(2, "Sibling-partition ready item", "goobers:approved", "goobers:ready", "goobers:local")
+	server.addIssue(3, "Unpartitioned ready item", "goobers:approved", "goobers:ready")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "partition-health-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:cloud")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-health", root)
+	if code != 0 {
+		t.Fatalf("backlog-health: code = %d, stderr = %q", code, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "backlog-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got backlogHealthReport
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ReadyPoolDepth != 1 {
+		t.Fatalf("ready pool depth = %d, want 1 (only the in-partition item) — "+
+			"the sibling-partition and unpartitioned items were counted as if claimable by this instance",
+			got.ReadyPoolDepth)
+	}
+}
+
 func TestBacklogHealthFeedbackRecuratesOnlySustainedFailures(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
