@@ -689,7 +689,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// run env leaks into its own test suite (#322). This is the same
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
-	injectRunContext := StageInvokesGoobersCLI(command)
+	//
+	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that
+	// WRAPS the goobers CLI in another process (command[0] names the
+	// wrapper, not "goobers") but still needs the same context its nested
+	// invocation does — declared per-stage rather than guessed from argv[0].
+	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
 	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
 	for key, value := range e.DefaultEnv {
 		declaredEnv[key] = value

@@ -1081,6 +1081,49 @@ func TestDispatchStageNonCLIStageCarriesNoRunContext(t *testing.T) {
 	}
 }
 
+// TestDispatchStageInjectRunContextOptInCarriesRunContext is #3484's mode-3
+// regression guard: a deterministic stage whose command wraps the goobers
+// CLI in another process (command[0] is not "goobers") carries no run
+// context by default — same as TestDispatchStageNonCLIStageCarriesNoRunContext
+// — but does once it declares Task.Run.InjectRunContext, mirroring the local
+// runner's identical opt-in (internal/executor/shell.go).
+func TestDispatchStageInjectRunContextOptInCarriesRunContext(t *testing.T) {
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	store := surrenderStore(t)
+	putSurrendered(t, store, "run-wrapper", "apply-verdict", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	a := &Activities{Dispatcher: fake, Surrenders: store}
+	input := dispatchInput("run-wrapper", "apply-verdict", 1)
+	input.Run = &apiv1.DeterministicRun{
+		Command:          []string{"node", "scripts/review-freshness.mjs"},
+		Workspace:        apiv1.WorkspaceScratch,
+		InjectRunContext: true,
+	}
+	input.Envelope.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "Agent-Clubhouse", Name: "Goobers"}
+	input.Envelope.BranchNamespace = "goobernetes/"
+	input.Envelope.BaseBranch = "main"
+
+	if _, err := a.DispatchStage(context.Background(), input); err != nil {
+		t.Fatalf("a wrapper stage that opts in must dispatch: %v", err)
+	}
+	got := fake.attempts[0]
+	if !got.CLIStage {
+		t.Fatal("InjectRunContext=true must mark the attempt a CLI stage, or the pod strips the run identity it needs")
+	}
+	for name, want := range map[string]string{
+		executor.RepoProviderEnvVar:    "github",
+		executor.RepoOwnerEnvVar:       "Agent-Clubhouse",
+		executor.RepoNameEnvVar:        "Goobers",
+		executor.BranchNamespaceEnvVar: "goobernetes/",
+		executor.BaseBranchEnvVar:      "main",
+	} {
+		if got.RunContext[name] != want {
+			t.Errorf("RunContext[%s] = %q, want %q", name, got.RunContext[name], want)
+		}
+	}
+}
+
 // An AGENTIC stage pinned to a remote runner now DISPATCHES, and must carry the
 // invocation the pod needs to execute it.
 //

@@ -1335,6 +1335,45 @@ func TestShellExecutor_NonGoobersStageOmitsRunContext(t *testing.T) {
 	}
 }
 
+// TestShellExecutor_InjectRunContextOptInReceivesRunContext is #3484's
+// regression guard: a deterministic stage whose command wraps the goobers
+// CLI in another process (here `sh`, standing in for a Node/Python adapter
+// that shells out to `goobers apply-verdict` itself) does NOT receive the
+// run's operational identity by default — exactly like
+// TestShellExecutor_NonGoobersStageOmitsRunContext, since command[0] is not
+// "goobers" — but DOES receive it once the stage explicitly opts in via
+// Task.Run.InjectRunContext, without needing command[0] to be the goobers
+// binary at all.
+func TestShellExecutor_InjectRunContextOptInReceivesRunContext(t *testing.T) {
+	exec, rec := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.RunID = "run-123"
+	env.Gaggle = "alpha"
+	env.WorkflowID = "implementation"
+
+	command := []string{"sh", "-c", `echo "run=$GOOBERS_RUN_ID gaggle=$GOOBERS_GAGGLE wf=$GOOBERS_WORKFLOW"`}
+
+	withoutOptIn, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: command})
+	if err != nil {
+		t.Fatalf("Run (no opt-in): %v", err)
+	}
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "run= gaggle= wf=\n" {
+		t.Fatalf("stdout without opt-in = %q, want empty run context (matches TestShellExecutor_NonGoobersStageOmitsRunContext)", got)
+	}
+
+	env.TaskID = "task-2"
+	withOptIn, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: command, InjectRunContext: true})
+	if err != nil {
+		t.Fatalf("Run (opt-in): %v", err)
+	}
+	if withoutOptIn.Status != apiv1.ResultSuccess || withOptIn.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v / %v, want both success", withoutOptIn.Status, withOptIn.Status)
+	}
+	if got := string(rec.recorded["task-2/stdout.log"]); got != "run=run-123 gaggle=alpha wf=implementation\n" {
+		t.Fatalf("stdout with InjectRunContext=true = %q, want the run's operational identity", got)
+	}
+}
+
 func TestShellExecutor_DeterministicStagesReceiveAdditionalRepoPaths(t *testing.T) {
 	tests := []struct {
 		name string

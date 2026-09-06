@@ -422,6 +422,18 @@ func stampDeterministicRun(attempt *dispatcher.Attempt, run *apiv1.Deterministic
 	attempt.Env = run.Env
 }
 
+// stageWantsRunContext reports whether a mode-3 stage attempt should be
+// stamped with the run's operational identity (GOOBERS_RUN_ID, GOOBERS_GAGGLE,
+// etc.) — the mode-3 mirror of the local runner's same decision
+// (internal/executor/shell.go). True either when the stage's command IS the
+// goobers CLI, or when the stage opted in explicitly via
+// run.InjectRunContext (#3484) because it wraps the CLI in another process
+// (Command[0] names the wrapper, not "goobers") but still needs the same
+// context its nested invocation does.
+func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
+	return run != nil && (executor.StageInvokesGoobersCLI(run.Command) || run.InjectRunContext)
+}
+
 // DispatchStage executes one mode-3 stage attempt: it hands the attempt to
 // the dispatcher (which creates, supervises, and disposes the pod) and then
 // marshals the pod's surrendered blob back into the stageActivityResult the
@@ -594,7 +606,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// so requiring one skipped the block and stamped no repository at all. The
 	// CLI question still needs Run — it inspects Run.Command — but the repo
 	// question does not, so the two are separated rather than nested.
-	cliStage := input.Run != nil && executor.StageInvokesGoobersCLI(input.Run.Command)
+	cliStage := stageWantsRunContext(input.Run)
 	if cliStage || needsRepoContext {
 		attempt.CLIStage = cliStage
 		attempt.RunContext = map[string]string{}

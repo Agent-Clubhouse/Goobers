@@ -513,6 +513,7 @@ const (
 	featureStageWorkspace                 FeatureID = "stage.workspace"
 	featureGateAgenticWorkspace           FeatureID = "gate.evaluator.agentic.workspace"
 	featureStageSyncBase                  FeatureID = "stage.run.syncBase"
+	featureStageInjectRunContext          FeatureID = "stage.run.injectRunContext"
 	featureStageResultFile                FeatureID = "stage.resultFile"
 	featureGateName                       FeatureID = "gate.name"
 	featureGateBranches                   FeatureID = "gate.branches"
@@ -719,6 +720,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureStageWorkspace,
 		featureGateAgenticWorkspace,
 		featureStageSyncBase,
+		featureStageInjectRunContext,
 		featureStageResultFile,
 		featureGateName,
 		featureGateBranches,
@@ -1430,8 +1432,19 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	case apiv1.WorkspaceRepoReadOnly:
 		used.add(featureStageWorkspaceRepoReadOnly)
 	}
-	if task.Run.SyncBase {
+	addRunFlagFeatures(used, task.Run)
+}
+
+// addRunFlagFeatures records the standalone boolean-flag features on a
+// DeterministicRun (SyncBase, InjectRunContext) — split out of
+// addTaskFeatures purely to keep that function's branch count down as new
+// flags are added (#3484).
+func addRunFlagFeatures(used featureSet, run *apiv1.DeterministicRun) {
+	if run.SyncBase {
 		used.add(featureStageSyncBase)
+	}
+	if run.InjectRunContext {
+		used.add(featureStageInjectRunContext)
 	}
 }
 
