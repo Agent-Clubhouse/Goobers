@@ -158,6 +158,19 @@ type fakeGitHubServer struct {
 	issueEventQuotaLimit     int
 	issueEventQuotaRemaining int
 	issueEventQuotaDrain     int
+	// globalQuotaLimit/globalQuotaRemaining, when globalQuotaLimit > 0, stamp
+	// X-RateLimit-Limit/-Remaining on EVERY response this server serves —
+	// unlike issueEventQuotaLimit/Remaining above, which is scoped to the
+	// issue-events endpoint alone. Models the admission check (#4182)
+	// observing quota from an ordinary call (e.g. ListWorkItems) rather than
+	// a dedicated rate-limit probe.
+	globalQuotaLimit     int
+	globalQuotaRemaining int
+	// issueItemGetRequests counts GET /issues/{number} single-item fetches —
+	// what GetWorkItem calls, and what filterBlockedEligibility's per-record
+	// (and per-blocker) re-verification spends every cycle regardless of
+	// backlog size (#4182).
+	issueItemGetRequests int
 	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
 	// specific status/body instead of listing the PR's fixture files — used to
 	// distinguish "the PR is gone" (the default 404 an unregistered number
@@ -228,6 +241,12 @@ func (s *fakeGitHubServer) issueListRequestCount() int {
 	return s.issueListRequests
 }
 
+func (s *fakeGitHubServer) issueItemGetRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.issueItemGetRequests
+}
+
 func (s *fakeGitHubServer) issueListPageSizeHistory() []int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -263,9 +282,34 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
 	mux.HandleFunc(prefix+"/labels", s.handleRepoLabels)
-	s.server = httptest.NewServer(mux)
+	s.server = httptest.NewServer(s.withGlobalQuotaHeaders(mux))
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+// setGlobalQuota stamps X-RateLimit-Limit/-Remaining on every response this
+// server serves, so a test can simulate the admission check (#4182)
+// observing critically low quota from an ordinary call.
+func (s *fakeGitHubServer) setGlobalQuota(limit, remaining int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.globalQuotaLimit, s.globalQuotaRemaining = limit, remaining
+}
+
+// withGlobalQuotaHeaders stamps globalQuotaLimit/Remaining on every response
+// when configured; a limit of 0 (the default for every test that never calls
+// setGlobalQuota) leaves responses exactly as their handler wrote them.
+func (s *fakeGitHubServer) withGlobalQuotaHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		limit, remaining := s.globalQuotaLimit, s.globalQuotaRemaining
+		s.mu.Unlock()
+		if limit > 0 {
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
+			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *fakeGitHubServer) handleGraphQL(w http.ResponseWriter, r *http.Request) {
@@ -818,6 +862,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
+		s.issueItemGetRequests++
 		writeFakeJSON(w, issueJSON(issue))
 	case len(parts) == 1 && r.Method == http.MethodPatch:
 		var body struct {
