@@ -123,7 +123,11 @@ func TestDaemonOutputMergesAndRedactsStreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer output.Close()
+	t.Cleanup(func() {
+		if err := output.Close(); err != nil {
+			t.Errorf("close daemon output: %v", err)
+		}
+	})
 
 	stdoutWriter := output.child(&stdout)
 	stderrWriter := output.child(&stderr)
