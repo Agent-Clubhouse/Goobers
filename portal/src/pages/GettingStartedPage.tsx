@@ -17,6 +17,10 @@ import { Icon } from "../ui/Icon";
 const defaultClient = new GuidedClient();
 const statePollIntervalMs = 5_000;
 const githubPATSettingsURL = "https://github.com/settings/personal-access-tokens/new";
+const providerAuthGuideURLs = {
+  ado: "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/ado-authentication.md",
+  github: "https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/github-token-scopes.md",
+} as const;
 /** Deadline for a single `/guided/state` read, so a getting-started server that
  *  stops answering cannot stall the poll loop indefinitely. */
 const stateRequestTimeoutMs = 15_000;
@@ -760,6 +764,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                     )}
                   </div>
                 )}
+                <DocumentationLink
+                  href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md"
+                  label="Learn how repository discovery and onboarding fit together"
+                />
                 {inspection.needsClone ? (
                   <div className="guided-callout">
                     <strong>
@@ -904,6 +912,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               <code>config-examples/gaggles/acme-web</code>. They are intentionally more
               complete than the disposable <code>quickstart@v1</code> tutorial workflow.
             </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/gaggle.md"
+              label="Learn how gaggles and workflow anatomy fit together"
+            />
             <div className="guided-module-grid">
               {workflowChoices.map((choice) => (
                 <label className="guided-module-card" data-selected={workflows.includes(choice.id)} key={choice.id}>
@@ -940,6 +952,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               identity, or allow it to pick up any issue carrying the required ready and
               approval labels.
             </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/assignment-aware-backlogs.md"
+              label="Learn how labels, backlog eligibility, and assignment scope work"
+            />
             <fieldset className="guided-radio-group">
               <legend>Which ready issues may implementation pick up?</legend>
               <label data-selected={issueScope === "all"}>
@@ -983,6 +999,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md"
               label="Learn how goobers, harnesses, capabilities, and instructions work"
+            />
+            <DocumentationLink
+              href={
+                inspection?.provider === "ado"
+                  ? providerAuthGuideURLs.ado
+                  : providerAuthGuideURLs.github
+              }
+              label="Learn which provider credentials and permissions are required"
             />
             <fieldset className="guided-radio-group">
               <legend>Agent harness</legend>
@@ -1183,6 +1207,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             <RecoveryCommand
               command={`goobers validate --check-harness --check-repos "${state.instancePath}"`}
             />
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/config-pr-validation-gate.md"
+              label="Learn how validation and testing protect configuration changes"
+            />
             <button
               className="reconnect-button guided-validate-button"
               disabled={busy !== null}
@@ -1236,6 +1264,18 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/dsl-authoring-skill.md"
               label="Learn how to customize gaggles and workflows with an agent"
+            />
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md"
+              label="Learn how to inspect runs, journals, claims, and workcopies"
+            />
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/supervision.md"
+              label="Learn how to debug runs and understand no-work outcomes"
+            />
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/instance-placement.md"
+              label="Learn more about Instance layout and operational data"
             />
             <p>You can now close this browser window.</p>
           </WizardPage>
