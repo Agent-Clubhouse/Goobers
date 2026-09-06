@@ -9,9 +9,10 @@ import (
 
 func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 	tests := []struct {
-		name string
-		def  Definition
-		want bool
+		name    string
+		def     Definition
+		goobers map[string]apiv1.GooberSpec
+		want    bool
 	}{
 		{
 			name: "read-only deterministic command",
@@ -35,6 +36,25 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 				Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
 			}}}},
 			want: true,
+		},
+		{
+			name: "agentic gate with mutating reviewer",
+			def: Definition{Name: "merge-review", Spec: apiv1.WorkflowSpec{Gates: []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+			}}}},
+			goobers: map[string]apiv1.GooberSpec{
+				"reviewer": {Capabilities: []string{"repo:push"}},
+			},
+			want: false,
+		},
+		{
+			name: "git command is uncertain",
+			def: Definition{Name: "git-workflow", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+				Name: "git", Type: apiv1.TaskDeterministic,
+				Run: &apiv1.DeterministicRun{Command: []string{"git", "status"}},
+			}}}},
+			want: false,
 		},
 		{
 			name: "explicit workspace",
@@ -68,7 +88,8 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var found bool
-			for _, warning := range CheckImplicitWritableWorkspaceWarnings(test.def) {
+			warnings := CheckImplicitWritableWorkspaceWarnings(test.def, test.goobers)
+			for _, warning := range warnings {
 				if strings.Contains(warning, "omits workspace") {
 					found = true
 					if !strings.Contains(warning, `workflow "`+test.def.Name+`"`) ||
@@ -80,7 +101,7 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 				}
 			}
 			if found != test.want {
-				t.Fatalf("implicit workspace warning = %v, want %v; warnings = %v", found, test.want, CheckImplicitWritableWorkspaceWarnings(test.def))
+				t.Fatalf("implicit workspace warning = %v, want %v; warnings = %v", found, test.want, warnings)
 			}
 		})
 	}

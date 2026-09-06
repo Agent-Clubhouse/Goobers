@@ -2094,7 +2094,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 		r.addWarning(WarningCompatibility, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
-	for _, msg := range wf.CheckImplicitWritableWorkspaceWarnings(def) {
+	for _, msg := range wf.CheckImplicitWritableWorkspaceWarnings(def, ix.gooberSpecs()) {
 		r.addWarning(WarningImplicitWritableWorkspace, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckReachability(def) {

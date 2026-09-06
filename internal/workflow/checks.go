@@ -19,8 +19,12 @@ func CheckWarnings(def Definition) []string {
 // implicitWritableWorkspaceWarnings flags stages whose omitted workspace
 // selects the historical writable run-branch worktree even though their
 // declaration provides no repository-mutation signal.
-func implicitWritableWorkspaceWarnings(def Definition) []string {
+func implicitWritableWorkspaceWarnings(def Definition, gooberSets ...map[string]apiv1.GooberSpec) []string {
 	var warnings []string
+	var goobers map[string]apiv1.GooberSpec
+	if len(gooberSets) > 0 {
+		goobers = gooberSets[0]
+	}
 	for _, task := range def.Spec.Tasks {
 		if task.EffectiveWorkspace() != "" {
 			continue
@@ -39,7 +43,14 @@ func implicitWritableWorkspaceWarnings(def Definition) []string {
 	}
 	for _, gate := range def.Spec.Gates {
 		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.EffectiveWorkspace() == "" && gate.Agentic != nil {
-			warnings = append(warnings, implicitWorkspaceWarning(def.Name, "gate", gate.Name))
+			var capabilities, policyActions []string
+			if goober, ok := goobers[gate.Agentic.Goober]; ok {
+				capabilities = goober.Capabilities
+				policyActions = goober.PolicyActions
+			}
+			if !hasRepositoryMutationSignal(capabilities, policyActions) {
+				warnings = append(warnings, implicitWorkspaceWarning(def.Name, "gate", gate.Name))
+			}
 		}
 	}
 	return warnings
@@ -47,8 +58,8 @@ func implicitWritableWorkspaceWarnings(def Definition) []string {
 
 // CheckImplicitWritableWorkspaceWarnings reports advisory workspace defaults
 // separately from the compiler's historical compatibility warnings.
-func CheckImplicitWritableWorkspaceWarnings(def Definition) []string {
-	return implicitWritableWorkspaceWarnings(def)
+func CheckImplicitWritableWorkspaceWarnings(def Definition, gooberSets ...map[string]apiv1.GooberSpec) []string {
+	return implicitWritableWorkspaceWarnings(def, gooberSets...)
 }
 
 func implicitWorkspaceWarning(workflow, kind, stage string) string {
@@ -82,7 +93,7 @@ func deterministicStageAppearsReadOnly(task apiv1.Task) bool {
 		return false
 	}
 	switch strings.ToLower(task.Run.Command[0]) {
-	case "go", "gofmt", "goimports", "git", "goobers":
+	case "go", "gofmt", "goimports", "goobers":
 		return true
 	default:
 		return false
