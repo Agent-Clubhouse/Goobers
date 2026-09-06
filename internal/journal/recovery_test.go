@@ -177,6 +177,76 @@ func TestRecoverReportsTheUnderLockEventView(t *testing.T) {
 	}
 }
 
+// TestRecoverResumesFromHighestSeqNotLastRecord is the #3640 regression: a
+// regressed journal — a crash mid-sequence leaving a lower-seq record as the
+// last durably-committed line, even though a higher seq was already
+// committed earlier in the log — must still recover LastSeq (and the
+// reopened writer's next-issued seq) from the maximum observed seq, not from
+// whatever seq the final line happens to carry. Recovering from the last
+// record's seq would reissue an already-used seq on the next append, and a
+// watermark-based projection reading by seq would then ignore that append as
+// already-seen.
+func TestRecoverResumesFromHighestSeqNotLastRecord(t *testing.T) {
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := run.Append(Event{Type: EventStageStarted, Stage: "s", Attempt: 1}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	dir := filepath.Join(root, testIdentity().RunID)
+	eventsPath := filepath.Join(dir, fileEvents)
+
+	// Simulate a regressed tail: a seq-3 event committed, then a crash and
+	// resume that (incorrectly, pre-fix) reissued seq 2 for the next append —
+	// leaving the durable log with seq 1, 3, 2 in file order.
+	clock := fixedClock()
+	line3, err := marshalEvent(Event{Schema: EventSchema, Seq: 3, Type: EventStageFinished, Stage: "s", Attempt: 1, Time: clock()})
+	if err != nil {
+		t.Fatalf("marshalEvent seq3: %v", err)
+	}
+	line2, err := marshalEvent(Event{Schema: EventSchema, Seq: 2, Type: EventStageStarted, Stage: "s", Attempt: 2, Time: clock()})
+	if err != nil {
+		t.Fatalf("marshalEvent seq2: %v", err)
+	}
+	f, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open events log: %v", err)
+	}
+	if _, err := f.Write(append(append(line3, '\n'), append(line2, '\n')...)); err != nil {
+		t.Fatalf("write regressed tail: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close events log: %v", err)
+	}
+
+	recovered, report, err := Recover(dir, WithClock(fixedClock()))
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	defer func() { _ = recovered.Close() }()
+
+	if report.LastSeq != 3 {
+		t.Fatalf("LastSeq=%d want 3 (the highest observed seq, not the last record's)", report.LastSeq)
+	}
+	if err := recovered.Append(Event{Type: EventStageStarted, Stage: "s", Attempt: 3}); err != nil {
+		t.Fatalf("Append after recover: %v", err)
+	}
+	events, _, err := readEvents(eventsPath)
+	if err != nil {
+		t.Fatalf("readEvents: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Seq != 4 {
+		t.Fatalf("post-recover append seq=%d want 4 (must not collide with the already-committed seq 3)", last.Seq)
+	}
+}
+
 // TestRecoverNulTailIsTruncatedNotBricking is the #116 negative control for the
 // NUL-tail bricking cascade. A crash can extend events.jsonl without flushing the
 // record, leaving NUL zero-fill after the last complete event. Recovery must

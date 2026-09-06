@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -402,6 +403,110 @@ func TestConformanceResumeMidParallelReachesSameTerminalAsUninterrupted(t *testi
 		if resumedCompleteness[i].Name != baselineCompleteness[i].Name || resumedCompleteness[i].Status != baselineCompleteness[i].Status {
 			t.Errorf("resumed branch %d = %+v, want %+v", i, resumedCompleteness[i], baselineCompleteness[i])
 		}
+	}
+}
+
+// countingStubDeterministic is stubDeterministic plus a per-task call
+// counter, for tests that must assert a specific task was never (re)dispatched.
+type countingStubDeterministic struct {
+	stubDeterministic
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func (s *countingStubDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, det apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	s.mu.Lock()
+	if s.calls == nil {
+		s.calls = map[string]int{}
+	}
+	s.calls[env.TaskID]++
+	s.mu.Unlock()
+	return s.stubDeterministic.Run(ctx, env, det)
+}
+
+func (s *countingStubDeterministic) callsFor(taskID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[taskID]
+}
+
+// TestParallelResumeRefusesToRedispatchBranchAttemptThatAlreadyMutated is
+// #3637's parallel-branch acceptance scenario: parallel_run.go's own resume
+// path (independent of the sequential walk's stepTask) must apply the same
+// guard. A branch task's mutation (e.g. a PR create) can succeed and be
+// journaled as ref.touched before the crash cuts off that attempt's own
+// stage.finished write. Resuming must not blindly continue the branch at
+// attempt+1 — that would redispatch the executor and duplicate the
+// already-succeeded mutation.
+func TestParallelResumeRefusesToRedispatchBranchAttemptThatAlreadyMutated(t *testing.T) {
+	machine := parallelRunnerMachine(t, 1, apiv1.WorkspaceScratch)
+	const runID = "conformance-resume-mutated"
+	det := &countingStubDeterministic{stubDeterministic: stubDeterministic{byTask: map[string]stubTaskResult{
+		runID + ":lens-a":  {status: apiv1.ResultSuccess, outputs: map[string]any{"findings": 0}},
+		runID + ":lens-b":  {status: apiv1.ResultSuccess, outputs: map[string]any{"findings": 1}},
+		runID + ":lens-c":  {status: apiv1.ResultSuccess, outputs: map[string]any{"findings": 2}},
+		runID + ":collate": {status: apiv1.ResultSuccess},
+	}}}
+	resumeRunner, resumeDir := newParallelTestRunner(t,
+		func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			det.rec = rec
+			return det, nil
+		},
+	)
+	jr, err := journal.Create(resumeDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: machine.Def.Spec.Gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventParallelStarted, Parallel: "fan", Completeness: []journal.BranchOutcome{
+		{Branch: 1, Name: "a"}, {Branch: 2, Name: "b"}, {Branch: 3, Name: "c"},
+	}}); err != nil {
+		t.Fatalf("append parallel.started: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventBranchStarted, Branch: 1, Parallel: "fan", BranchName: "a", Stage: "lens-a"}); err != nil {
+		t.Fatalf("append branch 1 started: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "lens-a", Branch: 1, Attempt: 1}); err != nil {
+		t.Fatalf("append lens-a started: %v", err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "lens-a", Branch: 1, Attempt: 1,
+		Status: string(apiv1.ResultSuccess), Outputs: map[string]any{"findings": 0},
+	}); err != nil {
+		t.Fatalf("append lens-a finished: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventBranchFinished, Branch: 1, Parallel: "fan", BranchName: "a", BranchStatus: journal.BranchSucceeded}); err != nil {
+		t.Fatalf("append branch 1 finished: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventBranchStarted, Branch: 2, Parallel: "fan", BranchName: "b", Stage: "lens-b"}); err != nil {
+		t.Fatalf("append branch 2 started: %v", err)
+	}
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "lens-b", Branch: 2, Attempt: 1}); err != nil {
+		t.Fatalf("append lens-b started: %v", err)
+	}
+	// The mutation itself (e.g. a PR create) already succeeded and was
+	// journaled before the crash cut off this attempt's stage.finished write.
+	if err := jr.Append(journal.Event{
+		Type: journal.EventRefTouched, Stage: "lens-b", Branch: 2, Attempt: 1,
+		ExternalRef: &journal.ExternalRef{Provider: string(apiv1.ProviderGitHub), Kind: "pr", ID: "42"},
+	}); err != nil {
+		t.Fatalf("append lens-b ref.touched: %v", err)
+	}
+	// No stage.finished, no branch.finished/run.finished: a real crash just
+	// stops mid-stream, right after the mutation but before it could be
+	// recorded as this attempt's own outcome.
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if _, err := resumeRunner.Resume(context.Background(), ResumeInput{RunID: runID, Machine: machine}); err == nil {
+		t.Fatal("Resume: want an error — lens-b's interrupted attempt already touched an external mutation and must not be redispatched")
+	}
+	if calls := det.callsFor(runID + ":lens-b"); calls != 0 {
+		t.Fatalf("lens-b executor called %d times, want 0 — redispatching would duplicate the already-succeeded mutation", calls)
 	}
 }
 

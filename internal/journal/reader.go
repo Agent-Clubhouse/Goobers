@@ -408,10 +408,12 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 		return nil, RecoverReport{}, err
 	}
 
-	report := RecoverReport{TornBytes: tornBytes, Events: events}
-	if len(events) > 0 {
-		report.LastSeq = events[len(events)-1].Seq
-	}
+	// The highest observed seq, not the last record's, must seed the writer: a
+	// regressed journal (a lower-seq event appended after a higher one) would
+	// otherwise let the writer reissue an already-used seq, and a
+	// watermark-based projection reading by seq would then ignore the new
+	// append as already-seen (#3640).
+	report := RecoverReport{TornBytes: tornBytes, Events: events, LastSeq: highestEventSeq(events)}
 
 	f, err := os.OpenFile(eventsPath, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {

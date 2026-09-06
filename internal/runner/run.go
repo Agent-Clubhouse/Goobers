@@ -1222,6 +1222,11 @@ type resumeContext struct {
 	committedWorkOnInfra   bool
 	policyAttempts         int32
 	infrastructureFailures int32
+	// mutated is true when the interrupted attempt already recorded a
+	// ref.touched external mutation before the crash — a non-idempotent
+	// side effect (e.g. PR creation) that redispatching the same attempt
+	// would duplicate (#3637).
+	mutated bool
 }
 
 type resumeRetryAccounting struct {
@@ -1915,6 +1920,17 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 		instructionAddendum = ws.rerun.instructionAddendum
 	}
 	if ws.resume != nil && ws.resume.stage == t.Name {
+		if ws.resume.mutated {
+			// The interrupted attempt already touched an external ref (e.g.
+			// created a PR) before the crash cut off its stage.finished
+			// write. Redispatching it would re-run that non-idempotent
+			// mutation. Fail closed and require manual reconciliation
+			// rather than duplicate it (#3637).
+			return apiv1.ResultEnvelope{}, Result{}, true, fmt.Errorf(
+				"runner: refusing to resume stage %q: attempt %d already touched an external mutation before the runner was interrupted; redispatching would duplicate it — reconcile manually, then rerun",
+				t.Name, ws.resume.attempt,
+			)
+		}
 		infraFailedAttemptCommittedWork = ws.resume.committedWorkOnInfra
 		resumeAccounting = &resumeRetryAccounting{
 			policyAttempts:            ws.resume.policyAttempts,
