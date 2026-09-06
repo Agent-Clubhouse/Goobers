@@ -191,6 +191,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "oidc-issuer", takesArg: true, desc: "OIDC issuer URL"},
 		{name: "registry", takesArg: true, desc: "Container registry host"},
 		{name: "egress", takesArg: true, desc: "Outbound host and port targets"},
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host:port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "timeout", takesArg: true, desc: "Per-probe timeout"},
 	},
 	"netpol-render": {

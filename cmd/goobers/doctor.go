@@ -22,6 +22,7 @@ import (
 
 const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
 	"                          [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]\n" +
+	"                          [--temporal-hostport <host:port>] [--temporal-namespace <name>]\n" +
 	"                          [--timeout <duration>]\n" +
 	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
 	"       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]\n\n" +
@@ -37,6 +38,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"  mixed-os-placement required  §7     Linux workloads cannot land on Windows nodes\n" +
 	"  oidc-issuer        required* §1/§3  issuer discovery document reachable\n" +
 	"  egress             required* §1/§5  outbound targets reachable from this host\n" +
+	"  temporal-namespace required* §2/§4  configured Temporal namespace is registered\n" +
 	"  registry           optional  §1     registry reachable (host-side sanity)\n\n" +
 	"Checks marked required* apply when their probe target is configured; left\n" +
 	"unconfigured they report a skipped warn. Every check is read-only: nothing is\n" +
@@ -122,6 +124,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	oidcIssuer := fs.String("oidc-issuer", "", "OIDC issuer URL whose discovery document must be reachable")
 	registry := fs.String("registry", "", "container registry host to probe for reachability")
 	egress := fs.String("egress", "", "comma-separated host:port outbound targets that must be reachable")
+	temporalHostPort := fs.String("temporal-hostport", "", "Temporal frontend host:port whose configured namespace must be registered")
+	temporalNamespace := fs.String("temporal-namespace", "", "Temporal namespace to check for (default \"default\")")
 	timeout := fs.Duration("timeout", k8spreflight.DefaultTimeout, "per-probe timeout")
 	fs.Usage = helpUsage(stderr, "doctor")
 	if err := fs.Parse(args); err != nil {
@@ -188,6 +192,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		OIDCIssuer:        *oidcIssuer,
 		Registry:          *registry,
 		Egress:            splitCommaList(*egress),
+		TemporalHostPort:  *temporalHostPort,
+		TemporalNamespace: *temporalNamespace,
 		Timeout:           *timeout,
 	})
 	report.Target = host

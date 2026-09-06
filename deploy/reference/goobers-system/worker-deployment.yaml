@@ -106,6 +106,18 @@ spec:
             - "/var/lib/goobers"
             - "--blob-store"
             - "/var/lib/goobers-blobs"
+            # #4286: enables the dispatcher-backed pod-per-stage seam (mode
+            # 3) — without it, the worker serves workspaces/gates but every
+            # real stage fails closed with "not configured". Takes a SINGLE
+            # namespace: one worker dispatches into one gaggle namespace, not
+            # one per gaggle (../gaggle-namespace/examples/ ships more than
+            # one — pick the one this Deployment serves, or copy this
+            # Deployment per gaggle for G2 dedicated mode, #656). The
+            # matching RBAC grant lives in
+            # ../gaggle-namespace/base/dispatcher-rbac.yaml, bound to this
+            # same goobers-worker ServiceAccount.
+            - "--dispatch-namespace"
+            - "gaggle-a" # CHANGE-ME: the gaggle namespace this worker dispatches into
           env:
             # Temporal frontend (§2); reachable from workers and operator only
             # (§5 — see ../temporal/networkpolicy-temporal.yaml). The worker

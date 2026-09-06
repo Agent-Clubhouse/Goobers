@@ -961,6 +961,7 @@ preflight a Kubernetes cluster, repository forge policy, or Windows antivirus ex
 ~~~text
 Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
+                          [--temporal-hostport <host:port>] [--temporal-namespace <name>]
                           [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
@@ -979,6 +980,7 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   mixed-os-placement required  §7     Linux workloads cannot land on Windows nodes
   oidc-issuer        required* §1/§3  issuer discovery document reachable
   egress             required* §1/§5  outbound targets reachable from this host
+  temporal-namespace required* §2/§4  configured Temporal namespace is registered
   registry           optional  §1     registry reachable (host-side sanity)
 
 Checks marked required* apply when their probe target is configured; left

@@ -8,3 +8,4 @@ resources:
   - namespace.yaml
   - serviceaccount.yaml
   - networkpolicies.yaml
+  - dispatcher-rbac.yaml

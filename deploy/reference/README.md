@@ -15,9 +15,9 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 | Path | Contents | Shape doc |
 |---|---|---|
 | `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`) | §2, §3, §4, §5 |
-| `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies | §3, §5 |
+| `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
-| `temporal/` | values for the OSS Temporal Helm chart + Temporal-isolation NetworkPolicy | §2, §4, §5 |
+| `temporal/` | values for the OSS Temporal Helm chart + Temporal-isolation NetworkPolicy + the namespace-registration Job | §2, §4, §5 |
 
 ## Hand-managed node-pool contract
 
@@ -36,6 +36,30 @@ taint when creating a Windows pool, and preserve it when replacing or adding nod
 ```sh
 kubectl taint node <windows-node> kubernetes.io/os=windows:NoSchedule
 ```
+
+## Temporal bring-up order
+
+The OSS Temporal Helm chart stands up a cluster with **no namespaces registered** — every
+"Temporal is healthy" check (pods Running, frontend reachable) passes while the
+worker/engine still dies with `Namespace default is not found` (#4287). Registering the
+namespace is a required step, not follow-up hardening; bring the stack up in this order:
+
+1. Create the customer-managed PostgreSQL `temporal-postgres-credentials` Secret
+   (`temporal/values.yaml`'s `existingSecret:` references).
+2. Install the chart (`temporal/values.yaml` header carries the pinned `helm install`
+   command).
+3. Apply `temporal/namespace-job.yaml` and wait for it to complete
+   (`kubectl wait --for=condition=complete -n goobers-temporal job/goobers-temporal-namespace`).
+   It is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
+4. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
+   registered).
+
+`namespace-job.yaml`'s `TEMPORAL_NAMESPACE`/`RETENTION` env vars are the single source for
+those values — `goobers-system/worker-deployment.yaml`'s Temporal env and this Job's
+`TEMPORAL_NAMESPACE` must name the same namespace (both default to
+`internal/instance/config.go`'s `DefaultTemporalNamespace`, `"default"`, unless overridden).
+`goobers doctor --k8s` checks the configured namespace actually exists (`temporal-namespace`
+check, `internal/k8spreflight/checks.go`).
 
 Karpenter and AKS Node Auto Provisioning (NAP) remain deferred, and whether an
 autoprovisioner is wanted at all is a separate open decision. The pod-per-stage
@@ -137,6 +161,18 @@ identity per gaggle; GAG-012, SEC-001/002). Stage egress grants are per runner c
 render them with `goobers netpol-render --out <dir>` (filled from `instance.yaml
 egress.allowlist`) and apply them alongside the base — the base itself carries only
 the class-independent floor (default-deny-all + allow-dns).
+
+The base also ships `dispatcher-rbac.yaml`, binding the **existing** `goobers-worker`
+ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to create,
+get, delete and list pods in this gaggle's namespace, and read the worker's own
+Deployment (DI-9 template read). This is what lets a worker whose `--dispatch-namespace`
+names this gaggle actually dispatch pod-per-stage runs into it (#4286); stage pods
+themselves still get no token mount and no RBAC grants at all
+(`serviceaccount.yaml`). **One worker dispatches into one namespace** —
+`--dispatch-namespace` takes a single value, not a list — so stamping a second gaggle
+means either pointing a second worker Deployment at it, or copying
+`goobers-system/worker-deployment.yaml` per gaggle for the G2 dedicated-worker mode
+(#656).
 
 ## Operating notes from a real cluster
 
