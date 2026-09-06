@@ -32,6 +32,7 @@ spec:
     - name: act
       type: agentic
       goober: "reviewer2"
+      workspace: repo
       goal: Continue the workflow using the prepared result.
       capabilities:
         - agent:model

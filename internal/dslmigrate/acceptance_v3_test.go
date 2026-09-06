@@ -118,8 +118,8 @@ func TestAcceptanceCommitReadingEdgeTable(t *testing.T) {
 			"open-pr":     {"update-docs"},
 		},
 		"tutor.yaml": {
-			"analyze":      nil, // producer, empty set
-			"draft-change": {"analyze"},
+			"analyze":      nil, // read-only consumer, no branch-ref definition
+			"draft-change": nil, // first branch-ref producer
 		},
 	}
 
