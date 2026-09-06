@@ -81,6 +81,19 @@ type Options struct {
 	// OTLPEndpoint is the OTLP collector endpoint the cluster exports to. When
 	// empty the signal-set check is a skipped warn.
 	OTLPEndpoint string
+	// TemporalHostPort is the Temporal frontend's host:port (§2/§4), e.g.
+	// "temporal-frontend.goobers-temporal:7233". When empty the namespace
+	// check is a skipped warn.
+	TemporalHostPort string
+	// TemporalNamespace is the namespace the worker/engine connect to
+	// (internal/instance/config.go's DefaultTemporalNamespace, "default",
+	// unless overridden). #4287: the OSS Temporal chart stands up a cluster
+	// with no namespaces registered, so this must exist before first use —
+	// see deploy/reference/temporal/namespace-job.yaml.
+	TemporalNamespace string
+	// DialTemporal dials the Temporal frontend; nil uses client.Dial. Tests
+	// substitute a fake to avoid a live Temporal server.
+	DialTemporal func(ctx context.Context, hostPort string) (temporalNamespaceDescriber, error)
 	// HTTPClient serves the issuer/registry probes; nil builds one bounded
 	// by Timeout.
 	HTTPClient *http.Client
@@ -131,6 +144,7 @@ func Run(ctx context.Context, client kubernetes.Interface, opts Options) Report 
 		checkOIDCIssuer,
 		checkRegistry,
 		checkEgress,
+		checkTemporalNamespace,
 	}
 	report := Report{Conformant: true}
 	for _, check := range checks {
