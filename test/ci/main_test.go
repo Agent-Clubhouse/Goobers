@@ -172,20 +172,10 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	}
 	want := []string{
 		"fmt-check",
-		"tidy-check",
 		"no-phone-home",
-		"stage-name-lint",
 		"vet",
-		"flake-policy",
-		"complexity",
-		"design-doc-status",
-		"markdown-links",
-		"workflow-inventory",
-		"npm-registry",
-		"go-toolchain",
 		"build-config-sync",
 		"build-goobers",
-		"validate-configs",
 		"build-operator",
 	}
 	if !reflect.DeepEqual(got, want) {

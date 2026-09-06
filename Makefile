@@ -365,7 +365,7 @@ cover-gate:
 	@test -s coverage.out || { echo "cover-gate: coverage.out is missing or empty; the unit suite did not emit a profile" >&2; exit 1; }
 	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
-## verify-fast: Run the Node-free format, policy, vet, build, and config tier.
+## verify-fast: Run the pre-push format, vet, and Go build tier.
 .PHONY: verify-fast
 verify-fast:
 	$(GO) run ./test/ci fast

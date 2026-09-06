@@ -616,7 +616,10 @@ func fullChecks(makeCommand string) []check {
 func fastChecks(mergeChecks []check) []check {
 	result := make([]check, 0, len(mergeChecks))
 	for _, current := range mergeChecks {
-		if isPreflightCheck(current.label) {
+		if current.label == "fmt-check" ||
+			current.label == "no-phone-home" ||
+			current.label == "vet" ||
+			strings.HasPrefix(current.label, "build-") {
 			if current.label == "build-goobers" {
 				current.args = removePortalEmbedTag(current.args)
 			}
