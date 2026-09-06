@@ -162,10 +162,18 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	backlogRepo := backlogRepoRefForStage(root, repo)
 	trustLabel := providerInput("trustLabel", "")
 	readyLabel := providerInput("readyLabel", providers.LabelReady)
+	requireLabels := splitLabelList(providerInput("requireLabels", ""))
 	var labels []string
 	if trustLabel != "" {
 		labels = []string{trustLabel}
 	}
+	// Partition scope (#4180): without this, the ready-pool measurement reads
+	// over every instance's partition plus the unpartitioned remainder, and
+	// can report a healthy depth composed entirely of items this gaggle can
+	// never claim. requireLabels is injected the same way backlog-query's own
+	// forward scan gets it (defaultBacklogQueryRequireLabels), or may be
+	// declared explicitly on the stage.
+	labels = append(labels, requireLabels...)
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()

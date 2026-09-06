@@ -66,6 +66,19 @@ const DefaultClaimLease = 30 * time.Minute
 const backlogScanCeiling = 250
 const backlogScanPageSize = 100
 
+// backlogEligibilityQuotaFloor mirrors backloghealth.go's
+// defaultTransitionScanQuotaFloor and its rationale (#4182): keep a tenth of
+// the provider rate-limit window in reserve for the operations that actually
+// move work (claims, label writes, PR creation, merge-review) rather than
+// spending it on this cycle's blocked-record re-verification, which is
+// re-run against the SAME parked items every cycle regardless of backlog
+// size and was measured burning quota ~1.75x faster than the hourly refill.
+// Below the floor, scanBacklogEligibility defers that re-verification
+// entirely (backlogEligibilityScan.Deferred) — a previously blocked item
+// simply stays parked for one more cycle rather than the run draining quota
+// that the next three lanes down the pipeline need to even start.
+const backlogEligibilityQuotaFloor = 0.10
+
 type backlogScanCursor struct {
 	Cursor string `json:"cursor,omitempty"`
 }
@@ -519,6 +532,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		eligible:          eligible,
 		maxItems:          maxItems,
 		trustLabel:        trustLabel,
+		requireLabels:     requireLabels,
 		fieldFilter:       fieldFilter,
 		fieldOrder:        fieldOrder,
 		selectionPriority: selectionPriority,
@@ -1371,11 +1385,22 @@ func (session *backlogClaimSession) releaseLedger(ctx context.Context, item prov
 }
 
 type backlogResweepOptions struct {
-	enabled           bool
-	policy            backlogResweepPolicy
-	eligible          []providers.WorkItem
-	maxItems          int
-	trustLabel        string
+	enabled    bool
+	policy     backlogResweepPolicy
+	eligible   []providers.WorkItem
+	maxItems   int
+	trustLabel string
+	// requireLabels is the gaggle's partition scope (injected by
+	// defaultBacklogQueryRequireLabels, e.g. goobers:cloud/goobers:local — the
+	// ONLY mechanism that carries partition membership; there is no analogous
+	// excludeLabels injection). Without checking it here, a re-sweep lists and
+	// can mutate items outside the gaggle's partition — including items
+	// belonging to a sibling instance (#4181). Deliberately not the stage's
+	// full excludeLabels: those are workflow-routing exclusions (e.g.
+	// backlog-curation.yaml excludes goobers:ready/blocked-on-sibling from the
+	// FORWARD scan precisely so resweep — this code — can claim them; applying
+	// that list here would exclude every resweep candidate by construction).
+	requireLabels     []string
 	fieldFilter       *fieldpredicate.Predicate
 	fieldOrder        fieldpredicate.Order
 	selectionPriority []string
@@ -1449,6 +1474,17 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 	return result, 0
 }
 
+// missingRequiredLabel reports the first of requireLabels item does not
+// carry, if any — the re-sweep paths' partition scope check (#4181).
+func missingRequiredLabel(item providers.WorkItem, requireLabels []string) (string, bool) {
+	for _, label := range requireLabels {
+		if !item.HasLabel(label) {
+			return label, true
+		}
+	}
+	return "", false
+}
+
 func appendBlockedResweepCandidates(
 	ctx context.Context,
 	env backlogQueryEnv,
@@ -1474,6 +1510,10 @@ func appendBlockedResweepCandidates(
 		env.debugf("candidate %s reached eligibility evaluation (blocked re-sweep)", item.ID)
 		if !item.HasLabel(opts.trustLabel) {
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
+			continue
+		}
+		if label, ok := missingRequiredLabel(item, opts.requireLabels); ok {
+			env.debugf("excluded %s: missing required label %q", item.ID, label)
 			continue
 		}
 		if !item.HasLabel(blockedOnSiblingLabel) {
@@ -1579,6 +1619,10 @@ func appendReadyResweepCandidates(
 		env.debugf("candidate %s reached eligibility evaluation (ready re-sweep)", item.ID)
 		if !item.HasLabel(opts.trustLabel) {
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
+			continue
+		}
+		if label, ok := missingRequiredLabel(item, opts.requireLabels); ok {
+			env.debugf("excluded %s: missing required label %q", item.ID, label)
 			continue
 		}
 		if !item.HasLabel(opts.policy.readyLabel) {
@@ -1784,6 +1828,18 @@ type backlogEligibilityScan struct {
 	remainingRecords map[string]blockedRecord
 	verifiedSkips    map[string]blockedEligibilitySkip
 	observedSkips    []blockedEligibilitySkip
+	// Deferred reports that this scan skipped blocked-record re-verification
+	// because provider quota, as observed from a call this same scan already
+	// made, was already below backlogEligibilityQuotaFloor (#4182). eligible
+	// still holds every item that passed the free label/field/decomposition/
+	// dependency checks; only the per-parked-item provider re-check was
+	// skipped — a currently blocked item stays correctly excluded at claim
+	// time via reconcileBlockedEligibilityLocked's own partition against the
+	// persisted ledger (blockedrecords.go), which this deferral leaves
+	// untouched. QuotaLimit/QuotaRemaining are the window it was judged
+	// against, for diagnostics.
+	Deferred                   bool
+	QuotaLimit, QuotaRemaining int
 }
 
 func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backlogScanOptions) (backlogEligibilityScan, int) {
@@ -1896,30 +1952,47 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	for _, warning := range warnings {
 		pf(env.stderr, "warning: native issue dependencies: %s\n", warning)
 	}
-	result.observedRecords, err = snapshotBlockedRecordsForRepository(env.layout, env.backlogRepo)
-	if err != nil {
-		pf(env.stderr, "error: %v\n", err)
-		return result, 1
+	if env.ghIssueProvider != nil {
+		if limit, remaining, known := env.ghIssueProvider.LastObservedQuota(); known && limit > 0 &&
+			float64(remaining) < backlogEligibilityQuotaFloor*float64(limit) {
+			result.Deferred = true
+			result.QuotaLimit, result.QuotaRemaining = limit, remaining
+		}
 	}
-	result.remainingRecords = make(map[string]blockedRecord, len(result.observedRecords))
-	for itemID, record := range result.observedRecords {
-		result.remainingRecords[itemID] = record
-	}
-	_, result.observedSkips, _, warnings = filterBlockedEligibility(
-		ctx,
-		env.issueProvider,
-		env.backlogRepo,
-		append([]providers.WorkItem(nil), result.eligible...),
-		result.remainingRecords,
-	)
-	for _, warning := range warnings {
-		pf(env.stderr, "warning: blocked records: %s\n", warning)
-	}
-	if needsHumanAssignee, cfgErr := needsHumanAssigneeFor(env.layout); cfgErr != nil {
-		pf(env.stderr, "warning: blocked cycle reconciliation: %v\n", cfgErr)
+	if result.Deferred {
+		// Unconditional, not debug-gated: this is a production admission
+		// decision an operator needs to see happening on an ordinary run,
+		// not only when debugging a specific eligibility exclusion (#4182,
+		// recommendation 3 — "nothing currently alerts on quotaRemaining").
+		pf(env.stderr, "warning: deferring blocked-record re-verification: quota %d/%d is below the %.0f%% reserve floor (#4182)\n",
+			result.QuotaRemaining, result.QuotaLimit, backlogEligibilityQuotaFloor*100,
+		)
 	} else {
-		for _, warning := range reconcileBlockedCycleLabels(ctx, env.issueProvider, result.remainingRecords, needsHumanAssignee) {
-			pf(env.stderr, "warning: blocked cycle reconciliation: %s\n", warning)
+		result.observedRecords, err = snapshotBlockedRecordsForRepository(env.layout, env.backlogRepo)
+		if err != nil {
+			pf(env.stderr, "error: %v\n", err)
+			return result, 1
+		}
+		result.remainingRecords = make(map[string]blockedRecord, len(result.observedRecords))
+		for itemID, record := range result.observedRecords {
+			result.remainingRecords[itemID] = record
+		}
+		_, result.observedSkips, _, warnings = filterBlockedEligibility(
+			ctx,
+			env.issueProvider,
+			env.backlogRepo,
+			append([]providers.WorkItem(nil), result.eligible...),
+			result.remainingRecords,
+		)
+		for _, warning := range warnings {
+			pf(env.stderr, "warning: blocked records: %s\n", warning)
+		}
+		if needsHumanAssignee, cfgErr := needsHumanAssigneeFor(env.layout); cfgErr != nil {
+			pf(env.stderr, "warning: blocked cycle reconciliation: %v\n", cfgErr)
+		} else {
+			for _, warning := range reconcileBlockedCycleLabels(ctx, env.issueProvider, result.remainingRecords, needsHumanAssignee) {
+				pf(env.stderr, "warning: blocked cycle reconciliation: %s\n", warning)
+			}
 		}
 	}
 	result.verifiedSkips = make(map[string]blockedEligibilitySkip, len(result.observedSkips))
