@@ -79,6 +79,29 @@ describe("overview page", () => {
 
     render(<App client={new FixtureDaemonClient(completed)} />);
     expect(await screen.findByText("Retention sweep completed")).toBeInTheDocument();
+    expect(screen.getByText(/periodic trigger/i)).toBeInTheDocument();
+  });
+
+  it("renders a failed retention sweep status", async () => {
+    const failed = populatedDaemonFixtures();
+    failed.instance.maintenance = {
+      kind: "retention-sweep",
+      state: "failed",
+      trigger: "periodic",
+      startedAt: "2026-09-05T21:32:00Z",
+      lastProgressAt: "2026-09-05T21:32:10Z",
+      currentPhase: "projection-retention",
+      candidates: 9,
+      removed: 5,
+      failures: 1,
+      lastResult: "failed",
+      errorSummary: "git remote timed out",
+    };
+
+    render(<App client={new FixtureDaemonClient(failed)} />);
+    expect(await screen.findByText("Retention sweep failed")).toBeInTheDocument();
+    expect(screen.getByText(/periodic trigger/i)).toBeInTheDocument();
+    expect(screen.getByText(/git remote timed out/i)).toBeInTheDocument();
   });
 
   it("renders a cancelled retention sweep status", async () => {

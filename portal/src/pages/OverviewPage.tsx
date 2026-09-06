@@ -362,6 +362,7 @@ function Overview({
 function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
   const hasLastCompletedSweep = Boolean(maintenance.lastCompletedAt || maintenance.lastResult);
   const phase = maintenance.currentPhase ? ` · ${maintenance.currentPhase}` : "";
+  const triggerLabel = maintenance.trigger ? ` · ${maintenance.trigger} trigger` : "";
   const lastProgressLabel = maintenance.lastProgressAt
     ? ` · last progress ${formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago`
     : "";
@@ -371,6 +372,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
       return (
         <div className="maintenance-indicator" role="status" aria-live="polite">
           <strong>Retention sweep running</strong>
+          {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.startedAt && (
             <span>
               {" "}
@@ -389,6 +391,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
       return (
         <div className="maintenance-indicator maintenance-indicator-error" role="alert">
           <strong>Retention sweep failed</strong>
+          {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.errorSummary && <span> · {maintenance.errorSummary}</span>}
           {maintenance.lastProgressAt && (
             <span>
@@ -402,6 +405,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
       return (
         <div className="maintenance-indicator" role="status" aria-live="polite">
           <strong>Retention sweep completed</strong>
+          {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.lastCompletedAt && (
             <span>
               {" "}
@@ -420,6 +424,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
       return (
         <div className="maintenance-indicator" role="status" aria-live="polite">
           <strong>Retention sweep cancelled</strong>
+          {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.lastCompletedAt && (
             <span>
               {" "}
@@ -432,6 +437,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
       return (
         <div className="maintenance-indicator" role="status" aria-live="polite">
           <strong>Retention sweep queued</strong>
+          {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.lastCompletedAt && (
             <span>
               {" "}
@@ -447,6 +453,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
       return (
         <div className="maintenance-indicator" role="status" aria-live="polite">
           <strong>No retention sweep running</strong>
+          {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.lastCompletedAt && (
             <span>
               {" "}
