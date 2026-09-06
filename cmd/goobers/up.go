@@ -144,6 +144,36 @@ func sweepOrphanedEphemeralTmp(cfg *instance.Config, log *journal.InstanceLog) {
 	newSweepErrorReporter(log, "ephemeral_tmp_sweep_failed").report(sweepErr)
 }
 
+// startAPIReadCacheLockSweepTicker starts the periodic re-sweep of stale
+// api-read-cache per-list-key lock files and returns the channel that closes
+// once its goroutine has stopped (for the shutdown join in runUpContext).
+//
+// #4251: cleanStaleAPIReadCacheLocks no longer gates itself to once per
+// process (apireadcache.go), so this ticker is what actually makes that
+// removal matter for a daemon whose own cache-construction call sites
+// (stage dispatch, open-PR polling, counter evaluation) might otherwise go
+// quiet for longer than apiReadCacheStaleLockAge between calls. Same
+// never-write-to-stdout footing as the other periodic sweeps in
+// runUpContext; the sweep itself is fail-open with no error to report
+// (apireadcache.go's own doc: "must never fail cache construction").
+func startAPIReadCacheLockSweepTicker(ctx context.Context, l instance.Layout) <-chan struct{} {
+	ticker := time.NewTicker(apiReadCacheLockSweepInterval)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cleanStaleAPIReadCacheLocks(l.SchedulerDir())
+			}
+		}
+	}()
+	return done
+}
+
 func (r *sweepErrorReporter) report(err error) {
 	if err == nil {
 		r.lastMessage = ""
@@ -1454,28 +1484,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}()
 
-	// #4251: cleanStaleAPIReadCacheLocks no longer gates itself to once per
-	// process (apireadcache.go), so this ticker is what actually makes that
-	// removal matter for a daemon whose own cache-construction call sites
-	// (stage dispatch, open-PR polling, counter evaluation) might otherwise
-	// go quiet for longer than apiReadCacheStaleLockAge between calls. Same
-	// never-write-to-stdout footing as the tickers above; the sweep itself is
-	// fail-open with no error to report (apireadcache.go's own doc: "must
-	// never fail cache construction").
-	apiReadCacheLockSweepTicker := time.NewTicker(apiReadCacheLockSweepInterval)
-	apiReadCacheLockSweepTickerDone := make(chan struct{})
-	go func() {
-		defer close(apiReadCacheLockSweepTickerDone)
-		defer apiReadCacheLockSweepTicker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-apiReadCacheLockSweepTicker.C:
-				cleanStaleAPIReadCacheLocks(l.SchedulerDir())
-			}
-		}
-	}()
+	apiReadCacheLockSweepTickerDone := startAPIReadCacheLockSweepTicker(ctx, l)
 
 	// #343's daemon-side half: periodically sweep for delegated trigger
 	// requests a short-lived `goobers run` invocation dropped after finding
