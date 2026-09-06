@@ -188,9 +188,20 @@ func (m *Manager) InstallTask(ctx context.Context) (Status, error) {
 		return Status{}, ErrAlreadyInstalled
 	}
 	task := m.windowsTaskName()
-	command := quoteWindowsCommandArg(m.config.Executable) + " __service-supervise " + quoteWindowsCommandArg(m.config.InstanceRoot)
-	if err := m.runRequired(ctx, "schtasks.exe", "/Create", "/TN", task, "/TR", command,
-		"/SC", "ONLOGON", "/RU", m.config.UserName, "/RL", "LIMITED", "/F"); err != nil {
+	arguments := "__service-supervise " + quoteWindowsCommandArg(m.config.InstanceRoot)
+	script := fmt.Sprintf(
+		`$ErrorActionPreference='Stop'; $action=New-ScheduledTaskAction -Execute %s -Argument %s; `+
+			`$trigger=New-ScheduledTaskTrigger -AtLogOn -User %s; `+
+			`$principal=New-ScheduledTaskPrincipal -UserId %s -LogonType Interactive -RunLevel Limited; `+
+			`Register-ScheduledTask -TaskPath %s -TaskName %s -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null`,
+		quotePowerShellLiteral(m.config.Executable),
+		quotePowerShellLiteral(arguments),
+		quotePowerShellLiteral(m.config.UserName),
+		quotePowerShellLiteral(m.config.UserName),
+		quotePowerShellLiteral(windowsTaskPrefix),
+		quotePowerShellLiteral(strings.TrimPrefix(task, windowsTaskPrefix)),
+	)
+	if err := m.runRequired(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script); err != nil {
 		return Status{}, err
 	}
 	if err := m.runRequired(ctx, "schtasks.exe", "/Run", "/TN", task); err != nil {
@@ -614,6 +625,10 @@ func (m *Manager) statusWindows(ctx context.Context) (Status, error) {
 func (m *Manager) windowsTaskName() string {
 	sum := sha256.Sum256([]byte(m.config.InstanceRoot))
 	return windowsTaskPrefix + "daemon-" + fmt.Sprintf("%x", sum[:8])
+}
+
+func quotePowerShellLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func (m *Manager) statusTask(ctx context.Context) (Status, error) {

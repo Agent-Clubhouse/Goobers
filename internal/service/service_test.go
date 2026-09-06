@@ -249,14 +249,21 @@ func TestWindowsScheduledTaskInstallUsesCurrentUserAndLogonTrigger(t *testing.T)
 		t.Fatalf("status = %+v", status)
 	}
 	create := runner.calls[1]
-	if create.name != "schtasks.exe" {
+	if create.name != "powershell.exe" {
 		t.Fatalf("create command = %#v", create)
 	}
 	args := strings.Join(create.args, " ")
-	for _, want := range []string{"/Create", "/SC ONLOGON", "/RU CONTOSO\\alice", "/RL LIMITED", "__service-supervise"} {
+	for _, want := range []string{
+		"-NoProfile", "-NonInteractive", "Register-ScheduledTask",
+		"New-ScheduledTaskTrigger -AtLogOn", "New-ScheduledTaskPrincipal",
+		"-LogonType Interactive", "-RunLevel Limited", "__service-supervise",
+	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("create command = %q, missing %q", args, want)
 		}
+	}
+	if strings.Contains(strings.ToLower(args), "password") {
+		t.Fatalf("create command must not request or persist a password: %q", args)
 	}
 }
 
