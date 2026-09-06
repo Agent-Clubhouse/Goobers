@@ -35,7 +35,109 @@ func TestRandomizedInterventionRequiresExplicitMarker(t *testing.T) {
 	}
 }
 
-func TestCausalCreditTreatsArmOnlyFactsAsUnidentifiable(t *testing.T) {
+// TestCausalCreditTreatsArmOnlyFactsAsNotRandomized guards against "arm"
+// metadata alone (with no randomizedIntervention marker) being mistaken for
+// a genuine randomized assignment — every run here shares one identity, so
+// if arm-only facts were wrongly treated as randomized this would produce a
+// randomizedEstimate result instead of the zero-cohort-data suppression
+// (#4025) a single-version, non-randomized node now correctly gets: no
+// versioned changepoint was ever recorded for it, so it is never reported
+// at all rather than filed as a permanent "unidentifiable" no-op every cycle.
+// seedCausalRunWithTriggerRef mirrors seedCausalRun but also sets TriggerRef
+// — seedCausalRun has no such parameter since no existing test needed one
+// before #4025's regression test, which specifically needs a per-run-unique
+// ref (the near-unique-per-run shape that made trigger_ref unsuitable as an
+// overlap-required covariate).
+func seedCausalRunWithTriggerRef(t *testing.T, store *Store, runID string, startedAt time.Time, stage, identity string, failed bool, triggerRef string) {
+	t.Helper()
+	phase := journal.PhaseCompleted
+	verdict, target := "pass", journal.TargetComplete
+	if failed {
+		phase, verdict, target = journal.PhaseFailed, "fail", "@abort"
+	}
+	finishedAt := startedAt.Add(time.Minute)
+	if err := store.UpsertRun(context.Background(), Projection{
+		Run: RunRow{
+			RunID: runID, Gaggle: "core", Workflow: "implementation",
+			Phase: phase, Terminal: true, StartedAt: startedAt,
+			FinishedAt: &finishedAt, LastActivity: finishedAt, LastSeq: 1,
+			OutcomeVerdict: verdict, OutcomeTarget: target,
+			TriggerKind: "backlog-item", TriggerRef: triggerRef,
+		},
+		Nodes: []NodeRow{
+			{RunID: runID, Kind: "stage", Name: stage, Identity: identity, Attempts: 1},
+		},
+	}); err != nil {
+		t.Fatalf("seed %s: %v", runID, err)
+	}
+}
+
+func seedCausalControlRunWithTriggerRef(t *testing.T, store *Store, runID string, startedAt time.Time, failed bool, triggerRef string) {
+	t.Helper()
+	phase := journal.PhaseCompleted
+	verdict, target := "pass", journal.TargetComplete
+	if failed {
+		phase, verdict, target = journal.PhaseFailed, "fail", "@abort"
+	}
+	finishedAt := startedAt.Add(time.Minute)
+	if err := store.UpsertRun(context.Background(), Projection{Run: RunRow{
+		RunID: runID, Gaggle: "core", Workflow: "implementation",
+		Phase: phase, Terminal: true, StartedAt: startedAt,
+		FinishedAt: &finishedAt, LastActivity: finishedAt, LastSeq: 1,
+		OutcomeVerdict: verdict, OutcomeTarget: target,
+		TriggerKind: "backlog-item", TriggerRef: triggerRef,
+	}}); err != nil {
+		t.Fatalf("seed %s: %v", runID, err)
+	}
+}
+
+// TestCausalCreditIgnoresPerRunUniqueTriggerRefForOverlap is the regression
+// test for #4025's covariate-selection bug: trigger_ref (a backlog item id
+// or cron expression — effectively unique per run for backlog/webhook
+// triggers) was included as an overlap-required covariate, which guaranteed
+// covariatesOverlap failed for any node whose treated/control runs came
+// from different backlog items — the common case, and the dominant
+// explanation for 16 of 54 nodes reporting real, non-trivial cohorts that
+// nonetheless never identified. This is otherwise the exact same
+// treated/control DiD shape as TestCausalCreditBuildsRoutedAndUnrouted
+// DifferenceInDifferencesCohorts, with every run given a distinct
+// TriggerRef — before the fix this would report Unidentifiable
+// ("cohorts do not overlap"); after, trigger_kind alone (a small, shared
+// enum) is the confounder, and both cohorts trivially share it.
+func TestCausalCreditIgnoresPerRunUniqueTriggerRefForOverlap(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	start := time.Date(2026, 8, 22, 3, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		at := start.Add(time.Duration(i) * time.Minute)
+		seedCausalRunWithTriggerRef(t, store, fmt.Sprintf("treated-before-%02d", i), at,
+			"implement", "sha256:old", true, fmt.Sprintf("backlog-item-%03d", i))
+		seedCausalControlRunWithTriggerRef(t, store, fmt.Sprintf("control-before-%02d", i), at.Add(30*time.Second), true,
+			fmt.Sprintf("backlog-item-%03d", 100+i))
+	}
+	for i := 0; i < 10; i++ {
+		at := start.Add(time.Hour + time.Duration(i)*time.Minute)
+		seedCausalRunWithTriggerRef(t, store, fmt.Sprintf("treated-after-%02d", i), at,
+			"implement", "sha256:new", false, fmt.Sprintf("backlog-item-%03d", 200+i))
+		seedCausalControlRunWithTriggerRef(t, store, fmt.Sprintf("control-after-%02d", i), at.Add(30*time.Second), true,
+			fmt.Sprintf("backlog-item-%03d", 300+i))
+	}
+
+	got, err := store.CausalCredit(ctx, CausalOptions{
+		Gaggle: "core", Workflow: "implementation", MinCohortSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Identification != CausalDifferenceInDifferences {
+		t.Fatalf("causal credit = %+v, want difference-in-differences despite every run having a distinct trigger_ref", got)
+	}
+	if !got[0].HasCohortData {
+		t.Fatalf("identified estimate must report HasCohortData=true: %+v", got[0])
+	}
+}
+
+func TestCausalCreditTreatsArmOnlyFactsAsNotRandomized(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	start := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
@@ -51,8 +153,8 @@ func TestCausalCreditTreatsArmOnlyFactsAsUnidentifiable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Identification != CausalUnidentifiable {
-		t.Fatalf("arm-only causal credit = %+v, want unidentifiable", got)
+	if len(got) != 0 {
+		t.Fatalf("arm-only causal credit = %+v, want suppressed (no versioned changepoint, not mistakenly randomized)", got)
 	}
 }
 

@@ -174,6 +174,9 @@ type Finding struct {
 	Classification       string                `json:"classification,omitempty"`
 	RecommendedAction    string                `json:"recommendedAction,omitempty"`
 	NominationGuardrails *NominationGuardrails `json:"nomination_guardrails,omitempty"`
+	// ErrorClass mirrors rollup.Finding.ErrorClass — populated only for
+	// error-signature findings (#3916).
+	ErrorClass string `json:"error_class,omitempty"`
 }
 
 // CausalNodeCredit is one node's causal estimate, or its explicit
@@ -192,6 +195,9 @@ type CausalNodeCredit struct {
 	IntervalAvailable bool    `json:"intervalAvailable"`
 	PromotionEligible bool    `json:"promotionEligible"`
 	PromotionSource   string  `json:"promotionSource"`
+	// HasCohortData distinguishes a node that never ran an experiment (false)
+	// from one that did but still failed identification (true) (#4025).
+	HasCohortData bool `json:"hasCohortData"`
 }
 
 // PromotionSignal is bounded promotion evidence for one node.
