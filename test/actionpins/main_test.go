@@ -24,6 +24,15 @@ func TestVerifyRejectsMutableReference(t *testing.T) {
 	}
 }
 
+func TestVerifyAcceptsLocalAction(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeWorkflow(t, root, "./.github/actions/setup-golangci-lint")
+	if err := verify(root); err != nil {
+		t.Fatalf("verify local action: %v", err)
+	}
+}
+
 func writeWorkflow(t *testing.T, root, reference string) {
 	t.Helper()
 	for _, relativePath := range workflowFiles {
