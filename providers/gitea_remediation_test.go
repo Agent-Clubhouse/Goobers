@@ -191,7 +191,7 @@ func TestGiteaProviderBranchTipSHAMissingBranchIsError(t *testing.T) {
 	}
 }
 
-func TestGiteaProviderUpdateCommentPatchesBody(t *testing.T) {
+func TestGiteaProviderUpdateCommentPatchesBodyAndRecordsMutation(t *testing.T) {
 	var gotBody map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/acme/app/issues/comments/55" {
@@ -199,16 +199,29 @@ func TestGiteaProviderUpdateCommentPatchesBody(t *testing.T) {
 		}
 		assertMethod(t, r, http.MethodPatch)
 		decodeJSON(t, r, &gotBody)
-		writeJSON(t, w, map[string]interface{}{"id": 55, "body": gotBody["body"]})
+		writeJSON(t, w, map[string]interface{}{
+			"id": 55, "body": gotBody["body"],
+			"html_url":  "https://gitea.test/acme/app/pulls/12#issuecomment-55",
+			"issue_url": "https://gitea.test/api/v1/repos/acme/app/issues/12",
+		})
 	}))
 	defer server.Close()
 
-	provider := NewGiteaProvider(server.URL, "token")
+	recorder := &recordingRecorder{}
+	provider := NewGiteaProvider(server.URL, "token", WithGiteaMutationRecorder(recorder))
 	if err := provider.UpdateComment(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "55", "updated body"); err != nil {
 		t.Fatalf("UpdateComment: %v", err)
 	}
 	if gotBody["body"] != "updated body" {
 		t.Fatalf("patched body = %q, want %q", gotBody["body"], "updated body")
+	}
+	ref, ok := recorder.last()
+	if !ok {
+		t.Fatal("UpdateComment recorded no external ref")
+	}
+	if ref.Provider != ProviderGitea || ref.Ref != "acme/app#12" ||
+		ref.Operation != "comment" || ref.URL != "https://gitea.test/acme/app/pulls/12#issuecomment-55" {
+		t.Fatalf("recorded ref = %+v, want gitea PR 12 comment mutation", ref)
 	}
 }
 

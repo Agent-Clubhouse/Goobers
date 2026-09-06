@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +49,35 @@ type restComment struct {
 	Body      string     `json:"body"`
 	User      githubUser `json:"user"`
 	HTMLURL   string     `json:"html_url"`
+	IssueURL  string     `json:"issue_url"`
+	PRURL     string     `json:"pull_request_url"`
 	CreatedAt *time.Time `json:"created_at"`
+}
+
+func commentMutationRef(provider ProviderKind, repo RepositoryRef, comment restComment) (ExternalRef, bool) {
+	for _, rawURL := range []string{comment.PRURL, comment.IssueURL, comment.HTMLURL} {
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			continue
+		}
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		for i := len(parts) - 2; i >= 0; i-- {
+			if parts[i] != "issues" && parts[i] != "pulls" {
+				continue
+			}
+			id := parts[i+1]
+			if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+				continue
+			}
+			return ExternalRef{
+				Provider:  provider,
+				Ref:       issueRef(repo, id),
+				URL:       comment.HTMLURL,
+				Operation: "comment",
+			}, true
+		}
+	}
+	return ExternalRef{}, false
 }
 
 // restRepository is the repository payload both backends embed in a pull

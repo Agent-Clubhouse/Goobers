@@ -263,7 +263,14 @@ func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, 
 	if err != nil {
 		return err
 	}
-	return p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, nil)
+	var comment restComment
+	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, &comment); err != nil {
+		return err
+	}
+	if ref, ok := commentMutationRef(ProviderGitHub, repo, comment); ok {
+		p.recordExternalRef(ctx, ref)
+	}
+	return nil
 }
 
 // DeleteComment removes an issue/PR comment. A missing comment is already in
