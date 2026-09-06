@@ -221,7 +221,13 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 	if provider == "" {
 		return nil, fmt.Errorf("rollup: cost provider is required")
 	}
-	rows, err := db.readDB().QueryContext(ctx, `
+	tx, err := db.readDB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("rollup: begin cost query: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `
 		SELECT r.run_id, r.started_at, a.external_kind, a.external_id
 		FROM runs r
 		JOIN run_cost_attribution a ON a.run_id = r.run_id
@@ -260,8 +266,11 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rollup: iterate cost-attributed runs: %w", err)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("rollup: close cost-attributed runs: %w", err)
+	}
 
-	usageRows, err := db.readDB().QueryContext(ctx, `
+	usageRows, err := tx.QueryContext(ctx, `
 		SELECT sa.run_id, su.input_tokens, su.output_tokens,
 		       su.cache_read_tokens, su.cache_write_tokens, su.reasoning_tokens,
 		       su.copilot_premium_requests, su.nano_aiu, su.cost_usd,
@@ -303,8 +312,11 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 	if err := usageRows.Err(); err != nil {
 		return nil, fmt.Errorf("rollup: iterate attributed attempt usage: %w", err)
 	}
+	if err := usageRows.Close(); err != nil {
+		return nil, fmt.Errorf("rollup: close attributed attempt usage: %w", err)
+	}
 
-	modelRows, err := db.readDB().QueryContext(ctx, `
+	modelRows, err := tx.QueryContext(ctx, `
 		SELECT smu.run_id, smu.model, smu.input_tokens, smu.output_tokens,
 		       smu.cache_read_tokens, smu.cache_write_tokens, smu.reasoning_tokens,
 		       smu.copilot_premium_requests, smu.nano_aiu, smu.cost_usd,
@@ -351,10 +363,16 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 	if err := modelRows.Err(); err != nil {
 		return nil, fmt.Errorf("rollup: iterate attributed model usage: %w", err)
 	}
+	if err := modelRows.Close(); err != nil {
+		return nil, fmt.Errorf("rollup: close attributed model usage: %w", err)
+	}
 
 	out := make([]*costRun, 0, len(order))
 	for _, runID := range order {
 		out = append(out, byID[runID])
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("rollup: commit cost query: %w", err)
 	}
 	return out, nil
 }
