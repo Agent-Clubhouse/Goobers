@@ -315,4 +315,5 @@ github.com/goobers/goobers/internal/creditgraph.stageFacts.provenanceMissing # M
 github.com/goobers/goobers/internal/creditgraph.stageFacts.badChoice # Bad-tool-choice detection reachable through the retained attribution entry point (#4078).
 github.com/goobers/goobers/internal/creditgraph.attributor.adjust # Contradiction and intervention adjustment reachable through the retained attribution entry point (#4078).
 github.com/goobers/goobers/internal/creditgraph.attributor.intervention # Repeated-attempt intervention evidence reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # Simplest concrete TargetLeaser, retained as the generic exercise double for Publisher/Primitives contract tests; its one production caller (publish-batch) moved to cmd/goobers's claims-plane-backed leaser for pod execution support (#4340).
 github.com/goobers/goobers/internal/creditgraph.attributor.finding # Cause finding construction reachable through the retained attribution entry point (#4078).
