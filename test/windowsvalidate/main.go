@@ -27,7 +27,10 @@ import (
 const (
 	contractEvidenceDir       = "GOOBERS_SHIPPED_CONTRACT_EVIDENCE_DIR"
 	ephemeralAPIListenAddress = "127.0.0.1:0"
-	implementationTestPattern = `^TestShippedWorkflowContracts$/^reference-workflows$/^goobers_implementation$/^01_query-backlog_next$`
+	// #4414 added preflight-repo-write as implementation.yaml's new first
+	// stage (before query-backlog), which renumbers this scenario name —
+	// contracts_test.go generates it from the first-encountered graph edge.
+	implementationTestPattern = `^TestShippedWorkflowContracts$/^reference-workflows$/^goobers_implementation$/^01_preflight-repo-write_next$`
 )
 
 var (
