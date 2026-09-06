@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/workerhost"
@@ -72,10 +73,20 @@ type workerSeams struct {
 	// historyDepth bounds history. Zero disables retention entirely, which
 	// makes any pin the current tree cannot satisfy an immediate refusal.
 	historyDepth int
+	// lastPinRefusal dedupes a persisting gate_pin_missing/run_pin_unverifiable
+	// refusal per (gaggle, workflow): #4153 found this refusal previously never
+	// logged at all, so a worker whose config tree has no writer to ever bring
+	// the pinned tree into force (rather than merely being one reload behind)
+	// retried the same refusal forever with nothing an operator could act on.
+	// Logging only the FIRST occurrence of each distinct expected digest — and
+	// clearing the entry once that digest resolves — turns the invisible
+	// infinite retry into a surfaced, alertable condition without spamming the
+	// log once per retried attempt. Guarded by mu.
+	lastPinRefusal map[localscheduler.WorkflowIdentity]string
 	// mu serializes the two writers that publish a snapshot: forGaggle's lazy
 	// seam construction and the config watcher's reload. Both read the current
 	// pointer, derive a successor, and store it, so neither may interleave
-	// with the other. It also guards history.
+	// with the other. It also guards history and lastPinRefusal.
 	mu sync.Mutex
 }
 

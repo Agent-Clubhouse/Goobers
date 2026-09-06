@@ -340,6 +340,84 @@ func TestWorkerPinRefusalRecoversAfterAReloadBringsThePinnedTree(t *testing.T) {
 	}
 }
 
+// TestWorkerPinRefusalLogsOnceAndClearsOnRecovery is #4153's regression test:
+// the previous refusal path never logged anything at all, so a worker whose
+// config tree has no writer to ever bring the pinned tree into force (not
+// merely one reload behind) retried the exact same refusal forever with no
+// operator-visible signal. This proves three things:
+//   - the FIRST refusal for a given expected digest is logged loudly, so the
+//     retry is now alertable instead of silent;
+//   - repeated attempts against the SAME still-missing digest do not spam the
+//     log once per retry, mirroring the config watcher's own dedupe;
+//   - once the pinned tree lands and the pin resolves, the dedup entry
+//     clears, so a LATER divergence against a different digest is loud again
+//     rather than assumed already-reported.
+func TestWorkerPinRefusalLogsOnceAndClearsOnRecovery(t *testing.T) {
+	root := initDemo(t)
+	seams := workerReloadSeams(t, root)
+	seams.historyDepth = 0
+
+	var logged []string
+	seams.logf = func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+
+	pin := "sha256:" + strings.Repeat("ab", 32)
+
+	if _, err := seams.forPinnedGaggle(pinGaggle, pinWorkflow, pin); err == nil {
+		t.Fatal("a pin no tree resolves was served")
+	}
+	if _, err := seams.forPinnedGaggle(pinGaggle, pinWorkflow, pin); err == nil {
+		t.Fatal("a pin no tree resolves was served")
+	}
+	if _, err := seams.forPinnedGaggle(pinGaggle, pinWorkflow, pin); err == nil {
+		t.Fatal("a pin no tree resolves was served")
+	}
+
+	var refusalLines []string
+	for _, line := range logged {
+		if strings.Contains(line, gooberPinMissingCode) {
+			refusalLines = append(refusalLines, line)
+		}
+	}
+	if len(refusalLines) != 1 {
+		t.Fatalf("three identical refusals produced %d logged lines %v, want exactly 1 — "+
+			"either the refusal is still silent, or an unbounded retry now spams the log", len(refusalLines), refusalLines)
+	}
+	if !strings.Contains(refusalLines[0], pin) {
+		t.Fatalf("logged refusal %q does not name the expected digest %s", refusalLines[0], pin)
+	}
+
+	// The pinned tree lands: recovery, exactly like #3884's own recovery test.
+	currentPin(t, seams) // sanity: the current tree resolves something.
+	newPin := currentPin(t, seams)
+	if _, err := seams.forPinnedGaggle(pinGaggle, pinWorkflow, newPin); err != nil {
+		t.Fatalf("attempt against the current tree's own digest: %v", err)
+	}
+
+	// A later divergence against a DIFFERENT digest must be loud again, not
+	// assumed already-reported because some earlier refusal was logged once.
+	logged = nil
+	otherPin := "sha256:" + strings.Repeat("cd", 32)
+	if _, err := seams.forPinnedGaggle(pinGaggle, pinWorkflow, otherPin); err == nil {
+		t.Fatal("a pin no tree resolves was served")
+	}
+	var secondRefusalLines []string
+	for _, line := range logged {
+		if strings.Contains(line, gooberPinMissingCode) {
+			secondRefusalLines = append(secondRefusalLines, line)
+		}
+	}
+	if len(secondRefusalLines) != 1 {
+		t.Fatalf("a new divergence against a different digest produced %d logged lines %v, want exactly 1 — "+
+			"recovery must clear the dedup entry rather than silencing every later refusal",
+			len(secondRefusalLines), secondRefusalLines)
+	}
+	if !strings.Contains(secondRefusalLines[0], otherPin) {
+		t.Fatalf("logged refusal %q does not name the new expected digest %s", secondRefusalLines[0], otherPin)
+	}
+}
+
 // TestWorkerRetainedConfigTreesAreBoundedAndEvictOldest pins the bound. Two
 // properties, and the second is the one that matters: retention is finite, and
 // past the bound the pin fails CLOSED — the worker refuses rather than quietly
