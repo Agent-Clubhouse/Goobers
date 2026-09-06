@@ -59,6 +59,7 @@ spec:
       evaluator: agentic
       agentic:
         goober: java-reviewer
+        workspace: repo-readonly
       branches:
         pass: local-ci
         needs-changes: implement

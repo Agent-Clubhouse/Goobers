@@ -35,6 +35,7 @@ spec:
     - name: implement
       type: agentic
       goober: coder
+      workspace: repo
       goal: Implement the backlog item and open a PR.
       capabilities:
         - agent:model

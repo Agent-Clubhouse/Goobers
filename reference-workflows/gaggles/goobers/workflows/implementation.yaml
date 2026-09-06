@@ -447,6 +447,7 @@ spec:
       evaluator: agentic
       agentic:
         goober: reviewer
+        workspace: repo-readonly
       branches:
         pass: push-branch
         needs-changes: implement
