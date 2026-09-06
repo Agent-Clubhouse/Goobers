@@ -22,9 +22,22 @@ import (
 type RepoWriteFailureCapability string
 
 const (
-	RepoWriteFailureUnauthorized                   RepoWriteFailureCapability = "repo.push.unauthorized"
-	RepoWriteFailureNoPushPermission               RepoWriteFailureCapability = "repo.push.no-permission"
-	RepoWriteFailureBranchPolicy                   RepoWriteFailureCapability = "repo.push.branch-policy"
+	// RepoWriteFailureUnauthorized means the repository was unreachable or
+	// the credential was rejected outright (HTTP 401/403/404 fetching the
+	// repository itself).
+	RepoWriteFailureUnauthorized RepoWriteFailureCapability = "repo.push.unauthorized"
+	// RepoWriteFailureNoPushPermission means the credential authenticated
+	// successfully but GitHub reports it lacks push permission on the
+	// repository.
+	RepoWriteFailureNoPushPermission RepoWriteFailureCapability = "repo.push.no-permission"
+	// RepoWriteFailureBranchPolicy means a branch_name_pattern ruleset rule
+	// actually denies the checked branch name, evaluated by its own
+	// operator/pattern/negate parameters.
+	RepoWriteFailureBranchPolicy RepoWriteFailureCapability = "repo.push.branch-policy"
+	// RepoWriteFailurePolicyIntrospectionUnavailable means GitHub answered
+	// but did not expose the information this check needs (push permission
+	// or branch ruleset evaluation) for this credential or plan — reported
+	// explicitly rather than inferred as either a pass or a denial.
 	RepoWriteFailurePolicyIntrospectionUnavailable RepoWriteFailureCapability = "repo.push.policy-introspection-unavailable"
 )
 

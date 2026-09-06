@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -315,8 +316,8 @@ func TestDispatcherPreflightRepositoryWriteFailsClosedWithoutDeclaration(t *test
 	if err == nil {
 		t.Fatal("expected ErrUnsupported for a provider that has not declared repo.push.preflight")
 	}
-	unsupported, ok := err.(ErrUnsupported)
-	if !ok {
+	var unsupported ErrUnsupported
+	if !errors.As(err, &unsupported) {
 		t.Fatalf("error = %v, want ErrUnsupported", err)
 	}
 	if unsupported.Capability != CapRepoPushPreflight {
