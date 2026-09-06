@@ -450,6 +450,10 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 					Timeout:            remaining,
 					MaxTranscriptBytes: req.MaxTranscriptBytes,
 					StdoutCapture:      recoveryCapture,
+					// The recovery turn runs on what is LEFT of the budget,
+					// so a stall here is if anything more urgent to see than
+					// one in the main session (#4179).
+					Activity: agentTelemetry.activityObserver(),
 				})
 				invocationResults = append(invocationResults, recovery)
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
