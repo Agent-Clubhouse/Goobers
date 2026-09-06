@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/providers"
@@ -49,11 +50,25 @@ func newClaimsPlane(t *testing.T) *claimsPlane {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Also wires the journal plane (#4417): a real daemon (cmd/goobers/up.go)
+	// stamps every CLI-stage pod with ALL FOUR plane bearers together
+	// (dispatcher/podspec.go's planeEnv, "ALL OR NOTHING"), so a pod that can
+	// reach the claims plane can always ALSO reach the journal/annotation
+	// plane recordItemRepository writes through. A claims-only fixture would
+	// exercise a combination no real pod ever has.
+	journalWriter, err := livejournal.NewWriter(func(gaggle string) (string, bool) {
+		return layout.ForGaggle(gaggle).RunsDir(), true
+	}, livejournal.WithInstanceLog(instanceLog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(journalWriter.Close)
 	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
 		httpapi.WithAuthenticator(authenticator),
 		httpapi.WithClaimService(newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
 			return recoverClaims(layout, instanceLog, now, nil, nil)
 		})),
+		httpapi.WithJournalService(journalWriter),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -543,6 +558,11 @@ func TestPullRequestClaimsOverThePlane(t *testing.T) {
 		t.Fatalf("seed contended PR: ok=%v err=%v", ok, err)
 	}
 	stampClaimsPlaneEnv(t, plane, "run-1", token)
+	// #4417: claimPullRequestInOrder also records the selected PR's
+	// repository identity over the journal/annotation plane — real pods get
+	// this bearer in the SAME stamp as the claims one (dispatcher/podspec.go's
+	// "ALL OR NOTHING" planeEnv), so this fixture must too.
+	stampJournalPlaneEnv(t, plane.server.URL, token, "run-1", "goobers")
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	podRoot := t.TempDir()

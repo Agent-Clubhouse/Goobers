@@ -156,6 +156,12 @@ func claimPullRequestInOrder(
 	if err != nil {
 		return nil, fmt.Errorf("open claim ledger: %w", err)
 	}
+	annotations, err := openStageAnnotator(l)
+	if err != nil {
+		return nil, fmt.Errorf("open instance annotations: %w", err)
+	}
+	defer func() { _ = annotations.Close() }()
+
 	var selected *providers.PullRequestSummary
 	err = ledger.Locked(claimContext(), claimLockOperationPRAcquire, func(tx claimsclient.Ledger) error {
 		for _, candidate := range candidates {
@@ -174,6 +180,16 @@ func claimPullRequestInOrder(
 				return fmt.Errorf("claim PR #%d in ledger: %w", candidate.Number, err)
 			}
 			if ok {
+				// #4417: record the PR's own typed repository identity
+				// against this claim, durably, before returning it as
+				// selected — terminal circuit-breaker/notification
+				// bookkeeping later reads this back instead of
+				// reconstructing ownership from the gaggle's static
+				// project or cfg.Repos[0].
+				itemID := pullRequestClaimKey(candidate.Number)
+				if recordErr := recordItemRepository(annotations, runID, itemID, itemKindPullRequest, repo); recordErr != nil {
+					return fmt.Errorf("claim PR #%d: %w", candidate.Number, recordErr)
+				}
 				candidate := candidate
 				selected = &candidate
 				break

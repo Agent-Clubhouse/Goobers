@@ -46,6 +46,7 @@ func TestFailureStreakPersistsInJournalAcrossHandlerCalls(t *testing.T) {
 		if ok, _, err := ledger.Claim("2701", runID, "implementation", time.Hour); err != nil || !ok {
 			t.Fatalf("seed claim %d: ok=%v err=%v", i, ok, err)
 		}
+		seedItemRepositoryForTest(t, l, runID, "2701", repo)
 		h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 		if err := h(context.Background(), runner.FailedOutcome{
 			RunID:   runID,
@@ -101,6 +102,7 @@ func TestFailureStreakNotAdvancedWhenCommentWriteRateLimited(t *testing.T) {
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
 	}}
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	seedItemRepositoryForTest(t, l, "run-rate-limited", "2702", repo)
 
 	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 	if err := h(context.Background(), runner.FailedOutcome{

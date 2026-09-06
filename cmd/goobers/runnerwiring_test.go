@@ -4304,6 +4304,7 @@ func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 	if ok, _, err := ledger.Claim("463", "run-timeout", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
+	seedItemRepositoryForTest(t, l, "run-timeout", "463", providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"})
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
@@ -4376,6 +4377,7 @@ func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
 	if ok, _, err := ledger.Claim("463", "run-trip", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
+	seedItemRepositoryForTest(t, l, "run-trip", "463", providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"})
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
@@ -4431,6 +4433,7 @@ func TestBuildFailedHandlerSkipsUpsertWhenStreakReadFails(t *testing.T) {
 	if ok, _, err := ledger.Claim("463", "run-streak-read-error", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
+	seedItemRepositoryForTest(t, l, "run-streak-read-error", "463", providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"})
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
@@ -4469,6 +4472,7 @@ func TestBuildFailedHandlerNormalizesPRClaimID(t *testing.T) {
 	if ok, _, err := ledger.Claim("pr/955", "run-remediate-fail", "pr-remediation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed PR claim: ok=%v err=%v", ok, err)
 	}
+	seedItemRepositoryForTest(t, l, "run-remediate-fail", "pr/955", providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"})
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
@@ -4540,11 +4544,12 @@ func TestTerminalCircuitBreakerTripsOnEscalated(t *testing.T) {
 	if ok, _, err := ledger.Claim("4", "run-esc", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
+	seedItemRepositoryForTest(t, l, "run-esc", "4", providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"})
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
 	}}
-	h := buildTerminalCircuitBreaker(l, cfg, apiv1.RepoRef{}, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 	if h == nil {
 		t.Fatal("expected non-nil terminal notifier")
 	}
@@ -4592,11 +4597,12 @@ func TestTerminalCircuitBreakerSkipsCompleted(t *testing.T) {
 	if ok, _, err := ledger.Claim("5", "run-ok", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
+	seedItemRepositoryForTest(t, l, "run-ok", "5", providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"})
 
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
 	}}
-	h := buildTerminalCircuitBreaker(l, cfg, apiv1.RepoRef{}, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 
 	for i := 0; i < failureStreakThreshold+1; i++ {
 		_ = h("run-ok", journal.PhaseCompleted, "done")

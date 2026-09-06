@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
@@ -393,13 +392,13 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		if class := telemetry.ClassifyError(o.Code); class.InfraFault() || class == telemetry.ErrorClassItemJudgment {
 			return nil
 		}
-		repoRef := providers.RepositoryRef{
-			Provider: providers.ProviderKind(o.RepoRef.Provider),
-			Owner:    o.RepoRef.Owner,
-			Name:     o.RepoRef.Name,
-		}
+		// #4417: o.RepoRef is the run's dispatch-time gaggle project, not
+		// necessarily the repo the item this run actually claimed belongs
+		// to — applyCircuitBreaker resolves each claimed item's own
+		// recorded identity instead of trusting a single repo for all of
+		// them.
 		runURL, _ := failureRunURL(l, cfg, o.RunID)
-		return applyCircuitBreaker(ctx, poster, l, repoRef, o.RunID, o.Stage, runURL)
+		return applyCircuitBreaker(ctx, poster, l, o.RunID, o.Stage, runURL)
 	}
 }
 
@@ -475,24 +474,33 @@ func writeFailureStreakCount(l instance.Layout, repo providers.RepositoryRef, it
 // (PhaseEscalated/PhaseAborted) so that ALL non-completed terminals count
 // toward the same streak.
 //
+// Each claimed item is routed to ITS OWN recorded repository (#4417), not a
+// single repo shared across every item this run holds: on a multi-repo
+// instance a run can hold claims against different repos (e.g. a
+// decomposition parent from GaggleSpec.AdditionalRepos), and applying one
+// item's repo to another's provider call silently mutates the wrong issue.
+// claimedItemsForRun fails closed (ErrItemRepositoryUnknown) before this
+// function makes any provider call if an item's identity was never recorded.
+//
 // A park whose provider mutation fails is persisted to the circuit-breaker
 // outbox (#3646) and retried here on the next terminal: discarding it left the
 // item goobers:ready with no durable evidence the protection had been
 // attempted, so unhealthy work kept churning.
-func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, repoRef providers.RepositoryRef, runID, stage, runURL string) error {
+func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, runID, stage, runURL string) error {
 	var errs []error
 	if err := reconcileCircuitBreakerOutbox(ctx, poster, l); err != nil {
 		errs = append(errs, err)
 	}
-	itemIDs, err := claimedItemIDsForRun(l, runID)
+	items, err := claimedItemsForRun(l, runID)
 	if err != nil {
 		errs = append(errs, err)
 		return errors.Join(errs...)
 	}
-	if len(itemIDs) == 0 {
+	if len(items) == 0 {
 		return errors.Join(errs...)
 	}
-	for _, itemID := range itemIDs {
+	for _, item := range items {
+		repoRef, itemID := item.Repo, item.ItemID
 		prevCount, loadErr := loadFailureStreakCount(l, repoRef, itemID)
 		if loadErr != nil {
 			errs = append(errs, fmt.Errorf("load failure streak state on %s#%s: %w", repoRef.Name, itemID, loadErr))
@@ -531,24 +539,28 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 	return errors.Join(errs...)
 }
 
-func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, repoRef providers.RepositoryRef, runID, runURL string) error {
-	itemIDs, err := claimedItemIDsForRun(l, runID)
+// resetCircuitBreaker mirrors applyCircuitBreaker's per-item repository
+// routing (#4417) for the completed-terminal reset path.
+func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, runID, runURL string) error {
+	items, err := claimedItemsForRun(l, runID)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, itemID := range itemIDs {
+	for _, item := range items {
+		repoRef, itemID := item.Repo, item.ItemID
 		if err := gate.ResetFailureComment(ctx, poster, repoRef, itemID, runID, runURL); err != nil {
 			errs = append(errs, fmt.Errorf("reset failure streak on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 		if err := writeFailureStreakCount(l, repoRef, itemID, 0, runID, ""); err != nil {
 			errs = append(errs, fmt.Errorf("reset failure streak state on %s#%s: %w", repoRef.Name, itemID, err))
 		}
-	}
-	// A completed run resets the streak that motivated any still-pending park
-	// for these items, so the outbox entry is moot rather than owed (#3646).
-	if err := clearCircuitBreakerMutations(l, repoRef, itemIDs...); err != nil {
-		errs = append(errs, fmt.Errorf("clear circuit breaker parks on %s: %w", repoRef.Name, err))
+		// A completed run resets the streak that motivated any still-pending
+		// park for this item, so the outbox entry is moot rather than owed
+		// (#3646).
+		if err := clearCircuitBreakerMutations(l, repoRef, itemID); err != nil {
+			errs = append(errs, fmt.Errorf("clear circuit breaker park on %s#%s: %w", repoRef.Name, itemID, err))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -559,17 +571,21 @@ func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 // wrapper skips PhaseFailed to avoid double-counting. Returns nil when no repo
 // is configured.
 //
-// project is the gaggle's own repository (#4243): the failure streak must be
-// counted, commented, and parked on the repo this run actually serves, not on
-// cfg.Repos[0] — on a multi-repo instance those are different repos whose
-// issue numbers collide. Routing matches the sibling terminal hooks, falling
-// back to cfg.Repos[0] only when the gaggle declares no project.
+// Unlike before #4417, this no longer takes a gaggle project to compute one
+// shared repo for every item a run holds (#4243's fix, itself superseded):
+// applyCircuitBreaker/resetCircuitBreaker resolve each claimed item's OWN
+// recorded repository identity instead, since the gaggle's static project
+// and a mid-run-claimed item's actual repo are not always the same thing —
+// #4417's own incident was a terminal circuit-breaker path routing to a
+// completely unrelated repository because it reconstructed ownership from
+// exactly that kind of instance-level default.
 //
 // Breaker errors are returned, not discarded (#3646): the runner journals a
 // TerminalNotifier failure as terminal_notification_failed, so a park that did
-// not reach the provider leaves an actionable diagnostic in the run trace
-// alongside the durable outbox entry.
-func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
+// not reach the provider — or a claimed item with no recorded repository
+// identity (ErrItemRepositoryUnknown) — leaves an actionable diagnostic in
+// the run trace alongside the durable outbox entry.
+func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
 	if len(cfg.Repos) == 0 {
 		return inner
 	}
@@ -579,7 +595,6 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, projec
 		layout:             l,
 		needsHumanAssignee: cfg.NeedsHumanAssignee,
 	}
-	repoRef := terminalRepositoryRefForProject(cfg, project)
 
 	return func(runID string, phase journal.RunPhase, finalState string) error {
 		var errs []error
@@ -589,10 +604,10 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, projec
 			attributedCtx, _ := attributionContextForRun(ctx, l, runID, finalState)
 			runURL, _ := failureRunURL(l, cfg, runID)
 			if phase == journal.PhaseCompleted {
-				if err := resetCircuitBreaker(attributedCtx, poster, l, repoRef, runID, runURL); err != nil {
+				if err := resetCircuitBreaker(attributedCtx, poster, l, runID, runURL); err != nil {
 					errs = append(errs, fmt.Errorf("reset circuit breaker for run %q: %w", runID, err))
 				}
-			} else if err := applyCircuitBreaker(attributedCtx, poster, l, repoRef, runID, finalState, runURL); err != nil {
+			} else if err := applyCircuitBreaker(attributedCtx, poster, l, runID, finalState, runURL); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
 			}
 		}

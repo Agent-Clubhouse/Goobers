@@ -1251,7 +1251,20 @@ func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claims
 	if err != nil {
 		return false, fmt.Errorf("claim %s in ledger: %w", item.ID, err)
 	}
-	return ok, nil
+	if !ok {
+		return false, nil
+	}
+	// #4417: record this item's own typed repository identity against the
+	// claim — terminal circuit-breaker/notification bookkeeping later reads
+	// this back instead of reconstructing ownership from the gaggle's
+	// static project or cfg.Repos[0].
+	if recordErr := recordItemRepository(session.annotations, session.runID, item.ID, itemKindIssue, session.env.repo); recordErr != nil {
+		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID); releaseErr != nil {
+			session.env.debugf("release claim %s after repository-identity record failure: %v", item.ID, releaseErr)
+		}
+		return false, fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
+	}
+	return true, nil
 }
 
 func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, start int) error {
