@@ -372,6 +372,7 @@
   },
   {
     "command": "reconcile-branches",
+    "resultFileSupport": 2,
     "capabilities": [
       {
         "capability": "github:branch:delete",
@@ -476,6 +477,7 @@
   },
   {
     "command": "telemetry-query",
+    "resultFileSupport": 2,
     "capabilities": [
       {
         "capability": "telemetry:read",
