@@ -12,10 +12,15 @@ import (
 )
 
 func TestImplementationWorkflowsGatherFirstPassContext(t *testing.T) {
-	for _, path := range []string{
-		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "workflows", "implementation.yaml"),
-		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml"),
-	} {
+	// #4179: only the reference-workflows dogfood definition gained the
+	// warm-module-cache stage between gather-implement-context and implement;
+	// the acme-web example is a separate customer fixture, deliberately
+	// untouched by this defect fix.
+	wantGatherNext := map[string]string{
+		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "workflows", "implementation.yaml"):    "implement",
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "implementation.yaml"): "warm-module-cache",
+	}
+	for path, wantNext := range wantGatherNext {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -48,8 +53,8 @@ func TestImplementationWorkflowsGatherFirstPassContext(t *testing.T) {
 			if !reflect.DeepEqual(gather.Capabilities, []string{"github:pr:write", "journal:read"}) {
 				t.Fatalf("gather-implement-context capabilities = %v, want [github:pr:write journal:read]", gather.Capabilities)
 			}
-			if gather.Next != "implement" {
-				t.Fatalf("gather-implement-context.next = %q, want implement", gather.Next)
+			if gather.Next != wantNext {
+				t.Fatalf("gather-implement-context.next = %q, want %q", gather.Next, wantNext)
 			}
 		})
 	}

@@ -161,6 +161,8 @@ func validateImplementationJournal(runDir string) error {
 	want := []string{
 		"stage:query-backlog",
 		"stage:gather-implement-context",
+		"stage:warm-module-cache",
+		"gate:warm-module-cache-gate=pass",
 		"stage:implement",
 		"gate:review=pass",
 		"stage:push-branch",
