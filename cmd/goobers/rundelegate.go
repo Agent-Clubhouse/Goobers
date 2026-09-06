@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,6 +41,108 @@ import (
 // pendingTriggersDir is the SchedulerDir subdirectory delegated and internal
 // priority-trigger request/response files live under.
 const pendingTriggersDir = "pending-triggers"
+
+// maxOutstandingTriggerRequestsPerIdentity bounds how many not-yet-dispatched
+// requests for the same (gaggle, workflow, PR, priority, sourceRun) identity
+// sweepPendingTriggers will actually dispatch in one pass; the rest are
+// answered immediately as bounded-out, without touching sched.Trigger* or the
+// instance journal (#4323/#4326). This exists because a misbehaving external
+// caller can drop pending-trigger request files directly under
+// SchedulerDir()/pending-triggers — bypassing writeTriggerRequestPayload and
+// any dedup a well-behaved client would apply on the write side — so the
+// bound has to hold at sweep time, unconditionally, regardless of how a
+// request file got there. #4326's incident was exactly this: a recurring
+// automation generated five duplicate same-identity requests every 15
+// minutes for ~59 hours with no accounting for already-pending ones,
+// producing 1,177 duplicates. Deliberately generous (not 1): an occasional
+// legitimate back-to-back retrigger of the same workflow must not be refused,
+// only a runaway flood. Var, not const, so a test can shrink it.
+var maxOutstandingTriggerRequestsPerIdentity = 5
+
+// maxTriggerSweepEntriesPerCycle bounds how many pending-trigger request
+// files a single sweepPendingTriggers call examines. Before this bound, a
+// large backlog (however it accumulated) was processed in one synchronous
+// pass — each real dispatch can journal one or more events, and
+// journal.InstanceLog.Append rereads the whole event log on every call
+// (#1914), so an unbounded backlog turned one sweep call into a
+// multi-minute-or-worse blocking operation on the delegation-ticker
+// goroutine. Bounding it here means a backlog drains progressively across
+// several delegationSweepInterval cycles instead of stalling one. Var, not
+// const, so a test can shrink it.
+var maxTriggerSweepEntriesPerCycle = 500
+
+// triggerIdentity groups pending trigger requests that target the same
+// nominal work, for maxOutstandingTriggerRequestsPerIdentity's bound.
+type triggerIdentity struct {
+	Gaggle    string
+	Workflow  string
+	PR        int
+	Priority  bool
+	SourceRun string
+}
+
+func identityOf(req triggerRequest) triggerIdentity {
+	return triggerIdentity{
+		Gaggle: req.Gaggle, Workflow: req.Workflow, PR: req.PR,
+		Priority: req.Priority, SourceRun: req.SourceRun,
+	}
+}
+
+// identityLabel renders a triggerRequest's identity for an operator-facing
+// bounded-out error, mirroring how `goobers run` itself names a target.
+func identityLabel(req triggerRequest) string {
+	label := req.Workflow
+	if req.Gaggle != "" {
+		label = req.Gaggle + "/" + label
+	}
+	if req.PR > 0 {
+		label = fmt.Sprintf("%s (PR #%d)", label, req.PR)
+	}
+	return label
+}
+
+// pendingTriggerRequest is one *.request.json file read (not yet consumed)
+// during a sweepPendingTriggers pass.
+type pendingTriggerRequest struct {
+	id       string
+	path     string
+	data     []byte
+	req      triggerRequest
+	parseErr error
+}
+
+// suppressExcessOutstanding returns the request ids among parsed that exceed
+// maxOutstandingTriggerRequestsPerIdentity within their identity group — the
+// oldest (by CreatedAt) requests in each group are kept, so a caller
+// legitimately waiting on an early request is never the one bounded out by
+// requests submitted after it. Requests that fail to parse or carry no
+// CreatedAt are excluded from grouping; sweepPendingTriggers already refuses
+// those on their own terms.
+func suppressExcessOutstanding(parsed []*pendingTriggerRequest) map[string]bool {
+	type candidate struct {
+		id        string
+		createdAt time.Time
+	}
+	groups := make(map[triggerIdentity][]candidate)
+	for _, p := range parsed {
+		if p.parseErr != nil || p.req.CreatedAt.IsZero() {
+			continue
+		}
+		key := identityOf(p.req)
+		groups[key] = append(groups[key], candidate{id: p.id, createdAt: p.req.CreatedAt})
+	}
+	suppressed := make(map[string]bool)
+	for _, candidates := range groups {
+		if len(candidates) <= maxOutstandingTriggerRequestsPerIdentity {
+			continue
+		}
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].createdAt.Before(candidates[j].createdAt) })
+		for _, c := range candidates[maxOutstandingTriggerRequestsPerIdentity:] {
+			suppressed[c.id] = true
+		}
+	}
+	return suppressed
+}
 
 // triggerRequest is one request for the daemon-owned scheduler to trigger a
 // workflow. Priority requests are internal, targeted, and fire-and-forget;
@@ -264,6 +367,7 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		return fmt.Errorf("delegate: read pending triggers: %w", err)
 	}
 	var sweepErr error
+	var requestEntries []os.DirEntry
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -278,10 +382,23 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		if !strings.HasSuffix(e.Name(), requestSuffix) {
 			continue
 		}
+		requestEntries = append(requestEntries, e)
+	}
+	// os.ReadDir (readDirectory's underlying call) returns entries sorted by
+	// filename, so bounding here consistently defers the same (lexically
+	// later) requests to the next cycle rather than starving them at random —
+	// #4323's fix for a backlog too large to examine in one pass.
+	if len(requestEntries) > maxTriggerSweepEntriesPerCycle {
+		requestEntries = requestEntries[:maxTriggerSweepEntriesPerCycle]
+	}
 
+	// Read every candidate request before dispatching any of them so
+	// suppressExcessOutstanding can bound outstanding requests per identity
+	// across the whole batch, not just entries seen so far.
+	parsed := make([]*pendingTriggerRequest, 0, len(requestEntries))
+	for _, e := range requestEntries {
 		requestID := strings.TrimSuffix(e.Name(), requestSuffix)
 		reqPath := filepath.Join(reqDir, e.Name())
-
 		data, err := os.ReadFile(reqPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -289,6 +406,14 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 			}
 			continue
 		}
+		p := &pendingTriggerRequest{id: requestID, path: reqPath, data: data}
+		p.parseErr = json.Unmarshal(data, &p.req)
+		parsed = append(parsed, p)
+	}
+	suppressed := suppressExcessOutstanding(parsed)
+
+	for _, p := range parsed {
+		requestID, reqPath := p.id, p.path
 		if err := os.Remove(reqPath); err != nil {
 			if !os.IsNotExist(err) {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: consume trigger request %s: %w", requestID, err))
@@ -296,14 +421,27 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 			continue
 		}
 
-		var req triggerRequest
+		req := p.req
+		data := p.data
 		resp := triggerResponse{}
-		if err := json.Unmarshal(data, &req); err != nil {
-			resp.Error = fmt.Sprintf("delegate: malformed trigger request: %v", err)
-		} else if req.CreatedAt.IsZero() {
+		switch {
+		case p.parseErr != nil:
+			resp.Error = fmt.Sprintf("delegate: malformed trigger request: %v", p.parseErr)
+		case req.CreatedAt.IsZero():
 			resp.Error = fmt.Sprintf("delegate: trigger request %s has no creation time; refusing to dispatch", requestID)
 			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
-		} else {
+		case suppressed[requestID]:
+			// Deliberately skipped: no sched.Trigger* call and no
+			// RecordTriggerRefusal journal write. Both are what a runaway
+			// duplicate producer must not be able to multiply — this branch
+			// costs only the file remove and (for a non-priority caller
+			// waiting on a response) one small atomic write, however large
+			// the backlog behind it is (#4326).
+			resp.Error = fmt.Sprintf(
+				"delegate: %d requests already outstanding for %s (bounded to %d); rejected without dispatch",
+				maxOutstandingTriggerRequestsPerIdentity+1, identityLabel(req), maxOutstandingTriggerRequestsPerIdentity,
+			)
+		default:
 			sweepTime := now()
 			requestDeadline := triggerRequestDeadline(req)
 			requestLifetime := requestDeadline.Sub(req.CreatedAt)
@@ -384,6 +522,41 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		}
 	}
 	return sweepErr
+}
+
+// pendingTriggerQueueStats reports how many *.request.json files currently
+// sit under schedulerDir/pending-triggers and the age of the oldest one, so
+// an operator (`goobers status`) can see a growing backlog before it turns
+// into #4323-style starvation instead of only after health checks start
+// failing. depth is 0 and oldestAge is zero when there is no pending-triggers
+// directory yet (nothing has ever delegated) or it is empty.
+func pendingTriggerQueueStats(schedulerDir string, now time.Time) (depth int, oldestAge time.Duration, err error) {
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	entries, exists, err := readDirectory(reqDir)
+	if !exists {
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("delegate: read pending triggers: %w", err)
+	}
+	var oldest time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), requestSuffix) {
+			continue
+		}
+		depth++
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if oldest.IsZero() || info.ModTime().Before(oldest) {
+			oldest = info.ModTime()
+		}
+	}
+	if depth == 0 {
+		return 0, 0, nil
+	}
+	return depth, now.Sub(oldest), nil
 }
 
 // dispatchPriorityTrigger routes apply-verdict's crowned-lander re-tick to

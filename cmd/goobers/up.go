@@ -1382,6 +1382,27 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 				return
 			case <-delegationTicker.C:
 				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
+			}
+		}
+	}()
+
+	// #4323: claims used to share the trigger delegation ticker above, so a
+	// large pending-trigger backlog (#4326's runaway automation is the
+	// incident that exposed this) starved claims processing behind it for as
+	// long as that single sweepPendingTriggers call ran — an operator's
+	// `goobers claim`/release could wait indefinitely with no trigger-side
+	// misbehavior of its own. Its own ticker gives claims the same isolation
+	// cancelTicker/applyTicker already have from each other below.
+	claimAdminTicker := time.NewTicker(delegationSweepInterval)
+	claimAdminTickerDone := make(chan struct{})
+	go func() {
+		defer close(claimAdminTickerDone)
+		defer claimAdminTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-claimAdminTicker.C:
 				claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 			}
 		}
@@ -1634,6 +1655,7 @@ daemonLoop:
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-delegationTickerDone
+	<-claimAdminTickerDone
 	<-cancelTickerDone
 	<-applyTickerDone
 	<-supervisorStopDone

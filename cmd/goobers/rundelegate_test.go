@@ -1191,3 +1191,206 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 		t.Fatalf("err = %v, want the run-conditions rejection", err)
 	}
 }
+
+// TestSweepBoundsOutstandingDuplicateRequestsPerIdentity is #4326's core
+// regression guard: a caller that drops many same-identity requests (the
+// incident's "automation-fill-*" flood — a recurring automation that never
+// accounted for already-pending requests) must not get every one of them
+// dispatched. Only maxOutstandingTriggerRequestsPerIdentity are actually
+// admitted through the scheduler; the rest are answered immediately as
+// bounded-out, with no dispatch and no journaled refusal.
+func TestSweepBoundsOutstandingDuplicateRequestsPerIdentity(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Gaggle:    "efunhouse",
+		Workflow:  "implementation",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 100},
+		Starter:   starter,
+	}})
+
+	const flood = 20
+	requestIDs := make([]string, 0, flood)
+	for i := 0; i < flood; i++ {
+		id, err := writeTargetedTriggerRequestContext(context.Background(), schedulerDir, "efunhouse", "implementation", 0)
+		if err != nil {
+			t.Fatalf("writeTargetedTriggerRequestContext[%d]: %v", i, err)
+		}
+		requestIDs = append(requestIDs, id)
+	}
+
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	sched.Wait()
+
+	if starter.count() != maxOutstandingTriggerRequestsPerIdentity {
+		t.Fatalf("starter calls = %d, want bounded to %d", starter.count(), maxOutstandingTriggerRequestsPerIdentity)
+	}
+
+	var admitted, bounded int
+	for _, id := range requestIDs {
+		_, err := pollTriggerResponse(context.Background(), schedulerDir, id, testResponseWait)
+		switch {
+		case err == nil:
+			admitted++
+		case strings.Contains(err.Error(), "already outstanding") && strings.Contains(err.Error(), "rejected without dispatch"):
+			bounded++
+		default:
+			t.Fatalf("pollTriggerResponse[%s]: unexpected error %v", id, err)
+		}
+	}
+	if admitted != maxOutstandingTriggerRequestsPerIdentity {
+		t.Fatalf("admitted = %d, want %d", admitted, maxOutstandingTriggerRequestsPerIdentity)
+	}
+	if bounded != flood-maxOutstandingTriggerRequestsPerIdentity {
+		t.Fatalf("bounded = %d, want %d", bounded, flood-maxOutstandingTriggerRequestsPerIdentity)
+	}
+
+	entries, err := filepathGlobRequests(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected every flooded request consumed, found: %v", entries)
+	}
+
+	events, err := journal.ReadInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refusals int
+	for _, ev := range events {
+		if ev.Type == journal.EventTickSkipped && ev.Workflow == "implementation" {
+			refusals++
+		}
+	}
+	if refusals != 0 {
+		t.Fatalf("refusal journal events = %d, want 0 — bounded-out duplicates must not journal", refusals)
+	}
+}
+
+// TestSweepAllowsDistinctIdentitiesPastThePerIdentityBound proves the bound
+// in TestSweepBoundsOutstandingDuplicateRequestsPerIdentity is per-identity,
+// not global: distinct (gaggle, workflow) targets each get their own budget,
+// so five configured lanes each still admit up to the per-identity bound —
+// exactly #4326's "five configured lanes produce at most five outstanding
+// fill requests" acceptance criterion, generalized to whatever bound is
+// configured.
+func TestSweepAllowsDistinctIdentitiesPastThePerIdentityBound(t *testing.T) {
+	alpha := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	beta := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{
+		{Gaggle: "alpha", Workflow: "implementation", Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100}, Starter: alpha},
+		{Gaggle: "beta", Workflow: "implementation", Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100}, Starter: beta},
+	})
+
+	for i := 0; i < maxOutstandingTriggerRequestsPerIdentity; i++ {
+		if _, err := writeTargetedTriggerRequestContext(context.Background(), schedulerDir, "alpha", "implementation", 0); err != nil {
+			t.Fatalf("write alpha[%d]: %v", i, err)
+		}
+		if _, err := writeTargetedTriggerRequestContext(context.Background(), schedulerDir, "beta", "implementation", 0); err != nil {
+			t.Fatalf("write beta[%d]: %v", i, err)
+		}
+	}
+
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	sched.Wait()
+
+	if alpha.count() != maxOutstandingTriggerRequestsPerIdentity || beta.count() != maxOutstandingTriggerRequestsPerIdentity {
+		t.Fatalf("starter calls: alpha=%d beta=%d, want both = %d", alpha.count(), beta.count(), maxOutstandingTriggerRequestsPerIdentity)
+	}
+}
+
+// TestSweepCapsEntriesExaminedPerCycle is #4323's direct regression guard for
+// the incident scale (1,178 pending requests): one sweepPendingTriggers call
+// must bound how much work it does regardless of backlog size, so a huge
+// backlog drains progressively across ticks instead of stalling the
+// delegation-ticker goroutine (and, behind it, claims processing and the
+// scheduler's own tick) for the duration of one unbounded pass.
+func TestSweepCapsEntriesExaminedPerCycle(t *testing.T) {
+	oldCap := maxTriggerSweepEntriesPerCycle
+	maxTriggerSweepEntriesPerCycle = 10
+	t.Cleanup(func() { maxTriggerSweepEntriesPerCycle = oldCap })
+
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow:  "implement",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1000},
+		Starter:   starter,
+	}})
+
+	const total = 1200
+	for i := 0; i < total; i++ {
+		if _, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement"); err != nil {
+			t.Fatalf("writeTriggerRequestContext[%d]: %v", i, err)
+		}
+	}
+
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+
+	remaining, err := filepathGlobRequests(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != total-maxTriggerSweepEntriesPerCycle {
+		t.Fatalf("remaining requests = %d, want %d left for the next cycle", len(remaining), total-maxTriggerSweepEntriesPerCycle)
+	}
+
+	// Draining fully takes ceil(total/cap) cycles; run the rest to prove the
+	// backlog does converge to zero rather than getting stuck.
+	for len(remaining) > 0 {
+		if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
+			t.Fatalf("drain sweepPendingTriggers: %v", err)
+		}
+		remaining, err = filepathGlobRequests(schedulerDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestPendingTriggerQueueStatsReportsDepthAndOldestAge is #4323's
+// operator-visibility acceptance guard: `goobers status` must be able to see
+// a growing pending-trigger backlog (and how stale its oldest entry is)
+// before it starves anything, the way #4326's incident accumulated 1,177
+// undetected duplicates.
+func TestPendingTriggerQueueStatsReportsDepthAndOldestAge(t *testing.T) {
+	schedulerDir := t.TempDir()
+
+	depth, oldestAge, err := pendingTriggerQueueStats(schedulerDir, time.Now())
+	if err != nil {
+		t.Fatalf("pendingTriggerQueueStats on an instance that never delegated: %v", err)
+	}
+	if depth != 0 || oldestAge != 0 {
+		t.Fatalf("depth = %d, oldestAge = %s, want 0/0 for no pending-triggers dir", depth, oldestAge)
+	}
+
+	oldID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
+	if err != nil {
+		t.Fatalf("write old request: %v", err)
+	}
+	oldPath := filepath.Join(schedulerDir, pendingTriggersDir, oldID+requestSuffix)
+	old := time.Now().Add(-90 * time.Second)
+	if err := os.Chtimes(oldPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement"); err != nil {
+		t.Fatalf("write fresh request: %v", err)
+	}
+
+	now := time.Now()
+	depth, oldestAge, err = pendingTriggerQueueStats(schedulerDir, now)
+	if err != nil {
+		t.Fatalf("pendingTriggerQueueStats: %v", err)
+	}
+	if depth != 2 {
+		t.Fatalf("depth = %d, want 2", depth)
+	}
+	if oldestAge < 89*time.Second || oldestAge > 100*time.Second {
+		t.Fatalf("oldestAge = %s, want roughly 90s (the older request's age)", oldestAge)
+	}
+}
