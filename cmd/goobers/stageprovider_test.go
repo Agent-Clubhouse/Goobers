@@ -86,14 +86,7 @@ func TestStageProviderRegistryIncludesBuiltInProviders(t *testing.T) {
 
 func TestNewProviderForStageWiresADOMutationRecorder(t *testing.T) {
 	root := initDemo(t)
-	oldwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Chdir(oldwd) }()
+	t.Chdir(root)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/org/project/_apis/git/repositories/repo/pullrequests/42/threads" {

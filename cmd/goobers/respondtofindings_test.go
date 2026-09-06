@@ -86,6 +86,7 @@ func respondToFindingsFixture(t *testing.T, verdict apiv1.Verdict, responses str
 
 func respondToFindingsFixtureForVerdict(t *testing.T, verdict *apiv1.Verdict, responses string, published bool) (string, *fakeGitHubServer, string) {
 	t.Helper()
+	t.Chdir(t.TempDir())
 	const (
 		runID    = "run-942"
 		prNumber = 77
@@ -181,6 +182,7 @@ func TestRespondToFindingsPostsCompleteDurableAccount(t *testing.T) {
 }
 
 func TestRespondToFindingsDispatchesToGitea(t *testing.T) {
+	t.Chdir(t.TempDir())
 	const (
 		runID    = "run-gitea-response"
 		prNumber = 77
