@@ -141,13 +141,17 @@ func IsPodPrincipal(principal Principal) bool {
 // TestPodPlaneScopesMatchPodauth so the restatement cannot drift — the same
 // discipline internal/dispatcher applies to the executor's env names.
 const (
-	ScopeClaims     = "claims"
-	ScopeState      = "state"
-	ScopeJournal    = "journal"
-	ScopeTelemetry  = "telemetry"
-	ScopeSurrender  = "surrender"
-	ScopeBlob       = "blob"
-	ScopeCredential = "credential"
+	ScopeClaims    = "claims"
+	ScopeState     = "state"
+	ScopeJournal   = "journal"
+	ScopeTelemetry = "telemetry"
+	ScopeSurrender = "surrender"
+	ScopeBlob      = "blob"
+	// ScopeConfigDigest admits the config-digest plane: a worker asking the
+	// daemon which config tree is currently in force, so it can tell that its
+	// own has diverged before a run fails on the mismatch (#4153).
+	ScopeConfigDigest = "config-digest"
+	ScopeCredential   = "credential"
 )
 
 // HasScope reports whether a pod principal may reach the plane named by
@@ -418,6 +422,13 @@ func podRouteScope(request *http.Request) (scope string, admitted bool) {
 	if telemetryPlanePath(path) && method == http.MethodGet {
 		return ScopeTelemetry, true
 	}
+	// The config-digest plane is GET-only and returns one hash. A digest is a
+	// hash of configuration, never configuration — the same property that lets
+	// gate_pin_missing name digests in the run journal, which is read by more
+	// people than the config tree is.
+	if path == apicontract.ConfigDigestPath && method == http.MethodGet {
+		return ScopeConfigDigest, true
+	}
 	// Decision 005 R1 option 1: reads of the pod's own run's journal, GET
 	// only. A pod may never write through a read route, and the handler still
 	// decides WHICH run.
@@ -515,6 +526,7 @@ type handlerConfig struct {
 	state               StateService
 	telemetryDefects    TelemetryDefectAggregateService
 	podRunGaggle        func(context.Context, string) (string, error)
+	configDigest        func() string
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -566,6 +578,28 @@ func WithInterventionContext(ctx context.Context) HandlerOption {
 			return errors.New("http API intervention context is required")
 		}
 		config.interventionContext = ctx
+		return nil
+	}
+}
+
+// WithConfigDigest registers the daemon's current config-tree digest source
+// for the config-digest plane (#4153).
+//
+// A function, not a value: the daemon's tree moves under it (workflowSource
+// syncs it live), and a digest captured once at wiring time would report the
+// tree that was in force at startup — which is exactly the stale answer this
+// plane exists to expose in someone else.
+//
+// Unregistered, the route reports that the daemon does not publish a digest
+// rather than an empty one: "" would be indistinguishable from a real digest
+// that happens to be unknown, and a worker comparing against it would
+// conclude it had diverged from everything.
+func WithConfigDigest(digest func() string) HandlerOption {
+	return func(c *handlerConfig) error {
+		if digest == nil {
+			return errors.New("http api: config digest source is required")
+		}
+		c.configDigest = digest
 		return nil
 	}
 }
@@ -826,6 +860,20 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		writeJSON(w, http.StatusOK, health)
 	})
+	router.Handle(apicontract.RouteConfigDigest, func(w http.ResponseWriter, request *http.Request) {
+		if config.configDigest == nil {
+			writeError(w, http.StatusServiceUnavailable, "config_digest_unavailable",
+				"this daemon does not publish a config-tree digest")
+			return
+		}
+		digest := config.configDigest()
+		if digest == "" {
+			writeError(w, http.StatusServiceUnavailable, "config_digest_unavailable",
+				"the daemon has not resolved a config-tree digest yet")
+			return
+		}
+		writeJSON(w, http.StatusOK, ConfigDigest{Digest: digest})
+	})
 	router.Handle(apicontract.RoutePortalConfig, func(w http.ResponseWriter, request *http.Request) {
 		portalConfig, err := reader.PortalConfig(request.Context())
 		if err != nil {
@@ -1080,4 +1128,15 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// ConfigDigest is the config-digest plane's response: the content digest of
+// the config tree the daemon currently has in force.
+//
+// A digest only — never the tree, never a name from it. That is what makes
+// the answer safe to hand a worker over the same bearer it already holds: a
+// hash tells the asker whether it agrees, and nothing about what it would be
+// agreeing to.
+type ConfigDigest struct {
+	Digest string `json:"digest"`
 }

@@ -822,6 +822,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// refused, so this is what OPENS the plane, and a daemon that serves stage
 	// pods at all can always answer which gaggle one of its own runs is in.
 	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(l)))
+	// #4153: publish which config tree is in force, so a worker can detect that
+	// its own has diverged instead of finding out when an agentic gate refuses.
+	configDigests := newConfigDigestPublisher(setup.ConfigDigest)
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithConfigDigest(configDigests.Get))
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)
@@ -1221,6 +1225,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		wg:             &wg,
 		appliedDigest:  setup.ConfigDigest,
 		observedDigest: setup.ConfigDigest,
+		digests:        configDigests,
 	}
 	// The workflow mutation service was built above so the HTTP handler could
 	// register the surface before the reloader existed. Now that it does,

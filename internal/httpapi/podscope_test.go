@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,6 +45,7 @@ func podRouteTable() []struct {
 		path   string
 		scope  string
 	}{
+		{"config digest", http.MethodGet, apicontract.ConfigDigestPath, ScopeConfigDigest},
 		{"claim acquire", http.MethodPost, apicontract.ClaimAcquirePath, ScopeClaims},
 		{"claim renew", http.MethodPost, apicontract.ClaimRenewPath, ScopeClaims},
 		{"claim release", http.MethodPost, apicontract.ClaimReleasePath, ScopeClaims},
@@ -215,7 +217,7 @@ func TestEveryPodScopeOpensExactlyItsOwnRoutes(t *testing.T) {
 
 // knownPodScopes is every scope a pod bearer can carry, in a stable order.
 func knownPodScopes() []string {
-	return []string{ScopeClaims, ScopeState, ScopeJournal, ScopeTelemetry, ScopeSurrender, ScopeBlob, ScopeCredential}
+	return []string{ScopeClaims, ScopeState, ScopeJournal, ScopeTelemetry, ScopeSurrender, ScopeBlob, ScopeCredential, ScopeConfigDigest}
 }
 
 func contains(haystack []string, needle string) bool {
@@ -267,5 +269,30 @@ func TestPodScopeNamesArePinnedWireFormat(t *testing.T) {
 		if strings.ContainsAny(scope, ",.") || scope != strings.ToLower(scope) {
 			t.Errorf("scope %q contains a payload delimiter or uppercase; it cannot round-trip a signed token", scope)
 		}
+	}
+}
+
+// TestConfigDigestPlaneServesOnlyADigest pins the property that makes this
+// plane safe to open to a pod bearer (#4153): it returns a HASH of the config
+// tree and nothing from it. A digest tells the asker whether it agrees, and
+// nothing about what it would be agreeing to — the same reasoning that lets
+// gate_pin_missing name digests in the run journal, which is read by more
+// people than the config tree is.
+func TestConfigDigestPlaneServesOnlyADigest(t *testing.T) {
+	var payload ConfigDigest
+	payload.Digest = "sha256:2803d658c27b5902"
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded) != 1 {
+		t.Fatalf("the config-digest response carries %d fields (%v); it must carry only the digest", len(decoded), decoded)
+	}
+	if decoded["digest"] != "sha256:2803d658c27b5902" {
+		t.Errorf("digest = %v", decoded["digest"])
 	}
 }

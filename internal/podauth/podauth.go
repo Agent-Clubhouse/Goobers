@@ -82,6 +82,11 @@ const (
 	ScopeBlob = "blob"
 	// ScopeCredential admits the credential-resolve route.
 	ScopeCredential = "credential"
+	// ScopeConfigDigest admits the config-digest read: which config tree the
+	// daemon currently has in force. A worker polls it to notice that its own
+	// tree has diverged, instead of discovering it when an agentic gate
+	// refuses gate_pin_missing (#4153).
+	ScopeConfigDigest = "config-digest"
 )
 
 // KnownScopes is every scope this package mints or verifies, in a stable
@@ -89,7 +94,7 @@ const (
 // a token that authorizes nothing and fails at the far side.
 var KnownScopes = []string{
 	ScopeClaims, ScopeState, ScopeJournal, ScopeTelemetry,
-	ScopeSurrender, ScopeBlob, ScopeCredential,
+	ScopeSurrender, ScopeBlob, ScopeCredential, ScopeConfigDigest,
 }
 
 // ErrUnknownScope reports a mint request naming a scope outside KnownScopes.
