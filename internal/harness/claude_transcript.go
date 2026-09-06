@@ -85,6 +85,10 @@ type claudeUsageAccumulator struct {
 	hasCost          bool
 }
 
+func (u claudeUsageAccumulator) hasTokens() bool {
+	return u.hasInput || u.hasOutput || u.hasCacheRead || u.hasCacheWrite
+}
+
 type claudeTerminalCapture struct {
 	mu         sync.Mutex
 	line       []byte
@@ -340,7 +344,7 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 					accumulateClaudeUsage(&modelTotals, usage.InputTokens, usage.OutputTokens,
 						usage.CacheReadInputTokens, usage.CacheCreationInputTokens, nil)
 				}
-				if modelTotals.hasInput || modelTotals.hasOutput || modelTotals.hasCacheRead || modelTotals.hasCacheWrite {
+				if modelTotals.hasTokens() {
 					accumulateClaudeUsageTotals(&aggregate, modelTotals)
 				} else {
 					accumulateClaudeUsage(&aggregate, native.Usage.InputTokens, native.Usage.OutputTokens,
