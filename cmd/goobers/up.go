@@ -481,6 +481,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	pf(stdout, "startup: scheduler initialized\n")
+	// #4070: say, every start, whether one stage's memory is bounded. Stage
+	// subprocesses share this daemon's memory cgroup, so an unbounded stage
+	// can OOM-kill the control plane and take every in-flight run with it —
+	// and the evidence self-erases (memory.events resets with the container,
+	// so a post-hoc look reads oom_kill 0 on a pod killed 30 minutes earlier).
+	// A structural hazard that no check fails on is one an operator can only
+	// learn about from the daemon volunteering it.
+	reportStageMemoryBound(setup.Config, stdout, stderr)
 	// #3480: on a Windows host, say once whether the directories this daemon
 	// writes then immediately reads are excluded from real-time scanning.
 	// Advisory — startup continues regardless.

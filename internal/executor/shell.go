@@ -177,6 +177,24 @@ type ShellExecutor struct {
 	// syscall), but an OS-level sample shows the blocked threads regardless.
 	// Off by default: zero cost and no extra files unless explicitly enabled.
 	Diagnostics bool
+	// StageMemoryLimitBytes bounds the memory ONE stage subprocess may use.
+	// Zero (the default) enforces nothing, so an unset caller is unchanged.
+	//
+	// It exists because stage subprocesses share the daemon's own memory
+	// cgroup, so a heavy stage can get the control-plane daemon OOM-killed and
+	// take every in-flight run with it (#4070). The admission-side memory gate
+	// (#3949) cannot cover this: it refuses to START runs while the cgroup is
+	// hot, and the killing allocation in each recorded incident was a stage
+	// ALREADY RUNNING. Resolved from runner.stageMemoryLimit by
+	// instance.RunnerConfig.ResolveStageMemoryBound, which is also where the
+	// reasoning for having no derived default lives.
+	StageMemoryLimitBytes uint64
+	// AllowStageMemoryAddressSpaceFallback permits the RLIMIT_AS fallback when
+	// no child cgroup can be created. Only ever true for a limit an operator
+	// set explicitly: an address-space bound is a proxy for RSS, and applying
+	// a number nobody chose through a mechanism that does not measure what it
+	// claims to is how this feature would start killing legitimate stages.
+	AllowStageMemoryAddressSpaceFallback bool
 	// ExtraEnvAllowlist names additional ambient env vars carried into every
 	// stage subprocess on top of the built-in procenv default-deny allowlist —
 	// the instance's RunnerConfig.EnvPassthrough (#736), for a custom toolchain
@@ -839,7 +857,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	tree, err := proc.Start(cmd)
+	tree, memoryBound, err := proc.StartBounded(cmd, e.StageMemoryLimitBytes, e.AllowStageMemoryAddressSpaceFallback)
 	if err != nil {
 		err = describeNetworkNoneStartFailure(run.Network, err)
 		return apiv1.ResultEnvelope{
@@ -848,6 +866,11 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
+	// Released only after the stage is fully accounted for: the bound's own
+	// record of whether it fired (the child cgroup's memory.events) has to
+	// outlive the process it bounded, or the reason a stage died is destroyed
+	// before anything reads it.
+	defer func() { _ = memoryBound.Release() }()
 
 	// --diagnostics watchdog: periodically snapshot a long-running stage
 	// (native sample + process tree + lsof) into a buffer recorded as an
@@ -1007,6 +1030,30 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Retryable: false,
 		}
 		result.Summary = "stage was canceled"
+		return result, nil
+	}
+
+	// A stage killed for breaching its memory bound must be reported as
+	// exactly that, BEFORE the generic exit-code handling below. The kernel
+	// kills it with SIGKILL, so otherwise it lands as an unexplained exit 137
+	// — indistinguishable from any other hard kill, and the evidence does not
+	// survive: memory.events counters live in the cgroup and vanish with it,
+	// which is why the production incidents read "oom_kill 0" half an hour
+	// after they happened (#4070). Naming it here is what turns a
+	// self-erasing symptom into a journalled cause.
+	if exceeded, reason := memoryBound.Exceeded(); exceeded {
+		result.Status = apiv1.ResultFailure
+		result.Error = &apiv1.ErrorInfo{
+			Code:    "stage_memory_exceeded",
+			Message: reason,
+			// Not retryable: the bound is a declared budget, so a stage that
+			// breached it breaches it again. Retrying would spend the run's
+			// attempts reproducing a kill whose remedy is a configuration
+			// change, the same reasoning DefaultStageTimeout records for
+			// routing resource failures to an agent (#1969).
+			Retryable: false,
+		}
+		result.Summary = "stage exceeded its per-stage memory bound and was killed"
 		return result, nil
 	}
 

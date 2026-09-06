@@ -110,6 +110,39 @@ vendor-neutral form.
   `kubernetes.io/os: windows` and tolerate that taint. This defense in depth prevents an
   unpinned Linux pod from attaching a Linux filesystem volume to a Windows node.
 
+### 7.1 Bounding a self-placed stage's memory (#4070)
+
+Stage subprocesses that run on the `self` runner execute **inside the API pod's
+own memory cgroup**. Without a bound, one heavy stage can get the control-plane
+daemon OOM-killed and take every in-flight run with it — observed three times in
+one week in production, with single children at 4.8, 9.8 and 9.9 GiB against a
+10Gi pod limit while the daemon's own footprint stayed under 300Mi.
+
+`runner.stageMemoryLimit` bounds one stage. Enforcing it through a cgroup —
+the only mechanism that bounds *resident* memory, which is what the kernel
+OOM-kills on — needs two things from the deployment that are **not** container
+defaults:
+
+1. **`/sys/fs/cgroup` mounted read-write** in the API container. Docker and
+   Kubernetes mount it read-only unless asked.
+2. **The daemon running in a sub-cgroup**, with `memory` listed in its
+   *parent's* `cgroup.subtree_control`.
+
+The second is not a preference. cgroup v2's "no internal processes" rule means
+a cgroup that holds processes can never delegate a controller to its own
+children, so the daemon's cgroup cannot bound children of itself; a bounded
+stage is created **beside** the daemon, under a parent that delegates `memory`
+precisely because the daemon is not in it. At the cgroup-namespace root — where
+`/proc/self/cgroup` reads `0::/`, the Kubernetes default — there is no reachable
+parent and no bound can be created at all.
+
+Where those are absent the daemon does not fail: it reports at startup that
+stages are unbounded (or that a configured limit cannot be enforced) and runs
+exactly as before. An explicitly configured limit may also be applied through
+`RLIMIT_AS`, which bounds address space rather than resident memory and is
+therefore a proxy — verify such a value against a real stage before relying on
+it.
+
 ## 8. Deliverables filed from this doc
 
 - **K1.** This shape doc merged (this PR) and kept current as V2 lands.

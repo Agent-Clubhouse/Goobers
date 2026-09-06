@@ -318,6 +318,31 @@ type RunnerConfig struct {
 	//
 	// Per-stage timeoutSeconds still wins; this only moves the floor.
 	DefaultStageTimeout string `json:"defaultStageTimeout,omitempty" yaml:"defaultStageTimeout,omitempty"`
+	// StageMemoryLimit caps the memory ONE stage subprocess may use, as a
+	// Kubernetes quantity ("8Gi"). It exists because stage subprocesses share
+	// the daemon's own memory cgroup, so a heavy stage can — and repeatedly
+	// did — get the control-plane daemon OOM-killed (#4070): production saw
+	// the pod's anonymous memory go 559Mi to 7.4Gi in ~60s while the daemon's
+	// heap sat at 13Mi, and single children measured 4.8, 9.8 and 9.9 GiB.
+	//
+	// The admission-side memory gate (#3949) cannot cover this: it refuses to
+	// START new runs while the cgroup is hot, and in every one of those
+	// incidents the killing allocation was a stage ALREADY RUNNING.
+	//
+	// EMPTY IS NOT UNBOUNDED. Left empty, the bound is DERIVED from the pod's
+	// own cgroup memory limit less a reserve for the daemon, and applied only
+	// through a child cgroup — an RSS bound the kernel enforces in the same
+	// unit it OOM-kills on. Set explicitly, the number is also allowed to be
+	// applied through RLIMIT_AS where no cgroup can be delegated. That
+	// asymmetry is deliberate: RLIMIT_AS bounds ADDRESS SPACE, which runtimes
+	// reserve far more of than they touch, so it is safe to apply to a number
+	// an operator chose and unsafe to apply to one derived on their behalf.
+	//
+	// Outside a container, or where the memory controller is not delegated to
+	// child cgroups, there may be no mechanism at all; the daemon reports
+	// which one is in force at startup rather than letting a green config
+	// imply a protection that is not there.
+	StageMemoryLimit string `json:"stageMemoryLimit,omitempty" yaml:"stageMemoryLimit,omitempty"`
 	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
 	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
 	// keep the built-in default (["copilot"] / ["claude"]).

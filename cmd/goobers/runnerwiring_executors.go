@@ -339,6 +339,16 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	shell.InstanceRoot = input.InstanceRoot
 	shell.ScratchDir = input.ScratchDir
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
+	// #4070: bound what one stage subprocess may take, so a heavy stage
+	// cannot evict the daemon it shares a memory cgroup with. Resolved (and
+	// validated) at config load; an instance that sets no limit gets zero,
+	// which enforces nothing and leaves stage execution exactly as before.
+	stageMemory, err := input.Config.Runner.ResolveStageMemoryBound()
+	if err != nil {
+		return nil, err
+	}
+	shell.StageMemoryLimitBytes = stageMemory.MaxBytes
+	shell.AllowStageMemoryAddressSpaceFallback = stageMemory.AllowAddressSpaceFallback
 	// The self runner's declared `tmp:ephemeral` is a RUNNER PROPERTY
 	// (docs/design/goobernetes-restrictions.md §5): every stage this executor
 	// runs is placed on self, so every one of them runs under the effect once
