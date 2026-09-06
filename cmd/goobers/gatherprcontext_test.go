@@ -623,6 +623,84 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	}
 }
 
+// TestHandleGatherPRContextUnchangedDigestReparkDoesNotSpendGeneration is
+// #4174's regression: a re-park of an ALREADY-escalated, still-unchanged head
+// is a re-confirmation of the same finding, not a fresh remediation attempt
+// reaching a new verdict — bumping EscalationGeneration or leaving
+// NoopGuardRepark unset would misreport it the same way #4173 fixes for
+// rebase-pr's own infra-fault path (reached here by the filer's different
+// route: the unchanged-digest guard's two-clear park, #716/#2378).
+func TestHandleGatherPRContextUnchangedDigestReparkDoesNotSpendGeneration(t *testing.T) {
+	const prBranch = "goobers/impl/repark-4174"
+	origin, headSHA, baseSHA := initPRBranchOrigin(t, prBranch)
+
+	work := t.TempDir()
+	runGitT(t, work, "clone", "--branch", prBranch, origin, filepath.Join(work, "checkout"))
+	checkout := filepath.Join(work, "checkout")
+	digest, err := diffDigest(checkout, baseSHA)
+	if err != nil {
+		t.Fatalf("diffDigest: %v", err)
+	}
+
+	priorState := remediationState{
+		Cycles: 4, Escalated: true, LastDiffDigest: digest,
+		HeadSHA: headSHA, BaseSHA: baseSHA,
+		EscalatedReason:   "the implementer reported no-work 2 consecutive times",
+		EscalationOutcome: remediationOutcomeDidNotConverge,
+		EscalatedHeadSHA:  headSHA, EscalatedBaseSHA: baseSHA,
+		EscalationGeneration: 3,
+	}
+	priorComment, err := remediationStateComment(priorState)
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+
+	pr := providers.PullRequestSummary{
+		Number: 4174, Head: prBranch, Base: "main",
+		HeadSHA: headSHA, BaseSHA: baseSHA,
+		Body:   priorComment,
+		Labels: []string{remediationEscalatedLabel},
+	}
+
+	instanceRoot := initDemo(t)
+	l := layoutFor(instanceRoot)
+	key := remediationNoopKey("", pr.Number)
+	// One attempt already on record for this exact head/digest — the next one
+	// crosses remediationNoopLimit and takes the re-park branch under test.
+	seedRemediationNoopState(t, l, key, remediationNoopSignature{HeadSHA: headSHA, DiffDigest: digest}, "prior-run")
+
+	var parkedBody string
+	adapter := gatherPRContextAdapter{
+		park: func(_ context.Context, _ providers.PullRequestSummary, _, body string) error {
+			parkedBody = body
+			return nil
+		},
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "run-4174-repark")
+	t.Chdir(checkout)
+	handled, code := handleGatherPRContextUnchangedDigest(instanceRoot, adapter, t.Context(), pr, nil, os.Stdout, os.Stderr)
+	if !handled || code != 0 {
+		t.Fatalf("handled = %v, code = %d, want a handled repark", handled, code)
+	}
+	if parkedBody == "" {
+		t.Fatal("park was never called — want a re-park on the second unchanged-digest tick")
+	}
+	state, ok := parseRemediationStateComment(parkedBody)
+	if !ok {
+		t.Fatalf("re-park comment %q has no parseable state", parkedBody)
+	}
+	if state.EscalationGeneration != 3 {
+		t.Fatalf("EscalationGeneration = %d, want 3 (unchanged from the prior escalation — this tick attempted nothing new)", state.EscalationGeneration)
+	}
+	if !state.NoopGuardRepark {
+		t.Fatal("NoopGuardRepark = false, want true so renderRemediationComment describes the two-clear unpark exit")
+	}
+	if !strings.Contains(parkedBody, "removed twice") {
+		t.Fatalf("re-park comment = %q, want the two-step unpark text for the noop-guard's own park", parkedBody)
+	}
+}
+
 func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 	verdict := &apiv1.Verdict{
 		Findings: []apiv1.Finding{

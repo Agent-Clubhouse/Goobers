@@ -43,7 +43,16 @@ type WorkflowEntry struct {
 	// ScheduleBackoffs aligns with Schedules. Missing entries use the default
 	// adaptive idle policy.
 	ScheduleBackoffs []IdleBackoffConfig
-	Signals          []string
+	// WebhookBackoff is the idle-backoff policy applied to this workflow's
+	// webhook-triggered dispatches (#4262). Unlike ScheduleBackoffs it is not
+	// keyed per-trigger: a workflow's webhook-originated signals share one
+	// backoff identity, mirroring "the same workflow+trigger identity"
+	// scoping the issue's acceptance criteria describe. Zero value (from a
+	// workflow with no type=webhook trigger, or one with no idleBackoff
+	// configured) resolves to the same enabled-by-default policy
+	// ParseIdleBackoff(nil) returns.
+	WebhookBackoff IdleBackoffConfig
+	Signals        []string
 	// PollFallbackCause, when non-empty, explains why a scheduled fire is the
 	// fallback for an event-capable workflow.
 	PollFallbackCause string
@@ -251,6 +260,11 @@ type Scheduler struct {
 	backlogLastCheck map[WorkflowIdentity]time.Time
 	refillLastCheck  map[WorkflowIdentity]time.Time
 	idleBackoffs     map[WorkflowIdentity][]idleBackoffState
+	// webhookBackoffs tracks idle-backoff state for webhook-triggered
+	// dispatch (#4262), one state per workflow identity — unlike
+	// idleBackoffs, which is indexed per-schedule, a workflow's
+	// webhook-originated signals share a single backoff identity.
+	webhookBackoffs map[WorkflowIdentity]idleBackoffState
 	// pendingScheduleDemand retains demand that a due scheduled poll found but
 	// concurrency limits could not admit yet. A durable outstanding marker lets
 	// Reconcile repoll current demand without replaying fully consumed firings or
@@ -450,6 +464,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		backlogLastCheck:      make(map[WorkflowIdentity]time.Time),
 		refillLastCheck:       make(map[WorkflowIdentity]time.Time),
 		idleBackoffs:          make(map[WorkflowIdentity][]idleBackoffState),
+		webhookBackoffs:       make(map[WorkflowIdentity]idleBackoffState),
 		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
 		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
 		triggerStallNotified:  make(map[WorkflowIdentity]bool),
@@ -1089,7 +1104,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 				if kind == journal.TriggerSchedule {
 					scheduleIndexes = candidate.scheduleIndexes
 				}
-				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes)
+				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes, false)
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
@@ -1169,6 +1184,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
 	idleBackoffs := make(map[WorkflowIdentity][]idleBackoffState, len(entries))
+	webhookBackoffs := make(map[WorkflowIdentity]idleBackoffState, len(entries))
 	pendingScheduleDemand := make(map[WorkflowIdentity]scheduledDemand, len(entries))
 	consecutivePoolSkips := make(map[WorkflowIdentity]int, len(entries))
 	triggerStallNotified := make(map[WorkflowIdentity]bool, len(entries))
@@ -1238,6 +1254,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.triggers = triggers
 	s.backlogLastCheck = backlogLastCheck
 	s.idleBackoffs = idleBackoffs
+	s.webhookBackoffs = webhookBackoffs
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
 	s.triggerStallNotified = triggerStallNotified
@@ -1403,6 +1420,69 @@ func (s *Scheduler) recordScheduledPollResult(identity WorkflowIdentity, entry W
 		states[token.index].nextPoll = completedAt.Add(states[token.index].interval)
 	}
 	s.idleBackoffs[identity] = states
+}
+
+// webhookBackedOff reports whether identity's webhook-triggered dispatch is
+// currently suppressed by idle backoff (#4262), mirroring scheduleBackedOff's
+// contract for schedule triggers.
+func (s *Scheduler) webhookBackedOff(identity WorkflowIdentity, config IdleBackoffConfig, now time.Time) (bool, string) {
+	if !config.Enabled {
+		return false, ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, ok := s.webhookBackoffs[identity]
+	if !ok || !state.nextPoll.After(now) {
+		return false, ""
+	}
+	return true, fmt.Sprintf("idle backoff: next webhook dispatch at %s after %d consecutive no-work run(s)", state.nextPoll.UTC().Format(time.RFC3339), state.consecutive)
+}
+
+// beginWebhookPoll reserves a generation token for one webhook-triggered
+// dispatch attempt, mirroring beginScheduledPoll for the single
+// per-workflow-identity webhook backoff state.
+func (s *Scheduler) beginWebhookPoll(identity WorkflowIdentity) idleBackoffToken {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state := s.webhookBackoffs[identity]
+	state.generation++
+	s.webhookBackoffs[identity] = state
+	return idleBackoffToken{generation: state.generation}
+}
+
+// recordWebhookPollResult applies noWork's outcome to identity's webhook
+// backoff state, mirroring recordScheduledPollResult. A stale token (a
+// concurrent dispatch already advanced the generation) is a no-op.
+func (s *Scheduler) recordWebhookPollResult(identity WorkflowIdentity, config IdleBackoffConfig, token idleBackoffToken, noWork bool, completedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, ok := s.webhookBackoffs[identity]
+	if !ok || state.generation != token.generation {
+		return
+	}
+	if !config.Enabled || !noWork {
+		state.consecutive = 0
+		state.interval = 0
+		state.nextPoll = time.Time{}
+		s.webhookBackoffs[identity] = state
+		return
+	}
+	state.consecutive++
+	if state.interval < config.Floor {
+		state.interval = config.Floor
+	} else if state.interval >= config.Ceiling/2 {
+		state.interval = config.Ceiling
+	} else {
+		state.interval *= 2
+	}
+	if state.interval > config.Ceiling {
+		state.interval = config.Ceiling
+	}
+	state.nextPoll = completedAt.Add(state.interval)
+	s.webhookBackoffs[identity] = state
 }
 
 func (s *Scheduler) resetIdleBackoff(identity WorkflowIdentity) {
@@ -2016,7 +2096,7 @@ func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, no
 	if trigger.Kind == journal.TriggerSignal {
 		s.resetIdleBackoff(entryIdentity(entry))
 	}
-	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason, nil)
+	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason, nil, false)
 	if !admitted {
 		return "", &TriggerRejectedError{Workflow: entry.Workflow, Reason: skipReason}
 	}
@@ -2097,7 +2177,7 @@ func (s *Scheduler) RecordRecoveredTrigger(requestID, workflow, runID string) {
 // run ids of every workflow actually admitted, in bounded-fair gaggle order
 // and workflow-name order within each gaggle.
 func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []string {
-	return s.signal(ctx, name, name, "signal", now, func(WorkflowEntry) bool { return true })
+	return s.signal(ctx, name, name, "signal", now, false, func(WorkflowEntry) bool { return true })
 }
 
 // SignalWebhook routes an authenticated GitHub delivery only to workflows for
@@ -2105,7 +2185,7 @@ func (s *Scheduler) Signal(ctx context.Context, name string, now time.Time) []st
 // number in the run trigger reference so merge-review can select it directly.
 func (s *Scheduler) SignalWebhook(ctx context.Context, delivery webhookhttp.Delivery, now time.Time) []string {
 	name := webhookhttp.SignalName(delivery.Event)
-	return s.signal(ctx, name, webhookhttp.TriggerRef(delivery), "webhook delivery: "+delivery.Event, now, func(entry WorkflowEntry) bool {
+	return s.signal(ctx, name, webhookhttp.TriggerRef(delivery), "webhook delivery: "+delivery.Event, now, true, func(entry WorkflowEntry) bool {
 		if delivery.RepositoryOwner == "" || delivery.RepositoryName == "" {
 			return true
 		}
@@ -2115,7 +2195,7 @@ func (s *Scheduler) SignalWebhook(ctx context.Context, delivery webhookhttp.Deli
 	})
 }
 
-func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time.Time, matches func(WorkflowEntry) bool) []string {
+func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time.Time, isWebhook bool, matches func(WorkflowEntry) bool) []string {
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
 	ctx = providersnapshot.WithTick(ctx, now)
@@ -2161,8 +2241,20 @@ func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time
 				entry := byGaggle[gaggle][next[gaggle]]
 				next[gaggle]++
 				attempted = true
+				if isWebhook {
+					identity := entryIdentity(entry)
+					if blocked, reason := s.webhookBackedOff(identity, entry.WebhookBackoff, now); blocked {
+						s.journalEvent(journal.Event{
+							Type:     journal.EventTickSkipped,
+							Workflow: entry.Workflow,
+							Gaggle:   entry.Gaggle,
+							Reason:   reason,
+						})
+						continue
+					}
+				}
 				runID, admitted, reason := s.dispatch(ctx, entry, now,
-					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire, nil)
+					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire, nil, isWebhook)
 				if admitted {
 					runIDs = append(runIDs, runID)
 					break
@@ -2238,7 +2330,7 @@ func (s *Scheduler) refillRejectionReason(identity WorkflowIdentity, now time.Ti
 // goroutine below and outlives dispatch's return, so the run gets its own
 // root span (via runner.Runner.startRunSpan). The candidate run ID is minted
 // first so both spans share its trace even when admission blocks the dispatch.
-func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string, scheduleIndexes []int) (runID string, admitted bool, skipReason string) {
+func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string, scheduleIndexes []int, trackWebhookBackoff bool) (runID string, admitted bool, skipReason string) {
 	ctx = providersnapshot.WithTick(ctx, now)
 	runID, err := newRunID()
 	if err != nil {
@@ -2368,6 +2460,10 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	s.admissionMu.Unlock()
 	s.dispatches.Add(1)
 	backoffTokens := s.beginScheduledPoll(identity, scheduleIndexes)
+	var webhookBackoffToken idleBackoffToken
+	if trackWebhookBackoff {
+		webhookBackoffToken = s.beginWebhookPoll(identity)
+	}
 	go func() {
 		defer s.dispatches.Done()
 		defer s.releaseAdmissionOwner(runID, entry.Workflow, admissionGeneration)
@@ -2380,6 +2476,9 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		})
 		if startErr == nil {
 			s.recordScheduledPollResult(identity, entry, backoffTokens, result.NoWork, s.now())
+			if trackWebhookBackoff {
+				s.recordWebhookPollResult(identity, entry.WebhookBackoff, webhookBackoffToken, result.NoWork, s.now())
+			}
 		}
 		if (startErr == nil && result.FailureCode == providers.ErrorCodeAuthFailed) ||
 			result.FailureCode == telemetry.ErrCodeCredentialUnavailable {

@@ -1623,7 +1623,15 @@ func TestRebasePRConflictDefersAndLeavesCleanWorktree(t *testing.T) {
 	}
 }
 
-func TestRebasePRConflictInspectionFailurePreservesCause(t *testing.T) {
+// TestRebasePRConflictInspectionInfraFailureWithholdsCause is #4173's
+// regression: the git subprocess that inspects conflict locations is OUR OWN
+// tooling running against OUR OWN checkout, not the forge reaching a verdict
+// about the PR. Failing that way must not attribute "conflict" to the PR —
+// remediation-checkpoint would spend a generation and park the PR over a
+// fault the next cycle may not even reproduce. Before #4173 this test
+// asserted the opposite ("PreservesCause": remediationCauses = "conflict"),
+// which was the bug.
+func TestRebasePRConflictInspectionInfraFailureWithholdsCause(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a POSIX git shim to inject a conflict-inspection failure")
 	}
@@ -1666,9 +1674,10 @@ exec "$GOOBERS_TEST_REAL_GIT" "$@"
 	}
 	result := readProviderStageResult(t, filepath.Join(wt.Path, "rebase-result.json"))
 	want := map[string]interface{}{
-		"conflict":          "true",
-		"remediationCauses": "conflict",
-		"rebaseBaseSha":     rebaseBaseSHA,
+		"conflict":                    "true",
+		"remediationCauses":           "",
+		"rebaseBaseSha":               rebaseBaseSHA,
+		"rebaseInfrastructureFailure": "true",
 	}
 	for key, value := range want {
 		if result[key] != value {

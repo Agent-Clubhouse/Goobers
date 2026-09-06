@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -35,6 +36,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/telemetry/retention"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
 	"github.com/goobers/goobers/internal/worktree"
@@ -112,6 +114,25 @@ type sweepErrorReporter struct {
 
 func newSweepErrorReporter(log *journal.InstanceLog, code string) *sweepErrorReporter {
 	return &sweepErrorReporter{log: log, code: code, reportEvery: sweepErrorReportEvery}
+}
+
+// sweepOrphanedEphemeralTmp reclaims any `goobers-ephemeral-tmp-*` directory
+// an OOMKill orphaned on a prior generation of this process (#3969) — an
+// OOMKill takes pid 1 with no unwinding, so the deferred Reclaim call that
+// normally cleans one up never runs. Called once, early in daemon startup
+// before this process establishes a Scope of its own, so every such
+// directory already in the temp root belongs to a prior generation, never a
+// live one (see ephemeraltmp.SweepOrphans' own doc for why that invariant
+// does not generalize past this exact call site). Gated on the same
+// declaration that governs whether this daemon ever creates one, so a self
+// runner that does not declare tmp:ephemeral sees no behavior change here
+// either.
+func sweepOrphanedEphemeralTmp(cfg *instance.Config, log *journal.InstanceLog) {
+	if !cfg.SelfRunnerEnforces(instance.RunnerRestrictionTmpEphemeral) {
+		return
+	}
+	_, sweepErr := ephemeraltmp.SweepOrphans("")
+	newSweepErrorReporter(log, "ephemeral_tmp_sweep_failed").report(sweepErr)
 }
 
 func (r *sweepErrorReporter) report(err error) {
@@ -355,6 +376,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 
+	// tracker/watchStartupReadiness (#4368): a daemon that is alive but stuck
+	// somewhere between process start and API readiness looks identical to a
+	// healthy one to every existing health signal — the scheduler heartbeat
+	// this instance's own unhealthy classification (status.go) relies on
+	// does not exist yet at this point in startup. The watchdog names the
+	// current phase once livenessTimeout has passed without readiness,
+	// giving an operator something to correlate a stuck dashboard/`status
+	// --daemon` against instead of only a stale heartbeat.
+	tracker := &startupPhaseTracker{}
+	go watchStartupReadiness(ctx, stdout, tracker, ready.Load, livenessTimeout)
+	retentionGate := &retentionSweepGate{}
+
 	// Single-instance lock (#23 AC3): a second `up` on the same instance root
 	// must fail fast with a clear message, not silently race the first.
 	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
@@ -446,6 +479,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return err
 	}
 	defer func() { _ = shutdownSetup() }()
+	// Shared across the startup-triggered deferred sweep and the periodic
+	// ticker below (#4373's "share the same exclusion mechanism"): one
+	// error-rate-limiting reporter per failure class, not per call site.
+	worktreeRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "worktree_retention_sweep_failed")
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -903,40 +940,65 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// separately by adopt-and-reset, but Reap is still what actually reclaims
 	// the disk space and the git worktree-list registration).
 	for gaggle, manager := range setup.WorktreesByGaggle {
-		if _, warnings, err := manager.Reap(ctx, worktree.ReapOptions{
-			IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
-		}); err != nil {
-			pf(stderr, "error: reap worktrees for gaggle %s: %v\n", gaggle, err)
+		manager := manager
+		var warnings []worktree.ReapWarning
+		reapErr := runStartupPhase(stdout, tracker, "worktree-reap-crash-orphan", gaggle, func() error {
+			var reapErr error
+			_, warnings, reapErr = manager.Reap(ctx, worktree.ReapOptions{
+				IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
+			})
+			return reapErr
+		})
+		if reapErr != nil {
+			pf(stderr, "error: reap worktrees for gaggle %s: %v\n", gaggle, reapErr)
 			return 1
-		} else {
-			for _, w := range warnings {
-				pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
-			}
+		}
+		for _, w := range warnings {
+			pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
 		}
 	}
 	if setup.LegacyWorktrees != nil {
-		if _, warnings, err := setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
-			IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
-		}); err != nil {
-			pf(stderr, "error: reap legacy worktrees: %v\n", err)
+		var warnings []worktree.ReapWarning
+		reapErr := runStartupPhase(stdout, tracker, "worktree-reap-crash-orphan", "legacy", func() error {
+			var reapErr error
+			_, warnings, reapErr = setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
+				IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+			})
+			return reapErr
+		})
+		if reapErr != nil {
+			pf(stderr, "error: reap legacy worktrees: %v\n", reapErr)
 			return 1
-		} else {
-			for _, w := range warnings {
-				pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
-			}
+		}
+		for _, w := range warnings {
+			pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
 		}
 	}
-	if err := pruneConfiguredRetention(ctx, l, setup, stdout, stderr); err != nil {
-		pf(stderr, "error: prune retained worktrees and branches: %v\n", err)
-		return 1
-	}
+	// Broad worktree/branch retention (merged-local-branch pruning etc.) is
+	// recoverable housekeeping, not the correctness-critical crash-orphan
+	// recovery just above — resuming into a stale worktree key would be a
+	// correctness bug, but a kept failure worktree or a fully-merged local
+	// branch sitting around one sweep interval longer is not. Running it
+	// synchronously here previously blocked API readiness on however long a
+	// large cleanup backlog took (#4373: 166 merged branches took roughly 11
+	// minutes on MDB5, during which `status --daemon` and the dashboard both
+	// treated the daemon as unreachable). It now runs as a background sweep
+	// gated on readiness instead (right after ready.Store(true), below),
+	// coalescing with the periodic 6h sweep via retentionGate so at most one
+	// ever runs at a time.
+	pf(stdout, "%s startup phase=retention-sweep status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#4373)")
 	telemetryRetentionConfig := instance.TelemetryRetentionConfig{}
 	if setup.Config.Telemetry.Retention != nil {
 		telemetryRetentionConfig = *setup.Config.Telemetry.Retention
 	}
-	telemetryPruned, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, time.Now())
-	if err != nil {
-		pf(stderr, "error: prune retained telemetry: %v\n", err)
+	var telemetryPruned []retention.Result
+	telemetryErr := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
+		var pruneErr error
+		telemetryPruned, pruneErr = pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, time.Now())
+		return pruneErr
+	})
+	if telemetryErr != nil {
+		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
 	for _, result := range telemetryPruned {
@@ -949,9 +1011,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// otherwise sits until an operator happens to run `goobers telemetry
 	// prune-orphans` — the same gap worktree Reap (above) and telemetry
 	// retention (immediately above) already close for their own trees.
-	orphansPruned, err := pruneOrphansAtStartup(l, time.Now())
-	if err != nil {
-		pf(stderr, "error: prune orphan run directories: %v\n", err)
+	var orphansPruned []retention.OrphanResult
+	orphanErr := runStartupPhase(stdout, tracker, "orphan-run-prune", "", func() error {
+		var pruneErr error
+		orphansPruned, pruneErr = pruneOrphansAtStartup(l, time.Now())
+		return pruneErr
+	})
+	if orphanErr != nil {
+		pf(stderr, "error: prune orphan run directories: %v\n", orphanErr)
 		return 1
 	}
 	for _, result := range orphansPruned {
@@ -1071,15 +1138,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	cancelPlane.AttachRelease(sched.ReleaseRun)
 
-	pf(stdout, "startup: phase=api-readiness status=starting address=%s\n", apiListenAddress(setup.Config))
-	if err := apiServer.Start(); err != nil {
-		pf(stderr, "startup: phase=api-readiness status=failure address=%s error=%v\n", apiListenAddress(setup.Config), err)
+	if err := runStartupPhase(stdout, tracker, "api-bind", apiListenAddress(setup.Config), apiServer.Start); err != nil {
 		pf(stderr, "error: start HTTP API: %v\n", err)
 		return 1
 	}
 	pf(stdout, "startup: phase=api-readiness status=ready address=%s\n", apiServer.Address())
 	if webhookServer != nil {
-		if err := webhookServer.Start(); err != nil {
+		if err := runStartupPhase(stdout, tracker, "webhook-listener-start", webhookServer.Address(), webhookServer.Start); err != nil {
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 			_ = apiServer.Shutdown(shutdownCtx)
 			shutdownCancel()
@@ -1129,6 +1194,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// attach it so subsequent SetWorkflowEnabled calls can drive on-demand
 	// pollOnce reloads and roll back their on-disk edit on rejection.
 	workflowMutations.AttachReloader(reloader)
+
+	// #3969/#4420 follow-up: this MUST run before crash-resume below, not
+	// after. Resuming a run dispatches its next stage in a background
+	// goroutine tracked by wg (joined far later, near shutdown) — if the
+	// sweep ran after resume started, a resumed run's stage could call
+	// ephemeraltmp.Establish and create a brand-new, live
+	// goobers-ephemeral-tmp-* directory before or during the sweep, which
+	// SweepOrphans cannot distinguish from a genuine prior-generation orphan
+	// and would delete out from under an in-flight build. Running it here
+	// preserves the invariant SweepOrphans' own doc requires: called before
+	// this process has established any Scope of its own.
+	sweepOrphanedEphemeralTmp(setup.Config, setup.InstanceLog)
 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
@@ -1351,7 +1428,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// failures still reach the instance journal via the error reporter).
 	worktreeRetentionTicker := time.NewTicker(worktreeRetentionSweepInterval)
 	worktreeRetentionTickerDone := make(chan struct{})
-	worktreeRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "worktree_retention_sweep_failed")
 	go func() {
 		defer close(worktreeRetentionTickerDone)
 		defer worktreeRetentionTicker.Stop()
@@ -1360,7 +1436,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case <-worktreeRetentionTicker.C:
-				worktreeRetentionErrors.report(sweepWorktreeRetention(ctx, l, setup))
+				err := retentionGate.run(func() error {
+					return sweepWorktreeRetention(ctx, l, setup)
+				})
+				if !errors.Is(err, errRetentionSweepAlreadyRunning) {
+					worktreeRetentionErrors.report(err)
+				}
 			}
 		}
 	}()
@@ -1385,10 +1466,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 				return
 			case <-delegationTicker.C:
 				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
-				claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 			}
 		}
 	}()
+
+	// #4323: claims used to share the trigger delegation ticker above, so a
+	// large pending-trigger backlog (#4326's runaway automation is the
+	// incident that exposed this) starved claims processing behind it for as
+	// long as that single sweepPendingTriggers call ran — an operator's
+	// `goobers claim`/release could wait indefinitely with no trigger-side
+	// misbehavior of its own. Its own ticker gives claims the same isolation
+	// cancelTicker/applyTicker already have from each other below.
+	claimAdminTickerDone := startPeriodicSweep(ctx, delegationSweepInterval, func() {
+		claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
+	})
 
 	// #831's cancel sweep runs on its own ticker so a slow (wedged-stage)
 	// cancellation never delays the trigger/claim delegation sweeps above.
@@ -1508,9 +1599,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if fleetConnectorErr != nil {
 		pf(stdout, "warning: Fleet connector unavailable: %v\n", fleetConnectorErr)
 	}
-	if webhookGate.Start() {
+	readyNow := webhookGate.Start()
+	if readyNow {
 		ready.Store(true)
+		pf(stdout, "%s startup phase=ready status=done target=%q address=%s\n", startupTimestamp(), "api", apiServer.Address())
 	}
+	// Now that the API is up and status/dashboard reads no longer block on
+	// it, run the broad retention sweep deferred above (#4373).
+	// startupRetentionSweepDone is always closed, whether or not readiness
+	// was actually reached, so the shutdown join below never blocks on a
+	// sweep that was never launched.
+	startupRetentionSweepDone := startDeferredRetentionSweep(ctx, l, setup, retentionGate, worktreeRetentionErrors, readyNow)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", root, len(setup.Entries), apiServer.Scheme(), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
 		pf(stdout, "GitHub webhooks listening at http://%s%s\n", webhookServer.Address(), webhookhttp.Path)
@@ -1636,7 +1735,9 @@ daemonLoop:
 	<-stalledTickerDone
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
+	<-startupRetentionSweepDone
 	<-delegationTickerDone
+	<-claimAdminTickerDone
 	<-cancelTickerDone
 	<-applyTickerDone
 	<-supervisorStopDone

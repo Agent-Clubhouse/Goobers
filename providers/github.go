@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
@@ -66,6 +67,28 @@ type GitHubProvider struct {
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration) error
 	jitter func(time.Duration) time.Duration
+	// lastQuota caches the most recent absolute rate-limit window this
+	// provider observed from a response header (#4182): a caller elsewhere
+	// in the same process can read it via LastObservedQuota to gate
+	// expensive work on quota its own prior calls already revealed, with no
+	// dedicated rate-limit request.
+	lastQuota struct {
+		mu        sync.Mutex
+		limit     int
+		remaining int
+		known     bool
+	}
+}
+
+// LastObservedQuota reports the most recent absolute rate-limit window
+// (X-RateLimit-Limit/-Remaining) this provider observed on a response, or
+// known=false if no call has been made yet or every response so far was
+// served from the shared snapshot cache (quotaFromHeaders treats a cache hit
+// as unknown, since it spent no real quota and carries no window).
+func (p *GitHubProvider) LastObservedQuota() (limit, remaining int, known bool) {
+	p.lastQuota.mu.Lock()
+	defer p.lastQuota.mu.Unlock()
+	return p.lastQuota.limit, p.lastQuota.remaining, p.lastQuota.known
 }
 
 // WithConfiguredLogin declares the login AuthenticatedLogin returns instead
@@ -300,6 +323,7 @@ type githubIssue struct {
 	Title                    string                          `json:"title"`
 	Body                     string                          `json:"body"`
 	State                    string                          `json:"state"`
+	StateReason              string                          `json:"state_reason"`
 	Locked                   bool                            `json:"locked"`
 	Comments                 int                             `json:"comments"`
 	HTMLURL                  string                          `json:"html_url"`
@@ -567,6 +591,7 @@ func mapGitHubIssue(issue githubIssue) WorkItem {
 		Body:           issue.Body,
 		Labels:         labels,
 		State:          issue.State,
+		StateReason:    issue.StateReason,
 		Status:         statusFromLabels(labels, issue.State),
 		Assignee:       assignee,
 		Links:          links,

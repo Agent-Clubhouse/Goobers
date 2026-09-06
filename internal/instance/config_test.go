@@ -440,6 +440,32 @@ repos:
 	}
 }
 
+// TestLoadConfigRejectsDuplicateKey guards #3643: sigs.k8s.io/yaml's
+// YAML-to-JSON conversion silently kept the LAST of a duplicate mapping key,
+// so a second "runner:" block here could override the first's fields while
+// LoadConfig's schema/unknown-field validation only ever saw the merged,
+// already-deduplicated result and reported success.
+func TestLoadConfigRejectsDuplicateKey(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+runner:
+  livenessTimeout: 3m
+runner:
+  livenessTimeout: 10m
+`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `duplicate key "runner"`) {
+		t.Fatalf("LoadConfig error = %v, want duplicate key rejection", err)
+	}
+}
+
 func TestLoadConfigRepoPathLength(t *testing.T) {
 	cfg, err := LoadConfig(writeInstanceYAML(t, `
 apiVersion: goobers.dev/v1alpha1

@@ -390,7 +390,7 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 
 	for name, next := range map[string]string{
 		"guard-before-agent-context": "gather-review-threads",
-		"guard-before-implement":     "implement",
+		"guard-before-implement":     "warm-module-cache",
 		"guard-before-review":        "review",
 		"guard-before-local-ci":      "local-ci",
 		"guard-before-push":          "push-remediated",
@@ -405,6 +405,40 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		}
 		if guard.Next != next {
 			t.Errorf("%s next = %q, want %q", name, guard.Next, next)
+		}
+	}
+
+	// #4179: a stalled `go mod download` inside the agentic implement session
+	// used to burn the whole implement budget invisibly. warm-module-cache
+	// bounds that download with its own short timeout, distinct from
+	// implement's, before implement ever starts.
+	warmCache, ok := m.Task("warm-module-cache")
+	if !ok {
+		t.Fatal("warm-module-cache not found")
+	}
+	if warmCache.Run == nil || !reflect.DeepEqual(warmCache.Run.Command, []string{"go", "mod", "download"}) {
+		t.Errorf("warm-module-cache command = %v, want [go mod download]", warmCache.Run)
+	}
+	if warmCache.TimeoutSeconds <= 0 || warmCache.TimeoutSeconds >= 900 {
+		t.Errorf("warm-module-cache timeoutSeconds = %d, want a short bound distinct from implement's own budget", warmCache.TimeoutSeconds)
+	}
+	if warmCache.Next != "warm-module-cache-gate" {
+		t.Errorf("warm-module-cache next = %q, want warm-module-cache-gate", warmCache.Next)
+	}
+	warmCacheGate, ok := m.Gate("warm-module-cache-gate")
+	if !ok {
+		t.Fatal("warm-module-cache-gate not found")
+	}
+	if warmCacheGate.Automated == nil || warmCacheGate.Automated.Check != "failure-class" {
+		t.Errorf("warm-module-cache-gate automated check = %+v, want failure-class", warmCacheGate.Automated)
+	}
+	for branch, want := range map[string]string{
+		"pass":  "implement",
+		"fail":  "implement",
+		"infra": "park-infrastructure-failure",
+	} {
+		if got := warmCacheGate.Branches[branch]; got != want {
+			t.Errorf("warm-module-cache-gate %s -> %q, want %q", branch, got, want)
 		}
 	}
 	release, ok := m.Task("release-claim")

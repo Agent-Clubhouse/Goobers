@@ -4652,6 +4652,86 @@ func TestConformanceRunnerResumeRetriesInterruptedAttempt(t *testing.T) {
 	}
 }
 
+// TestRunnerResumeRefusesToRedispatchAttemptThatAlreadyMutated is #3637's
+// acceptance scenario: a stage mutation (e.g. a PR create) can succeed and be
+// journaled as ref.touched, and then the crash that interrupts the run can
+// still land before that same attempt's own stage.finished write lands.
+// interruptedAttempt alone cannot tell that case apart from an attempt that
+// never touched anything external — both leave stage.started as the last
+// boundary event for the stage. Resume must not treat the two identically:
+// blindly continuing at attempt+1 would re-run the executor and duplicate
+// the non-idempotent mutation. Resume must fail closed instead, without
+// dispatching a fresh attempt.
+func TestRunnerResumeRefusesToRedispatchAttemptThatAlreadyMutated(t *testing.T) {
+	machine := retryFixtureMachine(t, 3)
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+
+	const runID = "run-crash-after-mutation"
+	jr, jerr := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if jerr != nil {
+		t.Fatalf("journal.Create: %v", jerr)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventRefTouched,
+		ExternalRef: &journal.ExternalRef{
+			Provider: string(apiv1.ProviderGitHub), Kind: "branch",
+			ID: providers.BranchName(machine.Def.Name, runID),
+		},
+	}); err != nil {
+		t.Fatalf("append run-branch ref.touched: %v", err)
+	}
+	jr.SetMachineState("implement")
+	if err := jr.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatalf("append stage.started: %v", err)
+	}
+	if err := recordContextManifest(jr, apiv1.InvocationEnvelope{}, "implement", 1, ""); err != nil {
+		t.Fatalf("record context manifest: %v", err)
+	}
+	// The mutation itself (e.g. a PR create) already succeeded and was
+	// journaled before the crash cut off this attempt's stage.finished write.
+	if err := jr.Append(journal.Event{
+		Type: journal.EventRefTouched, Stage: "implement", Attempt: 1,
+		ExternalRef: &journal.ExternalRef{Provider: string(apiv1.ProviderGitHub), Kind: "pr", ID: "42"},
+	}); err != nil {
+		t.Fatalf("append stage-scoped ref.touched: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	det := &flakyDeterministic{}
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return det, nil },
+		Automated:        gate.NewAutomatedEvaluator(),
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   runID,
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	}); err == nil {
+		t.Fatal("Resume: want an error — the interrupted attempt already touched an external mutation and must not be redispatched")
+	}
+	if det.calls != 0 {
+		t.Fatalf("executor called %d times, want 0 — redispatching would duplicate the already-succeeded mutation", det.calls)
+	}
+}
+
 func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle: "acme-web",

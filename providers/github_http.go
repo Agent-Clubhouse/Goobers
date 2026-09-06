@@ -227,6 +227,13 @@ func (p *GitHubProvider) observeRateLimit(ctx context.Context, ev RateLimitEvent
 }
 
 func (p *GitHubProvider) observeQuota(ctx context.Context, resp *http.Response) {
+	// Cached independently of quotaObserver being configured: LastObservedQuota
+	// (#4182) must work for every caller, not only one that wired an observer.
+	if limit, remaining, ok := quotaFromHeaders(resp.Header); ok {
+		p.lastQuota.mu.Lock()
+		p.lastQuota.limit, p.lastQuota.remaining, p.lastQuota.known = limit, remaining, true
+		p.lastQuota.mu.Unlock()
+	}
 	if p.quotaObserver == nil {
 		return
 	}

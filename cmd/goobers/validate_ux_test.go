@@ -69,8 +69,11 @@ func TestValidateForeignLayoutDiagnosticsAndExitCodes(t *testing.T) {
 		{
 			name: "capability typo",
 			mutate: func(t *testing.T, root string) {
+				// Extends the existing capabilities: list rather than
+				// appending a second one (#3643: a duplicate key is now a
+				// hard error, so this can no longer rely on last-key-wins).
 				path := filepath.Join(root, "config", "gaggles", "example", "goobers", "coder", "goober.yaml")
-				appendToFile(t, path, "  capabilities:\n    - github:prs:write\n")
+				replaceInFile(t, path, "  capabilities:\n    - repo:push", "  capabilities:\n    - repo:push\n    - github:prs:write")
 			},
 			code: 1,
 			want: `Goober/coder: spec.capabilities contains unknown capability "github:prs:write"; did you mean "github:pr:write"?`,
@@ -255,6 +258,7 @@ func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
 }
 
 func TestValidateAllowsRepositoryFreeScratchOnlyGaggle(t *testing.T) {
+	withDemoNetworkNoneProbe(t, func(context.Context) error { return nil })
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {
 		t.Fatalf("init --demo: code=%d stderr=%q", code, stderr)
@@ -523,13 +527,15 @@ func TestValidateTemplatePlaceholdersDoNotMatchEditedCoordinateSubstrings(t *tes
 		t.Fatal(err)
 	}
 	instancePath := filepath.Join(root, "instance.yaml")
-	appendToFile(t, instancePath, `repos:
+	// InitDemo's scaffold already writes a "repos: null" line (Config.Repos
+	// has no omitempty), so replace it in place rather than appending a
+	// second repos: key (#3643: a duplicate key is now a hard error).
+	replaceInFile(t, instancePath, "repos: null", `repos:
   - provider: github
     owner: your-organization
     name: your-repository
     token:
-      env: GOOBERS_GITHUB_TOKEN
-`)
+      env: GOOBERS_GITHUB_TOKEN`)
 
 	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
 	if code != 0 {
@@ -927,10 +933,14 @@ func TestValidateRejectsInsecureNonLoopbackOTLP(t *testing.T) {
 		t.Fatal(err)
 	}
 	instancePath := filepath.Join(root, "instance.yaml")
-	appendToFile(t, instancePath, "telemetry:\n"+
+	// Init's scaffold already writes a "telemetry: {}" line (TelemetryConfig
+	// is a struct, so json/yaml omitempty cannot drop it), so replace it in
+	// place rather than appending a second telemetry: key (#3643: a
+	// duplicate key is now a hard error).
+	replaceInFile(t, instancePath, "telemetry: {}", "telemetry:\n"+
 		"  otlp:\n"+
 		"    endpoint: goobers-collector.goobers-system:4317\n"+
-		"    insecure: true\n")
+		"    insecure: true")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 1 {

@@ -394,6 +394,14 @@ var infrastructureSignatures = [][]string{
 	{"cannot allocate memory"},
 	{"npm error openssl/", "tls alert handshake failure"},
 
+	// A test deliberately presents an untrusted loopback certificate to
+	// prove the client rejects it (e.g. TestPrepareDashboardAPIProbesTLSDaemonOverHTTPS);
+	// net/http's server logs the resulting client-side rejection as a
+	// handshake error regardless of the fixture's own outcome, so this line
+	// can appear in a captured failure's tail without naming the actual
+	// cause of a nonzero exit (#4362/#4367).
+	{"tls handshake error", "remote error: tls: bad certificate"},
+
 	// Filesystem errno on a tool write (#3373): EROFS from a read-only
 	// mount (observed: playwright's installer taking its directory lock
 	// under a read-only PLAYWRIGHT_BROWSERS_PATH, #3372), EACCES from a

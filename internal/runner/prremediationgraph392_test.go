@@ -264,6 +264,7 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		}},
 		runID + ":guard-before-agent-context": {status: apiv1.ResultSuccess},
 		runID + ":guard-before-implement":     {status: apiv1.ResultSuccess},
+		runID + ":warm-module-cache":          {status: apiv1.ResultSuccess},
 		runID + ":guard-before-review":        {status: apiv1.ResultSuccess},
 		runID + ":guard-before-local-ci":      {status: apiv1.ResultSuccess},
 		runID + ":guard-before-push":          {status: opts.beforePushStatus},
@@ -370,6 +371,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"gather-review-threads",
 		"gather-issue-context",
 		"guard-before-implement",
+		"warm-module-cache",
 		"implement",
 		"validate-finding-responses",
 		"guard-before-review",
@@ -657,8 +659,9 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 			artifactData: []byte(`{"reviewerVerdictTaxonomy":{},"hotFileMap":{}}`), artifactMediaType: "application/json",
 			artifactIntegrity: apiv1.IntegrityUnapproved,
 		},
-		runID + ":local-ci":    {status: apiv1.ResultSuccess},
-		runID + ":push-branch": {status: apiv1.ResultSuccess},
+		runID + ":warm-module-cache": {status: apiv1.ResultSuccess},
+		runID + ":local-ci":          {status: apiv1.ResultSuccess},
+		runID + ":push-branch":       {status: apiv1.ResultSuccess},
 		runID + ":open-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			// #947: open-pr emits opened=true on the happy path (claimed issue
 			// still open); open-pr-gate routes that to ci-poll.
@@ -706,7 +709,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 
-	want := []string{"query-backlog", "gather-implement-context", "implement", "push-branch", "local-ci", "open-pr", "ci-poll", "close-out"}
+	want := []string{"query-backlog", "gather-implement-context", "warm-module-cache", "implement", "push-branch", "local-ci", "open-pr", "ci-poll", "close-out"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}
@@ -758,8 +761,9 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 			artifactData: []byte(`{"hotFileMap":{}}`), artifactMediaType: "application/json",
 			artifactIntegrity: apiv1.IntegrityUnapproved,
 		},
-		runID + ":local-ci":    {status: apiv1.ResultSuccess},
-		runID + ":push-branch": {status: apiv1.ResultSuccess},
+		runID + ":warm-module-cache": {status: apiv1.ResultSuccess},
+		runID + ":local-ci":          {status: apiv1.ResultSuccess},
+		runID + ":push-branch":       {status: apiv1.ResultSuccess},
 		runID + ":open-pr": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
 			"prNumber": "101", "pull-request-url": "https://example.test/pr/101", "opened": "true",
 		}},
@@ -794,7 +798,7 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 	want := []string{
-		"query-backlog", "gather-implement-context", "implement", "push-branch",
+		"query-backlog", "gather-implement-context", "warm-module-cache", "implement", "push-branch",
 		"local-ci", "open-pr", "ci-poll", "remediate-ci", "push-branch",
 		"local-ci", "open-pr", "ci-poll", "close-out",
 	}

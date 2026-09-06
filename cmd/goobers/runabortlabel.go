@@ -14,21 +14,26 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// abortedRunLabel marks a PR whose originating implementation run was
-// cancelled/aborted after the PR was already opened (#2238). Cancelling a
-// run stops only the run itself — on its own that leaves the PR open,
-// unlabeled, and fully eligible for a later INDEPENDENT merge-review run to
-// select, approve, and auto-merge it against acceptance criteria snapshotted
-// into its body before an operator corrected the source issue. This label is
-// the durable, cross-run block: pr-select excludes it (prselect.go, the same
-// mechanism as noMergeReviewLabel) and merge-pr independently refuses to
-// merge a PR carrying it (mergepr.go), even with a green verdict and passing
-// CI — defense in depth so a bypass of selection can't bypass the block too.
+// abortedRunLabel marks a PR whose originating implementation run ended
+// without merging it (#2238, widened by #3490). Originally applied only to a
+// deliberately cancelled/aborted run; a run that instead fails or escalates
+// after opening a PR leaves exactly the same orphan behind — the PR is open,
+// unlabeled, and its CI may never settle to green (a run terminated mid
+// ci-poll, for instance), which makes it invisible to pr-select's normal
+// selection (prselect.go requires CheckStatePassing) with no other path back
+// into any lane. Stamping this label on every non-completed terminal phase
+// (aborted, failed, escalated) gives that PR the one disposition every other
+// terminal state already has: visibly excluded rather than silently
+// unowned. pr-select excludes it (prselect.go, the same mechanism as
+// noMergeReviewLabel) and merge-pr independently refuses to merge a PR
+// carrying it (mergepr.go), even with a green verdict and passing CI —
+// defense in depth so a bypass of selection can't bypass the block too.
 //
-// Deliberately NOT self-healing (unlike goobers:merge-demoted, #950): an
-// operator cancelling a run is a deliberate decision, not a transient
-// condition a later commit should silently clear. Only a human removing the
-// label re-enables the PR for auto-merge.
+// Deliberately NOT self-healing (unlike goobers:merge-demoted, #950): the run
+// that owned this PR is gone, so a later commit or CI settling green must not
+// silently re-admit it to auto-merge. Only a human removing the label (after
+// deciding to close it, hand it to remediation, or take it over) re-enables
+// the PR.
 const abortedRunLabel = "goobers:run-aborted"
 
 // prOpenOperation is the runner.operation value the mutation-sidecar replay
@@ -134,9 +139,12 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 }
 
 // labelAbortedRunPR stamps abortedRunLabel on the PR this run opened, if any,
-// when the run's terminal phase is aborted (#2238). Called on every terminal
-// run (buildTerminalBranchPreparer's shared entrypoint), so it returns before
-// any journal I/O for the overwhelmingly common non-aborted case. Locates the
+// when the run ends on any terminal phase other than PhaseCompleted (#2238,
+// widened by #3490 to cover PhaseFailed and PhaseEscalated alongside the
+// original PhaseAborted — a run that fails or escalates after open-pr orphans
+// its PR exactly as an abort does). Called on every terminal run
+// (buildTerminalBranchPreparer's shared entrypoint), so it returns before
+// any journal I/O for the overwhelmingly common completed case. Locates the
 // PR via the ExternalRef{Kind:"pr"} the runner's own mutation-sidecar replay
 // journals for a successful open-pr stage (finishTaskDispatch in
 // internal/runner/run.go) — the same signal finalizeTerminalBranch reads to
@@ -148,7 +156,12 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 // finalizeTerminalBranch's branch-cleanup scan) because a PR opened in an
 // earlier segment must still be labeled if this run ultimately aborts.
 func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate terminalAnnotator, repo providers.RepositoryRef, labelPR prLabelFunc) error {
-	if phase != journal.PhaseAborted || labelPR == nil {
+	if labelPR == nil {
+		return nil
+	}
+	switch phase {
+	case journal.PhaseAborted, journal.PhaseFailed, journal.PhaseEscalated:
+	default:
 		return nil
 	}
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))

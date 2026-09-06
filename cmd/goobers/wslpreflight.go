@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf16"
 
@@ -58,6 +59,9 @@ On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
 goobers binary, Bubblewrap, and working unprivileged user + network namespaces.
 
+On Linux, report whether this host can create the unprivileged user + network
+namespaces network:none isolation relies on (#4267); takes no flags there.
+
 With --launch-wsl, run the trailing Goobers command through that distro after
 the checks pass. Arguments are forwarded directly without shell evaluation,
 the WSL process starts in the current Windows directory, and its exit code is
@@ -83,12 +87,13 @@ type wslDistribution struct {
 }
 
 type wslPreflightDeps struct {
-	hostOS   string
-	lookPath func(string) (string, error)
-	probe    func(context.Context, string, []string) ([]byte, error)
-	launch   func(string, []string, io.Reader, io.Writer, io.Writer) (int, error)
-	getwd    func() (string, error)
-	stdin    io.Reader
+	hostOS           string
+	lookPath         func(string) (string, error)
+	probe            func(context.Context, string, []string) ([]byte, error)
+	launch           func(string, []string, io.Reader, io.Writer, io.Writer) (int, error)
+	getwd            func() (string, error)
+	stdin            io.Reader
+	probeNetworkNone func(context.Context) error
 }
 
 func realWSLPreflightDeps() wslPreflightDeps {
@@ -118,8 +123,9 @@ func realWSLPreflightDeps() wslPreflightDeps {
 			}
 			return 0, nil
 		},
-		getwd: os.Getwd,
-		stdin: os.Stdin,
+		getwd:            os.Getwd,
+		stdin:            os.Stdin,
+		probeNetworkNone: stageexecutor.ProbeNoNetwork,
 	}
 }
 
@@ -141,6 +147,35 @@ func runWSLNetworkPreflight(args []string, _ io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+// runLinuxNetworkPreflight reports whether this Linux host can create the
+// unprivileged user + network namespaces network:none isolation relies on
+// (internal/executor/network_linux.go), instead of unconditionally exiting 2
+// as if `goobers preflight` simply didn't exist on Linux (#4267). Linux has
+// no WSL/distro/bwrap chain to check — just this one capability — so the
+// Windows-only flags are rejected here.
+func runLinuxNetworkPreflight(distro string, launch bool, forwarded []string, probe func(context.Context) error, stdout, stderr io.Writer) int {
+	if distro != "" || launch || len(forwarded) != 0 {
+		pf(stderr, "error: --distro and --launch-wsl are Windows-only; `goobers preflight` on Linux takes no flags\n")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wslPreflightTimeout)
+	defer cancel()
+	err := probe(ctx)
+	if err == nil {
+		pln(stdout, "OK: this host supports Goobers' enforced network:none isolation (unprivileged user + network namespaces)")
+		return 0
+	}
+	if errors.Is(err, syscall.EPERM) {
+		pf(stderr, "error: unprivileged user namespaces (CLONE_NEWUSER|CLONE_NEWNET) are restricted on "+
+			"this host, so network:none isolation cannot be created; enable them (e.g. "+
+			"`sysctl -w kernel.unprivileged_userns_clone=1`, or the container/security-profile equivalent), "+
+			"or set GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 to run without enforced isolation\n")
+		return 1
+	}
+	pf(stderr, "error: network isolation capability probe failed: %v\n", err)
+	return 1
+}
+
 func runOnboardingPreflightWith(args []string, stdout, stderr io.Writer, deps wslPreflightDeps) int {
 	fs := newCLIFlagSet("preflight", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -149,6 +184,9 @@ func runOnboardingPreflightWith(args []string, stdout, stderr io.Writer, deps ws
 	launch := fs.Bool("launch-wsl", false, "run the trailing Goobers command inside WSL after a successful check")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if deps.hostOS == "linux" {
+		return runLinuxNetworkPreflight(*distro, *launch, fs.Args(), deps.probeNetworkNone, stdout, stderr)
 	}
 	if deps.hostOS != "windows" {
 		pf(stderr, "error: WSL preflight is only available on Windows hosts\n")

@@ -114,9 +114,66 @@ func TestSelfUpdateCommandReportsAlreadyActiveResult(t *testing.T) {
 	}
 }
 
+// TestSelfUpdatePrepareFailureWritesTypedErrorResult is #4348's core
+// regression: before this fix, every error path in runSelfUpdateWith
+// (including a failed selfupdate.Prepare — GitHub API errors, rollback
+// errors, and the like) returned nonzero after only printing to stderr,
+// never writing the declared result file. The executor then reported the
+// generic missing_result_file for every one of them (matching the reported
+// incident: 12/12 stage-update attempts, missing_result_file + run_failed,
+// stage-failure-rate 1.0), hiding whatever the real cause was. Now the
+// failure writes a typed, classified error result via failProviderStage —
+// the same #711 pattern every other provider stage command already uses —
+// so a resumed run's retry budget and an operator's diagnosis both see the
+// real cause instead of a bare "no result file" mystery.
+func TestSelfUpdatePrepareFailureWritesTypedErrorResult(t *testing.T) {
+	root := selfUpdateTestInstance(t, "20m")
+	setSelfUpdateRepoRoute(t)
+	resultFile := filepath.Join(t.TempDir(), "result.json")
+	t.Setenv(executor.InputEnvVar("resultFile"), resultFile)
+
+	prepareErr := errors.New("resolve release candidate: rpc error: unexpected EOF")
+	prepare := func(_ context.Context, _ selfupdate.PrepareOptions) (selfupdate.PrepareResult, error) {
+		return selfupdate.PrepareResult{}, prepareErr
+	}
+	var stdout, stderr bytes.Buffer
+	code := runSelfUpdateWith([]string{root}, &stdout, &stderr, "self-update", prepare)
+
+	if code != 1 {
+		t.Fatalf("code = %d, stderr = %q, want 1", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "self-update") || !strings.Contains(stderr.String(), "unexpected EOF") {
+		t.Fatalf("stderr = %q, want the operation and underlying error visible", stderr.String())
+	}
+
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatalf("read declared result file: %v — a self-update failure must not leave it missing (#4348)", err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal result file: %v", err)
+	}
+	if out[executor.OutputErrorCode] == "" || out[executor.OutputErrorCode] == nil {
+		t.Fatalf("result = %v, want a non-empty classified error code, not a bare missing result", out)
+	}
+	if out[executor.OutputErrorRetryable] == nil {
+		t.Fatalf("result = %v, want an explicit retryable flag", out)
+	}
+	msg, _ := out[executor.OutputErrorMessage].(string)
+	if !strings.Contains(msg, "self-update") || !strings.Contains(msg, "unexpected EOF") {
+		t.Fatalf("errorMessage = %q, want the operation and underlying cause", msg)
+	}
+}
+
 func TestSelfUpdateCommandRejectsInvalidPolicyTargets(t *testing.T) {
 	root := selfUpdateTestInstance(t, "")
 	setSelfUpdateRepoRoute(t)
+	// #4348: a validation failure now writes a typed-error result file
+	// (failProviderStage) instead of silently returning with none, so this
+	// must route it under t.TempDir() like every other test here rather than
+	// the package directory.
+	t.Setenv(executor.InputEnvVar("resultFile"), filepath.Join(t.TempDir(), "result.json"))
 	tests := []struct {
 		name string
 		args []string

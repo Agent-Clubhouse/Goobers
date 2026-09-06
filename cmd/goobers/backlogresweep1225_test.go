@@ -289,6 +289,88 @@ func TestBacklogQueryDependencyRechecksRespectRemainingBatchCapacity(t *testing.
 	}
 }
 
+// TestBacklogQueryReadyResweepRespectsPartitionRequireLabels is #4181's
+// regression test: the ready re-sweep path used to list from an entirely
+// unscoped query, so a run configured with a partition requireLabels (e.g.
+// goobers:cloud, the sibling-instance partitioning scheme) would still
+// re-sweep and CLAIM a ready item outside that partition — including items
+// belonging to a sibling instance's own claim. Only the in-partition item may
+// be swept; the out-of-partition item must be left untouched.
+func TestBacklogQueryReadyResweepRespectsPartitionRequireLabels(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(1, "In-partition ready item", "goobers:approved", providers.LabelReady, "goobers:cloud")
+	server.addIssue(2, "Out-of-partition ready item", "goobers:approved", providers.LabelReady)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "partition-resweep-run")
+	configureCurationResweep(t, "2", "2", "24h")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:cloud")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
+	}
+	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+	if len(items) != 1 || items[0].ID != "1" {
+		t.Fatalf("curation items = %+v, want only the in-partition ready item 1", items)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed := ledger.Lookup("2"); claimed {
+		t.Fatal("the out-of-partition ready item was claimed by the re-sweep — partition filter was bypassed")
+	}
+	if got := len(server.issues[2].comments); got != 0 {
+		t.Fatalf("out-of-partition ready item comments = %d, want 0 — the re-sweep must not touch it at all", got)
+	}
+}
+
+// TestBacklogQueryBlockedResweepRespectsPartitionRequireLabels is #4181's
+// dependency-recheck counterpart: appendBlockedResweepCandidates shared the
+// identical unscoped-listing shape as the ready path. An out-of-partition
+// blocked item whose blocker has since closed must not be dependency-
+// rechecked or claimed.
+func TestBacklogQueryBlockedResweepRespectsPartitionRequireLabels(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(1, "In-partition blocked item", "goobers:approved", blockedOnSiblingLabel, "goobers:cloud")
+	server.addIssue(2, "Out-of-partition blocked item", "goobers:approved", blockedOnSiblingLabel)
+	server.addIssue(98, "Closed blocker one")
+	server.addIssue(99, "Closed blocker two")
+	server.setIssueBlockers(1, 98)
+	server.setIssueBlockers(2, 99)
+	server.setIssueState(98, "closed")
+	server.setIssueState(99, "closed")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "partition-blocked-resweep-run")
+	configureCurationResweep(t, "2", "2", "24h")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:cloud")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
+	}
+	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+	if len(items) != 1 || items[0].ID != "1" || items[0].CurationMode != "dependency-recheck" {
+		t.Fatalf("curation items = %+v, want only the in-partition blocked item 1 as dependency-recheck", items)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed := ledger.Lookup("2"); claimed {
+		t.Fatal("the out-of-partition blocked item was claimed by the dependency recheck — partition filter was bypassed")
+	}
+	if got := len(server.issues[2].comments); got != 0 {
+		t.Fatalf("out-of-partition blocked item comments = %d, want 0 — the re-sweep must not touch it at all", got)
+	}
+}
+
 func TestReadBacklogResweepPolicyRejectsUnboundedInputs(t *testing.T) {
 	tests := []struct {
 		name     string

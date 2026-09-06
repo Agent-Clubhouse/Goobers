@@ -678,6 +678,22 @@ func triggerDisabled(trigger apiv1.Trigger) bool {
 	return trigger.Type != apiv1.TriggerManual
 }
 
+// webhookTriggerSignalsAndBackoff derives a type=webhook trigger's signal
+// names and idle-backoff policy (#4262), factored out of
+// buildSchedulerDefinitions's per-trigger loop to keep that function's
+// complexity within the gate.
+func webhookTriggerSignalsAndBackoff(workflowName string, trigger apiv1.Trigger) ([]string, localscheduler.IdleBackoffConfig, error) {
+	sigs := make([]string, 0, len(trigger.Events))
+	for _, event := range trigger.Events {
+		sigs = append(sigs, webhookhttp.SignalName(event))
+	}
+	backoff, err := localscheduler.ParseIdleBackoff(trigger.IdleBackoff)
+	if err != nil {
+		return nil, localscheduler.IdleBackoffConfig{}, fmt.Errorf("workflow %q: %w", workflowName, err)
+	}
+	return sigs, backoff, nil
+}
+
 func buildSchedulerDefinitions(
 	l instance.Layout,
 	cfg *instance.Config,
@@ -862,6 +878,7 @@ func buildSchedulerDefinitions(
 		// workflow subscribed to a received signal name.
 		var scheds []localscheduler.Schedule
 		var scheduleBackoffs []localscheduler.IdleBackoffConfig
+		webhookBackoff, _ := localscheduler.ParseIdleBackoff(nil)
 		var sigs []string
 		hasRepositoryWebhook := false
 		var pollPriority int32
@@ -887,9 +904,12 @@ func buildSchedulerDefinitions(
 			}
 			if trigger.Type == apiv1.TriggerWebhook {
 				hasRepositoryWebhook = true
-				for _, event := range trigger.Events {
-					sigs = append(sigs, webhookhttp.SignalName(event))
+				webhookSigs, backoff, err := webhookTriggerSignalsAndBackoff(wf.Name, trigger)
+				if err != nil {
+					return nil, err
 				}
+				sigs = append(sigs, webhookSigs...)
+				webhookBackoff = backoff
 			}
 			if trigger.Type == apiv1.TriggerBacklogItem || trigger.Type == apiv1.TriggerSchedule {
 				if !pollPrioritySet || trigger.Priority > pollPriority {
@@ -953,6 +973,7 @@ func buildSchedulerDefinitions(
 			Readiness:           wf.Spec.Readiness,
 			Schedules:           scheds,
 			ScheduleBackoffs:    scheduleBackoffs,
+			WebhookBackoff:      webhookBackoff,
 			Signals:             sigs,
 			PollFallbackCause:   pollFallbackCause,
 			BacklogCounter:      backlogCounter,

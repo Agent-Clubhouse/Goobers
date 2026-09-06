@@ -456,3 +456,132 @@ func TestBindsTheClosedListEffect(t *testing.T) {
 		t.Fatal("tmp:ephemeral must stay declarable on Windows; this package binds it on every self host")
 	}
 }
+
+// TestSweepOrphansRemovesOnlyDirPrefixedEntries proves #3969's fix: a
+// directory an OOMKill orphaned (never reached Reclaim) is collected on the
+// next process startup, while anything else in the temp root — a file, a
+// directory some other component created, a name that merely contains the
+// prefix mid-string — is left untouched.
+func TestSweepOrphansRemovesOnlyDirPrefixedEntries(t *testing.T) {
+	root := t.TempDir()
+
+	orphan1 := filepath.Join(root, dirPrefix+"aaaa")
+	orphan2 := filepath.Join(root, dirPrefix+"bbbb")
+	for _, dir := range []string{orphan1, orphan2} {
+		if err := os.MkdirAll(filepath.Join(dir, "gocache", "leftover"), 0o700); err != nil {
+			t.Fatalf("seed orphan %s: %v", dir, err)
+		}
+	}
+	unrelatedDir := filepath.Join(root, "some-other-dir")
+	if err := os.MkdirAll(unrelatedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedFile := filepath.Join(root, dirPrefix+"looks-like-one-but-is-a-file")
+	if err := os.WriteFile(unrelatedFile, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notAPrefixMatch := filepath.Join(root, "prefixed-with-"+dirPrefix+"-in-the-middle")
+	if err := os.MkdirAll(notAPrefixMatch, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := SweepOrphans(root)
+	if err != nil {
+		t.Fatalf("SweepOrphans() error = %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("removed = %d, want 2", removed)
+	}
+	for _, dir := range []string{orphan1, orphan2} {
+		if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+			t.Fatalf("orphan %s still exists after sweep: %v", dir, statErr)
+		}
+	}
+	for _, keep := range []string{unrelatedDir, unrelatedFile, notAPrefixMatch} {
+		if _, statErr := os.Stat(keep); statErr != nil {
+			t.Fatalf("sweep removed something it must not have (%s): %v", keep, statErr)
+		}
+	}
+}
+
+// TestSweepOrphansEmptyRootDefaultsToOSTempDir proves the empty-root
+// convention matches Establish's own, so a caller passing the same "" both
+// places gets consistent behavior.
+func TestSweepOrphansEmptyRootDefaultsToOSTempDir(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TMPDIR", root)
+	if runtime.GOOS == "windows" {
+		t.Setenv("TMP", root)
+		t.Setenv("TEMP", root)
+	}
+
+	orphan := filepath.Join(os.TempDir(), dirPrefix+"cccc")
+	if err := os.MkdirAll(orphan, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := SweepOrphans("")
+	if err != nil {
+		t.Fatalf("SweepOrphans(\"\") error = %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if _, statErr := os.Stat(orphan); !os.IsNotExist(statErr) {
+		t.Fatalf("orphan still exists after sweep: %v", statErr)
+	}
+}
+
+// TestSweepOrphansToleratesMissingRoot proves a temp root that does not exist
+// yet (nothing has ever run on this host) is not an error — there is nothing
+// to sweep, not a sweep failure.
+func TestSweepOrphansToleratesMissingRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "does-not-exist")
+	removed, err := SweepOrphans(root)
+	if err != nil {
+		t.Fatalf("SweepOrphans() error = %v, want nil for a root that does not exist", err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want 0", removed)
+	}
+}
+
+// TestSweepOrphansAggregatesRemovalFailuresAndKeepsGoing proves one
+// directory's removal failure does not stop the rest of the sweep from
+// running — best-effort, matching the package doc.
+func TestSweepOrphansAggregatesRemovalFailuresAndKeepsGoing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based removal failure is not reliably inducible on windows in a test sandbox")
+	}
+	root := t.TempDir()
+
+	blocked := filepath.Join(root, dirPrefix+"blocked")
+	if err := os.MkdirAll(filepath.Join(blocked, "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A read-only parent directory blocks RemoveAll from unlinking its child,
+	// without requiring root or a real permission-denied filesystem.
+	if err := os.Chmod(blocked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
+
+	removable := filepath.Join(root, dirPrefix+"removable")
+	if err := os.MkdirAll(removable, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := SweepOrphans(root)
+	if err == nil {
+		t.Fatal("SweepOrphans() error = nil, want a reported failure for the blocked directory")
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1 (the removable directory, despite the other's failure)", removed)
+	}
+	if _, statErr := os.Stat(removable); !os.IsNotExist(statErr) {
+		t.Fatalf("removable orphan still exists: %v", statErr)
+	}
+	if _, statErr := os.Stat(blocked); statErr != nil {
+		t.Fatalf("blocked orphan should still exist (removal failed): %v", statErr)
+	}
+}
