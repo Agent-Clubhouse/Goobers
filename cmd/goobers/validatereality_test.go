@@ -241,13 +241,15 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 // case below, which the old restrictions-non-empty check could not tell
 // from the off-self case).
 func TestAppendInstanceRootFinding(t *testing.T) {
-	// select-source, not backlog-query: the latter became dispatchable with
-	// Goobers#3897/#3898 (its claims, scheduler-state and journal-emit needs
-	// are all plane-served now), and this finding only fires for a command
-	// that STILL holds a file under the instance root.
+	// reconcile-branches, not backlog-query or (since Goobers#4342)
+	// select-source: both became dispatchable with #3897/#3898/#4342 (their
+	// claims, scheduler-state, journal-emit, and escalation-scan needs are
+	// all plane-served now), and this finding only fires for a command that
+	// STILL holds a file under the instance root (its scrubbed
+	// decision-annotation write, #4344).
 	ledgerTask := apiv1.Task{
 		Name: "select-parent", Type: apiv1.TaskDeterministic,
-		Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "select-source"}},
+		Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "reconcile-branches"}},
 		RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
 	}
 	tests := []struct {
@@ -262,7 +264,7 @@ func TestAppendInstanceRootFinding(t *testing.T) {
 			task:        ledgerTask,
 			wantWarning: true,
 			wantText: []string{
-				`command [goobers select-source]`,
+				`command [goobers reconcile-branches]`,
 				"cannot resolve to the daemon's own host (self)",
 				"eligible runner set for this stage is [pod]",
 				"refused at dispatch",
@@ -441,9 +443,10 @@ func TestAppendInstanceRootFinding(t *testing.T) {
 }
 
 // remoteRestrictedInstanceRootV30WorkflowYAML declares runsOn.restrictions
-// on a ledger-touching command (select-source, this PR's headline
-// silent-wrong-result case) — end-to-end coverage of RNR005 through the
-// real `goobers validate` seam, not only appendPlacementFindings directly.
+// on a ledger-touching command (reconcile-branches, since Goobers#4342 moved
+// select-source's own headline silent-wrong-result case off this list) —
+// end-to-end coverage of RNR005 through the real `goobers validate` seam,
+// not only appendPlacementFindings directly.
 const remoteRestrictedInstanceRootV30WorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "3.0"
@@ -461,9 +464,9 @@ spec:
       goal: run a ledger-touching stage that only a network:allowlist runner satisfies
       runsOn:
         restrictions: [network:allowlist]
-      capabilities: ["github:issues:read", "github:issues:write"]
+      capabilities: ["github:branch:delete"]
       run:
-        command: ["goobers", "select-source"]
+        command: ["goobers", "reconcile-branches"]
 `
 
 // TestValidateWarnsInstanceRootOffSelf is TestAppendInstanceRootFinding's
@@ -484,7 +487,7 @@ func TestValidateWarnsInstanceRootOffSelf(t *testing.T) {
 	for _, want := range []string{
 		"WARNING RNR005 Workflow/win-build",
 		"cannot resolve to the daemon's own host (self)",
-		`command [goobers select-source]`,
+		`command [goobers reconcile-branches]`,
 		"eligible runner set for this stage is [pod]",
 		"refused at dispatch",
 		"instance_root_required",
