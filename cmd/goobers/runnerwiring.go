@@ -338,7 +338,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// Circuit breaker for escalated/aborted terminals: buildFailedHandler
 		// covers PhaseFailed; this covers the remaining non-completed terminals
 		// so that a repeating escalation loop doesn't churn indefinitely.
-		NotifyTerminal: buildTerminalCircuitBreaker(l, cfg, gaggleProject, resolver, sharedReg, nil),
+		NotifyTerminal: buildTerminalCircuitBreaker(l, cfg, resolver, sharedReg, nil),
 		// PATH-preflight the local-ci stage's configured ciCommand (#1380) for
 		// a real daemon run. Left nil in every runner-package test and any
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —

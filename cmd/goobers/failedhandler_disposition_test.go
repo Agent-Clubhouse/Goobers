@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/providers"
 )
 
 // failedHandlerDispositionFixture seeds a repo-backed instance with one claim
@@ -35,6 +36,7 @@ func failedHandlerDispositionFixture(t *testing.T, runID string) (runner.FailedH
 	if ok, _, err := ledger.Claim("2458", runID, "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed claim: ok=%v err=%v", ok, err)
 	}
+	seedItemRepositoryForTest(t, l, runID, "2458", providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"})
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
 	}}

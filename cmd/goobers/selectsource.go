@@ -100,6 +100,12 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: open claim ledger: %v\n", err)
 		return 1
 	}
+	annotations, err := openStageAnnotator(l)
+	if err != nil {
+		pf(stderr, "error: open instance annotations: %v\n", err)
+		return 1
+	}
+	defer func() { _ = annotations.Close() }()
 
 	for _, candidate := range candidates {
 		item, getErr := issueProvider.GetWorkItem(ctx, repo, candidate.ParentID)
@@ -132,6 +138,18 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			// selector, or an unrelated implementation claim) — fail closed
 			// on this candidate and keep scanning.
 			continue
+		}
+
+		// #4417: record the parent issue's own typed repository identity
+		// against this claim before anything else can act on it — terminal
+		// circuit-breaker/notification bookkeeping later reads this back
+		// instead of reconstructing ownership from the gaggle's static
+		// project or cfg.Repos[0].
+		if recordErr := recordItemRepository(annotations, runID, item.ID, itemKindIssue, repo); recordErr != nil {
+			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
+				pf(stderr, "error: release claim %s after repository-identity record failure: %v\n", item.ID, releaseErr)
+			}
+			return failProviderStage(stderr, "record repository identity", recordErr, "selection.json")
 		}
 
 		digest, digestErr := decomposition.IssueSnapshotDigest(item.ID, item.Title, item.Body, decompositionDigestLabels(item.Labels), item.State)
