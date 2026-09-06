@@ -13,12 +13,25 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
+
+// defaultFleetEnrolled checks the real Fleet file storage. Errors other than
+// "not associated" are treated as not-enrolled — a read-only status field
+// must never fail the whole Instance() response over a Fleet storage hiccup.
+func defaultFleetEnrolled(instanceRoot string) bool {
+	storage, err := fleet.NewFileStorage("")
+	if err != nil {
+		return false
+	}
+	_, err = storage.LoadAssociation(instanceRoot)
+	return err == nil
+}
 
 const (
 	// APIVersion identifies the HTTP route version exposing this contract.
@@ -95,6 +108,11 @@ type LocalSources struct {
 	WorkItemLookup     WorkItemLookup
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration
+	// FleetEnrolled reports whether the instance at the given root is
+	// associated with a Fleet service (#4218). Optional: NewLocal defaults
+	// it to a check against the real Fleet file storage; tests substitute a
+	// stub to avoid touching the platform's Fleet storage directory.
+	FleetEnrolled func(instanceRoot string) bool
 }
 
 // Local reads a tier 1-2 instance's provisioned definitions, journals, and
@@ -156,6 +174,9 @@ func NewLocal(sources LocalSources, ready func() bool) (*Local, error) {
 	}
 	if store, ok := sources.ReadModel.(*readmodel.Store); ok && store == nil {
 		sources.ReadModel = nil
+	}
+	if sources.FleetEnrolled == nil {
+		sources.FleetEnrolled = defaultFleetEnrolled
 	}
 	now := time.Now
 	snapshot, err := newDefinitionSnapshot(sources.Definitions, sources.Validation, now())

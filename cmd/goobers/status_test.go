@@ -19,6 +19,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -1341,6 +1342,63 @@ func TestFormatLastActivity(t *testing.T) {
 	}
 }
 
+func TestReportFleetEnrollment(t *testing.T) {
+	originalStorage := newFleetStorage
+	t.Cleanup(func() { newFleetStorage = originalStorage })
+
+	t.Run("not enrolled", func(t *testing.T) {
+		newFleetStorage = func() (fleet.Storage, error) { return &fleetMemoryStorage{}, nil }
+		var buf bytes.Buffer
+		reportFleetEnrollment(t.TempDir(), &buf)
+		if got := buf.String(); !strings.Contains(got, "fleet: not enrolled") {
+			t.Errorf("reportFleetEnrollment() = %q, want it to contain %q", got, "fleet: not enrolled")
+		}
+	})
+
+	t.Run("enrolled", func(t *testing.T) {
+		store := &fleetMemoryStorage{
+			record: fleet.Record{Association: fleet.Association{
+				DisplayName:  "prod-instance",
+				CanonicalURI: "https://fleet.example",
+			}},
+			saved: true,
+		}
+		newFleetStorage = func() (fleet.Storage, error) { return store, nil }
+		var buf bytes.Buffer
+		reportFleetEnrollment(t.TempDir(), &buf)
+		got := buf.String()
+		for _, want := range []string{"fleet: enrolled", "prod-instance", "https://fleet.example"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("reportFleetEnrollment() = %q, want it to contain %q", got, want)
+			}
+		}
+	})
+}
+
+func TestReportDaemonBehaviorShowsMemoryGateAndFsyncState(t *testing.T) {
+	for name, tc := range map[string]struct {
+		behavior daemonBehavior
+		want     string
+	}{
+		"gate enabled": {
+			behavior: daemonBehavior{MemoryHighWater: 0.9, MemoryGateDisabled: false, FsyncDisabled: false},
+			want:     "memory-high-water=0.9, fsync-disabled=false",
+		},
+		"gate disabled": {
+			behavior: daemonBehavior{MemoryGateDisabled: true, FsyncDisabled: true},
+			want:     "memory-high-water=disabled, fsync-disabled=true",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			reportDaemonBehavior(&buf, &tc.behavior)
+			if got := buf.String(); !strings.Contains(got, tc.want) {
+				t.Errorf("reportDaemonBehavior() = %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
 	root := initDemo(t)
 	l := instance.NewLayout(root)
@@ -1366,6 +1424,8 @@ func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
 			DrainTimeoutNanos:     int64(30 * time.Second),
 			SkipPreflight:         true,
 			DisableReadModelReads: true,
+			MemoryHighWater:       0.85,
+			FsyncDisabled:         true,
 		},
 	}
 	release, err := acquireInstanceLockWithIdentity(filepath.Join(l.SchedulerDir(), "up.lock"), &identity)
@@ -1384,7 +1444,7 @@ func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
 		"version v0.3.0-test",
 		"last tick 0s ago",
 		"live runs 1",
-		"daemon behavior: watch-config=true, diagnostics=true, drain-timeout=30s, skip-preflight=true, disable-read-model-reads=true",
+		"daemon behavior: watch-config=true, diagnostics=true, drain-timeout=30s, skip-preflight=true, disable-read-model-reads=true, memory-high-water=0.85, fsync-disabled=true",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, want)

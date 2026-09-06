@@ -807,6 +807,13 @@
           "description": "Bounds cross-process claim-ledger lock acquisition, so a wedged holder cannot convoy stage dispatch or terminal cleanup. Empty defaults to 30 seconds.",
           "$ref": "#/$defs/duration",
           "examples": ["30s"]
+        },
+        "memoryHighWater": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of the container's memory limit above which the cgroup-aware admission gate refuses new runs. Zero or omitted uses the built-in default. GOOBERS_MEMORY_HIGH_WATER overrides this at daemon startup for the specific container the daemon was actually given (\"off\" disables the gate); `goobers status` and the /api/v1/instance payload report the effective value, whichever source set it.",
+          "examples": [0.85]
         }
       }
     },
