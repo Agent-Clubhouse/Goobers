@@ -888,6 +888,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		Timeout:            req.Timeout,
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      stdoutCapture,
+		// #4179: the session this observes is the one that burned a whole
+		// 5400s budget on a stalled `go mod download` while its journal held
+		// a single lifecycle event.
+		Activity: agentTelemetry.activityObserver(),
 	})
 	runErr = processErr
 	var payload []byte
@@ -936,6 +940,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 					Timeout:            remaining,
 					MaxTranscriptBytes: req.MaxTranscriptBytes,
 					StdoutCapture:      recoveryStdout,
+					// The recovery turn runs on what is LEFT of the budget,
+					// so a stall here is if anything more urgent to see than
+					// one in the main session (#4179).
+					Activity: agentTelemetry.activityObserver(),
 				})
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 				if err != nil {

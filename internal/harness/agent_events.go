@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -25,6 +26,11 @@ type adapterAgentEmitter struct {
 	resolvedModel   string
 	requestedEffort string
 	resolvedEffort  string
+	// mu guards everything below. The liveness sampler (#4179) emits from its
+	// own goroutine while the adapter's main path is still running, so the
+	// event slice and the nested-agent flag are shared state now, not
+	// single-threaded bookkeeping.
+	mu              sync.Mutex
 	events          []journal.Event
 	hasNestedAgents bool
 }
@@ -47,6 +53,12 @@ func beginAdapterAgentTelemetry(req RunRequest, plugin, requestedModel, resolved
 }
 
 func (e *adapterAgentEmitter) emit(events ...journal.Event) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.emitLocked(events...)
+}
+
+func (e *adapterAgentEmitter) emitLocked(events ...journal.Event) error {
 	for _, event := range events {
 		if event.Type == journal.EventAgentLifecycle && event.Agent != nil &&
 			event.Agent.ID != adapterAgentID(e.req, e.plugin) {
@@ -63,6 +75,8 @@ func (e *adapterAgentEmitter) emit(events ...journal.Event) error {
 }
 
 func (e *adapterAgentEmitter) finish(out *Outcome, runErr *error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	lifecycle := journal.AgentCompleted
 	if *runErr != nil {
 		lifecycle = journal.AgentFailed
@@ -83,12 +97,46 @@ func (e *adapterAgentEmitter) finish(out *Outcome, runErr *error) {
 		event.Agent.Coordinator = true
 		event.Agent.Worker = false
 	}
-	if err := e.emit(event); err != nil {
+	if err := e.emitLocked(event); err != nil {
 		*runErr = errors.Join(*runErr, err)
 	}
 	out.AgentEvents = append(out.AgentEvents, e.events...)
 	out.AgentTelemetryFidelity = journal.AgentFidelityPartial
 	out.AgentTelemetryDetail = partialAgentTelemetryDetail
+}
+
+// activityObserver turns subprocess output samples into periodic agent
+// lifecycle marks, so a stalled agentic stage is legible from `goobers trace`
+// without opening the transcript artifact (#4179).
+//
+// The mapping is the whole idea, and it is deliberately the smallest one that
+// answers the question the journal could not:
+//
+//	output arrived this interval → resumed  ("working")
+//	no output this interval      → waiting  ("blocked on something")
+//
+// Both already exist in journal.AgentLifecycle's taxonomy; nothing is added to
+// AgentProvenance, so no schema moves and no drift guard is involved. The
+// evidence an operator needs is the SEQUENCE: a run of `waiting` marks with
+// their timestamps says "silent since T" at a glance, which is exactly what
+// separated a looping agent from the blocked `go mod download` in
+// f5faeec4ee947f88af7a09204db51bcb — and what nothing in that run's journal
+// said.
+//
+// Emission failures are dropped on purpose. This is observational telemetry
+// about a session that is still running; failing the stage because a liveness
+// mark could not be written would turn a diagnostic into an outage.
+func (e *adapterAgentEmitter) activityObserver() ActivityObserver {
+	if e == nil {
+		return nil
+	}
+	return func(sample ActivitySample) {
+		lifecycle := journal.AgentWaiting
+		if sample.Moved {
+			lifecycle = journal.AgentResumed
+		}
+		_ = e.emit(e.lifecycleEvent(lifecycle, nil, e.resolvedModel, e.resolvedEffort))
+	}
 }
 
 func (e *adapterAgentEmitter) lifecycleEvent(lifecycle journal.AgentLifecycle, metrics map[string]float64, resolvedModel, resolvedEffort string) journal.Event {
