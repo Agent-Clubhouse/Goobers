@@ -187,6 +187,9 @@ func (r *configReloader) poll(now time.Time) error {
 	if webhookListenerTopologyChanged(r.setup.Definitions, set, r.setup.Config) {
 		return r.reject(digest, errors.New("adding the first or removing the last webhook trigger requires a daemon restart"))
 	}
+	if engineTopologyChanged(r.setup.Definitions, set, r.setup.Config) {
+		return r.reject(digest, errors.New("adding or removing a gaggle requires a daemon restart while the engine is enabled (the live journal writer and projection reconciler are pinned to the boot-time gaggle set)"))
+	}
 	runtimeMigration, err := r.layout.MigrateLegacyRuntimeWithReport(configuredGaggleNames(set))
 	if err != nil {
 		return r.reject(digest, err)

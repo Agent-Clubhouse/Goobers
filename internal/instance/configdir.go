@@ -9,14 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"sigs.k8s.io/yaml"
-
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsource"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/yamldoc"
 )
 
@@ -223,7 +222,7 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 		switch d.kind {
 		case "Manifest":
 			var m apiv1.Manifest
-			if err := yaml.Unmarshal(d.yaml, &m); err != nil {
+			if err := strictyaml.Unmarshal(d.yaml, &m); err != nil {
 				return nil, fmt.Errorf("parse Manifest %s: %w", d.name, err)
 			}
 			if manifest != nil {
@@ -232,19 +231,19 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 			manifest = &m
 		case "Gaggle":
 			var g apiv1.Gaggle
-			if err := yaml.Unmarshal(d.yaml, &g); err != nil {
+			if err := strictyaml.Unmarshal(d.yaml, &g); err != nil {
 				return nil, fmt.Errorf("parse Gaggle %s: %w", d.name, err)
 			}
 			gaggles = append(gaggles, sourcedGaggle{definition: g, source: d.file})
 		case "Goober":
 			var g apiv1.Goober
-			if err := yaml.Unmarshal(d.yaml, &g); err != nil {
+			if err := strictyaml.Unmarshal(d.yaml, &g); err != nil {
 				return nil, fmt.Errorf("parse Goober %s: %w", d.name, err)
 			}
 			goobers = append(goobers, sourcedGoober{definition: g, source: d.file})
 		case "Workflow":
 			var w apiv1.Workflow
-			if err := yaml.Unmarshal(d.yaml, &w); err != nil {
+			if err := strictyaml.Unmarshal(d.yaml, &w); err != nil {
 				return nil, fmt.Errorf("parse Workflow %s: %w", d.name, err)
 			}
 			flows = append(flows, sourcedWorkflow{definition: w, source: d.file})
