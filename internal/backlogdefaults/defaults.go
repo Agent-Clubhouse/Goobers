@@ -87,11 +87,15 @@ func AssignedTo(task apiv1.Task, inputs map[string]string, assignedTo string) ma
 }
 
 // RequireLabels injects a gaggle's RequireLabels default (MIRC-2, #1901) into
-// a backlog-query task's requireLabels input, mirroring AssignedTo exactly: a
-// task that already declares its own requireLabels wins untouched (full
-// replace, never merged — the same override shape BranchNamespace/headPrefix
-// already has), an empty default is a no-op, and only goobers backlog-query
-// tasks are affected.
+// a backlog-query OR backlog-health task's requireLabels input, mirroring
+// AssignedTo exactly: a task that already declares its own requireLabels wins
+// untouched (full replace, never merged — the same override shape
+// BranchNamespace/headPrefix already has), and an empty default is a no-op.
+//
+// backlog-health is included alongside backlog-query (#4180): both read the
+// same partitioned backlog, and an engine-dispatched health check without
+// this default would drift from a runner-dispatched one, which does receive
+// it (internal/runner/run.go's defaultBacklogQueryRequireLabels).
 //
 // Copy of internal/runner/run.go's defaultBacklogQueryRequireLabels — see the
 // package comment for why it is a copy.
@@ -102,7 +106,7 @@ func RequireLabels(task apiv1.Task, inputs map[string]string, requireLabels stri
 	if _, overridden := inputs[RequireLabelsInput]; overridden {
 		return inputs
 	}
-	if !IsBacklogQuery(task) {
+	if !isBacklogQueryOrHealth(task) {
 		return inputs
 	}
 	resolved := make(map[string]string, len(inputs)+1)
@@ -114,11 +118,23 @@ func RequireLabels(task apiv1.Task, inputs map[string]string, requireLabels stri
 }
 
 // IsBacklogQuery reports whether task runs the `goobers backlog-query`
-// subcommand — the predicate both defaults share. It is the runner's own
-// check, kept as one function here because the two copies above must never
-// disagree about which stages the partition applies to.
+// subcommand. It is the runner's own check (AssignedTo's predicate — assigned
+// identity is a claim-path concept, not a health-check one), kept as one
+// function here because the two copies above must never disagree about which
+// stages a default applies to.
 func IsBacklogQuery(task apiv1.Task) bool {
+	return isBacklogCommand(task, "backlog-query")
+}
+
+// isBacklogQueryOrHealth reports whether task runs `goobers backlog-query` or
+// `goobers backlog-health` — RequireLabels' predicate, matching
+// internal/runner/run.go's defaultBacklogQueryRequireLabels exactly.
+func isBacklogQueryOrHealth(task apiv1.Task) bool {
+	return isBacklogCommand(task, "backlog-query") || isBacklogCommand(task, "backlog-health")
+}
+
+func isBacklogCommand(task apiv1.Task, name string) bool {
 	return task.Run != nil && len(task.Run.Command) >= 2 &&
 		filepath.Base(task.Run.Command[0]) == "goobers" &&
-		task.Run.Command[1] == "backlog-query"
+		task.Run.Command[1] == name
 }

@@ -519,6 +519,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		eligible:          eligible,
 		maxItems:          maxItems,
 		trustLabel:        trustLabel,
+		requireLabels:     requireLabels,
 		fieldFilter:       fieldFilter,
 		fieldOrder:        fieldOrder,
 		selectionPriority: selectionPriority,
@@ -1371,11 +1372,22 @@ func (session *backlogClaimSession) releaseLedger(ctx context.Context, item prov
 }
 
 type backlogResweepOptions struct {
-	enabled           bool
-	policy            backlogResweepPolicy
-	eligible          []providers.WorkItem
-	maxItems          int
-	trustLabel        string
+	enabled    bool
+	policy     backlogResweepPolicy
+	eligible   []providers.WorkItem
+	maxItems   int
+	trustLabel string
+	// requireLabels is the gaggle's partition scope (injected by
+	// defaultBacklogQueryRequireLabels, e.g. goobers:cloud/goobers:local — the
+	// ONLY mechanism that carries partition membership; there is no analogous
+	// excludeLabels injection). Without checking it here, a re-sweep lists and
+	// can mutate items outside the gaggle's partition — including items
+	// belonging to a sibling instance (#4181). Deliberately not the stage's
+	// full excludeLabels: those are workflow-routing exclusions (e.g.
+	// backlog-curation.yaml excludes goobers:ready/blocked-on-sibling from the
+	// FORWARD scan precisely so resweep — this code — can claim them; applying
+	// that list here would exclude every resweep candidate by construction).
+	requireLabels     []string
 	fieldFilter       *fieldpredicate.Predicate
 	fieldOrder        fieldpredicate.Order
 	selectionPriority []string
@@ -1449,6 +1461,17 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 	return result, 0
 }
 
+// missingRequiredLabel reports the first of requireLabels item does not
+// carry, if any — the re-sweep paths' partition scope check (#4181).
+func missingRequiredLabel(item providers.WorkItem, requireLabels []string) (string, bool) {
+	for _, label := range requireLabels {
+		if !item.HasLabel(label) {
+			return label, true
+		}
+	}
+	return "", false
+}
+
 func appendBlockedResweepCandidates(
 	ctx context.Context,
 	env backlogQueryEnv,
@@ -1474,6 +1497,10 @@ func appendBlockedResweepCandidates(
 		env.debugf("candidate %s reached eligibility evaluation (blocked re-sweep)", item.ID)
 		if !item.HasLabel(opts.trustLabel) {
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
+			continue
+		}
+		if label, ok := missingRequiredLabel(item, opts.requireLabels); ok {
+			env.debugf("excluded %s: missing required label %q", item.ID, label)
 			continue
 		}
 		if !item.HasLabel(blockedOnSiblingLabel) {
@@ -1579,6 +1606,10 @@ func appendReadyResweepCandidates(
 		env.debugf("candidate %s reached eligibility evaluation (ready re-sweep)", item.ID)
 		if !item.HasLabel(opts.trustLabel) {
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
+			continue
+		}
+		if label, ok := missingRequiredLabel(item, opts.requireLabels); ok {
+			env.debugf("excluded %s: missing required label %q", item.ID, label)
 			continue
 		}
 		if !item.HasLabel(opts.policy.readyLabel) {
