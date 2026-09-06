@@ -97,16 +97,26 @@ func podRunContained(w http.ResponseWriter, request *http.Request, run, action s
 
 func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *log.Logger) {
 	service := config.runJournal
-	unavailable := func(w http.ResponseWriter) bool {
-		if service == nil {
-			writeError(w, http.StatusServiceUnavailable, "journal_unavailable", "the cross-run journal plane is not available from this server")
-			return true
-		}
-		return false
-	}
+	router.Handle(apicontract.RouteJournalRunPhase, journalRunPhaseHandler(service, errorLog))
+	router.Handle(apicontract.RouteJournalConflictTouches, journalConflictTouchesHandler(service, errorLog))
+	router.Handle(apicontract.RouteJournalUnpushedWork, journalUnpushedWorkHandler(service, errorLog))
+	router.Handle(apicontract.RouteJournalEscalationCandidates, journalEscalationCandidatesHandler(service, errorLog))
+	router.Handle(apicontract.RouteJournalBranchOwnership, journalBranchOwnershipHandler(service, errorLog))
+}
 
-	router.Handle(apicontract.RouteJournalRunPhase, func(w http.ResponseWriter, request *http.Request) {
-		if unavailable(w) {
+// journalPlaneUnavailable reports (and answers) whether service is nil — the
+// same guard every cross-run route handler needs before touching it.
+func journalPlaneUnavailable(service RunJournalService, w http.ResponseWriter) bool {
+	if service == nil {
+		writeError(w, http.StatusServiceUnavailable, "journal_unavailable", "the cross-run journal plane is not available from this server")
+		return true
+	}
+	return false
+}
+
+func journalRunPhaseHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, request *http.Request) {
+		if journalPlaneUnavailable(service, w) {
 			return
 		}
 		if status, code, message := validateMutationTransport(request); status != 0 {
@@ -134,10 +144,12 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 			return
 		}
 		writeJSON(w, http.StatusOK, response)
-	})
+	}
+}
 
-	router.Handle(apicontract.RouteJournalConflictTouches, func(w http.ResponseWriter, request *http.Request) {
-		if unavailable(w) {
+func journalConflictTouchesHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, request *http.Request) {
+		if journalPlaneUnavailable(service, w) {
 			return
 		}
 		if status, code, message := validateMutationTransport(request); status != 0 {
@@ -168,10 +180,12 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 			response.Touches = []journalclient.ConflictTouch{}
 		}
 		writeJSON(w, http.StatusOK, response)
-	})
+	}
+}
 
-	router.Handle(apicontract.RouteJournalUnpushedWork, func(w http.ResponseWriter, request *http.Request) {
-		if unavailable(w) {
+func journalUnpushedWorkHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, request *http.Request) {
+		if journalPlaneUnavailable(service, w) {
 			return
 		}
 		if status, code, message := validateMutationTransport(request); status != 0 {
@@ -207,10 +221,12 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 			return
 		}
 		writeJSON(w, http.StatusOK, response)
-	})
+	}
+}
 
-	router.Handle(apicontract.RouteJournalEscalationCandidates, func(w http.ResponseWriter, request *http.Request) {
-		if unavailable(w) {
+func journalEscalationCandidatesHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, request *http.Request) {
+		if journalPlaneUnavailable(service, w) {
 			return
 		}
 		if status, code, message := validateMutationTransport(request); status != 0 {
@@ -237,10 +253,12 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 			response.Candidates = []journalclient.EscalationCandidate{}
 		}
 		writeJSON(w, http.StatusOK, response)
-	})
+	}
+}
 
-	router.Handle(apicontract.RouteJournalBranchOwnership, func(w http.ResponseWriter, request *http.Request) {
-		if unavailable(w) {
+func journalBranchOwnershipHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, request *http.Request) {
+		if journalPlaneUnavailable(service, w) {
 			return
 		}
 		if status, code, message := validateMutationTransport(request); status != 0 {
@@ -272,7 +290,7 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 			return
 		}
 		writeJSON(w, http.StatusOK, response)
-	})
+	}
 }
 
 // MaxUnpushedWorkInlineDiffBytes caps how much of a stranded diff one answer
