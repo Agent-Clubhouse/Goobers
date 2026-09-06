@@ -795,6 +795,7 @@ func (f *resumeFrame) attemptContext(machine *workflow.Machine, stage string) *r
 			committedWorkOnInfra:   infraFailedAttemptCommittedWork(f.segment, stage, attempt),
 			policyAttempts:         policyAttemptsBefore(f.segment, stage, attempt),
 			infrastructureFailures: infrastructureFailuresBefore(f.segment, stage, attempt),
+			mutated:                interruptedAttemptMutated(f.segment, stage, attempt),
 		}
 	}
 	attempt := recordedInterruptedAttempt(f.segment, stage)
@@ -808,6 +809,7 @@ func (f *resumeFrame) attemptContext(machine *workflow.Machine, stage string) *r
 		recorded:               true,
 		policyAttempts:         policyAttemptsBefore(f.segment, stage, attempt),
 		infrastructureFailures: infrastructureFailuresBefore(f.segment, stage, attempt),
+		mutated:                interruptedAttemptMutated(f.segment, stage, attempt),
 	}
 }
 
@@ -2083,6 +2085,23 @@ func infraFailedAttemptCommittedWork(events []journal.Event, stageName string, a
 		}
 		committed, _ := event.Runner[infraCommittedWorkKey].(bool)
 		return event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) && committed
+	}
+	return false
+}
+
+// interruptedAttemptMutated reports whether stageName's attempt already
+// recorded an external mutation (ref.touched) before the crash — a
+// non-idempotent side effect (e.g. PR creation) that redispatching the same
+// attempt would duplicate (#3637). finishTaskDispatch records ref.touched
+// best-effort for every mutation a dispatch performs, independently of
+// whether the attempt's own stage.finished write later succeeds, so this
+// survives exactly the crash window stage.finished's own failure leaves
+// stranded.
+func interruptedAttemptMutated(events []journal.Event, stageName string, attempt int) bool {
+	for _, e := range events {
+		if e.Type == journal.EventRefTouched && e.Stage == stageName && e.Attempt == attempt {
+			return true
+		}
 	}
 	return false
 }
