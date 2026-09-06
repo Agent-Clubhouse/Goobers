@@ -116,6 +116,12 @@ result: never stale-label or close an item for age when it is `false`. When it
 is `true`, use the supplied age and last-activity timestamp to judge whether to
 act (for example, a clearly owned item may not need prompting). If you act:
 
+Checklist-only tracking parents have `staleness.stale` forced false. Maintain
+them through their children and never add a stale label or stale notice to the
+parent; this prevents the curator's own housekeeping comments from creating a
+permanent re-notification loop. Tracking parents opted into
+`goobers:auto-close` retain the ordinary staleness behavior.
+
 - **Default action:** add a `stale` label and a comment explaining why, asking
   whether it's still wanted. Do not close it.
 - **Configurable close:** only close a stale item outright when

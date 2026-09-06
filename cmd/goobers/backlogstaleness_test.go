@@ -108,6 +108,56 @@ func TestCalculateBacklogStalenessFlagsAtThreshold(t *testing.T) {
 	}
 }
 
+func TestCalculateBacklogStalenessSuppressesChecklistOnlyTrackingParent(t *testing.T) {
+	observedAt := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	lastActivity := observedAt.Add(-30 * 24 * time.Hour)
+
+	signal, err := calculateBacklogStaleness(
+		providers.WorkItem{
+			CreatedAt: &lastActivity,
+			Labels:    []string{providers.LabelTracking},
+		},
+		nil,
+		"goobers",
+		observedAt,
+		backlogStalenessPolicy{thresholdDays: 0},
+	)
+	if err != nil {
+		t.Fatalf("calculateBacklogStaleness: %v", err)
+	}
+	if signal.Stale {
+		t.Fatal("Stale = true, want false for a checklist-only tracking parent")
+	}
+	if signal.AgeDays != 30 {
+		t.Fatalf("AgeDays = %d, want 30", signal.AgeDays)
+	}
+	if !signal.LastMeaningfulActivityAt.Equal(lastActivity) {
+		t.Fatalf("LastMeaningfulActivityAt = %s, want %s", signal.LastMeaningfulActivityAt, lastActivity)
+	}
+}
+
+func TestCalculateBacklogStalenessKeepsAutoCloseTrackingParentStale(t *testing.T) {
+	observedAt := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	lastActivity := observedAt.Add(-30 * 24 * time.Hour)
+
+	signal, err := calculateBacklogStaleness(
+		providers.WorkItem{
+			CreatedAt: &lastActivity,
+			Labels:    []string{providers.LabelTracking, providers.LabelAutoClose},
+		},
+		nil,
+		"goobers",
+		observedAt,
+		backlogStalenessPolicy{thresholdDays: 0},
+	)
+	if err != nil {
+		t.Fatalf("calculateBacklogStaleness: %v", err)
+	}
+	if !signal.Stale {
+		t.Fatal("Stale = false, want true for an opted-in auto-close tracking parent")
+	}
+}
+
 func TestReadBacklogStalenessPolicyValidatesInputs(t *testing.T) {
 	t.Run("conservative defaults", func(t *testing.T) {
 		t.Setenv("GOOBERS_INPUT_STALEAFTERDAYS", "")
