@@ -397,6 +397,11 @@ var commands = map[string]Command{
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so branch publication fails at runtime"),
 		},
 	},
+	"preflight-repo-write": {
+		Capabilities: []CapabilityUse{
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so the repository-write preflight check fails at runtime"),
+		},
+	},
 	"reconcile-branches": {
 		ResultFileSupport: ResultFileOptional,
 		Capabilities: []CapabilityUse{

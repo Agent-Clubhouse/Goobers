@@ -85,6 +85,7 @@ var synopsisByID = map[string]string{
 	"file-issues":            "  goobers file-issues [--check]          file a validated nominations artifact as deduped, budgeted issues (a workflow stage)\n",
 	"reconcile-branches":     "  goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]\n                                report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)\n",
 	"push-branch":            "  goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)\n",
+	"preflight-repo-write":   "  goobers preflight-repo-write            check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)\n",
 	"check-fail-first":       "  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)\n",
 	"open-pr":                "  goobers open-pr                        open or update the run's PR (a workflow stage)\n",
 	"report-pr-status":       "  goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)\n",

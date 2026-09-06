@@ -58,6 +58,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 var providerDispatchAllowlist = map[string]string{
 	"elect-lander":           "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
 	"post-merge":             "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
+	"preflight-repo-write":   "Repository-write preflight (#4414) is a GitHub-only capability today (branch ruleset introspection has no ADO/Gitea equivalent); Dispatcher fails closed with ErrUnsupported for other providers.",
 	"reconcile-post-merge":   "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
 	"record-merge-refusal":   "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
 	"reconcile-branches":     "This operator command is scoped to GitHub branch reconciliation and requires github:branch:delete.",

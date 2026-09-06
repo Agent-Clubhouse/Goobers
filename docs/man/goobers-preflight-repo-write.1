@@ -1,0 +1,32 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS PREFLIGHT REPO WRITE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers preflight-repo-write \- check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers preflight-repo-write\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers preflight-repo-write [path]
+
+Check, without mutating any repository state, whether the configured
+repository credential can push this run's branch namespace. Reads two
+provider endpoints (repository permissions, branch ruleset policy) and
+reports one of four distinct outcomes: unreachable/unauthorized,
+authenticated without push permission, a branch ruleset denying the
+namespace, or ruleset introspection unavailable for this credential —
+never inferred as a pass.
+
+The `branch` input overrides the checked branch name; it defaults to
+the gaggle's configured branch namespace plus a representative suffix,
+since the exact per-run branch name is not generated until later
+(worktree checkout) — a namespace-prefix ruleset, the common case,
+still evaluates correctly against this default.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = pushable, 1 = a known preflight failure, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers preflight-repo-write
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

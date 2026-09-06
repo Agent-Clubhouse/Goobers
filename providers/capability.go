@@ -18,6 +18,12 @@ const (
 	CapRepoBranch Capability = "repo.branch"
 	CapRepoCommit Capability = "repo.commit"
 	CapRepoPush   Capability = "repo.push"
+	// CapRepoPushPreflight is a non-mutating check (#4414) of whether the
+	// configured credential can push a given branch, run before an
+	// implementation run claims an issue — separate from CapRepoPush
+	// because a provider may support pushing without exposing the reads a
+	// preflight needs (repo permissions, branch ruleset introspection).
+	CapRepoPushPreflight Capability = "repo.push.preflight"
 )
 
 // pr.core: pull-request surfaces every workflow-required provider must
@@ -375,6 +381,21 @@ func (d *Dispatcher) GetRepoPolicy(ctx context.Context, req RepoPolicyRequest) (
 		return RepoPolicyResult{}, ErrUnsupported{Provider: d.Kind(), Capability: CapRepoPolicyRead}
 	}
 	return reader.GetRepoPolicy(ctx, req)
+}
+
+// PreflightRepositoryWrite dispatches to the underlying provider's
+// RepositoryWritePreflighter if repo.push.preflight is declared, else
+// returns ErrUnsupported — never silently reports success for a provider
+// that cannot actually check.
+func (d *Dispatcher) PreflightRepositoryWrite(ctx context.Context, repo RepositoryRef, branch string) (RepositoryWritePreflightResult, error) {
+	if !d.Capabilities().Has(CapRepoPushPreflight) {
+		return RepositoryWritePreflightResult{}, ErrUnsupported{Provider: d.Kind(), Capability: CapRepoPushPreflight}
+	}
+	preflighter, ok := d.Provider.(RepositoryWritePreflighter)
+	if !ok {
+		return RepositoryWritePreflightResult{}, ErrUnsupported{Provider: d.Kind(), Capability: CapRepoPushPreflight}
+	}
+	return preflighter.PreflightRepositoryWrite(ctx, repo, branch)
 }
 
 // HasOpenWorkItemBlocker dispatches to the underlying provider's

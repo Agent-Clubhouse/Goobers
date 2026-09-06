@@ -191,6 +191,7 @@ Workflow-stage and connector commands:
   pr-claim          check PR liveness or release its remediation claim (a workflow stage)
   pr-comment-watch  label open goober PRs carrying unaddressed human comments (a workflow stage)
   pr-select         select one managed or advisory open PR for merge-review (a workflow stage)
+  preflight-repo-write check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)
   publish-batch     publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
   push-branch       push the worktree's checked-out branch to origin (a workflow stage)
   push-remediated   force-push the remediated branch and clear needs-remediation (a workflow stage)
@@ -246,6 +247,7 @@ Usage:
   pr-claim          check PR liveness or release its remediation claim (a workflow stage)
   pr-comment-watch  label open goober PRs carrying unaddressed human comments (a workflow stage)
   pr-select         select one managed or advisory open PR for merge-review (a workflow stage)
+  preflight-repo-write check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)
   publish-batch     publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
   push-branch       push the worktree's checked-out branch to origin (a workflow stage)
   push-remediated   force-push the remediated branch and clear needs-remediation (a workflow stage)
@@ -1724,6 +1726,25 @@ arguments.
 Exit codes: 0 = ready/forwarded command succeeded, 1 = not ready or forwarded
 command failed, 2 = usage error. A forwarded command's non-zero exit code is
 preserved.
+
+### preflight-repo-write
+Usage: goobers preflight-repo-write [path]
+
+Check, without mutating any repository state, whether the configured
+repository credential can push this run's branch namespace. Reads two
+provider endpoints (repository permissions, branch ruleset policy) and
+reports one of four distinct outcomes: unreachable/unauthorized,
+authenticated without push permission, a branch ruleset denying the
+namespace, or ruleset introspection unavailable for this credential —
+never inferred as a pass.
+
+The `branch` input overrides the checked branch name; it defaults to
+the gaggle's configured branch namespace plus a representative suffix,
+since the exact per-run branch name is not generated until later
+(worktree checkout) — a namespace-prefix ruleset, the common case,
+still evaluates correctly against this default.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = pushable, 1 = a known preflight failure, 2 = usage/IO error.
 
 ### publish-batch
 Usage: goobers publish-batch [path]

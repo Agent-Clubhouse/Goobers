@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "f1fc16f6085c7dbd86fb6cbaa2025b1369dbab79acfe757fb57a7be3d858ab40",
+  "snapshotSha256": "PLACEHOLDER",
   "changes": [
     {
       "version": 1,
@@ -24,6 +24,10 @@
     {
       "version": 6,
       "description": "Add ResultFileSupport (#4415): a tri-state (Unsupported/Always/Optional) classification of whether a built-in command produces a result file, resolved via the new SupportsResultFile accessor and consumed by a new admission check (v_2_0/v_3_0 compile.go's resultFileContractProblem) that rejects a stage declaring inputs.resultFile/expectedOutputs for a command that never writes one (e.g. record-merge-refusal). Purely additive metadata: an explicit ResultFileOptional override on reconcile-branches/telemetry-query (previously implicit Unsupported by omission, since they declare no ResultFile string, even though both can write one conditionally). Deliberately NOT extended to the capability-free built-ins builtincmd also inventories (__demo-provider, cancel-pending-ci, check-fail-first, docs-churn, gate-removal-guard, ios-simulator-test, mcp-io, self-update, validate) — this manifest covers only commands with declared capability requirements (see the package comment), and SupportsResultFile's ok=false for an absent command is treated as permissive by the new check, not as ResultFileUnsupported, so leaving them out changes nothing about what it rejects. No existing command's Capabilities/ResultFile/claim-ledger fields change, so every shipped config's capability admission is unaffected."
+    },
+    {
+      "version": 7,
+      "description": "Add preflight-repo-write (#4414): the repository-write credential preflight stage, wired first in the implementation workflow. Requires repo:push, the same capability push-branch already requires — the check runs read-only requests with that credential. Purely additive — a new command with one requirement; no existing command's requirements change, so every shipped config keeps compiling."
     }
   ]
 }

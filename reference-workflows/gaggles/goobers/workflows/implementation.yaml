@@ -44,8 +44,24 @@ spec:
     # The runner does NOT rebase/resolve cross-PR conflicts here — that's V0.5's
     # merge-review/pr-remediation layer (epic #357).
     maxOpenPRs: 1
-  start: query-backlog
+  start: preflight-repo-write
   tasks:
+    # Repository-write credential preflight (#4414): MDB5 observed eight runs
+    # of the same issue pass implementation/review/local-CI and only fail at
+    # push-branch because the configured credential could not push the run
+    # branch — spending all of that before the failure was ever visible.
+    # This is a non-mutating check (two reads: repo permissions, branch
+    # ruleset policy) run first, before an issue is even claimed, so a known
+    # credential or branch-policy problem refuses here instead.
+    - name: preflight-repo-write
+      type: deterministic
+      goal: Check the configured repository credential can push this run's branch namespace before claiming any work.
+      run:
+        command: ["goobers", "preflight-repo-write"]
+      capabilities:
+        - repo:push
+      next: query-backlog
+
     # Built-in backlog-query stage kind (WF-055/SCH-041): claims exactly one
     # item carrying both the trust label (SEC-047) and the curator's
     # goobers:ready output marker (#25). Narrowed to a single item (unlike

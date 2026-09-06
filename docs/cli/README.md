@@ -157,6 +157,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers pr-claim`](#goobers-pr-claim) | check PR liveness or release its remediation claim (a workflow stage) |
 | [`goobers pr-comment-watch`](#goobers-pr-comment-watch) | label open goober PRs carrying unaddressed human comments (a workflow stage) |
 | [`goobers pr-select`](#goobers-pr-select) | select one managed or advisory open PR for merge-review (a workflow stage) |
+| [`goobers preflight-repo-write`](#goobers-preflight-repo-write) | check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage) |
 | [`goobers publish-batch`](#goobers-publish-batch) | publish a verified decomposition batch behind one eligibility barrier (a workflow stage) |
 | [`goobers push-branch`](#goobers-push-branch) | push the worktree's checked-out branch to origin (a workflow stage) |
 | [`goobers push-remediated`](#goobers-push-remediated) | force-push the remediated branch and clear needs-remediation (a workflow stage) |
@@ -2596,6 +2597,36 @@ preserved.
 $ goobers preflight
 $ goobers preflight --distro Ubuntu-24.04
 $ goobers preflight --launch-wsl -- run implementation .
+~~~
+
+## `goobers preflight-repo-write`
+
+check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)
+
+~~~text
+Usage: goobers preflight-repo-write [path]
+
+Check, without mutating any repository state, whether the configured
+repository credential can push this run's branch namespace. Reads two
+provider endpoints (repository permissions, branch ruleset policy) and
+reports one of four distinct outcomes: unreachable/unauthorized,
+authenticated without push permission, a branch ruleset denying the
+namespace, or ruleset introspection unavailable for this credential —
+never inferred as a pass.
+
+The `branch` input overrides the checked branch name; it defaults to
+the gaggle's configured branch namespace plus a representative suffix,
+since the exact per-run branch name is not generated until later
+(worktree checkout) — a namespace-prefix ruleset, the common case,
+still evaluates correctly against this default.
+[path] defaults to the current directory (the stage's worktree).
+Exit codes: 0 = pushable, 1 = a known preflight failure, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers preflight-repo-write
 ~~~
 
 ## `goobers publish-batch`

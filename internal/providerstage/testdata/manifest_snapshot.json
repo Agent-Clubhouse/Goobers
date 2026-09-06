@@ -316,6 +316,15 @@
     ]
   },
   {
+    "command": "preflight-repo-write",
+    "capabilities": [
+      {
+        "capability": "repo:push",
+        "consequence": "the capability-scoped credential is not injected, so the repository-write preflight check fails at runtime"
+      }
+    ]
+  },
+  {
     "command": "publish-batch",
     "resultFile": "published-batch.json",
     "capabilities": [

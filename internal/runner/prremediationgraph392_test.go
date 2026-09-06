@@ -649,6 +649,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 	invocations := map[string]apiv1.InvocationEnvelope{}
 
 	byTask := map[string]stubTaskResult{
+		runID + ":preflight-repo-write": {status: apiv1.ResultSuccess},
 		runID + ":query-backlog": {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"claimed-item": "42"},
 			artifactName: "claimed-item.json", artifactData: []byte(`{"id":"42"}`),
@@ -709,7 +710,7 @@ func TestShippedImplementationIsUnaffectedByTheRebindingSeam(t *testing.T) {
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 
-	want := []string{"query-backlog", "gather-implement-context", "warm-module-cache", "implement", "push-branch", "local-ci", "open-pr", "ci-poll", "close-out"}
+	want := []string{"preflight-repo-write", "query-backlog", "gather-implement-context", "warm-module-cache", "implement", "push-branch", "local-ci", "open-pr", "ci-poll", "close-out"}
 	if strings.Join(visited, ",") != strings.Join(want, ",") {
 		t.Errorf("stage order = %v, want %v", visited, want)
 	}
@@ -751,6 +752,7 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 		invocations[stage] = env
 	}
 	byTask := map[string]stubTaskResult{
+		runID + ":preflight-repo-write": {status: apiv1.ResultSuccess},
 		runID + ":query-backlog": {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"claimed-item": "42"},
 			artifactName: "claimed-item.json", artifactData: []byte(`{"id":"42"}`),
@@ -798,7 +800,7 @@ func TestShippedImplementationRoutesCIFailureToCompatibleRemediation(t *testing.
 		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
 	}
 	want := []string{
-		"query-backlog", "gather-implement-context", "warm-module-cache", "implement", "push-branch",
+		"preflight-repo-write", "query-backlog", "gather-implement-context", "warm-module-cache", "implement", "push-branch",
 		"local-ci", "open-pr", "ci-poll", "remediate-ci", "push-branch",
 		"local-ci", "open-pr", "ci-poll", "close-out",
 	}
