@@ -136,6 +136,12 @@ func summaryConfiguration(b *strings.Builder, bundle Bundle) {
 	if bundle.Instance.ConfigDigest != "" {
 		writeLine(b, "- Config digest: `%s`", bundle.Instance.ConfigDigest)
 	}
+	if len(bundle.Instance.ConfigIssues) > 0 {
+		writeLine(b, "- **Config validation findings** (%d):", len(bundle.Instance.ConfigIssues))
+		for _, issue := range bundle.Instance.ConfigIssues {
+			writeLine(b, "  - %s", issue)
+		}
+	}
 	for _, gaggle := range bundle.Instance.Gaggles {
 		writeLine(b, "- Gaggle `%s`: %d workflow(s), %d goober(s)", gaggle.Name, len(gaggle.Workflows), len(gaggle.Goobers))
 		for _, workflow := range gaggle.Workflows {

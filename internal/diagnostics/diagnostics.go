@@ -107,7 +107,12 @@ type InstanceInfo struct {
 	Root string `json:"root"`
 	// ConfigDigest is the content digest of the loaded config tree, so two
 	// bundles can be compared for "did the config change between these".
-	ConfigDigest string       `json:"configDigest,omitempty"`
+	ConfigDigest string `json:"configDigest,omitempty"`
+	// ConfigIssues are the loaded tree's validation findings. A config that
+	// does not validate is a first-class diagnostic: an instance behaving
+	// oddly because the daemon refuses its config must not present as an
+	// instance with a healthy config.
+	ConfigIssues []string     `json:"configIssues,omitempty"`
 	Gaggles      []GaggleInfo `json:"gaggles,omitempty"`
 }
 

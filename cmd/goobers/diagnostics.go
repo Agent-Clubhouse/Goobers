@@ -16,6 +16,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/diagnostics"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -267,12 +268,35 @@ func diagnosticsInstanceInfo(root string) (diagnostics.InstanceInfo, []diagnosti
 	info := diagnostics.InstanceInfo{}
 	credentials := diagnosticsCredentials(cfg)
 
-	set, _, err := loadConfigDirectory(layout.ConfigDir())
+	set, report, err := loadConfigDirectory(layout.ConfigDir())
 	if err != nil && set == nil {
 		return info, credentials, fmt.Errorf("load config directory: %w", err)
 	}
+	// A config that fails validation is exactly what a bundle must report: the
+	// operator's question is often "why is this instance behaving oddly", and
+	// "its config does not validate" is the answer. Discarding the report would
+	// leave the bundle describing a generation the daemon may be refusing to
+	// load at all.
+	info.ConfigIssues = diagnosticsConfigIssues(report)
 	info.ConfigDigest, info.Gaggles = diagnosticsConfigGeneration(set)
 	return info, credentials, nil
+}
+
+// diagnosticsConfigIssues projects the validation report's errors and warnings
+// as bounded, code-first strings. Codes and file paths, not free prose dumps:
+// the bundle names what is wrong and where, and the operator runs `goobers
+// validate` for the full text.
+func diagnosticsConfigIssues(report *validate.Report) []string {
+	if report == nil {
+		return nil
+	}
+	issues := make([]string, 0, len(report.Issues))
+	for _, issue := range report.Issues {
+		issues = append(issues, fmt.Sprintf("%s %s %s: %s",
+			strings.ToUpper(string(issue.Severity)), issue.Code, issue.File, issue.Message))
+	}
+	sort.Strings(issues)
+	return issues
 }
 
 // diagnosticsConfigGeneration digests the loaded config tree and projects each
