@@ -3,10 +3,11 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func TestDeliveryContextRejectsIncompleteOrAmbiguousInput(t *testing.T) {
@@ -32,7 +33,7 @@ func TestDeliveryContextReadsBaseGitTreeToPreventDeletionBypass(t *testing.T) {
 	t.Chdir(t.TempDir())
 	git := func(args ...string) string {
 		t.Helper()
-		out, err := exec.Command("git", args...).CombinedOutput()
+		out, err := testgit.Command(args...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
