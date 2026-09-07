@@ -89,7 +89,7 @@
       "type": "object", "additionalProperties": false, "required": ["kind", "uri"],
       "properties": {
         "kind": {"const": "issue", "description": "External resource is an issue."},
-        "uri": {"type": "string", "pattern": "^https?://", "maxLength": 2048, "description": "External issue web locator; this manifest does not fetch it."},
+        "uri": {"type": "string", "pattern": "^https?://", "maxLength": 2048, "examples": ["https://example.invalid/issues/123"], "description": "External issue web locator; this manifest does not fetch it."},
         "description": {"type": "string", "maxLength": 512, "description": "Optional sanitized issue label, never raw external content."}
       }
     },
