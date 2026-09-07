@@ -14,9 +14,9 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 14 |
+| `draft` | 12 |
 | `approved` | 19 |
-| `implemented` | 25 |
+| `implemented` | 27 |
 | `superseded` | 4 |
 | `historical` | 6 |
 | **Total** | **68** |
@@ -32,7 +32,7 @@ word — read the page, not this table, before depending on it.
 
 | Document | Status | Delivered by | Superseded by | Verified |
 |---|---|---|---|---|
-| [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `draft` | — | — | — |
+| [Azure DevOps Provider Parity — the PR lifecycle on ADO](ado-provider-parity.md) | `implemented` | #2745 | — | — |
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | #983, #1003 | — | 09db115bb (2026-09-06) |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — |
@@ -68,7 +68,7 @@ word — read the page, not this table, before depending on it.
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | 09db115bb (2026-09-06) |
 | [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — |
 | [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | #2305, #2884 | — | — |
-| [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `draft` | — | — | — |
+| [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `implemented` | #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499 | — | — |
 | [Design: Separate GitHub repository sink for docs-updater](separate-docs-repository-sink.md) | `approved` | — | — | — |
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — |
 | [Design: Static fan-out/fan-in — bounded parallel branches and a real join](static-fan-out-fan-in.md) | `implemented` | #1939 | — | — |

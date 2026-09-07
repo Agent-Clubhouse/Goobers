@@ -15,14 +15,24 @@ import (
 // grouped order capability.go documents them. New capabilities are added
 // here at the same time as their constant — the matrix must never silently
 // drop a row.
+//
+// This list is hand-ordered on purpose (the matrix's row order is the reading
+// order of capability.go, not alphabetical), which makes it a place a new
+// capability can be forgotten: repo.push.preflight and ci.cancel were both
+// declared, used, and missing from here for weeks, so they appeared in neither
+// docs/provider-capability-matrix.md nor ValidateBlessedTier — and the only
+// guard compared the list to itself. TestAllCapabilitiesCoversEveryDeclaredConstant
+// now parses capability.go's own constant block and fails when the two
+// disagree, so completeness is checked against an INDEPENDENT declaration
+// rather than against this function (#2061/#2179).
 func AllCapabilities() []Capability {
 	return []Capability{
-		CapRepoClone, CapRepoBranch, CapRepoCommit, CapRepoPush,
+		CapRepoClone, CapRepoBranch, CapRepoCommit, CapRepoPush, CapRepoPushPreflight,
 		CapPROpen, CapPRList, CapPRPoll, CapPRClose, CapPRFiles, CapPRCompare,
 		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
 		CapPRReviewRequest, CapPRReviewSubmit, CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll, CapPRUpdateBranch, CapBranchDelete,
-		CapRepoPolicyRead, CapPRStatusPublish,
+		CapRepoPolicyRead, CapPRStatusPublish, CapCICancel,
 		CapBacklogList, CapBacklogGet, CapBacklogComments, CapBacklogCreate, CapBacklogUpdate, CapBacklogStatus, CapBacklogClaim, CapBacklogBlockers,
 		CapTriggerSubscribe,
 	}

@@ -1,8 +1,13 @@
 # Azure DevOps Provider Parity — the PR lifecycle on ADO
 
-> Status: **draft — for review.**
+> Status: **implemented, with recorded gaps** — the design landed in #2745
+> (`f1518ad1a`, 2026-08-09) and the lane described here is now *configurable* on
+> ADO (see §10). It is not yet *exercised* end to end: the live ADO leg is a
+> read-only smoke, and several requirements are GitHub-complete/ADO-partial.
+> Reconciled 2026-09-06 by #2061/#2179.
 > Driving epic: #2061 (ADO end-to-end). Builds on `docs/design/provider-contract-conformance.md`
 > (the capability model) and `docs/design/v0/pr-lifecycle-loop.md` (the stage contract).
+> Delivered-by: #2745
 
 ## 1. Context
 
@@ -105,8 +110,11 @@ per name), reads through `PullRequestLabelNames`, and clears through
 ### 4.3 The three ADO PR-label API quirks
 
 ADO's PR-label API has three behaviors a fixture/fake-server test cannot observe. All three
-break the needs-changes → remediation loop, and each is now pinned by conformance coverage
-after being verified against a live ADO organization:
+break the needs-changes → remediation loop. Each was verified against a live ADO
+organization, and each is now pinned by a test — quirk #1 only as of #2061/#2179,
+which found it had **no assertion anywhere**: deleting `includeLabels=true` from
+the list request would have blinded every label-driven selector while CI stayed
+green, which is precisely the failure this section claims is closed:
 
 | # | Quirk | Symptom if unhandled | Handling |
 |---|---|---|---|
@@ -297,3 +305,68 @@ precisely the class of defect a fake-server suite reports green on while the liv
 dead. Under the blessed-tier rule, GitHub and ADO move in lockstep on the workflow-required
 capability set: a new PR-lifecycle capability lands with contract tests and both blessed
 implementations, or with an explicit, declared gap.
+
+---
+
+## 10. Reconciliation, 2026-09-06 (#2061/#2179)
+
+The lane above is implemented; three things about its *status* were wrong or
+unstated. Recorded here rather than silently corrected in place, because two of
+them are the reason "ADO parity" looked closer to done than it was.
+
+### 10.1 The documented lane was not configurable — now it is
+
+`apply-verdict`'s derived provider capability was `pr.review.submit` for every
+provider. ADO deliberately does not declare it (there is no native self-review
+to submit), so **config load rejected the shipped `merge-review` workflow on an
+ADO gaggle** — and a passing test recorded that rejection as intended. The
+parity design, the conformance design, the shipped workflow, and #2061's
+acceptance gate therefore did not describe one executable product.
+
+Derivation is now per provider: on ADO, `apply-verdict` derives
+`pr.status.publish`, which is what its implementation actually uses (a
+`goobers`/`validation` PR status plus the verdict payload as a thread comment).
+See `provider-contract-conformance.md` §6.1. `TestShippedMergeReviewWorkflowValidatesOnADO`
+pins it against the real `reference-workflows` definition.
+
+A genuine gap still refuses: `gather-review-threads` derives `pr.review.threads`,
+ADO does not declare it, and no ADO path exists — so an ADO gaggle using that
+stage is refused at config load with the capability named. That is the intended
+shape of an "explicitly documented unsupported diagnosis".
+
+### 10.2 What "verified" means here, precisely
+
+§9 reads as though the lane is validated end to end against a real ADO
+organization. **The scheduled live leg (`ado-live-conformance.yml`) is
+read-only** — a single smoke test. No live leg exercises label writes, thread
+posts, or completion. The write-path claims in this document rest on
+fake-server tests plus one-off manual verification, which is exactly the
+situation §4.3's own argument warns about ("a fake-server suite reports green
+while the live loop is dead"). Standing up a write-capable ADO test project
+remains an open item on #2061.
+
+### 10.3 Requirements that are GitHub-complete and ADO-partial
+
+`docs/requirements/pr-lifecycle.md` now annotates these individually rather than
+asserting them provider-neutrally; the annotations and this list are the same
+set:
+
+| Requirement | ADO state |
+|---|---|
+| PRL-045 / PRL-064 | Queue eviction and timeout do not label the PR or seed the reconciliation ledger. |
+| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag. |
+| PRL-081 | ADO verdict threads are **posted**, not reconciled, so the single-sticky-comment guarantee does not hold on the thread carrier. |
+| PRL-082 | The ADO stage provider does not wire the mutation recorder, so ADO merge-path side effects are not journal-attributed. |
+
+`backlog.blockers` also remains undeclared for ADO — the Dispatcher fails closed
+per item rather than refusing the config, which is CONF-5's intended outcome.
+
+### 10.4 Lane stages added since §1 was written
+
+§1's merge-review lane list is four stages short. `elect-lander` and
+`record-merge-refusal` gained ADO branches (#3623), and `reconcile-post-merge`
+and `cancel-pending-ci` were added later (#4458). `cancel-pending-ci` dispatches
+through the capability seam and, because ADO does not declare `ci.cancel`,
+degrades to an `unsupported` status without disturbing the published verdict —
+correct behaviour that was undocumented. ADO PR thread comments also carry
+attribution now (#3984).
