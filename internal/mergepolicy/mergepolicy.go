@@ -72,6 +72,9 @@ func (directLander) Land(ctx context.Context, provider *providers.Dispatcher, re
 	if err != nil {
 		return Result{}, err
 	}
+	if !res.Merged {
+		return Result{}, fmt.Errorf("mergepolicy: provider did not confirm pull request %s merged", req.PullID)
+	}
 	return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, nil
 }
 

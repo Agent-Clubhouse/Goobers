@@ -114,6 +114,14 @@ func TestDirectLanderPropagatesError(t *testing.T) {
 	}
 }
 
+func TestDirectLanderRefusesUnconfirmedMerge(t *testing.T) {
+	fake := &fakeRepoProvider{mergeResult: providers.MergePullRequestResult{Merged: false, Message: "not merged"}}
+	result, err := directLander{}.Land(context.Background(), providers.NewDispatcher(fake), Request{PullID: "9"})
+	if err == nil || result.Outcome == OutcomeMerged {
+		t.Fatalf("unconfirmed provider response became a successful landing: %+v, %v", result, err)
+	}
+}
+
 func TestEnqueueLanderReportsEnqueuedWhenNotMerged(t *testing.T) {
 	fake := &fakeRepoProvider{enqueueResult: providers.EnqueuePullRequestResult{Merged: false}}
 	req := Request{Repository: providers.RepositoryRef{Owner: "acme", Name: "widgets"}, PullID: "7", ExpectedHeadSHA: "cafef00d", MergeMethod: providers.MergeMethodSquash}
