@@ -217,6 +217,9 @@ _goobers_completion()
         reconcile-post-merge)
             flags+=" --max --lookback"
             ;;
+        security-alerts-query)
+            flags+=" --source --state --severity --tool --ref --ecosystem --scope --max-results"
+            ;;
         telemetry-query)
             flags+=" --window --aggregate --learning-action --threshold --format --gaggle --workflow"
             ;;

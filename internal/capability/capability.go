@@ -88,6 +88,20 @@ const (
 	// routed per repo via a repo-qualified grant key (contents:read@owner/name)
 	// so each reference repo carries its own scoped read token.
 	ContentsRead Capability = "contents:read"
+	// GitHubCodeScanningRead grants read-only reads of GitHub code-scanning
+	// alerts (#2984), backed by the fine-grained "Code scanning alerts:
+	// Read-only" permission. It is separate from every issue and PR grant on
+	// purpose: a scheduled alert intake must be able to see default-branch
+	// CodeQL findings while holding no authority to write an issue, a pull
+	// request, or repository contents.
+	GitHubCodeScanningRead Capability = "github:code-scanning:read"
+	// GitHubDependabotAlertsRead grants read-only reads of GitHub Dependabot
+	// alerts (#2987), backed by the fine-grained "Dependabot alerts:
+	// Read-only" permission. GitHub exposes the two alert feeds through
+	// separate APIs behind separate permissions, so they are separate
+	// capabilities here: a workflow that only nominates dependency work never
+	// receives code-scanning access, and vice versa.
+	GitHubDependabotAlertsRead Capability = "github:dependabot-alerts:read"
 	// ADOCodeRead grants read-only Azure Repos and pull-request inspection.
 	ADOCodeRead Capability = "ado:code:read"
 	// ADOPRComment grants posting Azure Repos pull-request threads without vote,
@@ -143,6 +157,7 @@ func All() []Capability {
 	return []Capability{
 		RepoRead, RepoPush, ConfigRepoRead,
 		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
+		GitHubCodeScanningRead, GitHubDependabotAlertsRead,
 		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
 		TelemetryRead, JournalRead, AgentModel,
 	}

@@ -50,6 +50,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"remediation-checkpoint":   {test: TestRemediationCheckpointDispatchesFromCommand},
 	"report-pr-status":         {test: TestReportPRStatusDispatchesFromCommand},
 	"respond-to-findings":      {test: TestRespondToFindingsDispatchesToGitea},
+	"security-alerts-query":    {test: TestSecurityAlertsQueryRefusesNonGitHubProviders},
 	"select-source":            {test: TestSelectSourceDispatchesFromCommand},
 	"update-behind-pr":         {test: TestUpdateBehindPRDispatchesToGitea},
 	"validate-plan":            {test: TestValidatePlanDispatchesFromCommand},

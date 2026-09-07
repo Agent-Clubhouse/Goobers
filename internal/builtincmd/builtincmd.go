@@ -83,6 +83,7 @@ var names = []string{
 	"report-pr-status",
 	"resolve-review-threads",
 	"respond-to-findings",
+	"security-alerts-query",
 	"select-source",
 	"self-update",
 	"set-milestone",

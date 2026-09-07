@@ -464,6 +464,26 @@
     ]
   },
   {
+    "command": "security-alerts-query",
+    "resultFile": "security-alerts.json",
+    "capabilities": [
+      {
+        "capability": "github:code-scanning:read",
+        "consequence": "the read-only capability-scoped credential is not injected, so code-scanning alert intake fails at runtime",
+        "exact": true,
+        "flag": "source",
+        "flagValue": "code-scanning"
+      },
+      {
+        "capability": "github:dependabot-alerts:read",
+        "consequence": "the read-only capability-scoped credential is not injected, so Dependabot alert intake fails at runtime",
+        "exact": true,
+        "flag": "source",
+        "flagValue": "dependabot"
+      }
+    ]
+  },
+  {
     "command": "select-source",
     "resultFile": "selection.json",
     "mutatesClaimLedger": true,

@@ -277,6 +277,8 @@
               "github:branch:delete",
               "github:pr:merge",
               "contents:read",
+              "github:code-scanning:read",
+              "github:dependabot-alerts:read",
               "ado:code:read",
               "ado:pr:comment",
               "ado:pr:write",

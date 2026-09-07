@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -128,12 +129,18 @@ type fakeGitHubServer struct {
 	// code names but the repository does not actually define — the #1801 failure,
 	// where goobers:scope-gate-ack was referenced by a constant and existed
 	// nowhere, so the escape hatch it advertised was unreachable.
-	repoLabels    map[string]string
-	nextPR        int
-	nextCommentID int64
-	nextEventID   int64
-	issueEvents   []fakeIssueEvent
-	server        *httptest.Server
+	repoLabels map[string]string
+	// securityAlerts holds the raw JSON page each alert feed serves, plus the
+	// query each request carried, so a stage test can pin the bounds that
+	// actually reached the provider (#2984/#2987).
+	securityAlerts        map[string]string
+	securityAlertQueries  map[string][]url.Values
+	securityAlertFailures map[string]int
+	nextPR                int
+	nextCommentID         int64
+	nextEventID           int64
+	issueEvents           []fakeIssueEvent
+	server                *httptest.Server
 	// filesRequests/checkStateRequests count GET /pulls/{n}/files and
 	// /commits/{sha}/{status,check-runs} hits so cache tests can distinguish
 	// memoized file lists from check states that must remain fresh.
@@ -264,8 +271,11 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	s := &fakeGitHubServer{
 		owner: owner, repo: repo, issues: map[int]*fakeIssue{}, prs: map[int]*fakePR{},
 		compares: map[string]fakeCompare{}, contents: map[string]string{}, branchTips: map[string]string{},
-		repoLabels: map[string]string{},
-		nextPR:     1, authenticatedLogin: "goobers",
+		repoLabels:            map[string]string{},
+		securityAlerts:        map[string]string{},
+		securityAlertQueries:  map[string][]url.Values{},
+		securityAlertFailures: map[string]int{},
+		nextPR:                1, authenticatedLogin: "goobers",
 	}
 	mux := http.NewServeMux()
 	prefix := "/repos/" + owner + "/" + repo
@@ -282,9 +292,57 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	mux.HandleFunc(prefix+"/contents/", s.handleContents)
 	mux.HandleFunc(prefix+"/git/ref/", s.handleGitRef)
 	mux.HandleFunc(prefix+"/labels", s.handleRepoLabels)
+	mux.HandleFunc(prefix+"/code-scanning/alerts", s.handleSecurityAlerts("code-scanning"))
+	mux.HandleFunc(prefix+"/dependabot/alerts", s.handleSecurityAlerts("dependabot"))
 	s.server = httptest.NewServer(s.withGlobalQuotaHeaders(mux))
 	t.Cleanup(s.server.Close)
 	return s
+}
+
+// setSecurityAlerts seeds the raw JSON page one alert feed serves.
+func (s *fakeGitHubServer) setSecurityAlerts(source, page string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.securityAlerts[source] = page
+}
+
+// failSecurityAlerts makes one alert feed answer status, standing in for the
+// permission a fine-grained token was never granted.
+func (s *fakeGitHubServer) failSecurityAlerts(source string, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.securityAlertFailures[source] = status
+}
+
+// securityAlertQuery returns the query string of the last request one feed
+// served, so a test can assert the bounds on the wire.
+func (s *fakeGitHubServer) securityAlertQuery(source string) (url.Values, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queries := s.securityAlertQueries[source]
+	if len(queries) == 0 {
+		return nil, false
+	}
+	return queries[len(queries)-1], true
+}
+
+func (s *fakeGitHubServer) handleSecurityAlerts(source string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.securityAlertQueries[source] = append(s.securityAlertQueries[source], r.URL.Query())
+		page, ok := s.securityAlerts[source]
+		status := s.securityAlertFailures[source]
+		s.mu.Unlock()
+		if status != 0 {
+			http.Error(w, `{"message":"Resource not accessible by personal access token"}`, status)
+			return
+		}
+		if !ok {
+			page = "[]"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(page))
+	}
 }
 
 // setGlobalQuota stamps X-RateLimit-Limit/-Remaining on every response this

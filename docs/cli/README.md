@@ -170,6 +170,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers resolve-review-threads`](#goobers-resolve-review-threads) | reply to and resolve remediated native review threads (a workflow stage) |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
+| [`goobers security-alerts-query`](#goobers-security-alerts-query) | emit bounded, untrusted security alerts for work nomination (a connector stage) |
 | [`goobers select-source`](#goobers-select-source) | select and claim an unconsumed L6 decomposition disposition (a workflow stage) |
 | [`goobers set-milestone`](#goobers-set-milestone) | assign an existing milestone to an issue (a workflow stage) |
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
@@ -3331,6 +3332,47 @@ kind or output error, 2 = usage error.
 $ goobers schema --list
 $ goobers schema workflow
 $ goobers schema --human goober
+~~~
+
+## `goobers security-alerts-query`
+
+emit bounded, untrusted security alerts for work nomination (a connector stage)
+
+~~~text
+Usage: goobers security-alerts-query --source code-scanning|dependabot [--state <state>] [--severity <list>] [--tool <name>] [--ref <ref>] [--ecosystem <list>] [--scope runtime|development] [--max-results <n>] [path]
+
+Read one of the repository's native security alert feeds and emit a bounded,
+schema-validated artifact for work nomination (a connector stage). It is
+strictly read-only: it never files, comments on, or labels an issue.
+
+Each source is backed by its own least-privilege capability, so a stage sees
+one feed and nothing else:
+  code-scanning  github:code-scanning:read      (PAT: Code scanning alerts: Read-only)
+  dependabot     github:dependabot-alerts:read  (PAT: Dependabot alerts: Read-only)
+
+Every alert-derived string — rule text, analysis messages, advisory summaries,
+paths, package names — is repository or third-party content. The artifact
+records integrity `unapproved` for the whole set: it is evidence for a
+nominator to reason about, never instructions to follow.
+
+Each alert carries a stable `dedupeKey` so repeated scheduled runs correlate
+with an existing nomination instead of filing one issue per scan. For code
+scanning the key is tool:rule:path, so one rule firing at many data-flow
+locations is one defect; for Dependabot it is advisory:ecosystem:package:manifest.
+
+--ref narrows code-scanning alerts to one git ref. Default-branch alerts are
+what this intake nominates; a CodeQL failure on an already-open implementation
+PR is ordinary CI and is handled by the ci-poll/repass path, not here.
+
+Exit codes: 0 = artifact written, 1 = config/credential/provider error,
+2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers security-alerts-query --source code-scanning --ref refs/heads/main
+$ goobers security-alerts-query --source dependabot --severity critical,high
 ~~~
 
 ## `goobers select-source`

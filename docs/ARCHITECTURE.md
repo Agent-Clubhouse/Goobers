@@ -522,6 +522,18 @@ Instrumentation is OpenTelemetry throughout (already in `internal/telemetry`); o
 the exporter changes per tier. Work-nomination workflows read these stores; the Tutor
 (V1+) mines the run store.
 
+**Security alerts are a third nomination input** (#2984/#2987), and not a
+telemetry store: `goobers security-alerts-query` reads the forge's own
+code-scanning and Dependabot feeds through two separate read-only capabilities
+(`github:code-scanning:read`, `github:dependabot-alerts:read`) and emits the
+bounded `security-alerts-v1` artifact. Its whole content is repository and
+third-party advisory text, so it is graded `unapproved` and reaches a nominator
+as evidence, never as instruction; each alert carries a `dedupeKey` so repeated
+scheduled runs update one nomination instead of filing one issue per scan or per
+data-flow location. Default-branch alerts are what it nominates — an alert on an
+open pull request is ordinary CI and stays with that PR's `ci-poll`/repass path.
+See the security alert intake guide under `docs/guides/`.
+
 ## 9. Security and auth ladder
 
 | Tier | Identity/auth | Secrets | Isolation |

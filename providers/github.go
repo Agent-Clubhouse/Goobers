@@ -230,6 +230,7 @@ func (p *GitHubProvider) Capabilities() CapabilitySet {
 		CapRepoPolicyRead, CapCICancel,
 		CapRepoPushPreflight,
 		CapBacklogBlockers,
+		CapSecurityAlertsCodeScanning, CapSecurityAlertsDependabot,
 	)
 }
 

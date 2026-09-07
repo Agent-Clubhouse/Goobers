@@ -130,6 +130,16 @@ func requiredWhenFlagEquals(cap capability.Capability, flag, value, consequence 
 	}
 }
 
+func requiredExactWhenFlagEquals(cap capability.Capability, flag, value, consequence string) CapabilityUse {
+	return CapabilityUse{
+		Capability:  cap,
+		Consequence: consequence,
+		exact:       true,
+		flag:        flag,
+		flagValue:   value,
+	}
+}
+
 func requiredWhenAnyFlag(cap capability.Capability, flags []string, consequence string) CapabilityUse {
 	return CapabilityUse{Capability: cap, Consequence: consequence, anyFlags: flags}
 }
@@ -158,6 +168,19 @@ var commands = map[string]Command{
 		ResultFile: "dedupe-candidates.json",
 		Capabilities: []CapabilityUse{
 			requiredExact(capability.GitHubIssuesRead, "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"),
+		},
+	},
+	// #2984/#2987: two feeds, two least-privilege read capabilities, and no
+	// write capability at all. Both are optional at admission and required by
+	// the --source flag that selects the feed, so a workflow declaring only
+	// dependency intake never receives code-scanning access.
+	"security-alerts-query": {
+		ResultFile: "security-alerts.json",
+		Capabilities: []CapabilityUse{
+			requiredExactWhenFlagEquals(capability.GitHubCodeScanningRead, "source", "code-scanning",
+				"the read-only capability-scoped credential is not injected, so code-scanning alert intake fails at runtime"),
+			requiredExactWhenFlagEquals(capability.GitHubDependabotAlertsRead, "source", "dependabot",
+				"the read-only capability-scoped credential is not injected, so Dependabot alert intake fails at runtime"),
 		},
 	},
 	"backlog-assignment": {
