@@ -9,6 +9,7 @@ Usage:
 Commands:
   completion        Generate shell completion scripts.
   connect           Connect an instance to a GitHub repository.
+  cost              Show cost attributed to pull requests and issues.
   dashboard         Open the local operations portal.
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
@@ -55,6 +56,7 @@ Usage:
 Commands:
   completion        Generate shell completion scripts.
   connect           Connect an instance to a GitHub repository.
+  cost              Show cost attributed to pull requests and issues.
   dashboard         Open the local operations portal.
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
@@ -98,6 +100,7 @@ Usage:
 Core commands:
   completion        Generate shell completion scripts.
   connect           Connect an instance to a GitHub repository.
+  cost              Show cost attributed to pull requests and issues.
   dashboard         Open the local operations portal.
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
@@ -692,6 +695,15 @@ Flags:
 
 Exit codes: 0 = connected (or already connected), 1 = refusal, validation,
 or provider error, 2 = usage error.
+
+### cost
+Usage: goobers cost [--pr=<id> | --issue=<id>] [--provider=<name>] [--window=<duration>] [--since=<RFC3339>] [--until=<RFC3339>] [--json] [--rebuild] [path]
+
+Show exact recorded AI usage attributed to pull requests and issues. The
+default window is 7d ending now; --since replaces --window, and every
+query is capped at 90d. Native AI credits/USD and normalized estimates are
+reported separately. Missing measurements make totals lower bounds.
+Exit codes: 0 = OK, 2 = usage, query, or I/O error.
 
 ### dashboard
 Usage: goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]

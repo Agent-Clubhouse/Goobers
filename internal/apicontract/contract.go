@@ -34,6 +34,7 @@ const (
 	StageAttemptsPath            = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
 	RunArtifactPath              = V1Prefix + "/runs/{run}/artifacts/{digest}"
 	RunTranscriptPath            = V1Prefix + "/runs/{run}/transcripts/{seq}"
+	TelemetryCostsPath           = V1Prefix + "/telemetry/costs"
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
@@ -242,6 +243,7 @@ const (
 	RouteStageAttempts            RouteID = "stageAttempts"
 	RouteRunArtifact              RouteID = "runArtifact"
 	RouteRunTranscript            RouteID = "runTranscript"
+	RouteTelemetryCosts           RouteID = "telemetryCosts"
 	RouteTelemetryStats           RouteID = "telemetryStats"
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
@@ -394,6 +396,7 @@ var v1Routes = []Route{
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteTelemetryCosts, Method: http.MethodGet, Path: TelemetryCostsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},

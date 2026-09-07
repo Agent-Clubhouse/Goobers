@@ -28,6 +28,7 @@ var (
 
 // TelemetryReader is the shared telemetry read boundary used by HTTP and CLI.
 type TelemetryReader interface {
+	TelemetryCosts(context.Context, TelemetryCostRequest) (TelemetryCostResult, error)
 	TelemetryStats(context.Context, TelemetryStatsRequest) (TelemetryStatsResult, error)
 	TelemetryErrorSignatures(context.Context, TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error)
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
@@ -392,6 +393,7 @@ type TelemetryError struct {
 }
 
 type telemetryStore interface {
+	CostAggregates(context.Context, rollup.CostQuery) (rollup.CostResult, error)
 	Stats(context.Context, rollup.StatsRequest) (rollup.StatsResult, error)
 	TrendStats(context.Context, rollup.TrendRequest) ([]rollup.TrendResult, error)
 	TopErrorSignatures(context.Context, rollup.StatsRequest, int) ([]rollup.ErrorSignature, error)

@@ -36,6 +36,8 @@ import type {
   RunListOptions,
   TelemetryErrorSignaturesOptions,
   TelemetryErrorSignaturesResult,
+  TelemetryCostOptions,
+  TelemetryCostResult,
   TelemetryErrorsOptions,
   TelemetryErrorsPage,
   TelemetryStatsOptions,
@@ -67,6 +69,7 @@ const clientRoutes = {
   stageAttempts: apiRoutes.stageAttempts,
   runArtifact: apiRoutes.runArtifact,
   runTranscript: apiRoutes.runTranscript,
+  telemetryCosts: apiRoutes.telemetryCosts,
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
@@ -479,6 +482,23 @@ export class HttpDaemonClient implements DaemonClient {
         trendBuckets: request.trendBuckets,
         trendPreviousSince: request.trendPreviousSince,
         trendPreviousUntil: request.trendPreviousUntil,
+      },
+      options,
+    );
+  }
+
+  getTelemetryCosts(
+    request: TelemetryCostOptions,
+    options?: RequestOptions,
+  ): Promise<TelemetryCostResult> {
+    return this.getJSON(
+      clientRoutes.telemetryCosts,
+      {
+        provider: request.provider,
+        scope: request.scope,
+        id: request.id,
+        since: request.since,
+        until: request.until,
       },
       options,
     );

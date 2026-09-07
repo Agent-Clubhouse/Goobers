@@ -25,6 +25,7 @@ type wireFixtures struct {
 	RunDetail                readservice.RunDetail                      `json:"runDetail"`
 	RunEvents                readservice.EventList                      `json:"runEvents"`
 	StageAttempts            readservice.AttemptList                    `json:"stageAttempts"`
+	TelemetryCosts           readservice.TelemetryCostResult            `json:"telemetryCosts"`
 	TelemetryStats           readservice.TelemetryStatsResult           `json:"telemetryStats"`
 	TelemetryErrorSignatures readservice.TelemetryErrorSignaturesResult `json:"telemetryErrorSignatures"`
 	TelemetryErrors          readservice.TelemetryErrorsPage            `json:"telemetryErrors"`
@@ -56,6 +57,7 @@ var wireFixtureTypes = []struct {
 	{name: "runDetail", scriptType: "RunDetail"},
 	{name: "runEvents", scriptType: "EventList"},
 	{name: "stageAttempts", scriptType: "AttemptList"},
+	{name: "telemetryCosts", scriptType: "TelemetryCostResult"},
 	{name: "telemetryStats", scriptType: "TelemetryStatsResult"},
 	{name: "telemetryErrorSignatures", scriptType: "TelemetryErrorSignaturesResult"},
 	{name: "telemetryErrors", scriptType: "TelemetryErrorsPage"},
@@ -570,6 +572,83 @@ func newWireFixtures() wireFixtures {
 					Artifacts:      []readservice.ArtifactMetadata{},
 				},
 			},
+		},
+		TelemetryCosts: readservice.TelemetryCostResult{
+			Provider: "github",
+			Scope:    readservice.TelemetryCostScopeSummary,
+			Since:    startedAt,
+			Until:    timestamp,
+			PullRequests: []readservice.TelemetryCostAggregate{{
+				Provider: "github", ExternalKind: "pr", ExternalID: "4398",
+				TotalRuns: 3, MeasuredRuns: 2, TotalAttempts: 4, MeasuredAttempts: 3,
+				InputTokens: &modelInputTokens, OutputTokens: &modelOutputTokens,
+				NativeTotals: []readservice.TelemetryCostAmount{{
+					Unit: "aiCredits", Value: 2.5,
+				}},
+				NormalizedTotals: []readservice.TelemetryCostAmount{
+					{Unit: "usd", Value: 0.025, Estimated: true},
+				},
+				BillingModels: []string{"ai_credits"},
+				CostBases:     []string{"vendor_reported"},
+				Coverage: readservice.TelemetryCostCoverage{
+					TotalRuns: 3, MeasuredRuns: 2, TotalAttempts: 4, MeasuredAttempts: 3,
+					LowerBound: true,
+				},
+				Models: []readservice.TelemetryCostModelAggregate{{
+					Model: "gpt-5.6-sol", UsageAttempts: 3, MeasuredAttempts: 3,
+					InputTokens: &modelInputTokens, OutputTokens: &modelOutputTokens,
+					NativeTotals: []readservice.TelemetryCostAmount{{
+						Unit: "aiCredits", Value: 2.5,
+					}},
+					NormalizedTotals: []readservice.TelemetryCostAmount{
+						{Unit: "usd", Value: 0.025, Estimated: true},
+					},
+					BillingModels: []string{"ai_credits"},
+					CostBases:     []string{"vendor_reported"},
+				}},
+				Runs: []readservice.TelemetryCostRunAggregate{{
+					RunID: "run-123", StartedAt: startedAt, UsageAttempts: 3, MeasuredAttempts: 3,
+					InputTokens: &modelInputTokens, OutputTokens: &modelOutputTokens,
+					NativeTotals: []readservice.TelemetryCostAmount{{
+						Unit: "aiCredits", Value: 2.5,
+					}},
+					NormalizedTotals: []readservice.TelemetryCostAmount{{
+						Unit: "usd", Value: 0.025, Estimated: true,
+					}},
+					BillingModels: []string{"ai_credits"},
+					CostBases:     []string{"vendor_reported"},
+					Models:        []readservice.TelemetryCostModelAggregate{},
+				}},
+			}},
+			Issues: []readservice.TelemetryCostAggregate{{
+				Provider: "github", ExternalKind: "issue", ExternalID: "4398",
+				TotalRuns: 3, MeasuredRuns: 2, TotalAttempts: 4, MeasuredAttempts: 3,
+				NativeTotals: []readservice.TelemetryCostAmount{{
+					Unit: "usd", Value: 0.025,
+				}},
+				NormalizedTotals: []readservice.TelemetryCostAmount{
+					{Unit: "aiCredits", Value: 2.5, Estimated: true},
+				},
+				BillingModels: []string{},
+				CostBases:     []string{"vendor_reported"},
+				Coverage: readservice.TelemetryCostCoverage{
+					TotalRuns: 3, MeasuredRuns: 2, TotalAttempts: 4, MeasuredAttempts: 3,
+					LowerBound: true,
+				},
+				Models: []readservice.TelemetryCostModelAggregate{},
+				Runs: []readservice.TelemetryCostRunAggregate{{
+					RunID: "run-124", StartedAt: startedAt, UsageAttempts: 2, MeasuredAttempts: 2,
+					NativeTotals: []readservice.TelemetryCostAmount{{
+						Unit: "usd", Value: 0.025,
+					}},
+					NormalizedTotals: []readservice.TelemetryCostAmount{{
+						Unit: "aiCredits", Value: 2.5, Estimated: true,
+					}},
+					BillingModels: []string{},
+					CostBases:     []string{"vendor_reported"},
+					Models:        []readservice.TelemetryCostModelAggregate{},
+				}},
+			}},
 		},
 		TelemetryStats: readservice.TelemetryStatsResult{
 			CreditAssignment: []readservice.NodeCredit{{

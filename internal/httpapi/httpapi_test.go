@@ -15,16 +15,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
 type fakeReader struct {
 	health       readservice.Health
+	costs        readservice.TelemetryCostResult
 	stats        readservice.TelemetryStatsResult
 	signatures   readservice.TelemetryErrorSignaturesResult
 	errors       readservice.TelemetryErrorsPage
 	outcomes     readservice.TelemetryImplementationOutcomesResult
 	telemetryErr error
+	costReq      readservice.TelemetryCostRequest
 	statsReq     readservice.TelemetryStatsRequest
 	signatureReq readservice.TelemetryErrorSignaturesRequest
 	errorsReq    readservice.TelemetryErrorsRequest
@@ -72,6 +75,11 @@ func discardLogger() *log.Logger {
 func (f *fakeReader) Health(context.Context) (readservice.Health, error) {
 	f.called++
 	return f.health, f.err
+}
+
+func (f *fakeReader) TelemetryCosts(_ context.Context, req readservice.TelemetryCostRequest) (readservice.TelemetryCostResult, error) {
+	f.costReq = req
+	return f.costs, f.telemetryErr
 }
 
 func (f *fakeReader) TelemetryStats(_ context.Context, req readservice.TelemetryStatsRequest) (readservice.TelemetryStatsResult, error) {
@@ -610,6 +618,12 @@ func TestClientCancelledReadsAreQuiet(t *testing.T) {
 			name:   "list runs",
 			reader: &fakeReader{err: context.Canceled},
 			path:   RunsPath,
+		},
+		{
+			name:   "telemetry costs",
+			reader: &fakeReader{telemetryErr: context.Canceled},
+			path: apicontract.TelemetryCostsPath +
+				"?scope=summary&since=2026-08-01T00:00:00Z&until=2026-08-02T00:00:00Z",
 		},
 		{
 			name:   "telemetry stats",

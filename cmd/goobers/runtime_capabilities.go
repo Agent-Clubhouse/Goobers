@@ -444,6 +444,10 @@ func init() {
 			withSynopsis(synopsisByID["stats"]).
 			withHelp("show the instance lifetime summary card", statsHelp).
 			withExamples("goobers stats", "goobers stats --since 24h --json"),
+		coreCommand("cost", apicontract.ActionReadOnlyNavigation, runCost).
+			withSynopsis(synopsisByID["cost"]).
+			withHelp("show bounded cost attribution by pull request or issue", costHelp).
+			withExamples("goobers cost", "goobers cost --pr 4398 --json", "goobers cost --issue 4398 --window 30d"),
 		command("features", apicontract.ActionReadOnlyNavigation, runFeatures).
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
