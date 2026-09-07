@@ -820,9 +820,105 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 		return false, err
 	}
 	if base != liveBaseTip {
-		return false, nil
+		// #2702: the base moved, but for an ordering park that is only news if
+		// the ordering itself moved. Ask before spending a cycle.
+		unchanged, err := siblingOrderingUnchanged(ctx, provider, repo, state, rawComments)
+		if err != nil {
+			return false, err
+		}
+		return unchanged, nil
 	}
 	return true, nil
+}
+
+// siblingOrderingUnchanged reports whether an ordering-only escalation's
+// recorded blockers are ALL still blocking, which makes a base advance
+// uninformative about this park (#2702).
+//
+// The cadence loop it closes: a PR escalated behind a sibling awaiting a human
+// ordering decision is parked with cause sibling-overlap, which
+// baseAdvanceCuresRemediationCause calls rebase-curable — correctly, since the
+// canonical cure IS the sibling landing, and that advances the base. But on an
+// active repository the base advances constantly for unrelated reasons, and
+// each advance re-opened eligibility for a PR whose blockers had not moved.
+// Every tick then ran the full pipeline — context, sibling analysis,
+// checkpoint, respond-to-findings, implement — to reach the same terminal
+// answer. Live, one PR was re-attempted daily for five consecutive days.
+//
+// This narrows ONLY the sibling-overlap case, and only when the blocker set is
+// recoverable and intact:
+//
+//   - any other rebase-curable cause present (conflict, failing CI): a base
+//     advance genuinely re-decides those, so it must keep unparking. #4058
+//     records what happens when it does not — two PRs escalated by a repo-wide
+//     CI break stayed parked through five base advances with no reachable exit.
+//   - no recoverable blocker set: unpark, exactly as before. Inventing a hold
+//     from an absent record would rebuild the permanent park #4038 and #4051
+//     each fixed, where pr-remediation excludes escalated PRs upstream so the
+//     head can never move and the advertised exit is unreachable.
+//   - any recorded blocker resolved (merged, closed, or demoted): unpark. The
+//     ordering situation changed, which is the thing worth a cycle.
+//   - every recorded blocker still open: hold. The base carries no information
+//     about this park.
+//
+// The head-change and label-removal exits are untouched and remain the
+// operator's escape hatches.
+func siblingOrderingUnchanged(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	state remediationState,
+	comments []providers.Comment,
+) (bool, error) {
+	if !escalationCausesAreOrderingOnly(state) {
+		return false, nil
+	}
+	blockers := recordedEscalationBlockers(comments)
+	if len(blockers) == 0 {
+		return false, nil
+	}
+	for _, blocker := range blockers {
+		blocks, err := namedBlockerStillBlocks(ctx, provider, repo, blocker)
+		if err != nil {
+			return false, err
+		}
+		if !blocks {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// escalationCausesAreOrderingOnly reports whether sibling overlap is the only
+// rebase-curable cause this park was recorded against. A record with no causes
+// at all does not qualify: its cause is unknowable, which is the case
+// escalationBaseAdvanceUnparks deliberately keeps unparking.
+func escalationCausesAreOrderingOnly(state remediationState) bool {
+	ordering := false
+	for _, cause := range state.EscalationCauses {
+		if cause == remediationCauseSiblingOverlap {
+			ordering = true
+			continue
+		}
+		if baseAdvanceCuresRemediationCause(cause) {
+			return false
+		}
+	}
+	return ordering
+}
+
+// recordedEscalationBlockers recovers the sibling PR numbers an ordering park
+// was recorded against, from either marker that can carry them: the
+// blocked-on-sibling payload apply-verdict writes, or the BlockingPRs on the
+// findings of the latest merge-review verdict.
+func recordedEscalationBlockers(comments []providers.Comment) []int {
+	if state, _, found := latestBlockedOnSiblingState(comments); found && len(state.Blockers) > 0 {
+		return state.Blockers
+	}
+	if verdict, ok := latestMergeReviewVerdict(comments); ok {
+		return unionBlockingPRs(verdict.Findings)
+	}
+	return nil
 }
 
 // latestMergeReviewEscalationPins recovers the head/base snapshot merge-review
