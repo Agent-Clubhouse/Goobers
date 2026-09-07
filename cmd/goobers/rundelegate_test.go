@@ -1205,7 +1205,7 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 func TestSweepBoundsOutstandingDuplicateRequestsPerIdentity(t *testing.T) {
 	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
 	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
-		Gaggle:    "efunhouse",
+		Gaggle:    "dogfood",
 		Workflow:  "implementation",
 		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 100},
 		Starter:   starter,
@@ -1214,7 +1214,7 @@ func TestSweepBoundsOutstandingDuplicateRequestsPerIdentity(t *testing.T) {
 	const flood = 20
 	requestIDs := make([]string, 0, flood)
 	for i := 0; i < flood; i++ {
-		id, err := writeTargetedTriggerRequestContext(context.Background(), schedulerDir, "efunhouse", "implementation", 0)
+		id, err := writeTargetedTriggerRequestContext(context.Background(), schedulerDir, "dogfood", "implementation", 0)
 		if err != nil {
 			t.Fatalf("writeTargetedTriggerRequestContext[%d]: %v", i, err)
 		}

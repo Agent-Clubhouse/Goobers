@@ -37,12 +37,12 @@ func countRequests(t *testing.T, schedulerDir string) int {
 func TestPriorityTriggerResubmissionCreatesNoAdditionalRequest(t *testing.T) {
 	schedulerDir := triggerQueueDir(t)
 
-	first, err := writePriorityTriggerRequest(schedulerDir, "efunhouse", "implementation", "run-1")
+	first, err := writePriorityTriggerRequest(schedulerDir, "dogfood", "implementation", "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 50; i++ {
-		again, err := writePriorityTriggerRequest(schedulerDir, "efunhouse", "implementation", "run-1")
+		again, err := writePriorityTriggerRequest(schedulerDir, "dogfood", "implementation", "run-1")
 		if err != nil {
 			t.Fatalf("resubmission %d: %v", i, err)
 		}
@@ -68,7 +68,7 @@ func TestFiveLanesProduceFiveOutstandingRequests(t *testing.T) {
 	// Simulate the incident's cadence: repeated passes over every lane.
 	for pass := 0; pass < 20; pass++ {
 		for _, lane := range lanes {
-			if _, err := writePriorityTriggerRequest(schedulerDir, "efunhouse", lane, "fill"); err != nil {
+			if _, err := writePriorityTriggerRequest(schedulerDir, "dogfood", lane, "fill"); err != nil {
 				t.Fatalf("pass %d lane %s: %v", pass, lane, err)
 			}
 		}
@@ -89,7 +89,7 @@ func TestFiftyNineHoursOfLaneFillLeavesABoundedQueue(t *testing.T) {
 	invocations := int((59 * time.Hour) / (15 * time.Minute)) // 236
 	for i := 0; i < invocations; i++ {
 		for _, lane := range lanes {
-			if _, err := writePriorityTriggerRequest(schedulerDir, "efunhouse", lane, "fill"); err != nil {
+			if _, err := writePriorityTriggerRequest(schedulerDir, "dogfood", lane, "fill"); err != nil {
 				t.Fatalf("invocation %d lane %s: %v", i, lane, err)
 			}
 		}

@@ -12,7 +12,7 @@ import (
 // TestPRSelectReportsSevenEscalatedPullRequestsRatherThanBareNoWork is #2969's
 // named regression case.
 //
-// Live on EFunHouse 2026-08-15: seven open implementation PRs (#533-#539) were
+// Live on a production instance 2026-08-15: seven open implementation PRs (#533-#539) were
 // non-draft, mergeable CLEAN and green, and every one carried
 // goobers:merge-escalated. Run de97c14bcaadb32fafb864d100eae0d7 completed
 // successfully with pr-select no-work, and `goobers status` reported a 100%

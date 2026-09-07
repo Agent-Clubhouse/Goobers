@@ -10,7 +10,7 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 	premium := 1.5
 	attribution := Attribution{
 		Instance: "MDB1",
-		Gaggle:   "efunhouse",
+		Gaggle:   "dogfood",
 		Workflow: "implementation",
 		Task:     "escalate",
 		Goober:   "implementer",
