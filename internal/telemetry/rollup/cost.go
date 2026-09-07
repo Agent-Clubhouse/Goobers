@@ -67,6 +67,24 @@ type CostModelAggregate struct {
 	CostBases              []string
 }
 
+// CostRunModelBreakdown is one run/model row used by provider cost reports.
+type CostRunModelBreakdown struct {
+	RunID                  string
+	Model                  string
+	UsageAttempts          int
+	MeasuredAttempts       int
+	InputTokens            *int64
+	OutputTokens           *int64
+	CacheReadTokens        *int64
+	CacheWriteTokens       *int64
+	ReasoningTokens        *int64
+	CopilotPremiumRequests *float64
+	NanoAIU                *int64
+	CostUSD                *float64
+	BillingModels          []string
+	CostBases              []string
+}
+
 type costMeasures struct {
 	input, output, cacheRead, cacheWrite, reasoning optionalInt
 	premium, costUSD                                optionalFloat
@@ -244,6 +262,109 @@ func (db *DB) CostTargetsForRun(ctx context.Context, provider, runID string) ([]
 		}
 	}
 	return sortedSet(prs), sortedSet(issues), nil
+}
+
+// CostBreakdown returns deterministic run/model rows for one aggregate target.
+// Issue rows apply the same weighted allocation as IssueCosts.
+func (db *DB) CostBreakdown(ctx context.Context, provider, kind, externalID string) ([]CostRunModelBreakdown, error) {
+	runs, err := db.loadCostRuns(ctx, provider)
+	if err != nil {
+		return nil, err
+	}
+	prIssues := addressedIssuesByPR(runs)
+	directWeights := make(map[string]int64)
+	for _, run := range runs {
+		if len(run.issues) == 0 || !run.measures.nanoAIU.valid {
+			continue
+		}
+		for issue, share := range splitInt64(run.measures.nanoAIU.value, sortedSet(run.issues), nil) {
+			directWeights[issue] += share
+		}
+	}
+	prRuns := make(map[string]map[string]*costRun)
+	for _, run := range runs {
+		for pr := range run.prs {
+			addCostRun(prRuns, pr, run)
+		}
+	}
+	foldOrphanRuns(runs, prIssues, prRuns)
+
+	var out []CostRunModelBreakdown
+	for _, run := range runs {
+		include := false
+		targets := []string(nil)
+		weights := map[string]int64(nil)
+		switch kind {
+		case CostExternalKindPR:
+			_, include = prRuns[externalID][run.id]
+		case CostExternalKindIssue:
+			targets = sortedSet(run.issues)
+			if len(targets) == 0 {
+				issueSet := make(map[string]struct{})
+				for pr := range run.prs {
+					for issue := range prIssues[pr] {
+						issueSet[issue] = struct{}{}
+					}
+				}
+				targets = sortedSet(issueSet)
+				weights = directWeights
+			}
+			for _, target := range targets {
+				include = include || target == externalID
+			}
+		default:
+			return nil, fmt.Errorf("rollup: unknown cost target kind %q", kind)
+		}
+		if !include {
+			continue
+		}
+		models := make([]string, 0, len(run.models))
+		for model := range run.models {
+			models = append(models, model)
+		}
+		sort.Strings(models)
+		for _, model := range models {
+			source := run.models[model]
+			measures := source.measures
+			if kind == CostExternalKindIssue {
+				measures = splitMeasures(measures, targets, weights)[externalID]
+			}
+			out = append(out, breakdownRow(run.id, model, source, measures))
+		}
+	}
+	return out, nil
+}
+
+func breakdownRow(runID, model string, source *costModelRun, measures costMeasures) CostRunModelBreakdown {
+	row := CostRunModelBreakdown{
+		RunID: runID, Model: model, UsageAttempts: source.attempts,
+		MeasuredAttempts: source.measuredAttempts,
+		BillingModels:    sortedSet(measures.billingModels),
+		CostBases:        sortedSet(measures.costBases),
+	}
+	assignOptionalInt(&row.InputTokens, measures.input)
+	assignOptionalInt(&row.OutputTokens, measures.output)
+	assignOptionalInt(&row.CacheReadTokens, measures.cacheRead)
+	assignOptionalInt(&row.CacheWriteTokens, measures.cacheWrite)
+	assignOptionalInt(&row.ReasoningTokens, measures.reasoning)
+	assignOptionalFloat(&row.CopilotPremiumRequests, measures.premium)
+	assignOptionalInt(&row.NanoAIU, measures.nanoAIU)
+	assignOptionalFloat(&row.CostUSD, measures.costUSD)
+	return row
+}
+
+func assignOptionalInt(dst **int64, src optionalInt) {
+	if src.valid {
+		value := src.value
+		*dst = &value
+	}
+}
+
+func assignOptionalFloat(dst **float64, src optionalFloat) {
+	if src.valid {
+		value := src.value
+		*dst = &value
+	}
 }
 
 func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, error) {
@@ -450,7 +571,7 @@ func (m *costMeasures) addRow(input, output, cacheRead, cacheWrite, reasoning sq
 }
 
 func (m costMeasures) measured() bool {
-	return m.nanoAIU.valid || m.costUSD.valid
+	return m.nanoAIU.valid || m.costUSD.valid || m.premium.valid
 }
 
 func addOptionalInt(dst *optionalInt, value sql.NullInt64) {

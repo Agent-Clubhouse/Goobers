@@ -109,9 +109,13 @@ func runReportCost(args []string, stdout, stderr io.Writer) int {
 		if !ok {
 			continue
 		}
+		breakdown, err := db.CostBreakdown(ctx, string(repo.Provider), rollup.CostExternalKindPR, id)
+		if err != nil {
+			return failProviderStage(stderr, "query pull-request cost breakdown", err, costReportResultFile)
+		}
 		result, err := providers.UpsertStickyComment(ctx, provider, repo,
 			providers.StickyCommentTarget{Kind: providers.StickyCommentPullRequest, ID: id},
-			costReportMarker, renderCostReport("PR", aggregate))
+			costReportMarker, renderCostReport("PR", aggregate, breakdown))
 		if err != nil {
 			return failProviderStage(stderr, "publish pull-request cost report", err, costReportResultFile)
 		}
@@ -123,9 +127,13 @@ func runReportCost(args []string, stdout, stderr io.Writer) int {
 		if !ok {
 			continue
 		}
+		breakdown, err := db.CostBreakdown(ctx, string(repo.Provider), rollup.CostExternalKindIssue, id)
+		if err != nil {
+			return failProviderStage(stderr, "query issue cost breakdown", err, costReportResultFile)
+		}
 		result, err := providers.UpsertStickyComment(ctx, provider, backlogRepo,
 			providers.StickyCommentTarget{Kind: providers.StickyCommentIssue, ID: id},
-			costReportMarker, renderCostReport("issue", aggregate))
+			costReportMarker, renderCostReport("issue", aggregate, breakdown))
 		if err != nil {
 			return failProviderStage(stderr, "publish issue cost report", err, costReportResultFile)
 		}
@@ -173,7 +181,7 @@ func findCostAggregate(values []rollup.CostAggregate, id string) (rollup.CostAgg
 	return rollup.CostAggregate{}, false
 }
 
-func renderCostReport(subject string, aggregate rollup.CostAggregate) string {
+func renderCostReport(subject string, aggregate rollup.CostAggregate, breakdown []rollup.CostRunModelBreakdown) string {
 	var b strings.Builder
 	if subject == "PR" {
 		fmt.Fprintf(&b, "Thanks for using Goobers! This PR cost **%s**.\n\n", costHeadline(aggregate))
@@ -188,20 +196,25 @@ func renderCostReport(subject string, aggregate rollup.CostAggregate) string {
 		fmt.Fprintf(&b, "Cost is unavailable; known usage is %s tokens.\n\n", formatCount(tokens))
 	}
 	fmt.Fprintf(&b, "<details><summary>Cost breakdown -- %d runs, %s tokens</summary>\n\n", aggregate.TotalRuns, formatCount(tokens))
-	b.WriteString("| Model | Attempts | Tokens (in/out/cached) | Cost |\n")
-	b.WriteString("|---|---:|---:|---:|\n")
-	if len(aggregate.Models) == 0 {
-		fmt.Fprintf(&b, "| unavailable | %d | %s | %s |\n", aggregate.TotalAttempts,
+	b.WriteString("| Run | Model | Attempts | Tokens (in/out/cached) | Cost |\n")
+	b.WriteString("|---|---|---:|---:|---:|\n")
+	if len(breakdown) == 0 {
+		fmt.Fprintf(&b, "| unavailable | unavailable | %d | %s | %s |\n", aggregate.TotalAttempts,
 			formatTokenTriplet(aggregate.InputTokens, aggregate.OutputTokens, aggregate.CacheReadTokens),
 			costDetail(aggregate.NanoAIU, aggregate.CostUSD, aggregate.CopilotPremiumRequests, false))
 	} else {
-		models := append([]rollup.CostModelAggregate(nil), aggregate.Models...)
-		sort.Slice(models, func(i, j int) bool { return models[i].Model < models[j].Model })
-		for _, model := range models {
-			normalized := strings.HasPrefix(strings.ToLower(model.Model), "claude")
-			fmt.Fprintf(&b, "| `%s` | %d | %s | %s |\n", model.Model, model.UsageAttempts,
-				formatTokenTriplet(model.InputTokens, model.OutputTokens, model.CacheReadTokens),
-				costDetail(model.NanoAIU, model.CostUSD, model.CopilotPremiumRequests, normalized))
+		rows := append([]rollup.CostRunModelBreakdown(nil), breakdown...)
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].RunID == rows[j].RunID {
+				return rows[i].Model < rows[j].Model
+			}
+			return rows[i].RunID < rows[j].RunID
+		})
+		for _, row := range rows {
+			normalized := strings.HasPrefix(strings.ToLower(row.Model), "claude")
+			fmt.Fprintf(&b, "| `%s` | `%s` | %d | %s | %s |\n", costShortRunID(row.RunID), row.Model, row.UsageAttempts,
+				formatTokenTriplet(row.InputTokens, row.OutputTokens, row.CacheReadTokens),
+				costDetail(row.NanoAIU, row.CostUSD, row.CopilotPremiumRequests, normalized))
 		}
 	}
 	if hasClaudeModel(aggregate.Models) {
@@ -214,7 +227,17 @@ func renderCostReport(subject string, aggregate rollup.CostAggregate) string {
 	return b.String()
 }
 
+func costShortRunID(runID string) string {
+	if len(runID) > 8 {
+		return runID[:8]
+	}
+	return runID
+}
+
 func costHeadline(aggregate rollup.CostAggregate) string {
+	if allClaudeModels(aggregate.Models) && aggregate.CostUSD != nil {
+		return "$" + formatDecimal(*aggregate.CostUSD) + " estimated"
+	}
 	if aggregate.NanoAIU != nil {
 		credits := float64(*aggregate.NanoAIU) / 1e9
 		text := formatDecimal(credits) + " AI credits"
@@ -233,6 +256,18 @@ func costHeadline(aggregate rollup.CostAggregate) string {
 		return formatDecimal(*aggregate.CopilotPremiumRequests) + " premium requests"
 	}
 	return "unavailable"
+}
+
+func allClaudeModels(models []rollup.CostModelAggregate) bool {
+	if len(models) == 0 {
+		return false
+	}
+	for _, model := range models {
+		if !strings.HasPrefix(strings.ToLower(model.Model), "claude") {
+			return false
+		}
+	}
+	return true
 }
 
 func costDetail(nano *int64, usd, premium *float64, normalized bool) string {
