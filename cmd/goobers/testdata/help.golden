@@ -410,7 +410,12 @@ Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
 input otherwise), requireLabels, excludeLabels, and the optional
 labelPredicate CEL expression. CEL supports string membership in `labels`
-combined with &&, ||, and !. fieldPredicate adds typed comparisons against
+combined with &&, ||, and !.
+Park filtering uses a separate comma-separated parkLabels input (empty
+by default). filterParkLabels defaults to true; false ignores only that
+list, preserving excludeLabels, requireLabels, and labelPredicate. Shipped
+curation declares its park labels separately; opting out never adds ready.
+fieldPredicate adds typed comparisons against
 provider-native scalar fields using fields["name"]; unavailable fields fail
 explicitly. With --claim, claims
 exactly one via the local claim ledger (source of truth) mirrored to a
