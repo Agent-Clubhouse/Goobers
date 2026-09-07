@@ -67,7 +67,47 @@ type scriptedExec struct {
 	// rerun addendum actually reached the re-dispatched stage's envelope
 	// rather than merely being journaled.
 	addenda map[string]string
+	// held, when set for a stage, is a channel this exec waits on before
+	// answering that stage's dispatch — the seam holdUntilValidated uses to
+	// keep an activity genuinely in flight while a HITL update is validated
+	// (#3953). Read under mu; the wait itself happens outside the lock so a
+	// held stage never blocks another dispatch.
+	held map[string]<-chan struct{}
 }
+
+// holdFor makes the next dispatch of stage wait for release (bounded, so a
+// release that never comes fails the test rather than wedging the package).
+func (s *scriptedExec) holdFor(stage string, release <-chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held == nil {
+		s.held = map[string]<-chan struct{}{}
+	}
+	s.held[stage] = release
+}
+
+// waitForRelease blocks a dispatch of stage until its hold is released or the
+// bound expires. Consumed once: only the dispatch that is supposed to be in
+// flight is held.
+func (s *scriptedExec) waitForRelease(stage string) {
+	s.mu.Lock()
+	release, ok := s.held[stage]
+	if ok {
+		delete(s.held, stage)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	select {
+	case <-release:
+	case <-time.After(scriptedHoldBound):
+	}
+}
+
+// scriptedHoldBound bounds a hold so a delivery that is never validated ends
+// the test with its own assertion rather than with a package timeout.
+const scriptedHoldBound = 30 * time.Second
 
 func newScriptedExec(script map[string][]scriptedCall) *scriptedExec {
 	return &scriptedExec{script: script}
@@ -94,11 +134,18 @@ func (s *scriptedExec) next(taskID string) (apiv1.ResultEnvelope, error) {
 }
 
 func (s *scriptedExec) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	s.waitForRelease(stageOfTaskID(env.TaskID))
 	return s.next(env.TaskID)
+}
+
+// stageOfTaskID reads the stage or gate name off a dispatch task ID.
+func stageOfTaskID(taskID string) string {
+	return taskID[strings.Index(taskID, ":")+1:]
 }
 
 func (s *scriptedExec) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	s.recordAddendum(env)
+	s.waitForRelease(stageOfTaskID(env.TaskID))
 	return s.next(env.TaskID)
 }
 

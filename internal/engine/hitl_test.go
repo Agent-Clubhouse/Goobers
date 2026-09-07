@@ -21,6 +21,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,13 +139,31 @@ type hitlOutcome struct {
 	accepted bool
 	ack      HITLAck
 	err      error
+	// settled is closed the moment the VALIDATOR has answered, either way.
+	// holdUntilValidated waits on it to keep a stage activity in flight until
+	// then; nothing else reads it.
+	settled chan struct{}
+}
+
+// settle closes the validation signal exactly once. Both validator outcomes
+// call it: a refusal is as much an answer as an acceptance, and the waiter
+// cares only that the validator has run.
+func (o *hitlOutcome) settle() {
+	if o.settled == nil {
+		return
+	}
+	select {
+	case <-o.settled:
+	default:
+		close(o.settled)
+	}
 }
 
 func (o *hitlOutcome) callbacks(t *testing.T) *testsuite.TestUpdateCallback {
 	t.Helper()
 	return &testsuite.TestUpdateCallback{
-		OnAccept: func() { o.accepted = true },
-		OnReject: func(err error) { o.rejected = err },
+		OnAccept: func() { o.accepted = true; o.settle() },
+		OnReject: func(err error) { o.rejected = err; o.settle() },
 		OnComplete: func(value interface{}, err error) {
 			o.err = err
 			if err != nil {
@@ -237,6 +256,44 @@ type hitlExecutionProbe struct {
 func deliverWhileExecuting(t *testing.T, env *testsuite.TestWorkflowEnvironment, activityType string, deliveries ...*hitlDelivery) *hitlExecutionProbe {
 	t.Helper()
 	return deliverWhileExecutingNth(t, env, activityType, 1, deliveries...)
+}
+
+// holdUntilValidated makes deliverWhileExecuting's guarantee STRUCTURAL rather
+// than a property of the SDK's callback ordering (#3953).
+//
+// deliverWhileExecuting delivers from the activity-started listener, which
+// queues the update ahead of that activity's own completion callback. That
+// ordering is what is supposed to keep the run mid-execution when the
+// validator runs — and the reported failure is the case where it did not: the
+// intent was ACCEPTED, which only a resumable phase permits, so by the time the
+// validator read the phase the run had left execution. The probe could not
+// notice, because it samples the phase at DELIVERY and the validator runs
+// later.
+//
+// Holding the stage's dispatch until the validator has answered removes the
+// question. The activity cannot finish, so the run cannot leave the executing
+// phase, so the phase the validator reads is the phase the test claims to be
+// testing — whatever the SDK does with callback ordering, on any machine, at
+// any load. The hold is released by either validator outcome (an acceptance
+// releases it exactly as a refusal does, so a REGRESSION still reports the
+// wrong answer rather than deadlocking) and is bounded regardless.
+//
+// stage must be the stage whose activity the listener fires on, so the hold
+// applies to the very dispatch the delivery is aimed at.
+func holdUntilValidated(exec *scriptedExec, stage string, deliveries ...*hitlDelivery) {
+	release := make(chan struct{})
+	remaining := int32(len(deliveries))
+	for _, d := range deliveries {
+		d.out.settled = make(chan struct{})
+		settled := d.out.settled
+		go func() {
+			<-settled
+			if atomic.AddInt32(&remaining, -1) == 0 {
+				close(release)
+			}
+		}()
+	}
+	exec.holdFor(stage, release)
 }
 
 // deliverWhileExecutingNth is deliverWhileExecuting against the nth (1-based)
@@ -817,6 +874,9 @@ func TestHITLIntentWhileExecutingIsRefusedExplicitly(t *testing.T) {
 	// Delivered while the FIRST stage's activity is still in flight, so the
 	// run demonstrably has not reached any terminal, let alone a resumable one.
 	early := newHITLDelivery("update-early", intent)
+	// The implement dispatch is held open until the validator has answered, so
+	// the run is provably still executing when it does (#3953).
+	holdUntilValidated(exec, "implement", early)
 	probe := deliverWhileExecuting(t, env, ActInvokeGoober, early)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
@@ -867,6 +927,7 @@ func TestHITLDuplicateMidExecutionDeliveriesAreEachRefused(t *testing.T) {
 	// the case server-side update dedup does not cover.
 	first := newHITLDelivery("update-hammer-1", intent)
 	second := newHITLDelivery("update-hammer-2", intent)
+	holdUntilValidated(exec, "implement", first, second)
 	probe := deliverWhileExecuting(t, env, ActInvokeGoober, first, second)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
@@ -915,6 +976,7 @@ func TestHITLRefusedMidExecutionIntentLeavesNoIdempotencyResidue(t *testing.T) {
 	intent.Decision = "pass"
 
 	early := newHITLDelivery("update-reissued-early", intent)
+	holdUntilValidated(exec, "implement", early)
 	probe := deliverWhileExecuting(t, env, ActInvokeGoober, early)
 	// The operator does what the refusal told them to: re-reads the run and
 	// reissues the same intent once it is holding its terminal open.
@@ -981,6 +1043,7 @@ func TestHITLIntentDuringTheFinalTransitionIsRefusedNotQueued(t *testing.T) {
 	lateDelivery := newHITLDelivery("update-late", late)
 	// InvokeGoober #1 is implement; #2 is ship, the stage the resolution
 	// resumed the run into and the last thing it does before @complete.
+	holdUntilValidated(exec, "ship", lateDelivery)
 	probe := deliverWhileExecutingNth(t, env, ActInvokeGoober, 2, lateDelivery)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
