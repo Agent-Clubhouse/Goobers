@@ -231,6 +231,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		seams = builtSeams
 		engineRuntime.deps.Goober = seams.Agentic()
 		engineRuntime.deps.Det = seams.Deterministic()
+		engineRuntime.deps.Auto = seams.Automated()
 		// The #2931 dispatch canary asserts envelopes against the SAME shared
 		// registry the seams' executors register every resolved credential
 		// with — so a value that leaks into a dispatch payload after being
