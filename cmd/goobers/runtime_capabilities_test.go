@@ -79,7 +79,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
-		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true,
+		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true, "claimVerify": true,
 		// claims/recover (#4016): a stage pod asking the daemon to run the
 		// stale-claim sweep it cannot run itself (the sweep reads run journals
 		// under the instance root and honours interventions and the recovery

@@ -85,6 +85,16 @@ func TestClaimVerificationHTTPAttributionAndFilePersistence(t *testing.T) {
 		t.Fatalf("entries: %+v %v", entries, err)
 	}
 	entry := entries[0]
+	if entry.Verification.State != "unverified" || !entry.Verification.ObservedAt.IsZero() {
+		t.Fatalf("new claim must report unverified without an observation: %+v", entry.Verification)
+	}
+	raw, err := localscheduler.OpenClaimLedger(file.cfg.LedgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored := raw.ForRunAll("owner"); len(stored) != 1 || stored[0].Verification.State != "" {
+		t.Fatalf("reporting rewrote legacy verification state: %+v", stored)
+	}
 	observation := localscheduler.ClaimVerification{State: "verified", ObservedAt: time.Now().UTC(), ProviderRunID: "owner"}
 	plane, client := newFakePlane(t, func(path string, body map[string]any) (int, any) {
 		if path != apicontract.ClaimVerifyPath || body["runId"] != "run-1" || body["ownerRunId"] != "owner" {
