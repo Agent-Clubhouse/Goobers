@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 const defaultExemptionsPath = "test/deadcode/exemptions.txt"
@@ -73,6 +74,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	goCommand := flags.String("go", "go", "Go command used to build the analyzer tool and run its per-platform analysis")
 	exemptionsPath := flags.String("exemptions", defaultExemptionsPath, "reviewed exemption list")
+	issueStatesPath := flags.String("issue-states", "test/deadcode/issue-states.json", "committed offline issue-state evidence")
+	policyDetails := flags.Bool("policy-details", false, "list grandfathered exemption-policy debt")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -94,6 +97,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if closeErr != nil {
 		_, _ = fmt.Fprintf(stderr, "deadcode: close exemptions: %v\n", closeErr)
+		return 1
+	}
+	if err := checkExemptionPolicy(exemptions, *issueStatesPath, time.Now().UTC(), *policyDetails, stdout); err != nil {
+		_, _ = fmt.Fprintf(stderr, "deadcode: exemption policy: %v\n", err)
 		return 1
 	}
 
