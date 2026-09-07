@@ -668,6 +668,16 @@ func TestGatherSiblingContextTerminalBusinessOutcomesAreNoWork(t *testing.T) {
 			}
 
 			result := readProviderStageResult(t, filepath.Join(workDir, "sibling-context.json"))
+			// The reason is journaled alongside the terminal outcome (#2968)
+			// so a no-work cycle stays explainable from a redacted bundle,
+			// which cannot carry the stdout line that used to be its only
+			// record. Its exact wording is the stage's business, so assert
+			// that one exists rather than pinning the sentence.
+			reason, _ := result["noWorkReason"].(string)
+			if strings.TrimSpace(reason) == "" {
+				t.Fatalf("sibling-context.json = %v, want a journaled noWorkReason", result)
+			}
+			delete(result, "noWorkReason")
 			want := map[string]interface{}{
 				"claimed":             false,
 				executor.OutputNoWork: true,

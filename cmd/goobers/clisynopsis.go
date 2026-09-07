@@ -19,6 +19,7 @@ var synopsisByID = map[string]string{
 	"onboarding":             "  goobers onboarding stub-agent-instructions [flags]\n                                run non-interactive onboarding actions\n",
 	"examples":               "  goobers examples list | show <name>\n                                browse canonical workflow examples embedded in the binary\n",
 	"scaffold":               "  goobers scaffold goober|workflow|gaggle [flags] <name> [path]\n                                scaffold a goober, workflow, or gaggle\n",
+	"diagnostics":            "  goobers diagnostics bundle [flags] [path]\n                                collect a portable, redacted support bundle (no source checkout required)\n",
 	"agent-kit":              "  goobers agent-kit install|check|update [flags] [path]\n                                install, inspect, or explicitly update the release-matched agent toolkit\n",
 	"portal-extension":       "  goobers portal-extension install|status|update [flags]\n                                install, inspect, or update the user-scoped Goobers Portal canvas extension bundled with this binary\n",
 	"validate":               "  goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n                                validate an instance or checked-in config source tree\n",

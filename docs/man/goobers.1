@@ -139,6 +139,12 @@ apply the recorded checked-in source to the runtime instance
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
 .TP
+\fBgoobers diagnostics\fR
+collect a portable, redacted support bundle
+.TP
+\fBgoobers diagnostics bundle\fR
+write a portable, redacted support bundle
+.TP
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 .TP
@@ -511,6 +517,8 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),
 \fBgoobers-dashboard\fR(1),
+\fBgoobers-diagnostics\fR(1),
+\fBgoobers-diagnostics-bundle\fR(1),
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
