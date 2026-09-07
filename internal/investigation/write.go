@@ -18,37 +18,11 @@ const maxManifestBytes = 256 << 10
 // reference against the runner-authored current-run context and actual bytes.
 // It does not execute a reproduction or attest the branch/revision predicates.
 func Write(ctx context.Context, evidence Evidence, pointers []apiv1.ContextPointer, reader artifactset.Reader, scrubber artifactset.Scrubber, record artifactset.Record) (apiv1.ArtifactPointer, error) {
-	if reader == nil || scrubber == nil || record == nil {
+	if record == nil {
 		return apiv1.ArtifactPointer{}, errors.New("investigation: missing evidence writer dependency")
 	}
-	data, err := json.Marshal(evidence)
+	clean, err := prepareEvidence(ctx, evidence, pointers, reader, scrubber)
 	if err != nil {
-		return apiv1.ArtifactPointer{}, errors.New("investigation: evidence is not JSON-encodable")
-	}
-	if len(data) > maxManifestBytes {
-		return apiv1.ArtifactPointer{}, errors.New("investigation: manifest byte limit")
-	}
-	clean, err := artifactset.NewSanitizer(scrubber)("application/json", data)
-	if err != nil {
-		return apiv1.ArtifactPointer{}, errors.New("investigation: unsafe evidence JSON")
-	}
-	if len(clean) > maxManifestBytes {
-		return apiv1.ArtifactPointer{}, errors.New("investigation: redacted manifest byte limit")
-	}
-	if err := validateEvidenceJSON(clean); err != nil {
-		return apiv1.ArtifactPointer{}, errors.New("investigation: evidence violates the versioned schema")
-	}
-	var canonical Evidence
-	if err := json.Unmarshal(clean, &canonical); err != nil {
-		return apiv1.ArtifactPointer{}, errors.New("investigation: redacted manifest is invalid")
-	}
-	if err := validateMetadata(canonical); err != nil {
-		return apiv1.ArtifactPointer{}, err
-	}
-	if err := verifyReferences(ctx, canonical, pointers, reader); err != nil {
-		return apiv1.ArtifactPointer{}, err
-	}
-	if err := ctx.Err(); err != nil {
 		return apiv1.ArtifactPointer{}, err
 	}
 	pointer, err := record("investigation-evidence.json", "application/json", clean)
@@ -62,6 +36,43 @@ func Write(ctx context.Context, evidence Evidence, pointers []apiv1.ContextPoint
 		return apiv1.ArtifactPointer{}, errors.New("investigation: recorder changed canonical manifest")
 	}
 	return pointer, nil
+}
+
+func prepareEvidence(ctx context.Context, evidence Evidence, pointers []apiv1.ContextPointer, reader artifactset.Reader, scrubber artifactset.Scrubber) ([]byte, error) {
+	if reader == nil || scrubber == nil {
+		return nil, errors.New("investigation: missing evidence preparation dependency")
+	}
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		return nil, errors.New("investigation: evidence is not JSON-encodable")
+	}
+	if len(data) > maxManifestBytes {
+		return nil, errors.New("investigation: manifest byte limit")
+	}
+	clean, err := artifactset.NewSanitizer(scrubber)("application/json", data)
+	if err != nil {
+		return nil, errors.New("investigation: unsafe evidence JSON")
+	}
+	if len(clean) > maxManifestBytes {
+		return nil, errors.New("investigation: redacted manifest byte limit")
+	}
+	if err := validateEvidenceJSON(clean); err != nil {
+		return nil, errors.New("investigation: evidence violates the versioned schema")
+	}
+	var canonical Evidence
+	if err := json.Unmarshal(clean, &canonical); err != nil {
+		return nil, errors.New("investigation: redacted manifest is invalid")
+	}
+	if err := validateMetadata(canonical); err != nil {
+		return nil, err
+	}
+	if err := verifyReferences(ctx, canonical, pointers, reader); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return clean, nil
 }
 
 func verifyReferences(ctx context.Context, evidence Evidence, pointers []apiv1.ContextPointer, reader artifactset.Reader) error {

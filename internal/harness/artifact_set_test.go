@@ -9,17 +9,27 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
+	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestExecutorManifestArtifactSet(t *testing.T) {
-	for _, scenario := range []string{"valid", "empty", "missing", "duplicate", "self-reported", "legacy", "invalid-type"} {
+	for _, scenario := range []string{"valid", "empty", "missing", "duplicate", "self-reported", "legacy", "invalid-type", "canonical-pointers", "invalid-draft"} {
 		t.Run(scenario, func(t *testing.T) {
 			rec := &fakeRecorder{}
 			scrubber := journal.NewRegistryScrubber()
 			scrubber.Register([]byte("test-secret-material"))
 			adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
 				entries := []artifactset.ManifestEntry{{Name: "z.report", Path: "payload", MediaType: "text/plain"}, {Name: "a.report", Path: "payload", MediaType: "text/plain"}}
+				payload := []byte("test-secret-material evidence")
+				if scenario == "canonical-pointers" || scenario == "invalid-draft" {
+					version := investigation.SchemaVersion
+					if scenario == "invalid-draft" {
+						version = investigation.DraftSchemaVersion
+					}
+					payload = []byte(`{"schemaVersion":"` + version + `"}`)
+					entries[0].MediaType = "application/json"
+				}
 				if scenario == "empty" {
 					entries = []artifactset.ManifestEntry{}
 				}
@@ -36,7 +46,7 @@ func TestExecutorManifestArtifactSet(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(req.Workspace, "manifest.json"), manifest, 0o600); err != nil {
 					return err
 				}
-				if err := os.WriteFile(filepath.Join(req.Workspace, "payload"), []byte("test-secret-material evidence"), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(req.Workspace, "payload"), payload, 0o600); err != nil {
 					return err
 				}
 				result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
