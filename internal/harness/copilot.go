@@ -139,6 +139,11 @@ var copilotLongContextModels = map[string]bool{
 type CopilotAdapter struct {
 	// Command is the base CLI invocation, e.g. []string{"copilot"}.
 	Command []string
+	// RequireLauncherContract rejects unverified launcher overrides before
+	// dispatch. The built-in direct Copilot command keeps its existing contract.
+	RequireLauncherContract bool
+	launcherMu              sync.Mutex
+	launcherContract        *launcherContract
 	// PromptFlag precedes the rendered prompt text in the built argv.
 	// Defaults to "-p" if empty.
 	PromptFlag string
@@ -277,6 +282,9 @@ func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiexten
 }
 
 func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	if _, err := c.launcherSessionContract(ctx); err != nil {
+		return ConfigResolution{}, err
+	}
 	effectiveOptions, fallback, err := copilotFallbackOption(options)
 	if err != nil {
 		return ConfigResolution{}, err
@@ -510,6 +518,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
+	if _, err := c.launcherSessionContract(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	bin := c.Command[0]
 	if _, err := exec.LookPath(bin); err != nil {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q not found on PATH — install the GitHub Copilot CLI "+
@@ -523,16 +534,22 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
 	// default-deny), so the version-check subprocess needs this passed
 	// explicitly the same way Run's credentialEnv does.
-	versionProbe := fmt.Sprintf("harness: copilot-cli: %q %v", bin, args)
+	versionCommand := append(append([]string(nil), resolveHarnessCommand(c.Command)...), args...)
+	versionProbe := fmt.Sprintf("harness: copilot-cli: %q", versionCommand)
+	versionStdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
 	res, err := c.runner().Run(ctx, ProcessRequest{
-		Command:            append([]string{bin}, args...),
+		Command:            versionCommand,
 		Env:                baseEnv(c.ExtraEnvAllowlist),
 		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+		StdoutCapture:      versionStdout,
 	})
 	if err != nil || res.ExitCode != 0 {
 		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
 	}
-	version := firstOutputLine(res.Transcript)
+	if versionStdout.Truncated() {
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: version stdout exceeded the diagnostic output bound")
+	}
+	version := firstOutputLine(versionStdout.Bytes())
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
@@ -833,18 +850,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	_ = os.Remove(usageOutputPath)
 	argv = append(argv, "--usage-output-file", usageOutputArg)
 	defer func() { _ = os.Remove(usageOutputPath) }()
-	if !copilotCommandSelectsSession(argv) {
-		captureID, err := newHarnessSessionID()
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
-		}
-		argv = append(argv, "--session-id", captureID)
-		// Pin the log to this run without replacing the home that also holds
-		// the user's Copilot configuration.
-		if copilotHome, ok := copilotConfigHome(env); ok {
-			nativeTranscriptPath = copilotSessionLogPath(copilotHome, captureID)
-		}
+	var cleanupSession func()
+	argv, env, nativeTranscriptPath, cleanupSession, err = c.prepareLauncherSession(ctx, req.Workspace, argv, env)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
+	defer cleanupSession()
 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole

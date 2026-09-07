@@ -249,10 +249,11 @@ var copilotModelLister harness.CopilotModelLister
 func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), ephemeralTmp bool) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	copilotAdapter := &harness.CopilotAdapter{
-		Command:         harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"}),
-		AuthCheckArgs:   copilotAuthCheckArgs,
-		ModelLister:     copilotModelLister,
-		EnvCapabilities: envCaps,
+		Command:                 harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"}),
+		RequireLauncherContract: requiresCopilotLauncherContract(harnessCommand),
+		AuthCheckArgs:           copilotAuthCheckArgs,
+		ModelLister:             copilotModelLister,
+		EnvCapabilities:         envCaps,
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
 		},
@@ -287,6 +288,11 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		return nil, fmt.Errorf("register Claude Code harness: %w", err)
 	}
 	return registry, nil
+}
+
+func requiresCopilotLauncherContract(commands map[string][]string) bool {
+	command, configured := commands[string(apiv1.HarnessCopilot)]
+	return configured && (len(command) != 1 || command[0] != "copilot")
 }
 
 // harnessCommandOrDefault returns the adopter's launcher override for the named
