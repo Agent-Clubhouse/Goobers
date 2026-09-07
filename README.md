@@ -133,6 +133,7 @@ the release-matched [Getting Started skill](skills/goobers-getting-started/SKILL
 | Understand the product model | [Concepts](docs/concepts/README.md) |
 | Learn with a credential-free workflow | [Quickstart tutorial](docs/guides/quickstart.md) |
 | Learn to author, test, and debug workflow YAML | [Workflow authoring tutorial](docs/guides/learn-workflow-authoring.md) |
+| Operate, harden, and extend Goobers | [Learn Goobers](docs/guides/learn-goobers.md) |
 | Configure a real repository | [Arbitrary repository onboarding](docs/guides/arbitrary-repo-onboarding.md) |
 | Install on a specific host | [Linux](docs/guides/quickstart-linux.md), [macOS](docs/guides/quickstart-macos.md), or [Windows](docs/guides/quickstart-windows.md) |
 | Operate an instance | [Daemon supervision](docs/guides/supervision.md) |
