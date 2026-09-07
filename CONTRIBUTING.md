@@ -114,8 +114,32 @@ same header block (#4518):
 | `Delivered-by:` | **Required for `implemented`.** Name the issues or PRs that delivered it. A partial delivery is recorded by listing what *did* land and keeping an honest status (`approved`), not by claiming `implemented`. |
 | `Superseded-by:` | **Required for `superseded`.** Names the document that replaced it — a repo-relative `docs/…` path, which may be a requirements spec, not only another design. |
 | `Supersedes:` | Required *reciprocally*: if A declares `Superseded-by: B` and B is a design/ADR page, B must declare `Supersedes: A`, and vice versa. A one-sided supersession leaves a reader with no forward pointer, which is how a newer Windows design came to be written against an obsolete shape. |
-| `Verified:` | Optional. The revision and date the document's claims were last checked against the tree. |
+| `Verified:` | Optional until a delivery-closing PR refreshes it. Use a 7–40 character hexadecimal commit revision and a valid calendar date: `09db115bb (2026-09-06)`. This records when claims were checked; it does not itself prove them true. |
 | `Area:` | Optional. |
+| `Owner:` | Optional accountable maintainer or team; displayed with `Area` in the index. |
+| `Tracking:` | Explicit issue references for the complete design work package, distinct from what has already landed. |
+| `Pending-delivery:` | Issue references for unfinished obligations within the design's scope. Requires `Scope-delta`; incompatible with `implemented`. Do not reuse an issue in both this field and `Delivered-by`. |
+| `Scope-delta:` | Explains the designed behavior that has not shipped, or an intentional scope change. Required when `Pending-delivery` is present. |
+
+For a partial delivery, use explicit metadata such as:
+
+```markdown
+> Status: approved
+> Owner: @maintainer
+> Tracking: #100
+> Delivered-by: #101
+> Pending-delivery: #102
+> Scope-delta: Local execution ships; remote recovery remains unimplemented.
+```
+
+The scheduled check resolves tracking, delivered, and pending references together.
+An issue's closed state is resolved from GitHub; a PR reference additionally
+requires that the PR merged, not merely that it was closed without delivery.
+Open pending work keeps the partial status honest even when all delivered work is
+closed. Closed pending references are stale and must move into the delivery ledger
+with an updated scope delta. An unresolved reference is an error, never evidence
+that the design finished. Historical prose headed `Remaining` is not this field:
+such notes sometimes describe optional extensions outside the completed design.
 
 Two further rules the same check enforces:
 
@@ -140,6 +164,29 @@ that does not exist. A scheduled, non-blocking check
 (`design-ledger-reconcile.yml`) reports both directions of drift: an
 `implemented` page whose delivery issues are still open, and a `draft`/`approved`
 page whose entire ledger has closed.
+
+The same scheduled workflow checks the actual dormant-workflow inventory against
+GitHub. It reports unresolvable or untracked blockers and dormant workflows whose
+referenced blocking issues are all closed. These are review findings, not permission
+to enable or retire a workflow automatically.
+
+The PR checks job obtains GitHub's `closingIssuesReferences` (not a heuristic
+scan of PR prose) and compares the proposed design metadata with the pinned base
+revision. For a closing issue associated through `Tracking`, `Pending-delivery`,
+or the legacy `Delivered-by` ledger, the PR must retain the design, add the issue
+to `Delivered-by`, remove it from `Pending-delivery`, provide a `Scope-delta`
+(including an explicit no-delta statement when appropriate), and refresh
+`Verified`. Removing a tracking reference cannot bypass the base-tree check.
+Use `Tracking` when assigning a new design work item so this association is
+explicit. PR edits trigger CI too, because editing closing references changes
+the delivery claim without changing the code revision.
+
+For local reproduction, pass `-delivery-context <file>` to
+`go run ./test/designstatus` (or set `GOOBERS_DESIGN_DELIVERY_CONTEXT` for
+`make ci`). The JSON object contains a full `baseRevision` commit SHA and an
+explicit `closingIssues` array of local `#123` references. The base commit must
+be available locally. Missing, malformed, or truncated CI context fails closed;
+an explicitly empty closing-issue array needs no delivery update.
 
 **Humans:** use `verify-fast` for the short edit/push loop, `ci` for the merge
 gate, and `verify-full` on a Unix-like host with the pinned envtest and native

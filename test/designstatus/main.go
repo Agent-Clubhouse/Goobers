@@ -24,6 +24,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -33,6 +34,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // headerLines bounds how far into a document the metadata block may start.
@@ -51,7 +53,7 @@ var (
 	// blockquote marker most headers use. The key set is closed below; an
 	// unrecognized key is ignored rather than rejected, so ordinary prose in
 	// the header block is not mistaken for metadata.
-	metadataLine = regexp.MustCompile(`^\s*(?:>\s*)?(?:\*\*)?([A-Za-z][A-Za-z-]*)(?:\*\*)?:\s*(.+?)\s*$`)
+	metadataLine = regexp.MustCompile(`^\s*(?:>\s*)?(?:\*\*)?([A-Za-z][A-Za-z-]*)(?:\*\*)?:\s*(.*?)\s*$`)
 	// issueRef matches a #1234 delivery reference.
 	issueRef = regexp.MustCompile(`#\d+`)
 	// docPath matches a repo-relative docs path inside a metadata value, with
@@ -101,6 +103,10 @@ type document struct {
 	SupersededBy []string
 	Verified     string
 	Area         string
+	Owner        string
+	Tracking     []string
+	Remaining    []string
+	ScopeDelta   string
 
 	// MachineLocalPaths are citations into a home directory, which no other
 	// reader can resolve; DisclaimsExternalEvidence records whether the
@@ -111,6 +117,7 @@ type document struct {
 
 func main() {
 	write := flag.Bool("write", false, "regenerate the design index instead of checking it")
+	deliveryContext := flag.String("delivery-context", os.Getenv("GOOBERS_DESIGN_DELIVERY_CONTEXT"), "JSON file naming the PR base revision and authoritative closing issue references")
 	flag.Parse()
 
 	docs, problems := loadDocuments(designRoot, adrRoot)
@@ -126,6 +133,9 @@ func main() {
 
 	problems = append(problems, validate(docs)...)
 	problems = append(problems, checkIndexIsCurrent(docs)...)
+	if *deliveryContext != "" {
+		problems = append(problems, checkDeliveryContext(*deliveryContext, docs)...)
+	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
 		_, _ = fmt.Fprintf(os.Stderr, "designstatus:\n%s\n", strings.Join(problems, "\n"))
@@ -168,17 +178,15 @@ func loadDocuments(roots ...string) ([]document, []string) {
 }
 
 func parseDocument(p string) (document, error) {
-	file, err := os.Open(p)
-	if err != nil {
-		return document{}, fmt.Errorf("%s: %w", p, err)
-	}
-	defer func() { _ = file.Close() }()
-
-	doc := document{Path: filepath.ToSlash(p)}
 	body, err := os.ReadFile(p)
 	if err != nil {
 		return document{}, fmt.Errorf("%s: %w", p, err)
 	}
+	return parseDocumentBytes(p, body)
+}
+
+func parseDocumentBytes(p string, body []byte) (document, error) {
+	doc := document{Path: filepath.ToSlash(p)}
 	for _, candidate := range machineLocalPath.FindAllString(string(body), -1) {
 		if isMachineLocalCitation(candidate) {
 			doc.MachineLocalPaths = append(doc.MachineLocalPaths, candidate)
@@ -189,7 +197,7 @@ func parseDocument(p string) (document, error) {
 	// the check.
 	doc.DisclaimsExternalEvidence = strings.Contains(normalizeProse(string(body)), externalEvidenceDisclaimer)
 
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for line := 1; line <= headerLines && scanner.Scan(); line++ {
 		text := scanner.Text()
@@ -207,18 +215,11 @@ func parseDocument(p string) (document, error) {
 		if match == nil {
 			continue
 		}
-		switch strings.ToLower(match[1]) {
-		case "delivered-by":
-			doc.DeliveredBy = issueRef.FindAllString(match[2], -1)
-		case "supersedes":
-			doc.Supersedes = docPath.FindAllString(match[2], -1)
-		case "superseded-by":
-			doc.SupersededBy = docPath.FindAllString(match[2], -1)
-		case "verified":
-			doc.Verified = match[2]
-		case "area":
-			doc.Area = match[2]
+		key := strings.ToLower(match[1])
+		if (key == "tracking" || key == "pending-delivery") && len(issueRef.FindAllString(match[2], -1)) == 0 {
+			return document{}, fmt.Errorf("%s: %s must name issue references", p, match[1])
 		}
+		setDocumentMetadata(&doc, key, match[2])
 	}
 	if err := scanner.Err(); err != nil {
 		return document{}, fmt.Errorf("%s: read: %w", p, err)
@@ -230,6 +231,29 @@ func parseDocument(p string) (document, error) {
 		doc.Title = strings.TrimSuffix(filepath.Base(doc.Path), ".md")
 	}
 	return doc, nil
+}
+
+func setDocumentMetadata(doc *document, key, value string) {
+	switch key {
+	case "delivered-by":
+		doc.DeliveredBy = issueRef.FindAllString(value, -1)
+	case "supersedes":
+		doc.Supersedes = docPath.FindAllString(value, -1)
+	case "superseded-by":
+		doc.SupersededBy = docPath.FindAllString(value, -1)
+	case "verified":
+		doc.Verified = value
+	case "area":
+		doc.Area = value
+	case "owner":
+		doc.Owner = value
+	case "tracking":
+		doc.Tracking = issueRef.FindAllString(value, -1)
+	case "pending-delivery":
+		doc.Remaining = issueRef.FindAllString(value, -1)
+	case "scope-delta":
+		doc.ScopeDelta = value
+	}
 }
 
 func validate(docs []document) []string {
@@ -265,6 +289,10 @@ func validate(docs []document) []string {
 		}
 
 		problems = append(problems, checkSupersession(doc, byPath)...)
+		problems = append(problems, checkPartialDelivery(*doc)...)
+		if err := validateVerified(doc.Verified); err != nil {
+			problems = append(problems, fmt.Sprintf("%s: %v", doc.Path, err))
+		}
 
 		if len(doc.MachineLocalPaths) > 0 && !doc.DisclaimsExternalEvidence {
 			problems = append(problems, fmt.Sprintf(
@@ -274,6 +302,38 @@ func validate(docs []document) []string {
 		}
 	}
 	return problems
+}
+
+func checkPartialDelivery(doc document) []string {
+	var problems []string
+	if len(doc.Remaining) > 0 && doc.ScopeDelta == "" {
+		problems = append(problems, fmt.Sprintf("%s: Pending-delivery requires Scope-delta explaining what has not shipped", doc.Path))
+	}
+	if len(doc.Remaining) > 0 && doc.Status == "implemented" {
+		problems = append(problems, fmt.Sprintf("%s: implemented cannot carry Pending-delivery work", doc.Path))
+	}
+	for _, ref := range doc.Remaining {
+		if contains(doc.DeliveredBy, ref) {
+			problems = append(problems, fmt.Sprintf("%s: %s cannot be both Delivered-by and Pending-delivery", doc.Path, ref))
+		}
+	}
+	return problems
+}
+
+var verifiedPattern = regexp.MustCompile(`^([0-9a-fA-F]{7,40}) \(([0-9]{4}-[0-9]{2}-[0-9]{2})\)$`)
+
+func validateVerified(value string) error {
+	if value == "" {
+		return nil
+	}
+	match := verifiedPattern.FindStringSubmatch(value)
+	if match == nil {
+		return fmt.Errorf("field Verified must name a commit revision and date: <sha> (YYYY-MM-DD)")
+	}
+	if _, err := time.Parse("2006-01-02", match[2]); err != nil {
+		return fmt.Errorf("field Verified has an invalid calendar date")
+	}
+	return nil
 }
 
 // isMachineLocalCitation reports whether a home-directory path is a citation of
@@ -441,16 +501,19 @@ func renderIndex(docs []document) string {
 
 	for _, group := range order {
 		fmt.Fprintf(&b, "## `%s/`\n\n", group)
-		b.WriteString("| Document | Status | Delivered by | Superseded by | Verified |\n")
-		b.WriteString("|---|---|---|---|---|\n")
+		b.WriteString("| Document | Status | Owner / area | Tracking | Delivered by | Remaining | Superseded by | Verified |\n")
+		b.WriteString("|---|---|---|---|---|---|---|---|\n")
 		for _, doc := range groups[group] {
 			link, err := filepath.Rel(path.Dir(indexPath), doc.Path)
 			if err != nil {
 				link = doc.Path
 			}
-			fmt.Fprintf(&b, "| [%s](%s) | `%s` | %s | %s | %s |\n",
+			fmt.Fprintf(&b, "| [%s](%s) | `%s` | %s | %s | %s | %s | %s | %s |\n",
 				escapeCell(doc.Title), filepath.ToSlash(link), doc.Status,
+				cellOrDash(escapeCell(strings.Trim(strings.Join([]string{doc.Owner, doc.Area}, " / "), " /"))),
+				cellOrDash(strings.Join(doc.Tracking, ", ")),
 				cellOrDash(strings.Join(doc.DeliveredBy, ", ")),
+				cellOrDash(strings.Join(doc.Remaining, ", ")),
 				cellOrDash(linkList(doc.SupersededBy)),
 				cellOrDash(escapeCell(doc.Verified)))
 		}
