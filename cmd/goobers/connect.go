@@ -263,8 +263,8 @@ func runConnect(args []string, stdout, stderr io.Writer) int {
 		// parseGitHubRepo and used to be written to disk as a provider:
 		// github entry pointing at an ADO organization (cold-start ado #7);
 		// the honest three-part identity got a bare "v1" refusal that named
-		// no way forward. Recognize the ADO forms and hand back the exact
-		// manual steps instead. The two-part guess is caught later, before
+		// no way forward. Recognize the ADO forms and connect all three
+		// identity coordinates. The two-part guess is caught later, before
 		// any write, by the reachability preflight.
 		if ado, ok := connectADOIdentity(fs.Arg(0)); ok {
 			root := "."
@@ -376,10 +376,10 @@ func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
 		var checkOutput strings.Builder
 		if !checkTargetRepositoriesAtFile(scoped, stores, &checkOutput, diagnosticFile(opts.root, configFile)) {
 			pf(stderr, "%s", checkOutput.String())
-			pf(stderr, "error: %s %s/%s is not reachable with the credential named by %s; nothing was written. "+
-				"Fix the token or repository access, or — if this is not a GitHub repository — configure %s by hand "+
+			pf(stderr, "error: %s %s is not reachable with the credential named by %s; nothing was written. "+
+				"Check the repository identity, credential and access permissions "+
 				"(docs/guides/ado-authentication.md for Azure DevOps), then re-run `goobers connect`\n",
-				connectUnreachableCode, opts.owner, opts.name, opts.tokenEnv, instance.ConfigFileName)
+				connectUnreachableCode, connectRepositoryName(opts), opts.tokenEnv)
 			return 1
 		}
 		if !opts.json {
@@ -1057,7 +1057,7 @@ func connectSeedRepository(opts connectOptions, selectors, applied []string, res
 }
 
 func printConnectResult(stdout io.Writer, opts connectOptions, result onboardingActionResult) {
-	pf(stdout, "connected %s/%s at %s\n", opts.owner, opts.name, result.Path)
+	pf(stdout, "connected %s at %s\n", connectRepositoryName(opts), result.Path)
 	for _, item := range result.Updated {
 		pf(stdout, "  updated  %s\n", item)
 	}

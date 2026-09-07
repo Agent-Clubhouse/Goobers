@@ -20,6 +20,13 @@ func connectTargetProject(opts connectOptions) apiv1.RepoRef {
 	return ref
 }
 
+func connectRepositoryName(opts connectOptions) string {
+	if opts.ado != nil {
+		return opts.ado.String()
+	}
+	return opts.owner + "/" + opts.name
+}
+
 func connectTargetMatches(repo instance.RepoRef, opts connectOptions) bool {
 	target := connectTargetProject(opts)
 	return repo.Provider == string(target.Provider) && repo.Owner == target.Owner && repo.Project == target.Project && repo.Name == target.Name
