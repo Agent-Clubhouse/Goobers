@@ -3,7 +3,6 @@ package investigation
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -45,34 +44,27 @@ func evidenceFixture() (Evidence, []apiv1.ContextPointer, fixtureReader) {
 	return evidence, pointers, reader
 }
 
-func TestWriteVerifiedRedactedEvidence(t *testing.T) {
+func TestPrepareVerifiedRedactedEvidence(t *testing.T) {
 	evidence, pointers, reader := evidenceFixture()
 	evidence.Environment.Dimensions["note"] = "private-test-credential"
 	evidence.Environment.Dimensions["escaped"] = "private<test>&credential"
 	scrubber := journal.NewRegistryScrubber()
 	scrubber.Register([]byte("private-test-credential"))
 	scrubber.Register([]byte("private<test>&credential"))
-	writes := 0
-	p, err := Write(context.Background(), evidence, pointers, reader, scrubber, func(name, media string, data []byte) (apiv1.ArtifactPointer, error) {
-		writes++
-		if strings.Contains(string(data), "private-test-credential") {
-			t.Fatal("secret published")
-		}
-		var got Evidence
-		if err := json.Unmarshal(data, &got); err != nil {
-			t.Fatal(err)
-		}
-		if got.Environment.Dimensions["note"] != journal.Redacted || got.Environment.Dimensions["escaped"] != journal.Redacted || len(got.Attachments) != 0 {
-			t.Fatalf("bad redaction or placeholder attachments: %+v", got)
-		}
-		return apiv1.ArtifactPointer{Path: "artifacts/" + name, Digest: apiv1.Digest(data), Size: int64(len(data)), MediaType: media}, nil
-	})
-	if err != nil || writes != 1 || p.Digest == "" {
-		t.Fatalf("write: %+v, %v, count=%d", p, err, writes)
+	data, err := prepareEvidence(context.Background(), evidence, pointers, reader, scrubber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Evidence
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Environment.Dimensions["note"] != journal.Redacted || got.Environment.Dimensions["escaped"] != journal.Redacted || len(got.Attachments) != 0 {
+		t.Fatalf("bad redaction or placeholder attachments: %+v", got)
 	}
 }
 
-func TestWriteRejectsInvalidEvidenceBeforePublication(t *testing.T) {
+func TestPrepareRejectsInvalidEvidenceBeforePublication(t *testing.T) {
 	for name, mutate := range map[string]func(*Evidence, []apiv1.ContextPointer, fixtureReader){
 		"double slash host path": func(e *Evidence, _ []apiv1.ContextPointer, _ fixtureReader) {
 			e.Environment.Dimensions["root"] = "//server/private"
@@ -108,13 +100,9 @@ func TestWriteRejectsInvalidEvidenceBeforePublication(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			evidence, pointers, reader := evidenceFixture()
 			mutate(&evidence, pointers, reader)
-			writes := 0
-			_, err := Write(context.Background(), evidence, pointers, reader, journal.NewRegistryScrubber(), func(string, string, []byte) (apiv1.ArtifactPointer, error) {
-				writes++
-				return apiv1.ArtifactPointer{}, errors.New("must not publish")
-			})
-			if err == nil || writes != 0 {
-				t.Fatalf("invalid evidence reached publication: %v, count=%d", err, writes)
+			data, err := prepareEvidence(context.Background(), evidence, pointers, reader, journal.NewRegistryScrubber())
+			if err == nil || data != nil {
+				t.Fatalf("invalid evidence prepared for publication: %v", err)
 			}
 		})
 	}

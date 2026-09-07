@@ -14,30 +14,8 @@ import (
 
 const maxManifestBytes = 256 << 10
 
-// Write publishes a redacted, schema-valid manifest only after verifying every
-// reference against the runner-authored current-run context and actual bytes.
-// It does not execute a reproduction or attest the branch/revision predicates.
-func Write(ctx context.Context, evidence Evidence, pointers []apiv1.ContextPointer, reader artifactset.Reader, scrubber artifactset.Scrubber, record artifactset.Record) (apiv1.ArtifactPointer, error) {
-	if record == nil {
-		return apiv1.ArtifactPointer{}, errors.New("investigation: missing evidence writer dependency")
-	}
-	clean, err := prepareEvidence(ctx, evidence, pointers, reader, scrubber)
-	if err != nil {
-		return apiv1.ArtifactPointer{}, err
-	}
-	pointer, err := record("investigation-evidence.json", "application/json", clean)
-	if err != nil {
-		return apiv1.ArtifactPointer{}, err
-	}
-	if err := pointer.Validate(); err != nil {
-		return apiv1.ArtifactPointer{}, err
-	}
-	if pointer.Digest != apiv1.Digest(clean) || pointer.Size != int64(len(clean)) || pointer.MediaType != "application/json" {
-		return apiv1.ArtifactPointer{}, errors.New("investigation: recorder changed canonical manifest")
-	}
-	return pointer, nil
-}
-
+// prepareEvidence verifies references and prepares bytes without publishing.
+// Publication belongs to the executor's whole-set artifact boundary.
 func prepareEvidence(ctx context.Context, evidence Evidence, pointers []apiv1.ContextPointer, reader artifactset.Reader, scrubber artifactset.Scrubber) ([]byte, error) {
 	if reader == nil || scrubber == nil {
 		return nil, errors.New("investigation: missing evidence preparation dependency")
