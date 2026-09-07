@@ -16,6 +16,10 @@ spec:
     - name: check-todos
       type: deterministic
       goal: Count tracked TODO markers and publish the full listing.
+      # Counting TODOs only reads the checkout; repo-readonly keeps the stage
+      # off the run branch. repo-readonly is a task-level field: run.workspace
+      # accepts only repo|scratch.
+      workspace: repo-readonly
       run:
         command: ["sh", "scripts/check-todos.sh"]
       inputs:

@@ -48,14 +48,26 @@ against the responsible issue, per issue #30's scope.
   access to a repo you're willing to have the instance open PRs against —
   **use a scratch/fork repo for the first execution, not this one**, until
   the loop has been proven once.
-- The [self-hosting dogfood config](#1-setup) this repo ships — `reference-workflows/` is on
-  `main`: as of `e739bd0`, **6 goobers, 4 workflows** (curator, implementer,
-  reviewer, nominator, analyst, config-author; backlog-curation, work-nomination,
-  implementation, and `tutor.yaml`'s weekly self-improvement loop), with the
-  trust gate, reviewer gate, 2/day cap, no-merge guardrail, and (new, #223/#225)
-  the Tutor loop's config-write-boundary all in place. `config-examples/`
-  remains available as a lighter single-workflow stand-in if you'd rather
-  exercise the mechanics without the full chain.
+- The [self-hosting dogfood config](#1-setup) this repo ships —
+  `reference-workflows/` is on `main` and today loads **11 goobers and 11
+  workflows**. That inventory is CI-guarded, not restated by hand: the counts
+  below and in
+  [`reference-workflows/README.md`](../reference-workflows/README.md) are
+  asserted against the loaded definitions by
+  `TestReferenceWorkflowsREADMEInventoryAndMergePosture`
+  (`internal/workflow/reference_workflows_test.go`), which is also the roster of
+  record for the individual goober and workflow names. The trust gate, reviewer
+  gate, 2/day implementation cap, and the Tutor loop's config-write-boundary
+  (#223/#225) are all in place. `config-examples/` remains available as a
+  lighter single-workflow stand-in if you'd rather exercise the mechanics
+  without the full chain.
+
+  > *Historical note:* the V0 acceptance pass recorded below ran at `e739bd0`
+  > against the then-current **6 goobers, 4 workflows** (curator, implementer,
+  > reviewer, nominator, analyst, config-author; backlog-curation,
+  > work-nomination, implementation, and `tutor.yaml`). The V0 result stands;
+  > the numbers in the procedure are kept current so the runbook can still be
+  > followed.
 
 ## Procedure
 
@@ -85,16 +97,22 @@ export GOOBERS_GITHUB_TOKEN=ghp_...
 # Validate before anything runs (fails closed on bad config/definitions).
 cd my-instance
 ../bin/goobers validate .
-# OK: instance.yaml valid; config/ valid (1 gaggle(s), 6 goober(s), 4 workflow(s))
+# OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 11 workflow(s))
 ```
 
 Verified locally against a scratch instance root (no network, no live repo
 touched) on `e739bd0`: the above sequence builds and validates clean on
-`main` as of this writing.
+`main` as of this writing. The expected `validate` line is the same one the
+inventory guard asserts, so it cannot drift from the shipped definitions.
 
-Before running anything against the target repo, bootstrap its label
-taxonomy once (idempotent, `reference-workflows/README.md` §Setup) — the trust gate
-(`SEC-047`) depends on `goobers:approved` existing:
+Before running anything against the target repo, bootstrap its label taxonomy
+once (idempotent). The canonical copy of this block is
+[`reference-workflows/README.md`](../reference-workflows/README.md) §"Apply the
+self-hosting configuration", step 4 — the trust gate (`SEC-047`) depends on
+`goobers:approved` existing, and the bare `goobers` label is the gaggle's
+backlog scope (`gaggle.yaml` sets `backlog.labels: [goobers]`, a hard
+AND-filter), so an issue without it is invisible to every backlog-consuming
+workflow:
 
 ```sh
 for l in \
@@ -103,10 +121,15 @@ for l in \
   "goobers:claimed:FBCA04:Currently claimed by an in-flight run" \
   "goobers:nominated:5319E7:Filed by the nominator — awaiting maintainer approval" \
   "goobers:needs-human:D93F0B:Needs a decision only a human can make" \
+  "goobers:auto-close:0E8A16:Close a tracking issue after all children close" \
 ; do
   IFS=: read -r ns name color desc <<<"$l"
-  gh label create "$ns:$name" --color "$color" --description "$desc" --force
+  gh label create "$ns:$name" --color "$color" --description "$desc" \
+    --repo <owner>/<repo> --force
 done
+gh label create goobers --color 006B75 \
+  --description "Scopes which issues count as a gaggle's backlog (gaggle.yaml backlog.labels)" \
+  --repo <owner>/<repo> --force
 ```
 
 ### 2. Run
@@ -171,10 +194,14 @@ The run journal is also directly inspectable per `docs/ARCHITECTURE.md` §4 —
 it's designed to be (`cat`/`jq`/`grep` are legitimate debug tools at tier 1),
 independent of `status`/`trace`:
 
+Run journals are **gaggle-scoped** (`Layout.RunsDir`,
+`internal/instance/runtime.go`); the flat `runs/<run-id>/` layout is legacy and
+is only still read for pre-GAG-011 journals:
+
 ```sh
-cat runs/<run-id>/run.yaml
-cat runs/<run-id>/events.jsonl | jq .
-ls runs/<run-id>/artifacts/
+cat gaggles/<gaggle>/runs/<run-id>/run.yaml
+cat gaggles/<gaggle>/runs/<run-id>/events.jsonl | jq .
+ls gaggles/<gaggle>/runs/<run-id>/artifacts/
 ```
 
 ### 4. Verify

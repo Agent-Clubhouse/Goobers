@@ -59,8 +59,11 @@
 
     <!--
       launchd stops a job by sending SIGTERM (then SIGKILL after ExitTimeOut).
-      The stable host requests the daemon drain on SIGTERM (drainGrace 30s + HTTP grace
-      5s in cmd/goobers/up.go); allow a margin beyond that before the hard kill.
+      The stable host requests the daemon drain on SIGTERM. That drain is
+      UNBOUNDED by default (cmd/goobers/up.go: --drain-timeout defaults to 0 =
+      wait indefinitely), so this finite ExitTimeOut can hard-kill an in-flight
+      run. Set it to 0 to wait indefinitely, or pair it with a slightly shorter
+      `goobers up --drain-timeout`. See docs/guides/supervision.md.
     -->
     <key>ExitTimeOut</key>
     <integer>45</integer>

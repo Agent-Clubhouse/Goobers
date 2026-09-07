@@ -59,6 +59,14 @@ source may materialize it, directly from `workflowSource.token`. Use the
 [Workflow CD credential-isolation pen test](workflow-cd-isolation-pen-test.md)
 to verify the two-token boundary against disposable repositories.
 
+The capability names below are the canonical registry in
+`internal/capability` — the same list the workflow compiler admits from. A name
+that is not in that registry is a validation error at config load, not a
+best-effort match, so the table is CI-guarded against the registry by
+`TestGitHubTokenScopesGuideMatchesCapabilityRegistry`
+(`internal/capability/guidedocs_test.go`). Azure DevOps capabilities (`ado:*`) are out of scope
+for this page; see [`ado-authentication.md`](ado-authentication.md).
+
 | Capability | Recommended fine-grained PAT permissions | Notes |
 |---|---|---|
 | `github:issues:read` | Issues: Read-only | Backlog polling, triage stages. |
@@ -70,7 +78,12 @@ to verify the two-token boundary against disposable repositories.
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `provider:ci:cancel` | Actions: Read and write | Cancel a bounded set of pending GitHub Actions runs only after re-checking the open PR and its exact reviewed head SHA. Providers without a safe cancellation API report unsupported without changing the published verdict. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
-| `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
+| `repo:read` | Contents: Read-only | A read-only worktree of the stage's **own** target repo, with no push. This is the capability the work-nomination lane uses; there is no `repo:clone`. |
+| `contents:read` | Contents: Read-only | Clone/fetch of a **separate** reference repository declared as a gaggle `additionalRepos` entry (MGV-10). Routed per repo as a repo-qualified grant key (`contents:read@owner/name`), so each reference repo carries its own scoped token; used only at provision time and never handed a push path. |
+| `github:branch:delete` | Contents: Read and write | Delete a remote branch ref after its PR merges (and no open PR uses it as a base), or when a terminal run's pushed branch never became a PR. |
+| `github:pr:merge` | Pull requests: Read and write, Contents: Read and write | Merge or merge-queue a pull request. Grant it **only** to `merge-review`'s landing stage — the decider/executor split is the point (`docs/design/v0/pr-lifecycle-loop.md` §7). Never add it to `implementation` or `pr-remediation`. |
+| `telemetry:read` | *(no GitHub permission)* | Read the local telemetry rollup and named host-governed external connectors. Backed by connector configuration, not a GitHub PAT. |
+| `journal:read` | *(no GitHub permission)* | Read-only, digest-verified access to **another** run's journal. Local filesystem authority, not a GitHub PAT. |
 | `configrepo:read` | Contents: Read-only | Runner-only access to the workflow-config repo. Configure only through `workflowSource.token`; stages cannot declare or source it through `credentials`. |
 | `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use; on claude-code, stored `claude` CLI sign-in (or a real `sk-ant-...` Anthropic API key for headless use) | Agent harness model authentication for agentic stages. An existing per-user CLI sign-in is the local default on either harness; a configured token is injected as `COPILOT_GITHUB_TOKEN` (copilot) or `ANTHROPIC_API_KEY` (claude-code) for services/CI. Only **one** `agent:model` grant exists per instance — see [Mixed-harness instances](#mixed-harness-instances-copilot--claude-code-sharing-agentmodel) below before configuring both harnesses. |
 

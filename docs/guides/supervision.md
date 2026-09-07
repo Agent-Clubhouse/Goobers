@@ -33,8 +33,11 @@ troubleshooting.
 
 **One shutdown contract, three triggers.** The daemon has a single
 graceful-shutdown path: cancel the root context, stop admitting work, drain
-in-flight runs (up to `drainGrace` = 30s + a 5s HTTP grace, see
-`cmd/goobers/up.go`), then exit. Each supervisor drives that same path:
+in-flight runs, then exit. **The drain is unbounded by default** — `goobers up`
+waits indefinitely for admitted runs to finish, because an admitted run holds a
+live agentic session and a worktree. `--drain-timeout <duration>` opts into a
+deadline (`cmd/goobers/up.go`; `goobers status` reports `drain-timeout=unbounded`
+when unset). Each supervisor drives that same path:
 
 | Platform | Stop trigger | Reaches the graceful path via |
 |---|---|---|
@@ -91,9 +94,16 @@ journalctl --user -u goobers -f       # logs (follow)
 **Upgrade:** use `self-update`; reinstall the service only to replace its stable
 host.
 
-`TimeoutStopSec=45` in the template gives the drain window headroom before
-systemd escalates to `SIGKILL`. For a **system-wide** install instead, drop the
-unit in `/etc/systemd/system/`, add `User=`/`Group=`, and use `systemctl` without
+`TimeoutStopSec=infinity` in the template lets the unbounded drain finish
+instead of letting systemd escalate to `SIGKILL` mid-run. **Do not copy a finite
+value into it unless you also set `goobers up --drain-timeout`** — a shorter
+systemd deadline kills in-flight worker processes and loses the run. If you do
+bound the drain, make `TimeoutStopSec` slightly longer than `--drain-timeout`. A
+second `SIGTERM` still force-exits immediately (`internal/signals`), so an
+operator always has an escape hatch.
+
+For a **system-wide** install instead, drop the unit in
+`/etc/systemd/system/`, add `User=`/`Group=`, and use `systemctl` without
 `--user` (you own credential delivery to that user).
 
 ---
@@ -128,9 +138,17 @@ tail -f "$LOG_DIR"/goobers.err.log                                # logs
 **Upgrade:** use `self-update`; reinstall the LaunchAgent only to replace its
 stable host.
 
-`ExitTimeOut=45` allows the drain window before launchd sends `SIGKILL`;
+`ExitTimeOut=45` bounds the drain before launchd sends `SIGKILL`;
 `KeepAlive.SuccessfulExit=false` restarts on crashes without fighting an operator
 stop.
+
+> **Known asymmetry (macOS).** The systemd unit waits indefinitely
+> (`TimeoutStopSec=infinity`), but the packaged LaunchAgent still bounds the
+> drain at 45 seconds. On macOS, a `launchctl bootout`/`stop` while an agentic
+> stage is running can therefore reach `SIGKILL` before the run drains. Until
+> the plist is reconciled, either stop the daemon when no run is in flight
+> (`goobers status`), or raise `ExitTimeOut` in your own copy of the plist
+> (`0` means wait indefinitely) so it matches the daemon's default.
 
 ---
 
