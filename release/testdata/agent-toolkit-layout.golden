@@ -15,6 +15,8 @@ payload/.goobers/agent-toolkit/api/schemas/goober.schema.json
 payload/.goobers/agent-toolkit/api/schemas/hosted-progress.schema.json
 payload/.goobers/agent-toolkit/api/schemas/instance-repository-execution.schema.json
 payload/.goobers/agent-toolkit/api/schemas/instance.schema.json
+payload/.goobers/agent-toolkit/api/schemas/investigation-evidence-draft.schema.json
+payload/.goobers/agent-toolkit/api/schemas/investigation-evidence.schema.json
 payload/.goobers/agent-toolkit/api/schemas/invocation.schema.json
 payload/.goobers/agent-toolkit/api/schemas/journal-event.schema.json
 payload/.goobers/agent-toolkit/api/schemas/journal-run.schema.json
@@ -29,6 +31,8 @@ payload/.goobers/agent-toolkit/api/schemas/remediation-brief-v3.schema.json
 payload/.goobers/agent-toolkit/api/schemas/result.schema.json
 payload/.goobers/agent-toolkit/api/schemas/schema-output.schema.json
 payload/.goobers/agent-toolkit/api/schemas/security-alerts-v1.schema.json
+payload/.goobers/agent-toolkit/api/schemas/stage-artifact-manifest.schema.json
+payload/.goobers/agent-toolkit/api/schemas/stage-artifact-set.schema.json
 payload/.goobers/agent-toolkit/api/schemas/verdict.schema.json
 payload/.goobers/agent-toolkit/api/schemas/workflow.schema.json
 payload/.goobers/agent-toolkit/config-examples/README.md

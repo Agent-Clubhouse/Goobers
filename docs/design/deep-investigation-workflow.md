@@ -1,6 +1,10 @@
 # Design: Deep-investigation workflow
 
-> **Status:** approved — accepted design (2026-07-25); runtime implementation is deferred.
+> **Status:** approved — evidence transport is implemented; workflow execution and routing remain pending.
+> Delivered-by: #1484
+> Pending-delivery: #1482, #1483
+> Scope-delta: Sections 3.1–3.2 and the section 6 evidence schema, safe emission, and journal retention are delivered. The five-stage workflow, workflow-specific predicates, sealed execution and revision attestation remain #1482; triage routing remains #1483. Shared blob-store garbage collection is not provided by this journal-retention implementation.
+> Verified: a4696d7c5 (2026-09-07)
 > **Related:** #816 (this design), #1482 (workflow and goobers), #1483 (triage
 > label and routing), #1484 (evidence schema and durable emission),
 > [`ARCHITECTURE.md` sections 4-5](../ARCHITECTURE.md), and
