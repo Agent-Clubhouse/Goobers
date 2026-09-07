@@ -60,7 +60,10 @@ func startProjector(
 	// the change row, rather than through a second mechanism with its own
 	// latency and failure modes — which is precisely what the filesystem poller
 	// was.
-	feed := readmodel.NewFeed(store)
+	// The store owns exactly one feed (#2458): the SSE stream asks it for the
+	// same instance, so a projector commit wakes the subscribers that are
+	// actually waiting.
+	feed := store.Feed()
 	p := projector.New(store, watermarks, projector.Options{RunsDirs: runsDirs, Feed: feed})
 	stop := p.Start(ctx)
 

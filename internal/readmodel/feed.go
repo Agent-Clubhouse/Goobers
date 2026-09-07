@@ -56,6 +56,11 @@ type Feed struct {
 }
 
 // NewFeed constructs a feed over a store.
+//
+// Prefer Store.Feed: a store must have exactly ONE feed, or a writer notifies
+// one instance while a subscriber waits on another and the wakeup is simply
+// lost (#2458). This constructor remains for tests that want an isolated feed
+// over a store they own, and for the store's own lazily-built singleton.
 func NewFeed(store *Store) *Feed {
 	return &Feed{store: store, readChanges: store.Changes}
 }
