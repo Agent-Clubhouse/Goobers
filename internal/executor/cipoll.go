@@ -383,6 +383,11 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			continue
 		}
 		consecutiveErrors = 0
+		// The pull request's own lifecycle is asked FIRST, because a closed PR
+		// can go on reporting pending checks forever (#2786).
+		if outcome, stop := ciPollLifecycleOutcome(result, cfg.PullID); stop {
+			return outcome, nil
+		}
 		switch result.CheckState {
 		case providers.CheckStatePassing:
 			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing", cfg.PullID), nil
@@ -684,6 +689,62 @@ func ciPollDeadlineExceeded(parentCtx, pollCtx context.Context) bool {
 // ciPollTimeoutOutcome builds the ResultEnvelope for a poll that exhausted
 // its Timeout while still pending. It preserves the PR number so a workflow
 // can checkpoint and re-enter ci-poll without losing the pull request context.
+// CIStatusClosed and CIStatusMerged are the OutputCIStatus values for a poll
+// that stopped on the pull request's lifecycle rather than on its checks
+// (#2786) — deliberately distinct from passing/failing/timeout so a ci-status
+// gate can route them without inheriting either branch's behaviour.
+const (
+	CIStatusClosed = "closed"
+	CIStatusMerged = "merged"
+)
+
+// ciPollLifecycleOutcome stops the poll when the pull request itself is no
+// longer pollable, and reports how.
+//
+// ci-poll only ever asked about check state, and an abandoned pull request's
+// policy evaluations can stay queued indefinitely — so the stage stayed
+// healthy, emitted heartbeats and slept until its overall timeout while
+// holding its workspace, claim and a runner. Live on ADO, run
+// d2bde587afd546016d7cec69d37d3d68 polled PR 2331139 for over 21 minutes after
+// it was abandoned by hand, and was only stopped by cancelling the run.
+//
+// Closed-without-merge is deliberately NOT reported as ciStatus=failing. The
+// failing branch repasses to implementation, which would open another pull
+// request to replace the one an operator had just chosen to abandon. It is a
+// non-retryable failure with its own code instead: nothing about this run can
+// make the pull request open again.
+//
+// Merged-while-polling stops too, and succeeds: the checks it was waiting on
+// have been overtaken by the merge, and there is nothing left to wait for.
+// Continuing to poll a merged PR only spends time on stale checks.
+func ciPollLifecycleOutcome(result providers.PullRequestPollResult, pullID string) (apiv1.ResultEnvelope, bool) {
+	// Both spellings of merged are accepted. The ADO provider reports a
+	// completed pull request as Merged true AND State "merged"
+	// (adoPullRequestState), while GitHub reports State "closed" with Merged
+	// true; reading either alone would leave one provider polling a landed
+	// pull request.
+	if result.Merged || strings.EqualFold(result.State, "merged") {
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultSuccess,
+			Outputs: map[string]interface{}{OutputCIStatus: CIStatusMerged, OutputPRNumber: pullID},
+			Summary: fmt.Sprintf("ci-poll stopped because pull request %s was merged", pullID),
+		}, true
+	}
+	if !strings.EqualFold(result.State, "closed") {
+		return apiv1.ResultEnvelope{}, false
+	}
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultFailure,
+		Outputs: map[string]interface{}{OutputCIStatus: CIStatusClosed, OutputPRNumber: pullID},
+		Error: &apiv1.ErrorInfo{
+			Code:      "pull_request_closed",
+			Message:   fmt.Sprintf("ci-poll stopped because pull request %s was closed without merging", pullID),
+			Retryable: false,
+		},
+		Summary: fmt.Sprintf("ci-poll stopped because pull request %s was closed without merging", pullID),
+	}, true
+}
+
 func ciPollTimeoutOutcome(timeout time.Duration, pullID string) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{
 		Status:  apiv1.ResultFailure,
