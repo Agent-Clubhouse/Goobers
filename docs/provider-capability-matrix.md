@@ -22,6 +22,7 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `repo.branch` | yes | conformant | conformant | conformant |
 | `repo.commit` | yes | conformant | conformant | conformant |
 | `repo.push` | yes | conformant | conformant | conformant |
+| `repo.push.preflight` |  | conformant | not declared | not declared |
 | `pr.open` | yes | conformant | conformant | conformant |
 | `pr.list` | yes | conformant | conformant | conformant |
 | `pr.poll` | yes | conformant | conformant | conformant |
@@ -43,6 +44,7 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `branch.delete` | yes | conformant | conformant | conformant |
 | `repo.policy.read` |  | conformant | not declared | not declared |
 | `pr.status.publish` |  | not declared | conformant | conformant |
+| `ci.cancel` |  | conformant | not declared | not declared |
 | `backlog.list` | yes | conformant | conformant | conformant |
 | `backlog.get` | yes | conformant | conformant | conformant |
 | `backlog.comments` | yes | conformant | conformant | conformant |

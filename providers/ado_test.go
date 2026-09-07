@@ -654,6 +654,14 @@ func TestADOProviderListPullRequests(t *testing.T) {
 		if got := r.URL.Query().Get("searchCriteria.includeLinks"); got != "true" {
 			t.Fatalf("searchCriteria.includeLinks = %q", got)
 		}
+		// #2061/#2179: ADO omits PR labels from the list response unless
+		// asked. ado-provider-parity.md claims this quirk is "pinned by
+		// conformance coverage"; it had no assertion anywhere, so deleting
+		// the parameter would silently blind the label-based remediation
+		// selector while CI stayed green.
+		if got := r.URL.Query().Get("includeLabels"); got != "true" {
+			t.Fatalf("includeLabels = %q, want \"true\" — without it ADO omits PR labels and every label-driven selector sees nothing", got)
+		}
 		if got := r.URL.Query().Get("searchCriteria.targetRefName"); got != "refs/heads/main" {
 			t.Fatalf("searchCriteria.targetRefName = %q", got)
 		}
