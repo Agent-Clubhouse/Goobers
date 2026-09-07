@@ -200,18 +200,25 @@ func runPRSelectCore(
 		pf(stderr, "error: read advisory suppression state: %v\n", err)
 		return 1
 	}
+	exclusions := newPRSelectExclusions()
 	for _, pr := range prs {
 		if pr.State != "open" || pr.Base != base ||
 			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
 			continue
 		}
+		// Past this point the PR is one this workflow is responsible for, so
+		// every exit below is an exclusion worth counting (#2969).
+		exclusions.matching++
 		if pr.Draft {
+			exclusions.record(exclusionDraft)
 			continue
 		}
 		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
+			exclusions.record(exclusionChecks)
 			continue
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
+			exclusions.record(exclusionLabel)
 			continue
 		}
 
@@ -220,14 +227,16 @@ func runPRSelectCore(
 			advisoryAlreadyDispatched(advisedHeads, pr) {
 			pf(stdout, "skipped PR #%d: advisory verdict already published for head %s\n",
 				pr.Number, shortBaselineSHA(pr.HeadSHA))
+			exclusions.record(exclusionAdvisoryPublished)
 			continue
 		}
 		if !eligibleByMergeReviewPolicy(pr, requiredOptInLabel, respectAssignee, selfIdentity) {
 			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
 				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
+			exclusions.record(exclusionPolicy)
 			continue
 		}
-		blocked, blockReason, gateCode := prSelectSafetyGatesBlock(
+		blocked, blockCode, blockReason, gateCode := prSelectSafetyGatesBlock(
 			ctx, gateProvider, repo, pr, gateState.siblingBlocked[pr.Number],
 			gateState.siblingHoldReason[pr.Number], stdout, stderr,
 		)
@@ -236,9 +245,13 @@ func runPRSelectCore(
 		}
 		if blocked {
 			pf(stdout, "excluded PR #%d: %s\n", pr.Number, blockReason)
+			exclusions.record(blockCode)
 			continue
 		}
 		eligible = append(eligible, pr)
+	}
+	if len(eligible) == 0 {
+		pf(stdout, "%s\n", exclusions.summary())
 	}
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
@@ -490,6 +503,80 @@ func (s branchPolicyPRSelectSource) pullRequests(ctx context.Context, repo provi
 
 func (branchPolicyPRSelectSource) expectedAuthorLogin(context.Context, string) string { return "" }
 
+// Normalized exclusion reasons (#2969). These are the vocabulary the no-work
+// summary counts by, deliberately stable and few: an operator reading "7
+// escalated" must be able to act on it without reading pr-select's source.
+const (
+	exclusionDraft             = "draft"
+	exclusionChecks            = "checks not passing"
+	exclusionLabel             = "excluded by label"
+	exclusionAdvisoryPublished = "advisory verdict already published"
+	exclusionPolicy            = "merge-review eligibility policy"
+	exclusionScopeGate         = "scope gate"
+	exclusionEscalated         = "escalated, human action required"
+	exclusionDemoted           = "merge-demoted"
+	exclusionSiblingBlocked    = "blocked on a sibling"
+	exclusionTutorSignoff      = "awaiting human signoff"
+)
+
+// prSelectExclusions tallies why the pull requests this workflow is
+// responsible for did not become eligible (#2969).
+//
+// A healthy-looking daemon could complete merge-review with pr-select no-work
+// on every tick while its entire open queue was excluded by lifecycle state,
+// and nothing said so. Live on EFunHouse 2026-08-15, seven open implementation
+// PRs (#533-#539) were non-draft, mergeable CLEAN and green, every one of them
+// carrying goobers:merge-escalated; run de97c14bcaadb32fafb864d100eae0d7
+// completed successfully with no-work, and status reported a 100% merge-review
+// success rate. The scheduler was healthy and the queue was operationally
+// dead, and the two states were indistinguishable from the outside.
+//
+// Counting is deliberately over the PRs this workflow OWNS — matching head
+// prefix, base and author scope — because that is what makes "nothing to do"
+// separable from "everything is parked".
+type prSelectExclusions struct {
+	matching int
+	counts   map[string]int
+	order    []string
+}
+
+func newPRSelectExclusions() *prSelectExclusions {
+	return &prSelectExclusions{counts: make(map[string]int)}
+}
+
+func (e *prSelectExclusions) record(reason string) {
+	if reason == "" {
+		reason = "excluded"
+	}
+	if _, seen := e.counts[reason]; !seen {
+		e.order = append(e.order, reason)
+	}
+	e.counts[reason]++
+}
+
+// summary renders the one line a no-work cycle prints. It distinguishes the
+// three states an operator needs to tell apart: no pull requests at all, pull
+// requests that are all excluded, and pull requests that are eligible but lost
+// to something later in selection.
+func (e *prSelectExclusions) summary() string {
+	if e.matching == 0 {
+		return "queue empty: no open pull request matches this workflow"
+	}
+	excluded := 0
+	for _, reason := range e.order {
+		excluded += e.counts[reason]
+	}
+	if excluded == 0 {
+		return fmt.Sprintf("queue not empty: %d matching pull request(s), none excluded here", e.matching)
+	}
+	parts := make([]string, 0, len(e.order))
+	for _, reason := range e.order {
+		parts = append(parts, fmt.Sprintf("%s %d", reason, e.counts[reason]))
+	}
+	return fmt.Sprintf("queue parked: %d of %d matching pull request(s) excluded — %s",
+		excluded, e.matching, strings.Join(parts, ", "))
+}
+
 type prSelectSafetyGateState struct {
 	siblingBlocked    map[int]bool
 	blockedDependents map[int]int
@@ -596,17 +683,17 @@ func prSelectSafetyGatesBlock(
 	siblingBlocked bool,
 	siblingHoldReason string,
 	stdout, stderr io.Writer,
-) (bool, string, int) {
+) (bool, string, string, int) {
 	if provider == nil {
-		return false, "", 0
+		return false, "", "", 0
 	}
 
 	parked, err := scopeGateVerdictStillParks(ctx, provider, repo, pr)
 	if err != nil {
-		return false, "", failProviderStage(stderr, fmt.Sprintf("check scope-gate verdict for PR #%d", pr.Number), err, "selected-pr.json")
+		return false, "", "", failProviderStage(stderr, fmt.Sprintf("check scope-gate verdict for PR #%d", pr.Number), err, "selected-pr.json")
 	}
 	if parked {
-		return true, "scope-gate verdict still parks this PR", 0
+		return true, exclusionScopeGate, "scope-gate verdict still parks this PR", 0
 	}
 	if isTutorBranch(pr.Head, providerBranchNamespace()) {
 		classification, err := classifyRemoteTutorChanges(
@@ -614,19 +701,19 @@ func prSelectSafetyGatesBlock(
 		)
 		if err != nil {
 			pf(stderr, "warning: could not classify Tutor PR #%d (%v) — requiring manual review\n", pr.Number, err)
-			return true, "Tutor PR could not be classified — manual review required", 0
+			return true, exclusionTutorSignoff, "Tutor PR could not be classified — manual review required", 0
 		}
 		if classification.RequiresHumanSignoff() {
 			pf(stdout, "manual review required for Tutor PR #%d: %s\n", pr.Number, classification.String())
-			return true, "Tutor PR requires human signoff: " + classification.String(), 0
+			return true, exclusionTutorSignoff, "Tutor PR requires human signoff: " + classification.String(), 0
 		}
 	}
 	blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
 	if err != nil {
-		return false, "", failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "selected-pr.json")
+		return false, "", "", failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "selected-pr.json")
 	}
 	if blocked {
-		return true, "an unresolved escalation still blocks this PR", 0
+		return true, exclusionEscalated, "an unresolved escalation still blocks this PR", 0
 	}
 	// #950: a demoted PR (repeatedly could not merge at an unchanged head)
 	// is excluded from selection so the election stops re-crowning the stuck
@@ -638,15 +725,15 @@ func prSelectSafetyGatesBlock(
 		demoted = false
 	}
 	if demoted {
-		return true, "merge-demoted: repeatedly could not merge at an unchanged head", 0
+		return true, exclusionDemoted, "merge-demoted: repeatedly could not merge at an unchanged head", 0
 	}
 	if siblingBlocked {
 		if siblingHoldReason == "" {
 			siblingHoldReason = "blocked on a sibling"
 		}
-		return true, siblingHoldReason, 0
+		return true, exclusionSiblingBlocked, siblingHoldReason, 0
 	}
-	return false, "", 0
+	return false, "", "", 0
 }
 
 func restrictSelectionToTargetedPullRequest(candidates []providers.PullRequestSummary, triggerRef string) []providers.PullRequestSummary {
