@@ -466,6 +466,33 @@ func (p *ADOProvider) CreateWorkItemComment(ctx context.Context, repo Repository
 	return mapADOComment(comment), nil
 }
 
+// UpdateWorkItemComment edits an Azure Boards work-item comment in place.
+func (p *ADOProvider) UpdateWorkItemComment(ctx context.Context, repo RepositoryRef, id, commentID, body string) error {
+	project := p.project(repo)
+	if err := p.requireWorkItemScope(project); err != nil {
+		return err
+	}
+	if err := validateADOWorkItemID(id); err != nil {
+		return err
+	}
+	if strings.TrimSpace(commentID) == "" {
+		return fmt.Errorf("comment id is required")
+	}
+	body, err := withAttribution(body, p.attribution, "comment-update")
+	if err != nil {
+		return err
+	}
+	endpoint, err := p.workURLVersion(project, "7.1-preview.4", "workItems", id, "comments", commentID)
+	if err != nil {
+		return err
+	}
+	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"text": body}, nil); err != nil {
+		return err
+	}
+	p.recordMutation(ctx, "issue", id, "comment")
+	return nil
+}
+
 // UpdateWorkItem edits Azure Boards fields, assignee, tags, state, and comments.
 func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
 	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
