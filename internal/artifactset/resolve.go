@@ -172,6 +172,10 @@ func readVerified(ctx context.Context, reader Reader, pointer apiv1.ArtifactPoin
 }
 
 func decodeIndex(data []byte, index *Index) error {
+	return decodeDocument(data, index)
+}
+
+func decodeDocument(data []byte, target any) error {
 	// A second member with the same name must not silently override the first,
 	// including within embedded pointers. Bound nesting independently of bytes.
 	if err := uniqueJSON(json.NewDecoder(bytes.NewReader(data)), 0); err != nil {
@@ -179,7 +183,7 @@ func decodeIndex(data []byte, index *Index) error {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(index); err != nil {
+	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("%w: malformed index: %w", ErrInvalid, err)
 	}
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {

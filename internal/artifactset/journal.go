@@ -8,6 +8,7 @@ import (
 	"os"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/platform/safeopen"
 )
 
 // JournalReader is a read-only resolver pinned to one run journal. Construct it
@@ -38,10 +39,10 @@ func (r *JournalReader) ReadArtifact(ctx context.Context, pointer apiv1.Artifact
 	if err := boundedPointer(pointer, maxBytes); err != nil {
 		return nil, err
 	}
-	file, err := r.root.Open(pointer.Path)
+	file, err := safeopen.OpenRegularInRoot(r.root, pointer.Path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w: missing artifact", ErrInvalid)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, safeopen.ErrNotRegular) {
+			return nil, fmt.Errorf("%w: missing or non-regular artifact", ErrInvalid)
 		}
 		return nil, err
 	}
