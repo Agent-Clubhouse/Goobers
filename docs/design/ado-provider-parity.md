@@ -7,6 +7,7 @@
 > Reconciled 2026-09-06 by #2061/#2179.
 > Driving epic: #2061 (ADO end-to-end). Builds on `docs/design/provider-contract-conformance.md`
 > (the capability model) and `docs/design/v0/pr-lifecycle-loop.md` (the stage contract).
+> Delivered-by: #2745
 
 ## 1. Context
 

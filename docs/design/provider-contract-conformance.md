@@ -6,6 +6,7 @@
 > extension CONF-10 #2499. Reconciled 2026-09-06 by #2061/#2179.
 > Driving epic: #2061 (hero: ADO end-to-end). Related: #2026, #2050, #2059, #2064.
 > Author: state-of-repo review follow-up, 2026-07-31.
+> Delivered-by: #2074, #2075, #2076, #2077, #2078, #2079, #2496, #2497, #2498, #2499
 
 > **§1 is the 2026-07-31 problem statement, kept as the record of why this
 > design exists. Do not read it as current state.** Its three gaps are closed:
