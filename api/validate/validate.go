@@ -751,64 +751,66 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 	var docs []loadedDoc
 	parseFailureCount := 0
 
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		// Handle asset validation first (needs to validate before skipping)
-		// Check for assets before dir checks since assets can be symlinks
-		if gooberassets.IsSourceDir(path) {
-			if assetErr := gooberassets.Validate(path); assetErr != nil {
-				rel, _ := filepath.Rel(root, path)
-				r.add(errorInvalidGooberAssets, Error, filepath.ToSlash(rel), "", "", "invalid goober assets: %v", assetErr)
+	err := configtree.WalkDefinitionTrees(root, func(tree string) error {
+		return filepath.WalkDir(tree, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			// Handle asset validation first (needs to validate before skipping)
+			// Check for assets before dir checks since assets can be symlinks
+			if gooberassets.IsSourceDir(path) {
+				if assetErr := gooberassets.Validate(path); assetErr != nil {
+					rel, _ := filepath.Rel(root, path)
+					r.add(errorInvalidGooberAssets, Error, filepath.ToSlash(rel), "", "", "invalid goober assets: %v", assetErr)
+				}
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 			if d.IsDir() {
-				return filepath.SkipDir
+				// Skip hidden dirs and gaggle skills dirs
+				if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
+					return filepath.SkipDir
+				}
+				return nil
 			}
-			return nil
-		}
-		if d.IsDir() {
-			// Skip hidden dirs and gaggle skills dirs
-			if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
-				return filepath.SkipDir
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext != ".yaml" && ext != ".yml" {
+				return nil
 			}
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".yaml" && ext != ".yml" {
-			return nil
-		}
-		r.Files++
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(root, path)
-		rel = filepath.ToSlash(rel)
-		for _, document := range splitYAMLDocuments(string(raw)) {
-			if strings.TrimSpace(document.content) == "" {
-				continue
-			}
-			jb, err := strictyaml.YAMLToJSON([]byte(document.content))
+			r.Files++
+			raw, err := os.ReadFile(path)
 			if err != nil {
-				parseFailureCount++
-				r.addLocated(errorInvalidYAML, Error, rel,
-					yamlErrorLine(err.Error(), document.lineOffset), 1,
-					"", "", invalidYAMLMessagePrefix+"%s", err)
-				continue
+				return err
 			}
-			var tm typeMeta
-			if err := json.Unmarshal(jb, &tm); err != nil || tm.Kind == "" {
-				r.add(errorMissingTypeMeta, Error, rel, "", "", "document is missing apiVersion/kind")
-				continue
+			rel, _ := filepath.Rel(root, path)
+			rel = filepath.ToSlash(rel)
+			for _, document := range splitYAMLDocuments(string(raw)) {
+				if strings.TrimSpace(document.content) == "" {
+					continue
+				}
+				jb, err := strictyaml.YAMLToJSON([]byte(document.content))
+				if err != nil {
+					parseFailureCount++
+					r.addLocated(errorInvalidYAML, Error, rel,
+						yamlErrorLine(err.Error(), document.lineOffset), 1,
+						"", "", invalidYAMLMessagePrefix+"%s", err)
+					continue
+				}
+				var tm typeMeta
+				if err := json.Unmarshal(jb, &tm); err != nil || tm.Kind == "" {
+					r.add(errorMissingTypeMeta, Error, rel, "", "", "document is missing apiVersion/kind")
+					continue
+				}
+				docs = append(docs, loadedDoc{
+					file: rel, dir: filepath.Dir(path), kind: tm.Kind, name: tm.Metadata.Name,
+					dslVersion: tm.DSLVersion, json: jb,
+					node: parseYAMLNode(document.content), lineOffset: document.lineOffset,
+				})
 			}
-			docs = append(docs, loadedDoc{
-				file: rel, dir: filepath.Dir(path), kind: tm.Kind, name: tm.Metadata.Name,
-				dslVersion: tm.DSLVersion, json: jb,
-				node: parseYAMLNode(document.content), lineOffset: document.lineOffset,
-			})
-		}
-		return nil
+			return nil
+		})
 	})
 	if err != nil {
 		return r, fmt.Errorf("walk %s: %w", root, err)
@@ -818,6 +820,11 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 	idx.parseFailureCount = parseFailureCount
 	for _, doc := range docs {
 		r.Objects++
+		if strings.HasPrefix(doc.file, "../goobers/") && doc.kind != "Goober" {
+			r.add(errorGooberGaggleReference, Error, doc.file, doc.kind, doc.name,
+				"the instance-shared goobers tree may contain only Goober definitions")
+			continue
+		}
 		if doc.kind == "Manifest" {
 			idx.manifestDocsSeen++
 		}
@@ -997,7 +1004,7 @@ func (ix *index) add(r *Report, doc loadedDoc) {
 			r.add(errorTypedDecode, Error, doc.file, doc.kind, doc.name, "decode: %v", err)
 			return
 		}
-		ix.dupCheck(r, doc, "Goober", g.Name, func() bool { _, ok := ix.goobers[g.Name]; return ok })
+		ix.checkGooberDuplicate(r, doc)
 		ix.goobers[g.Name] = g
 		ix.gooberFile[g.Name] = doc.file
 		ix.gooberDir[g.Name] = doc.dir
@@ -1115,18 +1122,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 			r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
 				wf.CheckGooberFeatureSupport(def, g.Spec, allowPreview))
 		}
-		if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok {
-			ix.referenceNotFound(r, errorGooberGaggleReference, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
-				g.Spec.Gaggle, g.Spec.Gaggle)
-		}
-		for _, wf := range g.Spec.Workflows {
-			identity := workflowIdentity{gaggle: g.Spec.Gaggle, name: wf}
-			if _, ok := ix.workflows[identity]; !ok {
-				ix.referenceNotFound(r, errorGooberWorkflowReference, file, "Goober", g.Name,
-					"spec.workflows references %q, but no Workflow/%s is defined in gaggle %q",
-					wf, wf, g.Spec.Gaggle)
-			}
-		}
+		ix.checkGooberDirectoryScope(r, g, file)
+		ix.checkGooberReferences(r, g, file)
 		for _, value := range g.Spec.Capabilities {
 			if capability.Known(value) {
 				if !capability.StageDeclarable(value) {
@@ -1190,7 +1187,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 func (ix *index) featureDefinitionsForGaggle(gaggle string) []wf.Definition {
 	var definitions []wf.Definition
 	for identity, indexed := range ix.workflows {
-		if identity.gaggle != gaggle {
+		if gaggle != "" && identity.gaggle != gaggle {
 			continue
 		}
 		definition := indexed.definition
@@ -1202,6 +1199,11 @@ func (ix *index) featureDefinitionsForGaggle(gaggle string) []wf.Definition {
 }
 
 func (ix *index) featureDefinitionsForGoober(spec apiv1.GooberSpec) []wf.Definition {
+	if spec.Gaggle == "" {
+		// Shared personas are available to every gaggle, so their features
+		// must be checked against every configured DSL pin.
+		return ix.featureDefinitionsForGaggle("")
+	}
 	var definitions []wf.Definition
 	for _, name := range spec.Workflows {
 		indexed, ok := ix.workflows[workflowIdentity{gaggle: spec.Gaggle, name: name}]
@@ -1221,6 +1223,10 @@ func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared 
 		return "", "", false
 	}
 	configRoot = filepath.Clean(configRoot)
+	if gaggle == "" {
+		shared := filepath.Join(filepath.Dir(configRoot), "skills", skill)
+		return shared, shared, true
+	}
 	return filepath.Join(configRoot, "gaggles", gaggle, "skills", skill),
 		filepath.Join(filepath.Dir(configRoot), "skills", skill), true
 }
@@ -1241,10 +1247,9 @@ func (ix *index) checkMissingSkillPackages(r *Report, configRoot string) {
 			sharedMissing := errors.Is(sharedErr, fs.ErrNotExist) || (sharedErr == nil && !sharedInfo.IsDir())
 			if scopedMissing && sharedMissing {
 				r.add(WarningMissingSkillPackage, Warning, ix.gooberFile[g.Name], "Goober", g.Name,
-					"spec.skills declares %q, but no skill package directory was found at %q or %q; the dangling declaration contributes nothing at runtime — remove it or add the package",
+					"spec.skills declares %q, but no skill package directory was found at %s; the dangling declaration contributes nothing at runtime — remove it or add the package",
 					skill,
-					filepath.ToSlash(filepath.Join("gaggles", g.Spec.Gaggle, "skills", skill)),
-					filepath.ToSlash(filepath.Join("skills", skill)))
+					missingSkillLocations(g.Spec.Gaggle, skill))
 			}
 		}
 	}
@@ -2069,7 +2074,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			switch {
 			case !ok:
 				ix.referenceNotFound(r, errorTaskGooberReference, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
-			case goober.Spec.Gaggle != w.Spec.Gaggle:
+			case gooberInAnotherGaggle(goober.Spec, w.Spec.Gaggle):
 				r.add(errorTaskGooberGaggle, Error, file, "Workflow", w.Name,
 					"task %q targets goober %q in gaggle %q, not workflow gaggle %q",
 					t.Name, t.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
@@ -2087,7 +2092,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			switch {
 			case !ok:
 				ix.referenceNotFound(r, errorGateGooberReference, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
-			case goober.Spec.Gaggle != w.Spec.Gaggle:
+			case gooberInAnotherGaggle(goober.Spec, w.Spec.Gaggle):
 				r.add(errorGateGooberGaggle, Error, file, "Workflow", w.Name,
 					"gate %q reviewer goober %q is in gaggle %q, not workflow gaggle %q",
 					g.Name, g.Agentic.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)

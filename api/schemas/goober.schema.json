@@ -14,9 +14,9 @@
       "type": "object",
       "description": "The goober's role, instruction source, harness configuration, and granted authority.",
       "additionalProperties": false,
-      "required": ["gaggle", "role", "instructions"],
+      "required": ["role", "instructions"],
       "properties": {
-        "gaggle": { "type": "string", "minLength": 1, "examples": ["example"], "description": "Name of the gaggle this goober belongs to." },
+        "gaggle": { "type": "string", "minLength": 1, "examples": ["example"], "description": "Owning gaggle. Omit only for an instance-shared persona in the goobers directory beside config/." },
         "role": { "type": "string", "minLength": 1, "examples": ["author"], "description": "Role specialization, such as coder, reviewer, or perf-hunter." },
         "displayName": { "type": "string", "description": "Human-facing goober name shown in the portal." },
         "instructions": { "type": "string", "minLength": 1, "examples": ["instructions.md"], "description": "Markdown instruction file path relative to the goober definition directory." },

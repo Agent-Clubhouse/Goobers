@@ -127,7 +127,7 @@ func appendSkillPackageCollisionWarnings(configDir string, report *validate.Repo
 	for _, goober := range goobers {
 		for _, skill := range goober.Skills {
 			scoped, shared, ok := skillPackageDirs(configDir, goober.Gaggle, skill)
-			if !ok {
+			if !ok || scoped == shared {
 				continue
 			}
 			scopedInfo, scopedErr := os.Stat(scoped)

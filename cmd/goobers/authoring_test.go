@@ -134,36 +134,52 @@ func TestSchemaAndExplainIntrospectInstanceConfig(t *testing.T) {
 }
 
 func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
-	root := initDemo(t)
-	t.Chdir(root)
+	for _, scope := range []string{"gaggle", "shared"} {
+		t.Run(scope, func(t *testing.T) {
+			root := initDemo(t)
+			t.Chdir(root)
 
-	goober := authorRequiredDocument(t, "goober")
-	gooberSpec := goober["spec"].(map[string]any)
-	gooberName := goober["metadata"].(map[string]any)["name"].(string)
-	instructions := gooberSpec["instructions"].(string)
-	gooberDir := filepath.Join(root, "config", "gaggles", "example", "goobers", gooberName)
-	if err := os.MkdirAll(gooberDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeJSONDocument(t, filepath.Join(gooberDir, "goober.yaml"), goober)
-	if err := os.WriteFile(filepath.Join(gooberDir, instructions), []byte("# Offline author\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			goober := authorRequiredDocument(t, "goober")
+			gooberSpec := goober["spec"].(map[string]any)
+			gooberName := goober["metadata"].(map[string]any)["name"].(string)
+			instructions := gooberSpec["instructions"].(string)
+			gooberDir := filepath.Join(root, "config", "gaggles", "example", "goobers", gooberName)
+			if scope == "shared" {
+				gooberDir = filepath.Join(root, "goobers", gooberName)
+			} else {
+				// Ownership is directory-conditional, not globally required by the
+				// schema. An offline local author gets the value and scope guidance
+				// from explain without needing a source checkout.
+				ownership := runExplainJSON(t, "goober.spec.gaggle")
+				if !strings.Contains(ownership.Description, "instance-shared") {
+					t.Fatalf("missing conditional ownership guidance: %+v", ownership)
+				}
+				gooberSpec["gaggle"] = ownership.Example
+			}
+			if err := os.MkdirAll(gooberDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeJSONDocument(t, filepath.Join(gooberDir, "goober.yaml"), goober)
+			if err := os.WriteFile(filepath.Join(gooberDir, instructions), []byte("# Offline author\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	workflow := authorRequiredDocument(t, "workflow")
-	workflowSpec := workflow["spec"].(map[string]any)
-	workflowName := workflow["metadata"].(map[string]any)["name"].(string)
-	workflowSpec["tasks"] = []any{
-		runExplainJSON(t, "workflow.spec.tasks[]").Example,
-	}
-	// dslVersion is not in the schema's `required` set, but since the §8.3
-	// cutover (#3507) dropped DSL 1.4 an omitted pin is a hard error, not a
-	// default — so an offline-authored workflow must pin a loadable version.
-	workflow["dslVersion"] = supportmatrix.NextDSLVersion
-	writeJSONDocument(t, filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml"), workflow)
-	code, stdout, stderr := runArgs(t, "validate", root)
-	if code != 0 || !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
-		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			workflow := authorRequiredDocument(t, "workflow")
+			workflowSpec := workflow["spec"].(map[string]any)
+			workflowName := workflow["metadata"].(map[string]any)["name"].(string)
+			workflowSpec["tasks"] = []any{
+				runExplainJSON(t, "workflow.spec.tasks[]").Example,
+			}
+			// dslVersion is not in the schema's `required` set, but since the §8.3
+			// cutover (#3507) dropped DSL 1.4 an omitted pin is a hard error, not a
+			// default — so an offline-authored workflow must pin a loadable version.
+			workflow["dslVersion"] = supportmatrix.NextDSLVersion
+			writeJSONDocument(t, filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml"), workflow)
+			code, stdout, stderr := runArgs(t, "validate", root)
+			if code != 0 || !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
+				t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+		})
 	}
 }
 

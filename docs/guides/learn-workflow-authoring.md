@@ -70,6 +70,9 @@ The related Goobers and their instructions are under:
 learn-goobers/config/gaggles/example/goobers/
 ```
 
+For one reusable persona across several gaggles, use an
+[instance-shared goober](shared-goobers.md) under the sibling `goobers/` tree.
+
 If you want a checked-in configuration source rather than a runnable instance,
 materialize the same fixture with:
 

@@ -412,6 +412,41 @@ func TestInventoryRejectsCrossGaggleWorkflowOwner(t *testing.T) {
 	}
 }
 
+func TestInventoryIncludesSharedGooberAcrossGaggles(t *testing.T) {
+	definitions := inventoryDefinitions()
+	definitions.Goobers[0].Spec.Gaggle = ""
+	definitions.Workflows = []apiv1.Workflow{
+		testInventoryWorkflow("alpha", "deploy", "Deploy", "builder", apiv1.TaskAgentic),
+		testInventoryWorkflow("beta", "deploy", "Deploy", "builder", apiv1.TaskAgentic),
+	}
+	service, _ := newInventoryService(t, definitions, nil)
+	for _, gaggle := range []string{"alpha", "beta"} {
+		page, err := service.Goobers(context.Background(), gaggle, PageRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 1 || page.Items[0].Name != "builder" || len(page.Items[0].Stages) != 1 {
+			t.Fatalf("%s shared persona projection: %+v", gaggle, page.Items)
+		}
+		detail, err := service.Workflow(context.Background(), gaggle, "deploy")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(detail.Owners) != 1 || detail.Owners[0].Name != "builder" {
+			t.Fatalf("%s shared graph owners: %+v", gaggle, detail.Owners)
+		}
+	}
+	gaggles, err := service.Gaggles(context.Background(), PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gaggle := range gaggles.Items {
+		if gaggle.GooberCount != 1 {
+			t.Fatalf("%s shared goober count: %d", gaggle.Name, gaggle.GooberCount)
+		}
+	}
+}
+
 // TestWorkflowStagesIncludeParallels is the regression test for #2193: the
 // portal's workflow-detail page threw "inconsistent workflow stages" for any
 // workflow using the parallels DSL because workflowStages() only walked

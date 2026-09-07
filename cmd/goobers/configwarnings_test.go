@@ -126,6 +126,19 @@ func TestValidateWarnsWhenGaggleSkillShadowsSharedPackage(t *testing.T) {
 	}
 }
 
+func TestSharedPersonaSkillDoesNotWarnAboutShadowingItself(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "skills", "review"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	warnings, err := appendSkillPackageCollisionWarnings(filepath.Join(root, "config"), &validate.Report{}, map[string]apiv1.GooberSpec{
+		"shared-reviewer": {Skills: []string{"review"}},
+	})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("shared-only package produced collision warning: %+v, %v", warnings, err)
+	}
+}
+
 func withoutGeneratedPreviewWarnings(output string) ([]string, int) {
 	var warnings []string
 	previewCount := 0

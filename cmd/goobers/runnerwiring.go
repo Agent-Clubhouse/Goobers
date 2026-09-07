@@ -38,6 +38,9 @@ import (
 // that layout convention is reproduced here rather than widening ConfigSet's
 // shape for this one field.
 func gooberDefinitionDir(configDir string, spec apiv1.GooberSpec, gooberName string) string {
+	if spec.Gaggle == "" {
+		return filepath.Join(filepath.Dir(configDir), "goobers", gooberName)
+	}
 	return filepath.Join(configDir, "gaggles", spec.Gaggle, "goobers", gooberName)
 }
 

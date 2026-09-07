@@ -58,16 +58,27 @@ func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpe
 	return instructions, nil
 }
 
-func loadGooberSkillPackages(configDir, gaggle string, goobers map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
-	names := map[string]struct{}{}
+type skillSource struct{ name, gaggle string }
+
+func gooberSkillSources(gaggle string, goobers map[string]apiv1.GooberSpec) map[string]skillSource {
+	names := map[string]skillSource{}
 	for _, goober := range goobers {
-		if goober.Gaggle != gaggle {
+		if goober.Gaggle != "" && goober.Gaggle != gaggle {
 			continue
 		}
 		for _, skill := range goober.Skills {
-			names[skill] = struct{}{}
+			key := skill
+			if goober.Gaggle == "" {
+				key = workflow.SharedSkillPackageKey(skill)
+			}
+			names[key] = skillSource{name: skill, gaggle: goober.Gaggle}
 		}
 	}
+	return names
+}
+
+func loadGooberSkillPackages(configDir, gaggle string, goobers map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
+	names := gooberSkillSources(gaggle, goobers)
 	sorted := make([]string, 0, len(names))
 	for name := range names {
 		sorted = append(sorted, name)
@@ -75,8 +86,9 @@ func loadGooberSkillPackages(configDir, gaggle string, goobers map[string]apiv1.
 	sort.Strings(sorted)
 
 	packages := make(map[string][]workflow.SkillFile, len(sorted))
-	for _, name := range sorted {
-		root, paths, ok, err := skillPackagePaths(configDir, gaggle, name)
+	for _, key := range sorted {
+		name := names[key].name
+		root, paths, ok, err := skillPackagePaths(configDir, names[key].gaggle, name)
 		if err != nil {
 			return nil, fmt.Errorf("list skill %q package: %w", name, err)
 		}
@@ -98,7 +110,7 @@ func loadGooberSkillPackages(configDir, gaggle string, goobers map[string]apiv1.
 				Content: string(content),
 			})
 		}
-		packages[name] = files
+		packages[key] = files
 	}
 	return packages, nil
 }
@@ -108,6 +120,10 @@ func skillPackageDirs(configDir, gaggle, skill string) (scoped, shared string, o
 		return "", "", false
 	}
 	configDir = filepath.Clean(configDir)
+	if gaggle == "" {
+		shared := filepath.Join(filepath.Dir(configDir), "skills", skill)
+		return shared, shared, true
+	}
 	return filepath.Join(configDir, "gaggles", gaggle, "skills", skill),
 		filepath.Join(filepath.Dir(configDir), "skills", skill), true
 }

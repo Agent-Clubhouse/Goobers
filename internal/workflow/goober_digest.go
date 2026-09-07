@@ -70,7 +70,7 @@ func ComputeGooberDigest(
 			Name:           name,
 			Instructions:   content,
 			Skills:         canonicalSet(spec.Skills),
-			SkillPackages:  resolvedSkillPackages(spec.Skills, skillPackages),
+			SkillPackages:  resolvedSkillPackages(spec.Skills, spec.Gaggle == "", skillPackages),
 			Model:          spec.Model,
 			Harness:        string(harness),
 			HarnessOptions: options,
@@ -81,10 +81,24 @@ func ComputeGooberDigest(
 	return canonicalDigest(effective)
 }
 
-func resolvedSkillPackages(skills []string, packages map[string][]SkillFile) []effectiveSkillPackage {
+// SharedSkillPackageKey keeps an instance persona's skill separate from a
+// same-named gaggle override in the captured workflow skill package map.
+// Skill names cannot contain slashes, so this namespace cannot collide with
+// an ordinary skill name. The namespace is not part of the content digest.
+func SharedSkillPackageKey(name string) string { return "shared/" + name }
+
+func resolvedSkillPackages(skills []string, shared bool, packages map[string][]SkillFile) []effectiveSkillPackage {
 	var resolved []effectiveSkillPackage
 	for _, name := range canonicalSet(skills) {
-		if files, ok := packages[name]; ok {
+		files, ok := packages[name]
+		if shared {
+			// Preserve compatibility with callers supplying a single, already
+			// resolved package set; captured mixed-scope sets use explicit keys.
+			if scoped, exists := packages[SharedSkillPackageKey(name)]; exists {
+				files, ok = scoped, true
+			}
+		}
+		if ok {
 			canonical := append([]SkillFile(nil), files...)
 			sort.Slice(canonical, func(i, j int) bool { return canonical[i].Path < canonical[j].Path })
 			resolved = append(resolved, effectiveSkillPackage{Name: name, Files: canonical})

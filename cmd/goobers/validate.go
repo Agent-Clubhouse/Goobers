@@ -211,7 +211,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	configDir := l.ConfigDir()
 	if options.sourceTree {
 		configFile = filepath.Join(root, "instance.yaml.example")
-		configDir = root
+		configDir = sourceTreeDefinitionDir(root)
 	}
 	if _, err := os.Stat(configFile); err != nil {
 		if options.sourceTree {
