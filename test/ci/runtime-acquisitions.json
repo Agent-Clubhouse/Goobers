@@ -121,6 +121,7 @@
       "runtime-acquisitions:go-modules",
       "schema-description-coverage:go-modules",
       "shipped-workflows:go-modules",
+      "stack-parity:go-modules",
       "stage-name-lint:go-modules",
       "test:go-modules",
       "tidy-check:go-modules",
