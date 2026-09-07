@@ -256,6 +256,12 @@ type adoWorkItemCloser interface {
 	UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
 }
 
+type adoPostMergePRComments interface {
+	AuthenticatedLogin(context.Context) (string, error)
+	ListPullRequestThreadComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error)
+	PostPullRequestThreadComment(context.Context, providers.RepositoryRef, string, string) (providers.Comment, error)
+}
+
 // runPostMergeADO is the Azure DevOps post-merge path (merge-wiring-plan.md §6).
 // On ADO the merge chain's ONLY mandatory post-merge action is closing the work
 // item the merged PR resolved. Every sibling/demotion/remediation action the
@@ -282,7 +288,7 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 	backlogRepo := backlogRepoRefForStage(root, repo)
 
 	transport := threadCommentPostMergeTransport{
-		provider: dispatcher, backlogRepo: backlogRepo, root: root, repo: repo,
+		provider: dispatcher, prComments: adoProvider, backlogRepo: backlogRepo, root: root, repo: repo,
 	}
 	return runPostMergeCore(root, repo, transport, stdout, stderr)
 }
@@ -312,6 +318,7 @@ func (t issueCommentPostMergeTransport) Perform(ctx context.Context, pullNumber 
 
 type threadCommentPostMergeTransport struct {
 	provider    providers.Provider
+	prComments  adoPostMergePRComments
 	backlogRepo providers.RepositoryRef
 	root        string
 	repo        providers.RepositoryRef
@@ -322,7 +329,7 @@ func (t threadCommentPostMergeTransport) Poll(ctx context.Context, repo provider
 }
 
 func (t threadCommentPostMergeTransport) Perform(ctx context.Context, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
-	return performPostMergeADO(ctx, t.provider, t.backlogRepo, poll, pullNumber, t.root, t.repo, stdout, stderr)
+	return performPostMergeADOWithPRComments(ctx, t.provider, t.prComments, t.backlogRepo, poll, pullNumber, t.root, t.repo, stdout, stderr)
 }
 
 func runPostMergeCore(root string, repo providers.RepositoryRef, transport postMergeTransport, stdout, stderr io.Writer) int {
@@ -380,11 +387,20 @@ func runPostMergeCore(root string, repo providers.RepositoryRef, transport postM
 // runPostMergeADO's doc comment). This is what stops the PBI parking at
 // New/in-review forever after its PR lands (merge-wiring-plan.md §6).
 func performPostMergeADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
-	comment, err := mergedPullRequestComment(ctx, root, repo, pullNumber)
-	if err != nil {
-		pf(stderr, "warning: %v\n", err)
+	return performPostMergeADOWithPRComments(ctx, closer, nil, backlogRepo, poll, pullNumber, root, repo, stdout, stderr)
+}
+
+func performPostMergeADOWithPRComments(ctx context.Context, closer adoWorkItemCloser, prComments adoPostMergePRComments, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
+	issueIDs := closingIssueNumbers(poll.Body)
+	var report postMergeCostReport
+	if prComments != nil {
+		report = collectADOPostMergeCostReport(ctx, closer, prComments, backlogRepo, repo, pullNumber, issueIDs, stderr)
 	}
-	closed, closeErrs := closeReferencedWorkItemsADO(ctx, closer, backlogRepo, poll.Body, comment)
+	comments := make(map[string]string, len(issueIDs))
+	for _, issueID := range issueIDs {
+		comments[issueID] = mergedPullRequestComment(pullNumber, report, issueID)
+	}
+	closed, closeErrs := closeReferencedWorkItemsADOWithComments(ctx, closer, backlogRepo, poll.Body, comments)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
@@ -401,8 +417,16 @@ func performPostMergeADO(ctx context.Context, closer adoWorkItemCloser, backlogR
 // accepts the ADO provider) and targets backlogRepo, never the routed code repo.
 // A PR referencing no work item is a normal outcome, not an error.
 func closeReferencedWorkItemsADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, body, comment string) (closed []string, errs []error) {
+	comments := make(map[string]string)
 	for _, id := range closingIssueNumbers(body) {
-		if err := closeReferencedWorkItemADO(ctx, closer, backlogRepo, id, comment); err != nil {
+		comments[id] = comment
+	}
+	return closeReferencedWorkItemsADOWithComments(ctx, closer, backlogRepo, body, comments)
+}
+
+func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, body string, comments map[string]string) (closed []string, errs []error) {
+	for _, id := range closingIssueNumbers(body) {
+		if err := closeReferencedWorkItemADO(ctx, closer, backlogRepo, id, comments[id]); err != nil {
 			errs = append(errs, fmt.Errorf("close work item #%s: %w", id, err))
 			continue
 		}
@@ -476,11 +500,13 @@ func performPostMerge(ctx context.Context, provider, issuesProvider remediationP
 	}
 	errs = append(errs, undemoteErrs...)
 
-	comment, costErr := mergedPullRequestComment(ctx, root, repo, pullNumber)
-	if costErr != nil {
-		pf(stderr, "warning: %v\n", costErr)
+	issueIDs := closingIssueNumbers(poll.Body)
+	report := collectGitHubPostMergeCostReport(ctx, provider, issuesProvider, repo, pullNumber, issueIDs, stderr)
+	comments := make(map[string]string, len(issueIDs))
+	for _, issueID := range issueIDs {
+		comments[issueID] = mergedPullRequestComment(pullNumber, report, issueID)
 	}
-	closed, closeErrs := closeReferencedIssues(ctx, issuesProvider, repo, poll.Body, comment)
+	closed, closeErrs := closeReferencedIssues(ctx, issuesProvider, repo, poll.Body, comments)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
@@ -963,9 +989,9 @@ func siblingFilesForTriage(ctx context.Context, provider remediationProvider, re
 // GitHub's closing-keyword grammar (Fixes/Closes/Resolves #N) done. A PR
 // referencing no issue is a normal outcome (not every PR closes a backlog
 // item), not an error.
-func closeReferencedIssues(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, body, comment string) (closed []string, errs []error) {
+func closeReferencedIssues(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, body string, comments map[string]string) (closed []string, errs []error) {
 	for _, issueID := range closingIssueNumbers(body) {
-		if err := closeReferencedIssue(ctx, provider, repo, issueID, comment); err != nil {
+		if err := closeReferencedIssue(ctx, provider, repo, issueID, comments[issueID]); err != nil {
 			errs = append(errs, fmt.Errorf("close issue #%s: %w", issueID, err))
 			continue
 		}

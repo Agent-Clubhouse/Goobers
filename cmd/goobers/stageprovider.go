@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -153,7 +154,7 @@ func stageAttribution(root string) (providers.Attribution, bool) {
 	if clean := filepath.Clean(strings.TrimSpace(root)); clean != "." && clean != "" {
 		instanceName = filepath.Base(clean)
 	}
-	return providers.Attribution{
+	attribution := providers.Attribution{
 		Schema:   1,
 		Goobers:  true,
 		Instance: instanceName,
@@ -162,7 +163,60 @@ func stageAttribution(root string) (providers.Attribution, bool) {
 		Task:     task,
 		Goober:   goober,
 		Run:      runID,
-	}, true
+	}
+	// Provider writes happen after the stage's earlier agentic work has already
+	// journaled completion events. Snapshot those durable events here so every
+	// existing human-readable status comment can carry the same run's
+	// machine-readable cost receipt without consulting telemetry.db.
+	attribution.Cost = stageCostReceipt(root, runID)
+	return attribution, true
+}
+
+func stageCostReceipt(root, runID string) *providers.CostReceipt {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	runDir, err := instance.NewLayout(root).FindRunDir(runID)
+	if err != nil {
+		return nil
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return nil
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil
+	}
+	usage := journal.RollupRunAgentUsage(events, runID)
+	if usage.InputTokens == nil &&
+		usage.OutputTokens == nil &&
+		usage.CacheReadTokens == nil &&
+		usage.CacheWriteTokens == nil &&
+		usage.ReasoningTokens == nil &&
+		usage.CopilotPremiumRequests == nil &&
+		usage.NanoAIU == nil &&
+		usage.CostUSD == nil {
+		return nil
+	}
+	var sequence uint64
+	for _, event := range events {
+		if event.Seq > sequence {
+			sequence = event.Seq
+		}
+	}
+	return &providers.CostReceipt{
+		JournalSequence:        sequence,
+		Model:                  usage.Model,
+		InputTokens:            usage.InputTokens,
+		OutputTokens:           usage.OutputTokens,
+		CacheReadTokens:        usage.CacheReadTokens,
+		CacheWriteTokens:       usage.CacheWriteTokens,
+		ReasoningTokens:        usage.ReasoningTokens,
+		CopilotPremiumRequests: usage.CopilotPremiumRequests,
+		NanoAIU:                usage.NanoAIU,
+		CostUSD:                usage.CostUSD,
+	}
 }
 
 func newProviderForStageAs[T providers.Provider](root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (T, error) {

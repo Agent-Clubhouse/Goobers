@@ -208,7 +208,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 				report.Pending++
 				continue
 			}
-			actionErrs := performPostMergeADO(ctx, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, root, repo, stdout, stderr)
+			actionErrs := performPostMergeADOWithPRComments(ctx, provider, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, root, repo, stdout, stderr)
 			if len(actionErrs) > 0 {
 				report.Pending++
 				ledger.Entries[key] = entry
@@ -494,11 +494,14 @@ func reconcilePostMergeActions(
 	}); err != nil {
 		return nil, err
 	}
-	for _, issueID := range closingIssueNumbers(poll.Body) {
+	issueIDs := closingIssueNumbers(poll.Body)
+	costReport := collectGitHubPostMergeCostReport(ctx, provider, issuesProvider, entry.Repository, entry.PullNumber, issueIDs, stderr)
+	for _, issueID := range issueIDs {
 		if entry.Actions.ClosedIssueNumbers[issueID] {
 			continue
 		}
-		if err := closeReferencedIssue(ctx, issuesProvider, entry.Repository, issueID, entry.PullNumber); err != nil {
+		comment := mergedPullRequestComment(entry.PullNumber, costReport, issueID)
+		if err := closeReferencedIssue(ctx, issuesProvider, entry.Repository, issueID, comment); err != nil {
 			wrapped := fmt.Errorf("close issue #%s: %w", issueID, err)
 			actionErrs = append(actionErrs, wrapped)
 			pf(stderr, "warning: late-merged pr #%s %v\n", entry.PullNumber, wrapped)

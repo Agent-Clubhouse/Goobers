@@ -203,6 +203,9 @@ func agentUsage(metrics map[string]float64, models ...telemetry.ModelUsage) jour
 		v := int64(value)
 		usage.ReasoningTokens = &v
 	}
+	if value, ok := metrics[telemetry.AttrCopilotPremiumRequests]; ok {
+		usage.CopilotPremiumRequests = &value
+	}
 	if value, ok := metrics[telemetry.AttrUsageNanoAIU]; ok {
 		v := int64(value)
 		usage.NanoAIU = &v
