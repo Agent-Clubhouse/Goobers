@@ -12,9 +12,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestMutationSidecarPreservesMergeConfirmationAcrossWireConsumers(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	confirmation := &providers.MergeConfirmation{
+		RepositoryAPIURL: "https://forge.example/team/repos/acme/app", PullID: "9", MergeSHA: "commit",
+	}
+	sidecarMutationRecorder{kind: "pr"}.RecordExternalRef(context.Background(), providers.ExternalRef{
+		Provider: providers.ProviderGitHub, Ref: "acme/app#9", Operation: "merge", MergeConfirmation: confirmation,
+	})
+	facts := readMutationFacts(t, dir)
+	if len(facts) != 1 || facts[0].MergeConfirmation == nil || *facts[0].MergeConfirmation != *confirmation {
+		t.Fatalf("sidecar dropped merge evidence: %+v", facts)
+	}
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activity engine.MutationFact
+	var pod dispatcher.SurrenderedMutation
+	for _, value := range []any{&activity, &pod} {
+		if err := json.Unmarshal(data, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if activity.MergeConfirmation == nil || pod.MergeConfirmation == nil || *activity.MergeConfirmation != *confirmation || *pod.MergeConfirmation != *confirmation {
+		t.Fatalf("transport dropped confirmation: activity=%+v pod=%+v", activity, pod)
+	}
+}
 
 // readMutationFacts reads and parses every line of mutations.jsonl under
 // dir, the sidecar cmd/goobers's provider-chain subcommands write for the

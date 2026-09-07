@@ -293,7 +293,13 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
-	p.recordMutation(ctx, "pr", req.PullID, "merge")
+	if p.mutationRecorder != nil {
+		repositoryAPIURL, _ := p.repoURL(req.Repository)
+		p.mutationRecorder.RecordExternalRef(ctx, ExternalRef{
+			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "merge",
+			MergeConfirmation: newMergeConfirmation(repositoryAPIURL, req.PullID, final.LastMergeCommit.CommitID),
+		})
+	}
 	return MergePullRequestResult{Number: final.PullRequestID, Merged: true, MergeSHA: final.LastMergeCommit.CommitID}, nil
 }
 

@@ -4157,7 +4157,7 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 		_ = jr.Append(journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
 			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
-			Runner:      map[string]any{"operation": m.Operation},
+			Runner:      providers.MutationRunnerFields(m.Operation, m.MergeConfirmation),
 		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID))
 	}
 	if removeErr != nil {
@@ -5250,15 +5250,16 @@ const mutationsSidecarFile = "mutations.jsonl"
 // shape) — just enough to build a journal.ExternalRef plus an operation
 // annotation.
 type mutationFact struct {
-	Provider      string `json:"provider"`
-	Kind          string `json:"kind"`
-	ID            string `json:"id"`
-	URL           string `json:"url,omitempty"`
-	Operation     string `json:"operation,omitempty"`
-	RunID         string `json:"runId,omitempty"`
-	Outcome       string `json:"outcome,omitempty"`
-	ErrorCode     string `json:"errorCode,omitempty"`
-	ProviderRunID string `json:"providerRunId,omitempty"`
+	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
+	Provider          string                       `json:"provider"`
+	Kind              string                       `json:"kind"`
+	ID                string                       `json:"id"`
+	URL               string                       `json:"url,omitempty"`
+	Operation         string                       `json:"operation,omitempty"`
+	RunID             string                       `json:"runId,omitempty"`
+	Outcome           string                       `json:"outcome,omitempty"`
+	ErrorCode         string                       `json:"errorCode,omitempty"`
+	ProviderRunID     string                       `json:"providerRunId,omitempty"`
 }
 
 // readMutationSidecar reads and parses mutationsSidecarFile from workspace,

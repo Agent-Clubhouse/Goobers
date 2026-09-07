@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/providers"
 )
 
 // surrender.go is the surrendered-result half of the disposal gate
@@ -80,15 +81,16 @@ type SurrenderPlane interface {
 // projected journal records identical provenance whichever substrate ran the
 // stage.
 type SurrenderedMutation struct {
-	Provider      string `json:"provider"`
-	Kind          string `json:"kind"`
-	ID            string `json:"id"`
-	URL           string `json:"url,omitempty"`
-	Operation     string `json:"operation,omitempty"`
-	RunID         string `json:"runId,omitempty"`
-	Outcome       string `json:"outcome,omitempty"`
-	ErrorCode     string `json:"errorCode,omitempty"`
-	ProviderRunID string `json:"providerRunId,omitempty"`
+	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
+	Provider          string                       `json:"provider"`
+	Kind              string                       `json:"kind"`
+	ID                string                       `json:"id"`
+	URL               string                       `json:"url,omitempty"`
+	Operation         string                       `json:"operation,omitempty"`
+	RunID             string                       `json:"runId,omitempty"`
+	Outcome           string                       `json:"outcome,omitempty"`
+	ErrorCode         string                       `json:"errorCode,omitempty"`
+	ProviderRunID     string                       `json:"providerRunId,omitempty"`
 }
 
 // SurrenderedResult is the wire shape of one attempt's surrendered outcome:

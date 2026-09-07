@@ -27,15 +27,16 @@ const mutationsSidecarFile = "mutations.jsonl"
 // RunID identifies the claim owner, which can differ from the stage's run
 // during reconciliation. Provider Fields digests are not part of this handoff.
 type mutationFact struct {
-	Provider      string `json:"provider"`
-	Kind          string `json:"kind"`
-	ID            string `json:"id"`
-	URL           string `json:"url,omitempty"`
-	Operation     string `json:"operation,omitempty"`
-	RunID         string `json:"runId,omitempty"`
-	Outcome       string `json:"outcome,omitempty"`
-	ErrorCode     string `json:"errorCode,omitempty"`
-	ProviderRunID string `json:"providerRunId,omitempty"`
+	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
+	Provider          string                       `json:"provider"`
+	Kind              string                       `json:"kind"`
+	ID                string                       `json:"id"`
+	URL               string                       `json:"url,omitempty"`
+	Operation         string                       `json:"operation,omitempty"`
+	RunID             string                       `json:"runId,omitempty"`
+	Outcome           string                       `json:"outcome,omitempty"`
+	ErrorCode         string                       `json:"errorCode,omitempty"`
+	ProviderRunID     string                       `json:"providerRunId,omitempty"`
 }
 
 // sidecarMutationRecorder implements providers.MutationRecorder by appending
@@ -63,12 +64,13 @@ type sidecarMutationRecorder struct {
 // case and emits its own journal-level signal for that.
 func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref providers.ExternalRef) {
 	fact := mutationFact{
-		Provider:  string(ref.Provider),
-		Kind:      r.kind,
-		ID:        externalRefID(ref.Ref),
-		URL:       ref.URL,
-		Operation: ref.Operation,
-		RunID:     ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
+		MergeConfirmation: ref.MergeConfirmation,
+		Provider:          string(ref.Provider),
+		Kind:              r.kind,
+		ID:                externalRefID(ref.Ref),
+		URL:               ref.URL,
+		Operation:         ref.Operation,
+		RunID:             ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
 		ProviderRunID: ref.ProviderRunID,
 	}
 	data, err := json.Marshal(fact)

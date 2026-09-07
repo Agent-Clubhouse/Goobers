@@ -407,11 +407,13 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	// An accepted HTTP response is not evidence of a completed merge. In
 	// particular, missing/false `merged` must not inflate mutation telemetry.
 	if out.Merged {
+		repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
 		p.recordExternalRef(ctx, ExternalRef{
-			Provider:  ProviderGitHub,
-			Ref:       issueRef(req.Repository, req.PullID),
-			Operation: "merge",
-			Fields:    map[string]FieldDigest{"state": {After: digestString("merged")}},
+			MergeConfirmation: newMergeConfirmation(repositoryAPIURL, req.PullID, out.SHA),
+			Provider:          ProviderGitHub,
+			Ref:               issueRef(req.Repository, req.PullID),
+			Operation:         "merge",
+			Fields:            map[string]FieldDigest{"state": {After: digestString("merged")}},
 		})
 	}
 	return MergePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil

@@ -33,6 +33,9 @@ func TestGitHubMergeMutationRequiresPositiveMergeEvidence(t *testing.T) {
 			if recorded != tc.merged {
 				t.Fatalf("recorded a merge without positive evidence: result=%+v ref=%+v recorded=%v", result, ref, recorded)
 			}
+			if tc.merged && (ref.MergeConfirmation == nil || ref.MergeConfirmation.RepositoryAPIURL != server.URL+"/repos/acme/app" || ref.MergeConfirmation.PullID != "9" || ref.MergeConfirmation.MergeSHA != "merge-commit") {
+				t.Fatalf("merge lost repository/PR/commit confirmation: %+v", ref)
+			}
 		})
 	}
 }
