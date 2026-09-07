@@ -39,6 +39,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -120,8 +121,22 @@ func TestEngineLearningEpisodeNamesTheCorrectedEvent(t *testing.T) {
 	}
 	wantName := runner.LearningEpisodeArtifactName("review", failed.Seq)
 	if _, ok := findArtifactRecorded(events, wantName); !ok {
-		t.Fatalf("no artifact.recorded named %q; the walk named the episode after some other event's "+
-			"sequence.\njournal:\n%s", wantName, formatEventSeqs(events))
+		// Two different defects reach here and they are not distinguishable
+		// from the artifact's absence alone, which is what left #3955
+		// undiagnosable from its report: the walk may have named the episode
+		// after the wrong sequence (an addressing drift, the thing this test
+		// is for), or it may not have injected one at all (the branch
+		// predicate answered no, or the ops never reached the projection).
+		// Naming whichever episode WAS injected separates them on the first
+		// recurrence instead of on the next investigation.
+		if injected := injectedEpisodeNames(events); len(injected) > 0 {
+			t.Fatalf("the episode correcting seq %d is named %v, want %q — the walk named it after "+
+				"some other event's sequence.\njournal:\n%s",
+				failed.Seq, injected, wantName, formatEventSeqs(events))
+		}
+		t.Fatalf("no learning episode was injected at all (wanted %q); the retry arm did not reach "+
+			"the injection, so this is not an addressing drift.\njournal:\n%s",
+			wantName, formatEventSeqs(events))
 	}
 	// And the pointer the repass was dispatched with names the same sequence.
 	wantPointer := runner.LearningEpisodePointerName(failed.Seq)
@@ -793,16 +808,43 @@ func findArtifactRecorded(events []journal.Event, name string) (journal.Event, b
 	return journal.Event{}, false
 }
 
+// injectedEpisodeNames returns every learning-episode artifact the journal
+// holds, by name. Empty means no episode was injected, which is a different
+// defect from one injected under the wrong name.
+func injectedEpisodeNames(events []journal.Event) []string {
+	var names []string
+	for _, ev := range events {
+		if ev.Type == journal.EventArtifactRecorded && strings.HasPrefix(ev.Name, "learning/episode-") {
+			names = append(names, ev.Name)
+		}
+	}
+	return names
+}
+
+// formatEventSeqs renders the projected journal for a failure message.
+//
+// The sequence is printed, not just the type: every assertion in this file is
+// ABOUT sequences — the episode is named after one — so a rendering that
+// omitted them could not be checked against the name the test expected, and a
+// reader of a failed CI run had no way to tell a mis-numbered journal from a
+// mis-named episode. Attempt and status come along for the same reason: they
+// are what distinguish the failed attempt being corrected from the repass
+// correcting it.
 func formatEventSeqs(events []journal.Event) string {
 	var b strings.Builder
 	for _, ev := range events {
-		b.WriteString("  ")
-		b.WriteString(string(ev.Type))
+		fmt.Fprintf(&b, "  seq=%d %s", ev.Seq, ev.Type)
 		if ev.Name != "" {
 			b.WriteString(" name=" + ev.Name)
 		}
 		if ev.Stage != "" {
 			b.WriteString(" stage=" + ev.Stage)
+		}
+		if ev.Attempt != 0 {
+			fmt.Fprintf(&b, " attempt=%d", ev.Attempt)
+		}
+		if ev.Status != "" {
+			b.WriteString(" status=" + ev.Status)
 		}
 		b.WriteString("\n")
 	}
