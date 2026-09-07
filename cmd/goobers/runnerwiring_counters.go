@@ -441,7 +441,7 @@ func buildRefillDemandCounter(
 	excludeLabels := append(splitLabelList(task.Inputs["excludeLabels"]), providers.LabelClaimed)
 	requireLabels = uniqueSortedLabels(requireLabels)
 	excludeLabels = uniqueSortedLabels(excludeLabels)
-	predicate, err := labelpredicate.Compile(task.Inputs["labelPredicate"], requireLabels, excludeLabels)
+	predicate, _, err := compileBacklogLabelSelection(task.Inputs["labelPredicate"], requireLabels, excludeLabels, task.Inputs["parkLabels"], task.Inputs["filterParkLabels"])
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q refill label predicate: %w", wf.Name, err)
 	}

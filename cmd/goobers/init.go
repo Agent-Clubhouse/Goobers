@@ -66,7 +66,7 @@ func checkDemoNetworkIsolation(demo, insecure bool, goos string, stderr io.Write
 	return 0, demoUnisolated, linuxUserNSRestricted
 }
 
-const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
@@ -80,6 +80,11 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,\n" +
 	"select the repository's Resource owner, choose Only select repositories, and\n" +
 	"grant the permissions documented in docs/guides/github-token-scopes.md.\n" +
+	"--template=standard non-interactively seeds backlog-curation and implementation\n" +
+	"with their three canonical personas. It requires an explicit --ci-command\n" +
+	"JSON argv array and comma-separated --required-capabilities (e.g. node@24).\n" +
+	"It creates placeholders: configure repository identity and credential refs\n" +
+	"before running. It does not start workflows and refuses configured targets.\n" +
 	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
 	"intentionally not production-safe. With --source-tree <path>, it instead\n" +
 	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +
@@ -124,12 +129,19 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	guidedDevAssets := fs.String("dev-assets", "", "with --guided, serve a portal build from this directory instead of embedded assets")
 	guidedWorkdir := fs.String("workdir", defaultGettingStartedWorkdir(), "with --guided, temporary browser setup state")
 	guidedInstancePath := fs.String("instance-path", "", "with --guided, instance root to create")
-	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
-	harness := fs.String("harness", "", "with --template=quickstart, the agent harness every seeded goober uses (copilot, claude-code)")
+	template := fs.String("template", "", "seed a named onboarding template (available: quickstart, standard)")
+	ciCommand := fs.String("ci-command", "", "with --template=standard, required local CI command as a JSON argv array")
+	requiredCapabilities := fs.String("required-capabilities", "", "with --template=standard, required comma-separated toolchain capabilities")
+	harness := fs.String("harness", "", "with --template, the agent harness every seeded goober uses (copilot, claude-code)")
 	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
 	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
 	fs.Usage = helpUsage(stderr, "init")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	standard, standardErr := standardInitOptions(*template, *harness, *ciCommand, *requiredCapabilities)
+	if standardErr != nil {
+		pf(stderr, "error: %v\n", standardErr)
 		return 2
 	}
 	sourceTreeSet := false
@@ -152,8 +164,8 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		pf(stderr, "error: --insecure requires --demo\n")
 		return 2
 	}
-	if *template != "" && *template != instance.QuickstartTemplate {
-		pf(stderr, "error: unknown init template %q (available: %s)\n", *template, instance.QuickstartTemplate)
+	if *template != "" && *template != instance.QuickstartTemplate && *template != standardInitTemplate {
+		pf(stderr, "error: unknown init template %q (available: %s, %s)\n", *template, instance.QuickstartTemplate, standardInitTemplate)
 		return 2
 	}
 	if sourceTreeSet && *sourceTree == "" {
@@ -168,8 +180,8 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		pf(stderr, "error: --json is supported by init only with --source-tree\n")
 		return 2
 	}
-	if *harness != "" && *template != instance.QuickstartTemplate {
-		pf(stderr, "error: --harness requires --template=%s\n", instance.QuickstartTemplate)
+	if *harness != "" && *template != instance.QuickstartTemplate && *template != standardInitTemplate {
+		pf(stderr, "error: --harness requires --template=%s or --template=%s\n", instance.QuickstartTemplate, standardInitTemplate)
 		return 2
 	}
 	if *guidedInstancePath != "" && !*guided {
@@ -233,13 +245,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	var res *instance.InitResult
 	var err error
 	errCode := 2
-	if *template == instance.QuickstartTemplate {
-		res, err = instance.InitQuickstartWithOptions(root, instance.QuickstartOptions{Harness: *harness})
-	} else if *demo {
-		res, err = instance.InitDemo(root)
-	} else {
-		res, err = instance.Init(root)
-	}
+	res, err = seedInitTemplate(root, *template, *harness, *demo, standard)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		printDefaultedTargetNote(stderr, err, fs.NArg())

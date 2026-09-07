@@ -433,7 +433,12 @@ Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
 input otherwise), requireLabels, excludeLabels, and the optional
 labelPredicate CEL expression. CEL supports string membership in `labels`
-combined with &&, ||, and !. fieldPredicate adds typed comparisons against
+combined with &&, ||, and !.
+Park filtering uses a separate comma-separated parkLabels input (empty
+by default). filterParkLabels defaults to true; false ignores only that
+list, preserving excludeLabels, requireLabels, and labelPredicate. Shipped
+curation declares its park labels separately; opting out never adds ready.
+fieldPredicate adds typed comparisons against
 provider-native scalar fields using fields["name"]; unavailable fields fail
 explicitly. With --claim, claims
 exactly one via the local claim ledger (source of truth) mirrored to a
@@ -1972,7 +1977,7 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
@@ -1987,6 +1992,11 @@ user-scoped Portal canvas extension.
 For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,
 select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
+--template=standard non-interactively seeds backlog-curation and implementation
+with their three canonical personas. It requires an explicit --ci-command
+JSON argv array and comma-separated --required-capabilities (e.g. node@24).
+It creates placeholders: configure repository identity and credential refs
+before running. It does not start workflows and refuses configured targets.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,

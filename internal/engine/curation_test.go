@@ -131,8 +131,8 @@ func TestBacklogCurationDryRun(t *testing.T) {
 	if gotQueryInputs["trustLabel"] != "goobers:approved" {
 		t.Errorf("query-backlog trustLabel input = %v, want goobers:approved", gotQueryInputs["trustLabel"])
 	}
-	if gotQueryInputs["excludeLabels"] != "goobers:ready,goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation" {
-		t.Errorf("query-backlog excludeLabels input = %v, want ordinary FIFO to exclude outcome markers", gotQueryInputs["excludeLabels"])
+	if gotQueryInputs["excludeLabels"] != "goobers:ready" || gotQueryInputs["parkLabels"] != "goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation" || gotQueryInputs["filterParkLabels"] != "true" {
+		t.Errorf("query-backlog label inputs = %v, want ordinary FIFO to exclude outcome markers by default", gotQueryInputs)
 	}
 	if gotQueryInputs["staleAfterDays"] != "90" {
 		t.Errorf("query-backlog staleAfterDays input = %v, want 90", gotQueryInputs["staleAfterDays"])

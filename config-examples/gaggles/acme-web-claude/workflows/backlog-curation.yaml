@@ -100,7 +100,11 @@ spec:
         # Outcome markers stay out of ordinary FIFO selection. A bounded
         # dependency recheck revisits blocked-on-sibling items without claiming
         # unchanged blockers or starving forward work.
-        excludeLabels: "goobers:ready,goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
+        excludeLabels: "goobers:ready"
+        parkLabels: "goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
+        # Set false to include parked candidates; other eligibility gates remain.
+        # This changes selection only and never automatically restores ready.
+        filterParkLabels: "true"
         # Batch: claim up to 20 eligible items per run; backlog-query honors
         # maxItems and writes a claimed-items.json array for a batch (#236).
         maxItems: "20"

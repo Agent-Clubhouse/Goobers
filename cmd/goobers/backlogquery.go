@@ -131,7 +131,12 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
 	"labelPredicate CEL expression. CEL supports string membership in `labels`\n" +
-	"combined with &&, ||, and !. fieldPredicate adds typed comparisons against\n" +
+	"combined with &&, ||, and !.\n" +
+	"Park filtering uses a separate comma-separated parkLabels input (empty\n" +
+	"by default). filterParkLabels defaults to true; false ignores only that\n" +
+	"list, preserving excludeLabels, requireLabels, and labelPredicate. Shipped\n" +
+	"curation declares its park labels separately; opting out never adds ready.\n" +
+	"fieldPredicate adds typed comparisons against\n" +
 	"provider-native scalar fields using fields[\"name\"]; unavailable fields fail\n" +
 	"explicitly. With --claim, claims\n" +
 	"exactly one via the local claim ledger (source of truth) mirrored to a\n" +
@@ -334,9 +339,9 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
 	labelExpression := providerInput("labelPredicate", "")
-	labelFilter, err := labelpredicate.Compile(labelExpression, requireLabels, excludeLabels)
+	labelFilter, excludeLabels, err := compileBacklogLabelSelection(labelExpression, requireLabels, excludeLabels, providerInput("parkLabels", ""), providerInput("filterParkLabels", "true"))
 	if err != nil {
-		pf(stderr, "error: invalid labelPredicate: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	fieldExpression := providerInput("fieldPredicate", "")

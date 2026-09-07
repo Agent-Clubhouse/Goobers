@@ -10,6 +10,7 @@ import (
 // readyLabel/resweepReadyLabel defaults and policy-action claims need not appear
 // as literal selector inputs, but still depend on repository labels (#3184).
 func appendTaskLifecycleLabelUses(demand *repoRealityDemand, task apiv1.Task, where, file, path string) {
+	appendTaskParkLabelUses(demand, task, where, file, path)
 	labels := &connectLabelSet{}
 	connectTaskAppliedLabels(task, labels)
 	for _, label := range labels.sorted() {
@@ -26,5 +27,14 @@ func appendTaskLifecycleLabelUses(demand *repoRealityDemand, task apiv1.Task, wh
 				file: file, path: path,
 			})
 		}
+	}
+}
+
+func appendTaskParkLabelUses(demand *repoRealityDemand, task apiv1.Task, where, file, path string) {
+	for _, label := range splitLabelList(task.Inputs["parkLabels"]) {
+		demand.labelUses = append(demand.labelUses, labelUse{
+			label: label, kind: labelUseExclude, where: where + " inputs.parkLabels",
+			file: file, path: path + "/parkLabels",
+		})
 	}
 }
