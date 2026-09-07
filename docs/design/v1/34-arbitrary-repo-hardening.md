@@ -1,6 +1,15 @@
 # Design: Arbitrary-repo hardening + multi-gaggle instances — V1 epic #34
 
-> Status: **draft — for review** · Area prefix: `GAG` · Milestone: **V1**
+> Status: **implemented** — epic #34 is closed. Per-gaggle runtime namespacing,
+> provider pagination/retry/idempotency, fairness, and the onboarding path all
+> ship.
+> Delivered-by: #124, #139, #140
+> Verified: 09db115bb (2026-09-06)
+>
+> **Several gaps this document names went stale within hours of authorship**;
+> read its current-state passages as the 2026-07 baseline the work started from
+> (#4520).
+> · Area prefix: `GAG` · Milestone: **V1**
 > Requirements: [`docs/requirements/gaggle.md`](../../requirements/gaggle.md),
 > [`docs/requirements/instance.md`](../../requirements/instance.md) ·
 > Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §6

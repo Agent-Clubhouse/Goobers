@@ -1,6 +1,18 @@
 # Design: Human-in-the-Loop — escalation visibility & intervention
 
-> Status: **draft — for review; tiers 1–2 for build, tier 3 is a forward sketch** · Area prefix: `HITL` (new) · Milestone: **Human-in-the-Loop** (#16)
+> Status: **implemented for tiers 1–2; tier 3 remains a forward sketch.** The
+> `goobers.hitl.v1` protocol and the operator resolve/rerun/resume commands ship,
+> and the engine holds a resumable terminal open for the configured window when
+> HITL is enabled.
+> Delivered-by: #3876, #3877, #3883
+> Verified: 09db115bb (2026-09-06)
+>
+> **The "to build" list, the no-escalation-summary claim, and the open questions
+> below predate delivery** and contradict both the current code and this
+> document's own later sections. Read them as the design's starting point
+> (#4520). HITL is opt-in: an instance that configures nothing settles a run at
+> its terminal exactly as before the protocol existed.
+> · Area prefix: `HITL` (new) · Milestone: **Human-in-the-Loop** (#16)
 > Requirements: [`docs/requirements/gate.md`](../requirements/gate.md), [`docs/requirements/portal.md`](../requirements/portal.md)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #168 (human-gate evaluator + durable pause/resume), #170 (CLI approve/approvals), #172 (access-control seam), #309 (surface terminal run_failed cause)

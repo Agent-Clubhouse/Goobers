@@ -1,6 +1,14 @@
 # Design: Backlog curation engine — continuous, reliable, agile-inspired
 
-> Status: **approved — for staged implementation** (2026-07-22)
+> Status: **implemented** — CURE-1..CURE-8 shipped; the owning epic #1224 stays
+> open for later curation waves, which are separate work rather than unfinished
+> parts of this design.
+> Delivered-by: #983, #1003
+> Verified: 09db115bb (2026-09-06)
+>
+> **§1's problem statement is the 2026-07-22 record of why this was built, not
+> current state.** Milestone assignment and staleness handling — which it
+> describes as absent — are both present now (#4520).
 > Area prefix: `CURE`
 > Milestone: **Backlog curation engine — continuous, reliable, agile-inspired**
 > Related workflow: `backlog-curation` · Related goober: `curator` (the backlog's scrum master)
