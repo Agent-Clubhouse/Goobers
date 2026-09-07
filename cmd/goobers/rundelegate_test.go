@@ -331,7 +331,10 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 	nowMu.Lock()
-	now = now.Add(triggerDelegationTimeout + time.Millisecond)
+	// Past the CLIENT's wait, which since #2974 outlives the request's own
+	// deadline on purpose: the subject here is that a request past its
+	// deadline is not dispatched late, and that is unchanged.
+	now = now.Add(triggerResponseWait() + time.Millisecond)
 	nowMu.Unlock()
 
 	var code int
