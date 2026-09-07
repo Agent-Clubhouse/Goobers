@@ -117,14 +117,16 @@ func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherC
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	command := append(append([]string(nil), resolveHarnessCommand(c.Command)...), launcherContractFlag)
+	stdout := newTranscriptBuffer(16 * 1024)
 	result, err := c.runner().Run(probeCtx, ProcessRequest{
 		Command: command, Env: baseEnv(nil), Timeout: 10 * time.Second,
 		MaxTranscriptBytes: 16 * 1024,
+		StdoutCapture:      stdout,
 	})
-	if err != nil || result.ExitCode != 0 || result.TranscriptTruncated {
+	if err != nil || result.ExitCode != 0 || stdout.Truncated() {
 		return launcherContract{}, fmt.Errorf("harness: copilot launcher is incompatible: %s must return a bounded version-1 session contract without starting an agent; use direct copilot or a contract-aware wrapper", launcherContractFlag)
 	}
-	contract, err := parseLauncherContract(result.Transcript)
+	contract, err := parseLauncherContract(stdout.Bytes())
 	if err != nil {
 		return launcherContract{}, fmt.Errorf("harness: copilot launcher is incompatible: %w; use direct copilot or a contract-aware wrapper", err)
 	}

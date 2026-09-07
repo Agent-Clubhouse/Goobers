@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -92,7 +93,10 @@ func TestIncompatibleLauncherStopsBeforeAgentOrModelDiscovery(t *testing.T) {
 func TestLauncherPreflightRejectsConflictingConfiguredSessionSelector(t *testing.T) {
 	adapter := &CopilotAdapter{
 		Command: []string{"wrapper", "copilot", "--resume", "foreign-session"}, RequireLauncherContract: true,
-		Runner: &fakeProcessRunner{result: ProcessResult{Transcript: []byte(`{"version":1,"sessionMode":"wrapper-managed"}`)}},
+		Runner: &fakeProcessRunner{act: func(req ProcessRequest) error {
+			_, err := io.WriteString(req.StdoutCapture, `{"version":1,"sessionMode":"wrapper-managed"}`)
+			return err
+		}},
 	}
 	if _, err := adapter.Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "selectors conflict") {
 		t.Fatalf("conflict was not rejected before dispatch: %v", err)
@@ -120,6 +124,9 @@ func TestLauncherSessionModesReachRunAndCaptureTheirOwnTranscript(t *testing.T) 
 				Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
 					if req.Command[len(req.Command)-1] == launcherContractFlag {
 						probes++
+						if _, err := req.StdoutCapture.Write(data); err != nil {
+							return ProcessResult{}, err
+						}
 						return ProcessResult{Transcript: data}, nil
 					}
 					attempts++

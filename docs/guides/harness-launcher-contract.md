@@ -10,7 +10,8 @@ The default command, and an explicit `["copilot"]`, retain the existing direct
 Copilot behavior. Every other Copilot override must respond to its complete
 configured prefix followed by `--goobers-launcher-contract`. This probe must not
 start an agent, contact a model, request credentials, or modify a session. It
-returns exactly one JSON object, at most 16 KiB, within ten seconds. Nonzero exit,
+returns exactly one JSON object on stdout, at most 16 KiB, within ten seconds.
+Stderr diagnostics are captured separately and are never parsed as the contract. Nonzero exit,
 truncated output, unknown fields, or unsupported versions/modes fail admission
 and preflight before workflow dispatch. Successful contracts are cached for that
 adapter instance. Changing a wrapper requires rebuilding/restarting that instance.

@@ -17,6 +17,7 @@ func TestLauncherProcessFixture(t *testing.T) {
 		return
 	}
 	if slices.Contains(os.Args, launcherContractFlag) {
+		fmt.Fprintln(os.Stderr, "fixture launcher diagnostic: this is not protocol stdout")
 		fmt.Println(`{"version":1,"sessionMode":"wrapper-managed"}`)
 		os.Exit(0)
 	}
