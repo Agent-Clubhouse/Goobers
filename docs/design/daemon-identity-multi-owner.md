@@ -2,11 +2,11 @@
 
 **Status:** implemented, with a recorded scope delta — the per-owner routing
 this document designs shipped in #3414 and #3415, and the two validations it
-designed but did not ship were adjudicated and closed out in #4517. Retained as
+designed but did not ship were adjudicated and closed out in #4527. Retained as
 the design of record for #3341; the code, not this document, is authoritative
-for current behaviour. **Verified against** `origin/main` @ `09db115bb`
-(2026-09-06).
-Delivered-by: #3414, #3415, #4517
+for current behaviour. **Verified against** `origin/main` @ `b1d7b362c`
+(2026-09-07).
+Delivered-by: #3414, #3415, #4527
 
 > **Read §5.1 "Shipped scope delta" before treating §5, §6, §8 or §9 as a
 > specification.** The body below is written in the *pre-implementation* voice
@@ -193,7 +193,7 @@ Check 3 is independently shippable before the `installations:` field exists and 
 first — it converts the remaining silent-failure window into a config error with a clear message,
 even for operators who stay on the workaround (follow-up F1, §8).
 
-### 5.1 Shipped scope delta (adjudicated in #4517)
+### 5.1 Shipped scope delta (adjudicated in #4527, under #4517)
 
 The five checks above were designed together; only some shipped with #3414/#3415.
 The 2026-09-06 documentation audit found the difference undocumented, with §8's
@@ -208,8 +208,8 @@ subsection — not §5's list — is the current contract.
 | Check 4 — every owner has a binding | Yes | Contract, unchanged. |
 | Check 4, second sentence — **extra bindings rejected** | **No** | **Removed from the contract.** See below. |
 | Check 5 — same-App cross-check, single-`installationId` arm | Yes (#3414) | Contract, unchanged. |
-| Check 5 — same-App cross-check, **`installations` arm** | **No, until #4517** | **Implemented.** See below. |
-| §6 — **missing-`Slug` warning** | **No, until #4517** | **Implemented.** See below. |
+| Check 5 — same-App cross-check, **`installations` arm** | **No, until #4527** | **Implemented.** See below. |
+| §6 — **missing-`Slug` warning** | **No, until #4527** | **Implemented.** See below. |
 | §3/§4 — **case-insensitive owner matching** (stated three times) | **No** | **Removed from the contract.** See below. |
 
 **Case-insensitive owner matching — removed from the contract.**
@@ -234,7 +234,7 @@ apply. The typo'd-owner hazard Q2 worried about is still caught, because the
 *real* owner then has no binding and trips check 4's error. The contract is
 therefore: **extra bindings are permitted and inert.**
 
-**Same-App cross-check, `installations` arm — implemented (#4517).** This one is
+**Same-App cross-check, `installations` arm — implemented (#4527).** This one is
 a real gap, not a scope trim: #3414's `validateDaemonIdentitySameAppInstallations`
 returned early when the top-level `installationId` was empty, making it a no-op
 for *every* `installations`-form config — exactly the multi-owner shape this
@@ -245,7 +245,7 @@ identity's installation **for that repo's owner** through
 binding at all is deliberately left to check 4 rather than reported here, so the
 error blames the right field.
 
-**Missing-`Slug` warning — implemented (#4517).** §6 argued for it and #3415 did
+**Missing-`Slug` warning — implemented (#4527).** §6 argued for it and #3415 did
 not ship it, so a `kind: github-app` daemon identity without `slug` silently
 degraded PR selection to the branch-name-prefix heuristic. `goobers validate`
 now emits `IDENT001` (warning, not error — the instance still mints and
@@ -334,7 +334,7 @@ see §5.1 for what actually shipped.
 | # | Scope | Gate |
 | --- | --- | --- |
 | #3414 (F1) | Fail-at-config-load coverage checks for the **existing** single-installation form (§5 checks 3 and 5, single-owner arm): multi-owner repos + single `installationId` → load error; same-App `repos[].auth` disagreement → load error. No new config surface; independently shippable and worth landing first | This design merged |
-| #3415 (F2) | `installations:` per-owner bindings: config field + structural validation (§5 checks 1–2, 4, and the `installations`-form arm of 5), routing in `buildCredentials` / `newDaemonIdentityGitHubAppTokenSource` (§4), missing-`Slug` warning (§6), schema + guide updates (§7). **Shipped partially** — the field, structural validation, and routing landed; the `installations` arm of check 5, the missing-`Slug` warning, and the guide updates did not. All three were closed out in #4517 (§5.1). | #3414 (its checks become the `installations`-form arms) |
+| #3415 (F2) | `installations:` per-owner bindings: config field + structural validation (§5 checks 1–2, 4, and the `installations`-form arm of 5), routing in `buildCredentials` / `newDaemonIdentityGitHubAppTokenSource` (§4), missing-`Slug` warning (§6), schema + guide updates (§7). **Shipped partially** — the field, structural validation, and routing landed; the `installations` arm of check 5, the missing-`Slug` warning, and the guide updates did not. All three were closed out in #4527 (§5.1). | #3414 (its checks become the `installations`-form arms) |
 | — | Per-owner *different Apps* (multi-login attribution) — **not filed**: no observed need, and it invalidates the single-`expectedAuthorLogin` model (D6). File only if a real instance cannot install one App on every owner it targets | — |
 
 ---
@@ -343,5 +343,5 @@ see §5.1 for what actually shipped.
 
 | # | Question |
 | --- | --- |
-| Q1 | **Answered: error.** Shipped as a load error in #3414, extended to the `installations` form in #4517 (§5.1). Original framing: should check 5 (§5, same-App cross-check) be an error or a warning? This doc says error — two IDs for one (App, owner) cannot both be right, so one half of the config is already broken — but unlike checks 3/4 the broken half might be `repos[].auth` rather than `daemonIdentity`, and the error message must not presume which. Ruling folded into F1's review |
+| Q1 | **Answered: error.** Shipped as a load error in #3414, extended to the `installations` form in #4527 (§5.1). Original framing: should check 5 (§5, same-App cross-check) be an error or a warning? This doc says error — two IDs for one (App, owner) cannot both be right, so one half of the config is already broken — but unlike checks 3/4 the broken half might be `repos[].auth` rather than `daemonIdentity`, and the error message must not presume which. Ruling folded into F1's review |
 | Q2 | **Answered: yes, too strict — the rule was dropped entirely, not relaxed to a warning** (§5.1). Original framing: is rejecting *extra* bindings (§5 check 4) too strict for a config shared across instances with different repo subsets? |
