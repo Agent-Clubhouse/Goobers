@@ -19,10 +19,12 @@ const orphanScanPages = 10
 const orphanScanPageSize = 100
 
 type backlogRoutingScope struct {
-	name       string
-	required   []string
-	excluded   []string
-	expression string
+	name             string
+	required         []string
+	excluded         []string
+	expression       string
+	parkLabels       string
+	filterParkLabels string
 }
 
 func appendBacklogRoutingDemand(cfg *instance.Config, set *instance.ConfigSet, demand map[int]*repoRealityDemand) {
@@ -67,6 +69,7 @@ func localBacklogRoutingScopes(gaggle apiv1.Gaggle, workflows []apiv1.Workflow) 
 			scopes = append(scopes, backlogRoutingScope{
 				name:     gaggle.Name + "/" + wf.Name + "/" + task.Name,
 				required: required, excluded: splitLabelList(task.Inputs["excludeLabels"]), expression: task.Inputs["labelPredicate"],
+				parkLabels: task.Inputs["parkLabels"], filterParkLabels: task.Inputs["filterParkLabels"],
 			})
 		}
 	}
@@ -77,12 +80,12 @@ func compileRoutingScopes(scopes []backlogRoutingScope) ([]*labelpredicate.Predi
 	filters := make([]*labelpredicate.Predicate, 0, len(scopes))
 	var descriptions []string
 	for _, scope := range scopes {
-		filter, err := labelpredicate.Compile(scope.expression, scope.required, scope.excluded)
+		filter, excluded, err := compileBacklogLabelSelection(scope.expression, scope.required, scope.excluded, scope.parkLabels, scope.filterParkLabels)
 		if err != nil {
 			return nil, "", fmt.Errorf("%s: %w", scope.name, err)
 		}
 		filters = append(filters, filter)
-		descriptions = append(descriptions, fmt.Sprintf("%s requires %v, excludes %v, predicate %q", scope.name, scope.required, scope.excluded, scope.expression))
+		descriptions = append(descriptions, fmt.Sprintf("%s requires %v, excludes %v, predicate %q", scope.name, scope.required, excluded, scope.expression))
 	}
 	return filters, strings.Join(descriptions, "; "), nil
 }

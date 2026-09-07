@@ -824,7 +824,7 @@ var connectAppliedLabelInputs = map[string]string{
 // comma-separated list of labels a selector reads but never files — they exist
 // only because some other stage applies them, so they belong in the ensured
 // set and never on the starter issue.
-var connectExcludedLabelInputs = []string{"excludeLabels"}
+var connectExcludedLabelInputs = []string{"excludeLabels", "parkLabels"}
 
 // connectDerivedLabels derives the two label sets a connected repository needs
 // before a first run, plus the first connected workflow's name for the
