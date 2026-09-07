@@ -490,7 +490,10 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 		"issues: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
-		`labels: ["goobers:critical", "type:bug", "area:workflows"]`,
+		// goobers:approved and goobers:cloud are load-bearing, not decoration:
+		// without the trust gate and the claim partition a filed main-break issue
+		// is never selectable and the label only accumulates (2026-09-07 ruling).
+		`labels: ["goobers:critical", "type:bug", "area:workflows", "goobers:approved", "goobers:cloud"]`,
 	} {
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must contain %q", want)

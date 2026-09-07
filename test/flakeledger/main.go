@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,8 +23,20 @@ const (
 	flakeLabel       = "ci:flake"
 	flakeLabelColor  = "D73A4A"
 	flakeDescription = "Fingerprint-backed intermittent test failure"
-	snippetLimit     = 8 * 1024
-	signatureLimit   = 1024
+	// approvedLabel and cloudLabel put an auto-filed flake into the cloud
+	// instance's backlog as approved work. Operator ruling (2026-09-07):
+	// before this, flake issues carried ci:flake alone and every goobers:*
+	// label was stripped on refresh, so 54 of 56 open flakes had never been
+	// triaged and none could be claimed. Filing them approved and partitioned
+	// is what makes the autonomous lane able to act on them at all.
+	approvedLabel       = "goobers:approved"
+	approvedLabelColor  = "0E8A16"
+	approvedDescription = "Maintainer-approved — eligible for curation/implementation (SEC-047)"
+	cloudLabel          = "goobers:cloud"
+	cloudLabelColor     = "1D76DB"
+	cloudDescription    = "Claim-partition: issue belongs to the cloud (Goobernetes) instance"
+	snippetLimit        = 8 * 1024
+	signatureLimit      = 1024
 )
 
 var (
@@ -235,12 +246,16 @@ func publish(
 	repository providers.RepositoryRef,
 	report failuresReport,
 ) (publishResult, error) {
-	if _, err := provider.EnsureWorkItemLabels(ctx, repository, []providers.WorkItemLabel{{
-		Name:        flakeLabel,
-		Color:       flakeLabelColor,
-		Description: flakeDescription,
-	}}); err != nil {
-		return publishResult{}, fmt.Errorf("ensure %s label: %w", flakeLabel, err)
+	// EnsureWorkItemLabels creates only what is missing and never modifies an
+	// existing label, so naming the two backlog labels here cannot disturb the
+	// colour/description they already carry in a live repo — it just means a
+	// fresh repo can be published into without pre-seeding them by hand.
+	if _, err := provider.EnsureWorkItemLabels(ctx, repository, []providers.WorkItemLabel{
+		{Name: flakeLabel, Color: flakeLabelColor, Description: flakeDescription},
+		{Name: approvedLabel, Color: approvedLabelColor, Description: approvedDescription},
+		{Name: cloudLabel, Color: cloudLabelColor, Description: cloudDescription},
+	}); err != nil {
+		return publishResult{}, fmt.Errorf("ensure backlog labels: %w", err)
 	}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: repository,
@@ -266,7 +281,7 @@ func publish(
 				Repository: repository,
 				Title:      issueTitle(failure),
 				Body:       issueBody(report.Run, failure),
-				Labels:     []string{flakeLabel},
+				Labels:     []string{flakeLabel, approvedLabel, cloudLabel},
 				RunID:      "flake-" + failure.Fingerprint,
 			})
 			if err != nil {
@@ -276,7 +291,6 @@ func publish(
 			result.Created++
 			continue
 		}
-		removeLabels := workflowLabels(item.Labels)
 		marker := occurrenceMarker(report.Run, failure)
 		recorded := strings.Contains(item.Body, marker)
 		if !recorded {
@@ -295,14 +309,13 @@ func publish(
 		if !recorded {
 			comment = occurrenceComment(report.Run, failure)
 		}
-		if comment == "" && len(removeLabels) == 0 {
+		if comment == "" {
 			continue
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository:   repository,
-			ID:           item.ID,
-			RemoveLabels: removeLabels,
-			Comment:      comment,
+			Repository: repository,
+			ID:         item.ID,
+			Comment:    comment,
 		}); err != nil {
 			return result, fmt.Errorf("refresh issue %s for %s: %w", item.ID, failure.Fingerprint, err)
 		}
@@ -348,18 +361,6 @@ func distinguishingSignature(signature string) bool {
 	return false
 }
 
-func workflowLabels(labels []string) []string {
-	var result []string
-	for _, label := range labels {
-		normalized := strings.ToLower(label)
-		if strings.HasPrefix(normalized, "goobers:") || strings.HasPrefix(normalized, "goobers/status:") {
-			result = append(result, label)
-		}
-	}
-	sort.Strings(result)
-	return result
-}
-
 func issueTitle(failure testFailure) string {
 	title := fmt.Sprintf("[flake] %s %s: %s",
 		singleLine(failure.Package),
@@ -389,7 +390,7 @@ func issueBody(run runMetadata, failure testFailure) string {
 		"",
 		failureSnippet(failure),
 		"",
-		"This issue is maintained by the trusted stress workflow. It intentionally has no milestone or Goobers workflow labels.",
+		"This issue is filed and refreshed automatically by the trusted stress workflow, and enters the cloud instance's backlog as approved work.",
 	}, "\n")
 }
 

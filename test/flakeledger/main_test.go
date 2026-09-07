@@ -109,15 +109,21 @@ func TestRunPublishesSeededFailureAndRefreshesKnownFingerprint(t *testing.T) {
 	if stdout.String() != "flake ledger: 1 created, 1 refreshed\n" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
-	if len(provider.ensuredLabels) != 1 || provider.ensuredLabels[0].Name != flakeLabel {
+	// All three labels a filed flake needs are ensured, so a fresh repo does
+	// not have to be pre-seeded by hand.
+	if !slices.Equal(ensuredNames(provider.ensuredLabels),
+		[]string{flakeLabel, approvedLabel, cloudLabel}) {
 		t.Fatalf("ensured labels = %+v", provider.ensuredLabels)
 	}
 	if len(provider.updates) != 1 {
 		t.Fatalf("updates = %+v", provider.updates)
 	}
 	update := provider.updates[0]
+	// A refresh appends the occurrence and touches nothing else. It must not
+	// strip the goobers:* labels the backlog puts on a filed flake — doing so
+	// would tear a claim marker off an issue mid-run.
 	if update.ID != "7" ||
-		!slices.Equal(update.RemoveLabels, []string{"goobers/status:claimed", "goobers:ready"}) ||
+		len(update.RemoveLabels) != 0 || len(update.AddLabels) != 0 ||
 		!strings.Contains(update.Comment, "2 occurrence(s)") || update.State != "" ||
 		update.Title != nil || update.Body != nil || update.Milestone != nil {
 		t.Fatalf("update = %+v", update)
@@ -126,7 +132,7 @@ func TestRunPublishesSeededFailureAndRefreshesKnownFingerprint(t *testing.T) {
 		t.Fatalf("creates = %+v", provider.creates)
 	}
 	create := provider.creates[0]
-	if !slices.Equal(create.Labels, []string{flakeLabel}) || create.Status != "" ||
+	if !slices.Equal(create.Labels, []string{flakeLabel, approvedLabel, cloudLabel}) || create.Status != "" ||
 		!strings.Contains(create.Body, fingerprintMarker(fresh)) ||
 		!strings.Contains(create.Body, "stress run 123") ||
 		!strings.Contains(create.Body, "new assertion") ||
@@ -213,12 +219,10 @@ func TestPublishDoesNotDuplicateRecordedOccurrence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Refreshed != 1 || len(provider.updates) != 1 {
+	// An occurrence already recorded leaves nothing to say, and label stripping
+	// is gone, so the whole refresh is a no-op rather than an empty update.
+	if result.Refreshed != 0 || len(provider.updates) != 0 {
 		t.Fatalf("result=%+v updates=%+v", result, provider.updates)
-	}
-	update := provider.updates[0]
-	if update.Comment != "" || !slices.Equal(update.RemoveLabels, []string{"goobers/status:claimed"}) {
-		t.Fatalf("update = %+v", update)
 	}
 }
 
@@ -233,7 +237,7 @@ func TestPublishGreenRunStillEnsuresFlakeLabel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != (publishResult{}) || len(provider.ensuredLabels) != 1 ||
+	if result != (publishResult{}) || len(provider.ensuredLabels) != 3 ||
 		len(provider.creates) != 0 || len(provider.updates) != 0 {
 		t.Fatalf("result=%+v provider=%+v", result, provider)
 	}
@@ -408,4 +412,13 @@ func writeReport(t *testing.T, report failuresReport) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// ensuredNames projects the ensured label set to its names, in call order.
+func ensuredNames(labels []providers.WorkItemLabel) []string {
+	names := make([]string, 0, len(labels))
+	for _, label := range labels {
+		names = append(names, label.Name)
+	}
+	return names
 }
