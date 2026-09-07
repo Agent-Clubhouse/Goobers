@@ -615,6 +615,14 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 // The runner's lease ledger remains the claim source of truth (BL-005); this marker
 // only mirrors it.
 func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
+	result, err := p.claimWorkItem(ctx, req)
+	if err != nil {
+		p.recordClaimFailure(ctx, req, "claim")
+	}
+	return result, err
+}
+
+func (p *GitHubProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return ClaimResult{}, err
 	}
@@ -634,6 +642,11 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 	if winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID); err != nil {
 		return ClaimResult{}, err
 	} else if ok {
+		if winner == req.RunID {
+			if err := p.restoreOwnedClaimLabel(ctx, req.Repository, req.ID, label); err != nil {
+				return ClaimResult{}, err
+			}
+		}
 		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner, label)
 	}
 
@@ -662,6 +675,18 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 // The release breadcrumb lands first so a successful release never leaves later
 // claimers stuck behind the durable breadcrumb from the previous owner.
 func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
+	result, err := p.releaseWorkItemClaim(ctx, req)
+	if err != nil {
+		p.recordClaimFailure(ctx, req, "claim-release")
+	}
+	return result, err
+}
+
+func (p *GitHubProvider) recordClaimFailure(ctx context.Context, req ClaimWorkItemRequest, operation string) {
+	p.recordExternalRef(ctx, claimFailureRef(ProviderGitHub, req, operation))
+}
+
+func (p *GitHubProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return WorkItem{}, err
 	}
@@ -710,6 +735,7 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 		Ref:       issueRef(req.Repository, req.ID),
 		URL:       final.URL,
 		Operation: "claim-release",
+		Outcome:   "success",
 		RunID:     req.RunID,
 		Fields: map[string]FieldDigest{
 			"claim":  {Before: digestString("run=" + releasedRunID), After: digestString("released")},
@@ -787,6 +813,17 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 	return final, nil
 }
 
+// restoreOwnedClaimLabel repairs a stripped marker for an existing epoch owner.
+// It never changes the epoch or another owner's labels; finishClaim still checks
+// the final read after this write before reporting success.
+func (p *GitHubProvider) restoreOwnedClaimLabel(ctx context.Context, repo RepositoryRef, id, label string) error {
+	item, err := p.GetWorkItem(ctx, repo, id)
+	if err != nil || item.HasLabel(label) {
+		return err
+	}
+	return p.applyLabelChanges(ctx, repo, id, []string{label}, nil)
+}
+
 // finishClaim loads the final item, records the claim mutation, and reports whether
 // runID is the recognized winner.
 func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner, label string) (ClaimResult, error) {
@@ -803,6 +840,7 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 		Ref:       issueRef(repo, id),
 		URL:       item.URL,
 		Operation: "claim",
+		Outcome:   claimAttemptOutcome(claimed),
 		RunID:     runID,
 		Fields: map[string]FieldDigest{
 			"claim": {After: digestString("run=" + winner)},

@@ -140,6 +140,9 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *jsonOutput {
+		for i := range entries {
+			entries[i].Verification = entries[i].Verification.Report()
+		}
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(entries); err != nil {

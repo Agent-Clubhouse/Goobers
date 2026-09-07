@@ -97,7 +97,8 @@ const (
 	// failure-streak deprioritization) keep their input off the daemon. POST
 	// like its sibling routes: it is served under the same claims lock and
 	// carries a body, not a query string.
-	ClaimListPath = V1Prefix + "/claims/list"
+	ClaimListPath   = V1Prefix + "/claims/list"
+	ClaimVerifyPath = V1Prefix + "/claims/verify"
 	// ClaimRecoverPath is the claims plane's STALE-CLAIM SWEEP (Goobers#4016):
 	// release the ledger's expired leases and the leases whose owning run is
 	// already terminal. Unlike the five routes above it is not a primitive a
@@ -273,6 +274,7 @@ const (
 	RouteClaimRelease      RouteID = "claimRelease"
 	RouteClaimSettle       RouteID = "claimSettle"
 	RouteClaimList         RouteID = "claimList"
+	RouteClaimVerify       RouteID = "claimVerify"
 	RouteClaimRecover      RouteID = "claimRecover"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
@@ -435,6 +437,7 @@ var v1Routes = []Route{
 	// claimant's select-then-acquire must not have its select shed as read
 	// traffic while its acquire is admitted.
 	{ID: RouteClaimList, Method: http.MethodPost, Path: ClaimListPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteClaimVerify, Method: http.MethodPost, Path: ClaimVerifyPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	// claims/recover mutates the ledger (it releases leases), so it is pooled
 	// with the mutations rather than the reads.
 	{ID: RouteClaimRecover, Method: http.MethodPost, Path: ClaimRecoverPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},

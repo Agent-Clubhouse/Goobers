@@ -875,6 +875,8 @@ func surrenderedMutationFacts(mutations []dispatcher.SurrenderedMutation) []muta
 	for _, m := range mutations {
 		facts = append(facts, mutationFact{
 			Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL, Operation: m.Operation,
+			RunID: m.RunID, Outcome: m.Outcome, ErrorCode: m.ErrorCode,
+			ProviderRunID: m.ProviderRunID,
 		})
 	}
 	return facts

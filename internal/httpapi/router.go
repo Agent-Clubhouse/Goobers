@@ -187,6 +187,7 @@ func podPlanePath(path string) (scope string, ok bool) {
 		apicontract.ClaimReleasePath,
 		apicontract.ClaimSettlePath,
 		apicontract.ClaimListPath,
+		apicontract.ClaimVerifyPath,
 		apicontract.ClaimRecoverPath:
 		return ScopeClaims, true
 	case apicontract.TriggerIngestPath:

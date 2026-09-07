@@ -631,9 +631,11 @@ func TestClaimReleaseWithoutItemIsReleaseAllForRun(t *testing.T) {
 // field (the daemon converts one way, the stage client decodes the other),
 // and the client's lease ceiling is the route's.
 func TestClaimEntryWireMatchesTheLedger(t *testing.T) {
+	assertClaimWireShape(t, reflect.TypeFor[localscheduler.ClaimEntry](), reflect.TypeFor[ClaimEntry]())
 	released := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	original := localscheduler.ClaimEntry{
-		ItemID: "42", Gaggle: "g", Provider: "github", ExternalID: "42", RunID: "run-1", Workflow: "implementation",
+		Verification: localscheduler.ClaimVerification{State: "ownership-mismatch", ObservedAt: released.Add(-time.Minute), ProviderRunID: "other-run"},
+		ItemID:       "42", Gaggle: "g", Provider: "github", ExternalID: "42", RunID: "run-1", Workflow: "implementation",
 		ClaimedAt: released.Add(-time.Hour), ExpiresAt: released.Add(time.Hour), ReleasedAt: &released,
 	}
 	encoded, err := json.Marshal(original)
@@ -657,5 +659,23 @@ func TestClaimEntryWireMatchesTheLedger(t *testing.T) {
 	}
 	if MaxClaimLeaseSeconds != claimsclient.MaxLeaseSeconds {
 		t.Fatalf("claimsclient.MaxLeaseSeconds = %d, route cap = %d; the client clamps to a ceiling the route no longer has", claimsclient.MaxLeaseSeconds, MaxClaimLeaseSeconds)
+	}
+}
+
+func assertClaimWireShape(t *testing.T, source, wire reflect.Type) {
+	t.Helper()
+	if source == wire {
+		return
+	}
+	if source.Kind() != reflect.Struct || wire.Kind() != reflect.Struct || source.NumField() != wire.NumField() {
+		t.Fatalf("claim wire shape drift: %v != %v", source, wire)
+	}
+	for i := range source.NumField() {
+		field := source.Field(i)
+		mirror, ok := wire.FieldByName(field.Name)
+		if !ok || field.Tag.Get("json") != mirror.Tag.Get("json") {
+			t.Fatalf("claim wire field drift: %v.%s (%s)", source, field.Name, field.Tag)
+		}
+		assertClaimWireShape(t, field.Type, mirror.Type)
 	}
 }

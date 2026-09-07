@@ -41,15 +41,16 @@ func (k ClaimKey) storageKey() (string, error) {
 
 // ClaimEntry is one lease in the claim ledger.
 type ClaimEntry struct {
-	ItemID     string     `json:"itemId"`
-	Gaggle     string     `json:"gaggle,omitempty"`
-	Provider   string     `json:"provider,omitempty"`
-	ExternalID string     `json:"externalId,omitempty"`
-	RunID      string     `json:"runId"`
-	Workflow   string     `json:"workflow"`
-	ClaimedAt  time.Time  `json:"claimedAt"`
-	ExpiresAt  time.Time  `json:"expiresAt"`
-	ReleasedAt *time.Time `json:"releasedAt,omitempty"`
+	Verification ClaimVerification `json:"verification"`
+	ItemID       string            `json:"itemId"`
+	Gaggle       string            `json:"gaggle,omitempty"`
+	Provider     string            `json:"provider,omitempty"`
+	ExternalID   string            `json:"externalId,omitempty"`
+	RunID        string            `json:"runId"`
+	Workflow     string            `json:"workflow"`
+	ClaimedAt    time.Time         `json:"claimedAt"`
+	ExpiresAt    time.Time         `json:"expiresAt"`
+	ReleasedAt   *time.Time        `json:"releasedAt,omitempty"`
 }
 
 // expired reports whether the lease is no longer live at now.
@@ -403,6 +404,12 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		Workflow:   workflow,
 		ClaimedAt:  now,
 		ExpiresAt:  now.Add(leaseDuration),
+	}
+	// A live same-owner renewal is continuous ownership, not a new provider
+	// observation. Retain its original as-of timestamp; replacement or expired
+	// leases must never inherit the prior owner's verification.
+	if hadPrev && prev.RunID == runID && !prev.expired(now) && prev.ReleasedAt == nil {
+		entry.Verification = prev.Verification
 	}
 	l.entries[storageKey] = entry
 	previousHistory, hadHistory := l.historyEntry(runID, storageKey)

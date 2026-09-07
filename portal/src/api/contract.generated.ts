@@ -33,6 +33,7 @@ export const apiRoutes = {
   "claimRelease": { method: "POST", path: "/api/v1/claims/release", actionClass: "workflow-execution" },
   "claimSettle": { method: "POST", path: "/api/v1/claims/settle", actionClass: "workflow-execution" },
   "claimList": { method: "POST", path: "/api/v1/claims/list", actionClass: "workflow-execution" },
+  "claimVerify": { method: "POST", path: "/api/v1/claims/verify", actionClass: "workflow-execution" },
   "claimRecover": { method: "POST", path: "/api/v1/claims/recover", actionClass: "workflow-execution" },
   "triggerIngest": { method: "POST", path: "/api/v1/triggers", actionClass: "workflow-execution" },
   "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
