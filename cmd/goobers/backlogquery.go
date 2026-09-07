@@ -1803,7 +1803,19 @@ func performBacklogQueryReconciliation(
 	if err != nil {
 		return 0, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
 	}
-	return reconciled, 0
+	// #3086: the pass above corrects a claim label with no lease behind it. The
+	// opposite drift — a live lease with no label — is invisible to it, because
+	// it selects items to inspect by label, so this walks the ledger instead.
+	// Not fatal, deliberately. The reconciliation above has already run and
+	// committed its corrections, and this pass's own per-item failures are
+	// warnings for the same reason: it is scheduled housekeeping, so failing
+	// the stage would discard completed work to report a check that can simply
+	// run again on the next tick.
+	restored, err := restoreInvisibleClaims(ctx, env.layout, env.ghIssueProvider, env.repo, observedAt, env.stderr)
+	if err != nil {
+		pf(env.stderr, "warning: could not reconcile claim visibility: %v\n", err)
+	}
+	return reconciled + restored, 0
 }
 
 type backlogScanOptions struct {

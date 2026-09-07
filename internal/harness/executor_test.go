@@ -156,6 +156,13 @@ func (f *mcpFailureFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcom
 // lost servers — next to whatever the stage goes on to report — while leaving
 // the run's own outcome untouched (strictly additive: nothing that worked
 // before changes).
+//
+// The server here is a goober-DECLARED one, which is where that additive
+// contract still holds: a workflow may declare an MCP server its stage can do
+// without. goobers-io is the exception (#2955) — the harness registers it, the
+// prompt depends on it, and a stage cannot do its declared work without it, so
+// its loss fails the run. TestExecutorFailsWhenRequiredGoobersIOWasRejected
+// covers that case.
 func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 	rec := &fakeRecorder{}
 	adapter := &mcpFailureFakeAdapter{
@@ -164,7 +171,7 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 				Status: apiv1.ResultSuccess,
 			})
 		}},
-		failures: []MCPServerFailure{{Server: "goobers-io", Status: "failed"}},
+		failures: []MCPServerFailure{{Server: "acme-tools", Status: "failed"}},
 	}
 	exec, err := NewExecutor(
 		adapter,
@@ -199,7 +206,7 @@ func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
 		t.Fatalf("annotation stage = %q, want %q", annotation.Stage, "implement")
 	}
 	servers, ok := annotation.Runner["servers"].([]map[string]string)
-	if !ok || len(servers) != 1 || servers[0]["server"] != "goobers-io" || servers[0]["status"] != "failed" {
+	if !ok || len(servers) != 1 || servers[0]["server"] != "acme-tools" || servers[0]["status"] != "failed" {
 		t.Fatalf("annotation servers = %#v", annotation.Runner["servers"])
 	}
 	detail, _ := annotation.Runner["detail"].(string)

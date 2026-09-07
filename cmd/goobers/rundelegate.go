@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -318,8 +319,16 @@ func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, ti
 			}
 		}
 		if delegationNow().After(deadline) {
-			return "", fmt.Errorf("delegate: timed out after %s waiting for the live `goobers up` daemon to pick up the trigger request "+
-				"(request left at %s — is the daemon still running and healthy?)", timeout, filepath.Join(schedulerDir, pendingTriggersDir, requestID+requestSuffix))
+			// Reaching here now means the daemon never answered at all, not
+			// merely that it was slow: the wait outlives the request's own
+			// deadline, so a daemon that swept at any point would have written
+			// either a dispatch or a stale refusal. Say which of the two
+			// remaining explanations it is rather than asking the operator
+			// (#2974).
+			return "", fmt.Errorf("delegate: timed out after %s waiting for the `goobers up` daemon to answer the trigger request "+
+				"(request left at %s). %s", timeout,
+				filepath.Join(schedulerDir, pendingTriggersDir, requestID+requestSuffix),
+				schedulerLivenessEvidence(schedulerDir))
 		}
 		select {
 		case <-ctx.Done():
@@ -337,6 +346,32 @@ var delegationPollInterval = 100 * time.Millisecond
 // const, for the same reason. 30s comfortably exceeds delegationSweepInterval
 // (up.go) by a wide margin under any normal daemon load.
 var triggerDelegationTimeout = 30 * time.Second
+
+// triggerResponseGrace is how much longer the CLIENT waits than the request it
+// submitted is allowed to live (#2974).
+//
+// The two windows used to be one number, and that is what produced a failure
+// with no answer in it. On a Windows daemon restart the client waited its 30
+// seconds, reported "timed out ... is the daemon still running and healthy?",
+// and the daemon swept the request about six seconds later and — correctly,
+// under #537 — refused it as stale. The daemon was healthy, the request was
+// definitively resolved, and the operator was told neither of those things.
+//
+// Ordering the windows fixes that without touching the safety property. The
+// request still expires exactly when it always did, so a request the operator
+// believes failed can still never be dispatched later; the client simply stays
+// long enough afterwards to collect the daemon's own verdict. The grace covers
+// the sweep interval plus the write, so the only way to reach a bare timeout
+// now is a daemon that is not sweeping at all — which is the one case that
+// message was ever meant to describe.
+//
+// Var, not const, so tests need not sleep.
+var triggerResponseGrace = 15 * time.Second
+
+// triggerResponseWait is how long a submitting client listens for a verdict.
+func triggerResponseWait() time.Duration {
+	return triggerDelegationTimeout + triggerResponseGrace
+}
 
 var delegationNow = time.Now
 
@@ -631,3 +666,40 @@ func dispatchPriorityTrigger(ctx context.Context, l instance.Layout, gaggle, wor
 	}
 	return triggerer.PriorityTrigger(ctx, workflow, sourceRun)
 }
+
+// schedulerLivenessEvidence describes what the scheduler heartbeat says, for
+// the one case a delegation can still time out (#2974).
+//
+// The heartbeat is refreshed by a completed scheduler tick, so it distinguishes
+// exactly the two states the old message conflated: a daemon whose API is up
+// but whose scheduler is not yet ticking — the startup window this issue was
+// reported from — and no live daemon at all. Those call for opposite responses,
+// and the difference is observable, so the operator should not have to guess
+// which one they are in.
+//
+// Diagnostic only: it never changes the outcome, and an unreadable heartbeat
+// says so plainly rather than asserting either state.
+func schedulerLivenessEvidence(schedulerDir string) string {
+	lastTick, err := daemonstate.Read(filepath.Join(schedulerDir, "up.lock"))
+	if err != nil {
+		return "The scheduler heartbeat could not be read (" + err.Error() +
+			"), so whether a daemon is live is unknown from here."
+	}
+	age := delegationNow().UTC().Sub(lastTick)
+	if age < 0 {
+		age = 0
+	}
+	if age <= schedulerHeartbeatFreshFor {
+		return fmt.Sprintf(
+			"The scheduler last ticked %s ago, so a daemon is live but its trigger sweep did not reach this "+
+				"request; retry once startup settles.", age.Truncate(time.Second))
+	}
+	return fmt.Sprintf(
+		"The scheduler has not ticked for %s, so no live daemon is sweeping triggers; start or restart `goobers up`.",
+		age.Truncate(time.Second))
+}
+
+// schedulerHeartbeatFreshFor bounds how old a scheduler tick may be while the
+// daemon still counts as live for this diagnostic. Generous on purpose: this
+// only chooses which sentence an operator reads.
+const schedulerHeartbeatFreshFor = 2 * time.Minute

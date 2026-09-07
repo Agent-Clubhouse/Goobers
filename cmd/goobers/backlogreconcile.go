@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -571,4 +572,101 @@ func reconciliationComment(reasons []string) string {
 	}
 	body.WriteString("\n\nGround truth came from the claim ledger and current forge issue/child state, not from labels.")
 	return body.String()
+}
+
+// restoreInvisibleClaims re-applies the provider claim marker to items this
+// instance holds a live ledger lease on but that show no claim label (#3086).
+//
+// The reconciler above already handles the opposite drift — a label with no
+// lease behind it — and that asymmetry is the defect. In a dogfood instance,
+// active implementation runs held authoritative ledger claims for five issues
+// while none carried goobers:claimed: the labels had been removed during
+// escalation and manual recovery, and nothing put them back. Anyone reading
+// GitHub saw unclaimed work that Goobers was actively holding, so humans and
+// other automation made decisions on false state.
+//
+// It cannot ride the pass above, and that is the whole reason it exists
+// separately: that pass selects items to inspect BY LABEL
+// (hasReconciledMetadataLabel), so an item whose labels were stripped is never
+// looked at. Precisely the invisible case. This walks the ledger's live
+// entries instead, which is the only side that still knows the claim exists.
+//
+// The ledger stays authoritative in both directions: this never grants,
+// extends, or invents a lease, and an entry that has expired or been released
+// is skipped so a dead claim can never resurrect its own marker. The provider
+// call is ClaimWorkItem under the lease's OWN run id, so the epoch and the
+// breadcrumb it publishes belong to the run that actually holds the item.
+func restoreInvisibleClaims(
+	ctx context.Context,
+	l instance.Layout,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	now time.Time,
+	stderr io.Writer,
+) (int, error) {
+	gaggle := providerGaggle()
+	if gaggle == "" {
+		// An unscoped (legacy) instance keys its claims without a namespace,
+		// which ListNamespace cannot address. Skipping is the honest outcome:
+		// a pass that cannot read the ledger must not report having checked it.
+		pf(stderr, "notice: skipping claim-visibility reconciliation: this stage has no gaggle, so the claim namespace cannot be addressed\n")
+		return 0, nil
+	}
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		return 0, fmt.Errorf("open claim ledger: %w", err)
+	}
+	// providerGaggle(), not l.Gaggle(): layoutFor builds a root-only layout for
+	// provider stages, so its gaggle is always empty. The claim namespace is
+	// keyed on the stage's own gaggle, exactly as backlogClaimSession.claimKey
+	// builds it — reading the wrong one here would list an empty namespace and
+	// silently correct nothing.
+	listing, err := ledger.ListNamespace(ctx, gaggle, string(repo.Provider))
+	if err != nil {
+		return 0, fmt.Errorf("list claim ledger namespace: %w", err)
+	}
+
+	restored := 0
+	for _, entry := range listing.Entries {
+		if entry.ReleasedAt != nil || !entry.ExpiresAt.After(now) {
+			continue
+		}
+		itemID := entry.ExternalID
+		if itemID == "" {
+			itemID = entry.ItemID
+		}
+		if itemID == "" || entry.RunID == "" {
+			continue
+		}
+		item, err := provider.GetWorkItem(ctx, repo, itemID)
+		if err != nil {
+			// Diagnostic, never fatal: reconciliation is a housekeeping pass and
+			// one unreadable item must not stop it correcting the others.
+			pf(stderr, "warning: could not read item %s while checking claim visibility: %v\n", itemID, err)
+			continue
+		}
+		if item.HasLabel(providers.LabelClaimed) {
+			continue
+		}
+		result, err := provider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
+			Repository: repo, ID: itemID, RunID: entry.RunID,
+		})
+		if err != nil {
+			pf(stderr, "warning: could not restore the claim marker on item %s held by run %s: %v\n",
+				itemID, entry.RunID, err)
+			continue
+		}
+		if !result.Claimed {
+			// The provider says a different run owns the epoch. That is the
+			// other half of #3086's divergence and it is NOT this pass's to
+			// settle: backlog-query's claim path already arbitrates it, with
+			// the ledger release that has to accompany losing. Report it.
+			pf(stderr, "warning: item %s has a live ledger lease held by run %s but the provider claim epoch belongs to run %s\n",
+				itemID, entry.RunID, result.ClaimedBy)
+			continue
+		}
+		restored++
+		pf(stderr, "notice: restored the claim marker on item %s for its live ledger owner run %s\n", itemID, entry.RunID)
+	}
+	return restored, nil
 }

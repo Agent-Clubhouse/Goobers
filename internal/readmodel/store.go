@@ -88,6 +88,12 @@ type Store struct {
 	handles sync.RWMutex
 	closed  bool
 
+	// feed is the store's single change feed (#2458), built on first use by
+	// Feed(). Two feeds over one store lose wakeups between them, so this is
+	// the only instance production ever has.
+	feed     *Feed
+	feedOnce sync.Once
+
 	// clock stamps the one change row that cannot be derived from a journal:
 	// run.removed, whose whole point is that the journal is gone. Injectable so
 	// a test can assert removal ordering without sleeping.
@@ -484,4 +490,24 @@ func fileURI(path string) string {
 		slashed = "/" + slashed
 	}
 	return "file://" + (&url.URL{Path: slashed}).EscapedPath()
+}
+
+// Feed returns the store's single change feed, constructing it on first use.
+//
+// One feed per store is a correctness requirement, not a convenience (#2458).
+// A Feed's wakeup is delivered through the waiter set held on the instance
+// that Notify is called on, so two feeds over the same store give a writer and
+// a subscriber different rendezvous points: production built one feed for the
+// projector and a second for the SSE stream, so Since waited on the stream's
+// channel while commits notified only the projector's. The Portal then stayed
+// stale until something unrelated woke it, or until the client reconnected.
+//
+// Exposing it here rather than passing an instance between the two call sites
+// is deliberate: the previous wiring was correct-looking at both ends and wrong
+// between them, and a shared instance that must be threaded through is an
+// invariant one refactor away from breaking again. Asking the store removes the
+// opportunity.
+func (s *Store) Feed() *Feed {
+	s.feedOnce.Do(func() { s.feed = NewFeed(s) })
+	return s.feed
 }
