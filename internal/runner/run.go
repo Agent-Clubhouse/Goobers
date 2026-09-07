@@ -4150,15 +4150,16 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 		}
 	}
 	for _, m := range mutations {
-		// Best-effort, like ClaimLedger's own journal() (issue #228): a
-		// provider mutation already happened for real regardless of
-		// whether this projection succeeds, so a failed Append here must
-		// not fail the stage or mask the mutation's own outcome.
-		_ = jr.Append(journal.WithMutationOutcome(journal.Event{
+		// The external mutation cannot be rolled back, but its projection
+		// must not silently disappear. Stop on a failed append (which may
+		// have torn the log), preserving the other attempt failures too.
+		if err := jr.Append(journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
 			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
 			Runner:      providers.MutationRunnerFields(m.Operation, m.MergeConfirmation, m.QueueAdmission),
-		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID))
+		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID)); err != nil {
+			return fmt.Errorf("runner: journal provider mutation for %q: %w", stage, errors.Join(err, heartbeatErr, removeErr))
+		}
 	}
 	if removeErr != nil {
 		// Non-fatal (issue #136): a failed worktree teardown doesn't
