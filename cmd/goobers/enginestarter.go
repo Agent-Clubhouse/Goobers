@@ -319,6 +319,7 @@ func (s *engineStarter) echo(req localscheduler.StartRequest, ev journal.Event) 
 // The wrapped Starter is called with the request UNMODIFIED, so a fallback
 // lane behaves byte-for-byte as it did before this file existed.
 type runnerFallbackStarter struct {
+	telemetry *telemetry.Client
 	next      localscheduler.Starter
 	log       *journal.InstanceLog
 	workflow  string
@@ -327,6 +328,7 @@ type runnerFallbackStarter struct {
 
 func (s *runnerFallbackStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
 	s.annotate(req)
+	s.observeFallback(ctx, req)
 	return s.next.Start(ctx, req)
 }
 
@@ -345,27 +347,30 @@ func (s *runnerFallbackStarter) annotate(req localscheduler.StartRequest) {
 	if s.log == nil {
 		return
 	}
-	fields := map[string]any{
-		"kind":    engineStarterSelectionKind,
-		"starter": "runner",
-		"reason":  s.selection.FallbackReason,
-	}
-	if len(s.selection.SelfPinnedStages) > 0 {
-		fields["selfPinnedStages"] = s.selection.SelfPinnedStages
-	}
-	if len(s.selection.UnpinnedGates) > 0 {
-		fields["unpinnedGates"] = s.selection.UnpinnedGates
-	}
+	fields := s.selection.annotationFields()
 	_ = s.log.Append(journal.Event{
-		Type:     journal.EventRunnerAnnotation,
-		RunID:    req.RunID,
-		Gaggle:   req.Gaggle,
-		Workflow: s.workflow,
-		Reason:   "engine dispatch declined; running on the local runner",
-		Runner:   fields,
+		Type: journal.EventRunnerAnnotation, RunID: req.RunID,
+		Gaggle: req.Gaggle, Workflow: s.workflow,
+		Reason: "engine dispatch declined; running on the local runner", Runner: fields,
 	})
 }
 
-// engineStarterSelectionKind is the runner-annotation kind an operator greps
-// for to see which starter served a tick.
-const engineStarterSelectionKind = "engine_starter_selection"
+func (selection engineSelection) annotationFields() map[string]any {
+	fields := map[string]any{
+		"kind":              engineStarterSelectionKind,
+		"starter":           "runner",
+		"reason":            selection.FallbackReason,
+		"reasonClass":       selection.ReasonClass,
+		"placementDeclared": selection.PlacementDeclared,
+	}
+	if len(selection.SelfPinnedStages) > 0 {
+		fields["selfPinnedStages"] = selection.SelfPinnedStages
+	}
+	if len(selection.UnpinnedGates) > 0 {
+		fields["unpinnedGates"] = selection.UnpinnedGates
+	}
+	return fields
+}
+
+// engineStarterSelectionKind is shared with the run and workflow projections.
+const engineStarterSelectionKind = journal.RunnerAnnotationEngineSelection

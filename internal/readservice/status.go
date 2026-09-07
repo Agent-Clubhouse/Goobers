@@ -27,6 +27,7 @@ type StatusReader interface {
 // SchedulerStatus is scheduler state projected from the instance journal for
 // local status adapters.
 type SchedulerStatus struct {
+	EngineFallbacks       []readmodel.EngineFallback
 	ProviderQuotaResumeAt *time.Time
 	DaemonRestart         *DaemonRestartStatus
 	// RefusedWorkflows are the workflows the startup constraint solve marked
@@ -351,6 +352,9 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		}
 	}
 	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}
+	for _, key := range projected.engineFallbacks.order {
+		status.EngineFallbacks = append(status.EngineFallbacks, projected.engineFallbacks.items[key])
+	}
 	for _, key := range projected.refusalOrder {
 		status.RefusedWorkflows = append(status.RefusedWorkflows, projected.refusals[key])
 	}

@@ -20,6 +20,9 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 	if !event.KnownSchema() {
 		return RunEventUnknown, false
 	}
+	if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == journal.RunnerAnnotationEngineSelection {
+		return RunEventDecision, true
+	}
 
 	switch event.Type {
 	case journal.EventRunStarted,

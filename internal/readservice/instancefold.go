@@ -25,6 +25,7 @@ type instanceFold struct {
 // journal: everything SchedulerStatus reports plus the earliest recorded init
 // completion the time-to-first-PR metric measures from.
 type instanceState struct {
+	engineFallbacks       engineFallbackFold
 	initCompletedAt       time.Time
 	providerQuotaResumeAt *time.Time
 	restart               *DaemonRestartStatus
@@ -58,6 +59,7 @@ func (f *instanceFold) snapshot(ctx context.Context, schedulerDir string) (insta
 }
 
 func (s *instanceState) apply(event journal.Event) {
+	s.engineFallbacks.apply(event)
 	switch event.Type {
 	case journal.EventInitCompleted:
 		if !event.Time.IsZero() &&
@@ -153,6 +155,7 @@ func (s *instanceState) resetRefusals() {
 
 func (s instanceState) clone() instanceState {
 	clone := s
+	clone.engineFallbacks = s.engineFallbacks.clone()
 	if s.providerQuotaResumeAt != nil {
 		resumeAt := *s.providerQuotaResumeAt
 		clone.providerQuotaResumeAt = &resumeAt

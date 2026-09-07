@@ -26,6 +26,9 @@ type engineSelection struct {
 	// FallbackReason names, in operator language, why the lane stayed on the
 	// runner. Empty when UseEngine is true.
 	FallbackReason string
+	// ReasonClass is a stable code; prose is never an alerting key.
+	ReasonClass       string
+	PlacementDeclared bool
 	// SelfPinnedStages and UnpinnedGates are the two disqualifying sets,
 	// carried separately so the per-tick annotation can name them as data
 	// rather than only inside a rendered sentence.
@@ -79,8 +82,15 @@ type engineSelection struct {
 // declarations moves it back to the runner on the next config reload, with no
 // daemon flag and no restart.
 func selectEngineForEntry(def wfpkg.Definition, placements []engine.PinnedPlacement) engineSelection {
+	selection := selectEngineForPinnedEntry(def, placements)
+	selection.PlacementDeclared = workflowDeclaresPlacement(def)
+	return selection
+}
+
+func selectEngineForPinnedEntry(def wfpkg.Definition, placements []engine.PinnedPlacement) engineSelection {
 	if len(placements) == 0 {
 		return engineSelection{
+			ReasonClass:    "no_pinned_placements",
 			FallbackReason: "no stage placements are pinned for this workflow (zero-declaration or local-mode inventory)",
 		}
 	}
@@ -105,6 +115,7 @@ func selectEngineForEntry(def wfpkg.Definition, placements []engine.PinnedPlacem
 	sort.Strings(unpinnedGates)
 	if len(selfPinned) > 0 || len(unpinnedGates) > 0 {
 		return engineSelection{
+			ReasonClass:      "placement_ineligible",
 			SelfPinnedStages: selfPinned,
 			UnpinnedGates:    unpinnedGates,
 			FallbackReason:   engineFallbackReason(selfPinned, unpinnedGates),
@@ -115,6 +126,7 @@ func selectEngineForEntry(def wfpkg.Definition, placements []engine.PinnedPlacem
 	// runsOn edit.
 	if err := engine.RefuseDefinition(def.Name, def.Spec); err != nil {
 		return engineSelection{
+			ReasonClass:    "definition_refused",
 			Refusal:        err,
 			FallbackReason: "the engine walk refuses this definition: " + err.Error(),
 		}
@@ -187,8 +199,8 @@ func engineSelections(
 	// lane stays on the runner, and the annotation says so rather than naming
 	// placement facts that are not the reason.
 	if cfg == nil || !cfg.EngineProjectionEnabled() {
-		for identity := range machines {
-			out[identity] = engineSelection{FallbackReason: "this instance has no engine configuration"}
+		for identity, machine := range machines {
+			out[identity] = engineSelection{PlacementDeclared: entryDeclaresPlacement(machine, set, identity.Gaggle), ReasonClass: "engine_not_configured", FallbackReason: "this instance has no engine configuration"}
 		}
 		return out, nil
 	}
@@ -199,11 +211,15 @@ func engineSelections(
 		placements, err := bootstrap.PinStagePlacements(cfg, set, identity.Gaggle, machine.Def)
 		if err != nil {
 			out[identity] = engineSelection{
-				FallbackReason: "stage placements could not be pinned: " + err.Error(),
+				PlacementDeclared: entryDeclaresPlacement(machine, set, identity.Gaggle),
+				ReasonClass:       "placement_failed",
+				FallbackReason:    "stage placements could not be pinned: " + err.Error(),
 			}
 			continue
 		}
-		out[identity] = selectEngineForEntry(machine.Def, placements)
+		selection := selectEngineForEntry(machine.Def, placements)
+		selection.PlacementDeclared = entryDeclaresPlacement(machine, set, identity.Gaggle)
+		out[identity] = selection
 	}
 	return out, nil
 }
@@ -235,17 +251,20 @@ type entryStarterInput struct {
 // wrapping the latter in the annotation that names why.
 //
 // The runner branch returns the ORIGINAL starter's behavior unchanged — the
-// wrapper only appends one instance-log event before delegating — so a lane
-// that stays on the runner runs byte for byte as it did before D1. That is
-// the property per-lane rollback depends on: reverting a lane's runsOn
-// declarations must restore its previous behavior exactly, not approximately.
+// wrapper records routing evidence before delegating. The tracked starter also
+// pins that evidence into the new run's journal. Neither changes the request,
+// placement solve, workflow definition, nor the delegated execution result.
 func selectEntryStarter(in entryStarterInput) localscheduler.Starter {
 	if !in.selection.UseEngine {
+		if tracked, ok := in.runnerStarter.(*trackedStarter); ok {
+			tracked.starterSelection = in.selection.annotationFields()
+		}
 		return &runnerFallbackStarter{
 			next:      in.runnerStarter,
 			log:       in.log,
 			workflow:  in.def.Name,
 			selection: in.selection,
+			telemetry: in.telemetry,
 		}
 	}
 	return &engineStarter{

@@ -1542,17 +1542,18 @@ func runShutdownSteps(ctx context.Context, steps []shutdownStep) error {
 // sched.Trigger call, now that #134 routes it through the same scheduler —
 // incrementally ingests into rollupDB on completion (issue #127).
 type trackedStarter struct {
-	r            *runner.Runner
-	machine      *workflow.Machine
-	runControls  apiv1.RunControls
-	requiredCaps []string
-	wg           *sync.WaitGroup
-	l            instance.Layout
-	tel          *telemetry.Client
-	rollupDB     *rollup.DB
-	watermarks   *intake.Store
-	log          *journal.InstanceLog
-	runners      *daemonRunnerRegistry
+	starterSelection map[string]any
+	r                *runner.Runner
+	machine          *workflow.Machine
+	runControls      apiv1.RunControls
+	requiredCaps     []string
+	wg               *sync.WaitGroup
+	l                instance.Layout
+	tel              *telemetry.Client
+	rollupDB         *rollup.DB
+	watermarks       *intake.Store
+	log              *journal.InstanceLog
+	runners          *daemonRunnerRegistry
 }
 
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
@@ -1561,6 +1562,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 	untrack := s.runners.Track(req.RunID, s.machine.Def.Name, s.r)
 	defer untrack()
 	res, err := s.r.Start(ctx, runner.StartInput{
+		StarterSelection:     s.starterSelection,
 		RunID:                req.RunID,
 		Machine:              s.machine,
 		GooberDigest:         req.GooberDigest,
