@@ -21,7 +21,7 @@ func seedMergeReportEvent(t *testing.T, db *DB, n int, instanceID, gaggle, repos
 	if confirmed {
 		confirmation = &providers.MergeConfirmation{RepositoryAPIURL: repository, PullID: pullID, MergeSHA: "commit"}
 	}
-	data, err := json.Marshal(providers.MutationRunnerFields("merge", confirmation, nil))
+	data, err := json.Marshal(providers.MutationRunnerFields("merge", confirmation, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

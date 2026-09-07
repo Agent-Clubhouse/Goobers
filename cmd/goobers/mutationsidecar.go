@@ -30,6 +30,7 @@ const mutationsSidecarFile = "mutations.jsonl"
 // RunID identifies the claim owner, which can differ from the stage's run
 // during reconciliation. Provider Fields digests are not part of this handoff.
 type mutationFact struct {
+	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
 	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
 	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
 	Provider          string                       `json:"provider"`
@@ -78,19 +79,28 @@ func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref provid
 		RunID:             ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
 		ProviderRunID: ref.ProviderRunID,
 	}
+	if err := appendMutationFact(fact); err != nil {
+		log.Printf("mutation sidecar: persist %s: %v", mutationsSidecarFile, err)
+	}
+}
+
+func (r sidecarMutationRecorder) RecordLandingIntent(ctx context.Context, provider providers.ProviderKind, intent providers.LandingIntent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return appendMutationFact(mutationFact{Provider: string(provider), Kind: r.kind, ID: intent.PullID, Operation: "merge-intent", LandingIntent: &intent})
+}
+
+func appendMutationFact(fact mutationFact) error {
 	data, err := json.Marshal(fact)
 	if err != nil {
-		log.Printf("mutation sidecar: marshal %s %s %s: %v", r.kind, fact.Provider, fact.ID, err)
-		return
+		return err
 	}
 	f, err := os.OpenFile(mutationsSidecarFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		log.Printf("mutation sidecar: open %s: %v", mutationsSidecarFile, err)
-		return
+		return err
 	}
-	if err := persistMutationSidecar(f, append(data, '\n'), func() error { return durability.SyncDir(".") }); err != nil {
-		log.Printf("mutation sidecar: persist %s: %v", mutationsSidecarFile, err)
-	}
+	return persistMutationSidecar(f, append(data, '\n'), func() error { return durability.SyncDir(".") })
 }
 
 type mutationSidecarWriter interface {

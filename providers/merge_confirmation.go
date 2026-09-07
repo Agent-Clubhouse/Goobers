@@ -13,6 +13,7 @@ import (
 // prefixes so separate installations/projects on one host cannot collide.
 // Instance/run ownership comes from the enclosing immutable run journal.
 type MergeConfirmation struct {
+	IntentID         string `json:"intentId,omitempty"`
 	RepositoryAPIURL string `json:"repositoryApiUrl"`
 	PullID           string `json:"pullId"`
 	MergeSHA         string `json:"mergeSha,omitempty"`
@@ -48,8 +49,11 @@ func newMergeConfirmation(repositoryAPIURL, pullID, mergeSHA string) *MergeConfi
 // MutationRunnerFields preserves the legacy operation while carrying
 // explicit confirmation separately. Consumers must never infer confirmation
 // from operation=merge, which can also describe an observed terminal PR.
-func MutationRunnerFields(operation string, confirmation *MergeConfirmation, admission *QueueAdmission) map[string]any {
+func MutationRunnerFields(operation string, confirmation *MergeConfirmation, admission *QueueAdmission, intent *LandingIntent) map[string]any {
 	fields := map[string]any{"operation": operation}
+	if intent != nil {
+		fields["landingIntent"] = *intent
+	}
 	if confirmation != nil {
 		fields["mergeConfirmation"] = *confirmation
 	}

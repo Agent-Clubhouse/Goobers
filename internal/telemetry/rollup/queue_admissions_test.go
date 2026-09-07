@@ -14,7 +14,7 @@ import (
 func seedQueueReportEvent(t *testing.T, db *DB, n int, instanceID, repo, entryID string, at time.Time) {
 	t.Helper()
 	seedMergeReportEvent(t, db, n, instanceID, "web", repo, "9", false, at)
-	data, err := json.Marshal(providers.MutationRunnerFields("enqueue", nil, &providers.QueueAdmission{RepositoryAPIURL: repo, PullID: "9", EntryID: entryID, ExpectedHeadSHA: "head", EnqueuedAt: at}))
+	data, err := json.Marshal(providers.MutationRunnerFields("enqueue", nil, &providers.QueueAdmission{RepositoryAPIURL: repo, PullID: "9", EntryID: entryID, ExpectedHeadSHA: "head", EnqueuedAt: at}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

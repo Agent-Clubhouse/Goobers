@@ -44,6 +44,44 @@ func TestMutationSidecarPreservesQueueAdmissionAcrossWireConsumers(t *testing.T)
 	}
 }
 
+func TestMutationSidecarPreservesLandingIntentAcrossWireConsumers(t *testing.T) {
+	t.Chdir(t.TempDir())
+	intent := providers.LandingIntent{ID: "0123456789abcdef0123456789abcdef", RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", ExpectedHeadSHA: "expected"}
+	if err := (sidecarMutationRecorder{kind: "pr"}).RecordLandingIntent(context.Background(), providers.ProviderGitHub, intent); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var local mutationFact
+	var remote dispatcher.SurrenderedMutation
+	var temporal engine.MutationFact
+	for _, target := range []any{&local, &remote, &temporal} {
+		if err := json.Unmarshal(data, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, got := range []*providers.LandingIntent{local.LandingIntent, remote.LandingIntent, temporal.LandingIntent} {
+		if got == nil || *got != intent {
+			t.Fatalf("lost landing intent: %+v", got)
+		}
+	}
+	if local.Operation != "merge-intent" || local.MergeConfirmation != nil {
+		t.Fatalf("attempt promoted to completed merge: %+v", local)
+	}
+}
+
+func TestLandingIntentSidecarFailureIsReturned(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir(mutationsSidecarFile, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := (sidecarMutationRecorder{kind: "pr"}).RecordLandingIntent(context.Background(), providers.ProviderGitHub, providers.LandingIntent{}); err == nil {
+		t.Fatal("intent persistence error was swallowed")
+	}
+}
+
 func TestMutationSidecarPreservesMergeConfirmationAcrossWireConsumers(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

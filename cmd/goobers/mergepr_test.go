@@ -440,10 +440,13 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 		t.Fatalf("result = %+v, want deleted branch cleanup for %q", result, st.headBranch)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 2 || facts[0].Operation != "merge" || facts[1].Kind != "branch" || facts[1].Operation != "delete" {
-		t.Fatalf("mutation facts = %+v, want merge followed by branch delete", facts)
+	if len(facts) != 3 || facts[0].Operation != "merge-intent" || facts[0].LandingIntent == nil || facts[1].Operation != "merge" || facts[2].Kind != "branch" || facts[2].Operation != "delete" {
+		t.Fatalf("mutation facts = %+v, want intent, merge, then branch delete", facts)
 	}
-	confirmation := facts[0].MergeConfirmation
+	confirmation := facts[1].MergeConfirmation
+	if confirmation == nil || confirmation.IntentID != facts[0].LandingIntent.ID {
+		t.Fatalf("confirmation does not identify the persisted intent: %+v", confirmation)
+	}
 	if confirmation == nil || confirmation.RepositoryAPIURL != server.URL+"/repos/your-org/your-repo" || confirmation.PullID != "9" || confirmation.MergeSHA != "merge-commit-sha" {
 		t.Fatalf("CLI lost merge confirmation: %+v", confirmation)
 	}
@@ -782,7 +785,7 @@ func TestMergePRDeletesForkHeadBranchInForkRepository(t *testing.T) {
 		t.Fatalf("result = %+v, want merged with deleted fork branch", result)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 2 || facts[1].Kind != "branch" || facts[1].ID != st.headBranch || facts[1].Operation != "delete" {
+	if len(facts) != 3 || facts[0].Operation != "merge-intent" || facts[1].Operation != "merge" || facts[2].Kind != "branch" || facts[2].ID != st.headBranch || facts[2].Operation != "delete" {
 		t.Fatalf("mutation facts = %+v, want fork branch deletion", facts)
 	}
 }
@@ -808,7 +811,7 @@ func TestMergePRKeepsStackedHeadBranch(t *testing.T) {
 		t.Fatalf("result = %+v, want merged with stacked cleanup skip", result)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 1 || facts[0].Operation != "merge" {
+	if len(facts) != 2 || facts[0].Operation != "merge-intent" || facts[1].Operation != "merge" {
 		t.Fatalf("mutation facts = %+v, want no branch mutation for guarded skip", facts)
 	}
 }
@@ -834,7 +837,7 @@ func TestMergePRDeleteFailurePreservesMergeResult(t *testing.T) {
 		t.Fatalf("cleanup failure not visible: result=%+v stderr=%q", result, stderr)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 1 || facts[0].Operation != "merge" {
+	if len(facts) != 2 || facts[0].Operation != "merge-intent" || facts[1].Operation != "merge" {
 		t.Fatalf("mutation facts = %+v, want no branch mutation for failed delete", facts)
 	}
 }

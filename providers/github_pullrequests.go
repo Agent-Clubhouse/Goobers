@@ -397,6 +397,11 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 		body["merge_method"] = string(req.MergeMethod)
 	}
 	var out githubMergeResult
+	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
+	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitHub, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA)
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
 	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
 		return MergePullRequestResult{}, err
 	}
@@ -407,9 +412,12 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	// An accepted HTTP response is not evidence of a completed merge. In
 	// particular, missing/false `merged` must not inflate mutation telemetry.
 	if out.Merged {
-		repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
+		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, out.SHA)
+		if intent != nil {
+			confirmation.IntentID = intent.ID
+		}
 		p.recordExternalRef(ctx, ExternalRef{
-			MergeConfirmation: newMergeConfirmation(repositoryAPIURL, req.PullID, out.SHA),
+			MergeConfirmation: confirmation,
 			Provider:          ProviderGitHub,
 			Ref:               issueRef(req.Repository, req.PullID),
 			Operation:         "merge",
