@@ -110,20 +110,19 @@ Configure the identity provider with:
    `<issuer>/.well-known/openid-configuration`.
 2. An API resource or audience for Goobers. Issued access tokens must carry
    this exact value in `aud`.
-3. A browser public-client registration for the portal. Record its client ID
-   and register the exact external portal URL as a redirect URI, for example
-   `https://goobers.example.com`.
-4. A role or group claim with values that can be mapped to Goobers roles.
+3. A role or group claim with values that can be mapped to Goobers roles.
 
 The issuer value must exactly match the token's `iss` claim. Production issuers
-must use HTTPS; HTTP is accepted only for a loopback development issuer. The
-browser client is public, so do not create or place a client secret in
-`instance.yaml` or a portal build.
+must use HTTPS; HTTP is accepted only for a loopback development issuer.
 
-Some providers use the browser client ID as the access-token audience; others
-use a separate API identifier. Set `api.auth.oidc.audience` to the value
-actually emitted in the access token, not automatically to the portal client
-ID.
+There is deliberately **no browser client registration step**. Goobers ships no
+browser-side OIDC client today (see [Portal
+sign-in](#portal-sign-in-not-shipped) below), so nothing needs a redirect URI,
+and no client secret belongs in `instance.yaml`.
+
+Some providers use a browser client ID as the access-token audience; others use
+a separate API identifier. Set `api.auth.oidc.audience` to the value actually
+emitted in the access token by whatever client obtains it.
 
 ## Configure the daemon
 
@@ -155,33 +154,29 @@ goobers up /srv/goobers
 The daemon discovers signing keys lazily. If discovery or key retrieval fails,
 requests fail closed rather than falling back to anonymous access.
 
-## Configure the portal client
+## Portal sign-in (not shipped)
 
-The portal authentication seam reads these Vite variables at build time:
+**The portal has no OIDC client.** The browser-side authentication seam added by
+#1024 was never wired into the portal's data client, and it was deleted as
+orphaned production code by #3122 (`portal/src/auth`). Nothing in `portal/`
+reads `VITE_OIDC_ISSUER`, `VITE_OIDC_CLIENT_ID`, or `VITE_OIDC_REDIRECT_URI`
+today, so setting them at build time is silently ignored: `npm run build`
+succeeds and produces a bundle with no sign-in.
 
-| Variable | Purpose |
-| --- | --- |
-| `VITE_OIDC_ISSUER` | Same issuer/authority configured for the daemon |
-| `VITE_OIDC_CLIENT_ID` | Browser public-client ID |
-| `VITE_OIDC_REDIRECT_URI` | Registered redirect URI; defaults to the browser origin |
+Concretely, this means:
 
-Both issuer and client ID must be set together. If a redirect URI is set, it
-must exactly match a URI registered with the provider. Because these values are
-compiled into the static bundle, changing them requires rebuilding the portal:
+- Do not configure Vite `VITE_OIDC_*` variables. Earlier revisions of this guide
+  documented them; that guidance was wrong after #3122.
+- The `goobers dashboard` attach proxy cannot supply a bearer token to an
+  authenticated running daemon. Attaching the portal to a live daemon stays
+  **loopback-only**. Stop the daemon, or query its API directly with a token, if
+  you need authenticated access to daemon data.
+- OIDC as configured on this page protects the **daemon API** and the standalone
+  dashboard handler described below — both of which validate bearer tokens
+  server-side. That part is shipped and enforced.
 
-```sh
-VITE_OIDC_ISSUER=https://id.example.com/realms/platform \
-VITE_OIDC_CLIENT_ID=goobers-portal \
-VITE_OIDC_REDIRECT_URI=https://goobers.example.com \
-npm --prefix portal run build
-```
-
-The `goobers dashboard` attach proxy still cannot supply a bearer token to an
-authenticated running daemon, and the portal data client does not yet attach
-the token produced by the authentication seam. Do not treat these build
-variables as a working access control for that attached-to-a-live-daemon
-case — it stays loopback-only; stop the daemon or query its API directly if
-you need authenticated access to it through the portal.
+Restoring browser sign-in is tracked as portal contract reconciliation in
+[#4522](https://github.com/Agent-Clubhouse/Goobers/issues/4522).
 
 The standalone dashboard (no live `goobers up` daemon reachable) is
 different: `goobers dashboard --listen <host:port>` accepts a non-loopback

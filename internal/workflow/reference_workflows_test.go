@@ -76,6 +76,19 @@ func TestReferenceWorkflowsREADMEInventoryAndMergePosture(t *testing.T) {
 	if !strings.Contains(readme, validationOutput) {
 		t.Errorf("README validation sample does not match loaded definitions; want %q", validationOutput)
 	}
+
+	// The V0 acceptance runbook restates the same expected `goobers validate`
+	// line. It sat at the pre-#4519 "6 goober(s), 4 workflow(s)" for months
+	// because nothing tied it to the definitions, so an operator following the
+	// runbook saw output that did not match the procedure. Guard it here rather
+	// than leaving a second hand-maintained copy.
+	acceptanceRaw, err := os.ReadFile(filepath.Join("..", "..", "docs", "V0-ACCEPTANCE.md"))
+	if err != nil {
+		t.Fatalf("read V0 acceptance runbook: %v", err)
+	}
+	if !strings.Contains(string(acceptanceRaw), validationOutput) {
+		t.Errorf("docs/V0-ACCEPTANCE.md validation sample does not match loaded definitions; want %q", validationOutput)
+	}
 	for _, role := range roles {
 		if !strings.Contains(readme, "`"+role+"`") {
 			t.Errorf("README inventory omits goober role %q", role)

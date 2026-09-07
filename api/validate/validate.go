@@ -118,6 +118,27 @@ const (
 	// readiness cap cannot obtain a GitHub open-PR count for its gaggle's
 	// project repository.
 	WarningMaxOpenPRsUnenforceable WarningCode = "PRCAP001"
+	// WarningCobrandMissingLogoAsset identifies a portal.brand.logoUrl that
+	// points into the instance's assets/ dir at a file that is not there. The
+	// URL passes shape validation, the daemon serves the request by falling
+	// through to the embedded bundle, and the operator sees the stock logo
+	// with no error anywhere -- the failure is invisible without this warning.
+	// docs/design/cobrand.md 7 specified it as CBR001 and it was never
+	// implemented (#4522).
+	WarningCobrandMissingLogoAsset WarningCode = "CBR001"
+	// WarningCobrandMissingFaviconAsset is CBR001's counterpart for
+	// portal.brand.faviconUrl (cobrand.md 7's CBR002).
+	WarningCobrandMissingFaviconAsset WarningCode = "CBR002"
+	// WarningDaemonIdentityMissingSlug identifies a kind: github-app
+	// daemonIdentity with no slug. Slug is what makes the daemon identity an
+	// IDENTITY check: without it daemonIdentityAuthorLogin returns empty and
+	// PR-selection silently falls back to the branch-name-prefix heuristic
+	// (#3343). Everything still mints and authenticates, so this is a
+	// warning, not an error -- but the degradation is drift-shaped rather
+	// than crash-shaped, which is exactly the class
+	// docs/design/daemon-identity-multi-owner.md 6 asked to be warned about
+	// and #3415 did not ship (#4517).
+	WarningDaemonIdentityMissingSlug WarningCode = "IDENT001"
 	// WarningGateCompletionHidesFailure identifies an automated gate branch
 	// that is keyed on a failure-implying outcome (status-equals'
 	// default/success "fail", failure-class "fail"/"infra") and routes to

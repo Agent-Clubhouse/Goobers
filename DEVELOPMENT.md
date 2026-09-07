@@ -26,7 +26,7 @@ in the [README](README.md).
 | `cmd/operator`, `internal/operator` | Kubernetes operator entrypoints and reconciliation | Quarantined |
 | `internal/configsync` | Configuration repository to CRD rendering and apply path | Quarantined |
 | `infra/`, `deploy/` | Cloud-scale infrastructure and customer-applied reference manifests | Reference or quarantined |
-| `evals/` | EvalSuite design and prototype implementation | Prototype |
+| `evals/` | EvalSuite (#2662) design and Python prototype. **Direction superseded** by #2681; retained pending ratification — see [`docs/design/evals-suite.md`](docs/design/evals-suite.md) | Historical |
 
 Quarantined paths remain in-tree and compiling as documented cloud-scale
 extension points; they are not part of the shipped local runner. See

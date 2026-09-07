@@ -39,10 +39,14 @@ choice, never a product fork: the same definitions run everywhere.
 - **DEP-020 (MUST):** *(Tiers 1–2)* The platform MUST ship as a **single Go binary**
   (`goobers`) with no required service dependencies — no database, message bus, or
   cluster. Installation is placing the binary on the machine.
-- **DEP-021 (MUST):** *(Tiers 1–2)* `goobers init` MUST scaffold the instance layout per
-  `ARCHITECTURE.md §6`: `instance.yaml` (connections: target repo(s), provider, token
-  refs, telemetry settings), `config/`, `runs/`, `scheduler/`, `telemetry.db`, and
-  `workcopies/`. Owning statement: `INST-010`; this ID defers to it.
+- **DEP-021 (MUST):** *(Tiers 1–2)* `goobers init` MUST scaffold the instance layout
+  per `ARCHITECTURE.md §6` and `INST-010`: `instance.yaml` (connections: target
+  repo(s), provider, token refs, telemetry settings), `config/`, `scheduler/`,
+  `telemetry.db`, and the **gaggle-scoped** runtime roots
+  `gaggles/<gaggle>/runs/` and `gaggles/<gaggle>/workcopies/`. Owning statement:
+  `INST-010`; this ID defers to it and MUST NOT restate a different layout — the
+  root-level `runs/`/`workcopies/` this entry previously named is the pre-GAG-011
+  legacy shape, still *read* for old journals but no longer scaffolded (#4521).
 - **DEP-022 (MUST):** *(Tiers 1–2)* `goobers validate` MUST check the instance and all
   definitions before anything runs; unvalidated or invalid definitions fail closed.
   Owning statement: `INST-012`; this ID defers to it.
@@ -57,16 +61,16 @@ choice, never a product fork: the same definitions run everywhere.
   defers to it.
 - **DEP-025 (MUST):** *(Tiers 1–2)* The local `config/` directory is the tier 1–2
   config-delivery mechanism (tier-3 counterpart: `DEP-012`). **Shipped:** the daemon
-  loads and validates it once at `goobers up` startup — invalid config aborts startup
-  (fail-closed) — and `goobers config diff` detects drift against the shipped
-  canonical config. **Not implemented — V1 prescriptive:** watching `config/` and
-  applying validated changes live, delivered by Workflow CD
-  (`../design/workflow-cd.md`). Version pinning holds: in-flight runs complete on the
-  definition version they started with (`WF-016`). Owning statement: `CFG-020`; this ID
-  defers to it.
-- **DEP-026 (MUST):** *(Tiers 1–2)* Target repos MUST be materialized as **managed working
-  copies** under `workcopies/`, separate from any working copy the user edits; per-run
-  stage worktrees branch off these (`DEP-004`).
+  loads and validates it at `goobers up` startup — invalid config aborts startup
+  (fail-closed) — `goobers config diff` detects drift against the shipped canonical
+  config, and **live watch is shipped** (`goobers up --watch-config`, plus `goobers
+  apply` on demand and continuous reconciliation for a Git `workflowSource`).
+  Version pinning holds: in-flight runs complete on the definition version they
+  started with (`WF-016`). Owning statement: `CFG-020`; this ID defers to it.
+- **DEP-026 (MUST):** *(Tiers 1–2)* Target repos MUST be materialized as **managed
+  working copies** under the gaggle's own `gaggles/<gaggle>/workcopies/` root
+  (`INST-010`), separate from any working copy the user edits; per-run stage
+  worktrees branch off these (`DEP-004`).
 - **DEP-027 (SHOULD):** *(Tier 2)* The same binary SHOULD run as a long-lived daemon on a
   workstation, shared box, or small cloud VM/container. Tier 2 is an operational posture
   of tier 1, not a different build.
@@ -85,7 +89,7 @@ component goes when you outgrow the box.
 - **DEP-003 (MUST):** **Tier 3 (V2):** A reconcile controller MUST continuously drive the
   `config` repo's manifest desired state into the running deployment idempotently
   (Helm-like / GitOps). Tier 1–2 counterpart: load-at-startup + `goobers config diff`
-  drift detection today; live `config/` watch is V1 via Workflow CD (`DEP-025`).
+  drift detection, and live `config/` watch (`DEP-025`).
 - **DEP-010 (MUST):** **Tier 3 (V2):** The `infra` and `config` repos MUST be
   deployable/permissioned independently (supports Tutor write-scoping — `SEC-021`). At
   tiers 1–2 the same boundary holds with "infra" collapsed to the binary +
@@ -131,6 +135,19 @@ These are seam contracts, satisfied by both runners; the pod wording is the tier
   factor in its definition (`GBO-030`). Tiers 1–2: N concurrent runs drawing from shared
   claimed work under the scheduler's max-parallel conditions. **Tier 3 (V2):** pod/worker
   replica counts (change + redeploy → more replicas).
+
+- **DEP-028 (MAY):** *(Tiers 1–3, shipped)* A deployment MAY enroll its instance
+  with a Fleet service (`INST-015`). Enrollment MUST NOT become a deployment
+  prerequisite: an un-enrolled instance MUST remain fully operable, and the
+  packaged install, supervision, and upgrade paths MUST NOT depend on a fleet
+  service being reachable. The daemon starts, schedules, and runs with no fleet
+  configured.
+- **DEP-029 (MUST):** *(Fleet, not shipped)* A fleet **service** is not part of
+  this deployment contract. `docs/design/fleet-portal.md` §15 slices 7–8
+  (local/team packaging, production hardening) design one; nothing in
+  `deploy/`, `packaging/`, or the release engine builds or ships it, and this
+  requirement records that absence so a reader does not infer a deployable
+  control plane from the instance-side `goobers fleet` commands.
 
 ## Relationships
 

@@ -85,6 +85,16 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"versions": {
 		{name: "json", desc: "Emit JSON"},
 	},
+	"cost": {
+		{name: "pr", takesArg: true, desc: "Filter to one pull request"},
+		{name: "issue", takesArg: true, desc: "Filter to one issue"},
+		{name: "provider", takesArg: true, values: []string{"github", "ado"}, desc: "Filter external-reference provider"},
+		{name: "window", takesArg: true, desc: "Bounded lookback duration"},
+		{name: "since", takesArg: true, desc: "Inclusive RFC3339 run-start lower bound"},
+		{name: "until", takesArg: true, desc: "Exclusive RFC3339 run-start upper bound"},
+		{name: "json", desc: "Emit JSON"},
+		{name: "rebuild", desc: "Rebuild telemetry before querying"},
+	},
 	"init": {
 		{name: "guided", desc: "Open browser-based setup"},
 		{name: "allow-ephemeral", desc: "Allow initialization inside a linked or hosted ephemeral workspace"},

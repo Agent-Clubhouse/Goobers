@@ -1,6 +1,7 @@
 # Design: needs-human label taxonomy — decision vs. status
 
-> Status: **implemented** (2026-08-03)
+> Status: **implemented** (2026-08-03); §5's limitation is **half-stale** — see
+> the note there.
 > Area prefix: none (hygiene)
 > Related: #2028, #1696, #1974, #2064's state-of-repo review
 > Touches: `providers/model.go`, `cmd/goobers/runnerwiring.go`,
@@ -8,6 +9,7 @@
 > `reference-workflows/gaggles/goobers/workflows/implementation.yaml`,
 > `config-examples/gaggles/acme-web/workflows/implementation.yaml`,
 > both gaggles' `backlog-curation.yaml`
+> Delivered-by: #2028, #1974
 
 ## 1. Problem
 
@@ -110,13 +112,22 @@ the configured human, since no decision is pending on it.
   disposition. Splitting `park-escalated` by originating gate would need a
   second park stage per cause and is left for a follow-up if the coarser
   bucket proves too noisy in practice.
-- **No automated issue-side "unpark" exists yet.** The PR-lifecycle side has
-  `unparkResolvedSiblings` (`cmd/goobers/postmerge.go`) to clear
-  `goobers:blocked-on-sibling` from a PR once its blocker merges. No
-  equivalent exists for *issues* — `filterBlockedEligibility`'s self-heal only
-  clears the internal `blocked.json` record and re-admits the item for
-  re-claim; it does not remove the label or restore `goobers:ready` on the
-  issue itself. A blocked-on-sibling issue's label can therefore go stale
+- **Issue-side unpark now exists for the label; `goobers:ready` is still never
+  restored.** *(Narrowed 2026-09-06, #4520 — the original bullet said no
+  automated issue-side unpark existed at all, and that is no longer true.)*
+  Two automated unparkers run during backlog reconciliation:
+  `staleBlockedOnSiblingMarker` clears `goobers:blocked-on-sibling` once every
+  recorded or commented blocker has closed (#3355), and
+  `staleInfrastructureRemediationPark` clears `goobers:needs-remediation`
+  (#4154). `hasReconciledMetadataLabel` was widened twice specifically to feed
+  them.
+
+  **The half that remains true is the important half:** nothing re-adds
+  `goobers:ready`. `filterBlockedEligibility`'s self-heal clears the internal
+  `blocked.json` record and re-admits the item for re-claim, and the unparkers
+  remove the park label — but no `addLabels` path restores readiness, so an
+  unparked issue rejoins the backlog only if it was already `ready`, or when a
+  curator pass marks it. A blocked-on-sibling issue's label can therefore go stale
   (accurate at the moment it was applied, silently outdated once the blocker
   closes) until a human or curator pass notices. This is a real gap, but it
   existed identically for `goobers:needs-human` before this change — it is

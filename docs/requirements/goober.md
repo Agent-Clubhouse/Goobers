@@ -184,8 +184,13 @@ continue to use the CLI's stored authentication.
 ### Harness
 - **GBO-040 (MUST):** The first harness adapter MUST be the **GitHub Copilot CLI**;
   V0/V1 ship with it as the supported harness. *(All tiers)*
-- **GBO-041 (WON'T (v1)):** Additional harness adapters (e.g. Claude Code) are out of
-  scope for v1. The invocation/result envelope contract (`GBO-051`) already *is* the
+- **GBO-041 (SUPERSEDED — Claude Code shipped):** *This ID previously read
+  "WON'T (v1): additional harness adapters (e.g. Claude Code) are out of scope
+  for v1."* A Claude Code adapter ships behind the same envelope seam, and
+  `config-examples` carries a `claude-*` gaggle exercising it. The reasoning
+  below is retained because it is still the governing rule for **any** adapter,
+  and its security burden clause is now load-bearing rather than hypothetical
+  (#4521). Original text, for the record: The invocation/result envelope contract (`GBO-051`) already *is* the
   harness seam — adding a harness later means writing an adapter behind it, not
   building a new abstraction. *(Supersedes this ID's earlier, broader exclusion of
   any multi-harness abstraction: the seam is now core architecture (`GBO-051`); only
@@ -193,6 +198,39 @@ continue to use the CLI's stored authentication.
   adapter carries the capability-enforcement burden — it materializes only granted
   credentials/tools into the harness session — so new adapters are security-critical
   code, not plug-ins to accept casually.)*
+
+### Declarations a Goober carries
+
+These govern shipped declaration surfaces that had no requirement of their own
+(#4521). All are per-goober and all are optional; a goober that declares none
+behaves exactly as before each was added.
+
+- **GBO-060 (MUST, Shipped):** A Goober MAY declare a **harness** and, within it,
+  a **model**. The harness selects the adapter behind `GBO-051`'s envelope seam;
+  the model is harness-scoped and MUST be validated against what that harness
+  accepts, never carried through as an opaque string that fails at invocation
+  time. Arbitrary JSON-compatible `harnessOptions` MUST be preserved verbatim
+  and passed to the adapter without the platform interpreting them.
+- **GBO-061 (MUST, Shipped):** A Goober MAY declare **external MCP servers**
+  (`spec.mcpServers`), local stdio or remote HTTP. Their credentials MUST be
+  **references, never inline values** — the same rule as every other credential
+  surface (`SEC-010`/`CFG-009`) — and each reference MUST name the capability it
+  draws from, so an MCP server can never receive a credential for a capability
+  the goober did not declare (`SEC-042`). An MCP server is an additional tool
+  surface, not an additional capability: declaring one MUST NOT widen what the
+  goober may do.
+- **GBO-062 (MUST, Shipped):** A Goober MAY declare **policy actions** alongside
+  its capabilities. Capabilities are what the platform will *inject a credential
+  for*; policy actions are what the goober is *permitted to do* with what it
+  holds. The two MUST stay distinct: a policy action MUST NOT grant a capability,
+  and validation MUST evaluate them separately. Where a check needs to know
+  whether a stage mutates the repository, it MUST consider both.
+- **GBO-063 (MUST, Shipped):** A Goober MAY declare a **default per-attempt
+  timeout** (`spec.timeoutSeconds`) that applies to every stage bound to it,
+  overridden by a task's own `timeoutSeconds` and falling back to the built-in
+  default when neither is set (`WF-064`). This exists so a role that legitimately
+  does long work does not require stamping a timeout onto every stage that uses
+  it.
 
 ### Run environment & journal
 - **GBO-050 (MUST):** At tiers 1–2 a Goober run environment MUST be a local process

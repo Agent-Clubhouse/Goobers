@@ -856,8 +856,9 @@ func latestMergeReviewEscalationPins(comments []providers.Comment) (head, base s
 //
 // A pass faults nothing by definition, so an escalation applied over it can
 // only be the election deferring this PR behind a sibling. That is the shape
-// #4038 missed: it derived the cause with allCrossPRBlocked, which returns
-// false for an empty finding list by design (applyverdict.go), and a pass
+// #4038 missed: it derived the cause with the sequencing predicate (today
+// sequencingOnly), which returns false for an empty finding list by design
+// (applyverdict.go), and a pass
 // carries no findings — so the pass case recorded no cause, never unparked on
 // a base advance, and pr-remediation could not move the head to release it
 // either because escalated PRs are filtered out upstream. Live on 2026-08-31

@@ -4,6 +4,7 @@
 > Requirements: [`docs/requirements/config-as-code.md`](../requirements/config-as-code.md), [`docs/requirements/deployment.md`](../requirements/deployment.md), [`docs/requirements/security.md`](../requirements/security.md)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #337 (continuous-reconciliation CD daemon), #336 (`goobers apply`), #154 (config hot-reload), #250 (capability enforcement for built-in kinds)
+> Delivered-by: #454, #455, #456, #457, #458, #459, #460, #461
 
 ## 1. Why this exists
 

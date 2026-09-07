@@ -134,9 +134,15 @@ Add this workflow under the gaggle's `workflows/` directory in the instance
 config. Set `spec.gaggle` to the `metadata.name` from that gaggle's
 `gaggle.yaml` (`example` is the name created by `goobers init`).
 
+**Pin `dslVersion`.** It is a required top-level field: config load rejects an
+unpinned workflow outright (`DVL001`, "pin an explicit dslVersion"), because the
+transitional 1.4 default was removed in #3507. `"2.0"` is the version every
+shipped reference workflow pins.
+
 ```yaml
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: todo-check
 spec:
@@ -153,6 +159,7 @@ spec:
       type: deterministic
       goal: Count tracked TODO markers and publish the full listing.
       timeoutSeconds: 30
+      workspace: repo-readonly
       run:
         command: ["sh", "scripts/check-todos.sh"]
         env:
@@ -195,6 +202,33 @@ not a failed workflow stage.
 This script only reads the worktree and needs no external credential, so the
 capability list is explicitly empty. Declare any capability the command really
 uses; undeclared capabilities receive no credential and fail closed.
+
+**Choose the workspace deliberately.** `workspace` selects what filesystem the
+stage gets (`WorkspaceMode`, `api/v1alpha1/workflow_types.go`):
+
+| Value | What the stage gets |
+|---|---|
+| `repo` | A fresh worktree **on the run branch**, which the stage may commit to and push. |
+| `repo-readonly` | A worktree at the run's pinned base revision in **detached HEAD** — repo content with no branch name, so two concurrent repo-backed stages cannot collide over the one run branch. |
+| `scratch` | An empty disposable directory, no repository at all. |
+
+Leaving it unset is **not** the same as `repo-readonly`: an undeclared workspace
+is read by the local runner and the worker as the historical *writable* repo
+worktree. A read-only check like this one should say `repo-readonly` explicitly,
+which is why the example above does. Only declare `repo` when the stage really
+does commit on the run branch.
+
+**`repo-readonly` is a task-level field only.** `run.workspace` accepts just
+`repo` and `scratch` (`DeterministicRun.Workspace`); the three-value enum lives
+on the task (`Task.Workspace`). So a deterministic stage that wants a read-only
+checkout declares `workspace: repo-readonly` **beside** `run:`, as the example
+above does — not inside it. `run.workspace` still wins when both are set
+(`Task.EffectiveWorkspace`), which is why the example does not also set it
+there.
+
+Omitting `workspace` on a stage that looks read-only and holds no repository
+mutation capability raises an advisory validation warning naming exactly this
+choice (`internal/workflow.CheckImplicitWritableWorkspaceWarnings`).
 
 ### 3. Understand `resultFile`
 
@@ -301,9 +335,12 @@ the selected gate branch:
 To read the full listing from the human-readable journal, resolve the stdout
 artifact path from the same run's `events.jsonl`:
 
+Run journals are gaggle-scoped (`Layout.RunsDir`), so the run directory sits
+under the gaggle that owns the workflow:
+
 ```sh
 RUN_ID=0123456789abcdef
-RUN_DIR="./my-instance/runs/$RUN_ID"
+RUN_DIR="./my-instance/gaggles/example/runs/$RUN_ID"
 ARTIFACT_PATH=$(
   jq -r 'select(.type == "artifact.recorded" and (.name | endswith("check-todos/stdout.log"))) | .ref.path' \
     "$RUN_DIR/events.jsonl"

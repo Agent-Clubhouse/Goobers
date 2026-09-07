@@ -280,7 +280,7 @@ directly with standard tools — the journal is human-readable first
 `internal/localscheduler/README.md`):
 
 ```sh
-cat ~/goobers-instance/runs/<run-id>/events.jsonl | jq -c '{seq, type, stage, status}'
+cat ~/goobers-instance/gaggles/goobers/runs/<run-id>/events.jsonl | jq -c '{seq, type, stage, status}'
 jq -c 'select(.type=="trigger.fired" or .type=="tick.skipped")' \
   ~/goobers-instance/scheduler/events.jsonl
 ```

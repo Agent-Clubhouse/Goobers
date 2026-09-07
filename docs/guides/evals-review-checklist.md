@@ -1,5 +1,13 @@
 # EvalSuite PR review checklist
 
+> **⚠️ Direction superseded.** This describes the #2662 EvalSuite direction,
+> which is not being carried forward. See
+> [`docs/design/evals-suite.md`](../design/evals-suite.md) for the full account, and
+> [#2681](https://github.com/Agent-Clubhouse/Goobers/issues/2681) for the
+> replacement direction (native Go/DSL, opt-in, built on the existing runner).
+> These artifacts are preserved rather than deleted because #2681 is
+> `goobers:nominated`, not yet approved.
+
 Use this when reviewing a PR that touches EvalSuite artifacts: the DSL/schema,
 sample or production suites, the judge harness, the sandbox/tool-adapter API,
 cassettes, or the CI gate that runs any of it. It complements, not replaces,

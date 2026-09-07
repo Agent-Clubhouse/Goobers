@@ -1,6 +1,14 @@
 # Design: Polyglot stacks — .NET/C# first-class, Apple/Android laddered
 
-> Status: **draft — for review** · Area: `RUN` / `WF` / `area:runner` · Milestone: **V1 —
+> Status: **implemented, except the Android stretch.** The environment and
+> runtime model, the stack registry, iOS/simulator support, and routed execution
+> all ship.
+> Delivered-by: #736, #737, #740, #1494
+> Verified: 09db115bb (2026-09-06)
+>
+> **Remaining:** #742 (the Android rung) is still open, and was always laddered
+> as a stretch. Everything else this design proposes has landed (#4520).
+> · Area: `RUN` / `WF` / `area:runner` · Milestone: **V1 —
 > arbitrary repos, teams, hardening** (composes with **Custom & Generic Stages**, epic #744)
 > References: `internal/executor/` (dispatch/shell/env), `internal/procenv/procenv.go`,
 > `api/v1alpha1/gaggle_types.go`, `api/v1alpha1/workflow_types.go`, the per-gaggle CI-command

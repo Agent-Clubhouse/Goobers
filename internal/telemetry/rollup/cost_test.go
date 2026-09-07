@@ -160,6 +160,9 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 		pr.TotalAttempts != 5 || pr.MeasuredAttempts != 4 || pr.NanoAIU == nil || *pr.NanoAIU != 520 {
 		t.Fatalf("PR aggregate = %#v", pr)
 	}
+	if len(pr.Runs) != 4 || pr.Runs[0].RunID != "run-a" || pr.Runs[3].RunID != "run-d" {
+		t.Fatalf("PR run breakdown = %#v", pr.Runs)
+	}
 
 	issues, err := db.IssueCosts(context.Background(), "github")
 	if err != nil {
@@ -175,6 +178,32 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	if issues[0].MeasuredRuns != 3 || issues[0].TotalRuns != 4 ||
 		issues[1].MeasuredRuns != 2 || issues[1].TotalRuns != 3 {
 		t.Fatalf("issue coverage = %#v", issues)
+	}
+	if len(issues[0].Runs) != 4 || len(issues[1].Runs) != 3 {
+		t.Fatalf("issue run breakdown = %#v", issues)
+	}
+}
+
+func TestCostAggregatesBoundsWindowAndFiltersExternalID(t *testing.T) {
+	tmp := t.TempDir()
+	db := openTestDB(t, tmp)
+	defer func() { _ = db.Close() }()
+	seedCostRow(t, db, "before", fixtureStart, []costRef{{"pr", "10"}, {"issue", "1"}}, []costUsage{{nanoAIU: int64Pointer(10)}})
+	seedCostRow(t, db, "inside-a", fixtureStart.Add(time.Hour), []costRef{{"pr", "10"}, {"issue", "1"}}, []costUsage{{nanoAIU: int64Pointer(20)}})
+	seedCostRow(t, db, "inside-b", fixtureStart.Add(2*time.Hour), []costRef{{"pr", "11"}, {"issue", "2"}}, []costUsage{{nanoAIU: int64Pointer(30)}})
+	seedCostRow(t, db, "after", fixtureStart.Add(3*time.Hour), []costRef{{"pr", "10"}, {"issue", "1"}}, []costUsage{{nanoAIU: int64Pointer(40)}})
+
+	result, err := db.CostAggregates(context.Background(), CostQuery{
+		Provider: "github", ExternalKind: CostExternalKindPR, ExternalID: "10",
+		Since: fixtureStart.Add(30 * time.Minute), Until: fixtureStart.Add(3 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.PullRequests) != 1 || len(result.Issues) != 0 ||
+		result.PullRequests[0].ExternalID != "10" ||
+		result.PullRequests[0].NanoAIU == nil || *result.PullRequests[0].NanoAIU != 20 {
+		t.Fatalf("bounded result = %+v", result)
 	}
 }
 

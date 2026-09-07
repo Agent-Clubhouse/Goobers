@@ -28,6 +28,8 @@ import type {
   StageAttemptStatus,
   TelemetryErrorSignaturesOptions,
   TelemetryErrorSignaturesResult,
+  TelemetryCostOptions,
+  TelemetryCostResult,
   TelemetryErrorsOptions,
   TelemetryErrorsPage,
   TelemetryStatsOptions,
@@ -53,6 +55,7 @@ export interface DaemonFixtures {
   artifacts?: Record<string, ArtifactContent>;
   transcripts?: Record<string, TranscriptContent>;
   telemetryStats: TelemetryStatsResult;
+  telemetryCosts?: TelemetryCostResult;
   telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
 }
@@ -331,6 +334,35 @@ export class FixtureDaemonClient implements DaemonClient {
             usage: stats.usage,
           }
         : stats.trendPrevious,
+    });
+  }
+
+  async getTelemetryCosts(
+    request: TelemetryCostOptions,
+    options?: RequestOptions,
+  ): Promise<TelemetryCostResult> {
+    throwIfCancelled(options);
+    const fixture = this.fixtures.telemetryCosts ?? {
+      scope: request.scope,
+      since: request.since,
+      until: request.until,
+      pullRequests: [],
+      issues: [],
+    };
+    const filter = (item: TelemetryCostResult["pullRequests"][number]) =>
+      (!request.provider || item.provider === request.provider) &&
+      (!request.id || item.externalId === request.id);
+    return structuredClone({
+      ...fixture,
+      provider: request.provider,
+      scope: request.scope,
+      externalId: request.id,
+      since: request.since,
+      until: request.until,
+      pullRequests:
+        request.scope === "issue" ? [] : fixture.pullRequests.filter(filter),
+      issues:
+        request.scope === "pr" ? [] : fixture.issues.filter(filter),
     });
   }
 

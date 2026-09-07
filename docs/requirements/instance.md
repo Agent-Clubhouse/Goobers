@@ -98,6 +98,25 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   <workflow>` (manual trigger, still honoring run conditions), `goobers status`, and
   `goobers trace <run-id>`. This is the owning statement of the CLI lifecycle surface
   (`DEP-022`/`DEP-023` defer here). *(Tiers 1–2)*
+- **INST-018 (MUST, Shipped):** The **command registry is the single source of
+  truth for the CLI surface** (#4521). Every command, subcommand, and flag MUST be
+  declared once in that registry, and every derived artifact — `goobers help`
+  output, shell completions, the generated man pages, and `docs/cli/` — MUST be
+  **generated from it and drift-guarded in CI**, never hand-maintained. A new
+  subcommand that does not regenerate its documentation is a CI failure, not a
+  follow-up. This requirement exists because the CLI is a public contract with
+  four rendered surfaces, and hand-editing any one of them is how they diverge.
+- **INST-019 (MUST, Shipped):** The instance MUST support **operator-requested
+  self-update** of its own binary: a staged, verified replacement of the running
+  binary with health checking and rollback, driven through the daemon's supervised
+  host so an update never leaves the instance without a runnable binary. The
+  update **policy selects the target** (`manual` requires a named release tag,
+  `on-release` resolves the newest stable release, `on-main` builds a tracked
+  branch); it does **not** make the update automatic. Self-update MUST be
+  explicitly invoked — by the operator, or by the operator-requested `self-update`
+  workflow — and MUST NOT fire on a timer. It MUST NOT interrupt an in-flight run:
+  the handoff requests the daemon's ordinary graceful drain rather than killing
+  work (see the drain contract in `../guides/supervision.md`).
 - **INST-013 (MUST):** After a crash or restart, the local runner MUST recover by
   replaying each run's `state.json` + journal and resuming in-flight runs from the
   last completed stage; recovery MUST never rewrite journal history. Owning
@@ -107,6 +126,24 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   grants locally (hardened to a true permission boundary when `config` is backed by
   its own reviewed git remote) and repo + identity permissions in the cloud
   (`SEC-021`). *(All tiers)*
+
+- **INST-015 (MAY):** *(Tiers 1–3, shipped)* An instance MAY enroll with **one**
+  Fleet service and maintain a durable outbound connection to it
+  (`goobers fleet join|status|leave`, `internal/fleet`). Enrollment is
+  operator-initiated and opt-in: an instance that never joins behaves exactly as
+  before the capability existed, and no fleet code path runs. Discovery is a
+  `GET` of the service's `/.well-known/goobers-fleet` document; enrollment
+  consumes a one-time grant.
+- **INST-016 (MUST):** *(Tiers 1–3, shipped)* Fleet identity and credentials MUST
+  be stored **outside the instance root**, so copying or restoring an instance
+  directory does not clone its fleet identity (`internal/fleet/storage.go`, with
+  per-OS private-file enforcement). This is the instance-identity counterpart to
+  `INST-010`'s layout rule: the instance root is the unit of copy, and identity
+  is deliberately not in it.
+- **INST-017 (MUST):** *(Tiers 1–3, shipped)* The connection an enrolled instance
+  maintains MUST be **outbound-only**. Fleet enrollment MUST NOT require inbound
+  network reachability to the instance, and MUST NOT change the instance's own
+  listener posture (`SEC-043` continues to govern `api.listen` unchanged).
 
 ## Relationships
 

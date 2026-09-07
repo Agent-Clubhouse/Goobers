@@ -1,12 +1,19 @@
 # Portal read architecture — a rethink
 
-> **Status:** approved — accepted design, sixth pass; implementation in progress under
-> epic #1912. Responds to
-> `Goobers-Reviews/2026-07-29_portal-architecture-findings.md` (the diagnosis) and
+> **Status:** implemented — waves 0–5 delivered under epic **#1912 (closed)**;
+> waves 6 and 8 partial and wave 7 not started, all three tracked separately
+> (see the delivery ledger below). Reconciled 2026-09-06 by
+> [#4522](https://github.com/Agent-Clubhouse/Goobers/issues/4522). Responds to
+> `Goobers-Reviews/2026-07-29_portal-architecture-findings.md` — a review
+> artifact that lives **outside this repository and is not reproducible from
+> it**; every conclusion this document draws from it is restated here, so no
+> normative claim depends on reaching that file — and
 > supersedes [`unified-index-backed-run-reads.md`](unified-index-backed-run-reads.md)
 > (#1883), keeping its read-projection conclusion and replacing the parts it left
 > open: ordering, the writer set, request budgeting, in-process isolation,
 > topology, authorization, and the hosted shape.
+> Supersedes: docs/design/unified-index-backed-run-reads.md
+> Delivered-by: #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952
 >
 > **Revision history is in §18** — nine errors in the first pass, seven
 > correctness holes in the second, ten state-boundary findings in the third. The
@@ -19,14 +26,40 @@
 >
 > **The sixth pass (§18.0) is an implementation premise audit**, not a review: 156
 > factual claims this document makes about the code were checked against the code
-> before Wave 0 began. 105 held. **Twelve of the rest change the plan**, and two of
-> those are mechanisms §14 relies on that cannot work as written — a *per-route*
+> before Wave 0 began. 105 held. **Twelve of the rest changed the plan**, and two of
+> those were mechanisms §14 relied on that could not work as written — a *per-route*
 > budget cannot be enforced by `http.Server.WriteTimeout`, and `SQLITE_INTERRUPT`
 > is never observable to a caller because the driver rewrites it to `ctx.Err()`.
-> A third resizes Wave 4: the repository contains **zero** `QueryContext` call
-> sites and `internal/telemetry/rollup` has no `context.Context` in any
-> non-test signature, so "cancellation reaches the statement" is a plumbing
-> project, not a router change. §18.0 records all of them.
+> A third resized Wave 4: at that time the repository contained **zero**
+> `QueryContext` call sites and `internal/telemetry/rollup` had no
+> `context.Context` in any non-test signature, so "cancellation reaches the
+> statement" was a plumbing project, not a router change.
+>
+> **§18.0 is a historical audit, not a list of live blockers.** Its findings have
+> been acted on: the `WriteTimeout` and `SQLITE_INTERRUPT` findings were honoured
+> (per-frame deadlines in `internal/httpapi/feedstream.go`; the `ctx.Err()`
+> rewrite documented in `internal/httpapi/budget.go`), and the
+> `QueryContext`/`rollup` finding was Wave 1.5's work — the tree now has dozens
+> of `QueryContext` call sites and `internal/telemetry/rollup` carries
+> `context.Context` through its query signatures. Read §18.0 in the past tense.
+
+## Delivery ledger (as of 2026-09-06)
+
+Epic **#1912 is closed.** Wave status re-verified against the tree:
+
+| Wave | State | Evidence |
+|---|---|---|
+| 0 — measurement harness | **Delivered** (#1913) | `test/scale` |
+| 1 — five targeted diffs | **Delivered** | bounded journal tail (`internal/journal/instance.go`, #1945); indexes; reader/writer split (`internal/readmodel/store.go`, #1948); sampler (#1946); budgets (#1950) |
+| 2 — read model | **Delivered** (#1951) | `internal/readmodel` over `read.db` |
+| 3 — projector | **Delivered** (#1952) | `internal/readmodel/projector` — "sole writer of projected facts" |
+| 4 — read contract | **Delivered** | `Cost`/`Budget` on the route contract (`internal/apicontract`); `ReadStateEnvelope` (`internal/readservice/readstate.go`); TS `ReadState` |
+| 5 — live updates | **Delivered** | SSE (`internal/httpapi/eventstream.go`) |
+| 6 — aggregates & retention | **Partial** | `internal/readmodel/aggregate.go`, `buckets.go`; retention-sweep progress landed 2026-09-06 (#4432) |
+| 7 — cloud topology | **Not started** | reads remain in-daemon; this document already splits it to #652 |
+| 8 — mutability seam | **Partial** | no complete idempotency/ETag deliverable |
+
+Remaining cloud and mutation work is waves 6–8 and is **not** part of #1912.
 
 ---
 
@@ -106,7 +139,9 @@ Two framing notes:
 
 ## 2. Measured baseline
 
-Measured on the live self-hosting instance (`~/source/goobers-instances`) on
+Measured on the live self-hosting instance (`~/source/goobers-instances` — an
+operator's own checkout, so these measurements are **not reproducible from this
+repository**; the conclusions they support are restated in prose below) on
 2026-07-29, against `main` at `899dbbdd`. **The daemon was not running and
 `up.lock` was stale**, so every number is a *best case* with zero contention from
 live execution.
@@ -1469,6 +1504,25 @@ unrestricted fast path; reachable once #644's RBAC lands.
 ---
 
 ## 12. What gets deleted
+
+> **As-built (2026-09-06, #4522).** This section was written as a plan, and it
+> was largely executed — `eventstream.go` did go from 1,009 lines to 194,
+> matching its own "~640 deleted, framing kept" correction, and the full-journal
+> re-read per append is gone (`internal/journal/instance.go` now documents a
+> *bounded* tail read). Three things it says are no longer true:
+>
+> - **"Journal-scan fallback as a silent default" was not deleted — it was
+>   converted.** `internal/readservice/runs.go` now records that the
+>   journal-scanning path "is now REACHED DELIBERATELY, not fallen into" (#1777),
+>   and `listLatestWorkflowOutcomesScanning` and `listRunsScanning` are alive as
+>   explicit paths. That is a reasonable outcome and arguably the better one —
+>   it is recorded here because the design said *deleted*.
+> - **`ActiveRunCounts` is not test-only.** `ActiveRunCountsByWorkflowDirs` has a
+>   production caller in `cmd/goobers/status.go`. The row's reasoning about the
+>   read path still holds; its claim about the exported symbol does not.
+> - **Every `file:line` citation in the table below is stale.** `runs.go` alone
+>   is now over 3,000 lines and restructured. Read the *Where* column as naming
+>   a symbol and a file, never a location; do not navigate by the line numbers.
 
 | Removed | Where | Because |
 |---|---|---|

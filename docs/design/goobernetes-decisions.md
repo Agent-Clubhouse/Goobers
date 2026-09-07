@@ -169,6 +169,28 @@ Inventory updates follow **accept-and-pin**: in-flight runs finish against their
   image/layering contract. Publishing rides the existing release engine; **image tag = binary
   version** is the version-skew contract. Publishing an official Windows image explicitly promotes
   windows/amd64 from TierExperimental — stated, not implied. (Scopes #3275.)
+
+  > **⚠️ Amendment required — D8 vs DI-6 (#4240).** `goobernetes-deployment-images.md`
+  > DI-6 states the version-skew contract as **embedded-commit equality**, not tag
+  > equality: the dispatcher launches stage pods only from an image whose embedded
+  > commit stamp equals its own, and on continuous-main (no tagged releases) images
+  > are SHA-tagged. DI-6 records a measurement behind that choice — literal
+  > tag-string equality "was measured to reject every image the live instance has
+  > ever built" (gbn-infra-02/C-1).
+  >
+  > These are not the same rule, and `goobernetes-architecture.md`'s precedence
+  > sentence ("Where this document and the decision record disagree, the record
+  > wins") makes **this entry — the one without the measurement — win**. That is a
+  > precedence trap, not a decision. Neither text is edited here: resolving it is a
+  > PO amendment to D8, tracked on
+  > [#4240](https://github.com/Agent-Clubhouse/Goobers/issues/4240). Until it is
+  > amended, treat DI-6 as the operative engineering reading and do not build
+  > tag-string equality.
+  >
+  > **#3275 is a hard blocker for both readings**: nothing publishes any container
+  > image for any commit or platform today, so neither contract can be satisfied,
+  > and every smoke or promotion step that depends on an official image is blocked
+  > behind it (DI-7/DI-8 scope it).
 - The minimal base image is **v1-functional, not optimization**: it is what "simple stages route to
   tiny fast Linux runners" schedules onto. Per-toolchain image atomization is the deferred tail.
 

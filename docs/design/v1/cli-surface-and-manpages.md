@@ -1,6 +1,16 @@
 # Design: CLI robustness — registry-sourced help + generated man pages
 
-> Status: **draft — for review** · Area: `area:cli` / `DX` · Milestone: **Onboarding & Authoring**
+> Status: **implemented** — registry-sourced help, generated `docs/cli/` and man
+> pages, completions, per-command examples, `config show`, `doctor`, and `run
+> cancel` all ship, with the generated surfaces drift-guarded in CI
+> (`INST-018`).
+> Delivered-by: #437, #439, #2449
+> Verified: 09db115bb (2026-09-06)
+>
+> **Remaining:** #2430 (CLI metadata and generated help internally consistent) is
+> still open. The body's "today the CLI does X" passages describe the
+> pre-implementation surface (#4520).
+> · Area: `area:cli` / `DX` · Milestone: **Onboarding & Authoring**
 > (#435) References: `cmd/goobers/main.go` (usage), `cmd/goobers/runtime_capabilities.go`
 > (registry/dispatch), `cmd/goobers/completion.go` (static completion), `internal/apicontract`.
 > Origin: the V1 usability goal — audit CLI commands for robustness, correct/complete man

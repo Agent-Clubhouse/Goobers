@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version init connect examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help --version -h --help"
+        candidates="version init connect examples scaffold validate up down service dashboard run signal workflow status stats cost trace escalations completion help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -144,6 +144,9 @@ _goobers_completion()
             ;;
         stats)
             flags+=" --since --json"
+            ;;
+        cost)
+            flags+=" --pr --issue --provider --window --since --until --json --rebuild"
             ;;
         features)
             flags+=" --json --dsl-version --used"

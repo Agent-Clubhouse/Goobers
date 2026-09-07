@@ -4,11 +4,25 @@
 > architecture assumed by earlier specs and code. Where an older spec or code path
 > contradicts this document, this document wins and the spec/code carries a status
 > banner pointing here.
-> Last updated: 2026-08-07 · Descriptive/prescriptive status annotated 2026-07-23:
-> §4–§7 (as amended) describe shipped, verified behavior of the local runner,
-> except the capability namespace rule in §5, which is prescriptive pending its
-> atomic migration; §3.2, §10, the remaining V1 work identified in §12, and V2
-> are prescriptive roadmap — mandated, not yet built.
+> Last updated: 2026-09-06 · Descriptive/prescriptive status re-annotated
+> 2026-09-06: §4–§7 (as amended) describe shipped, verified behavior of the local
+> runner, except the capability namespace rule in §5, which is prescriptive
+> pending its atomic migration. The remaining V1 work identified in §12 is
+> prescriptive roadmap — mandated, not yet built.
+>
+> §3.2, §10 and §12's V2 entry are **no longer wholly prescriptive.** The
+> Temporal-hosted state machine (`internal/engine`), its worker host
+> (`internal/workerhost`), pod-per-stage Kubernetes dispatch
+> (`internal/dispatcher`), Azure Key Vault secret storage
+> (`internal/secretstore`), OTLP telemetry export (`internal/telemetry`), and the
+> dual-runner conformance harness (`internal/engine/conformance_test.go`, run by
+> `make test-conformance`) are shipped code, not roadmap. Read those sections as
+> a mix of delivered substrate and remaining mandate, and prefer the package
+> names above over any "not yet built" phrasing that survives here. The full
+> three execution modes, the dispatcher substrate, and the daemon plane
+> inventory are now covered by **§3.4**, which is the map into the Goobernetes
+> v1 design set. §3.2's Temporal-runner framing and §10's substrate map are
+> older text that §3.4 amends rather than replaces.
 
 ## 1. One system, three deployment tiers
 
@@ -62,7 +76,13 @@ execution. Two runners implement the same contract:
 - An embedded scheduler fires cron triggers and enforces run conditions
   (max-parallel, budgets).
 
-### 3.2 Temporal runner (tier 3, V2)
+### 3.2 Temporal runner (tier 3, V2 — substrate shipped)
+
+> The seam described here is no longer hypothetical. `internal/engine` hosts the
+> compiled state machine as a Temporal workflow, `internal/workerhost` runs the
+> workers, and `internal/dispatcher` dispatches agentic stages to ephemeral
+> Kubernetes pods. The prescriptive part that remains is the operator/GitOps
+> config-delivery path in §10 and the full mode-3 description owned by #4240.
 
 - The same compiled state machine hosted as a Temporal workflow; stages become
   activities dispatched to distributed workers; agentic stages run in ephemeral
@@ -114,9 +134,84 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
 
 The event schema (issue #8) marks each field normative or excluded, the V0 e2e
 walking skeleton asserts journal determinism on the local runner (the conformance
-seed), and the V2 conformance harness runs shared fixtures through both runners and
-diffs the conformance set. This property is what makes "one system, three tiers"
+seed), and the dual-runner conformance harness — shipped as
+`internal/engine/conformance_test.go` and run by `make test-conformance` — runs
+shared fixtures through both runners and diffs the conformance set. This property is what makes "one system, three tiers"
 enforceable rather than aspirational.
+
+### 3.4 Execution modes, the dispatcher, and the daemon planes
+
+The tier table in §1 is a **packaging** concept: how Goobers is installed and
+operated. It is not the execution model. The execution model has three **modes**,
+and mode is a property of the *instance*, never of a workflow document — a
+workflow must not know or care where it runs
+([`design/goobernetes-architecture.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-architecture.md) D1).
+
+| Mode | What executes a stage | Inferred from |
+|---|---|---|
+| **1 — Local** | The daemon's own host, through the local execution path: a fresh worktree per attempt. macOS is mode-1 only — there is no macOS cluster substrate, so an `os: macOS` stage on a cloud instance fails validation by design. | No `runners:` block (the legacy singular `runner:` becomes the implicit `self` entry), or a `runners:` inventory of `host: self` entries only. |
+| **2 — Cloud single-pod** | The daemon pod itself (`deploy/reference/goobers-system/api-deployment.yaml` running `goobers up` on an RWO journal PVC). | Same as mode 1, deployed in a cluster. |
+| **3 — Goobernetes** | **One fresh, never-reused pod per stage attempt**, created by the dispatcher for the runner the constraint solve resolved, disposed once its outputs are surrendered. Windows stages are container pods in the cluster. | Any `runners:` entry with `host: image` or `host: deployment`. `engine:` must then resolve. |
+
+Mode 3 distributes **stage execution**, not the instance: the instance root, the
+daemon, and control-plane state stay single-node/RWO
+([`design/k8s-infra-shape.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/k8s-infra-shape.md) §4).
+
+#### The dispatcher
+
+`internal/dispatcher` is the resident component that serves a runner's task
+queues. **It does not execute stages.** Per stage activity it receives the
+activity from the (gaggle × runner-type) queue, creates one fresh pod for the
+resolved runner, stamps pod-level restrictions as the pod creator, supervises
+the stage and relays liveness, collects the `ResultEnvelope`, confirms output
+surrender, and **deletes the pod**. A pod serves exactly one stage attempt;
+reuse is a correctness bug, not an optimization opportunity.
+
+Host kinds are `self` (no pod — the local path), `image` (the product-rendered
+pod), and `deployment` (consumer-owned pod spec, still fresh-per-attempt).
+
+This supersedes the earlier resident-worker substrate — a `goobers worker`
+Deployment executing stage activities as goroutines — which is **no longer the
+target execution model**; see
+[`design/goobernetes-architecture.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-architecture.md) §3
+and §10.
+
+#### The daemon plane inventory
+
+A mode-3 stage pod has no instance root and no shared filesystem. Everything it
+would have reached through the filesystem it instead reaches over enumerated,
+authenticated **planes** on the daemon API. The authoritative list is the path
+constants in [`internal/apicontract`](https://github.com/Agent-Clubhouse/Goobers/blob/main/internal/apicontract/contract.go) —
+that file, not this table, is the contract:
+
+| Plane | Routes (`internal/apicontract`) | What it replaces |
+|---|---|---|
+| **Claims** | `ClaimAcquirePath`, `ClaimRenewPath`, `ClaimReleasePath`, `ClaimSettlePath`, `ClaimListPath`, `ClaimRecoverPath` | Ledger-touching stages opening `claims.json` under `GOOBERS_INSTANCE_ROOT`. |
+| **Scheduler state** | `GaggleStateKeyPath` | The four non-claim scheduler state shapes (learned dependencies, backlog cursor, post-merge ledger, sibling-context cache), read-modify-written over ETag compare-and-swap under the same per-key lock the in-process path takes. The key namespace is closed. |
+| **Journal (write)** | `RunJournalEmitPath` | Batched live journal events for one run, idempotent per op, sequence assigned at acceptance by the daemon's single writer. |
+| **Journal (cross-run reads)** | `JournalRunPhasePath`, `JournalConflictTouchesPath`, `JournalUnpushedWorkPath`, `JournalEscalationCandidatesPath`, `JournalBranchOwnershipPath` | Purpose-built, gaggle-scoped questions the daemon derives — deliberately *not* a general cross-run journal reader. A pod reads its own run through the run-scoped read routes. |
+| **Credentials** | `CredentialResolvePath` | Credentials resolved at stage start, scoped to the stage's declared capabilities. Dispatch payloads carry opaque references only; nothing is inherited from dispatch time. |
+| **Blobs** | `BlobDigestPath` | The shared artifact filesystem: content-addressed get/put by sha256 digest. |
+| **Surrender** | `RunStageSurrenderPath` | The stage pod's exit handoff of its `ResultEnvelope` and mutation facts, identity-keyed by run/stage/attempt. |
+| **Triggers** | `TriggerIngestPath` | External trigger file drops into the daemon's `SchedulerDir`. |
+| **Run control / HITL** | `RunCancelPath`, `RunEscalationResolvePath` | `pending-cancels/` file drops and HITL gestures that previously required sharing the daemon's filesystem. |
+| **Config digest** | `ConfigDigestPath` | A worker deciding for itself whether its config tree has diverged from the daemon's. |
+
+Modes 1 and 2 keep their file seams; the planes are the non-local path, not a
+replacement for it.
+
+#### Where the detail lives
+
+This section is the map, not the specification. The Goobernetes v1 design set
+owns the detail, and the decision record is authoritative where they disagree:
+
+- [`design/goobernetes-decisions.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-decisions.md) — the PO decision record.
+- [`design/goobernetes-architecture.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-architecture.md) — mode model, substrate, control plane, supersessions.
+- [`design/distributed-state-and-coordination.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/distributed-state-and-coordination.md) — state and coordination, and the plane design.
+- [`design/goobernetes-dispatcher.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-dispatcher.md) — pod spec, placement, probes.
+- [`design/goobernetes-restrictions.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-restrictions.md) — the per-OS restriction matrix and what is enforceable where.
+- [`design/k8s-infra-shape.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/k8s-infra-shape.md) — namespaces, RWO constraints, networking.
+- [`design/goobernetes-deployment-images.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-deployment-images.md) — image families and the version-skew contract.
 
 ## 4. The run journal (provenance contract)
 
@@ -467,7 +562,8 @@ implementation of a seam the local runner also implements. "This is where it goe
 | `providers/` | **Keep & extend** — GitHub issues/PR operations are V0 workload |
 | `internal/telemetry` | **Keep** — add journal/SQLite exporter |
 | `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path) | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2. The tier-3 scheduler fork (`internal/scheduler`, `cmd/scheduler`) was **deleted** per goobernetes-architecture.md D5/§4 (#2055 resolved: supersede) — `internal/localscheduler` is the one scheduler |
-| `infra/` (Bicep, ArgoCD, Temporal) | **Quarantine** — tier-3 provisioning, revived in V2 |
+| `infra/` (Bicep, ArgoCD, Temporal) | **Quarantine** — tier-3 provisioning, revived in V2. Not to be confused with `deploy/reference/`, which ships the live Kubernetes reference manifests mode 3 uses |
+| `internal/dispatcher`, `internal/workerhost`, `internal/k8spreflight`, `internal/netpolrender`, `internal/podauth` | **Live** — the mode-3 substrate (§3.4). Not quarantined and not roadmap |
 | `portal/` | **Keep** — retarget from mock client to reading run journals (V1) |
 | `cmd/goober-runtime` | **Retired** (deleted) per goobernetes-architecture.md D5/§4 — superseded by the local runner's stage execution in the `goobers` binary |
 
@@ -513,10 +609,17 @@ authentication, and Tutor surfaces beyond their current slices.
 
 ### V2 — Cloud scale
 
-The **Temporal runner** behind the same seam with journal projection and the
-conformance harness; Kubernetes stage execution (agent pods); operator + ArgoCD/GitOps
-config delivery revived; Azure substrate drop-ins (ADX exporter, Key Vault, Entra)
-per §10.
+**Partly delivered.** Shipped: the **Temporal runner** behind the same seam
+(`internal/engine`) with journal projection, the dual-runner conformance harness
+(`make test-conformance`), Kubernetes stage execution as pod-per-stage dispatch
+(`internal/dispatcher`, `internal/workerhost`), Key Vault secret storage
+(`internal/secretstore`), and OTLP telemetry export (`internal/telemetry`).
+
+Still prescriptive: reviving the operator + ArgoCD/GitOps config-delivery path
+(`internal/operator`, `cmd/operator`, `cmd/config-sync`, `infra/`, still
+quarantined per §11) and the remaining Azure substrate drop-ins (ADX exporter,
+Entra) per §10. The authoritative current-state description of cloud execution
+is owned by [#4240](https://github.com/Agent-Clubhouse/Goobers/issues/4240).
 
 ## 13. Relationship to the requirement specs
 

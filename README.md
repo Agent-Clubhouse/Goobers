@@ -132,10 +132,11 @@ the release-matched [Getting Started skill](skills/goobers-getting-started/SKILL
 | --- | --- |
 | Understand the product model | [Concepts](docs/concepts/README.md) |
 | Learn with a credential-free workflow | [Quickstart tutorial](docs/guides/quickstart.md) |
+| Learn to author, test, and debug workflow YAML | [Workflow authoring tutorial](docs/guides/learn-workflow-authoring.md) |
 | Configure a real repository | [Arbitrary repository onboarding](docs/guides/arbitrary-repo-onboarding.md) |
 | Install on a specific host | [Linux](docs/guides/quickstart-linux.md), [macOS](docs/guides/quickstart-macos.md), or [Windows](docs/guides/quickstart-windows.md) |
 | Operate an instance | [Daemon supervision](docs/guides/supervision.md) |
-| Author workflows and configuration | [Agent toolkit](agent-toolkit/README.md) and [DSL authoring](docs/guides/dsl-authoring-skill.md) |
+| Author workflows and configuration | [Workflow primitive reference](docs/reference/workflow-primitives/README.md), [Agent toolkit](agent-toolkit/README.md), and [DSL authoring](docs/guides/dsl-authoring-skill.md) |
 | Look up commands | [CLI reference](docs/cli/README.md) |
 | Understand implementation and deployment boundaries | [Architecture](docs/ARCHITECTURE.md) |
 | Explore the website and animated introduction | [goobers.dev](https://goobers.dev) |

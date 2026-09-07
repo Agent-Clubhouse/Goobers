@@ -891,9 +891,12 @@ attempt is a new journal entry, never overwritten history (§5). A business
 per the table above.
 
 **Agentic session timeout & `Task.OnTimeout` (#724).** An agentic stage's
-harness session is bounded by a wall-clock timeout (currently a flat 30m,
-`internal/harness.DefaultTimeout`; not yet per-stage configurable — #151 is
-the natural home for a DSL-expressed limit). A timeout is a dispatch error
+harness session is bounded by a wall-clock timeout. The default is 30m
+(`internal/harness.DefaultTimeout`), and it **is** DSL-configurable: a task's
+own `timeoutSeconds` (`Task.TimeoutSeconds`) wins, else the goober's
+`spec.timeoutSeconds` (`GooberSpec.TimeoutSeconds`), else the built-in
+default. `limits.maxDurationSeconds` is also accepted but `timeoutSeconds`
+takes precedence when both are set. A timeout is a dispatch error
 (marked `invoke.IsTimeout`), so by default it consumes `Task.Retry` budget
 and, when exhausted, discards the run — historically throwing away real,
 committed, in-progress work whose only unfinished step was CI verification.

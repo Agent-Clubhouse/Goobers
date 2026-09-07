@@ -1,6 +1,18 @@
 # Design: V1 multi-gaggle + per-repo credential scoping
 
-> Status: **draft — for review** · Area: `RUN` / `SEC` / `WF` · Milestone: **V1 — arbitrary
+> Status: **implemented for MGV-1..MGV-7; a later credential wave is open.**
+> Per-gaggle CI commands, headPrefix derivation, foreign-repo diagnostics, and
+> per-repo credential scoping all ship.
+> Delivered-by: #1009, #1010, #1011, #1012, #1285, #1286
+> Verified: 09db115bb (2026-09-06)
+>
+> **Remaining:** MGV-13..MGV-15 (#1794, #1795, #1796) and the rest of #1797–#1800
+> — a first-class credential schema, explicit `additionalRepos` credentials, and
+> the grant path that consumes them — are still open. They extend this design
+> rather than completing it. Tables and paths in the body describe the
+> pre-implementation state and should be read as the design's argument, not as a
+> description of the tree (#4520).
+> · Area: `RUN` / `SEC` / `WF` · Milestone: **V1 — arbitrary
 > repos, teams, hardening** (epic #34)
 > Extends: [`34-arbitrary-repo-hardening.md`](34-arbitrary-repo-hardening.md)
 > (runtime scoping), [`35-sandboxing-per-goober-creds.md`](35-sandboxing-per-goober-creds.md)

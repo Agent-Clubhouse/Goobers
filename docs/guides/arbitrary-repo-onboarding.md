@@ -426,6 +426,33 @@ scaling shapes:
   repositories you operate together: one daemon, one journal, shared run
   conditions, and per-workflow budgets.
 
+**If the additional repository belongs to a different GitHub owner and you use
+`daemonIdentity: kind: github-app`, add an installation binding for that owner.**
+A GitHub App installation is owner-scoped, so a single top-level
+`installationId` cannot cover repos spanning two owners: the second owner's
+mutations fail at credential materialization with GitHub's 422. Move to the
+per-owner form and give every GitHub-provider owner a binding — `goobers
+validate` rejects the config at load if one is missing, rather than letting it
+detonate on a scheduled run:
+
+```yaml
+daemonIdentity:
+  kind: github-app
+  appId: 123456
+  privateKey: { file: /secrets/goobersbot.pem }
+  slug: goobersbot
+  installations:
+    - owner: acme
+      installationId: 1111111
+    - owner: globex
+      installationId: 2222222
+```
+
+Owner strings must match `repos[].owner` exactly. See
+[GitHub token scopes](github-token-scopes.md#daemonidentity-one-distinct-bot-identity-for-authored-prsreviewsmerges)
+and
+[`docs/design/daemon-identity-multi-owner.md`](../design/daemon-identity-multi-owner.md).
+
 Separate instance roots remain the right choice when a repository needs an
 isolation boundary — different credentials or trust postures, different
 machines, or independent journals and budgets — not because of a repository
