@@ -419,6 +419,8 @@ type guidedRepositoryReadiness struct {
 	EligibleCount       *int     `json:"eligibleCount,omitempty"`
 	StarterIssueCreated bool     `json:"starterIssueCreated,omitempty"`
 	UsesWorkItemTags    bool     `json:"usesWorkItemTags,omitempty"`
+	TagMatchCount       *int     `json:"tagMatchCount,omitempty"`
+	TagScanComplete     bool     `json:"tagScanComplete,omitempty"`
 }
 
 var guidedChooseRepositoryFolder = chooseGuidedRepositoryFolder
@@ -478,6 +480,10 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 	}
 	if gaggle.Spec.Project.Provider == apiv1.ProviderADO {
 		response.UsesWorkItemTags = true
+		if err := prepareGuidedADORepository(actionCtx, s.instancePath, gaggle, input, &response); err != nil {
+			writeGuidedRepositoryError(w, actionCtx, "ado_backlog_unavailable", err)
+			return
+		}
 		writeGuidedJSON(w, http.StatusOK, response)
 		return
 	}
