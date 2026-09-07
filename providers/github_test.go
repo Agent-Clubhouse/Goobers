@@ -2452,7 +2452,7 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 		}),
 		mutation: map[string]interface{}{
 			"enqueuePullRequest": map[string]interface{}{
-				"mergeQueueEntry": map[string]interface{}{"state": "QUEUED", "position": 2},
+				"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "state": "QUEUED", "position": 2},
 			},
 		},
 	}
@@ -2470,7 +2470,7 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 	}
 	// Enqueueing never merges inline, so Merged is false by construction —
 	// the queue entry is what the caller polls next.
-	if result.Merged || result.Number != 9 {
+	if result.Merged || result.Number != 9 || result.QueueEntryID != "MQE_accepted" {
 		t.Fatalf("result = %#v, want Merged=false Number=9", result)
 	}
 	if len(stub.bodies) != 2 {
@@ -2480,6 +2480,9 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 		t.Fatalf("lookup number = %v, want 9", got)
 	}
 	mutationVars := stub.variables(1)
+	if query, _ := stub.bodies[1]["query"].(string); !strings.Contains(query, "mergeQueueEntry{ id state position }") {
+		t.Fatalf("enqueue mutation did not request its receipt identity: %s", query)
+	}
 	if got := mutationVars["pullRequestId"]; got != "PR_node" {
 		t.Fatalf("mutation pullRequestId = %v, want the node id from the lookup", got)
 	}
@@ -2540,7 +2543,7 @@ func TestGitHubProviderEnqueuePullRequestAlreadyEnqueuedIsIdempotent(t *testing.
 		t: t,
 		lookup: lookupResponse(map[string]interface{}{
 			"id": "PR_node", "merged": false, "mergeCommit": nil,
-			"mergeQueueEntry": map[string]interface{}{"state": "AWAITING_CHECKS", "position": 0},
+			"mergeQueueEntry": map[string]interface{}{"id": "MQE_someone_else", "state": "AWAITING_CHECKS", "position": 0},
 		}),
 	}
 	server := stub.server()
@@ -2562,6 +2565,9 @@ func TestGitHubProviderEnqueuePullRequestAlreadyEnqueuedIsIdempotent(t *testing.
 	}
 	if ref, ok := rec.last(); ok {
 		t.Fatalf("observation of an existing queue entry recorded a mutation: %+v", ref)
+	}
+	if result.QueueEntryID != "" {
+		t.Fatalf("observed entry claimed as this caller's receipt: %+v", result)
 	}
 }
 

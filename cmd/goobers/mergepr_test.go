@@ -171,7 +171,7 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			st.enqueueVars = body.Variables
 			writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{
 				"enqueuePullRequest": map[string]interface{}{
-					"mergeQueueEntry": map[string]interface{}{"state": "QUEUED", "position": 1},
+					"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "state": "QUEUED", "position": 1},
 				},
 			}})
 			return

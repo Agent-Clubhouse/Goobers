@@ -798,10 +798,13 @@ type EnqueuePullRequestRequest struct {
 // the caller polls the queue entry (PollMergeQueueEntryRequest) for the
 // terminal outcome.
 type EnqueuePullRequestResult struct {
-	Number   int    `json:"number"`
-	Merged   bool   `json:"merged"`
-	MergeSHA string `json:"mergeSha,omitempty"`
-	Message  string `json:"message,omitempty"`
+	// QueueEntryID is populated only by this caller's positively accepted
+	// GitHub enqueue mutation, never by an already-enqueued observation.
+	QueueEntryID string `json:"queueEntryId,omitempty"`
+	Number       int    `json:"number"`
+	Merged       bool   `json:"merged"`
+	MergeSHA     string `json:"mergeSha,omitempty"`
+	Message      string `json:"message,omitempty"`
 }
 
 // DequeuePullRequestRequest removes a pull request that a caller previously

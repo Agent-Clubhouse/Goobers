@@ -567,7 +567,7 @@ const enqueuePullRequestLookupQuery = `query($owner:String!,$name:String!,$numbe
 // concurrency guard the REST merge endpoint spells "sha".
 const enqueuePullRequestMutation = `mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID){
   enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){
-    mergeQueueEntry{ state position }
+    mergeQueueEntry{ id state position }
   }
 }`
 
@@ -679,6 +679,7 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 	var mutation struct {
 		EnqueuePullRequest struct {
 			MergeQueueEntry *struct {
+				ID       string `json:"id"`
 				State    string `json:"state"`
 				Position int    `json:"position"`
 			} `json:"mergeQueueEntry"`
@@ -688,12 +689,13 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 		return EnqueuePullRequestResult{}, err
 	}
 
-	p.recordEnqueue(ctx, req.Repository, req.PullID)
-	message := "pull request enqueued"
-	if entry := mutation.EnqueuePullRequest.MergeQueueEntry; entry != nil {
-		message = fmt.Sprintf("pull request enqueued (state %s, position %d)", entry.State, entry.Position)
+	entry := mutation.EnqueuePullRequest.MergeQueueEntry
+	if entry == nil || strings.TrimSpace(entry.ID) == "" || len(entry.ID) > 256 {
+		return EnqueuePullRequestResult{}, fmt.Errorf("enqueue response lacks a valid queue entry identity; acceptance is unconfirmed")
 	}
-	return EnqueuePullRequestResult{Number: number, Message: message}, nil
+	p.recordEnqueue(ctx, req.Repository, req.PullID)
+	message := fmt.Sprintf("pull request enqueued (state %s, position %d)", entry.State, entry.Position)
+	return EnqueuePullRequestResult{Number: number, Message: message, QueueEntryID: entry.ID}, nil
 }
 
 // recordEnqueue journals the enqueue as a mutation of the pull request's
