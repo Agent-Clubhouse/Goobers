@@ -861,13 +861,36 @@ func flattenedSymlinks(root string, symlinkPaths []string, lstat func(string) (o
 //     older name for the same switch and is the fallback the newer key defers
 //     to; setting both covers every git version we support.
 func hardenedGitArgs(args []string) []string {
-	return append([]string{
+	return append(append([]string{
 		"-c", "safe.bareRepository=all",
 		"-c", "core.hooksPath=" + os.DevNull,
 		"-c", "core.fsmonitor=false",
+	}, ForegroundMaintenanceArgs()...), args...)
+}
+
+// ForegroundMaintenanceArgs is the auto-maintenance half of hardenedGitArgs,
+// exported because this package is not the only one that runs git inside a
+// tree it later tears down.
+//
+// A managed worktree SHARES the mirror's object store, so a git command run
+// in the worktree by another package — `cmd/goobers`'s rebase, checkout,
+// fetch and push on the PR-remediation path — writes loose objects into the
+// very `repo.git` this package's Reap and FinalizeRun remove, and can spawn
+// the same detached housekeeping orphan against it. Those callers cannot
+// inherit the pin through the environment: they compose their own
+// GIT_CONFIG_COUNT slots for safe.directory and the origin credential and
+// deliberately strip foreign GIT_CONFIG_* first, so anything layered into the
+// process environment is dropped before the child sees it. Handing them the
+// same command-line -c pins is the only composition that holds, and sharing
+// the single definition is what keeps a second copy from drifting out of
+// agreement with the mirror's own.
+//
+// Returns a fresh slice: callers append their own arguments to it.
+func ForegroundMaintenanceArgs() []string {
+	return []string{
 		"-c", "maintenance.autoDetach=false",
 		"-c", "gc.autoDetach=false",
-	}, args...)
+	}
 }
 
 // gitOutput runs git in dir and returns its trimmed stdout.

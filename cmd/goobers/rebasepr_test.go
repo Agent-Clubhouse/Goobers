@@ -488,8 +488,23 @@ func TestRebaseFetchHeadArgsFallsBackWhenOptionIsUnavailable(t *testing.T) {
 	}
 	shimDir := t.TempDir()
 	shim := filepath.Join(shimDir, "git")
+	// Matched by SCANNING the arguments rather than by position. Every git
+	// command this package builds carries `-c key=value` pins ahead of the
+	// verb, and a `-c` value does not start with a dash, so a positional shim
+	// silently stops matching the moment a pin is added or reordered — and a
+	// shim that never fires makes the test pass while exercising nothing.
 	script := `#!/bin/sh
-if [ "$1" = "rebase" ] && [ "$2" = "-h" ]; then
+verb=""; wants_help=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		-c) shift ;;
+		-h) wants_help=1 ;;
+		-*) : ;;
+		*) [ -z "$verb" ] && verb="$1" ;;
+	esac
+	shift
+done
+if [ "$verb" = "rebase" ] && [ -n "$wants_help" ]; then
 	echo "usage: git rebase [-i] [options] [--exec <cmd>] [--onto <newbase>] [<upstream> [<branch>]]"
 	exit 129
 fi
@@ -1646,8 +1661,19 @@ func TestRebasePRConflictInspectionInfraFailureWithholdsCause(t *testing.T) {
 	}
 	shimDir := t.TempDir()
 	shim := filepath.Join(shimDir, "git")
+	// Matched by SCANNING for the conflict-inspection flags rather than by
+	// argument position: the caller's argv carries `-c key=value` pins ahead
+	// of the verb, so a positional shim would stop firing — and stop injecting
+	// the failure this test is about — without failing. `-z` is required as
+	// well as `--diff-filter=U`, because the assertion at the end of this test
+	// runs the same query WITHOUT it and must reach the real git.
 	script := `#!/bin/sh
-if [ "$1" = "diff" ] && [ "$2" = "--name-only" ] && [ "$3" = "--diff-filter=U" ] && [ "$4" = "-z" ]; then
+unmerged=""; nul=""
+for arg in "$@"; do
+	[ "$arg" = "--diff-filter=U" ] && unmerged=1
+	[ "$arg" = "-z" ] && nul=1
+done
+if [ -n "$unmerged" ] && [ -n "$nul" ]; then
 	echo "conflict inspection rejected by test" >&2
 	exit 1
 fi
