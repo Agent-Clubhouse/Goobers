@@ -448,8 +448,8 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if release.Run == nil || !reflect.DeepEqual(release.Run.Command, []string{"goobers", "pr-claim", "--release"}) {
 		t.Errorf("release-claim command = %v, want explicit PR claim release", release.Run)
 	}
-	if release.Next != "report-cost" {
-		t.Errorf("release-claim next = %q, want report-cost", release.Next)
+	if release.Next != "" {
+		t.Errorf("release-claim next = %q, want terminal", release.Next)
 	}
 	escalatedRelease, ok := m.Task("release-escalated-claim")
 	if !ok {

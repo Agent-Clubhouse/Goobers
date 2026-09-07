@@ -539,8 +539,8 @@ func TestReferenceTestSuiteQualityUsesRecurringEvidenceBeforeNomination(t *testi
 	nominate := tasks["nominate"]
 	if nominate.InputsFrom["candidateFindings"] != "findingsRef" ||
 		!containsString(nominate.Capabilities, string(capability.GitHubIssuesWrite)) ||
-		nominate.Next != "report-cost" {
-		t.Fatalf("nominate = %+v, want issue-only proposal stage followed by report-cost", nominate)
+		nominate.Next != "" {
+		t.Fatalf("nominate = %+v, want terminal issue-only proposal stage", nominate)
 	}
 }
 

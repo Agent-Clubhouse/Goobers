@@ -379,7 +379,6 @@ spec:
       # complete once the issue carries the closing breadcrumb. There is no
       # merge stage anywhere in this workflow: merge-review owns that
       # separate, explicitly capability-gated path.
-      next: report-cost
 
     - name: park-escalated
       type: deterministic
@@ -427,16 +426,6 @@ spec:
         - update-issue
       next: "@abort"
 
-    - name: report-cost
-      type: deterministic
-      goal: Publish cumulative cost on this run's pull request and addressed issues.
-      run:
-        command: ["goobers", "report-cost"]
-        workspace: scratch
-      inputs:
-        resultFile: "cost-report-result.json"
-      capabilities:
-        - github:issues:write
   gates:
     # #4179: same failure-class evaluator local-gate below already uses, same
     # infra-retries-itself convention (the retry is bounded by the runner's own

@@ -150,16 +150,6 @@ spec:
         - update-issue
       next: "@escalate"
 
-    - name: report-cost
-      type: deterministic
-      goal: Publish cumulative cost on this run's pull request and addressed issues.
-      run:
-        command: ["goobers", "report-cost"]
-        workspace: scratch
-      inputs:
-        resultFile: "cost-report-result.json"
-      capabilities:
-        - github:issues:write
   gates:
     - name: schema-supported
       evaluator: automated
@@ -215,5 +205,5 @@ spec:
           key: publicationConflict
           equals: "false"
       branches:
-        pass: report-cost
+        pass: ""
         fail: park-for-human

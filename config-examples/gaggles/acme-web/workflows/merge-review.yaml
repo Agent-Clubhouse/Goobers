@@ -52,9 +52,9 @@ spec:
         authorScope: "any"
         # Optional stricter instance scoping. Empty/false preserves legacy
         # branch-prefix and starvation behavior.
-        requireOptInLabel: report-cost
+        requireOptInLabel: ""
         respectAssignee: "false"
-        selfIdentity: report-cost
+        selfIdentity: ""
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
@@ -315,8 +315,6 @@ spec:
     # refusals at an unchanged head and demotes a persistently-stuck lander
     # (goobers:merge-demoted) so its cluster drains around it. No-op for a
     # transient/first refusal; self-heals when the PR's head advances.
-      next: report-cost
-
     - name: record-merge-refusal
       type: deterministic
       goal: Record a merge refusal and demote a persistently-stuck lander (#950).
@@ -332,18 +330,7 @@ spec:
       policyActions:
         - record-merge-refusal
         - demote-pr
-      next: report-cost
 
-    - name: report-cost
-      type: deterministic
-      goal: Publish cumulative cost on this run's pull request and addressed issues.
-      run:
-        command: ["goobers", "report-cost"]
-        workspace: scratch
-      inputs:
-        resultFile: "cost-report-result.json"
-      capabilities:
-        - github:issues:write
   gates:
     # #2340: check-issue-staleness emits issueStale before the expensive
     # agentic review gate runs. A materially-changed issue routes here to a
@@ -372,7 +359,8 @@ spec:
           equals: "false"
       branches:
         pass: merge-pr
-        fail: report-cost
+        fail: ""
+
     - name: review
       evaluator: agentic
       agentic:
@@ -428,7 +416,8 @@ spec:
           equals: pass
       branches:
         pass: scope-gate
-        fail: report-cost
+        fail: ""
+
     - name: advisory-verdict
       evaluator: automated
       automated:
@@ -437,7 +426,7 @@ spec:
           key: advisoryMode
           equals: "true"
       branches:
-        pass: report-cost
+        pass: ""
         fail: published-verdict
 
     - name: merge-opt-out-gate
@@ -448,7 +437,7 @@ spec:
           key: optedOut
           equals: "true"
       branches:
-        pass: report-cost
+        pass: ""
         fail: merge-gate
 
     - name: merge-gate
@@ -475,7 +464,7 @@ spec:
           key: queueOutcome
           equals: skipped
       branches:
-        pass: report-cost
+        pass: ""
         fail: queue-gate
 
     - name: queue-gate
@@ -487,6 +476,6 @@ spec:
         check: queue-outcome
       branches:
         merged: post-merge
-        evicted: report-cost
-        timeout: report-cost
-        fail: report-cost
+        evicted: ""
+        timeout: ""
+        fail: ""

@@ -226,18 +226,7 @@ spec:
       # workflow classifies the opened Tutor PR. Persona/gate-tune changes may
       # follow its normal path; structure/skill/validation changes remain
       # CODEOWNER/manual-only and are independently refused by merge-pr.
-      next: report-cost
 
-    - name: report-cost
-      type: deterministic
-      goal: Publish cumulative cost on this run's pull request and addressed issues.
-      run:
-        command: ["goobers", "report-cost"]
-        workspace: scratch
-      inputs:
-        resultFile: "cost-report-result.json"
-      capabilities:
-        - github:issues:write
   gates:
     # A non-zero gate-removal-guard exit means it blocked a self-serving gate
     # edit (TUT-A3, #1215) — abort rather than publishing the branch.

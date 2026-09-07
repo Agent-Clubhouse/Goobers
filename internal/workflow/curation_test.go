@@ -174,8 +174,8 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if !ok {
 		t.Fatal("release-claim task not found")
 	}
-	if release.Next != "report-cost" {
-		t.Errorf("release-claim.next = %q, want report-cost", release.Next)
+	if release.Next != "" {
+		t.Errorf("release-claim.next = %q, want terminal", release.Next)
 	}
 	if release.Type != apiv1.TaskDeterministic {
 		t.Errorf("release-claim.type = %q, want deterministic", release.Type)
@@ -195,7 +195,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	// Bumped when intentional workflow contract changes alter the machine.
 	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
 	// #2386: read-only sampling and dedupe use issue-read rather than issue-write.
-	const wantDigest = "sha256:792232c3d8f48951e4c8a6c9652371442d8a0035c2b62d2488da63c388ed7329"
+	const wantDigest = "sha256:2cef3d2bdd74216f571783769d430f2dc252fd4f8f64f012204782b8626f6484"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
