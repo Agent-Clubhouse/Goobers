@@ -17,6 +17,17 @@ func startTime(pid int) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
+	return handleStartTime(h)
+}
+
+// handleStartTime reads a live process's creation time through an already-open
+// handle. Splitting it out is what lets a caller holding a TERMINATE handle
+// check the identity it is about to kill on that same handle rather than by
+// re-opening the pid (#4212): the handle pins the process object, so a pid
+// recycled between the two operations cannot be mistaken for the recorded one.
+//
+// The handle must carry PROCESS_QUERY_LIMITED_INFORMATION.
+func handleStartTime(h windows.Handle) (time.Time, bool) {
 	// Unlike /proc on Linux or sysctl kern.proc.pid on Darwin — both of which
 	// stop answering the moment a process is fully reaped — Windows keeps a
 	// process object (and answers OpenProcess/GetProcessTimes) for as long as
