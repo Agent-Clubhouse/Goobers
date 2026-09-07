@@ -342,6 +342,12 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// a policy fact. Conflated, the former parked driving issues for humans
 	// that no human action could unstick.
 	reclassifyToolPermissionBlock(&result, out.Transcript, out.Stderr)
+	// #2955: goobers-io carries this stage's artifact and context I/O, and the
+	// prompt instructs the model to use it instead of ordinary file tools. If
+	// it was never available the stage contract could not be satisfied, so the
+	// model's own status is not evidence about work it was told to do through
+	// tools it did not have.
+	refuseWhenRequiredMCPUnavailable(&result, out.MCPServerFailures)
 	// #2197: the backstop for a capability loss the preflight did not
 	// anticipate — a missing tool is a system defect, so it must not escalate
 	// and needs-human-park every item this run claimed.
