@@ -275,6 +275,139 @@ func TestPublishRefusesIssueWithoutDistinguishingSignature(t *testing.T) {
 	}
 }
 
+// Closing a flake issue must not retire its fingerprint (#4612). Before this,
+// the recurrence commented into a closed issue nobody watches and no new issue
+// was filed either, so the signal was lost in both directions.
+func TestPublishReopensClosedIssueOnRecurrence(t *testing.T) {
+	t.Parallel()
+	fingerprint := strings.Repeat("a", 64)
+	provider := &fakeLedgerProvider{items: []providers.WorkItem{{
+		ID:     "7",
+		Body:   fingerprintMarker(fingerprint),
+		Labels: []string{flakeLabel, approvedLabel, cloudLabel},
+		State:  "closed",
+	}}}
+	report := failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "456", URL: "https://github.com/acme/app/actions/runs/456"},
+		Failures:      []testFailure{seedFailure(fingerprint, "Resume() = 3, want 4")},
+	}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "app",
+	}, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (publishResult{Reopened: 1}) || len(provider.creates) != 0 || len(provider.updates) != 1 {
+		t.Fatalf("result=%+v creates=%+v updates=%+v", result, provider.creates, provider.updates)
+	}
+	update := provider.updates[0]
+	if update.ID != "7" || update.State != stateOpen {
+		t.Fatalf("update = %+v", update)
+	}
+	// A reopen must be distinguishable from an ordinary recurrence and must
+	// name the run that reopened it, since it means a landed fix regressed.
+	if !strings.Contains(update.Comment, "reopened") ||
+		!strings.Contains(update.Comment, "regression") ||
+		!strings.Contains(update.Comment, "`123`") {
+		t.Fatalf("reopen comment = %q", update.Comment)
+	}
+	// Reopening must not disturb the labels an operator left on the issue.
+	if len(update.AddLabels) != 0 || len(update.RemoveLabels) != 0 {
+		t.Fatalf("reopen changed labels: %+v", update)
+	}
+}
+
+// An occurrence already recorded on a closed issue means the operator closed it
+// after that occurrence landed. Reopening then would fight the operator.
+func TestPublishDoesNotReopenClosedIssueForRecordedOccurrence(t *testing.T) {
+	t.Parallel()
+	fingerprint := strings.Repeat("b", 64)
+	report := failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "456"},
+		Failures:      []testFailure{seedFailure(fingerprint, "Resume() = 3, want 4")},
+	}
+	provider := &fakeLedgerProvider{
+		items: []providers.WorkItem{{
+			ID:     "7",
+			Body:   fingerprintMarker(fingerprint),
+			Labels: []string{flakeLabel},
+			State:  "closed",
+		}},
+		comments: map[string][]providers.Comment{
+			"7": {{Body: occurrenceMarker(report.Run, report.Failures[0])}},
+		},
+	}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "app",
+	}, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (publishResult{}) || len(provider.updates) != 0 {
+		t.Fatalf("result=%+v updates=%+v", result, provider.updates)
+	}
+}
+
+// Only an observed failure reopens anything: a green run reports no failures,
+// so a closed issue stays closed and is never even updated.
+func TestPublishGreenRunLeavesClosedIssueUntouched(t *testing.T) {
+	t.Parallel()
+	provider := &fakeLedgerProvider{items: []providers.WorkItem{{
+		ID:     "7",
+		Body:   fingerprintMarker(strings.Repeat("c", 64)),
+		Labels: []string{flakeLabel},
+		State:  "closed",
+	}}}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "app",
+	}, failuresReport{SchemaVersion: stressSchema, Run: runMetadata{RunID: "456"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (publishResult{}) || len(provider.updates) != 0 || len(provider.creates) != 0 {
+		t.Fatalf("result=%+v updates=%+v creates=%+v", result, provider.updates, provider.creates)
+	}
+}
+
+// An open issue's recurrence keeps its existing behavior: comment only, with no
+// state change and no reopen wording.
+func TestPublishOpenIssueRecurrenceStillCommentsOnly(t *testing.T) {
+	t.Parallel()
+	fingerprint := strings.Repeat("d", 64)
+	provider := &fakeLedgerProvider{items: []providers.WorkItem{{
+		ID:     "7",
+		Body:   fingerprintMarker(fingerprint),
+		Labels: []string{flakeLabel},
+		State:  "open",
+	}}}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "app",
+	}, failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "456"},
+		Failures:      []testFailure{seedFailure(fingerprint, "Resume() = 3, want 4")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (publishResult{Refreshed: 1}) || len(provider.updates) != 1 {
+		t.Fatalf("result=%+v updates=%+v", result, provider.updates)
+	}
+	if provider.updates[0].State != "" || strings.Contains(provider.updates[0].Comment, "reopened") {
+		t.Fatalf("update = %+v", provider.updates[0])
+	}
+}
+
 func TestLoadFailuresRejectsMalformedReports(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
