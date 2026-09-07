@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -66,6 +69,37 @@ func TestTelemetryCostRouteRejectsMalformedQuery(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.TelemetryCostsPath+query, nil))
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("%s status = %d, want 400; body = %s", query, response.Code, response.Body)
+		}
+	}
+}
+
+func TestTelemetryCostRouteUsesStandardReadErrors(t *testing.T) {
+	for _, test := range []struct {
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{err: readservice.ErrInvalidTelemetryRequest, wantStatus: http.StatusBadRequest, wantCode: "invalid_query"},
+		{err: readservice.ErrTelemetryUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: "telemetry_unavailable"},
+		{err: errors.New("sqlite failed"), wantStatus: http.StatusInternalServerError, wantCode: "read_error"},
+	} {
+		var logs bytes.Buffer
+		handler, err := NewHandler(&fakeReader{telemetryErr: test.err}, AllowAll, log.New(&logs, "", 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet,
+			apicontract.TelemetryCostsPath+"?scope=summary&since=2026-08-01T00:00:00Z&until=2026-08-02T00:00:00Z", nil))
+		if response.Code != test.wantStatus {
+			t.Fatalf("error %v status = %d, want %d", test.err, response.Code, test.wantStatus)
+		}
+		var envelope ErrorEnvelope
+		if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Error.Code != test.wantCode {
+			t.Fatalf("error %v code = %q, want %q", test.err, envelope.Error.Code, test.wantCode)
 		}
 	}
 }

@@ -16,6 +16,8 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 	until := since.Add(7 * 24 * time.Hour)
 	nanoAIU := int64(2_500_000_000)
 	costUSD := 0.025
+	claudeNanoAIU := int64(42_000_000_000)
+	claudeCostUSD := 0.42
 	store := &fakeTelemetryStore{costs: rollup.CostResult{
 		PullRequests: []rollup.CostAggregate{{
 			Provider: "github", ExternalKind: "pr", ExternalID: "4398",
@@ -59,14 +61,44 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 		item.NativeTotals[0].Value != 2.5 || item.NativeTotals[0].Estimated {
 		t.Fatalf("native totals = %+v", item.NativeTotals)
 	}
-	if len(item.NormalizedTotals) != 2 ||
-		item.NormalizedTotals[1].Unit != "usd" ||
-		item.NormalizedTotals[1].Value != 0.025 ||
-		!item.NormalizedTotals[1].Estimated {
+	if len(item.NormalizedTotals) != 1 ||
+		item.NormalizedTotals[0].Unit != "usd" ||
+		item.NormalizedTotals[0].Value != 0.025 ||
+		!item.NormalizedTotals[0].Estimated {
 		t.Fatalf("normalized totals = %+v", item.NormalizedTotals)
 	}
 	if len(item.Models) != 1 || item.Models[0].Model != "gpt-5.6-sol" {
 		t.Fatalf("models = %+v", item.Models)
+	}
+	issueStore := &fakeTelemetryStore{costs: rollup.CostResult{
+		Issues: []rollup.CostAggregate{{
+			Provider: "github", ExternalKind: "issue", ExternalID: "4398",
+			TotalRuns: 1, MeasuredRuns: 1, TotalAttempts: 1, MeasuredAttempts: 1,
+			NanoAIU: &claudeNanoAIU, CostUSD: &claudeCostUSD,
+			CostBases: []string{telemetry.CostBasisVendorReported},
+			Models: []rollup.CostModelAggregate{{
+				Model: "claude-sonnet", UsageAttempts: 1, MeasuredAttempts: 1,
+				NanoAIU: &claudeNanoAIU, CostUSD: &claudeCostUSD,
+				CostBases: []string{telemetry.CostBasisVendorReported},
+			}},
+		}},
+	}}
+	issueResult, err := (&Telemetry{store: issueStore}).TelemetryCosts(context.Background(), TelemetryCostRequest{
+		Scope: TelemetryCostScopeIssue, ExternalID: "4398", Since: since, Until: until,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := issueResult.Issues[0]
+	if len(issue.NativeTotals) != 1 || issue.NativeTotals[0].Unit != "usd" ||
+		issue.NativeTotals[0].Value != 0.42 || issue.NativeTotals[0].Estimated {
+		t.Fatalf("Claude native totals = %+v", issue.NativeTotals)
+	}
+	if len(issue.NormalizedTotals) != 1 ||
+		issue.NormalizedTotals[0].Unit != "aiCredits" ||
+		issue.NormalizedTotals[0].Value != 42 ||
+		!issue.NormalizedTotals[0].Estimated {
+		t.Fatalf("Claude normalized totals = %+v", issue.NormalizedTotals)
 	}
 }
 

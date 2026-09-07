@@ -10,6 +10,7 @@
 | --- | --- |
 | [`goobers completion`](#goobers-completion) | generate a shell completion script |
 | [`goobers connect`](#goobers-connect) | connect an instance to your own GitHub repository |
+| [`goobers cost`](#goobers-cost) | show bounded cost attribution by pull request or issue |
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
@@ -909,6 +910,28 @@ or provider error, 2 = usage error.
 $ goobers connect acme/web ./my-instance
 $ goobers connect acme/web --token-env MY_GITHUB_TOKEN --seed ./my-instance
 $ goobers connect acme/web --json ./my-instance
+~~~
+
+## `goobers cost`
+
+show bounded cost attribution by pull request or issue
+
+~~~text
+Usage: goobers cost [--pr=<id> | --issue=<id>] [--provider=<name>] [--window=<duration>] [--since=<RFC3339>] [--until=<RFC3339>] [--json] [--rebuild] [path]
+
+Show exact recorded AI usage attributed to pull requests and issues. The
+default window is 7d ending now; --since replaces --window, and every
+query is capped at 90d. Native AI credits/USD and normalized estimates are
+reported separately. Missing measurements make totals lower bounds.
+Exit codes: 0 = OK, 2 = usage, query, or I/O error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers cost
+$ goobers cost --pr 4398 --json
+$ goobers cost --issue 4398 --window 30d
 ~~~
 
 ## `goobers dashboard`

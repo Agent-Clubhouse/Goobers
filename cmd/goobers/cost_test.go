@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -115,6 +116,36 @@ func TestCostCommandSupportsIssueAndSummaryHumanOutput(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCostCommandJSONSupportsEveryQueryMode(t *testing.T) {
+	now := time.Date(2026, 9, 7, 1, 2, 3, 0, time.UTC)
+	for _, test := range []struct {
+		args      []string
+		wantScope string
+		wantID    string
+	}{
+		{args: []string{"--json"}, wantScope: "summary"},
+		{args: []string{"--json", "--pr", "17"}, wantScope: "pr", wantID: "17"},
+		{args: []string{"--json", "--issue", "23"}, wantScope: "issue", wantID: "23"},
+	} {
+		reader := &fakeCostReader{result: readservice.TelemetryCostResult{
+			Scope: test.wantScope, ExternalID: test.wantID,
+			Since: now.Add(-7 * 24 * time.Hour), Until: now,
+			PullRequests: []readservice.TelemetryCostAggregate{},
+			Issues:       []readservice.TelemetryCostAggregate{},
+		}}
+		var stdout, stderr bytes.Buffer
+		code := runCostAt(test.args, &stdout, &stderr, now, func(string, bool) (costReader, io.Closer, error) {
+			return reader, io.NopCloser(strings.NewReader("")), nil
+		})
+		if code != 0 || stderr.Len() != 0 || !json.Valid(stdout.Bytes()) {
+			t.Fatalf("runCostAt(%v) = %d, stdout %q, stderr %q", test.args, code, stdout.String(), stderr.String())
+		}
+		if reader.request.Scope != test.wantScope || reader.request.ExternalID != test.wantID {
+			t.Fatalf("runCostAt(%v) request = %+v", test.args, reader.request)
+		}
 	}
 }
 

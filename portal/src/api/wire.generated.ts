@@ -789,11 +789,6 @@ export const goWireFixtures = {
         ],
         "normalizedTotals": [
           {
-            "unit": "aiCredits",
-            "value": 2.5,
-            "estimated": true
-          },
-          {
             "unit": "usd",
             "value": 0.025,
             "estimated": true
@@ -828,11 +823,6 @@ export const goWireFixtures = {
               }
             ],
             "normalizedTotals": [
-              {
-                "unit": "aiCredits",
-                "value": 2.5,
-                "estimated": true
-              },
               {
                 "unit": "usd",
                 "value": 0.025,
@@ -869,11 +859,6 @@ export const goWireFixtures = {
           {
             "unit": "aiCredits",
             "value": 2.5,
-            "estimated": true
-          },
-          {
-            "unit": "usd",
-            "value": 0.025,
             "estimated": true
           }
         ],

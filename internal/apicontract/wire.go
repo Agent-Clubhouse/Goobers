@@ -586,7 +586,6 @@ func newWireFixtures() wireFixtures {
 					Unit: "aiCredits", Value: 2.5,
 				}},
 				NormalizedTotals: []readservice.TelemetryCostAmount{
-					{Unit: "aiCredits", Value: 2.5, Estimated: true},
 					{Unit: "usd", Value: 0.025, Estimated: true},
 				},
 				BillingModels: []string{"ai_credits"},
@@ -602,7 +601,6 @@ func newWireFixtures() wireFixtures {
 						Unit: "aiCredits", Value: 2.5,
 					}},
 					NormalizedTotals: []readservice.TelemetryCostAmount{
-						{Unit: "aiCredits", Value: 2.5, Estimated: true},
 						{Unit: "usd", Value: 0.025, Estimated: true},
 					},
 					BillingModels: []string{"ai_credits"},
@@ -617,7 +615,6 @@ func newWireFixtures() wireFixtures {
 				}},
 				NormalizedTotals: []readservice.TelemetryCostAmount{
 					{Unit: "aiCredits", Value: 2.5, Estimated: true},
-					{Unit: "usd", Value: 0.025, Estimated: true},
 				},
 				BillingModels: []string{},
 				CostBases:     []string{"vendor_reported"},

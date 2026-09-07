@@ -181,19 +181,23 @@ func projectCostAggregate(source rollup.CostAggregate) TelemetryCostAggregate {
 	for _, model := range source.Models {
 		item.Models = append(item.Models, projectCostModel(model))
 	}
-	item.NativeTotals = nativeCostTotals(source.NanoAIU, source.CostUSD, source.CopilotPremiumRequests, source.BillingModels, source.CostBases)
-	item.NormalizedTotals = normalizedCostTotals(source.NanoAIU)
+	item.NativeTotals = aggregateNativeCostTotals(item.Models)
+	if len(item.NativeTotals) == 0 {
+		item.NativeTotals = nativeCostTotals(source.NanoAIU, source.CostUSD, source.CopilotPremiumRequests, source.BillingModels, source.CostBases)
+	}
+	item.NormalizedTotals = normalizedCostTotals(source.NanoAIU, item.NativeTotals)
 	return item
 }
 
 func projectCostModel(source rollup.CostModelAggregate) TelemetryCostModelAggregate {
+	native := nativeCostTotals(source.NanoAIU, source.CostUSD, source.CopilotPremiumRequests, source.BillingModels, source.CostBases)
 	return TelemetryCostModelAggregate{
 		Model: source.Model, UsageAttempts: source.UsageAttempts, MeasuredAttempts: source.MeasuredAttempts,
 		InputTokens: source.InputTokens, OutputTokens: source.OutputTokens,
 		CacheReadTokens: source.CacheReadTokens, CacheWriteTokens: source.CacheWriteTokens,
 		ReasoningTokens: source.ReasoningTokens, CopilotPremiumRequests: source.CopilotPremiumRequests,
-		NativeTotals:     nativeCostTotals(source.NanoAIU, source.CostUSD, source.CopilotPremiumRequests, source.BillingModels, source.CostBases),
-		NormalizedTotals: normalizedCostTotals(source.NanoAIU),
+		NativeTotals:     native,
+		NormalizedTotals: normalizedCostTotals(source.NanoAIU, native),
 		BillingModels:    append([]string(nil), source.BillingModels...),
 		CostBases:        append([]string(nil), source.CostBases...),
 	}
@@ -216,20 +220,50 @@ func nativeCostTotals(nanoAIU *int64, costUSD, premium *float64, billingModels, 
 	return totals
 }
 
-func normalizedCostTotals(nanoAIU *int64) []TelemetryCostAmount {
+func aggregateNativeCostTotals(models []TelemetryCostModelAggregate) []TelemetryCostAmount {
+	values := map[string]float64{}
+	estimated := map[string]bool{}
+	for _, model := range models {
+		for _, amount := range model.NativeTotals {
+			values[amount.Unit] += amount.Value
+			estimated[amount.Unit] = estimated[amount.Unit] || amount.Estimated
+		}
+	}
+	var totals []TelemetryCostAmount
+	for _, unit := range []string{"aiCredits", "usd", "premiumRequests"} {
+		if value, ok := values[unit]; ok {
+			totals = append(totals, TelemetryCostAmount{Unit: unit, Value: value, Estimated: estimated[unit]})
+		}
+	}
+	return totals
+}
+
+func normalizedCostTotals(nanoAIU *int64, native []TelemetryCostAmount) []TelemetryCostAmount {
 	if nanoAIU == nil {
 		return []TelemetryCostAmount{}
 	}
-	return []TelemetryCostAmount{
-		{
-			Unit: "aiCredits", Value: float64(*nanoAIU) / float64(telemetry.NanoAIUPerAICredit),
-			Estimated: true,
-		},
-		{
+	hasAICredits := false
+	hasUSD := false
+	for _, amount := range native {
+		hasAICredits = hasAICredits || amount.Unit == "aiCredits"
+		hasUSD = hasUSD || amount.Unit == "usd"
+	}
+	if hasAICredits && !hasUSD {
+		return []TelemetryCostAmount{{
 			Unit: "usd", Value: float64(*nanoAIU) / float64(telemetry.NanoAIUPerUSD),
 			Estimated: true,
-		},
+		}}
 	}
+	if hasUSD && !hasAICredits {
+		return []TelemetryCostAmount{{
+			Unit: "aiCredits", Value: float64(*nanoAIU) / float64(telemetry.NanoAIUPerAICredit),
+			Estimated: true,
+		}}
+	}
+	return []TelemetryCostAmount{{
+		Unit: "usd", Value: float64(*nanoAIU) / float64(telemetry.NanoAIUPerUSD),
+		Estimated: true,
+	}}
 }
 
 func costCoverage(totalRuns, measuredRuns, totalAttempts, measuredAttempts int) TelemetryCostCoverage {
