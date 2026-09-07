@@ -3,7 +3,9 @@ package journal
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -13,8 +15,14 @@ import (
 type InstanceEventsCompaction struct {
 	BeforeBytes int64
 	AfterBytes  int64
-	Kept        int
-	Dropped     int
+	// Kept counts the records this pass carried forward. It is only populated
+	// when the pass actually read the journal: a pass fenced out by
+	// nothingCanAgeOut (#3051) reports Kept 0, because counting records is
+	// exactly the O(history) work the fence exists to skip and no caller reads
+	// it. Dropped 0 with BytesRead below the journal size is the signature of
+	// a fenced pass.
+	Kept    int
+	Dropped int
 	// StaleGenerationsRemoved counts obsolete generation files reclaimed
 	// after the pointer advanced (see instancegen.go).
 	StaleGenerationsRemoved int
@@ -23,6 +31,11 @@ type InstanceEventsCompaction struct {
 	// succeeded — this is a diagnostic for the caller to surface, not a
 	// failure, since stranded generations only waste disk.
 	StaleGenerationCleanupErr error
+	// BytesRead is how much of the journal this pass actually read (#3051).
+	// It exists to be asserted on: a pass that drops nothing must not scale
+	// with journal history, and a work fence is only credible if the work is
+	// measurable.
+	BytesRead int64
 }
 
 // CompactInstanceEvents rewrites the instance journal at dir, keeping complete
@@ -65,6 +78,20 @@ func CompactInstanceEvents(dir string, keepAfter, keepRunStartsAfter time.Time, 
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: stat instance log: %w", err)
 	}
 
+	// #3051: the six-hourly pass read and JSON-parsed the entire generation
+	// before it could discover that nothing had aged out, so its cost grew with
+	// journal history forever while its output stayed empty. The oldest record
+	// alone settles that question.
+	if skip, bytesRead, err := nothingCanAgeOut(path, keepAfter); err != nil {
+		return InstanceEventsCompaction{}, err
+	} else if skip {
+		return InstanceEventsCompaction{
+			BeforeBytes: info.Size(),
+			AfterBytes:  info.Size(),
+			BytesRead:   bytesRead,
+		}, nil
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return InstanceEventsCompaction{}, fmt.Errorf("journal: read instance log: %w", err)
@@ -73,6 +100,7 @@ func CompactInstanceEvents(dir string, keepAfter, keepRunStartsAfter time.Time, 
 	if err != nil {
 		return InstanceEventsCompaction{}, err
 	}
+	result.BytesRead = int64(len(data))
 	if result.Dropped == 0 {
 		return result, nil // nothing aged out — leave the journal untouched
 	}
@@ -95,6 +123,68 @@ func CompactInstanceEvents(dir string, keepAfter, keepRunStartsAfter time.Time, 
 	}
 	result.StaleGenerationsRemoved, result.StaleGenerationCleanupErr = cleanupStaleInstanceEventsGenerations(dir, nextGen)
 	return result, nil
+}
+
+// firstRecordReadLimit bounds the fence's read. One instance-log record is a
+// single JSON line, far under this; a file whose first line is longer than this
+// is malformed enough that the full parse below should be the one to say so.
+const firstRecordReadLimit = 64 << 10
+
+// nothingCanAgeOut reports whether the retention cut provably drops no record,
+// by reading only the journal's oldest one (#3051).
+//
+// A record is dropped only when its time is before keepAfter (see
+// compactInstanceEventsData — every other clause only ever KEEPS a record).
+// Records are appended in time order, so if the first record is already at or
+// after the cut, so is every record behind it and the pass has nothing to do.
+// Deciding that from one line rather than the whole generation is what stops a
+// no-drop pass from scaling with journal history.
+//
+// The fence is deliberately one-directional: it can only skip work, never
+// perform a drop. A clock that jumped backwards mid-journal could leave a
+// record older than the first one behind the fence, and the effect is that the
+// record ages out on a later pass — once keepAfter advances past the skewed
+// first record too — rather than this one. A retention lag under a clock
+// anomaly is the acceptable side of this trade; re-reading the entire history
+// every six hours to rule it out is not.
+//
+// Returns the number of bytes read so the caller can report the work done.
+func nothingCanAgeOut(path string, keepAfter time.Time) (skip bool, bytesRead int64, err error) {
+	if keepAfter.IsZero() {
+		// A zero cut keeps everything, so the pass drops nothing by
+		// definition and need not read the journal at all.
+		return true, 0, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, 0, fmt.Errorf("journal: open instance log: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	buf := make([]byte, firstRecordReadLimit)
+	n, err := io.ReadFull(f, buf)
+	// A short journal is the normal case, not an error: ReadFull reports
+	// EOF/ErrUnexpectedEOF whenever the file is smaller than the read bound.
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return false, int64(n), fmt.Errorf("journal: read instance log head: %w", err)
+	}
+	head := buf[:n]
+	end := bytes.IndexByte(head, '\n')
+	if end < 0 {
+		// No complete first record within the bound: fall through to the full
+		// pass, which owns every malformed-input diagnostic.
+		return false, int64(n), nil
+	}
+	var meta struct {
+		Schema string    `json:"schema"`
+		Time   time.Time `json:"time"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(head[:end]), &meta); err != nil || meta.Schema != EventSchema {
+		// Malformed or unknown-schema first record: let the full pass report
+		// it, rather than duplicating its error contract here.
+		return false, int64(n), nil
+	}
+	return !meta.Time.Before(keepAfter), int64(n), nil
 }
 
 func compactInstanceEventsData(
