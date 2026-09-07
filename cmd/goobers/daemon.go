@@ -1293,6 +1293,11 @@ func buildRuntimeRunner(
 		return nil, nil, nil, err
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
+	// The daemon owns root identity creation; tier-3 workers must not create
+	// independent identities while loading a copied configuration tree.
+	if _, err := l.EnsureIdentity(context.Background()); err != nil {
+		return nil, nil, nil, fmt.Errorf("initialize daemon instance identity: %w", err)
+	}
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.JournalAdvanced = telemetryingest.RunIntakeObserver(watermarks, instanceLog)
 	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
