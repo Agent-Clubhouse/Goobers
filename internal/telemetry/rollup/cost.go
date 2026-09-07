@@ -10,7 +10,9 @@ import (
 )
 
 const (
-	CostExternalKindPR    = "pr"
+	// CostExternalKindPR identifies pull-request attribution.
+	CostExternalKindPR = "pr"
+	// CostExternalKindIssue identifies issue attribution.
 	CostExternalKindIssue = "issue"
 )
 
