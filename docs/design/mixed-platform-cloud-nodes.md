@@ -1,9 +1,29 @@
 # Mixed-Platform Cloud Nodes — Windows Node Pools & Platform-Labeled Routing
 
-**Status:** implemented for Temporal stage routing; node-pool provisioning remains
+**Status:** **superseded** in §2.1–§2.2 and §3 by
+[`goobernetes-architecture.md`](goobernetes-architecture.md) §10; the remainder is
+implemented for Temporal stage routing, with node-pool provisioning still
 operator-managed (issue #659, P13 of `docs/design/cross-platform-support.md` §3).
 
-**Locked decisions (Lead ruling, 2026-07-25, recorded on #659):** the platform
+> ### ⚠️ Superseded-by: `goobernetes-architecture.md` §10 (§2.1–§2.2 and §3)
+>
+> This is the forward pointer `goobernetes-architecture.md` §10 promised and did
+> not land (#4240). Three of this document's decisions are superseded:
+>
+> | Superseded here | What replaced it |
+> |---|---|
+> | **§3 — the persistent-Windows-VM posture** ("Windows workers = persistent VMs, provisional pending #651") | **Windows stages run as container pods** (record D11). #651 is resolved in the container direction on spike-ladder evidence (run `300534f6f9503e251374d9433060ebf8`: three stages across a Linux and a Windows node in one AKS cluster, one journal, #2838). |
+> | **§2.1–§2.2 — the locked #659 ruling** ("platform is a token, not a field") and the `<workflow-queue>-<goos>` routing scheme as *the* platform mechanism | **`runsOn.os` as a validated field**, with `os=*` tokens rejected in DSL 3.0 (record D2). The drift hazard #659 guarded against is closed by making the two vocabularies unable to coexist rather than by banning the field. Queues key on **(gaggle × runner-type)** (record D9); OS becomes one input to runner-type resolution rather than the only routing axis. |
+> | **§2.1 — the unlabeled ⇒ linux *semantic*** | Explicit-complete: an OS-unspecified stage has **no OS requirement**, and *placement policy* prefers, and will wait for, a Linux-class runner when the inventory has one (record D2). Observed behaviour of today's workflows is preserved without the hidden semantic. |
+>
+> Everything below is retained as the record of the platform-routing work as it
+> was designed and shipped for the Temporal stage router. Do not design new
+> Windows execution from it — start at
+> [`goobernetes-architecture.md`](goobernetes-architecture.md) and
+> [`goobernetes-restrictions.md`](goobernetes-restrictions.md).
+
+**Locked decisions (Lead ruling, 2026-07-25, recorded on #659) — see the supersession
+banner above; §2.1–§2.2's half of this ruling no longer holds:** the platform
 label is a **stage-level** attribute, an unlabeled stage defaults to **linux**, and the
 scheduler **fails fast** with a clear diagnostic when no node matches — no
 queue-and-wait. The Temporal engine implements those decisions with per-activity task
@@ -118,13 +138,26 @@ queue-naming scheme**:
 
 ## 3. Node-pool shape
 
+> **⚠️ Superseded.** #651 has since been resolved **in the container direction**
+> (`goobernetes-architecture.md` record D11, on the #2838 spike-ladder evidence).
+> Windows stages run as container pods; the persistent-VM posture below is not the
+> plan of record. Two facts from that resolution are now solver rules (record D12):
+> **ledger-touching stages never place on Windows** — a Windows pod cannot mount the
+> Linux node's RWO instance-root disk (#2842), so it structurally cannot reach
+> instance state — and **Windows dispatch timeouts default higher**, with
+> diagnostics naming scale-from-zero node provisioning and multi-GB image pulls as
+> the cause. The enforceable per-OS restriction matrix is
+> [`goobernetes-restrictions.md`](goobernetes-restrictions.md) §D4/§9, not this
+> section.
+
 A Windows worker is a **distinct, opt-in pool** — never a default fleet member:
 
 - **Provisioning expectation**: persistent Windows VMs, not Windows containers, for v1 of
   this design. Windows containers (process-isolated) interact with the still-open P11
   (#651) isolation-posture decision; committing to a containerized Windows worker shape
   ahead of that decision would bake in an isolation posture nothing has ruled on yet. This
-  section is explicitly **provisional** pending #651.
+  section was explicitly **provisional** pending #651 — *and #651 has since resolved the
+  other way; see the banner above.*
 - **What a Windows worker must provide**, mapped to this milestone's own prerequisite
   workstreams:
   - Git floor + worktree settings per P9 (#643) — **closed**, so this input is settled:

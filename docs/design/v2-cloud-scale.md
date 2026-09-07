@@ -1,8 +1,36 @@
 # V2 — Cloud & Large Team
 
-**Status:** approved — for backlog planning (PO directive, 2026-07-16). Items filed to milestone
-"V2 — cloud scale" remain **future investments**: backlog-only, not `goobers:approved`, not
-eligible for automated implementation until the PO promotes them.
+**Status:** approved, **partially superseded** — for backlog planning (PO directive,
+2026-07-16). Items filed to milestone "V2 — cloud scale" remain **future investments**:
+backlog-only, not `goobers:approved`, not eligible for automated implementation until the
+PO promotes them.
+
+> ### ⚠️ Superseded-by: `goobernetes-architecture.md` §10
+>
+> Two things this document records are no longer the plan. The banner is the
+> forward pointer `goobernetes-architecture.md` §10 promised and did not land
+> (#4240).
+>
+> | Superseded here | What replaced it |
+> |---|---|
+> | **§2 (A1.5/A1.6) and the worker posture throughout** — `goobers worker` Deployments executing stage activities as resident goroutines, as the *target execution model*; and A1.5's history→journal projection as the journaling end-state | **Pod-per-stage under a dispatcher**, and a **live journal service** that writes events as they happen rather than projecting closed runs. See `goobernetes-architecture.md` §3 (substrate) and D7 (journal decoupling). |
+> | **§8 G2's per-gaggle warm-pool keying** (with #666) | Warm pools stay deferred; the recorded constraint for their later design is pools **shareable across gaggles per runner type** (record D9). |
+>
+> **Specifically narrowed:** §3's "Temporal is the multi-node answer, not
+> distributed flocks" is not wrong, but it is no longer the whole answer.
+> [`distributed-state-and-coordination.md`](distributed-state-and-coordination.md)
+> narrows it: Temporal carries durable execution, while the **daemon remains the
+> single control plane** and cross-node state moves over enumerated daemon API
+> planes (claims, scheduler state, journal, credentials, blobs, surrender) — not
+> over Temporal and not over shared flocks. Read that document, and
+> `docs/ARCHITECTURE.md` §3.4, before designing anything multi-node from this
+> page.
+>
+> **What carries forward unchanged:** the foundations the `v2/cloud-ladder-foundations`
+> branch delivered — the dual-runner conformance harness, the blobstore, the
+> workspace-provisioner seam, the reference manifests, Key Vault resolution, App
+> installation-token minting, sandbox wiring, and the daemon TLS/OIDC work. The
+> *resident execution posture* is what died, not the ladder.
 
 > **Foundations delivered (2026-07-24, branch `v2/cloud-ladder-foundations`).** A single
 > integration branch lands an opt-in first cut of several workstreams so workflow definitions
@@ -74,7 +102,9 @@ implies but never detailed:
 - **State:** journals are files with **local flock** single-writer guards; the scheduler
   keeps trigger state in memory reconstructed by journal replay; crash-resume assumes sole
   ownership of `runs/`. None of this is multi-node-safe — by design, Temporal is the
-  multi-node answer, not distributed flocks.
+  multi-node answer, not distributed flocks. *(Narrowed — see the supersession banner
+  above: Temporal carries durable execution, but cross-node state moves over the daemon's
+  API planes, not over Temporal.)*
 - **Multi-gaggle:** config model supports N gaggles; runtime layout is still flat
   (GAG-011 scoping is V1 epic #34); tier-3 per-gaggle namespace/identity (GAG-012) is V2.
 
