@@ -14,11 +14,10 @@ import (
 func TestAdapterAgentEventsProjectLifecycleAndUsage(t *testing.T) {
 	req := RunRequest{Attempt: 3, Envelope: testEnvelope(t.TempDir(), "agent:model")}
 	events := []journal.Event{adapterAgentEventAt(req, "copilot", journal.AgentCompleted, map[string]float64{
-		telemetry.AttrGenAIUsageInputTokens:  12,
-		telemetry.AttrUsageCacheReadTokens:   9,
-		telemetry.AttrCopilotPremiumRequests: 1.5,
-		telemetry.AttrUsageNanoAIU:           200_000_000_000,
-		telemetry.AttrUsageCostUSD:           99,
+		telemetry.AttrGenAIUsageInputTokens: 12,
+		telemetry.AttrUsageCacheReadTokens:  9,
+		telemetry.AttrUsageNanoAIU:          200_000_000_000,
+		telemetry.AttrUsageCostUSD:          99,
 	}, time.Now().UTC())}
 	if len(events) != 1 || events[0].Agent == nil {
 		t.Fatalf("events = %#v", events)
@@ -28,7 +27,6 @@ func TestAdapterAgentEventsProjectLifecycleAndUsage(t *testing.T) {
 		agent.Lifecycle != journal.AgentCompleted || agent.Usage.InputTokens == nil ||
 		*agent.Usage.InputTokens != 12 || agent.Usage.CacheReadTokens == nil ||
 		*agent.Usage.CacheReadTokens != 9 || agent.Usage.NanoAIU == nil ||
-		agent.Usage.CopilotPremiumRequests == nil || *agent.Usage.CopilotPremiumRequests != 1.5 ||
 		*agent.Usage.NanoAIU != 200_000_000_000 || agent.Usage.CostUSD == nil ||
 		*agent.Usage.CostUSD != 2 {
 		t.Fatalf("agent = %#v", agent)

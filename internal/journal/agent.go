@@ -30,15 +30,14 @@ const (
 // AgentUsage contains observed usage. Nil values mean that the adapter did not
 // report that measure; zero is an observed zero.
 type AgentUsage struct {
-	Model                  string   `json:"model,omitempty"`
-	InputTokens            *int64   `json:"inputTokens,omitempty"`
-	OutputTokens           *int64   `json:"outputTokens,omitempty"`
-	CacheReadTokens        *int64   `json:"cacheReadTokens,omitempty"`
-	CacheWriteTokens       *int64   `json:"cacheWriteTokens,omitempty"`
-	ReasoningTokens        *int64   `json:"reasoningTokens,omitempty"`
-	CopilotPremiumRequests *float64 `json:"copilotPremiumRequests,omitempty"`
-	NanoAIU                *int64   `json:"nanoAiu,omitempty"`
-	CostUSD                *float64 `json:"costUsd,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	InputTokens      *int64   `json:"inputTokens,omitempty"`
+	OutputTokens     *int64   `json:"outputTokens,omitempty"`
+	CacheReadTokens  *int64   `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens *int64   `json:"cacheWriteTokens,omitempty"`
+	ReasoningTokens  *int64   `json:"reasoningTokens,omitempty"`
+	NanoAIU          *int64   `json:"nanoAiu,omitempty"`
+	CostUSD          *float64 `json:"costUsd,omitempty"`
 }
 
 // AgentProvenance is invocation-local identity and the latest known state of a
@@ -350,9 +349,6 @@ func mergeAgentUsage(dst *AgentUsage, src AgentUsage) {
 	if dst.ReasoningTokens == nil {
 		dst.ReasoningTokens = src.ReasoningTokens
 	}
-	if dst.CopilotPremiumRequests == nil {
-		dst.CopilotPremiumRequests = src.CopilotPremiumRequests
-	}
 	if dst.NanoAIU == nil {
 		dst.NanoAIU = src.NanoAIU
 	}
@@ -380,7 +376,6 @@ func addAgentUsage(dst *AgentUsage, src AgentUsage) {
 	addAgentUsageInt64(&dst.CacheReadTokens, src.CacheReadTokens)
 	addAgentUsageInt64(&dst.CacheWriteTokens, src.CacheWriteTokens)
 	addAgentUsageInt64(&dst.ReasoningTokens, src.ReasoningTokens)
-	addAgentUsageFloat64(&dst.CopilotPremiumRequests, src.CopilotPremiumRequests)
 	addAgentUsageInt64(&dst.NanoAIU, src.NanoAIU)
 	addAgentUsageFloat64(&dst.CostUSD, src.CostUSD)
 }
@@ -420,9 +415,6 @@ func validateAgentUsage(usage AgentUsage) error {
 	}
 	if usage.ReasoningTokens != nil && *usage.ReasoningTokens < 0 {
 		return fmt.Errorf("negative reasoning tokens")
-	}
-	if usage.CopilotPremiumRequests != nil && *usage.CopilotPremiumRequests < 0 {
-		return fmt.Errorf("negative Copilot premium requests")
 	}
 	if usage.NanoAIU != nil && *usage.NanoAIU < 0 {
 		return fmt.Errorf("negative nano-AIU")

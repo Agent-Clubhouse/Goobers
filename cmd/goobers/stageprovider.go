@@ -194,7 +194,6 @@ func stageCostReceipt(root, runID string) *providers.CostReceipt {
 		usage.CacheReadTokens == nil &&
 		usage.CacheWriteTokens == nil &&
 		usage.ReasoningTokens == nil &&
-		usage.CopilotPremiumRequests == nil &&
 		usage.NanoAIU == nil &&
 		usage.CostUSD == nil {
 		return nil
@@ -206,16 +205,15 @@ func stageCostReceipt(root, runID string) *providers.CostReceipt {
 		}
 	}
 	return &providers.CostReceipt{
-		JournalSequence:        sequence,
-		Model:                  usage.Model,
-		InputTokens:            usage.InputTokens,
-		OutputTokens:           usage.OutputTokens,
-		CacheReadTokens:        usage.CacheReadTokens,
-		CacheWriteTokens:       usage.CacheWriteTokens,
-		ReasoningTokens:        usage.ReasoningTokens,
-		CopilotPremiumRequests: usage.CopilotPremiumRequests,
-		NanoAIU:                usage.NanoAIU,
-		CostUSD:                usage.CostUSD,
+		JournalSequence:  sequence,
+		Model:            usage.Model,
+		InputTokens:      usage.InputTokens,
+		OutputTokens:     usage.OutputTokens,
+		CacheReadTokens:  usage.CacheReadTokens,
+		CacheWriteTokens: usage.CacheWriteTokens,
+		ReasoningTokens:  usage.ReasoningTokens,
+		NanoAIU:          usage.NanoAIU,
+		CostUSD:          usage.CostUSD,
 	}
 }
 

@@ -197,19 +197,15 @@ func TestRollupAgentUsageKeepsIndependentCoordinatorButExcludesProvenAggregate(t
 func TestRollupAgentUsageForRunSumsDeduplicatedStages(t *testing.T) {
 	now := time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC)
 	oldAttempt, implement, review := int64(100), int64(20), int64(7)
-	implementPremium, reviewPremium := 1.25, 0.5
 	events := []Event{
 		agentLifecycleEvent(now, "worker", "", "run", "implement", 1, AgentCompleted, AgentUsage{InputTokens: &oldAttempt}),
-		agentLifecycleEvent(now.Add(time.Second), "worker", "", "run", "implement", 2, AgentCompleted, AgentUsage{InputTokens: &implement, CopilotPremiumRequests: &implementPremium}),
-		agentLifecycleEvent(now, "reviewer", "", "run", "review", 1, AgentCompleted, AgentUsage{InputTokens: &review, CopilotPremiumRequests: &reviewPremium}),
+		agentLifecycleEvent(now.Add(time.Second), "worker", "", "run", "implement", 2, AgentCompleted, AgentUsage{InputTokens: &implement}),
+		agentLifecycleEvent(now, "reviewer", "", "run", "review", 1, AgentCompleted, AgentUsage{InputTokens: &review}),
 		agentLifecycleEvent(now, "other", "", "other-run", "implement", 1, AgentCompleted, AgentUsage{InputTokens: &oldAttempt}),
 	}
 	usage := RollupRunAgentUsage(events, "run")
 	if usage.InputTokens == nil || *usage.InputTokens != 27 {
 		t.Fatalf("run usage = %#v, want 27", usage.InputTokens)
-	}
-	if usage.CopilotPremiumRequests == nil || *usage.CopilotPremiumRequests != 1.75 {
-		t.Fatalf("run premium requests = %#v, want 1.75", usage.CopilotPremiumRequests)
 	}
 }
 
@@ -256,11 +252,10 @@ func TestAgentUsageReadsLegacyJSON(t *testing.T) {
 
 func TestAgentUsageRoundTripPreservesCanonicalFields(t *testing.T) {
 	zero, one, two, three := int64(0), int64(1), int64(2), int64(3)
-	premium := 1.5
 	want := AgentUsage{
 		Model: "gpt-5.6", InputTokens: &one, OutputTokens: &two,
 		CacheReadTokens: &three, CacheWriteTokens: &zero,
-		ReasoningTokens: &one, CopilotPremiumRequests: &premium, NanoAIU: &zero,
+		ReasoningTokens: &one, NanoAIU: &zero,
 	}
 	raw, err := json.Marshal(want)
 	if err != nil {
@@ -276,7 +271,6 @@ func TestAgentUsageRoundTripPreservesCanonicalFields(t *testing.T) {
 		got.CacheReadTokens == nil || *got.CacheReadTokens != three ||
 		got.CacheWriteTokens == nil || *got.CacheWriteTokens != zero ||
 		got.ReasoningTokens == nil || *got.ReasoningTokens != one ||
-		got.CopilotPremiumRequests == nil || *got.CopilotPremiumRequests != premium ||
 		got.NanoAIU == nil || *got.NanoAIU != zero {
 		t.Fatalf("round-trip usage = %#v, raw=%s", got, raw)
 	}
