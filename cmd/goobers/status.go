@@ -266,10 +266,11 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
-	Warnings      []validate.CodedWarning          `json:"warnings"`
-	TimeToFirstPR *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
-	DaemonRestart *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
-	Maintenance   *readservice.MaintenanceStatus   `json:"maintenance,omitempty"`
+	Warnings          []validate.CodedWarning          `json:"warnings"`
+	TimeToFirstPR     *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
+	DaemonRestart     *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
+	IsolationMandates map[string][]string              `json:"isolationMandates,omitempty"`
+	Maintenance       *readservice.MaintenanceStatus   `json:"maintenance,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -959,6 +960,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			text.WriteString(providerQuotaStatusLine(status, now))
 			text.WriteString(maintenanceStatusLine(status))
 			text.WriteString(refusedWorkflowStatusLines(status))
+			text.WriteString(isolationMandateStatusLines(status))
 		} else {
 			summary, summaryErr := loadFleetSummary(runs, readservice.SchedulerStatus{}, now)
 			if summaryErr != nil {
@@ -1049,6 +1051,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var daemonRestart *readservice.DaemonRestartStatus
 		var maintenance *readservice.MaintenanceStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
+		var isolationMandates map[string][]string
 		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
@@ -1059,6 +1062,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				daemonRestart = status.DaemonRestart
 				maintenance = status.Maintenance
 				refusedWorkflows = status.RefusedWorkflows
+				isolationMandates = status.IsolationMandates
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
 				parked = &snapshot
@@ -1071,15 +1075,16 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			baselineBlockers = &snapshot
 		}
 		output := statusJSONOutput{
-			Warnings:         warnings,
-			TimeToFirstPR:    timeToFirstPR,
-			DaemonRestart:    daemonRestart,
-			Maintenance:      maintenance,
-			RefusedWorkflows: refusedWorkflows,
-			Summary:          fleetSummary,
-			ParkedBacklog:    parked,
-			BaselineBlockers: baselineBlockers,
-			Runs:             statusJSONSummaries(runs),
+			Warnings:          warnings,
+			TimeToFirstPR:     timeToFirstPR,
+			DaemonRestart:     daemonRestart,
+			Maintenance:       maintenance,
+			RefusedWorkflows:  refusedWorkflows,
+			IsolationMandates: isolationMandates,
+			Summary:           fleetSummary,
+			ParkedBacklog:     parked,
+			BaselineBlockers:  baselineBlockers,
+			Runs:              statusJSONSummaries(runs),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)

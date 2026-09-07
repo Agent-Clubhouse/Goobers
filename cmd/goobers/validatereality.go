@@ -292,7 +292,7 @@ func appendPlacementFindings(
 	if cfg == nil {
 		return
 	}
-	inventoryDeclared := len(cfg.Runners) > 0
+	inventoryDeclared := len(cfg.Runners) > 0 || cfg.HasIsolationMandates()
 	unsatSeverity := validate.Warning
 	if inventoryDeclared && !advisory {
 		unsatSeverity = validate.Error
@@ -304,7 +304,7 @@ func appendPlacementFindings(
 	// with no declared provides.os is os-UNKNOWN at validate time; the
 	// HostOS substitution is runtime-only (boot/admission on the actual
 	// executing host — see instance.Config.PlacementRunners).
-	inventory := runnersolve.Inventory{Runners: cfg.PlacementRunners("")}
+	inventory := cfg.PlacementInventory("")
 	// selfRunnerNames is every inventory entry the solver treats as the
 	// daemon host (runnersolve.Runner.Self — a self entry's Name is author-
 	// chosen, not necessarily the literal "self": internal/instance's
@@ -326,9 +326,9 @@ func appendPlacementFindings(
 		if !inventoryDeclared && wf.DSLVersion != supportmatrix.V3DSLVersion {
 			continue
 		}
-		requirements, err := workflow.StagePlacements(workflow.Definition{
+		requirements, err := workflow.IsolationStagePlacements(workflow.Definition{
 			Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
-		}, gaggleSpecs[wf.Spec.Gaggle], goobers)
+		}, gaggleSpecs[wf.Spec.Gaggle], goobers, inventory.ClassMandates)
 		if err != nil {
 			// An unresolvable dslVersion has already failed validation in the
 			// compile pass; nothing to solve here.
@@ -480,7 +480,7 @@ func selfOSUnknownUnsat(inventory runnersolve.Inventory, requirement runnersolve
 	if placement.Unsat == nil || placement.Unsat.Kind != runnersolve.UnsatRequirement || requirement.OS == "" {
 		return false
 	}
-	assumed := runnersolve.Inventory{Mandates: inventory.Mandates}
+	assumed := runnersolve.Inventory{Mandates: inventory.Mandates, ClassMandates: inventory.ClassMandates}
 	sawUnknownSelf := false
 	for _, runner := range inventory.Runners {
 		if runner.Self && runner.OS == "" {

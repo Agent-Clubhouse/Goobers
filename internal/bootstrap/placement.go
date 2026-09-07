@@ -77,11 +77,8 @@ func taskLedgerTouching(task apiv1.Task) bool {
 // diagnostic: green-lighting a run whose stage can never place would strand
 // it at schedule-to-start instead of telling the operator why.
 func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle string, def workflow.Definition) ([]engine.PinnedPlacement, error) {
-	if cfg == nil || len(cfg.Runners) == 0 {
-		return nil, nil
-	}
-	inventory := runnersolve.Inventory{Runners: cfg.PlacementRunners(runnersolve.HostOS())}
-	if inventory.LocalMode() {
+	inventory, required := placementPinInventory(cfg)
+	if !required {
 		return nil, nil
 	}
 
@@ -96,7 +93,7 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 	for i := range set.Goobers {
 		goobers[set.Goobers[i].Name] = set.Goobers[i].Spec
 	}
-	requirements, err := workflow.StagePlacements(def, gaggleSpec, goobers)
+	requirements, err := workflow.IsolationStagePlacements(def, gaggleSpec, goobers, inventory.ClassMandates)
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q placement requirements: %w", def.Name, err)
 	}
@@ -146,6 +143,9 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		req, ok := requirementFor[stage.Stage]
 		if !ok {
 			return nil, fmt.Errorf("workflow %q: solver returned stage %q which the workflow's placement requirements do not name", def.Name, stage.Stage)
+		}
+		if req.ControlPlane {
+			continue // Validated against self, never turned into a dispatch pin.
 		}
 		ledger, ok := ledgerFor[stage.Stage]
 		if !ok {

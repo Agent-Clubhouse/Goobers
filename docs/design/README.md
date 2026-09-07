@@ -56,7 +56,7 @@ word — read the page, not this table, before depending on it.
 | [Goobernetes v1 — decision record](goobernetes-decisions.md) | `approved` | — | — | — |
 | [Goobernetes deployment shape and the image contract](goobernetes-deployment-images.md) | `approved` | — | — | — |
 | [Goobernetes dispatcher — the pod-per-stage substrate (infra-facing design)](goobernetes-dispatcher.md) | `draft` | — | — | — |
-| [Goobernetes restrictions — the effect-based isolation model](goobernetes-restrictions.md) | `approved` | — | — | — |
+| [Goobernetes restrictions — the effect-based isolation model](goobernetes-restrictions.md) | `approved` | #4540 | — | — |
 | [Goobernetes smoke — the distributed-shape v1 exit](goobernetes-smoke.md) | `approved` | — | — | — |
 | [Design: Human-in-the-Loop — escalation visibility & intervention](human-in-the-loop.md) | `implemented` | #3876, #3877, #3883 | — | 09db115bb (2026-09-06) |
 | [Kubernetes Infrastructure Shape — what Goobers needs from a customer-managed cluster](k8s-infra-shape.md) | `approved` | — | — | — |
