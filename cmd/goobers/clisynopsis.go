@@ -56,7 +56,7 @@ var synopsisByID = map[string]string{
 	"runs du":                "  goobers runs du [--json] [path]       report per-run journal and artifact bytes\n",
 	"status":                 "  goobers status [--daemon] [--agents] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]\n                                validate config, show warnings, list runs newest first, report daemon health with --daemon, or list live agentic stages by role with --agents\n",
 	"stats":                  "  goobers stats [--since <duration>] [--json] [path]\n                                show the instance lifetime summary card\n",
-	"cost":                   "  goobers cost [--pr <id> | --issue <id>] [--provider <name>] [--window <duration> | --since <RFC3339>] [--until <RFC3339>] [--json] [path]\n                                show bounded cost attribution by pull request or issue\n",
+	"cost":                   "  goobers cost [--pr <id> | --issue <id>] [--provider <name>] [--window <duration> | --since <RFC3339>] [--until <RFC3339>] [--json] [--rebuild] [path]\n                                show bounded cost attribution by pull request or issue\n",
 	"features":               "  goobers features [--json] [--dsl-version <version>] [--used] [path]\n                                list the workflow-DSL features this build supports\n",
 	"schema":                 "  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build\n",
 	"explain":                "  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema\n",
