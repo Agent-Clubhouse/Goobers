@@ -4,6 +4,7 @@
 2026-07-16). Items filed to milestone "V2 — cloud scale" remain **future investments**:
 backlog-only, not `goobers:approved`, not eligible for automated implementation until the
 PO promotes them.
+Superseded-by: docs/design/goobernetes-architecture.md
 
 > ### ⚠️ Superseded-by: `goobernetes-architecture.md` §10
 >

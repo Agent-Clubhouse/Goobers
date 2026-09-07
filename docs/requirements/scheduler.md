@@ -89,9 +89,15 @@ changes (`ARCHITECTURE.md §7`).
   this inspectable with standard tools at tier 1.
 
 ### Prioritization & telemetry
-- **SCH-030 (SHOULD):** The scheduler SHOULD support backlog prioritization (which item
-  next) — explicit priority field, FIFO within a priority (see `SCH-Q3`).
-  *(Not implemented — V1 prescriptive; no priority field exists yet.)*
+- **SCH-030 (SHOULD):** The scheduler SHOULD support backlog prioritization (which
+  item next) — FIFO by default, with a declared ordering applied before it (see
+  `SCH-Q3`). **Shipped:** the backlog-query claim stage accepts an opt-in,
+  ordered `selectionPriority` label list (#1335) applied before FIFO, an optional
+  `fieldOrder` applied within each priority tier, and an aging rotation so a
+  lower-priority item cannot starve indefinitely. Unset, the behaviour is plain
+  FIFO — prioritization is strictly additive. **Not implemented:** a priority
+  *field* on the item type itself; the shipped mechanism orders by declared
+  labels and fields rather than by a dedicated scalar.
 - **SCH-031 (MUST):** The scheduler MUST emit telemetry for its decisions, claims, and
   releases to the goober-run telemetry store — at tiers 1–2 as events in the
   **instance journal** (`scheduler/events.jsonl`, `ARCHITECTURE.md §4/§6`) rolled up

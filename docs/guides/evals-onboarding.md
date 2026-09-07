@@ -1,13 +1,22 @@
 # EvalSuite onboarding: running tests and reading reports
 
-This is the checklist for getting EvalSuite's current pieces running locally
-and making sense of what they produce today. It covers what exists right
-now: **validate a suite and run the unit tests**, and **read the judge
-contract's output** — there is no end-to-end runner yet (that's
-[#2667](https://github.com/Agent-Clubhouse/Goobers/issues/2667)), so "running
-an EvalSuite scenario against real workflow output" isn't possible yet.
+> **⚠️ Direction superseded.** This describes the #2662 EvalSuite direction,
+> which is not being carried forward. See
+> [`docs/design/evals-suite.md`](../design/evals-suite.md) for the full account, and
+> [#2681](https://github.com/Agent-Clubhouse/Goobers/issues/2681) for the
+> replacement direction (native Go/DSL, opt-in, built on the existing runner).
+> These artifacts are preserved rather than deleted because #2681 is
+> `goobers:nominated`, not yet approved.
 
-For what EvalSuite is and its overall status, see the
+This is the checklist for getting the #2662 EvalSuite artifacts running
+locally and making sense of what they produce. It covers what exists in
+`evals/`: **validate a suite and run the unit tests**, and **read the judge
+contract's output**. There is no end-to-end runner, and one is no longer
+planned on this path — #2667 was closed on 2026-08-08 as redirected to
+[#2682](https://github.com/Agent-Clubhouse/Goobers/issues/2682), not delivered.
+
+
+For what EvalSuite was and its current status, see the
 [design overview](../design/evals-suite.md). For what reviewers check before
 approving a PR that changes EvalSuite artifacts, see the
 [review checklist](evals-review-checklist.md).

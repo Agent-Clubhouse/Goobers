@@ -1,6 +1,41 @@
 # Design: EvalSuite CI gating, baseline management & alerting
 
-> Status: **draft — proposed** (research-phase deliverable; not yet wired to a runner)
+> Status: **historical — proposed under the #2662 direction, parked with it**
+> Superseded-by (proposed): [#2681](https://github.com/Agent-Clubhouse/Goobers/issues/2681)
+> — nominated, not yet approved
+
+> ## ⚠️ Direction superseded — read this first
+>
+> **This page documents the #2662 EvalSuite direction, which is no longer the
+> direction being pursued.** [#2681](https://github.com/Agent-Clubhouse/Goobers/issues/2681)
+> redirects EvalSuite to a **native Go, DSL-driven, opt-in** capability built on
+> the existing runner (`internal/localscheduler`), DSL (`api/schemas`), journal,
+> and telemetry — not a parallel Python system under `evals/`. Every child of
+> #2662 (#2663–#2669) was closed on 2026-08-08 as **redirected, not delivered**:
+> the adapter shim (#2666) and runner integration (#2667) were closed pointing at
+> #2681/#2682, and CI gating (#2668) was closed as premature before a comparison
+> primitive exists to gate on.
+>
+> **Do not build against this page.** Start from #2681 and its children
+> ([#2682](https://github.com/Agent-Clubhouse/Goobers/issues/2682) variant
+> comparison, [#2683](https://github.com/Agent-Clubhouse/Goobers/issues/2683)
+> eval-definition DSL,
+> [#2684](https://github.com/Agent-Clubhouse/Goobers/issues/2684) Tutor
+> integration).
+>
+> **Why this page still exists.** #2681 is `goobers:nominated`, not
+> `goobers:approved`. Retiring `evals/`, `evals-gate.yml`, and the
+> path-filtered `evals-tests.yml` waits on that ratification, so the artifacts
+> and their records are preserved as a historical account rather than deleted
+> ahead of a decision. The judge-template and sandbox research here remains
+> useful reference; it is not an implementation plan.
+
+> Specific to this page: #2668 was closed as **premature**, not delivered. Any
+> future CI gating should be re-scoped against whatever gate mechanism Goobers
+> already has, once #2682's comparison primitive and (optionally) #2683's eval
+> DSL are real — not against the bespoke baseline-snapshot/alerting system
+> designed below.
+
 > Area prefix: evals
 > Related: #2662 (EvalSuite epic), #2663 (DSL & schema), #2664 (judge harness),
 > #2665 (sandbox/adapter API), #2666 (adapter prototype), #2667 (runner

@@ -2,6 +2,7 @@
 
 > Status: **implemented — reference worker shape; the *worker* shape it
 > describes is superseded as the execution substrate**
+> Delivered-by: #3619
 
 > **⚠️ Read this first (#4240).** This note was written against the resident
 > `goobers worker` Deployment, which `goobernetes-architecture.md` §10

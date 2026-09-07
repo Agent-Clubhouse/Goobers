@@ -4,6 +4,8 @@
 [`goobernetes-architecture.md`](goobernetes-architecture.md) §10; the remainder is
 implemented for Temporal stage routing, with node-pool provisioning still
 operator-managed (issue #659, P13 of `docs/design/cross-platform-support.md` §3).
+Superseded-by: docs/design/goobernetes-architecture.md
+Delivered-by: #659
 
 > ### ⚠️ Superseded-by: `goobernetes-architecture.md` §10 (§2.1–§2.2 and §3)
 >

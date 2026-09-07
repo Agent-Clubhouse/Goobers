@@ -60,11 +60,21 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   capabilities' credentials** into the run environment — undeclared use fails closed
   because nothing is injected. V1 adds runtime containment via sandboxing
   (`SEC-044`); tier 3 adds namespace/identity/network policy. **Stated residual risk
-  at tiers 1–2 until V1:** an agentic harness runs as the local user and can reach
-  ambient credentials (shell config, keychain, its own signed-in session); Goobers
-  does not claim to stop that pre-sandbox. The accepted V0 posture is local trust
-  (`SEC-040`) + non-injection + the untrusted-input gate (`SEC-047`) + reviewer and
-  human-merge gates (`ARCHITECTURE.md §5`).
+  at tiers 1–2:** an agentic harness runs as the local user and can reach ambient
+  credentials (shell config, keychain, its own signed-in session); Goobers does not
+  claim to stop that unless sandbox enforcement is enabled (`SEC-044`). The
+  compensating controls are local trust (`SEC-040`) + non-injection + the
+  untrusted-input gate (`SEC-047`) + the reviewer gate (`ARCHITECTURE.md §5`) +
+  **merge-authority separation** (`SEC-053`).
+
+  > **Correction (#4521): a human merge gate is not one of these controls.** This
+  > clause previously named "reviewer and human-merge gates". `pr-lifecycle.md` G2
+  > deliberately ratifies full autonomous merge with no human in the critical path,
+  > and `merge-review` ships it. Citing a control that is not in force overstates the
+  > residual-risk posture, so it is removed. **`SEC-042`'s capability-admission MUST
+  > above is unaffected** — it never depended on the merge gate, and the control that
+  > actually constrains merge authority is now stated as its own requirement
+  > (`SEC-053`) rather than left implicit in a narrative sentence.
 - **SEC-043 (MUST):** *(Tier 2, V1)* The portal and daemon MUST support **optional OIDC**
   when exposed beyond the local machine (shared box / small VM). Same `Authenticator`
   seam as tier 3; only the issuer changes.
@@ -72,10 +82,23 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   constraining filesystem and network reach of the harness process beyond bare worktree +
   process isolation. **Status:** mechanism decided
   ([ADR 0001](../adr/0001-agentic-sandbox-mechanism.md), accepted — OS-native:
-  `sandbox-exec`/Seatbelt on macOS, bubblewrap on Linux) and the native
-  implementation is landed (`internal/sandbox`, darwin + linux). The agentic
-  executor/harness does not yet wrap stages in it — enforcement rollout (S2–S4 of
-  `../design/v1/35-sandboxing-per-goober-creds.md`) is still in progress.
+  `sandbox-exec`/Seatbelt on macOS, bubblewrap on Linux), the native
+  implementation is landed (`internal/sandbox`, darwin + linux), **and the
+  agentic harness does wrap the stage subprocess in it** (`confineArgv`,
+  `internal/harness/confine.go`, called from both the copilot and claude
+  adapters; #1305 wires the posture through `sandboxPosturesByGaggle`).
+  **Enforcement is off by default.** `sandbox.agentic` is `disabled` unless an
+  operator opts in — `api/schemas/instance.schema.json` calls isolation
+  "strictly opt-in", and a gaggle may only strengthen an operator-enforced
+  posture, never weaken it. When enforcement *is* enabled and no platform
+  sandbox is available, the stage fails closed (`ErrSandboxUnavailable`).
+  Remaining: whether to flip the default (adjudicated on
+  [#4517](https://github.com/Agent-Clubhouse/Goobers/issues/4517); note
+  `../design/trust-boundary-hardening.md` TBH-3 designed it as on-by-default and
+  shipped inverted), and narrowing read confinement, which ADR-0001 records as
+  out of scope for this mechanism. Do not read this requirement as "sandboxing
+  is unwired" — the accurate statement is "wired, opt-in, and read confinement
+  is incomplete".
 - **SEC-045 (MUST):** *(Tiers 1–2)* Credentials MUST be resolved and injected **per
   run, scoped to the stage's declared capabilities** — never ambient to the whole
   daemon. This ships at V0 (it is the enforcement mechanism behind `SEC-042`).
@@ -199,6 +222,39 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   constrained (allowlisting) to limit exfiltration or out-of-scope actions (`GBO-Q2`) —
   realized at every tier by capability admission (`SEC-042`); **Tier 3 (V2)** adds
   restricted pod egress via network policy.
+
+- **SEC-053 (MUST):** *(All tiers)* **Merge authority is a separate, conjunctive,
+  revocable grant.** Goobers merges its own pull requests with no human in the
+  critical path (`pr-lifecycle.md` G2), so the controls that make that safe are
+  normative, not implementation detail:
+  - **Capability separation.** Merge authority is `github:pr:merge` /
+    `ado:pr:complete`, deliberately distinct from `github:pr:write` /
+    `ado:pr:write`. A workflow that opens or updates PRs MUST NOT thereby be able
+    to land one. The shipped configuration grants merge only to `merge-review`'s
+    landing stage; `implementation` and `pr-remediation` have PR-write and no
+    merge (`design/v0/pr-lifecycle-loop.md` §7).
+  - **Conjunctive eligibility.** A merge MUST require **every** conjunct to hold,
+    with no override: a published `pass` verdict from a separately authenticated
+    reviewing identity, required CI green, not a draft, and every gate in
+    `PRL-040`–`PRL-042`. Any single failing conjunct is a refusal, and a refusal
+    is a normal journaled outcome (`PRL-083`), never a warning that proceeds.
+  - **SHA pinning.** The verdict MUST be pinned to the exact reviewed head and
+    base, re-checked against the PR's live state immediately before landing. A
+    stale pin voids the verdict (`PRL-013`) — it never merges.
+  - **Merge lock.** The poll/decide/merge window MUST be serialized so two runs
+    cannot both decide against the same pre-merge state.
+  - **Provider policy is not bypassed.** The provider's own branch protection and
+    merge-queue configuration determine direct merge versus enqueue. Goobers MUST
+    NOT hold, or require, permission to alter branch protection.
+  - **Advisory mode is the default for anything unmanaged.** A PR outside the
+    managed branch prefixes MUST receive a review-only (advisory) verdict and MUST
+    NOT be landed, and a late opt-out label MUST be honoured.
+
+  Revoking the grant — removing the merge task or its capability from the config —
+  MUST be sufficient to return the instance to review-only operation, and the
+  command MUST refuse to acquire merge authority it was not granted. This
+  requirement states the threat model `SEC-042`'s residual-risk clause used to
+  gesture at with "human-merge gates"; see `PRL-040`–`PRL-042` for the mechanism.
 
 ## No-phone-home guard and compliance audit
 

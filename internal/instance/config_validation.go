@@ -605,15 +605,22 @@ func (c *Config) validateDaemonIdentityOwnerCoverage() error {
 
 // validateDaemonIdentitySameAppInstallations rejects a repo that authenticates
 // as the SAME GitHub App as the daemon identity but declares a different
-// installationId (#3414).
+// installationId (#3414, extended to the installations form by #4517).
 //
 // GitHub allows one installation per (App, owner) pair, so if both halves of
 // the config name the same App and disagree on the installation, one of them is
 // wrong. This deliberately does not presume which: the message reports the
 // disagreement and leaves the choice to the operator, because either half could
 // be the stale one.
+//
+// The comparison resolves the daemon identity's installation FOR THAT REPO'S
+// OWNER (InstallationForOwner), so it covers both config shapes. #3414 shipped
+// only the single-installationId arm, which made the check a no-op for exactly
+// the multi-owner installations: form that daemon-identity-multi-owner.md
+// exists to serve — a repo naming the same App with a conflicting installation
+// went uncaught there until #4517.
 func (c *Config) validateDaemonIdentitySameAppInstallations() error {
-	if !c.DaemonIdentity.GitHubApp() || c.DaemonIdentity.AppID == "" || c.DaemonIdentity.InstallationID == "" {
+	if !c.DaemonIdentity.GitHubApp() || c.DaemonIdentity.AppID == "" {
 		return nil
 	}
 	for i := range c.Repos {
@@ -621,16 +628,17 @@ func (c *Config) validateDaemonIdentitySameAppInstallations() error {
 		if repo.Provider != string(apiv1.ProviderGitHub) || repo.Auth == nil || repo.Auth.Kind != GitHubAuthApp {
 			continue
 		}
-		if repo.Auth.AppID != c.DaemonIdentity.AppID {
+		if repo.Auth.AppID != c.DaemonIdentity.AppID || repo.Auth.InstallationID == "" {
 			continue
 		}
-		if repo.Auth.InstallationID == "" || repo.Auth.InstallationID == c.DaemonIdentity.InstallationID {
+		bound, ok := c.DaemonIdentity.InstallationForOwner(repo.Owner)
+		if !ok || repo.Auth.InstallationID == bound {
 			continue
 		}
 		return fmt.Errorf(
-			"repos[%d] (%s/%s): auth.installationId %q disagrees with daemonIdentity.installationId %q for the same appId %q — "+
+			"repos[%d] (%s/%s): auth.installationId %q disagrees with the daemonIdentity installation %q bound to owner %q for the same appId %q — "+
 				"GitHub allows one installation per App per owner, so one of these is wrong",
-			i, repo.Owner, repo.Name, repo.Auth.InstallationID, c.DaemonIdentity.InstallationID, c.DaemonIdentity.AppID)
+			i, repo.Owner, repo.Name, repo.Auth.InstallationID, bound, repo.Owner, c.DaemonIdentity.AppID)
 	}
 	return nil
 }

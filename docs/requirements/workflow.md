@@ -69,9 +69,17 @@ everything a goober does happens inside a workflow, at every deployment tier.
 - **WF-014 (SHOULD):** A workflow's outputs (e.g. a filed backlog item, an emitted
   signal) SHOULD be able to trigger another workflow — always routed through the
   scheduler, never via direct invocation.
-- **WF-015 (MUST):** Emergent chains MUST be bounded to prevent runaway loops — the
-  scheduler MUST enforce per-workflow run budgets/rate limits plus chain-depth / loop
-  detection.
+- **WF-015 (MUST, partially implemented):** Emergent chains MUST be bounded to
+  prevent runaway loops. **Shipped:** per-workflow run budgets and rate limits
+  (`maxConcurrentRuns`, `maxRunsPerHour`, `maxRunsPerDay`), enforced by the
+  scheduler's readiness conditions, plus the gate repass budget bounding
+  within-run loops. **Not implemented:** the chain-depth clause.
+  `readiness.maxChainDepth` exists as a DSL field and is carried through the API
+  contract, but **no scheduler, runner, or command reads it** — a declared value
+  is inert. Until it is enforced, budgets and rate limits are the only bound on an
+  emergent chain, and a workflow that triggers itself indirectly is limited by
+  cadence rather than by depth. Either wire `maxChainDepth` or remove it from the
+  DSL; carrying an inert readiness field is worse than either (#4521).
 - **WF-016 (MUST):** Workflow definition changes MUST use version pinning — a
   **runner-seam contract requirement, implemented by both runners**
   (`ARCHITECTURE.md §4`), not a feature of any particular engine: each run records
@@ -144,6 +152,51 @@ everything a goober does happens inside a workflow, at every deployment tier.
   runs never double-process. Owning requirement: `SCH-041` (claiming semantics
   `SCH-020`; eligibility gate `SEC-047`); this ID defers to it. *(All tiers; ships
   tiers 1–2 first.)*
+
+### Parallelism, DSL lifecycle, and workspaces
+
+These govern shipped primitives that had no requirement of their own (#4521).
+
+- **WF-060 (MUST, Shipped):** A workflow MAY declare **static parallel branches**
+  — a fixed, definition-time set of branches that execute concurrently and rejoin
+  at a declared join. Branch width MUST be a property of the definition, never of
+  run data: dynamic (data-driven) width is explicitly out of scope. Parallel and
+  branch lifecycle events (`parallel.started`, `branch.started`,
+  `branch.finished`, `parallel.finished`) plus the branch-completeness record are
+  **conformance-normative** and MUST be produced identically by every runner;
+  events order by `(branch, seq)` at every tier, because branch interleaving is a
+  scheduling artefact (`ARCHITECTURE.md` §3.3). A branch MAY carry its own
+  timeout; exceeding it terminates that branch, not the run.
+- **WF-061 (MUST, Shipped):** Every author-facing workflow document MUST pin an
+  explicit `dslVersion`. A missing pin is a **load error**, not a default: the
+  transitional default was removed, so an unpinned document is refused with a
+  diagnostic naming the pin. The supported-version matrix MUST classify each
+  version as supported, preview, deprecated (with a replacement and a
+  removed-after version), or unsupported, and a document on an unsupported
+  version MUST be refused with the migration command that fixes it.
+- **WF-062 (MUST, Shipped):** A **migration path MUST exist between adjacent DSL
+  versions** and MUST be executable by the operator (`goobers fix --to <version>`)
+  rather than requiring a hand rewrite. A migration MUST be behaviour-preserving
+  or refuse; it MUST NOT silently change what a workflow does.
+- **WF-063 (MUST, Shipped):** A stage MUST be able to declare its **workspace
+  mode**: `repo` (a worktree on the run branch, writable and intended for
+  commits), `repo-readonly` (a worktree at the run's pinned base revision in
+  detached HEAD — repository content with no branch name, so concurrently
+  executing repo-backed stages cannot collide over the single run branch), or
+  `scratch` (an empty disposable directory, no repository). An **undeclared**
+  workspace resolves to the historical writable repo worktree, so validation
+  MUST warn when a stage that appears read-only and holds no repository-mutation
+  capability leaves it undeclared. `repo-readonly` is a task-level declaration;
+  a deterministic stage's `run.workspace` takes precedence when both are set.
+- **WF-064 (MUST, Shipped):** An agentic stage's session MUST be bounded by a
+  wall-clock timeout, resolved as task > goober > built-in default, and a
+  workflow MUST be able to choose what a timeout *means* for that stage. The two
+  behaviours are `fail` (the default — a timeout consumes retry budget like any
+  dispatch error) and **`salvage`**: if the run branch carries viable committed
+  work at the moment of the timeout, the stage completes on that work rather than
+  discarding it, recording a provenance marker and a `salvagedOnTimeout` output
+  so a salvaged completion is never indistinguishable from a clean one. A
+  pre-commit timeout has nothing to salvage and falls back to `fail`.
 
 ## Relationships
 

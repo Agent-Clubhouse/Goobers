@@ -4,6 +4,7 @@ Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 [goobernetes-decisions.md](goobernetes-decisions.md) (2026-08-22).
 **Grounded against** `main` @ `21c645a6` and the spike-ladder evidence recorded on #2838.
 Where this document and the decision record disagree, the record wins.
+Supersedes: docs/design/v2-cloud-scale.md, docs/design/mixed-platform-cloud-nodes.md
 
 Goobernetes is the distributed execution mode of Goobers: every stage attempt of a run
 executes in its own fresh container pod, placed by a constraint solve against a declared

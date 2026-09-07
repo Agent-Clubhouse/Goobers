@@ -108,6 +108,40 @@ daemonIdentity:
     env: DAEMON_GITHUB_TOKEN
 ```
 
+For `kind: github-app`, **set `slug`**. It is the App's bot login without the
+`[bot]` suffix, and it is the only thing that makes the daemon identity an
+identity *check*: without it, PR selection cannot recognise the daemon's own
+pull requests by login and silently falls back to the branch-name-prefix
+heuristic. `goobers validate` warns (`IDENT001`) when it is missing.
+
+**Multi-owner instances.** A GitHub App installation belongs to exactly one
+owner, so a single `installationId` cannot cover repos spanning two owners —
+every mutation against the second owner's repo fails at credential
+materialization with a 422. Bind one installation per owner instead (#3415):
+
+```yaml
+daemonIdentity:
+  kind: github-app
+  appId: 123456
+  privateKey: { file: /secrets/goobersbot.pem }
+  slug: goobersbot
+  installations:
+    - owner: Agent-Clubhouse
+      installationId: 1111111
+    - owner: masra91
+      installationId: 2222222
+```
+
+`installations[].owner` must match `repos[].owner` **exactly** — the comparison
+is byte-for-byte, so a case mismatch is a load error naming the uncovered owner,
+not a silent miss. Every GitHub-provider owner the instance targets must have a
+binding; extra bindings for owners with no configured repo are permitted and
+inert. If a repo's own `auth` names the same `appId` with a different
+`installationId` than the binding for that repo's owner, config load rejects it.
+`appId`, `privateKey`, and `slug` stay top-level and singular: one App, one key,
+one login. See
+[`docs/design/daemon-identity-multi-owner.md`](../design/daemon-identity-multi-owner.md).
+
 Mint the machine account's fine-grained PAT with the union of the permissions
 those capabilities need (the rows above), never the operator's own token.
 Every daemon-authored PR, review, and merge then carries that account's
@@ -122,7 +156,7 @@ heuristic remains exactly as before).
 repo's own `auth.kind: github-app` uses (`appId`/`installationId`/
 `privateKey`), for consumers who provision a dedicated App instead of a
 machine-account PAT — see #1779. An explicit `credentials:` entry for any one
-of the six capabilities still overrides `daemonIdentity` for that capability
+of the seven capabilities still overrides `daemonIdentity` for that capability
 alone, so a mixed setup (e.g. a distinct App for reviews, the daemon identity
 for everything else) is still possible.
 
