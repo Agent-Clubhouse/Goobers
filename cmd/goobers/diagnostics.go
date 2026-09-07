@@ -349,12 +349,14 @@ func diagnosticsConfigGeneration(set *instance.ConfigSet) (string, []diagnostics
 		entry := byGaggle[name]
 		sort.Strings(entry.Goobers)
 		sort.Slice(entry.Workflows, func(i, j int) bool { return entry.Workflows[i].Name < entry.Workflows[j].Name })
-		fmt.Fprintf(hash, "gaggle:%s\n", entry.Name)
+		// hash is a sha256 writer: its Write never returns an error, and the
+		// digest is verified end to end by the reproducibility test.
+		_, _ = fmt.Fprintf(hash, "gaggle:%s\n", entry.Name)
 		for _, goober := range entry.Goobers {
-			fmt.Fprintf(hash, "goober:%s\n", goober)
+			_, _ = fmt.Fprintf(hash, "goober:%s\n", goober)
 		}
 		for _, wf := range entry.Workflows {
-			fmt.Fprintf(hash, "workflow:%s:%s:%s\n", wf.Name, wf.DSLVersion, wf.DefinitionDigest)
+			_, _ = fmt.Fprintf(hash, "workflow:%s:%s:%s\n", wf.Name, wf.DSLVersion, wf.DefinitionDigest)
 		}
 		gaggles = append(gaggles, *entry)
 	}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -248,7 +249,7 @@ func TestArchiveHeadersCarryNoHostState(t *testing.T) {
 	tr := tar.NewReader(gz)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -307,7 +308,7 @@ func readArchive(t *testing.T, data []byte) map[string][]byte {
 	tr := tar.NewReader(gz)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
