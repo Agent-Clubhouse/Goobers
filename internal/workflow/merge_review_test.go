@@ -268,7 +268,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				advisoryVerdict.Automated.Params["equals"] != "true" {
 				t.Errorf("advisory-verdict check = %+v, want advisoryMode == true", advisoryVerdict.Automated)
 			}
-			wantAdvisoryBranches := map[string]string{"pass": TerminalComplete, "fail": "published-verdict"}
+			wantAdvisoryBranches := map[string]string{"pass": "report-cost", "fail": "published-verdict"}
 			if !reflect.DeepEqual(advisoryVerdict.Branches, wantAdvisoryBranches) {
 				t.Errorf("advisory-verdict branches = %v, want %v", advisoryVerdict.Branches, wantAdvisoryBranches)
 			}
@@ -283,7 +283,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				publishedVerdict.Automated.Params["equals"] != "pass" {
 				t.Errorf("published-verdict check = %+v, want decision == pass", publishedVerdict.Automated)
 			}
-			wantPublishedBranches := map[string]string{"pass": "scope-gate", "fail": TerminalComplete}
+			wantPublishedBranches := map[string]string{"pass": "scope-gate", "fail": "report-cost"}
 			if tt.name == "reference-workflows" {
 				wantPublishedBranches["fail"] = "cancel-pending-ci"
 			}
@@ -321,7 +321,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				scopeGate.Automated.Params["equals"] != "false" {
 				t.Errorf("scope-gate check = %+v, want scopeGateParked == false", scopeGate.Automated)
 			}
-			wantScopeBranches := map[string]string{"pass": "merge-pr", "fail": TerminalComplete}
+			wantScopeBranches := map[string]string{"pass": "merge-pr", "fail": "report-cost"}
 			if !reflect.DeepEqual(scopeGate.Branches, wantScopeBranches) {
 				t.Errorf("scope-gate branches = %v, want %v", scopeGate.Branches, wantScopeBranches)
 			}
@@ -362,7 +362,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				mergeOptOutGate.Automated.Params["equals"] != "true" {
 				t.Errorf("merge-opt-out-gate check = %+v, want optedOut == true", mergeOptOutGate.Automated)
 			}
-			wantMergeOptOutBranches := map[string]string{"pass": TerminalComplete, "fail": "merge-gate"}
+			wantMergeOptOutBranches := map[string]string{"pass": "report-cost", "fail": "merge-gate"}
 			if !reflect.DeepEqual(mergeOptOutGate.Branches, wantMergeOptOutBranches) {
 				t.Errorf("merge-opt-out-gate branches = %v, want %v", mergeOptOutGate.Branches, wantMergeOptOutBranches)
 			}
@@ -394,8 +394,8 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			if !ok {
 				t.Fatal("record-merge-refusal task not found")
 			}
-			if recordRefusal.Next != TerminalComplete {
-				t.Errorf("record-merge-refusal.next = %q, want terminal", recordRefusal.Next)
+			if recordRefusal.Next != "report-cost" {
+				t.Errorf("record-merge-refusal.next = %q, want report-cost", recordRefusal.Next)
 			}
 			wantRefusalCaps := []string{"github:pr:write", "github:issues:write"}
 			if !reflect.DeepEqual(recordRefusal.Capabilities, wantRefusalCaps) {
@@ -438,7 +438,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				queueOptOutGate.Automated.Params["equals"] != "skipped" {
 				t.Errorf("queue-opt-out-gate check = %+v, want queueOutcome == skipped", queueOptOutGate.Automated)
 			}
-			wantQueueOptOutBranches := map[string]string{"pass": TerminalComplete, "fail": "queue-gate"}
+			wantQueueOptOutBranches := map[string]string{"pass": "report-cost", "fail": "queue-gate"}
 			if !reflect.DeepEqual(queueOptOutGate.Branches, wantQueueOptOutBranches) {
 				t.Errorf("queue-opt-out-gate branches = %v, want %v", queueOptOutGate.Branches, wantQueueOptOutBranches)
 			}
@@ -450,7 +450,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Errorf("queue-gate check = %+v, want queue-outcome", queueGate.Automated)
 			}
 			wantQueueBranches := map[string]string{
-				"merged": "post-merge", "evicted": TerminalComplete, "timeout": TerminalComplete, "fail": TerminalComplete,
+				"merged": "post-merge", "evicted": "report-cost", "timeout": "report-cost", "fail": "report-cost",
 			}
 			if !reflect.DeepEqual(queueGate.Branches, wantQueueBranches) {
 				t.Errorf("queue-gate branches = %v, want %v", queueGate.Branches, wantQueueBranches)
@@ -482,6 +482,9 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 			if !reflect.DeepEqual(postMerge.PolicyActions, wantPostMergePolicyActions) {
 				t.Errorf("post-merge policyActions = %v, want %v", postMerge.PolicyActions, wantPostMergePolicyActions)
+			}
+			if postMerge.Next != "report-cost" {
+				t.Errorf("post-merge.next = %q, want report-cost", postMerge.Next)
 			}
 
 			// A shell stage's Outputs are harvested ONLY from a declared

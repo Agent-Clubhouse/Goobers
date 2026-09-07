@@ -261,6 +261,7 @@ spec:
         - update-issue
       # Terminal: no `next`. The core loop's product — issue in, PR out — is
       # complete once the issue carries the closing breadcrumb.
+      next: report-cost
 
     - name: park-escalated
       type: deterministic
@@ -308,6 +309,16 @@ spec:
         - update-issue
       next: "@abort"
 
+    - name: report-cost
+      type: deterministic
+      goal: Publish cumulative cost on this run's pull request and addressed issues.
+      run:
+        command: ["goobers", "report-cost"]
+        workspace: scratch
+      inputs:
+        resultFile: "cost-report-result.json"
+      capabilities:
+        - github:issues:write
   gates:
     # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
     # "Agentic" evaluator kind) — there is no separate preceding review task.

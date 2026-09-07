@@ -80,6 +80,7 @@ var names = []string{
 	"reconcile-post-merge",
 	"record-merge-refusal",
 	"remediation-checkpoint",
+	"report-cost",
 	"report-pr-status",
 	"resolve-review-threads",
 	"respond-to-findings",

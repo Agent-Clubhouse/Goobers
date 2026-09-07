@@ -211,6 +211,18 @@ spec:
                 items:
                   type: string
                 type: array
+              cost:
+                description: |-
+                  Cost overrides the instance-wide cost-report publication setting for
+                  this gaggle. Omitted inherits instance.yaml cost.enabled, which itself
+                  defaults to true.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled publishes reports when true. A pointer preserves omitted
+                      (inherit/default-on) separately from an explicit false.
+                    type: boolean
+                type: object
               displayName:
                 description: DisplayName is the human-facing name shown on the portal
                   dashboard.

@@ -26,6 +26,21 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
         runs/           # run journals (append-only events, snapshots, artifacts)
         workcopies/     # managed working copies and per-run worktrees
       scheduler/        # instance journal: scheduler decisions + claim ledger
+
+      ## Cost report publication
+
+      Successful shipped workflows publish provider-native sticky cost reports by
+      default. Configure the instance default with:
+
+      ```yaml
+      cost:
+        enabled: false
+      ```
+
+      A gaggle may override that default with `spec.cost.enabled`. Resolution is
+      explicitly most-specific-first: a non-nil gaggle value wins, otherwise the
+      instance value wins, otherwise reporting is enabled. Omitting `enabled` is
+      therefore not the same as setting it to `false`. journal: scheduler decisions + claim ledger
       telemetry.db      # local telemetry rollup store
     ```
 

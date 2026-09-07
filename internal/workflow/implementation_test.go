@@ -161,8 +161,15 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	if !ok {
 		t.Fatal("close-out task not found")
 	}
-	if closeOut.Next != "" {
-		t.Errorf("close-out.next = %q, want terminal", closeOut.Next)
+	if closeOut.Next != "report-cost" {
+		t.Errorf("close-out.next = %q, want report-cost", closeOut.Next)
+	}
+	reportCost, ok := m.Task("report-cost")
+	if !ok {
+		t.Fatal("report-cost task not found")
+	}
+	if reportCost.Next != "" || !slices.Equal(reportCost.Capabilities, []string{"github:issues:write"}) {
+		t.Errorf("report-cost contract = next %q capabilities %v", reportCost.Next, reportCost.Capabilities)
 	}
 	park, ok := m.Task("park-needs-human")
 	if !ok {
@@ -252,7 +259,7 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// #3272: review now checkpoints the branch before local-ci, local-ci pass
 	// proceeds directly to open-pr, and infrastructure outcomes retry local-ci
 	// under their separate bounded budget.
-	const wantDigest = "sha256:5389872ca6628eec1d7305be4b0bbe8b58b468fdfc5bdaaf1b1f344f1270b577"
+	const wantDigest = "sha256:37e7c88205ba39c64441b187285c3abc6b4227dba15735c638fc7acbff67d2d4"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

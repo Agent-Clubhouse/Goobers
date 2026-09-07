@@ -188,6 +188,12 @@ var commands = map[string]Command{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so decomposition batch publication fails at runtime"),
 		},
 	},
+	"report-cost": {
+		ResultFile: "cost-report-result.json",
+		Capabilities: []CapabilityUse{
+			requiredExact(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so sticky cost-report publication fails at runtime"),
+		},
+	},
 	"file-issues": {
 		ResultFile: "filed-nominations.json",
 		Capabilities: []CapabilityUse{

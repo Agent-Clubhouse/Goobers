@@ -98,7 +98,18 @@ spec:
       expectedOutputs:
         - pull-request-url
         - prNumber
+      next: report-cost
 
+    - name: report-cost
+      type: deterministic
+      goal: Publish cumulative cost on this run's pull request and addressed issues.
+      run:
+        command: ["goobers", "report-cost"]
+        workspace: scratch
+      inputs:
+        resultFile: "cost-report-result.json"
+      capabilities:
+        - github:issues:write
   gates:
     - name: docs-valid
       evaluator: automated

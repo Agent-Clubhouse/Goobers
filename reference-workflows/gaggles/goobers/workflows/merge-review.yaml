@@ -470,6 +470,8 @@ spec:
     # cluster can drain around it. A no-op for a transient/first refusal, and
     # terminal either way — the PR stays retryable and self-heals the moment
     # its head advances.
+      next: report-cost
+
     - name: record-merge-refusal
       type: deterministic
       goal: Record a merge refusal and demote a persistently-stuck lander (#950).
@@ -495,6 +497,8 @@ spec:
     # Cancellation is exact-SHA, bounded, idempotent, and non-fatal: verdict
     # publication remains authoritative even when the forge does not support
     # cancellation or the credential lacks Actions write permission.
+      next: report-cost
+
     - name: cancel-pending-ci
       type: deterministic
       goal: Cancel obsolete pending CI for the exact rejected pull-request head.
@@ -511,8 +515,17 @@ spec:
       policyActions:
         - cancel-pending-ci
       continueOnError: true
-      next: ""
-
+      next: report-cost
+    - name: report-cost
+      type: deterministic
+      goal: Publish cumulative cost on this run's pull request and addressed issues.
+      run:
+        command: ["goobers", "report-cost"]
+        workspace: scratch
+      inputs:
+        resultFile: "cost-report-result.json"
+      capabilities:
+        - github:issues:write
   gates:
     # #2340: check-issue-staleness re-fetches the pinned linked issue and
     # emits issueStale before the expensive agentic review gate runs. A
@@ -542,8 +555,7 @@ spec:
           equals: "false"
       branches:
         pass: merge-pr
-        fail: ""
-
+        fail: report-cost
     # Holistic review: reuses the shared `reviewer` goober (design doc §2's
     # explicit reuse-over-new-goober call), evaluating gather-sibling-
     # context's own Outputs (the selected PR's identity/SHAs + every
@@ -645,7 +657,7 @@ spec:
           key: advisoryMode
           equals: "true"
       branches:
-        pass: ""
+        pass: report-cost
         fail: published-verdict
 
     # A late goobers:no-merge-review label is a distinct terminal no-op.
@@ -659,7 +671,7 @@ spec:
           key: optedOut
           equals: "true"
       branches:
-        pass: ""
+        pass: report-cost
         fail: merge-gate
 
     - name: merge-gate
@@ -695,7 +707,7 @@ spec:
           key: queueOutcome
           equals: skipped
       branches:
-        pass: ""
+        pass: report-cost
         fail: queue-gate
 
     - name: queue-gate
@@ -710,6 +722,6 @@ spec:
         check: queue-outcome
       branches:
         merged: post-merge
-        evicted: ""
-        timeout: ""
-        fail: ""
+        evicted: report-cost
+        timeout: report-cost
+        fail: report-cost

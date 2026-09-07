@@ -702,6 +702,8 @@ spec:
 
     # Escalation must retain its terminal phase after releasing the claim, so
     # its release stage has an explicit @escalate successor.
+      next: report-cost
+
     - name: release-escalated-claim
       type: deterministic
       goal: Release this run's pull-request claim before terminal escalation.
@@ -832,6 +834,16 @@ spec:
         - escalate-pr
       next: release-escalated-claim
 
+    - name: report-cost
+      type: deterministic
+      goal: Publish cumulative cost on this run's pull request and addressed issues.
+      run:
+        command: ["goobers", "report-cost"]
+        workspace: scratch
+      inputs:
+        resultFile: "cost-report-result.json"
+      capabilities:
+        - github:issues:write
   gates:
     # #4179: same failure-class evaluator local-gate below already uses, same
     # infra disposition (park-infrastructure-failure — this workflow's own

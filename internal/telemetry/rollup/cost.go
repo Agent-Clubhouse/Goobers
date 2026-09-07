@@ -219,6 +219,33 @@ func (db *DB) IssueCosts(ctx context.Context, provider string) ([]CostAggregate,
 	return sortedAggregates(aggregates), nil
 }
 
+// CostTargetsForRun returns the pull requests touched by runID and every issue
+// directly named by that run or addressed by one of those pull requests.
+func (db *DB) CostTargetsForRun(ctx context.Context, provider, runID string) ([]string, []string, error) {
+	runs, err := db.loadCostRuns(ctx, provider)
+	if err != nil {
+		return nil, nil, err
+	}
+	prIssues := addressedIssuesByPR(runs)
+	prs := make(map[string]struct{})
+	issues := make(map[string]struct{})
+	for _, run := range runs {
+		if run.id != runID {
+			continue
+		}
+		for pr := range run.prs {
+			prs[pr] = struct{}{}
+			for issue := range prIssues[pr] {
+				issues[issue] = struct{}{}
+			}
+		}
+		for issue := range run.issues {
+			issues[issue] = struct{}{}
+		}
+	}
+	return sortedSet(prs), sortedSet(issues), nil
+}
+
 func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("rollup: cost provider is required")
