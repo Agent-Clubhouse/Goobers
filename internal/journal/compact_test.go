@@ -160,12 +160,29 @@ func TestCompactInstanceEventsKeepsAllWhenNothingAged(t *testing.T) {
 	writeRawInstanceLog(t, dir, eventLine(1, recent, ""), eventLine(2, recent, ""))
 	cutoff := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 
+	journalPath := filepath.Join(dir, fileEvents)
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	result, err := CompactInstanceEvents(dir, cutoff, cutoff, false)
 	if err != nil {
 		t.Fatalf("CompactInstanceEvents: %v", err)
 	}
-	if result.Dropped != 0 || result.Kept != 2 {
-		t.Fatalf("compaction = %+v, want Dropped 0 Kept 2", result)
+	if result.Dropped != 0 {
+		t.Fatalf("compaction = %+v, want Dropped 0", result)
+	}
+	// Kept is deliberately not reported here: every record is newer than the
+	// cut, so the #3051 fence returns before parsing the journal, and counting
+	// records is the O(history) work it exists to skip. What must hold is that
+	// the journal is untouched.
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("a no-drop compaction rewrote the journal")
 	}
 }
 
