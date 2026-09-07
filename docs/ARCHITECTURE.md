@@ -145,7 +145,7 @@ The tier table in §1 is a **packaging** concept: how Goobers is installed and
 operated. It is not the execution model. The execution model has three **modes**,
 and mode is a property of the *instance*, never of a workflow document — a
 workflow must not know or care where it runs
-([`design/goobernetes-architecture.md`](design/goobernetes-architecture.md) D1).
+([`design/goobernetes-architecture.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-architecture.md) D1).
 
 | Mode | What executes a stage | Inferred from |
 |---|---|---|
@@ -155,7 +155,7 @@ workflow must not know or care where it runs
 
 Mode 3 distributes **stage execution**, not the instance: the instance root, the
 daemon, and control-plane state stay single-node/RWO
-([`design/k8s-infra-shape.md`](design/k8s-infra-shape.md) §4).
+([`design/k8s-infra-shape.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/k8s-infra-shape.md) §4).
 
 #### The dispatcher
 
@@ -173,7 +173,7 @@ pod), and `deployment` (consumer-owned pod spec, still fresh-per-attempt).
 This supersedes the earlier resident-worker substrate — a `goobers worker`
 Deployment executing stage activities as goroutines — which is **no longer the
 target execution model**; see
-[`design/goobernetes-architecture.md`](design/goobernetes-architecture.md) §3
+[`design/goobernetes-architecture.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-architecture.md) §3
 and §10.
 
 #### The daemon plane inventory
@@ -181,7 +181,7 @@ and §10.
 A mode-3 stage pod has no instance root and no shared filesystem. Everything it
 would have reached through the filesystem it instead reaches over enumerated,
 authenticated **planes** on the daemon API. The authoritative list is the path
-constants in [`internal/apicontract`](../internal/apicontract/contract.go) —
+constants in [`internal/apicontract`](https://github.com/Agent-Clubhouse/Goobers/blob/main/internal/apicontract/contract.go) —
 that file, not this table, is the contract:
 
 | Plane | Routes (`internal/apicontract`) | What it replaces |
@@ -205,13 +205,13 @@ replacement for it.
 This section is the map, not the specification. The Goobernetes v1 design set
 owns the detail, and the decision record is authoritative where they disagree:
 
-- [`design/goobernetes-decisions.md`](design/goobernetes-decisions.md) — the PO decision record.
-- [`design/goobernetes-architecture.md`](design/goobernetes-architecture.md) — mode model, substrate, control plane, supersessions.
-- [`design/distributed-state-and-coordination.md`](design/distributed-state-and-coordination.md) — state and coordination, and the plane design.
-- [`design/goobernetes-dispatcher.md`](design/goobernetes-dispatcher.md) — pod spec, placement, probes.
-- [`design/goobernetes-restrictions.md`](design/goobernetes-restrictions.md) — the per-OS restriction matrix and what is enforceable where.
-- [`design/k8s-infra-shape.md`](design/k8s-infra-shape.md) — namespaces, RWO constraints, networking.
-- [`design/goobernetes-deployment-images.md`](design/goobernetes-deployment-images.md) — image families and the version-skew contract.
+- [`design/goobernetes-decisions.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-decisions.md) — the PO decision record.
+- [`design/goobernetes-architecture.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-architecture.md) — mode model, substrate, control plane, supersessions.
+- [`design/distributed-state-and-coordination.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/distributed-state-and-coordination.md) — state and coordination, and the plane design.
+- [`design/goobernetes-dispatcher.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-dispatcher.md) — pod spec, placement, probes.
+- [`design/goobernetes-restrictions.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-restrictions.md) — the per-OS restriction matrix and what is enforceable where.
+- [`design/k8s-infra-shape.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/k8s-infra-shape.md) — namespaces, RWO constraints, networking.
+- [`design/goobernetes-deployment-images.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/goobernetes-deployment-images.md) — image families and the version-skew contract.
 
 ## 4. The run journal (provenance contract)
 
