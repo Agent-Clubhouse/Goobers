@@ -4,7 +4,9 @@
 investment: items are not `goobers:approved` and not eligible for automated implementation
 until promoted.
 Delivered-by: #639, #643, #647, #651
-Verified: 09db115bb (2026-09-06)
+Pending-delivery: #3151, #2440
+Scope-delta: §4's first acceptance clause — a *required* CI matrix green on ubuntu/macos/windows for `go run ./test/ci` — is the one unmet item. The Windows leg is a hermetic tier only: #3151 records 670 failing tests across 19 packages that keep the behavioral tier out of the matrix, and #2440 records that the required Windows gate therefore skips most of the unit suite Linux and macOS run in full. Every other phase (P8–P13) landed; see the note below.
+Verified: b1d7b362c (2026-09-07)
 
 > **Most of this shipped; the PO directive above is left intact deliberately.**
 > Re-checked 2026-09-06 (#4520): P8 daemon supervision units ship for all three

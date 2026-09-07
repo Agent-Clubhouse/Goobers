@@ -33,7 +33,7 @@ themselves, so no cell can drift from the YAML.
 | `flake-watch.yml` | schedule, workflow_dispatch | active | — |
 | `ghcp-echo.yml` | schedule, workflow_dispatch | active | — |
 | `large-repo-scale.yml` | schedule, workflow_dispatch | active | — |
-| `provider-fixture-drift-ado.yml` | workflow_dispatch | dormant | first live-candidate review (no tracking issue) |
+| `provider-fixture-drift-ado.yml` | workflow_dispatch | dormant | #4602 (ADO fixture work item, PAT, first live-candidate review) |
 | `provider-fixture-drift.yml` | workflow_dispatch | dormant | #1478 (designated repo, issue, PR, credential) |
 | `release.yml` | push, workflow_dispatch | active | — |
 | `scheduled-failure-alarm.yml` | schedule, workflow_dispatch | active | — |
