@@ -295,14 +295,11 @@ func newInventoryProjection(definitions *instance.ConfigSet, report *validate.Re
 		graphs:      make(map[workflowKey]workflow.Graph, len(definitions.Workflows)),
 		warnings:    append([]validate.CodedWarning{}, report.Warnings()...),
 	}
-	goobers := make(map[string]map[string]apiv1.GooberSpec)
+	goobers := make(map[string]apiv1.GooberSpec)
 	gooberGaggles := make(map[string]string, len(definitions.Goobers))
 	for i := range definitions.Goobers {
 		def := &definitions.Goobers[i]
-		if goobers[def.Spec.Gaggle] == nil {
-			goobers[def.Spec.Gaggle] = map[string]apiv1.GooberSpec{}
-		}
-		goobers[def.Spec.Gaggle][def.Name] = def.Spec
+		goobers[def.Name] = def.Spec
 		gooberGaggles[def.Name] = def.Spec.Gaggle
 	}
 
@@ -319,7 +316,7 @@ func newInventoryProjection(definitions *instance.ConfigSet, report *validate.Re
 			workflow.Definition{
 				Name: def.Name, Version: currentWorkflowVersion, DSLVersion: def.DSLVersion, Spec: def.Spec,
 			},
-			workflow.WithGoobers(goobers[def.Spec.Gaggle]),
+			workflow.WithGoobers(goobers),
 			workflow.WithPreviewFeatures(
 				definitions.Manifest != nil && workflow.PreviewFeaturesEnabled(definitions.Manifest.Annotations),
 			),
@@ -342,7 +339,7 @@ func validateWorkflowOwners(def *apiv1.Workflow, gooberGaggles map[string]string
 			return fmt.Errorf("read service: workflow %q in gaggle %q stage %q references unknown goober %q",
 				def.Name, def.Spec.Gaggle, stage, owner)
 		}
-		if gaggle != def.Spec.Gaggle {
+		if gaggle != "" && gaggle != def.Spec.Gaggle {
 			return fmt.Errorf("read service: workflow %q in gaggle %q stage %q references goober %q in gaggle %q",
 				def.Name, def.Spec.Gaggle, stage, owner, gaggle)
 		}
@@ -456,7 +453,7 @@ func (s *Local) gagglesUnannotated(ctx context.Context, request PageRequest) (Ga
 			Warnings:       warningsFor(inventory, "Gaggle", def.Name, "", ""),
 		}
 		for j := range inventory.definitions.Goobers {
-			if inventory.definitions.Goobers[j].Spec.Gaggle == def.Name {
+			if inventory.definitions.Goobers[j].Spec.Gaggle == "" || inventory.definitions.Goobers[j].Spec.Gaggle == def.Name {
 				item.GooberCount++
 			}
 		}
@@ -488,7 +485,7 @@ func (s *Local) goobersUnannotated(ctx context.Context, gaggle string, request P
 	items := make([]Goober, 0)
 	for i := range inventory.definitions.Goobers {
 		def := &inventory.definitions.Goobers[i]
-		if def.Spec.Gaggle != gaggle {
+		if def.Spec.Gaggle != "" && def.Spec.Gaggle != gaggle {
 			continue
 		}
 		harness := def.Spec.Harness

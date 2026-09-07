@@ -1,12 +1,38 @@
 package workflow
 
 import (
+	"reflect"
 	"testing"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
+
+func TestResolvedSkillsKeepSharedAndGaggleContentSeparate(t *testing.T) {
+	local := []SkillFile{{Path: "SKILL.md", Content: "gaggle override"}}
+	shared := []SkillFile{{Path: "SKILL.md", Content: "constant shared persona"}}
+	packages := map[string][]SkillFile{"testing": local, SharedSkillPackageKey("testing"): shared}
+	for _, tc := range []struct {
+		shared bool
+		want   []SkillFile
+	}{{false, local}, {true, shared}} {
+		got := resolvedSkillPackages([]string{"testing"}, tc.shared, packages)
+		if len(got) != 1 || got[0].Name != "testing" || !reflect.DeepEqual(got[0].Files, tc.want) {
+			t.Fatalf("shared=%t packages=%+v", tc.shared, got)
+		}
+	}
+	// An explicitly captured missing shared package must not borrow the
+	// local override. Old, single-scope callers remain byte-compatible.
+	packages[SharedSkillPackageKey("testing")] = nil
+	if got := resolvedSkillPackages([]string{"testing"}, true, packages); len(got[0].Files) != 0 {
+		t.Fatalf("missing shared package borrowed local content: %+v", got)
+	}
+	delete(packages, SharedSkillPackageKey("testing"))
+	if !reflect.DeepEqual(resolvedSkillPackages([]string{"testing"}, true, packages), resolvedSkillPackages([]string{"testing"}, false, packages)) {
+		t.Fatal("legacy single-scope package digest changed")
+	}
+}
 
 func TestGooberDigestTracksEffectiveParticipatingGoobers(t *testing.T) {
 	def := Definition{Name: "x", Version: 1, Spec: linearSpec()}

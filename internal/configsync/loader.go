@@ -180,20 +180,29 @@ func stageSource(root string, ignoreDirs []string) (string, func(), error) {
 	stagedRoot := filepath.Join(tmp, "config")
 	err = copyTree(rootAbs, stagedRoot, skip)
 	if err == nil {
-		skillsRoot := filepath.Join(filepath.Dir(rootAbs), "skills")
-		_, statErr := os.Stat(skillsRoot)
-		switch {
-		case statErr == nil:
-			err = copyTree(skillsRoot, filepath.Join(tmp, "skills"), nil)
-		case !errors.Is(statErr, fs.ErrNotExist):
-			err = statErr
-		}
+		err = copySharedSourceTrees(rootAbs, tmp)
 	}
 	if err != nil {
 		cleanup()
 		return "", noop, fmt.Errorf("stage source: %w", err)
 	}
 	return stagedRoot, cleanup, nil
+}
+
+func copySharedSourceTrees(root, destination string) error {
+	for _, name := range []string{"skills", "goobers"} {
+		source := filepath.Join(filepath.Dir(root), name)
+		if _, err := os.Lstat(source); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if err := copyTree(source, filepath.Join(destination, name), nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func copyTree(src, dst string, skip map[string]bool) error {
@@ -236,26 +245,28 @@ func readDocs(root string) ([]rawDoc, error) {
 	opts.SkipDirPredicate = skipPredicate
 	opts.SkipSymlinkEntries = false
 
-	err := mcpio.WalkFiles(root, func(path string, entry fs.DirEntry) error {
-		// Only process YAML files
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".yaml" && ext != ".yml" {
+	err := configtree.WalkDefinitionTrees(root, func(tree string) error {
+		return mcpio.WalkFiles(tree, func(path string, entry fs.DirEntry) error {
+			// Only process YAML files
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext != ".yaml" && ext != ".yml" {
+				return nil
+			}
+
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			parsedDocs := yamldoc.SplitDocuments(raw)
+			for _, pd := range parsedDocs {
+				docs = append(docs, rawDoc{
+					kind: pd.Meta.Kind, name: pd.Meta.Name, dslVersion: pd.Meta.DSLVersion, yaml: pd.Content,
+				})
+			}
 			return nil
-		}
-
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		parsedDocs := yamldoc.SplitDocuments(raw)
-		for _, pd := range parsedDocs {
-			docs = append(docs, rawDoc{
-				kind: pd.Meta.Kind, name: pd.Meta.Name, dslVersion: pd.Meta.DSLVersion, yaml: pd.Content,
-			})
-		}
-		return nil
-	}, opts)
+		}, opts)
+	})
 
 	if err != nil {
 		return nil, fmt.Errorf("walk %s: %w", root, err)
@@ -328,7 +339,7 @@ func (l *Loader) assemble(docs []rawDoc) (*RenderSet, error) {
 		set.Objects = append(set.Objects, &gaggles[i])
 	}
 	for i := range goobers {
-		if !included[goobers[i].Spec.Gaggle] {
+		if goobers[i].Spec.Gaggle != "" && !included[goobers[i].Spec.Gaggle] {
 			continue
 		}
 		l.stamp(&goobers[i].TypeMeta, &goobers[i].ObjectMeta, "Goober", instance, goobers[i].Spec.Gaggle)

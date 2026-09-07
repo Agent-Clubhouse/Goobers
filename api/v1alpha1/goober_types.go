@@ -101,9 +101,10 @@ type MCPServer struct {
 // everything needed to materialize the goober as ephemeral pods when a workflow
 // invokes it (GBO-001, GBO-002).
 type GooberSpec struct {
-	// Gaggle is the name of the Gaggle this goober belongs to.
-	// +kubebuilder:validation:Required
-	Gaggle string `json:"gaggle" yaml:"gaggle"`
+	// Gaggle is the owning gaggle. Omit it only for an instance-shared
+	// persona under the goobers directory beside the config tree.
+	// +optional
+	Gaggle string `json:"gaggle,omitempty" yaml:"gaggle,omitempty"`
 	// Role is the goober's role, e.g. "coder", "perf-hunter", "reviewer".
 	// +kubebuilder:validation:Required
 	Role string `json:"role" yaml:"role"`

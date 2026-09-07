@@ -169,26 +169,28 @@ func readDocs(root string) ([]rawDoc, error) {
 	opts.SkipDirPredicate = skipPredicate
 	opts.SkipSymlinkEntries = false
 
-	err := mcpio.WalkFiles(root, func(path string, entry fs.DirEntry) error {
-		// Only process YAML files
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".yaml" && ext != ".yml" {
+	err := configtree.WalkDefinitionTrees(root, func(tree string) error {
+		return mcpio.WalkFiles(tree, func(path string, entry fs.DirEntry) error {
+			// Only process YAML files
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext != ".yaml" && ext != ".yml" {
+				return nil
+			}
+
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			parsedDocs := yamldoc.SplitDocuments(raw)
+			for _, pd := range parsedDocs {
+				rel, _ := filepath.Rel(root, path)
+				rel = filepath.ToSlash(rel)
+				docs = append(docs, rawDoc{kind: pd.Meta.Kind, name: pd.Meta.Name, file: rel, yaml: pd.Content})
+			}
 			return nil
-		}
-
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		parsedDocs := yamldoc.SplitDocuments(raw)
-		for _, pd := range parsedDocs {
-			rel, _ := filepath.Rel(root, path)
-			rel = filepath.ToSlash(rel)
-			docs = append(docs, rawDoc{kind: pd.Meta.Kind, name: pd.Meta.Name, file: rel, yaml: pd.Content})
-		}
-		return nil
-	}, opts)
+		}, opts)
+	})
 
 	if err != nil {
 		return nil, fmt.Errorf("walk %s: %w", root, err)
@@ -273,7 +275,7 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 	}
 	for i := range goobers {
 		goober := goobers[i].definition
-		if included[goober.Spec.Gaggle] {
+		if goober.Spec.Gaggle == "" || included[goober.Spec.Gaggle] {
 			set.Goobers = append(set.Goobers, goober)
 			set.gooberSources[goober.Name] = goobers[i].source
 		}

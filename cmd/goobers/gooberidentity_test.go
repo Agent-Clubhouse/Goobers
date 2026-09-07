@@ -166,6 +166,7 @@ func TestLoadGooberSkillPackagesPrefersGagglePackageWithSharedFallback(t *testin
 	goobers := map[string]apiv1.GooberSpec{
 		"alpha-coder": {Gaggle: "alpha", Skills: []string{"testing"}},
 		"beta-coder":  {Gaggle: "beta", Skills: []string{"testing"}},
+		"reviewer":    {Skills: []string{"testing"}},
 	}
 
 	packages, err := loadGooberSkillPackages(configDir, "alpha", goobers)
@@ -188,6 +189,9 @@ func TestLoadGooberSkillPackagesPrefersGagglePackageWithSharedFallback(t *testin
 	}
 	if got := packages["testing"]; len(got) != 1 || got[0].Content != "scoped" {
 		t.Fatalf("gaggle package = %+v", got)
+	}
+	if got := packages[workflow.SharedSkillPackageKey("testing")]; len(got) != 1 || got[0].Content != "shared" {
+		t.Fatalf("shared persona inherited gaggle override: %+v", got)
 	}
 
 	packages, err = loadGooberSkillPackages(configDir, "beta", goobers)

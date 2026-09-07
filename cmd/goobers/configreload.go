@@ -348,65 +348,67 @@ func configDirectoryDigest(root string) (string, error) {
 		_, _ = hash.Write(content)
 		return nil
 	}
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		name := entry.Name()
-		// Handle asset loading/hashing first
-		if gooberassets.IsSourceDir(path) {
-			bundle, err := gooberassets.Load(path)
+	err := configtree.WalkDefinitionTrees(root, func(tree string) error {
+		return filepath.WalkDir(tree, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			name := entry.Name()
+			// Handle asset loading/hashing first
+			if gooberassets.IsSourceDir(path) {
+				bundle, err := gooberassets.Load(path)
+				if err != nil {
+					return err
+				}
+				if bundle == nil {
+					return nil
+				}
+				if err := writeEntry(path, 0, []byte(bundle.Fingerprint())); err != nil {
+					return err
+				}
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				// Skip hidden dirs and gaggle skills dirs
+				if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			// Outside asset bundles, only YAML definitions contribute.
+			if strings.HasPrefix(name, ".") {
+				return nil
+			}
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext != ".yaml" && ext != ".yml" {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				// A config file that vanished between the walk and the read (an
+				// editor's atomic rename, a git checkout) is a transient state, not
+				// a rejectable config. Skip it and let the next poll — with the
+				// read-validate-reread stability check — converge on settled bytes.
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+				return err
+			}
+			if err := writeEntry(path, 0, content); err != nil {
+				return err
+			}
+			references, err := gooberContentReferences(root, path, content)
 			if err != nil {
 				return err
 			}
-			if bundle == nil {
-				return nil
-			}
-			if err := writeEntry(path, 0, []byte(bundle.Fingerprint())); err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				return filepath.SkipDir
+			for _, contentPath := range references {
+				contentPaths[contentPath] = struct{}{}
 			}
 			return nil
-		}
-		if entry.IsDir() {
-			// Skip hidden dirs and gaggle skills dirs
-			if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		// Outside asset bundles, only YAML definitions contribute.
-		if strings.HasPrefix(name, ".") {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".yaml" && ext != ".yml" {
-			return nil
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			// A config file that vanished between the walk and the read (an
-			// editor's atomic rename, a git checkout) is a transient state, not
-			// a rejectable config. Skip it and let the next poll — with the
-			// read-validate-reread stability check — converge on settled bytes.
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		if err := writeEntry(path, 0, content); err != nil {
-			return err
-		}
-		references, err := gooberContentReferences(root, path, content)
-		if err != nil {
-			return err
-		}
-		for _, contentPath := range references {
-			contentPaths[contentPath] = struct{}{}
-		}
-		return nil
+		})
 	})
 	if err != nil {
 		return "", fmt.Errorf("digest config directory: %w", err)

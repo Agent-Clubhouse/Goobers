@@ -68,8 +68,9 @@ spec:
                   dashboard.
                 type: string
               gaggle:
-                description: Gaggle is the name of the Gaggle this goober belongs
-                  to.
+                description: |-
+                  Gaggle is the owning gaggle. Omit it only for an instance-shared
+                  persona under the goobers directory beside the config tree.
                 type: string
               harness:
                 default: copilot
@@ -252,7 +253,6 @@ spec:
                   type: string
                 type: array
             required:
-            - gaggle
             - instructions
             - role
             type: object
