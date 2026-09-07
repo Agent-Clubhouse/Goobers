@@ -76,7 +76,7 @@ func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 		}
 	}
 
-	const wantProducers = 16
+	const wantProducers = 17
 	if producers != wantProducers {
 		t.Fatalf("found %d shipped backlog-query stages, want audited inventory of %d", producers, wantProducers)
 	}
