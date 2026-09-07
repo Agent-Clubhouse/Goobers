@@ -2060,7 +2060,7 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--provider=github|ado] --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
@@ -2078,6 +2078,8 @@ grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=standard non-interactively seeds backlog-curation and implementation
 with their three canonical personas. It requires an explicit --ci-command
 JSON argv array and comma-separated --required-capabilities (e.g. node@24).
+Use --provider=ado for Azure DevOps placeholders and GOOBERS_ADO_TOKEN;
+the default provider is github. See docs/guides/ado-authentication.md.
 It creates placeholders: configure repository identity and credential refs
 before running. It does not start workflows and refuses configured targets.
 --template=quickstart seeds the versioned onboarding workflow; it is

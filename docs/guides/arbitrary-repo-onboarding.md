@@ -182,6 +182,21 @@ gh repo view $env:GOOBERS_TARGET
 
 ## 3. Initialize the instance
 
+For Azure DevOps, the guided path below discovers an existing ADO clone; use
+[Azure DevOps authentication](ado-authentication.md) for Azure CLI, PAT, or
+unattended identity setup rather than the GitHub token commands above.
+For noninteractive scaffolding, select the provider explicitly:
+
+```sh
+goobers init --template=standard --provider=ado --ci-command='["dotnet","test"]' --required-capabilities=dotnet@8 ./ado-instance
+```
+
+This creates ADO repository and Azure Boards project placeholders, with a
+`GOOBERS_ADO_TOKEN` PAT reference, without reading a token or starting a run.
+Set the real organization, project and repository in `instance.yaml` and the
+gaggle before running. Choose the CI command and toolchain for your repository;
+the .NET command here is an example, not an ADO requirement.
+
 ```sh
 goobers init --guided
 ```
