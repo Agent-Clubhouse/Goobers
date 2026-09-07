@@ -45,7 +45,7 @@ func connectRewriteADOInstanceConfig(cfg *instance.Config, opts connectOptions) 
 			return false, nil
 		}
 		if placeholder || (current && opts.replace) {
-			cfg.Repos[i] = target
+			cfg.Repos[i] = connectADORepositoryIdentity(repo, target)
 			return true, nil
 		}
 		if current {
@@ -53,10 +53,21 @@ func connectRewriteADOInstanceConfig(cfg *instance.Config, opts connectOptions) 
 		}
 	}
 	if opts.replace && len(cfg.Repos) > 0 && cfg.Repos[0].Provider == "ado" {
-		cfg.Repos[0] = target
+		cfg.Repos[0] = connectADORepositoryIdentity(cfg.Repos[0], target)
 		return true, nil
 	}
 	return false, fmt.Errorf("no matching ADO placeholder found; initialize with --template=standard --provider=ado first; connect never changes an existing repository's provider")
+}
+
+// Change only the requested identity and credential; repository execution
+// policy belongs to the operator and is not reset by connecting a repository.
+func connectADORepositoryIdentity(existing, target instance.RepoRef) instance.RepoRef {
+	existing.Owner = target.Owner
+	existing.Project = target.Project
+	existing.Name = target.Name
+	existing.Token = target.Token
+	existing.Auth = target.Auth
+	return existing
 }
 
 func connectRewriteADOGaggleFile(path string, opts connectOptions) (bool, error) {
