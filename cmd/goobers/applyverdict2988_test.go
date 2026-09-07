@@ -8,20 +8,20 @@ import (
 
 // TestVerdictLabelSequencingOnlyNeverRemediates is #2988's regression pin.
 //
-// The live shape (EFunHouse merge-review run dc872629e885baed30b17b6bf2137530,
-// PR #533 at ef10431): gather-sibling-context reported hasSiblingOverlap=true
-// and hasSubstantiveFindings=false, the reviewer returned pass, and all four
+// The live shape (a production instance's merge-review run
+// dc872629e885baed30b17b6bf2137530, PR #533 at ef10431):
+// gather-sibling-context reported hasSiblingOverlap=true and
+// hasSubstantiveFindings=false, the reviewer returned pass, and all four
 // findings were severity `info` whose own rationale said they were ordering
 // concerns rather than defects. apply-verdict nonetheless labelled the PR
 // needs-remediation, and the implementer's remediation run completed without
 // changing a line — the no-progress loop #717/#747/#2486 each closed by a
-// different route.
-//
-// The cause was a predicate mismatch, not a missing case: the label split
-// required EVERY finding to carry class cross-pr-blocked, while the election
-// floor (findingIsRealDefect) tolerates info severity and scope-gate echoes.
-// A verdict could therefore be clean enough to crown and defective enough to
-// remediate at the same time. Both now read the same floor.
+// different route. The cause was a predicate mismatch, not a missing case: the
+// label split required EVERY finding to carry class cross-pr-blocked, while
+// the election floor (findingIsRealDefect) tolerates info severity and
+// scope-gate echoes. A verdict could therefore be clean enough to crown and
+// defective enough to remediate at the same time. Both now read the same
+// floor.
 func TestVerdictLabelSequencingOnlyNeverRemediates(t *testing.T) {
 	orderingAsk := apiv1.Finding{
 		Class:       apiv1.FindingCrossPRBlocked,

@@ -524,7 +524,7 @@ const (
 //
 // A healthy-looking daemon could complete merge-review with pr-select no-work
 // on every tick while its entire open queue was excluded by lifecycle state,
-// and nothing said so. Live on EFunHouse 2026-08-15, seven open implementation
+// and nothing said so. Live on a production instance 2026-08-15, seven open implementation
 // PRs (#533-#539) were non-draft, mergeable CLEAN and green, every one of them
 // carrying goobers:merge-escalated; run de97c14bcaadb32fafb864d100eae0d7
 // completed successfully with no-work, and status reported a 100% merge-review

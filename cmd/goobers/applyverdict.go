@@ -62,12 +62,12 @@ type canonicalFinding struct {
 // ("blocked-on-sibling for the non-elected members, needs-remediation for a
 // verdict with real defects", electlander.go). A reviewer that passes the PR
 // and files its ordering notes as severity `info` — the shape observed live on
-// EFunHouse PR #533, four info findings whose own rationale said they were
-// ordering concerns and not defects — failed the every-finding test and was
-// dispatched to remediation, which reproduced the identical diff. The severity
-// floor that decides the crown (findingIsRealDefect) and the one that decides
-// the label are now the same floor, so a verdict cannot be simultaneously
-// clean enough to elect and defective enough to remediate.
+// a production instance's PR #533, four info findings whose own rationale said
+// they were ordering concerns and not defects — failed the every-finding test
+// and was dispatched to remediation, which reproduced the identical diff. The
+// severity floor that decides the crown (findingIsRealDefect) and the one that
+// decides the label are now the same floor, so a verdict cannot be
+// simultaneously clean enough to elect and defective enough to remediate.
 func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) string {
 	switch decision {
 	case apiv1.VerdictPass:

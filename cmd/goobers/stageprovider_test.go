@@ -132,7 +132,7 @@ func TestNewProviderForStageWiresADOMutationRecorder(t *testing.T) {
 func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "MDB1")
 	t.Setenv("GOOBERS_RUN_ID", "run-123456789")
-	t.Setenv("GOOBERS_GAGGLE", "efunhouse")
+	t.Setenv("GOOBERS_GAGGLE", "dogfood")
 	t.Setenv("GOOBERS_WORKFLOW", "implementation")
 	t.Setenv(executor.TaskEnvVar, "publish-result")
 	t.Setenv(executor.GooberEnvVar, "implementer")
@@ -142,7 +142,7 @@ func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 		t.Fatal("stageAttribution did not recognize complete run context")
 	}
 	if got.Instance != "MDB1" ||
-		got.Gaggle != "efunhouse" ||
+		got.Gaggle != "dogfood" ||
 		got.Workflow != "implementation" ||
 		got.Task != "publish-result" ||
 		got.Goober != "implementer" ||
@@ -154,7 +154,7 @@ func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 func TestStageAttributionIncludesCurrentRunCostReceipt(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "MDB1")
 	runID := "run-123456789"
-	gaggle := "efunhouse"
+	gaggle := "dogfood"
 	now := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
 	nanoAIU := int64(8_305_840_000)
 	run, err := journal.Create(instance.NewLayout(root).ForGaggle(gaggle).RunsDir(), journal.RunIdentity{
