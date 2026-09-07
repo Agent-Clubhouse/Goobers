@@ -10,6 +10,12 @@ import (
 const defaultCreditLimit = 20
 
 // CreditOptions scopes the cross-run node attribution rollup.
+//
+// This file is the PRODUCTION credit-attribution path: `goobers telemetry
+// query --aggregate credit-assignment`, the read API, and the portal all read
+// from here. internal/creditgraph is a separate, newer per-run graph contract
+// with no production caller; the two are unreconciled (issue #4523,
+// docs/design/credit-graph.md). Do not assume a change here is reflected there.
 type CreditOptions struct {
 	Gaggle   string
 	Workflow string
