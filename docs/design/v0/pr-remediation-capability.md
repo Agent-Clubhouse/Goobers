@@ -1,6 +1,15 @@
 # Design: making `pr-remediation` genuinely capable — evidence, policy, and response (V0.6)
 
-> Status: **draft — for review** · Area prefix: `PRR` · Builds on: [`pr-lifecycle-loop.md`](./pr-lifecycle-loop.md) §5/§6
+> Status: **implemented** — PRR-1..PRR-6 shipped; the `pr-remediation` workflow
+> runs the agentic evidence/policy/response chain on the PR's own branch.
+> Delivered-by: #886, #892, #949, #950, #951, #952, #953
+> Verified: 09db115bb (2026-09-06)
+>
+> **Two body sections describe removed behaviour**: the severity-routing and
+> policy-evaluation passages do not match what shipped, and several `file:line`
+> citations point into files that have since been split. Read them by symbol,
+> and treat the shipped stages as authoritative (#4520).
+> · Area prefix: `PRR` · Builds on: [`pr-lifecycle-loop.md`](./pr-lifecycle-loop.md) §5/§6
 > Prerequisite: #392 / PR #933 (the workspace-branch handoff that lets the agentic chain run on the PR's own branch)
 > Origin: the `weekend_10` observation round (2026-07-19), in which 6 of 9 PRs opened converged on the same terminal state via three unrelated root causes.
 

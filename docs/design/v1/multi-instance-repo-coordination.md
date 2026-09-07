@@ -1,6 +1,12 @@
 # Design: Multiple Goober instances coordinating on the same repo
 
-> Status: **draft — for review** · Area: `RUN` / `WF` / `SEC` · Milestone: **V1 — multi-gaggle,
+> Status: **draft — for review; the question it answers is closed.** #1657 — the
+> docs/design question that prompted it — is closed, and the coordination
+> primitives it depends on (per-gaggle claim scoping, assignment-aware selection
+> via the COORD design) have shipped. What remains open is the multi-instance
+> *policy* this document proposes, not its foundations (#4520).
+> Verified: 09db115bb (2026-09-06)
+> · Area: `RUN` / `WF` / `SEC` · Milestone: **V1 — multi-gaggle,
 > teams, and repos you own**, forward-looking to **V2 — cloud scale & large teams**
 > References: #1657 (the docs/design question this resolves); COORD design
 > (`docs/design/v1/backlog-assignment-coordination.md`, #1818); per-gaggle

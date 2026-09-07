@@ -18,6 +18,22 @@ validation, and its migration. Decisions here are numbered D1–D18; `PO-Dn` cit
 decision record.
 
 Current-state citations are against `main` @ `54c42936`.
+Verified: 09db115bb (2026-09-06)
+
+> **Grounding refreshed 2026-09-06 (#4520).** Two things this document reasons
+> about have since been decided by implementation rather than left open:
+>
+> - **§9's open question about interpreter package naming is answered.** The
+>   packages are `internal/workflow/v_2_0` and `internal/workflow/v_3_0` —
+>   version-literal names, not the `v_current`/`v_next` rotation. **Every
+>   `v_current` and `v_next` reference below is a dead path**; read them as
+>   "the 1.4 interpreter" and "the 2.0 interpreter" respectively.
+> - **1.4 is dropped and the drop is enforced.** A missing `dslVersion` is a hard
+>   load error rather than a default to 1.4 (`api/validate`, `DVL001`), which is
+>   the §8.3 cutover D13 specified. `WF-061` in `docs/requirements/workflow.md`
+>   is the normative statement.
+>
+> The design itself is unchanged and remains approved.
 
 ---
 

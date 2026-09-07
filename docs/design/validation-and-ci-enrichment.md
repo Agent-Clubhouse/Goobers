@@ -3,6 +3,21 @@
 **Status:** approved — for backlog planning (PO directive, 2026-07-16). Backlog-only future
 investment: items are not `goobers:approved` and not eligible for automated implementation
 until promoted.
+Verified: 09db115bb (2026-09-06)
+
+> **The baseline this document argues from no longer exists.** Re-checked
+> 2026-09-06 (#4520): §1's "`make ci`, single job, Ubuntu" is not recognizable as
+> today's CI, which fans out across preflight, per-OS lint, three race shards, a
+> coverage gate, darwin and windows gates, shipped-workflow contracts, sandbox
+> confinement, dead-code analysis, deploy-manifest rendering, and a vulnerability
+> scan. G3's flake-masking gap has its own machinery
+> (`test/flakepolicy`, `test/flakeledger`, `flake-watch.yml`, and the
+> zero-anonymous-retries policy in
+> [`docs/guides/flake-management.md`](../guides/flake-management.md)).
+>
+> The PO's backlog-only directive is left intact — this note corrects the
+> **evidence**, not the disposition. Anyone re-scoping the remaining CI items
+> should re-measure first rather than plan against §1.
 
 **Goal:** enrich the local validation loop and CI so that "green" reliably means "main is
 healthy" — for humans and for the agent workforce whose merge decisions key off it.
