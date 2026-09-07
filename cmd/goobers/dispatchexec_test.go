@@ -484,7 +484,11 @@ func TestRecordStageArtifactsSurfacesFailureWithoutPanicking(t *testing.T) {
 	t.Setenv(dispatcher.EnvAttempt, "1")
 
 	var errOut strings.Builder
+	start := time.Now()
 	recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("x")})
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("recordStageArtifacts exceeded the short best-effort retry window: %s", elapsed)
+	}
 	if !strings.Contains(errOut.String(), "record stage artifacts") {
 		t.Fatalf("a journal failure must be VISIBLE on stderr, got %q", errOut.String())
 	}
