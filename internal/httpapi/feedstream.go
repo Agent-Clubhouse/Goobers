@@ -74,7 +74,10 @@ type feedStream struct {
 func newFeedStream(store *readmodel.Store) *feedStream {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &feedStream{
-		feed: readmodel.NewFeed(store), store: store, done: make(chan struct{}),
+		// The store's one feed, not a second one over the same store: a feed
+		// built here would give commits and subscribers different rendezvous
+		// points, and the wakeup would be lost (#2458).
+		feed: store.Feed(), store: store, done: make(chan struct{}),
 		ctx: ctx, cancel: cancel,
 	}
 }
