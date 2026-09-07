@@ -203,11 +203,15 @@ func collectAgentToolkitAssets(repoRoot string, release agentToolkitRelease) ([]
 		{"docs/VISION.md", "docs/VISION.md"},
 		{"docs/adr/0001-agentic-sandbox-mechanism.md", "docs/adr/0001-agentic-sandbox-mechanism.md"},
 		{"docs/adr/0002-provider-neutral-capability-namespaces.md", "docs/adr/0002-provider-neutral-capability-namespaces.md"},
+		{"docs/cli/README.md", "docs/cli/README.md"},
 		{"docs/design/cobrand.md", "docs/design/cobrand.md"},
 		{"docs/design/notification-output.md", "docs/design/notification-output.md"},
 		{"docs/design/static-fan-out-fan-in.md", "docs/design/static-fan-out-fan-in.md"},
+		{"docs/feature-matrix.md", "docs/feature-matrix.md"},
 		{"docs/guides/goobers-io-mcp.md", "docs/guides/goobers-io-mcp.md"},
+		{"docs/guides/learn-workflow-authoring.md", "docs/guides/learn-workflow-authoring.md"},
 		{"docs/guides/quickstart.md", "docs/guides/quickstart.md"},
+		{"docs/guides/stack-support.md", "docs/guides/stack-support.md"},
 		{"docs/guides/supervision.md", "docs/guides/supervision.md"},
 		{"docs/stage-contract.md", "docs/stage-contract.md"},
 		{"internal/capability/capability.go", "internal/capability/capability.go"},
@@ -234,6 +238,7 @@ func collectAgentToolkitAssets(repoRoot string, release agentToolkitRelease) ([]
 		{"config-examples", "config-examples", func(path string) bool {
 			return !strings.HasSuffix(path, ".go")
 		}},
+		{"docs/reference/workflow-primitives", "docs/reference/workflow-primitives", includeAgentToolkitFile},
 		{"docs/requirements", "docs/requirements", includeAgentToolkitFile},
 	}
 	for _, source := range treeSources {
