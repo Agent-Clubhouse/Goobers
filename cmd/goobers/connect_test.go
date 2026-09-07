@@ -23,7 +23,7 @@ func TestConnectLabelsDoNotCrossProviderIdentity(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "github"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}, Backlog: apiv1.BacklogRef{Labels: []string{"github-only"}}}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "ado"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "boards", Name: "web"}, Backlog: apiv1.BacklogRef{Labels: []string{"ado-only"}}}},
 	}}
-	selectors, _, _ := connectDerivedLabels(set, "acme", "web")
+	selectors, _, _ := connectDerivedLabelsForRepo(set, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
 	if !slices.Equal(selectors, []string{"github-only"}) {
 		t.Fatalf("GitHub connection borrowed ADO selectors: %v", selectors)
 	}
@@ -802,7 +802,7 @@ func TestConnectDerivedLabelsCoverWorkflowAppliedLabels(t *testing.T) {
 		},
 	}
 
-	selectors, applied, workflow := connectDerivedLabels(set, "acme", "web")
+	selectors, applied, workflow := connectDerivedLabelsForRepo(set, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
 	wantSelectors := []string{"goobers:approved", "goobers:ready"}
 	if !slices.Equal(selectors, wantSelectors) {
 		t.Fatalf("selectors = %v, want %v", selectors, wantSelectors)
@@ -855,7 +855,7 @@ func TestConnectDerivedLabelsStayQuietForSelectorOnlyConfig(t *testing.T) {
 			},
 		}},
 	}
-	selectors, applied, _ := connectDerivedLabels(set, "acme", "web")
+	selectors, applied, _ := connectDerivedLabelsForRepo(set, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
 	if !slices.Equal(selectors, []string{"goobers", "goobers:ready"}) {
 		t.Fatalf("selectors = %v", selectors)
 	}

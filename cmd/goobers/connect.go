@@ -820,10 +820,6 @@ var connectExcludedLabelInputs = []string{"excludeLabels", "parkLabels"}
 // (cold-start python #7). They are ensured on the repository but never put on
 // the starter issue — an issue born goobers:claimed or goobers/status:in-review
 // would be excluded by the very selectors meant to find it.
-func connectDerivedLabels(set *instance.ConfigSet, owner, name string) (selectors, applied []string, workflow string) {
-	return connectDerivedLabelsForRepo(set, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: owner, Name: name})
-}
-
 // connectDerivedLabelsForRepo keeps independent forge and Azure Boards project
 // identities separate even when their owner/repository names happen to match.
 func connectDerivedLabelsForRepo(set *instance.ConfigSet, target apiv1.RepoRef) (selectors, applied []string, workflow string) {
