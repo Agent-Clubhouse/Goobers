@@ -83,7 +83,7 @@ func TestDecompositionWorkflowContract(t *testing.T) {
 	}
 	if publicationGate.Automated.Params["key"] != "publicationConflict" ||
 		publicationGate.Automated.Params["equals"] != "false" ||
-		publicationGate.Branches["pass"] != "" || publicationGate.Branches["fail"] != "park-for-human" {
+		publicationGate.Branches["pass"] != "report-cost" || publicationGate.Branches["fail"] != "park-for-human" {
 		t.Fatalf("publication-clean gate = %+v", publicationGate)
 	}
 	assertOutputGateTarget(t, schemaGate, map[string]interface{}{"schemaInvalid": true}, gate.OutcomeFail, "@abort")

@@ -84,8 +84,10 @@ func TestDocsUpdaterWorkflowContract(t *testing.T) {
 			validate := requireTask(t, spec, "validate")
 			push := requireTask(t, spec, "push-branch")
 			open := requireTask(t, spec, "open-pr")
+			reportCost := requireTask(t, spec, "report-cost")
 			if gather.Next != "update-docs" || update.Next != "validate" ||
-				validate.Next != "docs-valid" || push.Next != "open-pr" || open.Next != "" {
+				validate.Next != "docs-valid" || push.Next != "open-pr" || open.Next != "report-cost" ||
+				reportCost.Next != "" {
 				t.Fatalf("unexpected docs-updater stage wiring")
 			}
 			rootsInput := strings.Join(spec.DocsRoots, ",")
