@@ -42,11 +42,69 @@ func sanitizeText(scrubber Scrubber, media string, data []byte) ([]byte, error) 
 	if !safeText(data) || (media == "application/json" && !json.Valid(data)) {
 		return nil, errors.New("invalid textual payload")
 	}
+	if media == "application/json" {
+		var err error
+		data, err = scrubJSONStrings(scrubber, data)
+		if err != nil {
+			return nil, err
+		}
+	}
 	clean := scrubber.Scrub(data)
 	if len(clean) > MaxPayloadBytes || !safeText(clean) || (media == "application/json" && !json.Valid(clean)) {
 		return nil, errors.New("redaction produced invalid textual payload")
 	}
 	return clean, nil
+}
+
+// Decode strings before scrubbing so JSON escapes cannot hide credentials.
+// Preserve numbers exactly, and reject sensitive keys rather than renaming
+// them and possibly colliding with another member or changing the contract.
+func scrubJSONStrings(scrubber Scrubber, data []byte) ([]byte, error) {
+	if err := uniqueJSON(json.NewDecoder(bytes.NewReader(data)), 0); err != nil {
+		return nil, errors.New("ambiguous or deeply nested JSON payload")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, errors.New("invalid JSON payload")
+	}
+	clean, err := scrubJSONValue(scrubber, value)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(clean)
+}
+
+func scrubJSONValue(scrubber Scrubber, value any) (any, error) {
+	switch typed := value.(type) {
+	case string:
+		clean := scrubber.Scrub([]byte(typed))
+		if !utf8.Valid(clean) || len(clean) > MaxPayloadBytes {
+			return nil, errors.New("invalid redacted JSON string")
+		}
+		return string(clean), nil
+	case []any:
+		for i, entry := range typed {
+			clean, err := scrubJSONValue(scrubber, entry)
+			if err != nil {
+				return nil, err
+			}
+			typed[i] = clean
+		}
+	case map[string]any:
+		for key, entry := range typed {
+			if !bytes.Equal(scrubber.Scrub([]byte(key)), []byte(key)) {
+				return nil, errors.New("JSON member name contains secret material")
+			}
+			clean, err := scrubJSONValue(scrubber, entry)
+			if err != nil {
+				return nil, err
+			}
+			typed[key] = clean
+		}
+	}
+	return value, nil
 }
 
 func safeText(data []byte) bool {

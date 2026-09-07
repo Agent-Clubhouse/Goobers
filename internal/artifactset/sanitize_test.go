@@ -4,11 +4,43 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
 )
+
+func TestSanitizeJSONDecodesSecretsAndPreservesNumbers(t *testing.T) {
+	s := journal.NewRegistryScrubber()
+	s.Register([]byte("test-secret-material"))
+	input := []byte(`{"nested":[{"value":"test-\u0073ecret-material"}],"counter":9007199254740993,"decimal":1.234567890123456789}`)
+	clean, err := NewSanitizer(s)("application/json", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Nested  []struct{ Value string }
+		Counter json.Number
+		Decimal json.Number
+	}
+	if err := json.Unmarshal(clean, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Nested) != 1 || got.Nested[0].Value != journal.Redacted || got.Counter.String() != "9007199254740993" || got.Decimal.String() != "1.234567890123456789" {
+		t.Fatalf("redaction or numeric fidelity lost: %s", clean)
+	}
+	for _, invalid := range []string{
+		`{"test-\u0073ecret-material":"value"}`,
+		`{"value":"first","v\u0061lue":"second"}`,
+		strings.Repeat("[", 18) + "0" + strings.Repeat("]", 18),
+	} {
+		if _, err := NewSanitizer(s)("application/json", []byte(invalid)); err == nil {
+			t.Fatal("unsafe JSON accepted")
+		}
+	}
+}
 
 func archiveFixture(t *testing.T, kind byte, name, content string) []byte {
 	t.Helper()

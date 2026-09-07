@@ -48,8 +48,10 @@ func evidenceFixture() (Evidence, []apiv1.ContextPointer, fixtureReader) {
 func TestWriteVerifiedRedactedEvidence(t *testing.T) {
 	evidence, pointers, reader := evidenceFixture()
 	evidence.Environment.Dimensions["note"] = "private-test-credential"
+	evidence.Environment.Dimensions["escaped"] = "private<test>&credential"
 	scrubber := journal.NewRegistryScrubber()
 	scrubber.Register([]byte("private-test-credential"))
+	scrubber.Register([]byte("private<test>&credential"))
 	writes := 0
 	p, err := Write(context.Background(), evidence, pointers, reader, scrubber, func(name, media string, data []byte) (apiv1.ArtifactPointer, error) {
 		writes++
@@ -60,7 +62,7 @@ func TestWriteVerifiedRedactedEvidence(t *testing.T) {
 		if err := json.Unmarshal(data, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got.Environment.Dimensions["note"] != journal.Redacted || len(got.Attachments) != 0 {
+		if got.Environment.Dimensions["note"] != journal.Redacted || got.Environment.Dimensions["escaped"] != journal.Redacted || len(got.Attachments) != 0 {
 			t.Fatalf("bad redaction or placeholder attachments: %+v", got)
 		}
 		return apiv1.ArtifactPointer{Path: "artifacts/" + name, Digest: apiv1.Digest(data), Size: int64(len(data)), MediaType: media}, nil

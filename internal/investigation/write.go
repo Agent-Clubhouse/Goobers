@@ -28,7 +28,10 @@ func Write(ctx context.Context, evidence Evidence, pointers []apiv1.ContextPoint
 	if len(data) > maxManifestBytes {
 		return apiv1.ArtifactPointer{}, errors.New("investigation: manifest byte limit")
 	}
-	clean := scrubber.Scrub(data)
+	clean, err := artifactset.NewSanitizer(scrubber)("application/json", data)
+	if err != nil {
+		return apiv1.ArtifactPointer{}, errors.New("investigation: unsafe evidence JSON")
+	}
 	if len(clean) > maxManifestBytes {
 		return apiv1.ArtifactPointer{}, errors.New("investigation: redacted manifest byte limit")
 	}
