@@ -116,6 +116,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
@@ -3759,8 +3760,9 @@ $ goobers status --agents --json
 query, export, prune, or compact run telemetry
 
 ~~~text
-Usage: goobers telemetry <stats|errors|export|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
 
+merges: confirmed PR landings and daily counts by originating instance
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
@@ -3839,6 +3841,30 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+~~~
+
+## `goobers telemetry merges`
+
+confirmed PR landings and daily counts by originating instance
+
+~~~text
+Usage: goobers telemetry merges [--json] [--gaggle=name] [--instance-id=id] [--repository-api-url=url] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+
+Report confirmed PR landings and daily UTC counts from retained telemetry.
+Defaults to the last 7 days; maximum window 90 days and 10000 mutation events.
+The interval includes --since and excludes --until. Repeated receipts for
+one PR count once; conflicting instance/gaggle/commit claims are excluded.
+Legacy merge operations without explicit confirmation are not verified.
+Unverified event/conflict counts cover the whole window before filters.
+This retained-telemetry view does not yet compare the forge's full merge inventory.
+Exit codes: 0 = OK; 2 = usage, query, or output error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry merges
+$ goobers telemetry merges --json
 ~~~
 
 ## `goobers telemetry prune`

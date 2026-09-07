@@ -21,7 +21,8 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryHelp = "Usage: goobers telemetry <stats|errors|export|prune|prune-orphans|compact> [flags] [path]\n\n" +
+const telemetryHelp = "Usage: goobers telemetry <stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]\n\n" +
+	"merges: confirmed PR landings and daily counts by originating instance\n" +
 	"stats:  run/stage outcomes, curation actions, and ready-pool health\n" +
 	"errors: recent errors across runs, by class, with run/stage refs\n" +
 	"export: re-emit a span-start-time window from journaled OTLP/JSON\n" +

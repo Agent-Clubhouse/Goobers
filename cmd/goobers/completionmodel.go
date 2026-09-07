@@ -430,6 +430,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
 	},
+	"telemetry merges": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
+		{name: "instance-id", takesArg: true, desc: "Filter by originating instance"},
+		{name: "repository-api-url", takesArg: true, desc: "Filter by repository API address"},
+		{name: "since", takesArg: true, desc: "Inclusive start timestamp"},
+		{name: "until", takesArg: true, desc: "Exclusive end timestamp"},
+		{name: "rebuild", desc: "Rebuild from retained journals"},
+	},
 	"telemetry errors": {
 		{name: "json", desc: "Emit JSON"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
