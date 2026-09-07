@@ -1,26 +1,71 @@
 # Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments
 
-> Status: **draft — scoping note; not a build-ready design.** Placeholder issue #2306,
-> follow-up to #2305 (the run-level reveal button itself, not yet implemented).
-> This resolves the open questions #2306 lists so a future issue can be scoped
-> and approved; it does not itself authorize implementation.
+> Status: **implemented — §3's recommendation was adopted.** Placeholder issue
+> #2306 remains open for the *remote-aware alternative*, which is still
+> deliberately deferred (§3, §4). Reconciled against the tree 2026-09-06 by
+> [#4522](https://github.com/Agent-Clubhouse/Goobers/issues/4522).
+> Delivered-by: #2305, #2884
+
+> ### What shipped, and what is now stale here
+>
+> **The reveal button shipped** (#2305, CLOSED — route
+> `apicontract.RunRevealPath`, `internal/httpapi/reveal_test.go`, capability
+> `RevealRun` on `readservice.PortalConfig`, gated in `RunPage.tsx`), landing on
+> 2026-08-03 — the same day this note was written.
+>
+> **§3's recommendation was adopted, in exactly the shape §3 asked for.** The
+> revealer is wired only when the listener is loopback, at both entry points:
+> `cmd/goobers/up.go` gates `httpapi.WithRunRevealer` on
+> `instance.IsLoopbackListenAddress(apiListenAddress(...))`, and
+> `cmd/goobers/dashboard.go` gates it on the standalone listener's own
+> loopback-ness (#2884). The capability then falls out of the wiring —
+> `Capabilities.RevealRun = config.runRevealer != nil` — and the portal
+> conditions the control on it. That is "evaluate once at startup, surface as a
+> boolean on the payload the portal already polls, one conditional render",
+> which is what §3 specified.
+>
+> **Two premises in §1–§2 are stale and should not be relied on:**
+>
+> - There is **no `validateAPIConfig`**. The listener check is
+>   `validateLoopbackListenAddress` plus the `api.listen` rule in
+>   `internal/instance/config_validation.go`, and that rule now requires
+>   **`api.tls`** for a non-loopback bind, *not* OIDC. Requiring OIDC
+>   specifically was removed deliberately, because it made the most restrictive
+>   posture — zero human access, pod plane only behind `DenyAllAuthenticator` —
+>   the one posture that could not be expressed.
+> - **§2's "prerequisite-blocked" argument no longer holds.** A1, the generic
+>   OIDC authenticator, shipped: `internal/oidcauth` is a real implementation
+>   wired into both `goobers up` and `goobers dashboard`. A non-loopback,
+>   TLS-terminated, OIDC-authenticated portal is a configuration a real operator
+>   can run today. The loopback gate above is therefore load-bearing, not
+>   precautionary — which is the opposite of what §2's reasoning implied and the
+>   reason it is worth correcting rather than deleting.
+>
+> **What is still open (#2306):** the remote-aware alternative — a downloadable
+> run-directory archive, or a filesystem-independent "copy path". §3 deferred it
+> until tier-2+ remote access had real users. With A1 shipped, the condition §3
+> named as the trigger for re-scoping is now closer to met, so #2306 should be
+> re-scoped against actual tier-2+ usage rather than left as a placeholder
+> indefinitely.
 
 ## 1. The problem, restated
 
 #2305's proposed "reveal in Finder" button has the daemon shell out to open a
 filesystem path on its own machine. That's only correct when the browser and
 the daemon are on the same machine — true for today's default loopback bind
-(`127.0.0.1:8080`). `internal/instance/config.go`'s `validateAPIConfig`
-already permits a non-loopback bind for tier-2+ deployments (workstation/
-shared-box/small-VM, `DEP-027`), gated behind TLS + an authenticator
-(`SEC-043`). In that configuration, clicking reveal would open a window on
+(`127.0.0.1:8080`). Instance validation already permits a non-loopback bind for
+tier-2+ deployments (workstation/shared-box/small-VM, `DEP-027`), gated behind
+TLS (`SEC-043`). *(The note originally named `validateAPIConfig` and described
+the gate as TLS + an authenticator; see the banner — the function does not
+exist and the rule is TLS.)* In that configuration, clicking reveal would open a window on
 the *server's* desktop, not the requesting user's — silently wrong, not just
 degraded.
 
 ## 2. How close is non-loopback portal access to real usage today?
 
-**Not close.** `validateAPIConfig` requires `api.auth.oidc` to be configured
-before it will accept a non-loopback bind — but per
+**Not close.** *(Stale as of 2026-09-06 — see the banner. A1 shipped and this
+answer is now "close enough that the §3 gate is load-bearing".)* The listener
+rule required `api.auth.oidc` before it would accept a non-loopback bind — but per
 [`docs/design/v1/38-auth-oidc-seam.md`](v1/38-auth-oidc-seam.md)'s own
 progress note (2026-07-23), only the secret-resolver piece (A2) has shipped;
 **the actual generic-OIDC authenticator (A1) — the thing that config option

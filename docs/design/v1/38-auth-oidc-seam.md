@@ -10,6 +10,20 @@
 > Progress (2026-07-23): A2 secret-resolver stabilization **shipped** (#822); the
 > `internal/httpapi` `Authorizer` seam exists (tier-1 `AllowAll`); A0/A1/A3
 > remain unbuilt.
+>
+> **Progress correction (2026-09-06, #4522): A0 and A1 have since shipped.**
+> `internal/oidcauth` is a real generic-OIDC `Authenticator` — discovery, JWKS,
+> issuer/audience validation, and a `RoleMapping` onto the three instance roles
+> — wired into both `goobers up` and `goobers dashboard`, with
+> `httpapi.RequireRoles()` as the non-`AllowAll` `Authorizer`. #174 (A1) is
+> closed and the code backs it. The stale note above had already been cited as
+> a live prerequisite blocker by
+> [`portal-reveal-remote-posture.md`](../portal-reveal-remote-posture.md) §2, so
+> it is corrected here rather than left to rot. A3 (tier-2 auth setup docs and
+> posture) is partially served by
+> [`docs/guides/oidc-authentication.md`](../../guides/oidc-authentication.md);
+> the portal's own browser sign-in is **not** built — see that guide's "Portal
+> sign-in (not shipped)" section.
 
 ## 1. Verdict
 
