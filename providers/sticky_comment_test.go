@@ -192,6 +192,53 @@ func TestADOStickyPullRequestCommentContract(t *testing.T) {
 	}
 }
 
+func TestADOStickyIssueCommentUsesWorkItemTransport(t *testing.T) {
+	body := ""
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			comments := []map[string]interface{}{}
+			if body != "" {
+				comments = append(comments, map[string]interface{}{
+					"id": 5, "text": body, "createdBy": map[string]string{"displayName": "Goobers"},
+					"createdDate": "2026-09-07T02:00:00Z",
+				})
+			}
+			writeJSON(t, w, map[string]interface{}{"comments": comments})
+		case http.MethodPost:
+			var payload map[string]string
+			decodeJSON(t, r, &payload)
+			body = payload["text"]
+			w.WriteHeader(http.StatusCreated)
+			writeJSON(t, w, map[string]interface{}{"id": 5, "text": body})
+		default:
+			t.Fatalf("unexpected ADO work-item request %s", r.Method)
+		}
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workItems/42/comments/5", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		var payload map[string]string
+		decodeJSON(t, r, &payload)
+		body = payload["text"]
+		writeJSON(t, w, map[string]interface{}{"id": 5, "text": body})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	repo := RepositoryRef{Provider: ProviderADO, Owner: "org", Project: "project", Name: "repo"}
+	target := StickyCommentTarget{Kind: StickyCommentIssue, ID: "42"}
+	first, err := UpsertStickyComment(context.Background(), provider, repo, target, stickyContractMarker, "first")
+	if err != nil || !first.Created {
+		t.Fatalf("create issue sticky = %+v, %v", first, err)
+	}
+	second, err := UpsertStickyComment(context.Background(), provider, repo, target, stickyContractMarker, "second")
+	if err != nil || second.Created || !strings.Contains(body, "second") {
+		t.Fatalf("update issue sticky = %+v, %v, body %q", second, err, body)
+	}
+}
+
 func assertStickyContract(
 	t *testing.T,
 	provider Provider,
