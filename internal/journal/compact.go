@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -162,7 +163,9 @@ func nothingCanAgeOut(path string, keepAfter time.Time) (skip bool, bytesRead in
 
 	buf := make([]byte, firstRecordReadLimit)
 	n, err := io.ReadFull(f, buf)
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+	// A short journal is the normal case, not an error: ReadFull reports
+	// EOF/ErrUnexpectedEOF whenever the file is smaller than the read bound.
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return false, int64(n), fmt.Errorf("journal: read instance log head: %w", err)
 	}
 	head := buf[:n]
