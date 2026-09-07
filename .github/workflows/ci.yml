@@ -55,6 +55,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
   merge_group:
     branches: [main]
 
@@ -62,6 +63,7 @@ on:
 permissions:
   actions: read
   contents: read
+  pull-requests: read
 
 # One in-flight run per ref; newer pushes cancel stale runs.
 concurrency:
@@ -197,6 +199,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The design-delivery gate compares the pinned PR base documents.
+          fetch-depth: 0
+
+      - name: Collect design delivery context
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          gh api graphql \
+            -F owner="$GITHUB_REPOSITORY_OWNER" \
+            -F name="${GITHUB_REPOSITORY#*/}" \
+            -F number="$PR_NUMBER" \
+            -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{nameWithOwner}} pageInfo{hasNextPage}}}}}' \
+            | jq --arg base "$BASE_REVISION" --arg repo "$GITHUB_REPOSITORY" '
+              .data.repository.pullRequest.closingIssuesReferences
+              | if . == null or .pageInfo.hasNextPage then error("closing issue references unavailable or truncated")
+                else {baseRevision: $base, closingIssues: [.nodes[] | select(.repository.nameWithOwner == $repo) | "#\(.number)"]}
+                end' > "$RUNNER_TEMP/design-delivery-context.json"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -285,6 +310,8 @@ jobs:
             npm --prefix portal exec -- playwright install --with-deps chromium
 
       - name: fmt · tidy · no-phone-home · vet · build · portal
+        env:
+          GOOBERS_DESIGN_DELIVERY_CONTEXT: ${{ github.event_name == 'pull_request' && format('{0}/design-delivery-context.json', runner.temp) || '' }}
         run: go run ./test/ci group checks
 
   deploy-reference:

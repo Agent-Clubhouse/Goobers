@@ -12,8 +12,8 @@ import (
 
 // mutationsSidecarFile is the well-known, worktree-relative file a
 // provider-chain subcommand (backlog-query/open-pr/issue-close-out) records
-// its mutation facts to, for the runner to project into ref.touched journal
-// events once the stage finishes (issue #228). These subcommands run as
+// its mutation facts to, for the runner to project into ref.touched or error
+// journal events once the stage finishes (issue #228). These subcommands run as
 // separate short-lived processes with no legal journal access — only the
 // parent runner process holds the run journal under its single-writer,
 // monotonic-seq, fsync-per-record contract — so a sidecar in the stage
@@ -23,16 +23,19 @@ import (
 const mutationsSidecarFile = "mutations.jsonl"
 
 // mutationFact is one line of mutationsSidecarFile — just enough to build a
-// journal.ExternalRef (Provider/Kind/ID/URL) plus an operation annotation,
-// not the richer providers.ExternalRef shape (Fields digests, RunID) that
-// exists for a different purpose (provider_mutations' own telemetry
-// richness) and isn't needed for this projection.
+// journal.ExternalRef (Provider/Kind/ID/URL), operation, and claim outcome.
+// RunID identifies the claim owner, which can differ from the stage's run
+// during reconciliation. Provider Fields digests are not part of this handoff.
 type mutationFact struct {
-	Provider  string `json:"provider"`
-	Kind      string `json:"kind"`
-	ID        string `json:"id"`
-	URL       string `json:"url,omitempty"`
-	Operation string `json:"operation,omitempty"`
+	Provider      string `json:"provider"`
+	Kind          string `json:"kind"`
+	ID            string `json:"id"`
+	URL           string `json:"url,omitempty"`
+	Operation     string `json:"operation,omitempty"`
+	RunID         string `json:"runId,omitempty"`
+	Outcome       string `json:"outcome,omitempty"`
+	ErrorCode     string `json:"errorCode,omitempty"`
+	ProviderRunID string `json:"providerRunId,omitempty"`
 }
 
 // sidecarMutationRecorder implements providers.MutationRecorder by appending
@@ -65,6 +68,8 @@ func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref provid
 		ID:        externalRefID(ref.Ref),
 		URL:       ref.URL,
 		Operation: ref.Operation,
+		RunID:     ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
+		ProviderRunID: ref.ProviderRunID,
 	}
 	data, err := json.Marshal(fact)
 	if err != nil {

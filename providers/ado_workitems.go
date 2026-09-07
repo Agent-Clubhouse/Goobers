@@ -552,6 +552,12 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 // ClaimWorkItem atomically adds the visible claim tag and an internal owner tag.
 // The /rev test makes concurrent read-modify-write attempts settle on one winner.
 func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
+	result, err := p.claimWorkItem(ctx, req)
+	p.recordClaimAttempt(ctx, req, "claim", claimAttemptOutcome(result.Claimed), err)
+	return result, err
+}
+
+func (p *ADOProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
 	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
 		return ClaimResult{}, err
 	}
@@ -715,6 +721,23 @@ func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id
 // breadcrumb, drops the visible claim label, and clears any legacy owner tag
 // left by a claim taken before ownership moved into the comment thread (#1979).
 func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
+	result, err := p.releaseWorkItemClaim(ctx, req)
+	p.recordClaimAttempt(ctx, req, "claim-release", "success", err)
+	return result, err
+}
+
+func (p *ADOProvider) recordClaimAttempt(ctx context.Context, req ClaimWorkItemRequest, operation, outcome string, err error) {
+	if p.mutationRecorder == nil {
+		return
+	}
+	ref := ExternalRef{Provider: ProviderADO, Ref: "ado#" + req.ID, RunID: req.RunID, Operation: operation, Outcome: outcome}
+	if err != nil {
+		ref.Outcome, ref.ErrorCode = "failure", "provider_claim_failed"
+	}
+	p.mutationRecorder.RecordExternalRef(ctx, ref)
+}
+
+func (p *ADOProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
 	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
 		return WorkItem{}, err
 	}

@@ -1,5 +1,8 @@
 # Find ready issues with no label route
 
+For lease/provider drift rather than label routing, see
+[claim verification](claim-verification.md).
+
 For the curation park-label opt-out, see [park filtering](backlog-park-filtering.md).
 
 Run `goobers validate --check-repos <instance-root>` before enabling partitioned

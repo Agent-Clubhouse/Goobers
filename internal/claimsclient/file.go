@@ -32,6 +32,7 @@ type FileConfig struct {
 // FileLedger is the slice of *localscheduler.ClaimLedger the file backend
 // operates on — seam-shaped so tests can wrap the real ledger.
 type FileLedger interface {
+	RecordClaimVerification(Entry, localscheduler.ClaimVerification) (bool, error)
 	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
 	ClaimScoped(key Key, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
 	Release(itemID, runID string) error
@@ -185,25 +186,29 @@ func (s *fileSession) ReleaseAllForRun(_ context.Context, runID string) ([]Entry
 		if err := s.ledger.ReleaseEntry(entry, runID); err != nil {
 			return released, fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
 		}
-		released = append(released, entry)
+		released = append(released, reportEntry(entry))
 	}
 	return released, nil
 }
 
 func (s *fileSession) ForRunAll(_ context.Context, runID string) ([]Entry, error) {
-	return s.ledger.ForRunAll(runID), nil
+	entries := s.ledger.ForRunAll(runID)
+	for i := range entries {
+		entries[i] = reportEntry(entries[i])
+	}
+	return entries, nil
 }
 
 func (s *fileSession) ListNamespace(_ context.Context, gaggle, provider string) (Listing, error) {
 	var listing Listing
 	for _, entry := range s.ledger.Snapshot() {
 		if InNamespace(entry, gaggle, provider) {
-			listing.Entries = append(listing.Entries, entry)
+			listing.Entries = append(listing.Entries, reportEntry(entry))
 		}
 	}
 	for _, entry := range s.ledger.HistorySnapshot() {
 		if InNamespace(entry, gaggle, provider) {
-			listing.History = append(listing.History, entry)
+			listing.History = append(listing.History, reportEntry(entry))
 		}
 	}
 	return listing, nil
@@ -211,4 +216,10 @@ func (s *fileSession) ListNamespace(_ context.Context, gaggle, provider string) 
 
 func (s *fileSession) MergeLock(ctx context.Context, lock MergeLock, fn func(context.Context) error) error {
 	return s.file.MergeLock(ctx, lock, fn)
+}
+
+// Match the HTTP reporting boundary without rewriting legacy ledger records.
+func reportEntry(entry Entry) Entry {
+	entry.Verification = entry.Verification.Report()
+	return entry
 }

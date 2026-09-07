@@ -84,15 +84,24 @@ type ClaimResponse struct {
 // same reason internal/dispatcher restates MintedCredential: this package is
 // the server, and the ledger package has no business depending on it.
 type ClaimEntry struct {
-	ItemID     string     `json:"itemId"`
-	Gaggle     string     `json:"gaggle,omitempty"`
-	Provider   string     `json:"provider,omitempty"`
-	ExternalID string     `json:"externalId,omitempty"`
-	RunID      string     `json:"runId"`
-	Workflow   string     `json:"workflow"`
-	ClaimedAt  time.Time  `json:"claimedAt"`
-	ExpiresAt  time.Time  `json:"expiresAt"`
-	ReleasedAt *time.Time `json:"releasedAt,omitempty"`
+	Verification ClaimVerification `json:"verification"`
+	ItemID       string            `json:"itemId"`
+	Gaggle       string            `json:"gaggle,omitempty"`
+	Provider     string            `json:"provider,omitempty"`
+	ExternalID   string            `json:"externalId,omitempty"`
+	RunID        string            `json:"runId"`
+	Workflow     string            `json:"workflow"`
+	ClaimedAt    time.Time         `json:"claimedAt"`
+	ExpiresAt    time.Time         `json:"expiresAt"`
+	ReleasedAt   *time.Time        `json:"releasedAt,omitempty"`
+}
+
+// ClaimVerification mirrors the ledger's bounded, lease-specific provider
+// observation. It is reporting only, never a grant or renewal of ownership.
+type ClaimVerification struct {
+	State         string    `json:"state"`
+	ObservedAt    time.Time `json:"observedAt"`
+	ProviderRunID string    `json:"providerRunId,omitempty"`
 }
 
 // Claim list scopes.
@@ -351,6 +360,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 			return claims.Settle(ctx, request)
 		})
 	registerClaimListRoute(router, config.claims, errorLog)
+	registerClaimVerificationRoute(router, config.claims, errorLog)
 	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)

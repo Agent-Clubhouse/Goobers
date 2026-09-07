@@ -327,13 +327,13 @@ func (r *runJournal) mutationIssues(ctx workflow.Context, stage string, attempt 
 
 func (r *runJournal) mutations(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact) {
 	for _, mutation := range mutations {
-		r.append(ctx, journal.Event{
+		r.append(ctx, journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
 			ExternalRef: &journal.ExternalRef{
 				Provider: mutation.Provider, Kind: mutation.Kind, ID: mutation.ID, URL: mutation.URL,
 			},
 			Runner: map[string]any{"operation": mutation.Operation},
-		})
+		}, mutation.RunID, mutation.Outcome, mutation.ErrorCode, mutation.ProviderRunID))
 	}
 }
 
