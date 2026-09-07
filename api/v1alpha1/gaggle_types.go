@@ -7,6 +7,10 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // goobers and workflows (which reference it by name). Isolation is realized as a
 // namespace + identity per gaggle (GAG-001..006, SEC-001/002).
 type GaggleSpec struct {
+	// Cost overrides instance-wide external cost publication. An omitted or
+	// null enabled value inherits the instance default; local accounting remains active.
+	// +optional
+	Cost *CostReporting `json:"cost,omitempty" yaml:"cost,omitempty"`
 	// DisplayName is the human-facing name shown on the portal dashboard.
 	// +optional
 	DisplayName string `json:"displayName,omitempty" yaml:"displayName,omitempty"`
@@ -123,6 +127,16 @@ type GaggleSpec struct {
 	// siblings is a no-op — purely additive, opt-in config.
 	// +optional
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
+}
+
+// CostReporting controls provider-visible cost receipts and summaries, not
+// collection of local usage measurements or operator cost queries.
+type CostReporting struct {
+	// Enabled selects external cost publication. Null or omitted inherits the
+	// enclosing default; the built-in instance default is true.
+	// +optional
+	// +nullable
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
 // GaggleRunsOn is the gaggle-level placement floor of DSL 3.0 (dsl-3.0.md §2):

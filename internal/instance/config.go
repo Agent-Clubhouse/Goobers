@@ -70,8 +70,11 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
-	APIVersion string `json:"apiVersion" yaml:"apiVersion"`
-	Kind       string `json:"kind" yaml:"kind"`
+	// Cost controls external cost publication by default. Gaggles may override
+	// it; omitted or null enabled preserves the built-in enabled behavior.
+	Cost       *apiv1.CostReporting `json:"cost,omitempty" yaml:"cost,omitempty"`
+	APIVersion string               `json:"apiVersion" yaml:"apiVersion"`
+	Kind       string               `json:"kind" yaml:"kind"`
 	// SchemaVersion is the instance-config schema revision (dsl-3.0.md D8,
 	// decision record D3) — the config's first version field. Absent means 1,
 	// the pre-Goobernetes schema every existing install is on; 2 introduces
