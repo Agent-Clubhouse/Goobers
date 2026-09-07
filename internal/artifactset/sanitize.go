@@ -16,10 +16,10 @@ import (
 // Scrubber is the run's configured secret-redaction policy.
 type Scrubber interface{ Scrub([]byte) []byte }
 
-// NewSanitizer supplies the production text/JSON/archive/native-trace policy.
+// NewSanitizer supplies the production text/JSON/archive/native-diagnostic policy.
 // Containers are decoded before redaction, then deterministically rebuilt with
-// no host metadata. Valid native traces are preserved only if no redaction is
-// needed. Other opaque binary formats fail closed rather than being corrupted.
+// no host metadata. Valid native traces and profiles are preserved only if no
+// redaction is needed. Other opaque formats fail closed rather than being corrupted.
 func NewSanitizer(scrubber Scrubber) Sanitize {
 	return func(media string, data []byte) ([]byte, error) {
 		if scrubber == nil || len(data) > MaxPayloadBytes {
@@ -30,6 +30,8 @@ func NewSanitizer(scrubber Scrubber) Sanitize {
 			return sanitizeText(scrubber, media, data)
 		case "application/x-go-trace":
 			return sanitizeGoTrace(scrubber, data)
+		case "application/x-pprof":
+			return sanitizePprof(scrubber, data)
 		case "application/x-tar":
 			return sanitizeTar(scrubber, data)
 		case "application/gzip":
