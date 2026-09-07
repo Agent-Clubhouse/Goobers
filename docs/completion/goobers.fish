@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard run signal workflow status stats cost trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -215,6 +215,14 @@ complete -c goobers -n '__fish_seen_subcommand_from status' -l watch -d 'Refresh
 complete -c goobers -n '__fish_seen_subcommand_from status' -l interval -r -d 'Watch refresh interval'
 complete -c goobers -n '__fish_seen_subcommand_from stats' -l since -r -d 'Only include activity from the preceding duration'
 complete -c goobers -n '__fish_seen_subcommand_from stats' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from cost' -l pr -r -d 'Filter to one pull request'
+complete -c goobers -n '__fish_seen_subcommand_from cost' -l issue -r -d 'Filter to one issue'
+complete -c goobers -n '__fish_seen_subcommand_from cost' -l provider -r -a 'github ado' -d 'Filter external-reference provider'
+complete -c goobers -n '__fish_seen_subcommand_from cost' -l window -r -d 'Bounded lookback duration'
+complete -c goobers -n '__fish_seen_subcommand_from cost' -l since -r -d 'Inclusive RFC3339 run-start lower bound'
+complete -c goobers -n '__fish_seen_subcommand_from cost' -l until -r -d 'Exclusive RFC3339 run-start upper bound'
+complete -c goobers -n '__fish_seen_subcommand_from cost' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from cost' -l rebuild -d 'Rebuild telemetry before querying'
 complete -c goobers -n '__fish_seen_subcommand_from features' -l json -d 'Emit a versioned feature-discovery envelope'
 complete -c goobers -n '__fish_seen_subcommand_from features' -l dsl-version -r -d 'Scope features to one DSL version'
 complete -c goobers -n '__fish_seen_subcommand_from features' -l used -d 'List only features referenced by the instance'

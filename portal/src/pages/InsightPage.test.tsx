@@ -27,12 +27,14 @@ describe("Insight page", () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     const getTelemetryErrorSignatures = vi.spyOn(client, "getTelemetryErrorSignatures");
+    const getTelemetryCosts = vi.spyOn(client, "getTelemetryCosts");
 
     render(<App client={client} />);
 
     await waitFor(() => {
       expect(getTelemetryStats).toHaveBeenCalledTimes(3);
       expect(getTelemetryErrorSignatures).toHaveBeenCalledTimes(1);
+      expect(getTelemetryCosts).toHaveBeenCalledTimes(1);
     });
 
     const statsCalls = getTelemetryStats.mock.invocationCallOrder;
@@ -40,6 +42,7 @@ describe("Insight page", () => {
     expect(statsCalls[0]).toBeLessThan(errorCall);
     expect(errorCall).toBeLessThan(statsCalls[1]);
     expect(statsCalls[1]).toBeLessThan(statsCalls[2]);
+    expect(statsCalls[2]).toBeLessThan(getTelemetryCosts.mock.invocationCallOrder[0]);
   });
 
   it("shows scoped outcomes and full stage duration distributions", async () => {
@@ -198,6 +201,7 @@ describe("Insight page", () => {
     const tokenLink = screen.getByRole("link", {
       name: /View token usage runs behind Instance/,
     });
+
     const costLink = screen.getByRole("link", {
       name: /View AI cost runs behind Instance/,
     });
@@ -285,6 +289,41 @@ describe("Insight page", () => {
         }),
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
+    );
+  });
+
+  it("shows provider-native attributed costs, normalized estimates, and coverage", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryCosts = vi.spyOn(client, "getTelemetryCosts");
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("PR #4398")).toBeInTheDocument();
+    expect(screen.getByText("Issue #4398")).toBeInTheDocument();
+    expect(screen.getAllByText("2.5 AI credits").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$0.025 estimated").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$0.42").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("42 AI credits estimated").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("Lower bound: 2 of 3 runs and 3 of 4 attempts measured."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Complete coverage: 2 runs and 2 attempts measured."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-sol: 2.5 AI credits · 3/3 attempts")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet: $0.42 · 2/2 attempts")).toBeInTheDocument();
+    expect(
+      screen.getByText("01JZ455ESCALATE: 2.5 AI credits · 3/3 attempts"),
+    ).toBeInTheDocument();
+    expect(getTelemetryCosts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "summary",
+        since: expect.stringMatching(/Z$/),
+        until: expect.stringMatching(/Z$/),
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 

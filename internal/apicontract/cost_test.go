@@ -128,6 +128,16 @@ func TestBlobRoutesCarryTheLargerBudget(t *testing.T) {
 	}
 }
 
+func TestTelemetryCostsUsesAggregateBudget(t *testing.T) {
+	route, ok := V1Route(RouteTelemetryCosts)
+	if !ok {
+		t.Fatal("telemetryCosts route is not in the V1 contract")
+	}
+	if route.Cost != CostAggregate || route.Budget != BoundedBudget {
+		t.Fatalf("telemetryCosts route = cost %q budget %s", route.Cost, route.Budget)
+	}
+}
+
 // TestOnlyOneStreamRoute pins the assumption the zero-budget exemption rests on.
 //
 // The exemption is safe because exactly one route is a stream and it is the SSE

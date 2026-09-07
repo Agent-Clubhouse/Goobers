@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS COST" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers cost \- show bounded cost attribution by pull request or issue
+.SH SYNOPSIS
+\fBgoobers cost\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers cost [--pr=<id> | --issue=<id>] [--provider=<name>] [--window=<duration>] [--since=<RFC3339>] [--until=<RFC3339>] [--json] [--rebuild] [path]
+
+Show exact recorded AI usage attributed to pull requests and issues. The
+default window is 7d ending now; --since replaces --window, and every
+query is capped at 90d. Native AI credits/USD and normalized estimates are
+reported separately. Missing measurements make totals lower bounds.
+Exit codes: 0 = OK, 2 = usage, query, or I/O error.
+.fi
+.SH EXAMPLES
+.nf
+goobers cost
+goobers cost --pr 4398 --json
+goobers cost --issue 4398 --window 30d
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

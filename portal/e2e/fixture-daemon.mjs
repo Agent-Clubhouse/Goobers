@@ -310,6 +310,16 @@ const responses = new Map([
       ],
     },
   ],
+  [
+    "/api/v1/telemetry/costs",
+    {
+      scope: "summary",
+      since: "2026-08-10T08:00:00Z",
+      until: "2026-08-17T08:00:00Z",
+      pullRequests: [],
+      issues: [],
+    },
+  ],
   ["/api/v1/telemetry/stats", telemetryStats],
   ["/api/v1/telemetry/error-signatures", { items: [] }],
   [`/api/v1/runs/${run.id}`, runDetail],

@@ -29,6 +29,8 @@ const (
 	Prefix = apicontract.V1Prefix
 	// HealthPath is the daemon health endpoint.
 	HealthPath = apicontract.HealthPath
+	// TelemetryCostsPath exposes bounded per-PR and per-issue cost aggregates.
+	TelemetryCostsPath = apicontract.TelemetryCostsPath
 	// TelemetryStatsPath exposes workflow and stage telemetry aggregates.
 	TelemetryStatsPath = apicontract.TelemetryStatsPath
 	// TelemetryErrorSignaturesPath exposes recurring error code/class aggregates.

@@ -4,6 +4,7 @@ Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 [goobernetes-decisions.md](goobernetes-decisions.md) (2026-08-22).
 **Grounded against** `main` @ `21c645a6` and the spike-ladder evidence recorded on #2838.
 Where this document and the decision record disagree, the record wins.
+Supersedes: docs/design/v2-cloud-scale.md, docs/design/mixed-platform-cloud-nodes.md
 
 Goobernetes is the distributed execution mode of Goobers: every stage attempt of a run
 executes in its own fresh container pod, placed by a constraint solve against a declared
@@ -286,6 +287,19 @@ that would otherwise be built twice.
 
 Record D0's zero-deference ruling, applied. Each row names what dies; the cited documents
 gain a banner pointing here when this design is approved.
+
+> **Banner status (#4240).** The promised banners landed 2026-09-06:
+> `v2-cloud-scale.md` and `mixed-platform-cloud-nodes.md` (both its §3 and its
+> §2.1–§2.2 rows) now carry reciprocal `Superseded-by` headers, and
+> `windows-pod-restrictions.md` — written after this design against the
+> superseded resident-worker shape — carries one too. Until then a newer Windows
+> document had already canonized the obsolete shape, which is the concrete cost
+> of a supersession without a forward pointer.
+>
+> **Still open on #4240:** whether
+> `deploy/reference/goobers-system/worker-windows-deployment.yaml` is a
+> control-plane utility, a legacy reference, or retired; and the D8/DI-6
+> version-skew conflict recorded in `goobernetes-decisions.md` D8.
 
 | Prior text | What dies | Replacement |
 | --- | --- | --- |

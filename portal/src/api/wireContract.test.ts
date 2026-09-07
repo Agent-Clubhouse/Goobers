@@ -24,6 +24,7 @@ describe("Go daemon wire contract", () => {
       "runDetail",
       "runEvents",
       "stageAttempts",
+      "telemetryCosts",
       "telemetryStats",
       "telemetryErrorSignatures",
       "telemetryErrors",
@@ -46,6 +47,10 @@ describe("Go daemon wire contract", () => {
     expect(checkedFixtures.runEvents.events[0]).toMatchObject({
       category: "transition",
       replayChapter: true,
+    });
+    expect(checkedFixtures.telemetryCosts.pullRequests[0]).toMatchObject({
+      externalId: "4398",
+      coverage: { lowerBound: true },
     });
     expect(checkedFixtures.configSources.items.map(({ kind }) => kind)).toEqual([
       "local",

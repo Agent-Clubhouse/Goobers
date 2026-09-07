@@ -37,6 +37,9 @@ func (stubReadService) Health(context.Context) (readservice.Health, error) {
 func (stubReadService) PortalConfig(context.Context) (readservice.PortalConfig, error) {
 	return readservice.PortalConfig{}, nil
 }
+func (stubReadService) TelemetryCosts(context.Context, readservice.TelemetryCostRequest) (readservice.TelemetryCostResult, error) {
+	return readservice.TelemetryCostResult{}, nil
+}
 func (stubReadService) TelemetryStats(context.Context, readservice.TelemetryStatsRequest) (readservice.TelemetryStatsResult, error) {
 	return readservice.TelemetryStatsResult{}, nil
 }
