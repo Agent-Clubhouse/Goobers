@@ -14,6 +14,7 @@ adapts the production-oriented canonical workflow modules to your repository.
 | --- | --- |
 | See the workflow model without credentials | Section 1: zero-credential demo |
 | Exercise one disposable issue-to-PR run | Sections 1-2: complete tutorial |
+| Learn to author and debug workflow YAML | [Workflow authoring tutorial](learn-workflow-authoring.md) |
 | Configure a real repository | `goobers init --guided` and [Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md) |
 | Hand-author every configuration layer | [Manual configuration](#manualadvanced-alternative-bare-init) |
 

@@ -12,7 +12,11 @@ For a minimal starting point, use the scaffold created by `goobers init
 ./my-instance` (one gaggle, one goober, and one `default-implement` workflow).
 For a short guided example, use `goobers init --template=quickstart
 ./tutorial-instance`; that template is intentionally not production-safe. See
-the [quickstart](../docs/guides/quickstart.md) for both paths.
+the [quickstart](../docs/guides/quickstart.md) for both paths, then continue
+with the [workflow authoring tutorial](../docs/guides/learn-workflow-authoring.md).
+Use the
+[workflow primitive reference](../docs/reference/workflow-primitives/README.md)
+for the complete accepted vocabulary and parameter contracts.
 
 ## Folder layout
 
