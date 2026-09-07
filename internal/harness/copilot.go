@@ -523,9 +523,10 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
 	// default-deny), so the version-check subprocess needs this passed
 	// explicitly the same way Run's credentialEnv does.
-	versionProbe := fmt.Sprintf("harness: copilot-cli: %q %v", bin, args)
+	versionCommand := append(append([]string(nil), resolveHarnessCommand(c.Command)...), args...)
+	versionProbe := fmt.Sprintf("harness: copilot-cli: %q", versionCommand)
 	res, err := c.runner().Run(ctx, ProcessRequest{
-		Command:            append([]string{bin}, args...),
+		Command:            versionCommand,
 		Env:                baseEnv(c.ExtraEnvAllowlist),
 		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 	})
