@@ -18,7 +18,7 @@ func probeImageSourceRequirement(ctx context.Context, run overlayCommandRunner, 
 	if required.MinimumCommit != memoryGateMinimumCommit {
 		return fmt.Errorf("unrecognized image source capability")
 	}
-	data, err := run(ctx, overlayCommand{Program: "gh", Args: []string{"api", "repos/Agent-Clubhouse/Goobers/compare/" + required.MinimumCommit + "..." + required.Commit, "--jq", "{status: .status}"}})
+	data, err := run(ctx, overlayCommand{Program: "gh", Args: []string{"api", "repos/Agent-Clubhouse/Goobers/compare/" + required.MinimumCommit + "..." + required.Commit, "--hostname", "github.com", "--jq", "{status: .status}"}})
 	if err != nil {
 		return fmt.Errorf("cannot establish memory-gate source ancestry: %w", err)
 	}

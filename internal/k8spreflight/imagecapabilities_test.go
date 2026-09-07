@@ -69,6 +69,22 @@ func TestImageSourceAncestryNeverPassesUnknownOrOlderPins(t *testing.T) {
 	}
 }
 
+func TestImageSourceAncestryPinsAuthoritativeHost(t *testing.T) {
+	t.Setenv("GH_HOST", "unrelated.example")
+	t.Setenv("GH_REPO", "unrelated/example")
+	commit := strings.Repeat("a", 40)
+	run := func(_ context.Context, cmd overlayCommand) ([]byte, error) {
+		want := []string{"api", "repos/Agent-Clubhouse/Goobers/compare/" + memoryGateMinimumCommit + "..." + commit, "--hostname", "github.com", "--jq", "{status: .status}"}
+		if cmd.Program != "gh" || !slices.Equal(cmd.Args, want) {
+			t.Fatalf("source authority can be redirected by ambient gh settings: %+v", cmd)
+		}
+		return []byte(`{"status":"ahead"}`), nil
+	}
+	if err := probeImageSourceRequirement(context.Background(), run, imageRequirements{Commit: commit, MinimumCommit: memoryGateMinimumCommit}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestImageScriptCapabilityActuallyChecksEachConfiguredVariable(t *testing.T) {
 	var checked []string
 	invoke := func(program string, args []string, _ []byte) ([]byte, error) {
