@@ -99,16 +99,16 @@ func TestVerdictLabel(t *testing.T) {
 	}
 }
 
-// TestAllCrossPRBlockedEmptyFindingsIsFalse pins the edge case verdictLabel's
+// TestSequencingOnlyEmptyFindingsIsFalse pins the edge case verdictLabel's
 // own doc comment calls out: a needs-changes verdict with NO findings at all
 // falls through to needs-remediation like today, not blocked-on-sibling —
 // "entirely cross-pr-blocked" requires at least one such finding to be true.
-func TestAllCrossPRBlockedEmptyFindingsIsFalse(t *testing.T) {
-	if allCrossPRBlocked(nil) {
-		t.Fatal("allCrossPRBlocked(nil) = true, want false")
+func TestSequencingOnlyEmptyFindingsIsFalse(t *testing.T) {
+	if sequencingOnly(nil) {
+		t.Fatal("sequencingOnly(nil) = true, want false")
 	}
-	if allCrossPRBlocked([]apiv1.Finding{}) {
-		t.Fatal("allCrossPRBlocked(empty) = true, want false")
+	if sequencingOnly([]apiv1.Finding{}) {
+		t.Fatal("sequencingOnly(empty) = true, want false")
 	}
 }
 

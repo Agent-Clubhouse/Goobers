@@ -113,7 +113,7 @@ func electionDecision(findings []apiv1.Finding, selectedNumber int, policy elect
 	if demoted[selectedNumber] {
 		return false
 	}
-	if !electableUnderOrdering(findings) {
+	if !sequencingOnly(findings) {
 		return false
 	}
 	return policy(selectedNumber, withoutDemoted(unionBlockingPRs(findings), demoted))
@@ -138,7 +138,7 @@ const noLanderEscalationPrefix = "Cluster has no lander under policy"
 // than silently parking the rest of the cluster.
 func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.Finding, selectedNumber int, overlappingSiblings []int, policy electionPolicyFunc, demoted map[int]bool, policyName string) string {
 	if decision != apiv1.VerdictNeedsChanges || len(overlappingSiblings) == 0 ||
-		demoted[selectedNumber] || electableUnderOrdering(findings) {
+		demoted[selectedNumber] || sequencingOnly(findings) {
 		return ""
 	}
 	clusterBlockers := electionClusterBlockers(findings, overlappingSiblings)

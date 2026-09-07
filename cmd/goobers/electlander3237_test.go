@@ -23,7 +23,7 @@ func TestConflictOverlapFindingIsOrderingFinding(t *testing.T) {
 	siblings := []int{3235}
 
 	effective := withOverlapBackstop(findings, siblings)
-	if !allCrossPRBlocked(effective) {
+	if !sequencingOnly(effective) {
 		t.Fatalf("conflict finding naming only an overlapping sibling was not normalized: %+v", effective)
 	}
 	if want := []int{3235}; !reflect.DeepEqual(unionBlockingPRs(effective), want) {
@@ -61,7 +61,7 @@ func TestBaseConflictFindingStillBlocksCrowning(t *testing.T) {
 	for name, finding := range cases {
 		t.Run(name, func(t *testing.T) {
 			effective := withOverlapBackstop([]apiv1.Finding{finding}, []int{3235})
-			if allCrossPRBlocked(effective) {
+			if sequencingOnly(effective) {
 				t.Fatalf("real conflict was normalized to an ordering finding: %+v", effective)
 			}
 			if electionDecision(effective, 3227, electedLander, nil) {

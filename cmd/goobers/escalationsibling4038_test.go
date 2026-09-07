@@ -173,7 +173,7 @@ func TestClusterSiblingEscalationHasAnExit(t *testing.T) {
 // #4038 its first fix missed. The cluster election escalates a deferring
 // sibling AFTER that sibling's own merge-review verdict, and when that verdict
 // is a pass it carries no findings at all. #4038 derived the cause class with
-// allCrossPRBlocked, which returns false for an empty finding list by design,
+// sequencingOnly, which returns false for an empty finding list by design,
 // so the pass case recorded no EscalationCauses, escalationBaseAdvanceUnparks
 // stayed false, and the park was released only by a head change that
 // pr-remediation — excluded upstream — could never produce.
