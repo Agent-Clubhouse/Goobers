@@ -69,3 +69,15 @@ spec:
         - opened
       # Terminal: the opened pull request is the first-run success artifact
       # the quickstart promises (#2447).
+      next: report-cost
+
+    - name: report-cost
+      type: deterministic
+      goal: Publish cumulative cost on this run's pull request and addressed issues.
+      run:
+        command: ["goobers", "report-cost"]
+        workspace: scratch
+      inputs:
+        resultFile: "cost-report-result.json"
+      capabilities:
+        - github:issues:write
