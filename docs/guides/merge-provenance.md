@@ -11,6 +11,14 @@ confirmation are not verified. Conflicting instance, gaggle or commit claims
 are excluded before display filters. Rebuilding only recovers retained journals;
 it cannot reconstruct receipts that were never recorded or have been pruned.
 
+Accepted GitHub queue mutations appear separately in `queueAdmissions`, keyed
+by repository and the forge-returned queue entry ID, with the immutable run,
+instance and gaggle identity. They retain the expected PR head and actual
+enqueue timestamp. An accepted enqueue is **not** a completed merge and never
+increments the daily merge count. Unknown and conflicting queue receipts have
+separate counters; display filters cannot hide an ownership conflict. The
+10,000-event bound covers merge and enqueue events together, before filtering.
+
 ```sh
 goobers telemetry merges --json --since=2026-09-01T00:00:00Z --until=2026-09-08T00:00:00Z /path/to/instance
 ```

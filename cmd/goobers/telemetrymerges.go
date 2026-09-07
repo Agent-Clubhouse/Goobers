@@ -118,6 +118,10 @@ func writeMergeReport(output io.Writer, report rollup.MergeReport) error {
 	for _, row := range report.Daily {
 		pf(stdout, "%s\t%s\t%s\t%s\t%s\t%d\n", row.Day, row.InstanceID, row.Gaggle, row.Provider, row.RepositoryAPIURL, row.Count)
 	}
+	pf(stdout, "Accepted queue entries (not completed merges): %d; unverified queue events: %d; conflicting entries: %d\n", len(report.QueueAdmissions), report.UnverifiedQueueEvents, report.ConflictingQueueEntries)
+	for _, entry := range report.QueueAdmissions {
+		pf(stdout, "%s\t%s\t%s\tPR %s\t%s\n", entry.InstanceID, entry.Gaggle, entry.RepositoryAPIURL, entry.PullID, entry.EntryID)
+	}
 	if report.Comparison == nil {
 		pf(stdout, "Coverage: retained telemetry only; no forge-inventory comparison.\n")
 	} else {

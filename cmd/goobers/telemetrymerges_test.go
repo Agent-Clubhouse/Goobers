@@ -31,6 +31,10 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: providers.MutationRunnerFields("merge", confirmation, nil)}); err != nil {
 		t.Fatal(err)
 	}
+	admission := &providers.QueueAdmission{RepositoryAPIURL: confirmation.RepositoryAPIURL, PullID: "10", EntryID: "owned-entry", ExpectedHeadSHA: "queue-head", EnqueuedAt: at}
+	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "10"}, Runner: providers.MutationRunnerFields("enqueue", nil, admission)}); err != nil {
+		t.Fatal(err)
+	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +61,9 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 	}
 	if len(report.Merges) != 1 || report.Merges[0].InstanceID != id || report.Merges[0].PullID != "9" || len(report.Daily) != 1 || report.Daily[0].Count != 1 {
 		t.Fatalf("CLI lost provenance: %+v", report)
+	}
+	if len(report.QueueAdmissions) != 1 || report.QueueAdmissions[0].EntryID != "owned-entry" || report.QueueAdmissions[0].PullID != "10" || report.QueueAdmissions[0].InstanceID != id || report.QueueAdmissions[0].RunID != "merge-report" {
+		t.Fatalf("CLI lost queue ownership: %+v", report.QueueAdmissions)
 	}
 }
 

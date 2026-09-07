@@ -59,6 +59,10 @@ type DailyMerges struct {
 // MergeReport is a retained-telemetry report, not a forge inventory. Unknown
 // events and conflicts are explicit; neither is silently promoted to verified.
 type MergeReport struct {
+	QueueAdmissions          []AcceptedQueueEntry `json:"queueAdmissions"`
+	UnverifiedQueueEvents    int                  `json:"unverifiedQueueEvents"`
+	ConflictingQueueEntries  int                  `json:"conflictingQueueEntries"`
+	examinedEvents           int
 	Coverage                 string           `json:"coverage"`
 	Since                    time.Time        `json:"since"`
 	Until                    time.Time        `json:"until"`
@@ -107,7 +111,17 @@ func (db *DB) MergeProvenance(ctx context.Context, query MergeReportQuery) (Merg
 		return MergeReport{}, fmt.Errorf("query merge provenance: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	return readMergeProvenance(rows, query, nil)
+	report, err := readMergeProvenance(rows, query, nil)
+	if err != nil {
+		return MergeReport{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return MergeReport{}, err
+	}
+	if err := db.readQueueAdmissions(ctx, query, &report); err != nil {
+		return MergeReport{}, err
+	}
+	return report, nil
 }
 
 func readMergeProvenance(rows *sql.Rows, query MergeReportQuery, wanted map[mergeKey]bool) (MergeReport, error) {
@@ -159,6 +173,7 @@ func readMergeProvenance(rows *sql.Rows, query MergeReportQuery, wanted map[merg
 		return a.Provider+"\x00"+a.RepositoryAPIURL+"\x00"+a.PullID < b.Provider+"\x00"+b.RepositoryAPIURL+"\x00"+b.PullID
 	})
 	result.Daily = dailyMergeCounts(result.Merges)
+	result.examinedEvents = count
 	return result, nil
 }
 
