@@ -24,6 +24,34 @@ func migrationPrefixDigest(prefix []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// openHistoricalTestDB builds the actual historical schema. Relabeling a
+// current database as old silently relies on every future migration being
+// idempotent and is not an upgrade fixture (ALTER ADD COLUMN exposes it).
+func openHistoricalTestDB(t *testing.T, path string, version int) *DB {
+	t.Helper()
+	if version < 1 || version > len(migrations) {
+		t.Fatalf("invalid historical schema version %d", version)
+	}
+	sqlDB, err := sql.Open("sqlite", path+dsnParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := &DB{sql: sqlDB, path: path}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := sqlDB.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:version] {
+		if _, err := sqlDB.Exec(migration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := sqlDB.Exec(`INSERT INTO schema_meta VALUES (?)`, version); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
 // TestMigrationPrefixIsAppendOnly pins schema.go's "never edit a migration once
 // released — append a new one" rule with something other than a comment (#2049).
 // Only the newest migration is left out of the pinned prefix, so a legitimate
@@ -33,7 +61,7 @@ func migrationPrefixDigest(prefix []string) string {
 // every upgraded store silently stops applying the inserted DDL forever while
 // fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "f59b4c833e9fd466c89f4130c4bf01b178d3cabc93e2100668c31b8b61a034c4"
+	const wantDigest = "41a874be9c12f4ad6ee9ea3ea14028cb8fdf06daf88c85d81787c11ede9ce73d"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+

@@ -801,4 +801,9 @@ CREATE INDEX idx_stage_usage_run ON stage_usage(run_id);
 CREATE INDEX idx_stage_usage_branch ON stage_usage(branch, run_id);
 CREATE INDEX idx_stage_model_usage_run ON stage_model_usage(run_id);
 `,
+	// v24 (#3019): preserve the originating instance from run.yaml. NULL is
+	// deliberately unknown for existing rows; names/paths cannot backfill it.
+	`
+ALTER TABLE runs ADD COLUMN instance_id TEXT;
+`,
 }
