@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { RunTiming } from "../components/RunTiming";
 import type { DaemonClient, MaintenanceStatus, RunSummary } from "../api/types";
 import { useAttentionCollapsed } from "../attentionCollapse";
 import { useAttentionDismissals } from "../attentionDismissals";
@@ -612,7 +613,7 @@ function RunSection({
                   </span>
                 </>
               )}
-              <span className="mono">{formatDuration(run.durationMillis)}</span>
+              <RunTiming run={run} />
             </DataRow>
           ))}
         </DataList>

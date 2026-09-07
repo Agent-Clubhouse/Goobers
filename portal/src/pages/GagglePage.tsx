@@ -1,3 +1,4 @@
+import { RunTiming } from "../components/RunTiming";
 import type {
   DaemonClient,
   Goober,
@@ -310,7 +311,7 @@ function GaggleActivitySections({
                   <span aria-hidden="true" className="stage-progress-mark" />
                   {run.currentStage ?? "Awaiting stage"}
                 </span>
-                <span className="mono">{formatDuration(run.durationMillis)}</span>
+                <RunTiming run={run} />
               </DataRow>
             ))}
           </DataList>
@@ -344,7 +345,7 @@ function GaggleActivitySections({
                 </span>
                 <StatusBadge status={run.phase} />
                 <span>{label(run)}</span>
-                <span className="mono">{formatDuration(run.durationMillis)}</span>
+                <RunTiming run={run} />
               </DataRow>
             ))}
           </DataList>
@@ -393,17 +394,6 @@ function GoobersPanel({
       )}
     </section>
   );
-}
-
-function formatDuration(milliseconds: number): string {
-  const totalSeconds = Math.max(0, Math.round(milliseconds / 1_000));
-  const hours = Math.floor(totalSeconds / 3_600);
-  const minutes = Math.floor((totalSeconds % 3_600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 function repositoryIdentity(connection: RepositoryConnection): string {

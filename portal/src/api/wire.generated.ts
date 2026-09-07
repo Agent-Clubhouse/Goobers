@@ -453,6 +453,17 @@ export const goWireFixtures = {
   "runs": {
     "runs": [
       {
+        "activeStages": [
+          {
+            "name": "implement",
+            "kind": "stage",
+            "branch": 1,
+            "attempt": 2,
+            "goober": "implementer",
+            "startedAt": "2026-07-18T12:32:56Z"
+          }
+        ],
+        "activityTruncated": true,
         "engineFallback": {
           "gaggle": "core",
           "workflow": "implementation",
@@ -517,6 +528,17 @@ export const goWireFixtures = {
     "nextCursor": "next-run"
   },
   "runDetail": {
+    "activeStages": [
+      {
+        "name": "implement",
+        "kind": "stage",
+        "branch": 1,
+        "attempt": 2,
+        "goober": "implementer",
+        "startedAt": "2026-07-18T12:32:56Z"
+      }
+    ],
+    "activityTruncated": true,
     "engineFallback": {
       "gaggle": "core",
       "workflow": "implementation",

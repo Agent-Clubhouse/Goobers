@@ -337,8 +337,12 @@ func (r *runJournal) mutations(ctx workflow.Context, stage string, attempt int, 
 	}
 }
 
-func (r *runJournal) stageStarted(at time.Time, stage string, attempt int, class journal.AttemptClass) {
-	r.appendAt(at, journal.Event{Type: journal.EventStageStarted, Stage: stage, Attempt: attempt, AttemptClass: class})
+func (r *runJournal) stageStarted(at time.Time, task apiv1.Task, attempt int, class journal.AttemptClass) {
+	event := journal.Event{Type: journal.EventStageStarted, Stage: task.Name, Attempt: attempt, AttemptClass: class}
+	if task.Type == apiv1.TaskAgentic {
+		event.Runner = map[string]any{"goober": task.Goober}
+	}
+	r.appendAt(at, event)
 }
 
 // placement journals one attempt's runner.placement provenance from what the
@@ -559,14 +563,17 @@ func (r *runJournal) gatePaused(ctx workflow.Context, gate string) {
 // number is visible on the surrendered result and the pod it names, not
 // re-journaled here. The key is omitted from Runner rather than journaled as
 // 0, so a self-arm gate.started reads exactly as it always has.
-func (r *runJournal) gateStarted(ctx workflow.Context, gate string, repassAttempt, podAttempt int) {
+func (r *runJournal) gateStarted(ctx workflow.Context, gate apiv1.Gate, repassAttempt, podAttempt int) {
 	ev := journal.Event{
 		Type:   journal.EventGateStarted,
-		Gate:   gate,
+		Gate:   gate.Name,
 		Runner: map[string]any{"repassAttempt": repassAttempt},
 	}
 	if podAttempt > 0 {
 		ev.Runner["podAttempt"] = podAttempt
+	}
+	if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil {
+		ev.Runner["goober"] = gate.Agentic.Goober
 	}
 	r.append(ctx, ev)
 }
