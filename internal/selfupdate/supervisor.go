@@ -16,6 +16,7 @@ import (
 
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/version"
 )
@@ -163,7 +164,7 @@ func performUpdate(
 	if err := waitOrKill(process, opts.DrainTimeout); err != nil {
 		return process, fmt.Errorf("daemon failed while draining for self-update: %w", err)
 	}
-	_ = os.Remove(stopRequestPath(opts.Root))
+	_ = durability.RemoveFile(stopRequestPath(opts.Root))
 
 	candidate, baseline, err := startCandidate(opts, log, request)
 	if err != nil {
@@ -305,7 +306,7 @@ func rollbackAndRestart(
 		if err := waitOrKill(process, opts.DrainTimeout); err != nil {
 			return nil, err
 		}
-		_ = os.Remove(stopRequestPath(opts.Root))
+		_ = durability.RemoveFile(stopRequestPath(opts.Root))
 	}
 	if err := restorePrevious(opts); err != nil {
 		return nil, err
@@ -357,7 +358,7 @@ func completeRequest(root string, request Request) error {
 	if err := removeCompletedStaging(root, request.StagedPath); err != nil {
 		return fmt.Errorf("clean self-update staging: %w", err)
 	}
-	if err := os.Remove(requestPath(root)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := durability.RemoveFile(requestPath(root)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("complete self-update request: %w", err)
 	}
 	return nil
@@ -544,8 +545,17 @@ func RequestDaemonStop(root string) error {
 }
 
 // ConsumeStopRequest removes a pending daemon drain request.
+//
+// The removal goes through durability.RemoveFile rather than os.Remove because
+// the file it deletes was published by an atomic write, and on Windows such a
+// file can still be briefly undeletable while another handle on it is released
+// (#3562). The caller in cmd/goobers/up.go treats a failure here as terminal
+// and stops watching for stop requests, so a transient sharing violation used
+// to leave a live daemon permanently unable to be asked to drain — and the
+// write side of the same protocol has waited that condition out since it was
+// written.
 func ConsumeStopRequest(root string) (bool, error) {
-	err := os.Remove(stopRequestPath(root))
+	err := durability.RemoveFile(stopRequestPath(root))
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -556,7 +566,7 @@ func stopForService(process process, opts SupervisorOptions) error {
 		return err
 	}
 	err := waitOrKill(process, opts.DrainTimeout)
-	_ = os.Remove(stopRequestPath(opts.Root))
+	_ = durability.RemoveFile(stopRequestPath(opts.Root))
 	return err
 }
 func waitOrKill(process process, timeout time.Duration) error {

@@ -4,6 +4,7 @@ package durability
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +22,48 @@ func ReplaceFile(source, destination string) error {
 // Move atomically renames a path when the destination does not exist.
 func Move(source, destination string) error {
 	return movePath(source, destination, windows.MOVEFILE_WRITE_THROUGH)
+}
+
+// RemoveFile deletes path, retrying the transient Windows failures that a file
+// this package just wrote can still be holding.
+//
+// os.Remove has no such retry and the write path has had one since it was
+// written, which is the asymmetry #3562 reported: a file published by
+// ReplaceFile (temp + MoveFileEx) can still be briefly undeletable — a scanner,
+// an indexer, or the filesystem filter stack holds a handle opened without
+// FILE_SHARE_DELETE — and Windows answers the delete with
+// ERROR_SHARING_VIOLATION rather than deleting it. Nothing about that condition
+// is permanent; it just is not over yet.
+//
+// The consequence is not confined to tests. The daemon's stop-request watch
+// (cmd/goobers/up.go) treats a failure from ConsumeStopRequest as terminal and
+// stops watching, so one transient sharing violation left a live Windows daemon
+// unable to be asked to drain for the rest of its life.
+//
+// ErrNotExist returns immediately: an absent file is an answer, not a
+// contention, and every caller here distinguishes the two.
+func RemoveFile(path string) error {
+	deadline := time.Now().Add(replaceRetryWindow)
+	for {
+		err := os.Remove(path)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if !transientFileError(err) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// transientFileError reports whether err is one of the Windows contention
+// codes that another handle on the same file produces and that goes away on
+// its own. Shared by the move and remove retries so the two cannot come to
+// disagree about which failures are worth waiting out.
+func transientFileError(err error) bool {
+	return errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
+		errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||
+		errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }
 
 func movePath(source, destination string, flags uint32) error {
@@ -46,12 +89,7 @@ func movePath(source, destination string, flags uint32) error {
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, windows.ERROR_ACCESS_DENIED) &&
-			!errors.Is(err, windows.ERROR_SHARING_VIOLATION) &&
-			!errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
-			return err
-		}
-		if time.Now().After(deadline) {
+		if !transientFileError(err) || time.Now().After(deadline) {
 			return err
 		}
 		time.Sleep(10 * time.Millisecond)
