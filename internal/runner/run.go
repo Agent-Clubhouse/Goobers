@@ -4180,6 +4180,29 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 	return heartbeatErr
 }
 
+// completeTaskDispatch commits receipts before allowing workspace teardown.
+// If projection fails, retain the workspace but release its in-process lease.
+// Retention here is not a substitute for crash reconciliation.
+func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage string, attempt int, class journal.AttemptClass, mutations []mutationFact, cleanup func(bool) error) error {
+	projectionErr := finishTaskDispatch(jr, heartbeat, stage, attempt, class, mutations, nil)
+	if cleanup == nil {
+		return projectionErr
+	}
+	cleanupErr := cleanup(projectionErr != nil)
+	if projectionErr != nil {
+		return errors.Join(projectionErr, cleanupErr)
+	}
+	if cleanupErr != nil {
+		if err := jr.Append(journal.Event{
+			Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
+			Error: &journal.ErrorDetail{Code: "worktree_remove_failed", Message: cleanupErr.Error()},
+		}); err != nil {
+			return fmt.Errorf("runner: journal worktree removal error for %q: %w", stage, errors.Join(err, cleanupErr))
+		}
+	}
+	return nil
+}
+
 // taskFrame is the execution frame one stage attempt runs against: the journal
 // it appends to, the run input, the executors, the task itself, the upstream
 // context and outputs it reads, and the workspace binding it checks out.
@@ -4347,7 +4370,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, tf, int(attempt), class, attemptAddendum, span, &infraFailedAttemptCommittedWork)
+		result, mutations, cleanup, dispatchErr := r.dispatchTask(attemptCtx, tf, int(attempt), class, attemptAddendum, span, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -4362,7 +4385,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 				}
 			}
 		}
-		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
+		if err := completeTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, cleanup); err != nil {
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
@@ -4680,7 +4703,8 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // dispatchTask provisions one attempt's workspace and invokes the task's
 // executor. It never journals its own result/err — runTask owns attempt/
 // retry journaling so a retried attempt is never mistaken for the run's
-// overall outcome. removeErr is separate and additive: a failed workspace
+// overall outcome. The returned cleanup callback runs after receipt projection.
+// A failed workspace
 // teardown (issue #136 — worktree failures were previously silently discarded,
 // letting a failed
 // Remove turn every subsequent retry of this stage into a guaranteed
@@ -4695,9 +4719,8 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // open-pr/issue-close-out) runs as a separate short-lived process with no
 // legal journal access, so it records its provider-mutation facts to a
 // sidecar file in the workspace instead; dispatchTask reads that sidecar
-// (before cleanup destroys the workspace, since runTask can't read
-// it after the fact) and returns the parsed facts for runTask to project
-// into ref.touched events. Read on the deterministic success path only —
+// and returns the parsed facts for runTask to project into ref.touched events
+// before calling cleanup. Read on both deterministic exit paths —
 // mutations only ever come from a deterministic provider-chain subcommand,
 // never an agentic stage.
 //
@@ -4708,7 +4731,7 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, cleanup func(bool) error, err error) {
 	jr, in, ex, t := tf.jr, tf.in, tf.ex, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
 	completed, fanIn := tf.completed, tf.fanIn
@@ -4716,7 +4739,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err), nil
+		return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err)
 	}
 	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
 	taskInputs = defaultBacklogQueryRequireLabels(t, taskInputs, r.cfg.BacklogQueryRequireLabels)
@@ -4725,23 +4748,23 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	var experimentObservations []bandit.Observation
 	var experimentWindow string
 	if configured, ok, banditConfigErr := banditConfig(in.Machine, t); banditConfigErr != nil {
-		return apiv1.ResultEnvelope{}, nil, banditConfigErr, nil
+		return apiv1.ResultEnvelope{}, nil, nil, banditConfigErr
 	} else if ok {
 		experiment = configured
 		experimentObservations, err = loadBanditObservations(r.cfg.RunsDir, t.Name)
 		if err != nil {
-			return apiv1.ResultEnvelope{}, nil, err, nil
+			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
 		assignment, err = experiment.AssignAndRecord(in.RunID, experimentObservations, jr)
 		if err != nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("assign experiment for task %q: %w", t.Name, err), nil
+			return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("assign experiment for task %q: %w", t.Name, err)
 		}
 		experimentWindow = banditObservationWindow(experiment, experimentObservations)
 		taskInputs = assignment.Apply(taskInputs)
 	}
 	taskLimits, err := workflow.TaskLimits(in.Machine, t)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err), nil
+		return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err)
 	}
 	syncBase := t.Run != nil && t.Run.SyncBase
 	env, workspace, err := r.buildEnvelope(ctx, in, t.Name, t.Goal, taskInputs, t.Capabilities, taskLimits, upstream, workspaceMode, syncBase, workspaceBranch)
@@ -4757,11 +4780,11 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 				ConflictingFiles: conflict.ConflictingFiles,
 			})
 			if marshalErr != nil {
-				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("marshal base synchronization conflict for stage %q: %w", t.Name, marshalErr), nil
+				return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("marshal base synchronization conflict for stage %q: %w", t.Name, marshalErr)
 			}
 			ref, recordErr := jr.RecordStageArtifact(t.Name, attempt, class, BaseSyncConflictArtifactName(t.Name), data)
 			if recordErr != nil {
-				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("record base synchronization conflict for stage %q: %w", t.Name, recordErr), nil
+				return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("record base synchronization conflict for stage %q: %w", t.Name, recordErr)
 			}
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
@@ -4793,9 +4816,9 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		// as an undifferentiated executor error.
 		coded := codedStageFailure(provisionFailureCode(err), prepErr)
 		if worktree.IsTransientProvisionError(err) {
-			return apiv1.ResultEnvelope{}, nil, invoke.InfrastructureFailure(coded), nil
+			return apiv1.ResultEnvelope{}, nil, nil, invoke.InfrastructureFailure(coded)
 		}
-		return apiv1.ResultEnvelope{}, nil, coded, nil
+		return apiv1.ResultEnvelope{}, nil, nil, coded
 	}
 	env.MinimumIntegrity = t.MinimumIntegrity
 	env.Attempt = int32(attempt)
@@ -4846,7 +4869,9 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 				}
 			}
 		}
-		removeErr = workspace.Remove(ctx)
+		cleanup = func(preserve bool) error {
+			return workspace.finishDispatch(ctx, preserve)
+		}
 	}()
 
 	// Surface any non-fatal worktree-provisioning warnings (today: symlinks a
@@ -4855,7 +4880,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	// operator-visible — rather than letting the degradation pass silently.
 	if ev, ok := worktreeWarningEvent(t.Name, workspace.worktree); ok {
 		if err := jr.Append(ev); err != nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: journal worktree warnings: %w", t.Name, err), nil
+			return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("task %q: journal worktree warnings: %w", t.Name, err)
 		}
 	}
 
@@ -4866,14 +4891,14 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 			} else if absent {
 				delete(env.Inputs, inputKey)
 			} else {
-				return apiv1.ResultEnvelope{}, nil, branchInputsFromError(t.Name, inputKey, outputKey), nil
+				return apiv1.ResultEnvelope{}, nil, nil, branchInputsFromError(t.Name, inputKey, outputKey)
 			}
 			continue
 		}
 		qualified := workflow.SupportsStageQualifiedInputs(in.Machine)
 		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualified)
 		if !ok {
-			return apiv1.ResultEnvelope{}, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified), nil
+			return apiv1.ResultEnvelope{}, nil, nil, inputsFromError(t.Name, inputKey, outputKey, completed, qualified)
 		}
 		env.Inputs[inputKey] = v
 	}
@@ -4884,14 +4909,14 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	switch t.Type {
 	case apiv1.TaskDeterministic:
 		if t.Run == nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name), nil
+			return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("task %q is deterministic but declares no DeterministicRun", t.Name)
 		}
 		det, err := ex.deterministic()
 		if err != nil {
-			return apiv1.ResultEnvelope{}, nil, err, nil
+			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
+			return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err)
 		}
 		result, err = det.Run(ctx, env, *t.Run)
 		// A provider mutation can succeed before a later subprocess error
@@ -4912,21 +4937,21 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		if configuredExperiment(t) {
 			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
-				return result, mutations, errors.Join(err, recordErr), nil
+				return result, mutations, nil, errors.Join(err, recordErr)
 			}
 		}
-		return result, mutations, err, nil
+		return result, mutations, nil, err
 	case apiv1.TaskAgentic:
 		ag, err := ex.agentic(t.Goober)
 		if err != nil {
-			return apiv1.ResultEnvelope{}, nil, err, nil
+			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
 		agentInvocation = &gooberInvocation{
 			Goober:                 ag,
 			activateAssetPathGuard: workspace.ActivateAssetPathGuard,
 		}
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
-			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
+			return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err)
 		}
 		result, err = agentInvocation.Invoke(ctx, env)
 		if err == nil {
@@ -4957,7 +4982,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		if configuredExperiment(t) {
 			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
-				return result, mutations, errors.Join(err, recordErr), nil
+				return result, mutations, nil, errors.Join(err, recordErr)
 			}
 		}
 		// #3366: persist the run branch's committed-but-not-yet-published diff
@@ -4976,14 +5001,14 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 			if salvaged, ok := r.salvageTimeout(ctx, jr, in, t, workspace, attempt, class, err); ok {
 				salvaged = withSalvagedDiagnostics(salvaged, result)
 				if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
-					return apiv1.ResultEnvelope{}, nil, outboxErr, nil
+					return apiv1.ResultEnvelope{}, nil, nil, outboxErr
 				}
 				return salvaged, nil, nil, nil
 			}
 		}
-		return result, nil, err, nil
+		return result, nil, nil, err
 	default:
-		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type), nil
+		return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("task %q has unknown type %q", t.Name, t.Type)
 	}
 }
 
@@ -5982,6 +6007,17 @@ func (w *stageWorkspace) ValidateReservedPaths(ctx context.Context) error {
 		return nil
 	}
 	return w.worktree.ValidateReservedPaths(ctx)
+}
+
+func (w *stageWorkspace) finishDispatch(ctx context.Context, preserve bool) error {
+	if !preserve {
+		return w.Remove(ctx)
+	}
+	if w.release != nil {
+		w.release()
+		w.release = nil
+	}
+	return fmt.Errorf("mutation projection failed; retained stage workspace %q", w.path)
 }
 
 func (w *stageWorkspace) Remove(ctx context.Context) error {
