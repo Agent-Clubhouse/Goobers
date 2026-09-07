@@ -105,6 +105,32 @@ behind every unit of work.
   health, task-queue depth) are not portal scope; if ever surfaced they arrive as
   tier-3 annotations on the same journal shape, not a separate UI. **Tier 3 (V2).**
 
+- **PORT-030 (MUST):** *(Tiers 1–3, shipped)* The portal-config read
+  (`GET /api/v1/portal/config`) MUST carry a **capability object** alongside the
+  co-branding payload, reporting which optional interactive surfaces this daemon
+  was wired with (today `revealRun` and `workflowEnable`). The portal MUST use it
+  to decide whether to render those controls. A capability flag reports **daemon
+  wiring, not authorization**: a true flag means the seam exists, never that the
+  caller may use it — the acting route remains responsible for authorization.
+  Adding a flag is an API-contract change (`internal/apicontract`'s wire
+  fixture), not a co-branding change.
+- **PORT-031 (MUST):** *(Tiers 1–3, shipped)* Any portal action whose effect is
+  **local to the daemon's own machine** MUST be withheld when the daemon's
+  listener is not loopback, because off-loopback the daemon's machine is not
+  necessarily the requesting user's. The reveal-run action is the shipped
+  instance of this rule: the revealer is wired only under a loopback listener, in
+  both `goobers up` and standalone `goobers dashboard`, and the capability then
+  reports false. Withholding the control is required rather than failing at click
+  time — a hidden control is the honest signal that the action does not apply to
+  this deployment. See `docs/design/portal-reveal-remote-posture.md`.
+- **PORT-032 (SHOULD):** *(Fleet, partially shipped)* The portal SHOULD remain a
+  window over a **single instance**. Fleet-level aggregation across instances is
+  designed in `docs/design/fleet-portal.md` and is **not** shipped: the shipped
+  fleet slice is instance-side enrollment and connection only (`INST-015`–`INST-017`).
+  Until a fleet read model and dashboard exist, no portal surface aggregates
+  across instances, and this requirement is the record that the boundary has not
+  moved.
+
 ## Relationships
 
 - Reads → **run journals** (`ARCHITECTURE.md §4`) and the **Telemetry** run store

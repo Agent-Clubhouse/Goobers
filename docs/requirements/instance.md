@@ -93,6 +93,24 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   its own reviewed git remote) and repo + identity permissions in the cloud
   (`SEC-021`). *(All tiers)*
 
+- **INST-015 (MAY):** *(Tiers 1–3, shipped)* An instance MAY enroll with **one**
+  Fleet service and maintain a durable outbound connection to it
+  (`goobers fleet join|status|leave`, `internal/fleet`). Enrollment is
+  operator-initiated and opt-in: an instance that never joins behaves exactly as
+  before the capability existed, and no fleet code path runs. Discovery is a
+  `GET` of the service's `/.well-known/goobers-fleet` document; enrollment
+  consumes a one-time grant.
+- **INST-016 (MUST):** *(Tiers 1–3, shipped)* Fleet identity and credentials MUST
+  be stored **outside the instance root**, so copying or restoring an instance
+  directory does not clone its fleet identity (`internal/fleet/storage.go`, with
+  per-OS private-file enforcement). This is the instance-identity counterpart to
+  `INST-010`'s layout rule: the instance root is the unit of copy, and identity
+  is deliberately not in it.
+- **INST-017 (MUST):** *(Tiers 1–3, shipped)* The connection an enrolled instance
+  maintains MUST be **outbound-only**. Fleet enrollment MUST NOT require inbound
+  network reachability to the instance, and MUST NOT change the instance's own
+  listener posture (`SEC-043` continues to govern `api.listen` unchanged).
+
 ## Relationships
 
 The `GET /api/v1/instance` response includes a bounded `maintenance` snapshot

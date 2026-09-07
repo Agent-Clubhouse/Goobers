@@ -1,9 +1,15 @@
 # Design: Dashboard co-branding and support hooks
 
-> Status: **approved — for implementation**
+> Status: **implemented** — shipped 2026-07-24 (`eac3cb707`, PR #1381), with the
+> as-built deltas recorded in §13. Reconciled against the tree 2026-09-06 by
+> [#4522](https://github.com/Agent-Clubhouse/Goobers/issues/4522).
 > Area prefix: `CBR`
 > Milestone: **V1 — arbitrary repos / teams / hardening**
-> Related: [`docs/design/dashboard.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/dashboard.md) · [`docs/requirements/portal.md`](../requirements/portal.md) · [`docs/requirements/instance.md`](../requirements/instance.md)
+> Related: [`docs/design/dashboard.md`](dashboard.md) · [`docs/requirements/portal.md`](../requirements/portal.md) · [`docs/requirements/instance.md`](../requirements/instance.md)
+
+> **Read §13 before treating §3.1, §4.1, §5.4, §6 or §7 as a specification.**
+> Several of them describe promises the implementation did not keep, or keeps
+> differently. §13 says which, and what was decided about each.
 
 ## 1. Problem
 
@@ -125,14 +131,14 @@ The following are enforced by `goobers validate` and at daemon startup:
 
 | Field | Rule |
 |---|---|
-| `brand.name` | Non-empty string ≤ 64 chars when present. |
-| `brand.tagline` | Non-empty string ≤ 128 chars when present. |
-| `brand.scopeMark` | Single Unicode grapheme cluster when present. |
+| `brand.name` | ≤ 64 chars. *(Narrowed: an empty string is treated as absent, so no non-empty check is enforced — see §13.)* |
+| `brand.tagline` | ≤ 128 chars. *(Same narrowing.)* |
+| `brand.scopeMark` | At most 2 runes — one letter, or one emoji with a variation selector. *(Narrowed from "single Unicode grapheme cluster": Go has no grapheme segmenter in the standard library. Enforced as of #4522; previously unvalidated entirely.)* |
 | `brand.logoUrl` | Must begin with `/assets/` when present. |
 | `brand.faviconUrl` | Must begin with `/assets/` when present. |
 | `theme.accent*` | Valid CSS color string when present (hex `#rrggbb`/`#rgb`, `rgb()`, `hsl()`, or a CSS named color). |
-| `support.docsUrl` | Absolute HTTPS URL when present. |
-| `support.issuesUrl` | Absolute HTTPS URL when present. |
+| `support.docsUrl` | Absolute HTTPS URL with a host when present. *(Parsed as of #4522; previously a bare `https://` passed a prefix check.)* |
+| `support.issuesUrl` | Absolute HTTPS URL with a host when present. *(Same.)* |
 | `support.chatUrl` | Absolute URL (`https://` or known deep-link schemes: `slack://`, `msteams://`) when present. |
 | `support.links[].label` | Non-empty string ≤ 32 chars. |
 | `support.links[].url` | Absolute HTTPS URL. |
@@ -151,11 +157,17 @@ via the brand config. The daemon serves `/assets/` from `<instance-root>/assets/
 GET /api/v1/portal/config
 ```
 
-Returns the effective cobrand configuration for the portal. This endpoint is
-always available (even standalone mode) and requires no authentication beyond
-the loopback binding. The response is cache-friendly: the `ETag` reflects the
-raw config section's digest and the daemon sets `Cache-Control: no-cache`
-(revalidation on every page load, not full re-fetch).
+Returns the effective cobrand configuration for the portal. It is always
+available (even in standalone mode).
+
+> **As-built (§13).** Two things in the original paragraph here were wrong.
+> **There is no `ETag`** — the handler sets `Cache-Control: no-cache` and
+> nothing else; there is no config digest on this route. And the endpoint is
+> **not** unauthenticated: it is registered like every other v1 route and passes
+> through the standard `Authorizer`, so "requires no authentication beyond the
+> loopback binding" describes the tier-1 `AllowAll` authorizer, not a property
+> of the route. The endpoint has also since become the portal's
+> **capability-negotiation channel** — see §13.
 
 **Response shape** (new `PortalConfig` type added to the API contract):
 
@@ -283,7 +295,8 @@ in place when the portal-config fetch resolves (avoids a flash).
 // portal/src/shell/SupportFooter.tsx
 // Renders in the sidebar below the status area when any support field is set.
 // Shows up to: Docs, Get help, Chat, and custom links.
-// Each opens in a new tab (rel="noopener noreferrer").
+// Each opens in a new tab (rel="noopener noreferrer"). Shipped as
+// rel="noreferrer" only until #4522.
 // Hidden entirely when no support fields are configured.
 ```
 
@@ -299,6 +312,18 @@ rel="icon">` element in `<head>` to point at the custom URL. This runs after
 the cobrand fetch resolves and is a no-op when null.
 
 ## 6. Static asset serving
+
+> **As-built (§13).** This shipped in a **different layer** and with an
+> additional semantic the design does not state. It is not a daemon HTTP-layer
+> route: it is `serveInstanceAsset` in `cmd/goobers/dashboard.go`, dispatched by
+> the portal-serving handler ahead of the embedded file server, and it
+> deliberately avoids `http.ServeMux` because ServeMux's traversal-redirect
+> would 3xx a `/assets/../x` path before the containment check could 404 it. The
+> undocumented semantic that matters most: **an operator file under
+> `<instance-root>/assets/` overrides the embedded bundle at the same
+> `/assets/` path**, and anything not present there — notably the portal's own
+> `/assets/index-*.js|css` — falls through. That override is a real capability
+> and a real hazard, and it is why CBR001/CBR002 exist.
 
 The daemon's HTTP layer gains a new route:
 
@@ -322,18 +347,31 @@ on disk at validation time.
 
 ## 7. `goobers validate` additions
 
-Two new validation warnings (not errors, since the daemon still starts):
+Two validation warnings (not errors, since the daemon still starts):
 
 | Code | Condition |
 |---|---|
 | `CBR001` | `brand.logoUrl` is set but the file does not exist under `assets/`. |
 | `CBR002` | `brand.faviconUrl` is set but the file does not exist under `assets/`. |
 
-A new validation error (daemon refuses to start):
+Both are implemented as of #4522 (`appendCobrandAssetWarnings`,
+`cmd/goobers/validatereality.go`); until then the codes appeared only on this
+page. They matter because the asset handler treats a missing file as "fall
+through to the embedded bundle" (§6), so a typo'd filename renders stock Goobers
+branding with no error on any surface.
+
+A validation error (daemon refuses to start):
 
 | Code | Condition |
 |---|---|
 | `CBR003` | Any `theme.accent*` value is present but fails CSS color validation. |
+
+> **As-built.** The CBR003 *condition* is enforced (`PortalConfig.Validate`
+> rejects an implausible CSS color), but it is returned as an uncoded
+> `fmt.Errorf` string, not as an allocated `CBR003`. Config-load errors in this
+> package are uncoded generally, so this is a documentation narrowing rather
+> than a gap: **treat `CBR003` as the name of the rule, not as a code the
+> validator emits.** `PORT-CBR-005` inherits the same reading.
 
 ## 8. Config-examples update
 
@@ -397,3 +435,62 @@ reference in the file they're already editing.
 - **`README.md`** — update portal row in the repository layout table to note
   cobrand support.
 - **`docs/requirements/portal.md`** — add `PORT-CBR` requirements block.
+
+---
+
+## 13. As-built deltas (recorded 2026-09-06, #4522)
+
+Cobrand shipped on 2026-07-24 (`eac3cb707`, PR #1381). The bulk of this design
+is implemented exactly as written — the five config structs, the
+`/api/v1/portal/config` route and its wire fixture, `cobrand.tsx` with the
+documented `:root:not([data-theme="dark"])` / `:root[data-theme="dark"]`
+selectors, all six token values verbatim, the favicon swap, the commented
+`portal:` block in `config-examples/manifest.yaml`, and `PORT-CBR-001`…`007`.
+
+These are the deltas.
+
+### Closed in #4522
+
+| Delta | Disposition |
+|---|---|
+| **CBR001 / CBR002 never implemented.** §6 promised `goobers validate` would warn about a `logoUrl`/`faviconUrl` naming an absent asset; no file-existence check existed anywhere. | **Implemented.** `appendCobrandAssetWarnings` emits both codes. This was genuinely unbuilt functionality, not a naming gap: with the §6 override semantics, a typo renders stock branding silently. |
+| **Support URLs checked by `strings.HasPrefix(…, "https://")`**, so a bare `https://` passed. | **Implemented.** Parsed and required to carry a host. |
+| **`brand.scopeMark` had no validation at all** — only defaulting. | **Implemented, narrowed.** Bounded at 2 runes rather than segmented into grapheme clusters. |
+| **`rel="noreferrer"` and a plain `<div>`**, against §5.4's `rel="noopener noreferrer"` and `<nav aria-label="Support">`. `PORT-CBR-003` inherited the gap. | **Implemented** as designed. |
+
+### Narrowed in the design instead
+
+| Delta | Disposition |
+|---|---|
+| **`brand.name` / `brand.tagline` "non-empty"** was never enforced; only the length caps are. | **Design narrowed.** An empty string is indistinguishable from an absent field here, and rejecting it would fail configs that behave identically to omitting the key. §3.1 corrected. |
+| **`CBR003` is not an allocated code.** The condition is enforced; the error is an uncoded string. | **Design narrowed.** Config-load errors in `internal/instance` are uncoded generally. `CBR003` names the rule, not an emitted code. `PORT-CBR-005` reads the same way. |
+| **`ETag`** on `/api/v1/portal/config`. Never implemented; the handler sets only `Cache-Control: no-cache`, and no config digest backs the route. | **Design narrowed.** §4.1 corrected. Revisit only if the payload grows expensive; it currently does not. |
+| **"requires no authentication beyond the loopback binding."** The route passes through the standard `Authorizer` like every other v1 route. | **Design corrected.** The observed behaviour comes from the tier-1 `AllowAll` authorizer, not from a property of this route — a distinction that matters the moment a real authorizer is configured. |
+
+### Recorded as an undocumented design change
+
+**The portal-config endpoint became the portal's capability-negotiation
+channel**, after this design and without a design record. Its response now
+carries a `Capabilities` object alongside the cobrand payload —
+`RevealRun` (#2372, 2026-08-03) and `WorkflowEnable` (#4201, 2026-09-05) —
+populated from whether the daemon was wired with a run-revealer and a
+workflow-mutation seam, and consumed by the portal to decide whether to render
+those controls.
+
+That is a sound place for it: the portal already fetches this route on load, and
+capabilities are exactly "static facts about this daemon the UI needs before it
+renders." But it means **this endpoint is no longer only about branding**, and
+its contract is now load-bearing for feature gating. Two consequences worth
+stating:
+
+- Adding a capability flag is an API-contract change, not a cobrand change, and
+  belongs in `internal/apicontract`'s wire fixture review.
+- A capability flag reflects **daemon wiring**, not authorization. `RevealRun`
+  being true means the daemon has a revealer, not that the caller may use it;
+  authorization stays with the route that performs the action.
+
+### Still unbuilt
+
+`docs/guides/cobrand.md` (§11) and the root `README.md` mention (§12) do not
+exist. §11's checklist boxes are left unticked deliberately: the sections above,
+not the checklist, are the record of what shipped.

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -982,5 +983,87 @@ func TestValidateWarnsWindowsAVExclusionsUndeclared(t *testing.T) {
 	}
 	if strings.Contains(stdout, "RNR006") {
 		t.Errorf("a declared avExclusionsVerified: true must not warn RNR006:\n%s", stdout)
+	}
+}
+
+// #4522: cobrand.md §7 specified CBR001/CBR002 — warn when brand.logoUrl or
+// brand.faviconUrl names a file the instance's assets/ dir does not contain —
+// and neither was implemented. The daemon's asset handler treats a miss as
+// "fall through to the embedded bundle", so a typo renders stock branding with
+// no error on any surface.
+func TestAppendCobrandAssetWarnings(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "assets"), 0o755); err != nil {
+		t.Fatalf("create assets dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "assets", "logo.svg"), []byte("<svg/>"), 0o644); err != nil {
+		t.Fatalf("write logo: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		portal    instance.PortalConfig
+		wantCodes []validate.WarningCode
+		wantText  []string
+	}{
+		{
+			name:   "present asset is clean",
+			portal: instance.PortalConfig{Brand: instance.PortalBrandConfig{LogoURL: "/assets/logo.svg"}},
+		},
+		{
+			name:      "missing logo warns",
+			portal:    instance.PortalConfig{Brand: instance.PortalBrandConfig{LogoURL: "/assets/missing.svg"}},
+			wantCodes: []validate.WarningCode{validate.WarningCobrandMissingLogoAsset},
+			wantText:  []string{"portal.brand.logoUrl", "/assets/missing.svg", "falls through to the embedded bundle"},
+		},
+		{
+			name: "missing favicon warns separately",
+			portal: instance.PortalConfig{Brand: instance.PortalBrandConfig{
+				LogoURL: "/assets/logo.svg", FaviconURL: "/assets/nope.png",
+			}},
+			wantCodes: []validate.WarningCode{validate.WarningCobrandMissingFaviconAsset},
+			wantText:  []string{"portal.brand.faviconUrl"},
+		},
+		{
+			name: "both missing warn independently",
+			portal: instance.PortalConfig{Brand: instance.PortalBrandConfig{
+				LogoURL: "/assets/a.svg", FaviconURL: "/assets/b.png",
+			}},
+			wantCodes: []validate.WarningCode{
+				validate.WarningCobrandMissingLogoAsset,
+				validate.WarningCobrandMissingFaviconAsset,
+			},
+		},
+		{
+			name:   "unset urls never warn",
+			portal: instance.PortalConfig{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			set := &instance.ConfigSet{}
+			report := &validate.Report{}
+			cfg := &instance.Config{Portal: tc.portal}
+			var got []realityWarning
+			for _, w := range appendStaticRealityWarnings(root, "config", cfg, set, nil, report, false) {
+				if w.warning.Code == validate.WarningCobrandMissingLogoAsset ||
+					w.warning.Code == validate.WarningCobrandMissingFaviconAsset {
+					got = append(got, w)
+				}
+			}
+			if len(got) != len(tc.wantCodes) {
+				t.Fatalf("cobrand warnings = %#v, want %d", got, len(tc.wantCodes))
+			}
+			for i, want := range tc.wantCodes {
+				if got[i].warning.Code != want {
+					t.Errorf("warning %d code = %q, want %q", i, got[i].warning.Code, want)
+				}
+			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(got[0].warning.Explanation, want) {
+					t.Errorf("explanation %q does not mention %q", got[0].warning.Explanation, want)
+				}
+			}
+		})
 	}
 }

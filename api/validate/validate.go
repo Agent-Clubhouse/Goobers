@@ -118,6 +118,17 @@ const (
 	// readiness cap cannot obtain a GitHub open-PR count for its gaggle's
 	// project repository.
 	WarningMaxOpenPRsUnenforceable WarningCode = "PRCAP001"
+	// WarningCobrandMissingLogoAsset identifies a portal.brand.logoUrl that
+	// points into the instance's assets/ dir at a file that is not there. The
+	// URL passes shape validation, the daemon serves the request by falling
+	// through to the embedded bundle, and the operator sees the stock logo
+	// with no error anywhere -- the failure is invisible without this warning.
+	// docs/design/cobrand.md 7 specified it as CBR001 and it was never
+	// implemented (#4522).
+	WarningCobrandMissingLogoAsset WarningCode = "CBR001"
+	// WarningCobrandMissingFaviconAsset is CBR001's counterpart for
+	// portal.brand.faviconUrl (cobrand.md 7's CBR002).
+	WarningCobrandMissingFaviconAsset WarningCode = "CBR002"
 	// WarningGateCompletionHidesFailure identifies an automated gate branch
 	// that is keyed on a failure-implying outcome (status-equals'
 	// default/success "fail", failure-class "fail"/"infra") and routes to
