@@ -81,6 +81,14 @@ separately against it (§10).
 
 ## 3. What exists today (verified against `origin/main`)
 
+> **"Today" here is the pre-GA baseline, not the current tree** (#4520). Every
+> row below predates the implementation this document's own header records as
+> GA in #1939 — the whole point of the table was to state what the design had to
+> add. Read it as the starting point; `api/v1alpha1`'s parallel/branch types and
+> the `parallel.*`/`branch.*` journal events are the outcome, and `WF-060` in
+> `docs/requirements/workflow.md` is the normative statement. Line-number
+> anchors in the table are stale; resolve them by symbol.
+
 | # | Component | State today | Anchor |
 |---|---|---|---|
 | 1 | Task successor | `Next string` — exactly one successor, empty means terminal. | `api/v1alpha1/workflow_types.go:232` |

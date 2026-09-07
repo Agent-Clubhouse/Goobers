@@ -3,6 +3,25 @@
 **Status:** approved — for backlog planning (PO directive, 2026-07-16). Backlog-only future
 investment: items are not `goobers:approved` and not eligible for automated implementation
 until promoted.
+Delivered-by: #639, #643, #647, #651
+Verified: 09db115bb (2026-09-06)
+
+> **Most of this shipped; the PO directive above is left intact deliberately.**
+> Re-checked 2026-09-06 (#4520): P8 daemon supervision units ship for all three
+> platforms (systemd, launchd, Windows service — `packaging/`,
+> `internal/winsvc`); P9's git/worktree Windows audit is
+> [`docs/guides/windows-worktree-notes.md`](../guides/windows-worktree-notes.md)
+> and the managed-mirror config it specifies is enforced in
+> `internal/worktree`; the required Windows CI gate runs the worktree
+> regressions natively; and Windows release artifacts are published by the
+> release engine. P11 (#651) resolved **in the container direction**, which
+> supersedes P13's persistent-VM posture — see
+> [`mixed-platform-cloud-nodes.md`](mixed-platform-cloud-nodes.md) §3.
+>
+> The worktree path formula this document cites
+> (`workcopies/<key>/runs/<runID>-<stage>`) is the pre-#2263 shape; the leaf is
+> now a fixed-width hash. Read the tables below as the 2026-07 portability
+> baseline the work started from, not as current state.
 
 **Goal:** Goobers nodes — the local daemon at tiers 1–2 and cloud workers/pods at tier 3 —
 run first-class on **Linux and Windows** in addition to the current macOS development
