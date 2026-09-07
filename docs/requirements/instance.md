@@ -83,6 +83,25 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   <workflow>` (manual trigger, still honoring run conditions), `goobers status`, and
   `goobers trace <run-id>`. This is the owning statement of the CLI lifecycle surface
   (`DEP-022`/`DEP-023` defer here). *(Tiers 1–2)*
+- **INST-018 (MUST, Shipped):** The **command registry is the single source of
+  truth for the CLI surface** (#4521). Every command, subcommand, and flag MUST be
+  declared once in that registry, and every derived artifact — `goobers help`
+  output, shell completions, the generated man pages, and `docs/cli/` — MUST be
+  **generated from it and drift-guarded in CI**, never hand-maintained. A new
+  subcommand that does not regenerate its documentation is a CI failure, not a
+  follow-up. This requirement exists because the CLI is a public contract with
+  four rendered surfaces, and hand-editing any one of them is how they diverge.
+- **INST-019 (MUST, Shipped):** The instance MUST support **operator-requested
+  self-update** of its own binary: a staged, verified replacement of the running
+  binary with health checking and rollback, driven through the daemon's supervised
+  host so an update never leaves the instance without a runnable binary. The
+  update **policy selects the target** (`manual` requires a named release tag,
+  `on-release` resolves the newest stable release, `on-main` builds a tracked
+  branch); it does **not** make the update automatic. Self-update MUST be
+  explicitly invoked — by the operator, or by the operator-requested `self-update`
+  workflow — and MUST NOT fire on a timer. It MUST NOT interrupt an in-flight run:
+  the handoff requests the daemon's ordinary graceful drain rather than killing
+  work (see the drain contract in `../guides/supervision.md`).
 - **INST-013 (MUST):** After a crash or restart, the local runner MUST recover by
   replaying each run's `state.json` + journal and resuming in-flight runs from the
   last completed stage; recovery MUST never rewrite journal history. Owning

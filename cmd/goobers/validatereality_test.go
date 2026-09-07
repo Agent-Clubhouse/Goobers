@@ -986,6 +986,72 @@ func TestValidateWarnsWindowsAVExclusionsUndeclared(t *testing.T) {
 	}
 }
 
+// #4517: docs/design/daemon-identity-multi-owner.md §6 asked for a warning on a
+// github-app daemonIdentity with no slug, and #3415 did not ship it. Without
+// slug, daemonIdentityAuthorLogin returns empty and PR selection silently
+// degrades to the branch-name-prefix heuristic — drift-shaped, not
+// crash-shaped, so nothing else surfaces it.
+func TestAppendDaemonIdentitySlugWarning(t *testing.T) {
+	app := func(slug string) *instance.DaemonIdentityConfig {
+		return &instance.DaemonIdentityConfig{
+			Kind: instance.GitHubAuthApp, AppID: "123456", InstallationID: "999",
+			PrivateKey: &instance.TokenRef{File: "/key.pem"}, Slug: slug,
+		}
+	}
+	tests := []struct {
+		name        string
+		identity    *instance.DaemonIdentityConfig
+		wantWarning bool
+		wantText    []string
+	}{
+		{
+			name:        "github-app identity without slug warns",
+			identity:    app(""),
+			wantWarning: true,
+			wantText:    []string{"kind: github-app", "declares no slug", "branch-name-prefix heuristic", "goobersbot[bot]"},
+		},
+		{
+			name:     "github-app identity with slug is clean",
+			identity: app("goobersbot"),
+		},
+		{
+			// A PAT identity resolves its login from the provider at runtime,
+			// so slug is meaningless for it and must not warn.
+			name: "pat identity never warns",
+			identity: &instance.DaemonIdentityConfig{
+				Kind: instance.GitHubAuthPAT, Token: &instance.TokenRef{Env: "DAEMON_GITHUB_TOKEN"},
+			},
+		},
+		{
+			name: "no daemon identity never warns",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			set := &instance.ConfigSet{}
+			report := &validate.Report{}
+			cfg := &instance.Config{DaemonIdentity: tc.identity}
+			var got []realityWarning
+			for _, w := range appendStaticRealityWarnings("", "config", cfg, set, nil, report, false) {
+				if w.warning.Code == validate.WarningDaemonIdentityMissingSlug {
+					got = append(got, w)
+				}
+			}
+			if (len(got) == 1) != tc.wantWarning {
+				t.Fatalf("IDENT001 warnings = %#v, want warning %t", got, tc.wantWarning)
+			}
+			if !tc.wantWarning {
+				return
+			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(got[0].warning.Explanation, want) {
+					t.Errorf("IDENT001 explanation %q does not mention %q", got[0].warning.Explanation, want)
+				}
+			}
+		})
+	}
+}
+
 // #4522: cobrand.md §7 specified CBR001/CBR002 — warn when brand.logoUrl or
 // brand.faviconUrl names a file the instance's assets/ dir does not contain —
 // and neither was implemented. The daemon's asset handler treats a miss as

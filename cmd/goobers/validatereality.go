@@ -150,6 +150,7 @@ func appendStaticRealityWarnings(
 	appendMaxOpenPRWarnings(root, configDir, cfg, set, add)
 	appendGateCompletionWarnings(root, configDir, set, add)
 	appendWindowsAVExclusionWarnings(root, cfg, add)
+	appendDaemonIdentitySlugWarning(root, cfg, add)
 	appendCobrandAssetWarnings(root, cfg, add)
 	return warnings
 }
@@ -193,6 +194,35 @@ func appendCobrandAssetWarnings(
 			fmt.Sprintf("%s is %q, but %s does not exist; the daemon falls through to the embedded bundle, "+
 				"so the stock branding is served with no error", asset.field, asset.url, full))
 	}
+}
+
+// appendDaemonIdentitySlugWarning warns when a github-app daemonIdentity omits
+// slug (#4517, closing the gap docs/design/daemon-identity-multi-owner.md 6
+// named and #3415 did not ship).
+//
+// slug is the App's bot login minus the "[bot]" suffix, and it is the only
+// thing that turns the configured daemon identity into an identity CHECK: with
+// it, daemonIdentityAuthorLogin returns "<slug>[bot]" and PR selection
+// recognises the daemon's own PRs by login; without it that function returns
+// empty and selection silently falls back to the branch-name-prefix heuristic.
+// The instance still mints and authenticates correctly, so this is a warning --
+// but nothing else surfaces the downgrade, which is why it is worth one.
+func appendDaemonIdentitySlugWarning(
+	root string,
+	cfg *instance.Config,
+	add func(code validate.WarningCode, kind, name, file, path, message string),
+) {
+	if cfg == nil || cfg.DaemonIdentity == nil || !cfg.DaemonIdentity.GitHubApp() {
+		return
+	}
+	if cfg.DaemonIdentity.Slug != "" {
+		return
+	}
+	add(validate.WarningDaemonIdentityMissingSlug, "Instance", "daemonIdentity",
+		filepath.Join(root, instance.ConfigFileName), "daemonIdentity.slug",
+		"daemonIdentity is kind: github-app but declares no slug: PR selection cannot recognise the daemon's own "+
+			"pull requests by login and silently falls back to the branch-name-prefix heuristic. Set slug to the "+
+			"App's bot login without the \"[bot]\" suffix (for example slug: goobersbot for goobersbot[bot]).")
 }
 
 // appendWindowsAVExclusionWarnings is #3480's declaration half (RNR006): a

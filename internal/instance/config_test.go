@@ -3424,6 +3424,14 @@ func TestValidateDaemonIdentitySameAppInstallations(t *testing.T) {
 		Kind: GitHubAuthApp, AppID: "123456", InstallationID: "999",
 		PrivateKey: &TokenRef{File: "/key.pem"},
 	}
+	perOwnerIdentity := &DaemonIdentityConfig{
+		Kind: GitHubAuthApp, AppID: "123456",
+		Installations: []DaemonInstallation{
+			{Owner: "acme", InstallationID: "111"},
+			{Owner: "globex", InstallationID: "222"},
+		},
+		PrivateKey: &TokenRef{File: "/key.pem"},
+	}
 	repo := func(appID, installationID GitHubID) RepoRef {
 		return RepoRef{
 			Provider: "github", Owner: "acme", Name: "a",
@@ -3439,7 +3447,7 @@ func TestValidateDaemonIdentitySameAppInstallations(t *testing.T) {
 		{
 			name:    "same app, different installation is rejected",
 			cfg:     Config{DaemonIdentity: identity, Repos: []RepoRef{repo("123456", "888")}},
-			wantErr: "disagrees with daemonIdentity.installationId",
+			wantErr: `disagrees with the daemonIdentity installation "999" bound to owner "acme"`,
 		},
 		{
 			name: "same app, same installation agrees",
@@ -3460,6 +3468,45 @@ func TestValidateDaemonIdentitySameAppInstallations(t *testing.T) {
 			cfg: Config{DaemonIdentity: identity, Repos: []RepoRef{
 				{Provider: "github", Owner: "acme", Name: "a", Token: TokenRef{Env: "T"}},
 			}},
+		},
+		{
+			// #4517: #3414 shipped only the single-installationId arm, so this
+			// check was a no-op for the installations: form -- the exact
+			// multi-owner shape daemon-identity-multi-owner.md exists for.
+			name: "installations form: same app, wrong installation for that owner is rejected",
+			cfg: Config{
+				DaemonIdentity: perOwnerIdentity,
+				Repos: []RepoRef{
+					{Provider: "github", Owner: "globex", Name: "b", Auth: &RepoAuthConfig{
+						Kind: GitHubAuthApp, AppID: "123456", InstallationID: "111",
+					}},
+				},
+			},
+			wantErr: `disagrees with the daemonIdentity installation "222" bound to owner "globex"`,
+		},
+		{
+			name: "installations form: matching installation for that owner agrees",
+			cfg: Config{
+				DaemonIdentity: perOwnerIdentity,
+				Repos: []RepoRef{
+					{Provider: "github", Owner: "globex", Name: "b", Auth: &RepoAuthConfig{
+						Kind: GitHubAuthApp, AppID: "123456", InstallationID: "222",
+					}},
+				},
+			},
+		},
+		{
+			// An owner with no binding is already rejected by the coverage
+			// check; this one must not also fire and blame the wrong field.
+			name: "installations form: unbound owner is left to the coverage check",
+			cfg: Config{
+				DaemonIdentity: perOwnerIdentity,
+				Repos: []RepoRef{
+					{Provider: "github", Owner: "initech", Name: "c", Auth: &RepoAuthConfig{
+						Kind: GitHubAuthApp, AppID: "123456", InstallationID: "333",
+					}},
+				},
+			},
 		},
 	}
 	for _, tc := range cases {

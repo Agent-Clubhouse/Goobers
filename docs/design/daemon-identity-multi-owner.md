@@ -1,17 +1,28 @@
 # Daemon identity on multi-owner instances
 
-**Status:** implemented — the routing this document designs shipped in #3414 and
-#3415; `internal/instance/config.go`'s `DaemonIdentityConfig` carries the
-per-owner-installation fields described below. Retained as the design of record
-for #3341; the code, not this document, is authoritative for current behaviour.
-**Verified against** `origin/main` @ `a1cd66dd`.
+**Status:** implemented, with a recorded scope delta — the per-owner routing
+this document designs shipped in #3414 and #3415, and the two validations it
+designed but did not ship were adjudicated and closed out in #4517. Retained as
+the design of record for #3341; the code, not this document, is authoritative
+for current behaviour. **Verified against** `origin/main` @ `09db115bb`
+(2026-09-06).
 
-`daemonIdentity` is per-instance global and carries exactly one `installationId`. GitHub App
-installations are owner-scoped. An instance whose `repos` span two GitHub owners therefore has **no
-configuration of `daemonIdentity` that works**: every daemon mutation against the other owner's repo
-dies at credential materialization with GitHub's 422 ("at least one repository … is not accessible to
-the parent installation"), because the mint is correctly down-scoped to a repo the configured
-installation does not cover.
+> **Read §5.1 "Shipped scope delta" before treating §5, §6, §8 or §9 as a
+> specification.** The body below is written in the *pre-implementation* voice
+> it was drafted in — the #4329 resync flipped only the status line and left
+> the prose asserting, in the present tense, gaps that #3415 closed. §5.1 is the
+> reconciliation: which of the designed validations shipped, which were
+> deliberately dropped from the contract, and which were implemented later.
+
+## 0. The problem (historical — resolved by #3415)
+
+*Before #3415:* `daemonIdentity` was per-instance global and carried exactly one
+`installationId`. GitHub App installations are owner-scoped. An instance whose
+`repos` spanned two GitHub owners therefore had **no configuration of
+`daemonIdentity` that worked**: every daemon mutation against the other owner's
+repo died at credential materialization with GitHub's 422 ("at least one
+repository … is not accessible to the parent installation"), because the mint is
+correctly down-scoped to a repo the configured installation does not cover.
 
 Found live on a tier-3 cloud instance (v0.2.1, 2026-08-20 cutover) whose repos are
 `Agent-Clubhouse/Goobers` (installation A) and `masra91/Goobers-Site` (installation B) — same App,
@@ -43,7 +54,8 @@ lifecycle-safe at any DSL version (operator ruling on #3341, 2026-08-20).
 
 ## 2. Current mechanics (what the design builds on)
 
-All symbol references are to `origin/main` @ `a1cd66dd`. Cited by symbol, not line.
+All symbol references are cited by symbol, not line, and were re-resolved
+against `origin/main` @ `09db115bb` (2026-09-06).
 
 - **Config:** `instance.DaemonIdentityConfig` (`internal/instance/config.go`) carries `Kind`
   (`pat` | `github-app`), and for `github-app`: `AppID`, a single `InstallationID`, `PrivateKey`,
@@ -52,9 +64,10 @@ All symbol references are to `origin/main` @ `a1cd66dd`. Cited by symbol, not li
 - **Wiring:** `buildCredentials` (`cmd/goobers/runnerwiring_credentials.go`) is per-gaggle — it
   receives `(gaggleOwner, gaggleName)`. When `DaemonIdentity` is configured it registers one
   resolver ref (`daemonIdentityRefName = "daemon-identity"`) and grants it the standard
-  daemon-mutation set (`daemonIdentityCapabilities` in `runnerwiring_executors.go`: `repo:push`,
-  `github:issues:write`, `github:pr:write`, `github:pr:review`, `github:branch:delete`,
-  `github:pr:merge`), before the explicit `credentials:` loop so per-capability grants still win
+  daemon-mutation set (`daemonIdentityCapabilities` in `runnerwiring_executors.go` — seven
+  capabilities: `repo:push`, `github:issues:write`, `github:pr:write`, `github:pr:review`,
+  `provider:ci:cancel`, `github:branch:delete`, `github:pr:merge`), before the explicit
+  `credentials:` loop so per-capability grants still win
   (`credentials.RunnerGrants` last-wins semantics).
 - **Minting:** `newDaemonIdentityGitHubAppTokenSource` builds a `githubapp.New` source from the
   single `InstallationID`, down-scoped via `Repositories` to the gaggle's own repo — the MGV-5
@@ -81,15 +94,16 @@ daemonIdentity:
   appId: 123456
   privateKey: { file: /secrets/goobersbot.pem }
   slug: goobersbot
-  installations:                      # NEW — owner-scoped installation routing
+  installations:                      # owner-scoped installation routing (#3415)
     - owner: Agent-Clubhouse
       installationId: 1111111
     - owner: masra91
       installationId: 2222222
 ```
 
-- `installations[].owner` — the GitHub owner (org or user) exactly as it appears in
-  `repos[].owner`. Compared case-insensitively (GitHub owner names are case-insensitive).
+- `installations[].owner` — the GitHub owner (org or user) **exactly** as it appears in
+  `repos[].owner`. Compared byte-for-byte, not case-insensitively — see §5.1; a case
+  mismatch is a load error naming the uncovered owner, never a silent miss.
 - `installations[].installationId` — `GitHubID`, numeric, same validation as the existing
   top-level field.
 - The existing single-installation form remains fully supported for single-owner instances:
@@ -114,7 +128,7 @@ unconfigured instance's written `instance.yaml` stays byte-identical.
 
 ## 4. Runtime routing
 
-`buildCredentials` selects the binding whose `owner` matches `gaggleOwner` (case-insensitive) and
+`buildCredentials` selects the binding whose `owner` matches `gaggleOwner` exactly (§5.1) and
 hands that `installationId` to `newDaemonIdentityGitHubAppTokenSource`, which needs no other change
 — it already receives the gaggle repo name for down-scoping and would now take the resolved
 installation ID (or the owner, resolving internally) instead of reading the single global field.
@@ -147,7 +161,7 @@ Structural (new field, both forms):
 
 1. Exactly one of `installationId` / `installations` for kind `github-app`; `installations`
    non-empty when present; each entry requires non-empty `owner` and a numeric `installationId`;
-   duplicate owners (case-insensitive) rejected.
+   duplicate owners rejected (exact match — §5.1).
 2. `kind: pat` + `installations` rejected (App-only field, existing pattern).
 
 Coverage (the #3341 detonation, made static):
@@ -158,9 +172,9 @@ Coverage (the #3341 detonation, made static):
    have caught the live config the moment it was written. Message names the uncovered owners and
    points at `installations:`.
 4. **`installations` form:** every distinct GitHub-provider `repos[].owner` must have a binding.
-   Extra bindings for owners with no configured repo are rejected too — an unused binding is
-   either a typo'd owner (the dangerous case: the real owner then also trips check 4's missing
-   arm) or dead config.
+   ~~Extra bindings for owners with no configured repo are rejected too.~~ **Dropped — see
+   §5.1.** An extra binding is inert, and the typo'd-owner case it was meant to catch is caught
+   anyway, because the real owner then has no binding and trips this check's missing arm.
 5. **Cross-check against `repos[].auth` (D5):** for any repo whose `auth` is `github-app` with
    `appId` equal to `daemonIdentity.appId`, the repo's `installationId` must equal the daemon
    identity's binding for that repo's owner (or the single `installationId` on a single-owner
@@ -177,6 +191,64 @@ only through genuine server-side changes rather than expressible-but-wrong confi
 Check 3 is independently shippable before the `installations:` field exists and is worth landing
 first — it converts the remaining silent-failure window into a config error with a clear message,
 even for operators who stay on the workaround (follow-up F1, §8).
+
+### 5.1 Shipped scope delta (adjudicated in #4517)
+
+The five checks above were designed together; only some shipped with #3414/#3415.
+The 2026-09-06 documentation audit found the difference undocumented, with §8's
+F2 row reading as if all of them had landed. Each is adjudicated here, and this
+subsection — not §5's list — is the current contract.
+
+| Designed | Shipped? | Disposition |
+|---|---|---|
+| Check 1 — structural (exactly one form; non-empty entries; duplicate owners rejected) | Yes | Contract, unchanged. |
+| Check 2 — `kind: pat` + `installations` rejected | Yes (`hasGitHubAppFields`) | Contract, unchanged. |
+| Check 3 — single-installation form cannot span owners | Yes (`validateDaemonIdentityOwnerCoverage`) | Contract, unchanged. |
+| Check 4 — every owner has a binding | Yes | Contract, unchanged. |
+| Check 4, second sentence — **extra bindings rejected** | **No** | **Removed from the contract.** See below. |
+| Check 5 — same-App cross-check, single-`installationId` arm | Yes (#3414) | Contract, unchanged. |
+| Check 5 — same-App cross-check, **`installations` arm** | **No, until #4517** | **Implemented.** See below. |
+| §6 — **missing-`Slug` warning** | **No, until #4517** | **Implemented.** See below. |
+| §3/§4 — **case-insensitive owner matching** (stated three times) | **No** | **Removed from the contract.** See below. |
+
+**Case-insensitive owner matching — removed from the contract.**
+`InstallationForOwner` compares `binding.Owner == owner` exactly
+(`internal/instance/config.go`), and duplicate detection and coverage both use
+exact-key maps. An owner whose binding differs only in case is therefore
+*uncovered*, not matched — which check 3/4 turns into a **load error naming the
+uncovered owner**, not a silent mis-route. That is fail-closed and loud, so it
+is not a security property, and matching GitHub's case-insensitive login
+semantics here would buy convenience at the cost of a second normalization rule
+that `repos[].owner` does not have anywhere else. The contract is therefore:
+**`installations[].owner` must match `repos[].owner` exactly.** A case mismatch
+is a configuration error, and the loader says so.
+
+**Extra-binding rejection — removed from the contract.** Q2 below asked whether
+rejecting bindings for owners with no configured repo was too strict for a
+config shared across instances with different repo subsets. The implementation
+answered by not rejecting them, and that answer stands: an unused binding grants
+nothing — a binding is only ever consulted through `InstallationForOwner` for an
+owner the instance actually targets — so the fail-closed argument does not
+apply. The typo'd-owner hazard Q2 worried about is still caught, because the
+*real* owner then has no binding and trips check 4's error. The contract is
+therefore: **extra bindings are permitted and inert.**
+
+**Same-App cross-check, `installations` arm — implemented (#4517).** This one is
+a real gap, not a scope trim: #3414's `validateDaemonIdentitySameAppInstallations`
+returned early when the top-level `installationId` was empty, making it a no-op
+for *every* `installations`-form config — exactly the multi-owner shape this
+design exists to serve. A repo whose `auth` names the same App with a
+conflicting installation ID went uncaught. The check now resolves the daemon
+identity's installation **for that repo's owner** through
+`InstallationForOwner`, so it covers both config shapes. An owner with no
+binding at all is deliberately left to check 4 rather than reported here, so the
+error blames the right field.
+
+**Missing-`Slug` warning — implemented (#4517).** §6 argued for it and #3415 did
+not ship it, so a `kind: github-app` daemon identity without `slug` silently
+degraded PR selection to the branch-name-prefix heuristic. `goobers validate`
+now emits `IDENT001` (warning, not error — the instance still mints and
+authenticates correctly).
 
 ---
 
@@ -254,12 +326,14 @@ workaround) at any time, since the field is provisioning-only.
 
 ## 8. Follow-up issues
 
-Filed alongside this document, gated as listed. This PR implements none of them.
+Filed alongside this document, gated as listed. *This section is written from the
+document's original pre-implementation moment;* both issues have since landed —
+see §5.1 for what actually shipped.
 
 | # | Scope | Gate |
 | --- | --- | --- |
 | #3414 (F1) | Fail-at-config-load coverage checks for the **existing** single-installation form (§5 checks 3 and 5, single-owner arm): multi-owner repos + single `installationId` → load error; same-App `repos[].auth` disagreement → load error. No new config surface; independently shippable and worth landing first | This design merged |
-| #3415 (F2) | `installations:` per-owner bindings: config field + structural validation (§5 checks 1–2, 4, and the `installations`-form arm of 5), routing in `buildCredentials` / `newDaemonIdentityGitHubAppTokenSource` (§4), missing-`Slug` warning (§6), schema + guide updates (§7). Regression test shape: two-owner instance config, assert per-gaggle resolvers mint from the owner-matched installation and that the §5 rejections fire | #3414 (its checks become the `installations`-form arms) |
+| #3415 (F2) | `installations:` per-owner bindings: config field + structural validation (§5 checks 1–2, 4, and the `installations`-form arm of 5), routing in `buildCredentials` / `newDaemonIdentityGitHubAppTokenSource` (§4), missing-`Slug` warning (§6), schema + guide updates (§7). **Shipped partially** — the field, structural validation, and routing landed; the `installations` arm of check 5, the missing-`Slug` warning, and the guide updates did not. All three were closed out in #4517 (§5.1). | #3414 (its checks become the `installations`-form arms) |
 | — | Per-owner *different Apps* (multi-login attribution) — **not filed**: no observed need, and it invalidates the single-`expectedAuthorLogin` model (D6). File only if a real instance cannot install one App on every owner it targets | — |
 
 ---
@@ -268,5 +342,5 @@ Filed alongside this document, gated as listed. This PR implements none of them.
 
 | # | Question |
 | --- | --- |
-| Q1 | Should check 5 (§5, same-App cross-check) be an error or a warning? This doc says error — two IDs for one (App, owner) cannot both be right, so one half of the config is already broken — but unlike checks 3/4 the broken half might be `repos[].auth` rather than `daemonIdentity`, and the error message must not presume which. Ruling folded into F1's review |
-| Q2 | Is rejecting *extra* bindings (§5 check 4) too strict for a config shared across instances with different repo subsets? The fail-closed argument (typo'd owner) currently wins; relax to a warning if the shared-config pattern materializes |
+| Q1 | **Answered: error.** Shipped as a load error in #3414, extended to the `installations` form in #4517 (§5.1). Original framing: should check 5 (§5, same-App cross-check) be an error or a warning? This doc says error — two IDs for one (App, owner) cannot both be right, so one half of the config is already broken — but unlike checks 3/4 the broken half might be `repos[].auth` rather than `daemonIdentity`, and the error message must not presume which. Ruling folded into F1's review |
+| Q2 | **Answered: yes, too strict — the rule was dropped entirely, not relaxed to a warning** (§5.1). Original framing: is rejecting *extra* bindings (§5 check 4) too strict for a config shared across instances with different repo subsets? |
