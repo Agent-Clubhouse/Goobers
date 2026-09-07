@@ -59,6 +59,22 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 
 ## Requirements
 
+### Provider applicability
+
+Requirements in this spec are written provider-neutrally, which reads as "true on
+every provider" unless stated otherwise. **It is not.** GitHub is complete;
+Azure DevOps is complete for the review-and-decide half and incomplete on parts
+of the landing and cross-run-state half. Requirements with a narrower provider
+scope carry an explicit `*(GitHub; ADO: …)*` annotation, following the pattern
+`backlog-providers.md` already uses. The annotated ones today are `PRL-045`,
+`PRL-064`, `PRL-072`, `PRL-081`, and `PRL-082`.
+
+A requirement with **no** annotation is asserted for every provider this spec
+covers. Adding provider-specific behaviour to any of them without annotating it
+is the drift this section exists to prevent. Closing the annotated gaps is
+tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
+[#2179](https://github.com/Agent-Clubhouse/Goobers/issues/2179).
+
 ### PR selection & fairness
 
 - **PRL-001 (MUST, Shipped):** `merge-review` MUST select **at most one PR per
@@ -135,10 +151,19 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   summary/rationale, and a **SHA pin**
   (`headSha`, `baseSha`) plus review digest and source run id. The prose PR
   comment is a projection of this artifact, never a second source of truth.
-- **PRL-013 (MUST, Shipped):** Every verdict is **SHA-pinned** (design D6): no
-  stage may act on a verdict whose pin no longer matches the PR's live
-  head/base. A stale pin **voids** the verdict — a normal outcome (no comment,
-  no label, exit 0), re-reviewed next cycle — never an error and never a merge.
+- **PRL-013 (MUST, Shipped — amended #4521):** Every verdict is **SHA-pinned**
+  (design D6): no stage may act on a verdict whose pin no longer matches the PR's
+  live head/base. A stale pin **voids** the verdict — a normal outcome, exit 0,
+  re-reviewed next cycle — never an error and never a merge. **The void is
+  visible:** it rewrites the standing merge-review status comment to mark the
+  verdict stale (`markMergeReviewVerdictStale`), so a reader of the PR sees that
+  the verdict no longer applies rather than a verdict that silently stopped being
+  true. No label is applied.
+
+  > *Adjudication:* the original text said "no comment, no label". The comment
+  > edit is deliberate (#1830) and pinned by test. Silence would leave a stale
+  > verdict comment standing as the PR's most recent machine statement, which is
+  > the worse failure. **Intentional design change, spec corrected.**
 - **PRL-014 (SHOULD, Shipped):** Re-review of an unchanged
   `(head, base, sibling-set)` SHOULD be skipped via the review-digest verdict
   cache (#523); a cache hit reuses the prior verdict unchanged, including its
@@ -229,11 +254,20 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   remediation loop as a failed validation status + the findings/verdict-json on
   a machine-readable **PR thread** + the routing label — never a submitted
   review, never an issue comment.
-- **PRL-031 (MUST, Shipped):** Decision→label routing: `pass` →
-  `goobers:merge-ready` path (merge conjuncts, PRL-040); `needs-changes` →
+- **PRL-031 (MUST, Shipped — amended #4521):** Decision→label routing.
+  **`pass` applies no label**: the pass path publishes the native review and
+  reconciles the status comment, and eligibility for the merge conjuncts
+  (`PRL-040`) follows from the *published verdict*, not from a label. Only the
+  non-pass decisions route to labels: `needs-changes` →
   `goobers:needs-remediation`, or `goobers:blocked-on-sibling` when findings
   are entirely cross-PR (PRL-024); `fail` → `goobers:merge-escalated` (a
   wrong approach is a human's call, never burned on remediation budget — D2).
+
+  > *Adjudication:* the original text implied a `goobers:merge-ready` label on
+  > pass. No such label is applied and a test pins that (#825). A pass label
+  > would be a second, weaker source of truth for merge eligibility alongside the
+  > SHA-pinned verdict — exactly the ambiguity `PRL-013` exists to prevent.
+  > **Intentional design change, spec corrected.**
   An empty-findings `needs-changes` routes to remediation, not to parking.
   While `goobers:merge-escalated` is present, a `needs-changes` verdict that
   would route to remediation MUST still be published, but
@@ -253,12 +287,26 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
      byte-identical diff (length-prefixed digest over every file's path,
      status, and verbatim patch; any omitted patch makes identity
      unverifiable → no close).
-- **PRL-033 (MUST, Shipped):** Autonomous close MUST only ever close the
-  **later** PR (the earlier claim wins, consistent with FIFO election), MUST
-  **never intercept a `pass`** (a passing PR merges and wins), and MUST post a
-  close comment stating the objective reason, with the reviewer's rationale
-  quoted as explanation only. This close authority lives in the decider
-  (`apply-verdict`), not in remediation.
+- **PRL-033 (MUST, Shipped — amended #4521):** Autonomous close MUST only ever
+  close the **later** PR (the earlier claim wins, consistent with FIFO election),
+  MUST **never intercept a `pass`** (a passing PR merges and wins), and MUST post
+  a close comment stating the objective reason, with the reviewer's rationale
+  quoted as explanation only.
+
+  Close authority lives in exactly **two** places, and in neither is it
+  remediation's:
+  1. the decider (`apply-verdict`), for the duplicate-work case above; and
+  2. **post-merge reconciliation**, for the *moot-parked* case (#4034/#4452): a
+     parked PR every one of whose referenced issues is now closed as `COMPLETED`
+     — i.e. resolved by a different PR — is closed with a stated reason. This
+     path fails closed: one unresolvable, still-open, or `NOT_PLANNED` issue
+     leaves the PR parked exactly as it was.
+
+  > *Adjudication:* the original "lives in the decider, not in remediation" was
+  > written before post-merge could observe that a park had become moot.
+  > Post-merge is not remediation and the distinction the clause protects — that
+  > a *rework* loop never closes a PR — still holds. **Intentional design change,
+  > spec corrected.**
 
 ### Merge execution
 
@@ -299,8 +347,10 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   from the **pinned pass verdict** on the locked poll's own comment snapshot
   (title + summary/rationale + `Closes #N` footers) — attributable to the
   verdict author, never re-fetched outside the lock.
-- **PRL-045 (MUST, Shipped):** An enqueued PR MUST be **watched** to one of
-  three determined outcomes: `merged` (same post-merge path as a direct
+- **PRL-045 (MUST, Shipped):** *(GitHub; ADO: partial — queue eviction and
+  timeout do not label the PR or seed the reconciliation ledger, so the trail
+  this requirement mandates is GitHub-only. #2061.)* An enqueued PR MUST be
+  **watched** to one of three determined outcomes: `merged` (same post-merge path as a direct
   merge), `evicted`, or `timeout` — eviction and timeout label the PR
   `goobers:needs-remediation` with an explanatory comment, and a failure to
   leave that trail is a stage failure, not a warning. A timeout additionally
@@ -398,11 +448,21 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 - **PRL-057 (MUST, Shipped):** A cross-PR-blocked (parked) PR is **excluded
   from remediation** — parking means wait, not rework; the drain path is the
   sibling landing (PRL-064), not a rewrite of a diff that would be fine once
-  the sibling lands. The generic behind-base fallback is **lazy**: it may
-  select only an eligible crowned lander with at least one live parked
-  dependent. Parked siblings retain their blocker markers and do not rebase
-  until their blocker set clears, bounding a K-PR overlap wave to at most K
-  rebases.
+  the sibling lands. Parked siblings retain their blocker markers and do not
+  rebase until their blocker set clears, bounding a K-PR overlap wave to at most
+  K rebases.
+
+  The generic behind-base fallback selects a crowned lander (a candidate with at
+  least one live parked dependent) **or a solitary behind-base PR with no parked
+  dependents at all** (#4163).
+
+  > *Adjudication:* the original clause said the fallback is "lazy: it may select
+  > **only** an eligible crowned lander with at least one live parked dependent",
+  > which would strand a single behind-base PR with nothing queued behind it —
+  > the common case for a quiet repository. Admitting the solitary case is
+  > correct and pinned by `TestUpdateBehindPRUpdatesSolitaryBehindPR`. The
+  > laziness the clause protects — never rebasing a *parked* sibling
+  > speculatively — is unchanged. **Intentional design change, spec corrected.**
 
 ### Escalation ladder & drainage
 
@@ -416,15 +476,26 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 - **PRL-061 (MUST, Shipped):** Every park state MUST have a **deterministic
   exit** — either self-heal or a defined human surface. No label may be
   "permanent until a human notices" without a recorded snapshot to check.
-- **PRL-062 (MUST, Shipped):** `merge-escalated` self-heals when the PR's
-  head has moved **or the live base branch tip** has advanced past the
-  escalation snapshot (#1052 — the pinned `base.sha` never moves and MUST NOT
-  be the comparison); a labeled PR with no snapshot fails closed (blocked
-  until a human clears it).
+- **PRL-062 (MUST, Shipped — amended #4521):** `merge-escalated` self-heals when
+  the PR's head has moved. It **also** self-heals on a live base-branch advance
+  past the escalation snapshot (#1052 — the pinned `base.sha` never moves and
+  MUST NOT be the comparison), **but only when the escalation's recorded cause is
+  rebase-curable.** An escalation whose cause is a substantive reviewer rejection
+  or a human comment survives a base advance; a labeled PR with no snapshot fails
+  closed (blocked until a human clears it).
+
+  > *Adjudication:* the original clause made any base advance clear any
+  > escalation. A `fail` verdict means "wrong approach" (D2) — a human's call —
+  > and an unrelated commit landing on `main` is not evidence that the approach
+  > became right. Restricting base-advance self-heal to rebase-curable causes is
+  > the correct behaviour and is pinned by test (#4076). **Intentional design
+  > change, spec corrected.**
 - **PRL-063 (MUST, Shipped):** `blocked-on-sibling` self-heals when every
   recorded predecessor blocker is closed, merged, or demoted; an absent or
   empty blocker record fails **open** (nothing concrete can hold the park).
-- **PRL-064 (MUST, Shipped):** Post-merge MUST run the **drainage sweeps**
+- **PRL-064 (MUST, Shipped):** *(GitHub; ADO: partial — the drainage sweeps
+  depend on the label and sticky-comment carriers `PRL-081` annotates. #2061.)*
+  Post-merge MUST run the **drainage sweeps**
   (sibling-pr-sequencing S4, #992): unpark siblings whose blockers resolved,
   remove self-healed escalations and demotions, and fan out
   `needs-remediation` — so a file-overlap cluster of N mergeable PRs drains
@@ -447,9 +518,12 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   handoff (displacing PR + overlapping paths); a clean disjoint sibling is
   untouched. A failed triage signal labels conservatively rather than
   silently skipping.
-- **PRL-072 (MUST, Shipped):** After an actual merge (direct or
-  queue-reported), the merged head branch MUST be deleted unless another open
-  PR is stacked on it; cleanup requires the `github:branch:delete` grant and
+- **PRL-072 (MUST, Shipped):** *(GitHub and Gitea; **not ADO** — ADO
+  source-branch deletion rides on the completion request's own
+  `deleteSourceBranch` flag rather than this cleanup path, and `merge-pr` skips
+  the shared cleanup for ADO by construction. #2061.)* After an actual merge
+  (direct or queue-reported), the merged head branch MUST be deleted unless
+  another open PR is stacked on it; cleanup requires the `github:branch:delete` grant and
   a cleanup failure is a warning on an already-successful merge, never a
   merge failure. (The grant was designed in #581 but unwired until #1075 —
   now closed; treat any regression as a PRL-072 violation, not a new gap.)
@@ -462,8 +536,10 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
 - **PRL-080 (MUST, Shipped):** Verdicts are recorded as **gate artifacts in
   the emitting run's journal** (`GT-015`); in-run consumers read them back
   from that journal, never from re-prompted model output.
-- **PRL-081 (MUST, Shipped):** All **cross-run** loop state MUST travel as
-  durable provider-side state — native PR labels plus machine-readable
+- **PRL-081 (MUST, Shipped):** *(GitHub; ADO: partial — ADO verdict threads are
+  posted rather than reconciled, so the single-sticky-comment guarantee below
+  does not yet hold on the PR-thread carrier. #2061.)* All **cross-run** loop
+  state MUST travel as durable provider-side state — native PR labels plus machine-readable
   sticky-comment payloads (verdict-json, blocked-on-sibling, remediation-state,
   merge-demotion, post-merge handoff) — since no two runs share a journal. The
   sticky-comment carrier is provider-neutral: an issue/PR comment on GitHub, a
@@ -471,8 +547,10 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   mapped to the neutral `Comment` type. Each payload MUST be SHA-snapshotted
   where a self-heal check reads it, and updates MUST reconcile a single sticky
   comment/thread rather than append per cycle — on either carrier.
-- **PRL-082 (MUST, Shipped):** Provider mutations on the merge path (reviews,
-  merges, branch deletions, label writes by the merge stages) MUST be
+- **PRL-082 (MUST, Shipped):** *(GitHub and Gitea; **not ADO** — the ADO stage
+  provider does not wire the mutation recorder, so ADO merge-path side effects
+  are not journal-attributed. #2061.)* Provider mutations on the merge path
+  (reviews, merges, branch deletions, label writes by the merge stages) MUST be
   recorded through the run's mutation recorder so the journal attributes
   every external side effect.
 - **PRL-083 (MUST, Shipped):** Refusals, voids, and no-work outcomes are
@@ -544,16 +622,24 @@ therefore have no action row.
 
 ## Known gaps (prescriptive)
 
-Verified open issues this spec expects to be closed against these IDs:
+> **All three issues this section listed are now closed** (#1061, #1071, #509),
+> verified 2026-09-06. A "known gaps" list whose entries have all closed is
+> indistinguishable from one nobody has looked at, so they are recorded below as
+> **closed history**, not as outstanding work. The current provider-shaped gaps
+> are the annotated requirements — see [Provider applicability](#provider-applicability)
+> — and are tracked on #2061/#2179.
 
-- **#1061** — `apply-verdict` fails with `selectedHeadSha is required` on the
-  elect-lander `elected:false` branch under some threading orders — a
-  violation of PRL-030's "every non-void verdict is applied".
-- **#1071** — a repo's **native merge queue** can land a sibling-overlap PR
+Closed:
+
+- **#1061** — `apply-verdict` failed with `selectedHeadSha is required` on the
+  elect-lander `elected:false` branch under some threading orders, violating
+  PRL-030's "every non-void verdict is applied". **Closed.**
+- **#1071** — a repo's **native merge queue** could land a sibling-overlap PR
   without the election completing, bypassing PRL-021's single-lander
-  arbitration; the queue is a second merge authority the seam (PRL-043) does
-  not yet arbitrate with.
-- **#509** — configurable selection priority (PRL-005).
+  arbitration. **Closed.**
+- **#509** — configurable selection priority (PRL-005). **Closed**; the shipped
+  mechanism is the ordered `selectionPriority` label list plus `fieldOrder`,
+  applied before FIFO (`SCH-030`).
 
 ## Open questions
 
