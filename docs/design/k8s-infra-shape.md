@@ -35,7 +35,9 @@ vendor-neutral form.
 | Config sync | Argo CD app (or equivalent GitOps agent) | customer's GitOps ns | Git (config repo `main`) → CRs; Argo owns sync/drift/rollback, operator owns domain reconcile |
 | Temporal server | Helm release (self-hosted, OSS) | `goobers-temporal` | DEP-011; basic visibility (no Elasticsearch) |
 | PostgreSQL for Temporal | Customer-managed (recommended: managed cloud PG) | external or in-cluster | Temporal persistence; the one stateful service we require |
-| Goobers workers | Deployment(s) per task-queue | `goobers-system` or per-gaggle | `goobers worker` (v2-cloud-scale A1.6); HPA-scalable |
+| Goobers dispatcher | Deployment(s) per (gaggle × runner-type) task queue | `goobers-system` or per-gaggle | `internal/dispatcher` — serves the queue and **creates one fresh pod per stage attempt**, disposing it after surrender. This is the mode-3 substrate (`goobernetes-architecture.md` §3, `docs/ARCHITECTURE.md` §3.4). |
+| Stage pods | One ephemeral pod **per stage attempt**, created by the dispatcher | per-gaggle | Never reused; reuse is a correctness bug. Restrictions are stamped by the dispatcher as the pod creator (`goobernetes-restrictions.md` D7). |
+| Goobers workers | Deployment(s) per task-queue | `goobers-system` or per-gaggle | `goobers worker` (v2-cloud-scale A1.6); HPA-scalable. **Superseded as the execution substrate** (`goobernetes-architecture.md` §10): a resident worker executing stage activities as goroutines is not the target model. |
 | Agent stage pods | Ephemeral pods/Jobs | per-gaggle namespaces | Spawned per stage attempt (DEP-004..007); never long-lived |
 | Daemon API + portal | Deployment + static assets | `goobers-system` | `/api/v1` read + authed mutation surface; SSE through ingress |
 | Sandbox environments | Team-defined (Jobs/CRDs/external) | per-gaggle or team-chosen | BYO provisioner contract (v2-cloud-scale C4) |

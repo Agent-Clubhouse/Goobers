@@ -16,8 +16,8 @@ word — read the page, not this table, before depending on it.
 |---|---:|
 | `draft` | 14 |
 | `approved` | 19 |
-| `implemented` | 26 |
-| `superseded` | 3 |
+| `implemented` | 25 |
+| `superseded` | 4 |
 | `historical` | 6 |
 | **Total** | **68** |
 
@@ -61,7 +61,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Human-in-the-Loop — escalation visibility & intervention](human-in-the-loop.md) | `implemented` | #3876, #3877, #3883 | — | 09db115bb (2026-09-06) |
 | [Kubernetes Infrastructure Shape — what Goobers needs from a customer-managed cluster](k8s-infra-shape.md) | `approved` | — | — | — |
 | [Large-repo execution model (#2063)](large-repo-execution-model.md) | `draft` | — | — | — |
-| [Mixed-Platform Cloud Nodes — Windows Node Pools & Platform-Labeled Routing](mixed-platform-cloud-nodes.md) | `implemented` | #659 | — | — |
+| [Mixed-Platform Cloud Nodes — Windows Node Pools & Platform-Labeled Routing](mixed-platform-cloud-nodes.md) | `superseded` | #659 | [`goobernetes-architecture.md`](goobernetes-architecture.md) | — |
 | [Design: Multiple capability-scoped credentials (per-capability token sourcing)](multi-token-credentials.md) | `implemented` | #822, #823 | — | — |
 | [Design: needs-human label taxonomy — decision vs. status](needs-human-taxonomy.md) | `implemented` | #2028, #1974 | — | — |
 | [Notification output boundary](notification-output.md) | `historical` | — | — | — |
@@ -78,7 +78,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Unattended operation — an instance that survives a week without an operator](unattended-operation.md) | `draft` | — | — | — |
 | [Unified index-backed run reads](unified-index-backed-run-reads.md) | `superseded` | — | [`portal-read-architecture.md`](portal-read-architecture.md) | — |
 | [Design: V0.6 ladder remediation — executor convergence + lifecycle unblock](v07-ladder-remediation.md) | `historical` | — | — | — |
-| [V2 — Cloud & Large Team](v2-cloud-scale.md) | `approved` | — | — | — |
+| [V2 — Cloud & Large Team](v2-cloud-scale.md) | `approved` | — | [`goobernetes-architecture.md`](goobernetes-architecture.md) | — |
 | [Validation & CI Enrichment — closing the false-green gaps](validation-and-ci-enrichment.md) | `approved` | — | — | 09db115bb (2026-09-06) |
 | [Design: Versioning & Releases — DSL compatibility, tagged builds, feature matrix](versioning-and-compatibility.md) | `implemented` | #427, #428, #429, #430, #431, #432, #433, #434 | — | — |
 | [Windows Pod Restrictions](windows-pod-restrictions.md) | `implemented` | #3619 | — | — |
