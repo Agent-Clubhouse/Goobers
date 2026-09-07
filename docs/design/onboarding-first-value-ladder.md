@@ -1,6 +1,21 @@
 # Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)
 
-Status: draft — for review. Filed 2026-08-07 from a nine-dimension recon of the
+Status: draft — for review; **its authoritative ledger has partly rotted.**
+Verified: 09db115bb (2026-09-06)
+
+> **Two rows of §"the ledger" are no longer true** (re-checked 2026-09-06,
+> #4520). **Install:** releases exist — `v0.3.3` is the latest stable and
+> `v0.4.0-beta.2` the latest pre-release — so Decision 7.1's premise ("zero
+> releases/tags have ever been published; every platform guide's download+verify
+> block 404s") is closed. **Connect:** `goobers connect <owner>/<repo>` ships as
+> a first-class command, which is R3's whole choreography; the ledger still
+> lists it as missing.
+>
+> The document is otherwise right that it is a point-in-time recon, and the two
+> items it flags that **do** remain open are the flagless `doctor` and the
+> full-ladder gate.
+
+Original framing. Filed 2026-08-07 from a nine-dimension recon of the
 onboarding journey, the init/setup code surface, the DSL and its validation,
 the shipped agent-context assets, the backlog, prior design art, test/e2e
 coverage, stack neutrality, and CLI-surface coherence — plus PO directives
