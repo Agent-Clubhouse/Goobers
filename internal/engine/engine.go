@@ -1244,6 +1244,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 	}
 	return apiv1.InvocationEnvelope{
 		TaskID:          in.RunID + ":" + stateName,
+		InstanceID:      in.InstanceID,
 		WorkflowID:      in.WorkflowName,
 		RunID:           in.RunID,
 		TriggerRef:      in.TriggerRef,

@@ -839,6 +839,9 @@ func New(cfg Config) (*Runner, error) {
 
 // StartInput is what triggers one run.
 type StartInput struct {
+	// instanceID is assigned by Start or recovered from the durable journal
+	// on resume. A worker/config reload cannot replace a run's provenance.
+	instanceID string
 	// StarterSelection records the scheduler's engine decline in this run's
 	// journal, without changing the workflow definition or placement decision.
 	StarterSelection map[string]any
@@ -949,6 +952,7 @@ func boundFailureMessage(s string) string {
 // Start in its own goroutine per run rather than block its own dispatch loop
 // on it.
 func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
+	in.instanceID = r.cfg.InstanceID
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}
@@ -1014,7 +1018,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	registrar, scrubber := journal.DefaultScrubber()
 	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
-		InstanceID:          r.cfg.InstanceID,
+		InstanceID:          in.instanceID,
 		RunID:               in.RunID,
 		Workflow:            in.Machine.Def.Name,
 		WorkflowVersion:     in.Machine.Def.Version,
@@ -5474,6 +5478,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		}
 		env = apiv1.InvocationEnvelope{
 			TaskID:          in.RunID + ":" + g.Name,
+			InstanceID:      in.instanceID,
 			WorkflowID:      in.Machine.Def.Name,
 			RunID:           in.RunID,
 			TriggerRef:      in.Trigger.Ref,
@@ -6035,6 +6040,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 	}
 	env := apiv1.InvocationEnvelope{
 		TaskID:               in.RunID + ":" + stageName,
+		InstanceID:           in.instanceID,
 		WorkflowID:           in.Machine.Def.Name,
 		RunID:                in.RunID,
 		TriggerRef:           in.Trigger.Ref,

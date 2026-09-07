@@ -616,6 +616,7 @@ func (r *Runner) newResumeFrame(
 		pointerEvents = seedEvents[:parallelStart]
 	}
 	ws := newWalkState(jr, StartInput{
+		instanceID:   id.InstanceID,
 		RunID:        in.RunID,
 		Machine:      in.Machine,
 		GooberDigest: in.GooberDigest,

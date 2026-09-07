@@ -169,11 +169,19 @@ func stageAttribution(root string) (providers.Attribution, bool) {
 	// existing human-readable status comment can carry the same run's
 	// machine-readable cost receipt without consulting telemetry.db.
 	attribution.Cost = stageCostReceipt(root, runID)
-	// Read only: a subprocess must never initialize its own identity and
-	// mistake a worker-local directory for the owning daemon. Missing/corrupt
-	// identity remains explicitly absent from this legacy-compatible marker.
-	attribution.InstanceID, _ = instance.NewLayout(root).ReadIdentity()
+	attribution.InstanceID = stageInstanceIdentity()
 	return attribution, true
+}
+
+func stageInstanceIdentity() string {
+	// Missing, empty and malformed pins all mean unknown. Reading a root
+	// here would attribute historical/remote work to whichever worker happens
+	// to execute this stage, rather than the instance that admitted the run.
+	value := os.Getenv(executor.InstanceIDEnvVar)
+	if instance.ValidIdentity(value) {
+		return value
+	}
+	return ""
 }
 
 func stageCostReceipt(root, runID string) *providers.CostReceipt {

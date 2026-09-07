@@ -1350,14 +1350,15 @@ func TestShellExecutor_InjectRunContextOptInReceivesRunContext(t *testing.T) {
 	env.RunID = "run-123"
 	env.Gaggle = "alpha"
 	env.WorkflowID = "implementation"
+	env.InstanceID = "0123456789abcdef0123456789abcdef"
 
-	command := []string{"sh", "-c", `echo "run=$GOOBERS_RUN_ID gaggle=$GOOBERS_GAGGLE wf=$GOOBERS_WORKFLOW"`}
+	command := []string{"sh", "-c", `echo "run=$GOOBERS_RUN_ID gaggle=$GOOBERS_GAGGLE wf=$GOOBERS_WORKFLOW instance=$GOOBERS_INSTANCE_ID"`}
 
 	withoutOptIn, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{Command: command})
 	if err != nil {
 		t.Fatalf("Run (no opt-in): %v", err)
 	}
-	if got := string(rec.recorded["task-1/stdout.log"]); got != "run= gaggle= wf=\n" {
+	if got := string(rec.recorded["task-1/stdout.log"]); got != "run= gaggle= wf= instance=\n" {
 		t.Fatalf("stdout without opt-in = %q, want empty run context (matches TestShellExecutor_NonGoobersStageOmitsRunContext)", got)
 	}
 
@@ -1369,7 +1370,7 @@ func TestShellExecutor_InjectRunContextOptInReceivesRunContext(t *testing.T) {
 	if withoutOptIn.Status != apiv1.ResultSuccess || withOptIn.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v / %v, want both success", withoutOptIn.Status, withOptIn.Status)
 	}
-	if got := string(rec.recorded["task-2/stdout.log"]); got != "run=run-123 gaggle=alpha wf=implementation\n" {
+	if got := string(rec.recorded["task-2/stdout.log"]); got != "run=run-123 gaggle=alpha wf=implementation instance="+env.InstanceID+"\n" {
 		t.Fatalf("stdout with InjectRunContext=true = %q, want the run's operational identity", got)
 	}
 }

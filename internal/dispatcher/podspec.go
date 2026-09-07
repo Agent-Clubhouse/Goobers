@@ -85,11 +85,12 @@ const (
 const (
 	// EnvRunID / EnvGaggle / EnvWorkflow / EnvStage / EnvAttempt identify the
 	// attempt inside the pod.
-	EnvRunID    = "GOOBERS_RUN_ID"
-	EnvGaggle   = "GOOBERS_GAGGLE"
-	EnvWorkflow = "GOOBERS_WORKFLOW"
-	EnvStage    = "GOOBERS_STAGE"
-	EnvAttempt  = "GOOBERS_ATTEMPT"
+	EnvRunID      = "GOOBERS_RUN_ID"
+	EnvInstanceID = "GOOBERS_INSTANCE_ID"
+	EnvGaggle     = "GOOBERS_GAGGLE"
+	EnvWorkflow   = "GOOBERS_WORKFLOW"
+	EnvStage      = "GOOBERS_STAGE"
+	EnvAttempt    = "GOOBERS_ATTEMPT"
 	// ProviderBotLoginEnv carries the login the stage's forge credential
 	// authenticates AS for the routed repository — the instance config's
 	// declared GitHub App bot login, resolved DAEMON-SIDE at dispatch, where
@@ -348,7 +349,7 @@ var DispatcherPrivilegedEnv = []string{
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
 var DispatcherRunIdentityEnv = append([]string{
-	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, ProviderBotLoginEnv,
+	EnvRunID, EnvInstanceID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, ProviderBotLoginEnv,
 }, runContextEnv...)
 
 // DispatcherPlaneEnv is the THIRD category, and it exists because neither of
@@ -1083,6 +1084,7 @@ func activeDeadlineSeconds(cfg Config, attempt Attempt) int64 {
 func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnContainer []string) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: EnvRunID, Value: attempt.RunID},
+		{Name: EnvInstanceID, Value: attempt.InstanceID},
 		{Name: EnvGaggle, Value: attempt.Gaggle},
 		{Name: EnvWorkflow, Value: attempt.Workflow},
 		{Name: EnvStage, Value: attempt.Stage},

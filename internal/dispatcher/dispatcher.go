@@ -268,6 +268,8 @@ func (c Config) linuxScheduleToStart() time.Duration {
 // Attempt is one stage attempt to dispatch: the identity, requirement, and
 // budget facts the pod spec is a pure function of.
 type Attempt struct {
+	// InstanceID belongs to the originating run, not to the dispatch worker.
+	InstanceID string
 	// RunID, Gaggle, Workflow, and Stage identify the attempt; Number is the
 	// 1-based attempt ordinal. Together they name the fresh pod — a new
 	// Number is a new pod by construction (decision record D1).

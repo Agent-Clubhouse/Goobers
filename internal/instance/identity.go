@@ -18,6 +18,16 @@ import (
 
 const instanceIdentityFile = "instance-id"
 
+// ValidIdentity reports whether a value is a canonical nonzero instance ID.
+// Transported identities follow the same contract as the durable root file.
+func ValidIdentity(value string) bool {
+	if len(value) != 32 || value == strings.Repeat("0", 32) {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil && value == strings.ToLower(value)
+}
+
 // ReadIdentity reads an existing root identity without creating or repairing
 // state. Missing legacy identity and corrupt identity are distinct errors;
 // neither may be presented as a verified instance identity.
@@ -43,9 +53,7 @@ func (l Layout) ReadIdentity() (string, error) {
 		return "", err
 	}
 	value := strings.TrimSuffix(string(data), "\n")
-	decoded, decodeErr := hex.DecodeString(value)
-	if len(data) != 33 || len(value) != 32 || len(decoded) != 16 || decodeErr != nil ||
-		value != strings.ToLower(value) || value == strings.Repeat("0", 32) {
+	if len(data) != 33 || !ValidIdentity(value) {
 		return "", fmt.Errorf("invalid instance identity in %s; refusing to replace it", path)
 	}
 	return value, nil

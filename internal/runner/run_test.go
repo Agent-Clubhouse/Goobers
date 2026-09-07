@@ -4462,10 +4462,15 @@ func TestRunnerDrainsInFlightAttemptOnCancellation(t *testing.T) {
 // torn-write repair is internal/journal's own, already-tested concern
 // (TestKill9MidAppendRecovers); this test is about the runner's
 // interpretation of "started with no finished", not journal-write durability.
-func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Machine, runID, stageName string, attempt int, trigger journal.Trigger, branchRecorded bool) {
+func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Machine, runID, stageName string, attempt int, trigger journal.Trigger, branchRecorded bool, instanceIDs ...string) {
 	t.Helper()
+	instanceID := ""
+	if len(instanceIDs) > 0 {
+		instanceID = instanceIDs[0]
+	}
 	jr, err := journal.Create(runsDir, journal.RunIdentity{
-		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		InstanceID: instanceID,
+		RunID:      runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
 		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: trigger,
 	}, nil)
 	if err != nil {
@@ -4754,9 +4759,11 @@ func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *
 	}
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
 	const runID = "run-agentic-recovery"
-	simulateCrashMidAttempt(t, runsDir, machine, runID, "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true)
+	const originalInstance = "0123456789abcdef0123456789abcdef"
+	simulateCrashMidAttempt(t, runsDir, machine, runID, "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true, originalInstance)
 	goober := &capturingSuccessGoober{}
 	r, err := New(Config{
+		InstanceID: "abcdef0123456789abcdef0123456789",
 		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 			return goober, nil
 		},
@@ -4778,6 +4785,9 @@ func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *
 	}
 	if result.Phase != journal.PhaseCompleted || len(goober.invocations) != 1 {
 		t.Fatalf("result = %+v, agent invocations = %d", result, len(goober.invocations))
+	}
+	if got := goober.invocations[0].InstanceID; got != originalInstance {
+		t.Fatalf("resumed invocation identity = %q, want original journal identity %q, not current runner", got, originalInstance)
 	}
 	events := readRunEvents(t, runsDir, runID)
 	var recovery, interrupted bool

@@ -487,6 +487,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		}
 	}
 	attempt := dispatcher.Attempt{
+		InstanceID:     input.Envelope.InstanceID,
 		RunID:          input.Envelope.RunID,
 		Gaggle:         input.Envelope.Gaggle,
 		Workflow:       input.Envelope.WorkflowID,
