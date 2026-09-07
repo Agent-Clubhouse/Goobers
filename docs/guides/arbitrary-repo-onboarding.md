@@ -43,6 +43,36 @@ acceptable.
 
 ## 1. Prepare the host and target repository
 
+### Non-interactive standard scaffold
+
+For scripts and agents, select the canonical backlog-curation and implementation
+pair without opening the browser or answering prompts:
+
+```sh
+goobers init --template=standard --harness=claude-code \
+  --ci-command='["npm","run","ci"]' --required-capabilities=node@24 \
+  ./standard-instance
+```
+
+Use the target repository's real CI argv and toolchain capabilities; no Go-specific
+command or toolchain is assumed. The command creates the two workflows and their
+curator, implementer, and reviewer personas using the same seeder as browser setup.
+It validates the result but does not start a daemon, run work, or contact a provider.
+The default harness is Copilot; either supported harness can be selected explicitly.
+
+This is a scaffold, not a connected production instance. Replace `your-org` and
+`your-repo` in `instance.yaml` and `config/gaggles/example/gaggle.yaml`, review the
+branch and workflow policy, and configure the named credential references before
+running. The generated GitHub references are `GOOBERS_GITHUB_TOKEN`,
+`GOOBERS_GITHUB_ISSUES_TOKEN`, `GOOBERS_GITHUB_PR_TOKEN`, and
+`GOOBERS_GITHUB_PUSH_TOKEN`; they contain environment-variable names, never token
+values. Authenticate the selected harness using its supported local login path.
+Follow the credential scopes and first-run checks below. Existing instance
+configuration is refused rather than overwritten; use a fresh durable destination.
+`--source-tree` remains available only with the quickstart template.
+
+### Host prerequisites
+
 Install or build:
 
 - `goobers`, `git`, and the GitHub Copilot CLI on the daemon's `PATH`.
