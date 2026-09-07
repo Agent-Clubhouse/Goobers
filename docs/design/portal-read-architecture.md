@@ -13,6 +13,7 @@
 > open: ordering, the writer set, request budgeting, in-process isolation,
 > topology, authorization, and the hosted shape.
 > Supersedes: docs/design/unified-index-backed-run-reads.md
+> Delivered-by: #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952
 >
 > **Revision history is in §18** — nine errors in the first pass, seven
 > correctness holes in the second, ten state-boundary findings in the third. The

@@ -4,6 +4,7 @@
 > #2306 remains open for the *remote-aware alternative*, which is still
 > deliberately deferred (§3, §4). Reconciled against the tree 2026-09-06 by
 > [#4522](https://github.com/Agent-Clubhouse/Goobers/issues/4522).
+> Delivered-by: #2305, #2884
 
 > ### What shipped, and what is now stale here
 >

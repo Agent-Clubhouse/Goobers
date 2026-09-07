@@ -14,9 +14,9 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 25 |
-| `approved` | 22 |
-| `implemented` | 12 |
+| `draft` | 24 |
+| `approved` | 20 |
+| `implemented` | 15 |
 | `superseded` | 3 |
 | `historical` | 6 |
 | **Total** | **68** |
@@ -36,7 +36,7 @@ word — read the page, not this table, before depending on it.
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `approved` | — | — | — |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — |
-| [Design: Dashboard co-branding and support hooks](cobrand.md) | `approved` | — | — | — |
+| [Design: Dashboard co-branding and support hooks](cobrand.md) | `implemented` | #1381, #4522 | — | — |
 | [Credit graph contract](credit-graph.md) | `implemented` | #4077, #4078 | — | — |
 | [Cross-Platform Support — Linux & Windows nodes](cross-platform-support.md) | `approved` | — | — | — |
 | [Daemon identity on multi-owner instances](daemon-identity-multi-owner.md) | `implemented` | #3414, #3415, #4517 | — | — |
@@ -66,8 +66,8 @@ word — read the page, not this table, before depending on it.
 | [Design: needs-human label taxonomy — decision vs. status](needs-human-taxonomy.md) | `implemented` | #2028, #1974 | — | — |
 | [Notification output boundary](notification-output.md) | `historical` | — | — | — |
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | — |
-| [Portal read architecture — a rethink](portal-read-architecture.md) | `approved` | — | — | — |
-| [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `draft` | — | — | — |
+| [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — |
+| [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | #2305, #2884 | — | — |
 | [Provider Contract & Conformance — capability-declared providers, test-defined parity](provider-contract-conformance.md) | `draft` | — | — | — |
 | [Design: Separate GitHub repository sink for docs-updater](separate-docs-repository-sink.md) | `approved` | — | — | — |
 | [Design: Autonomous sibling-PR sequencing — draining file-overlap clusters without a human](sibling-pr-sequencing.md) | `draft` | — | — | — |
