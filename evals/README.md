@@ -1,7 +1,16 @@
 # evals/
 
-Design and implementation home for EvalSuite (deterministic, reproducible
-evaluation of agentic workflows — [#2662](https://github.com/Agent-Clubhouse/Goobers/issues/2662)).
+> **⚠️ Direction superseded.** This describes the #2662 EvalSuite direction,
+> which is not being carried forward. See
+> [`docs/design/evals-suite.md`](../docs/design/evals-suite.md) for the full account, and
+> [#2681](https://github.com/Agent-Clubhouse/Goobers/issues/2681) for the
+> replacement direction (native Go/DSL, opt-in, built on the existing runner).
+> These artifacts are preserved rather than deleted because #2681 is
+> `goobers:nominated`, not yet approved.
+
+Design and implementation home for the **#2662** EvalSuite direction
+(deterministic, reproducible evaluation of agentic workflows —
+[#2662](https://github.com/Agent-Clubhouse/Goobers/issues/2662), closed).
 
 ## Design docs
 
@@ -11,10 +20,11 @@ evaluation of agentic workflows — [#2662](https://github.com/Agent-Clubhouse/G
 - [`EVALS_CASSETTE.md`](./EVALS_CASSETTE.md) — the cassette storage format
   that `replay` mode reads from and `real`+`record` sessions write to.
 
-Other design docs for sibling child issues under the epic (judge harness,
-adapter shim prototype, CI gating) land here as their issues are worked.
-DSL/schema validation (#2663) and runner integration (#2667) are documented
-in the sections below.
+No further design docs will land here: every child of #2662 (#2663–#2669) was
+closed on 2026-08-08 as redirected, and the adapter shim (#2666) and runner
+integration (#2667) were never built. DSL/schema validation (#2663) is
+documented in the sections below and is the part of this tree that does run —
+`evals-tests.yml` exercises it.
 
 ## DSL & schema validation (#2663)
 

@@ -1,14 +1,25 @@
 name: EvalSuite gate
 
-# Dormant until #2667 (runner integration) lands. workflow_dispatch only —
-# no schedule, no pull_request trigger — until there is a real runner and a
-# committed evals/testdata/baselines/ fixture for it to diff against. See
-# docs/design/evals-ci-gating.md.
+# Dormant, and its design direction is superseded. workflow_dispatch only — no
+# schedule, no pull_request trigger.
+#
+# This gate was written against the #2662 EvalSuite direction. #2667 (runner
+# integration) and #2668 (this gate's design) were both CLOSED on 2026-08-08 as
+# REDIRECTED, not delivered: #2681 replaces the direction with a native
+# Go/DSL capability on the existing runner, and #2668's closing note called
+# bespoke baseline/alerting gating premature before #2682's comparison
+# primitive exists to gate on. Nothing is coming to unblock this file as
+# written.
+#
+# It is kept, not deleted, because #2681 is goobers:nominated and not yet
+# goobers:approved; retiring evals/ and this workflow waits on that decision.
+# See docs/design/evals-ci-gating.md and docs/design/evals-suite.md.
 
 on:
   workflow_dispatch:
-  # Enable once #2667 lands a runner and baselines are committed (see
-  # docs/design/evals-ci-gating.md §4):
+  # Do NOT uncomment these. They were written for a runner shape (#2667) that
+  # was redirected rather than built; enabling them would gate merges on a
+  # superseded design. Any future eval gate should be re-scoped under #2681.
   # pull_request:
   #   paths: ["evals/**"]
   # schedule:
@@ -33,11 +44,12 @@ jobs:
       - name: Verify runner is provisioned
         run: |
           if [ ! -d evals/cmd ] || [ ! -d evals/testdata/baselines ]; then
-            echo "::error title=EvalSuite runner not yet implemented::evals/cmd/ (runner) and evals/testdata/baselines/ (§4) don't exist yet. This is a distinct gate from evals-tests.yml, which already runs the evals/ schema/unit tests (#2670-#2672); this one is blocked on #2667 (runner integration) landing. See docs/design/evals-ci-gating.md."
+            echo "::error title=EvalSuite gate is superseded, not pending::evals/cmd/ (runner) and evals/testdata/baselines/ (§4) do not exist and are not being built. #2667 and #2668 were closed on 2026-08-08 as redirected to #2681, so nothing will unblock this workflow as written; it is retained only until #2681 is ratified. This is a distinct workflow from evals-tests.yml, which does run the evals/ schema tests (#2670-#2672). See docs/design/evals-suite.md."
             exit 1
           fi
 
-      # Once #2667 lands, the remaining steps become real:
+      # These steps were the #2662-direction implementation. They are kept for
+      # the historical record only; #2681 replaces the approach:
       #
       # - name: Set up Go
       #   uses: actions/setup-go@v7
@@ -67,6 +79,6 @@ jobs:
       - name: Verify the gate actually ran
         run: |
           if [ ! -f evals-run-report.json ]; then
-            echo "::error title=EvalSuite gate activation incomplete::evals-run-report.json was not produced. Uncomment the commented 'Run EvalSuite against committed baselines' step above (not just the provisioning guard) before enabling this workflow's triggers."
+            echo "::error title=EvalSuite gate activation incomplete::evals-run-report.json was not produced. This workflow's design is superseded by #2681 and should be re-scoped rather than activated; if it is nonetheless being activated, uncomment the 'Run EvalSuite against committed baselines' step above, not just the provisioning guard."
             exit 1
           fi
