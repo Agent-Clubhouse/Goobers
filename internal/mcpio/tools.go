@@ -3,11 +3,14 @@ package mcpio
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // defaultReadLineCap bounds a range-less read_input call — large enough for
@@ -64,19 +67,37 @@ func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string
 // exactly one such target per invocation today (a task has one artifactFile
 // input, not a map) — see #2406's issue body for why this doesn't take a
 // name parameter yet.
-func (t *Toolset) PublishOutput(content string) (bytesWritten int, err error) {
+//
+// The write is atomic (#2422). os.WriteFile truncates the existing artifact
+// before writing its replacement, so a second publish that died mid-write —
+// ENOSPC, a kill, a crash — left the target holding partial bytes of the new
+// content, and the harness lifts and journals whatever is on disk at
+// completion. A truncated report that parses is worse than no report: it is
+// indistinguishable from a short one.
+//
+// journal.WriteFileAtomic stages into a uniquely-named sibling, fsyncs it,
+// atomically replaces the target and fsyncs the parent directory, so the
+// artifact is only ever the previous complete content or the new complete
+// content. A failed publish leaves the prior artifact intact and removes the
+// staging file.
+//
+// The returned digest names the content that was actually published, so a
+// caller can tell two successful publishes apart and confirm which one it is
+// looking at.
+func (t *Toolset) PublishOutput(content string) (bytesWritten int, digest string, err error) {
 	if t.cfg.ArtifactFile == "" {
-		return 0, fmt.Errorf("this stage declares no artifactFile input — publish_output has nothing to write to")
+		return 0, "", fmt.Errorf("this stage declares no artifactFile input — publish_output has nothing to write to")
 	}
 	full, err := t.resolveInWorkspace(t.cfg.ArtifactFile, true)
 	if err != nil {
-		return 0, fmt.Errorf("resolve artifactFile: %w", err)
+		return 0, "", fmt.Errorf("resolve artifactFile: %w", err)
 	}
 	data := []byte(content)
-	if err := os.WriteFile(full, data, 0o644); err != nil {
-		return 0, fmt.Errorf("write artifactFile: %w", err)
+	if err := journal.WriteFileAtomic(full, data, 0o644); err != nil {
+		return 0, "", fmt.Errorf("write artifactFile: %w", err)
 	}
-	return len(data), nil
+	sum := sha256.Sum256(data)
+	return len(data), "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // InputSummary is one entry list_inputs returns.

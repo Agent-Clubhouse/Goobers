@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -315,6 +316,10 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 		cleanup()
 		return "", nil, err
 	}
+	if err := stageReleaseRootFiles(repoRoot, payloadDir); err != nil {
+		cleanup()
+		return "", nil, err
+	}
 	_, err = stageOnboardingPayload(
 		repoRoot,
 		version,
@@ -366,7 +371,136 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 		cleanup()
 		return "", nil, fmt.Errorf("write release docs identity: %w", err)
 	}
+	// Runs last: it decides by what the payload actually contains, so every
+	// other staging step must already have put its files there.
+	if err := pinUnresolvableReadmeLinks(payloadDir, version); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if broken, err := unresolvableReadmeLinks(payloadDir); err != nil {
+		cleanup()
+		return "", nil, err
+	} else if len(broken) > 0 {
+		cleanup()
+		return "", nil, fmt.Errorf(
+			"packaged README still links to %d path(s) the archive does not contain: %s",
+			len(broken), strings.Join(broken, ", "))
+	}
 	return payloadDir, cleanup, nil
+}
+
+// releaseRootFiles are the repository-root documents every archive carries
+// alongside the binary (#4268).
+var releaseRootFiles = []string{"LICENSE", "SECURITY.md"}
+
+// stageReleaseRootFiles copies the repository-root documents every archive must
+// carry into the payload.
+//
+// Before #4268 the payload was assembled from exactly docs/, README.md and the
+// onboarding tree, so all five published v0.4.0-beta.2 archives redistributed
+// an MIT-licensed binary with no licence text inside them, while the packaged
+// README's own last line linked to a LICENSE file that was not there.
+func stageReleaseRootFiles(repoRoot, payloadDir string) error {
+	for _, name := range releaseRootFiles {
+		if err := copyReleaseFile(filepath.Join(repoRoot, name), filepath.Join(payloadDir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// markdownRelativeLinkPattern matches an inline markdown link target that is
+// repository-relative: not a URL, not an anchor, not a mailto.
+var markdownRelativeLinkPattern = regexp.MustCompile(`\]\(([^)\s#][^)\s]*)\)`)
+
+// markdownReferenceLinkPattern matches a reference-style link definition
+// ("[label]: target"). The pin below deliberately does NOT rewrite these, so
+// that the staging guard is checking something the pin cannot have made true by
+// construction: if the README ever grows a dangling reference definition, the
+// release fails and names it instead of shipping it.
+var markdownReferenceLinkPattern = regexp.MustCompile(`(?m)^\[[^\]]+\]:[ \t]+(\S+)`)
+
+// pinUnresolvableReadmeLinks rewrites the packaged README's repository-relative
+// links that do not resolve inside the archive into blob URLs pinned at this
+// release's tag (#4268).
+//
+// The README ships next to the binary, and 10 of its 25 relative links dangled
+// once extracted — LICENSE, CONTRIBUTING.md, go.mod, source files under
+// internal/, and others — because the repository's markdown link checker
+// validates against the repo tree, where they all resolve, and never against
+// the archive layout that actually ships.
+//
+// Two outcomes only, decided by what the payload contains: a target present in
+// the archive keeps its relative link, and a target absent from it becomes a
+// blob URL at this version's tag. Pinning to the tag rather than main matters
+// for a document a user reads months later beside a binary of this vintage —
+// main will have moved, and the file the link describes may not be there at
+// all.
+func pinUnresolvableReadmeLinks(payloadDir, version string) error {
+	readme := filepath.Join(payloadDir, "README.md")
+	data, err := os.ReadFile(readme)
+	if err != nil {
+		return fmt.Errorf("read packaged README for link pinning: %w", err)
+	}
+	rewritten := markdownRelativeLinkPattern.ReplaceAllStringFunc(string(data), func(match string) string {
+		target := markdownRelativeLinkPattern.FindStringSubmatch(match)[1]
+		if readmeLinkResolves(payloadDir, target) {
+			return match
+		}
+		return fmt.Sprintf("](%s)", releaseBlobURL(version, target))
+	})
+	if err := os.WriteFile(readme, []byte(rewritten), 0o644); err != nil {
+		return fmt.Errorf("write packaged README after link pinning: %w", err)
+	}
+	return nil
+}
+
+// unresolvableReadmeLinks lists the packaged README's repository-relative link
+// targets that do not exist in payloadDir. It is the assertion behind the
+// staging failure: the pin above is the fix, and this is the proof that it
+// covered every case, evaluated against the payload actually produced rather
+// than against the repository tree.
+func unresolvableReadmeLinks(payloadDir string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(payloadDir, "README.md"))
+	if err != nil {
+		return nil, fmt.Errorf("read packaged README for link check: %w", err)
+	}
+	var broken []string
+	for _, pattern := range []*regexp.Regexp{markdownRelativeLinkPattern, markdownReferenceLinkPattern} {
+		for _, match := range pattern.FindAllStringSubmatch(string(data), -1) {
+			if target := match[1]; !readmeLinkResolves(payloadDir, target) {
+				broken = append(broken, target)
+			}
+		}
+	}
+	return broken, nil
+}
+
+// readmeLinkResolves reports whether a markdown link target names something the
+// payload contains. A target carrying a scheme is somebody else's problem; one
+// carrying a fragment is checked by its path alone.
+func readmeLinkResolves(payloadDir, target string) bool {
+	if strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
+		return true
+	}
+	path, _, _ := strings.Cut(target, "#")
+	if path == "" {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(payloadDir, filepath.FromSlash(path)))
+	return err == nil
+}
+
+// releaseBlobURL renders the canonical GitHub blob URL for a repository path at
+// this release's tag.
+func releaseBlobURL(version, target string) string {
+	path, fragment, hasFragment := strings.Cut(target, "#")
+	url := fmt.Sprintf("https://github.com/Agent-Clubhouse/Goobers/blob/%s/%s",
+		version, strings.TrimPrefix(path, "./"))
+	if hasFragment {
+		url += "#" + fragment
+	}
+	return url
 }
 
 func adaptInstalledOnboarding(payloadDir, version string) error {
