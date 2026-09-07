@@ -501,6 +501,11 @@ type AutomatedEvaluator struct {
 	// Checks is the check registry, keyed by AutomatedGate.Check. Defaults to
 	// DefaultChecks() when nil.
 	Checks map[string]CheckFunc
+	// ArtifactChecks registers evidence-aware checks independently of scalar
+	// checks. A name present in both registries is rejected as ambiguous.
+	ArtifactChecks map[string]ArtifactCheckFunc
+	// OpenArtifacts resolves a fresh read-only current-run reader per check.
+	OpenArtifacts OpenArtifactReader
 }
 
 // NewAutomatedEvaluator returns an AutomatedEvaluator over DefaultChecks.
@@ -509,12 +514,18 @@ func NewAutomatedEvaluator() *AutomatedEvaluator {
 }
 
 // Evaluate implements invoke.Automated.
-func (e *AutomatedEvaluator) Evaluate(_ context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
+func (e *AutomatedEvaluator) Evaluate(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
 	checks := e.Checks
 	if checks == nil {
 		checks = DefaultChecks()
 	}
 	check, ok := checks[gate.Check]
+	if artifactCheck, artifactOK := e.ArtifactChecks[gate.Check]; artifactOK {
+		if ok || artifactCheck == nil {
+			return "", fmt.Errorf("gate: ambiguous or nil artifact check %q", gate.Check)
+		}
+		return e.evaluateArtifacts(ctx, artifactCheck, gate, env)
+	}
 	if !ok {
 		return "", fmt.Errorf("gate: unknown automated check %q", gate.Check)
 	}

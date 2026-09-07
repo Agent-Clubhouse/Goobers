@@ -1067,14 +1067,14 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if g.Automated != nil {
 			conf = *g.Automated
 		}
-		// An automated gate gets no workspace, capabilities, or context
-		// pointers — its checks are pure functions over env.Inputs alone,
-		// matching the local runner (#112). Per the runner-contract
+		// An automated gate gets no workspace or capabilities. Scalar checks
+		// remain pure; artifact-aware checks receive accumulated upstream
+		// pointers and a runner-bound read-only journal resolver. Per the runner-contract
 		// convention (internal/gate/automated.go): a gate never receives the
 		// subject stage's ResultEnvelope over the wire envelope (§2.4), so
 		// the subject's status and small outputs are flattened into the
 		// gate's own Inputs before dispatch.
-		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil, "")
+		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, upstream, "")
 		env.Inputs, err = gate.AutomatedInputs(subject)
 		if err != nil {
 			return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q inputs: %w", g.Name, err)
