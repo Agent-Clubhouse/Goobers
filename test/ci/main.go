@@ -323,6 +323,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			expectEmpty: true,
 			group:       groupChecks,
 		},
+		// Discover undeclared downloads before the long unit/browser suites.
+		{label: "runtime-acquisitions", command: tools.goCommand, args: []string{"test", "./test/ci", "-run", "Test.*Acquisition", "-count=1"}, group: groupPreflight},
 		{label: "tidy-check", command: tools.goCommand, args: []string{"mod", "tidy", "-diff"}, group: groupChecks},
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
@@ -634,6 +636,7 @@ func fastChecks(mergeChecks []check) []check {
 func isPreflightCheck(label string) bool {
 	switch label {
 	case "fmt-check",
+		"runtime-acquisitions",
 		"tidy-check",
 		"no-phone-home",
 		"stage-name-lint",

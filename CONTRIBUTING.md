@@ -211,6 +211,12 @@ go test -run=^$ -bench=. ./internal/journal ./internal/readmodel
 
 ### Platform prerequisites
 
+Tools can also acquire binaries and artifacts lazily. Before using an
+egress-controlled runner, consult the [runtime acquisition manifest and local
+override guide](docs/guides/runtime-acquisition.md). The preflight gate checks
+discovered acquisition sites against that inventory; cached executables alone do
+not make the complete merge tier offline-capable.
+
 | Platform | Required tools | Merge-tier invocation |
 |---|---|---|
 | Linux | Go from `go.mod`, Node.js 24 with npm, Git, `golangci-lint` v2.12.2 | `go run ./test/ci` (`make ci` also works with GNU Make and a POSIX shell) |
