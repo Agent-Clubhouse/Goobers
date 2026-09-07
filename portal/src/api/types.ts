@@ -441,6 +441,7 @@ export interface WorkflowConcurrency {
 }
 
 export interface WorkflowSummary {
+  engineFallback?: EngineFallback;
   identity: WorkflowReference;
   displayName: string;
   purpose: string;
@@ -553,7 +554,20 @@ export interface WorkflowRunActivity {
   activeRuns: number;
 }
 
+export interface EngineFallback {
+  gaggle: string;
+  workflow: string;
+  runId: string;
+  at: string;
+  reason: string;
+  reasonClass: string;
+  placementDeclared: boolean;
+  selfPinnedStages?: string[];
+  unpinnedGates?: string[];
+}
+
 export interface RunSummary {
+  engineFallback?: EngineFallback;
   id: string;
   workflow: string;
   workflowVersion: number;

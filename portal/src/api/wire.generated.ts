@@ -224,6 +224,21 @@ export const goWireFixtures = {
   "workflows": {
     "items": [
       {
+        "engineFallback": {
+          "gaggle": "core",
+          "workflow": "implementation",
+          "runId": "run-1",
+          "at": "2026-09-07T00:00:00Z",
+          "reason": "implement is self-pinned",
+          "reasonClass": "placement_ineligible",
+          "placementDeclared": true,
+          "selfPinnedStages": [
+            "implement"
+          ],
+          "unpinnedGates": [
+            "review"
+          ]
+        },
         "identity": {
           "gaggle": "core",
           "name": "implementation"
@@ -292,6 +307,21 @@ export const goWireFixtures = {
     }
   },
   "workflowDetail": {
+    "engineFallback": {
+      "gaggle": "core",
+      "workflow": "implementation",
+      "runId": "run-1",
+      "at": "2026-09-07T00:00:00Z",
+      "reason": "implement is self-pinned",
+      "reasonClass": "placement_ineligible",
+      "placementDeclared": true,
+      "selfPinnedStages": [
+        "implement"
+      ],
+      "unpinnedGates": [
+        "review"
+      ]
+    },
     "identity": {
       "gaggle": "core",
       "name": "implementation"
@@ -423,6 +453,21 @@ export const goWireFixtures = {
   "runs": {
     "runs": [
       {
+        "engineFallback": {
+          "gaggle": "core",
+          "workflow": "implementation",
+          "runId": "run-1",
+          "at": "2026-09-07T00:00:00Z",
+          "reason": "implement is self-pinned",
+          "reasonClass": "placement_ineligible",
+          "placementDeclared": true,
+          "selfPinnedStages": [
+            "implement"
+          ],
+          "unpinnedGates": [
+            "review"
+          ]
+        },
         "id": "run-123",
         "workflow": "implementation",
         "workflowVersion": 7,
@@ -472,6 +517,21 @@ export const goWireFixtures = {
     "nextCursor": "next-run"
   },
   "runDetail": {
+    "engineFallback": {
+      "gaggle": "core",
+      "workflow": "implementation",
+      "runId": "run-1",
+      "at": "2026-09-07T00:00:00Z",
+      "reason": "implement is self-pinned",
+      "reasonClass": "placement_ineligible",
+      "placementDeclared": true,
+      "selfPinnedStages": [
+        "implement"
+      ],
+      "unpinnedGates": [
+        "review"
+      ]
+    },
     "id": "run-123",
     "workflow": "implementation",
     "workflowVersion": 7,

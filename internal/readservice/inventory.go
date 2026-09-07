@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -227,16 +228,17 @@ type WorkflowConcurrency struct {
 // WorkflowSummary is the inventory projection shared by workflow list and
 // detail responses.
 type WorkflowSummary struct {
-	Identity    WorkflowReference         `json:"identity"`
-	DisplayName string                    `json:"displayName"`
-	Purpose     string                    `json:"purpose"`
-	Triggers    []apiv1.Trigger           `json:"triggers"`
-	Readiness   apiv1.ReadinessConditions `json:"readiness"`
-	Concurrency WorkflowConcurrency       `json:"concurrency"`
-	Owners      []GooberReference         `json:"owners"`
-	StageCount  int                       `json:"stageCount"`
-	Definition  WorkflowDefinition        `json:"definition"`
-	Warnings    []validate.CodedWarning   `json:"warnings"`
+	EngineFallback *readmodel.EngineFallback `json:"engineFallback,omitempty"`
+	Identity       WorkflowReference         `json:"identity"`
+	DisplayName    string                    `json:"displayName"`
+	Purpose        string                    `json:"purpose"`
+	Triggers       []apiv1.Trigger           `json:"triggers"`
+	Readiness      apiv1.ReadinessConditions `json:"readiness"`
+	Concurrency    WorkflowConcurrency       `json:"concurrency"`
+	Owners         []GooberReference         `json:"owners"`
+	StageCount     int                       `json:"stageCount"`
+	Definition     WorkflowDefinition        `json:"definition"`
+	Warnings       []validate.CodedWarning   `json:"warnings"`
 }
 
 // WorkflowPage is a deterministic page of workflows within one gaggle.
@@ -578,7 +580,9 @@ func (s *Local) workflowsUnannotated(ctx context.Context, gaggle string, request
 	for i := range inventory.definitions.Workflows {
 		def := &inventory.definitions.Workflows[i]
 		if def.Spec.Gaggle == gaggle {
-			items = append(items, s.workflowSummary(inventory, def, active, refill))
+			item := s.workflowSummary(inventory, def, active, refill)
+			item.EngineFallback = schedulerStatus.engineFallbackFor(def.Spec.Gaggle, def.Name)
+			items = append(items, item)
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Identity.Name < items[j].Identity.Name })
@@ -656,7 +660,7 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 	if err != nil {
 		return WorkflowDetail{}, err
 	}
-	return WorkflowDetail{
+	detail := WorkflowDetail{
 		WorkflowSummary: s.workflowSummary(
 			inventory,
 			def,
@@ -665,7 +669,9 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 		),
 		Graph:  inventory.graphs[workflowKey{gaggle: gaggle, name: name}],
 		Stages: workflowStages(def),
-	}, nil
+	}
+	detail.EngineFallback = schedulerStatus.engineFallbackFor(gaggle, name)
+	return detail, nil
 }
 
 // activeRunCounts returns the most recent background sample of the active-run

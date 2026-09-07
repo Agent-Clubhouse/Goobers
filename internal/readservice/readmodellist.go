@@ -105,6 +105,7 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 // cutover would not have removed the per-row open — it would have moved it.
 func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary {
 	return RunSummary{
+		EngineFallback:  row.Operator.EngineFallback,
 		ID:              row.RunID,
 		Workflow:        row.Workflow,
 		WorkflowVersion: row.WorkflowVersion,

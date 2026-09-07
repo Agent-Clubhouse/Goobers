@@ -158,19 +158,20 @@ type WorkflowRunActivity struct {
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
 // run detail.
 type RunSummary struct {
-	ID              string           `json:"id"`
-	Workflow        string           `json:"workflow"`
-	WorkflowVersion int              `json:"workflowVersion"`
-	WorkflowDigest  string           `json:"workflowDigest,omitempty"`
-	Gaggle          string           `json:"gaggle"`
-	Trigger         journal.Trigger  `json:"trigger"`
-	Phase           journal.RunPhase `json:"phase"`
-	Terminal        bool             `json:"terminal"`
-	CurrentStage    string           `json:"currentStage,omitempty"`
-	StartedAt       time.Time        `json:"startedAt"`
-	FinishedAt      *time.Time       `json:"finishedAt,omitempty"`
-	DurationMillis  int64            `json:"durationMillis"`
-	LastActivityAt  time.Time        `json:"lastActivityAt"`
+	EngineFallback  *readmodel.EngineFallback `json:"engineFallback,omitempty"`
+	ID              string                    `json:"id"`
+	Workflow        string                    `json:"workflow"`
+	WorkflowVersion int                       `json:"workflowVersion"`
+	WorkflowDigest  string                    `json:"workflowDigest,omitempty"`
+	Gaggle          string                    `json:"gaggle"`
+	Trigger         journal.Trigger           `json:"trigger"`
+	Phase           journal.RunPhase          `json:"phase"`
+	Terminal        bool                      `json:"terminal"`
+	CurrentStage    string                    `json:"currentStage,omitempty"`
+	StartedAt       time.Time                 `json:"startedAt"`
+	FinishedAt      *time.Time                `json:"finishedAt,omitempty"`
+	DurationMillis  int64                     `json:"durationMillis"`
+	LastActivityAt  time.Time                 `json:"lastActivityAt"`
 	// Stale is true only for a running run when both its last activity and the
 	// daemon scheduler heartbeat are older than runner.livenessTimeout.
 	Stale            bool   `json:"stale"`
@@ -1592,6 +1593,7 @@ func summarizeRunForStage(
 ) (RunSummary, error) {
 	phase := journal.PhaseRunning
 	var finishedAt *time.Time
+	var engineFallback *readmodel.EngineFallback
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
@@ -1648,6 +1650,7 @@ func summarizeRunForStage(
 				lastHeartbeat = event.Time
 			}
 		case journal.EventRunnerAnnotation:
+			engineFallback = engineFallback.After(event)
 			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
 				currentStage = queue
 			}
@@ -1848,6 +1851,7 @@ func summarizeRunForStage(
 		NoWork:           noWork,
 		TerminalReason:   terminalReason,
 		Operator:         operator,
+		EngineFallback:   engineFallback,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, nil
