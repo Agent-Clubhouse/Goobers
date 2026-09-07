@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -21,6 +22,7 @@ type schemaFixture struct {
 
 func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 	fixtures := map[string]schemaFixture{
+		"investigation-evidence": {schema: "investigation-evidence.schema.json", value: completeInvestigationEvidence()},
 		"artifact": {
 			schema: schemas.Envelope["artifact"],
 			value:  completeArtifactPointer("artifacts/review/evidence.json"),
@@ -481,6 +483,9 @@ func pointer[T any](value T) *T {
 }
 
 var completenessOmissions = map[reflect.Type]map[string]string{
+	reflect.TypeOf(investigation.Validation{}): {
+		"SymptomObservationsAfter": "schema requires constant zero; non-omitempty field is always serialized and negative writer fixtures verify nonzero rejection",
+	},
 	reflect.TypeOf(apiv1.RepoRef{}): {
 		"Checkout": "workspace materialization config is intentionally projected out by RepoRef.EnvelopeRef",
 	},

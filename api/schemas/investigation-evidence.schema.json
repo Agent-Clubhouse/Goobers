@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/investigation-evidence.schema.json",
+  "title": "Investigation evidence",
+  "description": "Versioned index over verified investigation artifacts; repository attestation belongs to the workflow's runner-owned gates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "subject", "environment", "reproduction", "diagnosis", "fix", "validation"],
+  "properties": {
+    "schemaVersion": {"const": "goobers.dev/investigation-evidence/v1alpha1", "description": "Immutable evidence contract version."},
+    "subject": {
+      "type": "object", "additionalProperties": false,
+      "description": "Issue and immutable source revisions being investigated.",
+      "required": ["item", "repository", "baseRevision", "fixRevision"],
+      "properties": {
+        "item": {"$ref": "#/$defs/issue", "description": "External issue locator, never the raw issue body."},
+        "repository": {"type": "string", "minLength": 1, "maxLength": 512, "description": "Provider repository identity, not a local checkout path."},
+        "baseRevision": {"$ref": "#/$defs/revision", "description": "Pinned pre-fix commit."},
+        "fixRevision": {"$ref": "#/$defs/revision", "description": "Commit containing the proposed fix."}
+      }
+    },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "description": "Sanitized comparison environment, never raw process environment values.",
+      "required": ["platform", "dimensions", "configDigest"],
+      "properties": {
+        "platform": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Sanitized platform identity."},
+        "dimensions": {"$ref": "#/$defs/dimensions", "description": "Bounded scalar comparison facts."},
+        "configDigest": {"$ref": "#/$defs/digest", "description": "Digest of the comparison configuration."}
+      }
+    },
+    "reproduction": {
+      "type": "object", "additionalProperties": false,
+      "description": "Reproduction harness and baseline evidence.",
+      "required": ["harness", "baseline", "sourceSnapshotDigest", "oracleDigest", "symptom"],
+      "properties": {
+        "harness": {"$ref": "artifact-pointer.schema.json", "description": "Verified reproduction harness pointer."},
+        "baseline": {"$ref": "artifact-pointer.schema.json", "description": "Verified runner-authored baseline pointer."},
+        "sourceSnapshotDigest": {"$ref": "#/$defs/digest", "description": "Baseline source snapshot digest."},
+        "oracleDigest": {"$ref": "#/$defs/digest", "description": "Pinned symptom oracle digest."},
+        "symptom": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Bounded symptom description."}
+      }
+    },
+    "diagnosis": {
+      "type": "object", "additionalProperties": false,
+      "description": "Confirmed causal diagnosis supported by concrete evidence.",
+      "required": ["report", "confidence", "evidence"],
+      "properties": {
+        "report": {"$ref": "artifact-pointer.schema.json", "description": "Verified diagnosis report pointer."},
+        "confidence": {"const": "confirmed", "description": "Required causal confidence; the gate verifies the underlying evidence."},
+        "evidence": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/evidenceRef"}, "description": "At least one supporting evidence reference."}
+      }
+    },
+    "fix": {
+      "type": "object", "additionalProperties": false,
+      "description": "Implementation report and canonical diff identity.",
+      "required": ["report", "diffDigest"],
+      "properties": {
+        "report": {"$ref": "artifact-pointer.schema.json", "description": "Verified implementation report pointer."},
+        "diffDigest": {"$ref": "#/$defs/digest", "description": "Canonical base-to-fix diff digest."}
+      }
+    },
+    "validation": {
+      "type": "object", "additionalProperties": false,
+      "description": "Successful reproduction-clearing result, checked independently by workflow admission gates.",
+      "required": ["result", "sourceSnapshotDigest", "harnessDigest", "oracleDigest", "completedAttempts", "symptomObservationsBefore", "symptomObservationsAfter", "passed"],
+      "properties": {
+        "result": {"$ref": "artifact-pointer.schema.json", "description": "Verified runner-authored validation result pointer."},
+        "sourceSnapshotDigest": {"$ref": "#/$defs/digest", "description": "Validated fixed source snapshot digest."},
+        "harnessDigest": {"$ref": "#/$defs/digest", "description": "Reused reproduction harness digest."},
+        "oracleDigest": {"$ref": "#/$defs/digest", "description": "Reused symptom oracle digest."},
+        "completedAttempts": {"type": "integer", "minimum": 1, "description": "Number of completed validation attempts."},
+        "symptomObservationsBefore": {"type": "integer", "minimum": 1, "description": "Observed pre-fix symptom count."},
+        "symptomObservationsAfter": {"const": 0, "description": "No symptom observations after the fix."},
+        "passed": {"const": true, "description": "Successful validation signal, not a substitute for gate verification."}
+      }
+    },
+    "attachments": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/evidenceRef"}, "description": "Optional heterogeneous diagnostics; absent kinds do not create placeholders."}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "revision": {"type": "string", "pattern": "^([a-f0-9]{40}|[a-f0-9]{64})$"},
+    "dimensions": {
+      "type": "object", "maxProperties": 64,
+      "propertyNames": {"pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+      "additionalProperties": {"type": ["string", "number", "boolean", "null"], "maxLength": 1024}
+    },
+    "issue": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "uri"],
+      "properties": {
+        "kind": {"const": "issue", "description": "External resource is an issue."},
+        "uri": {"type": "string", "pattern": "^https?://", "maxLength": 2048, "description": "External issue web locator; this manifest does not fetch it."},
+        "description": {"type": "string", "maxLength": 512, "description": "Optional sanitized issue label, never raw external content."}
+      }
+    },
+    "evidenceRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "artifact", "producerStage", "description", "captureContext"],
+      "properties": {
+        "kind": {"enum": ["dump", "trace", "profile", "log", "metrics", "fixture", "other"], "description": "Diagnostic kind; no particular kind is mandatory."},
+        "artifact": {"$ref": "artifact-pointer.schema.json", "description": "Verified immutable diagnostic pointer."},
+        "producerStage": {"enum": ["reproduce", "instrument", "implement-fix", "validate-reproduction"], "description": "Producer stage owning this evidence."},
+        "description": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Bounded sanitized explanation of the capture."},
+        "captureContext": {"$ref": "#/$defs/dimensions", "description": "Bounded scalar capture dimensions."}
+      }
+    }
+  }
+}
