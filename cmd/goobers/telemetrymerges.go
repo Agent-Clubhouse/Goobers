@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -52,6 +53,12 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 		pf(stderr, "error: invalid --instance-id\n")
 		return 2
 	}
+	if *compareRepo != "" || *sharedIdentities != "" {
+		if err := validateMergeComparisonFlags(*compareRepo, *sharedIdentities); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+	}
 	since, until, err := parseTelemetryWindow(*sinceValue, *untilValue)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -88,9 +95,6 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 			pf(stderr, "error: compare merge inventory: %v\n", err)
 			return 2
 		}
-	} else if *sharedIdentities != "" {
-		pf(stderr, "error: --shared-identities requires --compare-github\n")
-		return 2
 	}
 	if *jsonOutput {
 		if err := json.NewEncoder(stdout).Encode(report); err != nil {
@@ -99,6 +103,16 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 		}
 		return 0
 	}
+	if err := writeMergeReport(stdout, report); err != nil {
+		pf(stderr, "error: write merge report: %v\n", err)
+		return 2
+	}
+	return 0
+}
+
+func writeMergeReport(output io.Writer, report rollup.MergeReport) error {
+	var buffer bytes.Buffer
+	stdout := &buffer
 	pf(stdout, "Confirmed merges: %d; unverified mutation events: %d; conflicting PRs: %d\n", len(report.Merges), report.UnverifiedMutationEvents, report.ConflictingPullRequests)
 	pf(stdout, "UTC DAY\tINSTANCE\tGAGGLE\tPROVIDER\tREPOSITORY API\tMERGES\n")
 	for _, row := range report.Daily {
@@ -113,5 +127,6 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 			pf(stdout, "%s\t%s\t%s\t%s\t%d\n", row.Day, row.Category, row.InstanceID, row.Gaggle, row.Count)
 		}
 	}
-	return 0
+	_, err := buffer.WriteTo(output)
+	return err
 }

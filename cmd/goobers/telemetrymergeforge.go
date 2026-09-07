@@ -14,14 +14,27 @@ type mergeInventorySource interface {
 	MergeInventory(context.Context, providers.MergeInventoryRequest) ([]providers.MergeInventoryEntry, error)
 }
 
-func compareGitHubMerges(root, repository, identities string, db *rollup.DB, query rollup.MergeReportQuery) (*rollup.MergeComparison, error) {
+func validateMergeComparisonFlags(repository, identities string) error {
 	parts := strings.Split(repository, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, "?#\\ \t\r\n") {
-		return nil, fmt.Errorf("--compare-github requires an explicit owner/repository")
+		return fmt.Errorf("--compare-github requires an explicit owner/repository")
 	}
 	if strings.TrimSpace(identities) == "" {
-		return nil, fmt.Errorf("--shared-identities is required with --compare-github; identity is never inferred from PR authors")
+		return fmt.Errorf("--shared-identities is required with --compare-github; identity is never inferred from PR authors")
 	}
+	for _, identity := range strings.Split(identities, ",") {
+		if strings.TrimSpace(identity) == "" {
+			return fmt.Errorf("--shared-identities cannot contain an empty login")
+		}
+	}
+	return nil
+}
+
+func compareGitHubMerges(root, repository, identities string, db *rollup.DB, query rollup.MergeReportQuery) (*rollup.MergeComparison, error) {
+	if err := validateMergeComparisonFlags(repository, identities); err != nil {
+		return nil, err
+	}
+	parts := strings.Split(repository, "/")
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: parts[0], Name: parts[1]}
 	source, err := newProviderForStageSurface[mergeInventorySource](root, repo, true, withStageProviderCapability(capability.GitHubPRRead))
 	if err != nil {
