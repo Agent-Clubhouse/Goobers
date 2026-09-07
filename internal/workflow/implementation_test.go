@@ -252,7 +252,12 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// #3272: review now checkpoints the branch before local-ci, local-ci pass
 	// proceeds directly to open-pr, and infrastructure outcomes retry local-ci
 	// under their separate bounded budget.
-	const wantDigest = "sha256:5389872ca6628eec1d7305be4b0bbe8b58b468fdfc5bdaaf1b1f344f1270b577"
+	// #2554: local-ci declares this gaggle's own `npm run ci` instead of the
+	// Go default `make ci`, finishing what #2174 started on the prose. The
+	// gaggle's ciCommand already resolved to the same argv at config-load
+	// time, so the RUNTIME command is unchanged; only the hashed definition
+	// moved, and the example no longer reads as a Go project.
+	const wantDigest = "sha256:a8607589552819e69e8792b8f26bbde4637668b3a64e7f3ffcfdfc310faa9b55"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

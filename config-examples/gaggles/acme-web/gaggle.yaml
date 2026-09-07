@@ -21,10 +21,13 @@ spec:
     namespace: gaggle-acme-web
     identityRef: acme-web-identity
   # Per-gaggle CI command (MGV-1/#1009): this is a non-Go (web) stack, so the
-  # deterministic `local-ci` stage runs this suite in place of the Go default
-  # `["make", "ci"]` its workflow declares — no need to fork the shared workflow
-  # template. A non-zero exit fails the gate exactly as that Go default does,
-  # and only ever fails this gaggle's own PRs.
+  # deterministic `local-ci` stage runs this suite, resolved into the stage at
+  # config-load time — no need to fork the shared workflow template. The
+  # workflow declares the same argv (#2554), so this override changes nothing
+  # an operator reads there; it is what makes the same template reusable by a
+  # gaggle on any stack. A non-zero exit fails the gate exactly as the Go
+  # default `["make", "ci"]` does elsewhere, and only ever fails this gaggle's
+  # own PRs.
   ciCommand: ["npm", "run", "ci"]
   # Runner capabilities every run of this gaggle needs (RRQ-1/#1101). These are
   # matched at *schedule* time against the runner's advertised set
