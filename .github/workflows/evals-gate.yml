@@ -4,12 +4,15 @@ name: EvalSuite gate
 # schedule, no pull_request trigger.
 #
 # This gate was written against the #2662 EvalSuite direction. #2667 (runner
-# integration) and #2668 (this gate's design) were both CLOSED on 2026-08-08 as
-# REDIRECTED, not delivered: #2681 replaces the direction with a native
-# Go/DSL capability on the existing runner, and #2668's closing note called
-# bespoke baseline/alerting gating premature before #2682's comparison
-# primitive exists to gate on. Nothing is coming to unblock this file as
-# written.
+# integration) landed a PYTHON runner (evals/runner.py, PR #2676) and was then
+# CLOSED on 2026-08-08 as REDIRECTED; #2668 (this gate's design) was closed the
+# same day as premature. #2681 replaces the direction with a native Go/DSL
+# capability on the existing Goobers runner.
+#
+# The guard below can therefore never pass: evals/cmd/ and
+# evals/testdata/baselines/ are the shape of the ILLUSTRATIVE GO cli that
+# evals-ci-gating.md sketched, and the runner that shipped is Python. Nothing is
+# coming to unblock this file as written.
 #
 # It is kept, not deleted, because #2681 is goobers:nominated and not yet
 # goobers:approved; retiring evals/ and this workflow waits on that decision.
@@ -44,7 +47,7 @@ jobs:
       - name: Verify runner is provisioned
         run: |
           if [ ! -d evals/cmd ] || [ ! -d evals/testdata/baselines ]; then
-            echo "::error title=EvalSuite gate is superseded, not pending::evals/cmd/ (runner) and evals/testdata/baselines/ (§4) do not exist and are not being built. #2667 and #2668 were closed on 2026-08-08 as redirected to #2681, so nothing will unblock this workflow as written; it is retained only until #2681 is ratified. This is a distinct workflow from evals-tests.yml, which does run the evals/ schema tests (#2670-#2672). See docs/design/evals-suite.md."
+            echo "::error title=EvalSuite gate is superseded, not pending::evals/cmd/ and evals/testdata/baselines/ do not exist and never will: they are the shape of the illustrative GO cli evals-ci-gating.md sketched, while the runner that actually shipped is Python (evals/runner.py). #2667 and #2668 were closed on 2026-08-08 as redirected to #2681, so nothing will unblock this workflow as written; it is retained only until #2681 is ratified. This is a distinct workflow from evals-tests.yml, which does run the evals/ schema tests (#2670-#2672). See docs/design/evals-suite.md."
             exit 1
           fi
 

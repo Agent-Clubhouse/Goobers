@@ -15,6 +15,7 @@
 > were **mutually un-mergeable as a set** — surfacing that Goobers reviews per-run,
 > per-diff, and has no layer that reviews across PRs, against a moving base, or that
 > carries a PR forward to merge. This design adds that layer.
+> Superseded-by: docs/requirements/pr-lifecycle.md
 
 ## 1. Why this exists
 

@@ -8,6 +8,7 @@
 > References: `docs/ARCHITECTURE.md` §9, `docs/requirements/security.md` (SEC-042/045/046),
 > `docs/guides/github-token-scopes.md`, `internal/credentials`,
 > `cmd/goobers/runnerwiring.go`.
+> Delivered-by: #822, #823
 
 ## 1. Problem
 

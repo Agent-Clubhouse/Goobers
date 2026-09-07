@@ -7,6 +7,7 @@
 > (#1883), keeping its read-projection conclusion and replacing the parts it left
 > open: ordering, the writer set, request budgeting, in-process isolation,
 > topology, authorization, and the hosted shape.
+> Supersedes: docs/design/unified-index-backed-run-reads.md
 >
 > **Revision history is in §18** — nine errors in the first pass, seven
 > correctness holes in the second, ten state-boundary findings in the third. The
@@ -106,7 +107,9 @@ Two framing notes:
 
 ## 2. Measured baseline
 
-Measured on the live self-hosting instance (`~/source/goobers-instances`) on
+Measured on the live self-hosting instance (`~/source/goobers-instances` — an
+operator's own checkout, so these measurements are **not reproducible from this
+repository**; the conclusions they support are restated in prose below) on
 2026-07-29, against `main` at `899dbbdd`. **The daemon was not running and
 `up.lock` was stale**, so every number is a *best case* with zero contention from
 live execution.

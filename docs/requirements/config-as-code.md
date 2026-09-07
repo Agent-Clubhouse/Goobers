@@ -86,12 +86,13 @@ is delivered to a running instance at each deployment tier.
 ### Delivery by tier
 - **CFG-020 (MUST):** *(Tiers 1–2)*: config delivery MUST be a **local config
   directory** that the local runner daemon loads and validates — no database,
-  cluster, or sync service required. **Shipped:** config is loaded once at
-  `goobers up` startup; invalid config aborts startup (fail-closed). `goobers
+  cluster, or sync service required. **Shipped:** config is loaded and validated at
+  `goobers up` startup (invalid config aborts startup, fail-closed); `goobers
   config diff` (`../guides/config-drift.md`) detects drift against the shipped
-  canonical config. **Not implemented — V1 prescriptive:** watching the directory
-  and applying validated changes on reload, delivered by the Workflow CD design
-  (`../design/workflow-cd.md`, WCD-4/5). Version pinning holds either way:
+  canonical config; **and live reload is shipped** — `goobers up --watch-config`
+  watches the materialized config directory and applies validated changes without
+  a restart, `goobers apply` reloads on demand, and a Git `workflowSource`
+  reconciles continuously without the flag. Version pinning holds either way:
   in-flight runs stay pinned to their started definition version (`WF-016`). This
   is the owning statement of tiers-1–2 config delivery (`DEP-025` defers here).
 - **CFG-021 (MUST):** **Tier 3 (V2):** config delivery MUST be **ArgoCD sync → CRDs →
@@ -109,9 +110,10 @@ is delivered to a running instance at each deployment tier.
   (`design/static-fan-out-fan-in.md` §4).
 - **CFG-023 (MUST):** Validation MUST fail closed: definitions that do not validate
   MUST NOT be loaded or trigger runs. **Shipped:** invalid config aborts `goobers
-  up` at startup, with the error surfaced on the CLI. **Not implemented — V1
-  prescriptive:** last-known-good retention — a running instance keeping its prior
-  valid config and surfacing the error rather than stopping — arrives with
+  up` at startup with the error surfaced on the CLI, **and last-known-good
+  retention is shipped** — a *running* instance that is handed invalid config keeps
+  its prior valid definitions running and surfaces the error rather than stopping.
+  Historical note: this arrived with
   watch/reload delivery (Workflow CD, `../design/workflow-cd.md` WCD-5). *(All
   tiers)*
 

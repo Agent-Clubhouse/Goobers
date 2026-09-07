@@ -21,10 +21,12 @@ Design and implementation home for the **#2662** EvalSuite direction
   that `replay` mode reads from and `real`+`record` sessions write to.
 
 No further design docs will land here: every child of #2662 (#2663–#2669) was
-closed on 2026-08-08 as redirected, and the adapter shim (#2666) and runner
-integration (#2667) were never built. DSL/schema validation (#2663) is
-documented in the sections below and is the part of this tree that does run —
-`evals-tests.yml` exercises it.
+closed on 2026-08-08 as redirected. The adapter shim (#2666, `adapters/`) and
+runner integration (#2667, `runner.py`) **did land** — on 2026-08-07 and
+2026-08-08 — and were redirected immediately afterwards; they are retained
+pending #2681's ratification but no automation executes them. DSL/schema
+validation (#2663) is documented in the sections below and is the part of this
+tree that does run: `evals-tests.yml` exercises it.
 
 ## DSL & schema validation (#2663)
 

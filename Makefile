@@ -106,6 +106,7 @@ manifests-check: manifests
 .PHONY: docs
 docs:
 	$(GO) run ./cmd/goobers __generate-docs docs
+	$(GO) run ./test/designstatus -write
 
 ## test-integration: Run declared-dependency integration tests (missing tools skip locally).
 .PHONY: test-integration

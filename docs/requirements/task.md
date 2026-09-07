@@ -68,10 +68,18 @@ defined inputs, work to be done, and a goal. `ARCHITECTURE.md` refers to tasks a
   are a first-class runner capability (`WF-021`).
 
 ### Stage contract (run environment, artifacts, capabilities)
+- **TSK-039 (MUST, Shipped):** A Task's **workspace mode** is a declaration, not
+  an inference: `repo`, `repo-readonly`, or `scratch`. Owning statement:
+  `WF-063` in `workflow.md`; this ID exists so `TSK-040`'s "fresh working copy"
+  is not read as "always a writable run-branch worktree". A read-only Task MUST
+  be able to obtain repository content **without** taking the run branch, so two
+  concurrently executing repo-backed stages cannot collide over it.
 - **TSK-040 (MUST):** Every Task MUST execute in an ephemeral, isolated, disposable
   workspace. Repo-backed Tasks MUST receive a **fresh working copy** of the target repo
   — at tiers 1–2 a git worktree off the managed working copy, run as a local process;
-  at tier 3 (V2) the workspace of an ephemeral pod. Deterministic Tasks MAY instead
+  at tier 3 (V2) the workspace of an ephemeral pod — writable on the run branch,
+  or read-only at the run's pinned base revision in detached HEAD, per `TSK-039`.
+  Deterministic Tasks MAY instead
   declare `run.workspace: scratch` to receive an empty workspace without repository
   resolution. Environments MUST be cleaned up after the run. This is the **owning
   statement** of the stage run-environment contract (`ARCHITECTURE.md §5`; `WF-053`

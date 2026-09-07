@@ -7,6 +7,7 @@
 > Requirements: [`docs/requirements/portal.md`](../requirements/portal.md)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Prototype: [`portal/`](../../portal/)
+> Supersedes: docs/design/v1/37-portal-v1.md
 
 ## 1. Product decision
 
