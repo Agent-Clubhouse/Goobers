@@ -177,6 +177,7 @@ func validateImplementationJournal(runDir string) error {
 		"stage:ci-poll",
 		"gate:ci-gate=pass",
 		"stage:close-out",
+		"stage:report-cost",
 	}
 	if strings.Join(sequence, "\n") != strings.Join(want, "\n") {
 		return fmt.Errorf("implementation workflow sequence:\n got: %v\nwant: %v", sequence, want)
