@@ -85,7 +85,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
+var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -375,19 +375,8 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			}
 
 		case eventRefTouched:
-			if ev.ExternalRef == nil {
-				continue
-			}
-			rj, err := runnerJSON(ev.Runner)
-			if err != nil {
+			if err := insertRefTouched(ctx, tx, runID, ev); err != nil {
 				return err
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO provider_mutations (run_id, seq, provider, kind, external_id, url, operation, occurred_at, runner_json)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID,
-				nullIfEmpty(ev.ExternalRef.URL), nullIfEmpty(operationFromRunner(ev.Runner)), formatTime(ev.Time), rj); err != nil {
-				return fmt.Errorf("rollup: insert provider_mutation seq %d: %w", ev.Seq, err)
 			}
 		}
 	}
@@ -402,6 +391,35 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 			nullIfEmpty(a.errorCode), nullIfEmpty(a.errorClass), a.runnerJSON, k.branch); err != nil {
 			return fmt.Errorf("rollup: insert stage_attempt %s traversal %d: %w", k.stage, k.traversal, err)
 		}
+	}
+	return nil
+}
+
+func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalEvent) error {
+	if ev.ExternalRef == nil {
+		return nil
+	}
+	relationship := operationFromRunner(ev.Runner)
+	if relationship == "" {
+		relationship = "touched"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO run_cost_attribution
+			(run_id, provider, external_kind, external_id, relationship)
+		VALUES (?, ?, ?, ?, ?)`,
+		runID, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID, relationship); err != nil {
+		return fmt.Errorf("rollup: insert cost attribution seq %d: %w", ev.Seq, err)
+	}
+	rj, err := runnerJSON(ev.Runner)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO provider_mutations (run_id, seq, provider, kind, external_id, url, operation, occurred_at, runner_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID,
+		nullIfEmpty(ev.ExternalRef.URL), nullIfEmpty(operationFromRunner(ev.Runner)), formatTime(ev.Time), rj); err != nil {
+		return fmt.Errorf("rollup: insert provider_mutation seq %d: %w", ev.Seq, err)
 	}
 	return nil
 }
@@ -1266,7 +1284,23 @@ func insertStageUsage(ctx context.Context, tx *sql.Tx, runID string, span teleme
 	if err != nil {
 		return err
 	}
+	cacheRead, hasCacheRead, err := usageInt64(span.SpanID, span.Attributes, telemetry.AttrUsageCacheReadTokens)
+	if err != nil {
+		return err
+	}
+	cacheWrite, hasCacheWrite, err := usageInt64(span.SpanID, span.Attributes, telemetry.AttrUsageCacheWriteTokens)
+	if err != nil {
+		return err
+	}
+	reasoning, hasReasoning, err := usageInt64(span.SpanID, span.Attributes, telemetry.AttrUsageReasoningTokens)
+	if err != nil {
+		return err
+	}
 	premium, hasPremium, err := usageFloat64(span.SpanID, span.Attributes, telemetry.AttrCopilotPremiumRequests)
+	if err != nil {
+		return err
+	}
+	nanoAIU, hasNanoAIU, err := usageInt64(span.SpanID, span.Attributes, telemetry.AttrUsageNanoAIU)
 	if err != nil {
 		return err
 	}
@@ -1274,23 +1308,28 @@ func insertStageUsage(ctx context.Context, tx *sql.Tx, runID string, span teleme
 	if err != nil {
 		return err
 	}
+	billingModel, hasBillingModel := span.Attributes[telemetry.AttrUsageBillingModel]
+	costBasis, hasCostBasis := span.Attributes[telemetry.AttrUsageCostBasis]
 	models, err := modelUsageFromSpan(span)
 	if err != nil {
 		return err
 	}
-	hasAggregate := hasInput || hasOutput || hasPremium || hasCost
+	hasAggregate := hasInput || hasOutput || hasCacheRead || hasCacheWrite || hasReasoning ||
+		hasPremium || hasNanoAIU || hasCost || hasBillingModel || hasCostBasis
 	if len(models) == 0 && hasAggregate {
 		if model := span.Attributes[telemetry.AttrGenAIResponseModel]; model != "" {
 			models = append(models, modelUsageRecord{
-				model:      model,
-				input:      input,
-				hasInput:   hasInput,
-				output:     output,
-				hasOutput:  hasOutput,
-				premium:    premium,
-				hasPremium: hasPremium,
-				cost:       cost,
-				hasCost:    hasCost,
+				model: model,
+				input: input, hasInput: hasInput,
+				output: output, hasOutput: hasOutput,
+				cacheRead: cacheRead, hasCacheRead: hasCacheRead,
+				cacheWrite: cacheWrite, hasCacheWrite: hasCacheWrite,
+				reasoning: reasoning, hasReasoning: hasReasoning,
+				premium: premium, hasPremium: hasPremium,
+				nanoAIU: nanoAIU, hasNanoAIU: hasNanoAIU,
+				cost: cost, hasCost: hasCost,
+				billingModel: billingModel, hasBillingModel: hasBillingModel,
+				costBasis: costBasis, hasCostBasis: hasCostBasis,
 			})
 		}
 	}
@@ -1314,13 +1353,18 @@ func insertStageUsage(ctx context.Context, tx *sql.Tx, runID string, span teleme
 	if hasAggregate {
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO stage_usage (
-				run_id, stage, traversal, attempt, input_tokens, output_tokens, copilot_premium_requests, cost_usd, branch
+				run_id, stage, traversal, attempt, input_tokens, output_tokens,
+				cache_read_tokens, cache_write_tokens, reasoning_tokens,
+				copilot_premium_requests, nano_aiu, cost_usd, billing_model, cost_basis, branch
 			)
-			SELECT run_id, stage, traversal, attempt, ?, ?, ?, ?, branch
+			SELECT run_id, stage, traversal, attempt, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, branch
 			FROM stage_attempts
 			WHERE run_id = ? AND stage = ? AND traversal = ? AND attempt = ?`,
 			nullableInt64(input, hasInput), nullableInt64(output, hasOutput),
-			nullableFloat64(premium, hasPremium), nullableFloat64(cost, hasCost),
+			nullableInt64(cacheRead, hasCacheRead), nullableInt64(cacheWrite, hasCacheWrite),
+			nullableInt64(reasoning, hasReasoning), nullableFloat64(premium, hasPremium),
+			nullableInt64(nanoAIU, hasNanoAIU), nullableFloat64(cost, hasCost),
+			nullableString(billingModel, hasBillingModel), nullableString(costBasis, hasCostBasis),
 			runID, stage, traversal, attempt)
 		if err != nil {
 			return fmt.Errorf("rollup: insert usage for stage %s traversal %d: %w", stage, traversal, err)
@@ -1337,14 +1381,21 @@ func insertStageUsage(ctx context.Context, tx *sql.Tx, runID string, span teleme
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO stage_model_usage (
 				run_id, stage, traversal, attempt, model, input_tokens, output_tokens,
-				copilot_premium_requests, cost_usd
+				cache_read_tokens, cache_write_tokens, reasoning_tokens,
+				copilot_premium_requests, nano_aiu, cost_usd, billing_model, cost_basis
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID, stage, traversal, attempt, model.model,
 			nullableInt64(model.input, model.hasInput),
 			nullableInt64(model.output, model.hasOutput),
+			nullableInt64(model.cacheRead, model.hasCacheRead),
+			nullableInt64(model.cacheWrite, model.hasCacheWrite),
+			nullableInt64(model.reasoning, model.hasReasoning),
 			nullableFloat64(model.premium, model.hasPremium),
-			nullableFloat64(model.cost, model.hasCost)); err != nil {
+			nullableInt64(model.nanoAIU, model.hasNanoAIU),
+			nullableFloat64(model.cost, model.hasCost),
+			nullableString(model.billingModel, model.hasBillingModel),
+			nullableString(model.costBasis, model.hasCostBasis)); err != nil {
 			return fmt.Errorf("rollup: insert model usage for stage %s traversal %d model %s: %w", stage, traversal, model.model, err)
 		}
 	}
@@ -1352,11 +1403,17 @@ func insertStageUsage(ctx context.Context, tx *sql.Tx, runID string, span teleme
 }
 
 type modelUsageRecord struct {
-	model               string
-	input, output       int64
-	premium, cost       float64
-	hasInput, hasOutput bool
-	hasPremium, hasCost bool
+	model                            string
+	input, output                    int64
+	cacheRead, cacheWrite, reasoning int64
+	nanoAIU                          int64
+	premium, cost                    float64
+	billingModel, costBasis          string
+	hasInput, hasOutput              bool
+	hasCacheRead, hasCacheWrite      bool
+	hasReasoning, hasNanoAIU         bool
+	hasPremium, hasCost              bool
+	hasBillingModel, hasCostBasis    bool
 }
 
 func modelUsageFromSpan(span telemetry.SpanRecord) ([]modelUsageRecord, error) {
@@ -1382,7 +1439,23 @@ func modelUsageFromSpan(span telemetry.SpanRecord) ([]modelUsageRecord, error) {
 		if err != nil {
 			return nil, err
 		}
+		cacheRead, hasCacheRead, err := usageInt64(span.SpanID, event.Attributes, telemetry.AttrUsageCacheReadTokens)
+		if err != nil {
+			return nil, err
+		}
+		cacheWrite, hasCacheWrite, err := usageInt64(span.SpanID, event.Attributes, telemetry.AttrUsageCacheWriteTokens)
+		if err != nil {
+			return nil, err
+		}
+		reasoning, hasReasoning, err := usageInt64(span.SpanID, event.Attributes, telemetry.AttrUsageReasoningTokens)
+		if err != nil {
+			return nil, err
+		}
 		premium, hasPremium, err := usageFloat64(span.SpanID, event.Attributes, telemetry.AttrCopilotPremiumRequests)
+		if err != nil {
+			return nil, err
+		}
+		nanoAIU, hasNanoAIU, err := usageInt64(span.SpanID, event.Attributes, telemetry.AttrUsageNanoAIU)
 		if err != nil {
 			return nil, err
 		}
@@ -1390,15 +1463,32 @@ func modelUsageFromSpan(span telemetry.SpanRecord) ([]modelUsageRecord, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !hasInput && !hasOutput && !hasPremium && !hasCost {
+		billingModel, hasBillingModel := event.Attributes[telemetry.AttrUsageBillingModel]
+		costBasis, hasCostBasis := event.Attributes[telemetry.AttrUsageCostBasis]
+		if !hasInput && !hasOutput && !hasCacheRead && !hasCacheWrite && !hasReasoning &&
+			!hasPremium && !hasNanoAIU && !hasCost && !hasBillingModel && !hasCostBasis {
 			return nil, fmt.Errorf("rollup: span %s has unmeasured model usage for %q", span.SpanID, model)
 		}
 		out = append(out, modelUsageRecord{
 			model: model, input: input, hasInput: hasInput, output: output, hasOutput: hasOutput,
-			premium: premium, hasPremium: hasPremium, cost: cost, hasCost: hasCost,
+			cacheRead: cacheRead, hasCacheRead: hasCacheRead,
+			cacheWrite: cacheWrite, hasCacheWrite: hasCacheWrite,
+			reasoning: reasoning, hasReasoning: hasReasoning,
+			premium: premium, hasPremium: hasPremium,
+			nanoAIU: nanoAIU, hasNanoAIU: hasNanoAIU,
+			cost: cost, hasCost: hasCost,
+			billingModel: billingModel, hasBillingModel: hasBillingModel,
+			costBasis: costBasis, hasCostBasis: hasCostBasis,
 		})
 	}
 	return out, nil
+}
+
+func nullableString(value string, valid bool) any {
+	if !valid {
+		return nil
+	}
+	return value
 }
 
 func traversalForUsageSpan(tx *sql.Tx, runID, stage string, attempt int, span telemetry.SpanRecord) (int, error) {
