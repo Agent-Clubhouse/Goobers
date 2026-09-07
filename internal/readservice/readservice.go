@@ -64,12 +64,13 @@ type Reader interface {
 // Health is the versioned daemon health response.
 type Health struct {
 	ReadStateEnvelope
-	APIVersion    string           `json:"apiVersion"`
-	SchemaVersion string           `json:"schemaVersion"`
-	Ready         bool             `json:"ready"`
-	Healthy       bool             `json:"healthy"`
-	Instance      InstanceIdentity `json:"instance"`
-	Freshness     Freshness        `json:"freshness"`
+	APIVersion       string                  `json:"apiVersion"`
+	SchemaVersion    string                  `json:"schemaVersion"`
+	Ready            bool                    `json:"ready"`
+	Healthy          bool                    `json:"healthy"`
+	Instance         InstanceIdentity        `json:"instance"`
+	Freshness        Freshness               `json:"freshness"`
+	DefinitionReload *DefinitionReloadStatus `json:"definitionReload,omitempty"`
 }
 
 // InstanceIdentity is the canonical identity provisioned by the manifest.
@@ -118,11 +119,12 @@ type LocalSources struct {
 // Local reads a tier 1-2 instance's provisioned definitions, journals, and
 // telemetry projection.
 type Local struct {
-	sources     LocalSources
-	telemetry   *Telemetry
-	ready       func() bool
-	now         func() time.Time
-	definitions atomic.Pointer[definitionSnapshot]
+	sources          LocalSources
+	telemetry        *Telemetry
+	ready            func() bool
+	now              func() time.Time
+	definitions      atomic.Pointer[definitionSnapshot]
+	definitionReload atomic.Pointer[DefinitionReloadStatus]
 
 	// activeSampler, when non-nil, serves active-run counts from a background
 	// sample. Projected services sample read.db; services without a projection
@@ -306,10 +308,11 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 	}
 
 	return Health{
-		APIVersion:    APIVersion,
-		SchemaVersion: SchemaVersion,
-		Ready:         s.ready(),
-		Healthy:       healthy,
+		DefinitionReload: s.definitionReloadSnapshot(),
+		APIVersion:       APIVersion,
+		SchemaVersion:    SchemaVersion,
+		Ready:            s.ready(),
+		Healthy:          healthy,
 		Instance: InstanceIdentity{
 			Name:        ref.Name,
 			Environment: ref.Environment,

@@ -74,6 +74,13 @@ export const goWireFixtures = {
       "journalUpdatedAt": null,
       "lastSchedulerTickAt": "2026-07-18T12:32:56Z",
       "lastTickAgeMillis": 120000
+    },
+    "definitionReload": {
+      "appliedDigest": "sha256:applied",
+      "observedDigest": "sha256:observed",
+      "observedAt": "2026-07-18T12:34:56Z",
+      "watching": true,
+      "state": "rejected"
     }
   },
   "instance": {

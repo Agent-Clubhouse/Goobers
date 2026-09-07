@@ -2503,8 +2503,9 @@ A Git workflowSource continuously reconciles its tracked ref. Local Git
 ref changes wake the loop immediately; periodic fetch-and-compare polling
 is always active, and authenticated GitHub push deliveries wake it when
 webhook.secret is configured. Invalid revisions are rejected with the
-last-known-good definitions left running. --watch-config separately watches
-direct edits to the materialized config directory.
+last-known-good definitions left running. Direct edits to the materialized
+config directory are watched by default; --watch-config=false explicitly
+disables that watcher. Existing runs retain their pinned definitions.
 
 --diagnostics turns on deep, opt-in capture for hard hangs: any
 deterministic stage still running past a couple of minutes gets a
@@ -2520,7 +2521,7 @@ deploy — use it if the read-model list path is ever suspected of serving
 wrong or incomplete results.
 
 These five behavior controls are intentionally flag-only: --watch-config
-selects a process-local development watcher, --diagnostics is temporary
+controls the process-local definition watcher, --diagnostics is temporary
 debug capture, --drain-timeout applies only after this process receives a
 shutdown signal, --skip-preflight is an unsafe startup escape hatch, and
 --disable-read-model-reads is an emergency rollback. Keeping them out of
