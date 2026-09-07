@@ -61,6 +61,16 @@ authoring, daemon lifecycle, and other config-time commands remain CLI-only.
 
 ## 3. Current state and prototype authority
 
+> **This section is the state *as of approval* and every bullet in it is now
+> false** (re-checked 2026-09-06, #4520). `goobers up` serves the daemon HTTP
+> API; `status`/`trace`/`telemetry` read through the read model and read
+> service; `GoobersPortalApi` no longer exists anywhere in the tree — the
+> contract is `internal/apicontract`, generated into
+> `portal/src/api/wire.generated.ts`; and `portal/` is the production frontend,
+> not a fixture-backed prototype. The list is kept because the design's
+> reasoning depends on the baseline it started from. Current portal
+> architecture is [`portal-read-architecture.md`](portal-read-architecture.md).
+
 As of approval:
 
 - `goobers up` has no HTTP server.

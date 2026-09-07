@@ -1,6 +1,19 @@
 # Design: Sandboxing + per-goober credential injection (isolation rung 2) — V1 epic #35
 
-> Status: **draft — for review** · Area prefix: `SEC` · Milestone: **V1**
+> Status: **implemented, with enforcement off by default** — epic #35 is closed.
+> Per-goober credential injection ships (#823), and the native sandbox is wired
+> through the harness (`confineArgv`, both adapters).
+> Delivered-by: #119, #120, #166, #167, #823, #1418
+> Verified: 09db115bb (2026-09-06)
+>
+> **Two things the body still gets wrong.** It calls per-goober injection and the
+> sandbox/egress decisions missing; both landed. And `sandbox.agentic` defaults
+> to `disabled` — isolation is strictly opt-in — so "sandboxing ships" and
+> "sandboxing is on" are different claims. Whether to flip that default is
+> adjudicated on [#4517](https://github.com/Agent-Clubhouse/Goobers/issues/4517),
+> and the egress half was superseded by instance-level NetworkPolicy rendering;
+> see `trust-boundary-hardening.md` TBH-3. **Remaining:** #165 (#4520).
+> · Area prefix: `SEC` · Milestone: **V1**
 > Requirements: [`docs/requirements/security.md`](../../requirements/security.md)
 > (SEC-044/045, SEC-Q6) · Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §9
 >

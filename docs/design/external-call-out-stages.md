@@ -1,7 +1,17 @@
 # External call-out stages
 
 **Status:** draft — design of record, pending the owner rulings in §9.
-**Verified against** `origin/main` @ `e447359f`.
+Verified: 09db115bb (2026-09-06)
+
+> **Grounding refreshed 2026-09-06 (#4520); the design itself is unchanged and
+> still unimplemented** (#2976–#2979, #2983, #3444–#3448, #3450 are open).
+> One fact D14 rests on has moved: `projectableEventTypes`
+> (`internal/engine/projection.go`) is now a **13-entry** closed whitelist, not
+> ten — placement provenance, workspace continuity, and their siblings joined
+> it. D14's argument still holds, because what makes it work is that the set is
+> closed and validated over all ops before `journal.Create`, not its size.
+> Package paths cited in the body predate the #4314 renames; resolve them by
+> symbol rather than by path.
 
 A workflow declares a stage that hands work to an HTTP endpoint outside the instance and brings
 information back. Targets are operator-configured and named from the DSL; credentials are scoped to one
