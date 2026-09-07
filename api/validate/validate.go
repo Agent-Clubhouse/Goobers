@@ -118,6 +118,16 @@ const (
 	// readiness cap cannot obtain a GitHub open-PR count for its gaggle's
 	// project repository.
 	WarningMaxOpenPRsUnenforceable WarningCode = "PRCAP001"
+	// WarningDaemonIdentityMissingSlug identifies a kind: github-app
+	// daemonIdentity with no slug. Slug is what makes the daemon identity an
+	// IDENTITY check: without it daemonIdentityAuthorLogin returns empty and
+	// PR-selection silently falls back to the branch-name-prefix heuristic
+	// (#3343). Everything still mints and authenticates, so this is a
+	// warning, not an error -- but the degradation is drift-shaped rather
+	// than crash-shaped, which is exactly the class
+	// docs/design/daemon-identity-multi-owner.md 6 asked to be warned about
+	// and #3415 did not ship (#4517).
+	WarningDaemonIdentityMissingSlug WarningCode = "IDENT001"
 	// WarningGateCompletionHidesFailure identifies an automated gate branch
 	// that is keyed on a failure-implying outcome (status-equals'
 	// default/success "fail", failure-class "fail"/"infra") and routes to

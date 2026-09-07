@@ -72,10 +72,23 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   constraining filesystem and network reach of the harness process beyond bare worktree +
   process isolation. **Status:** mechanism decided
   ([ADR 0001](../adr/0001-agentic-sandbox-mechanism.md), accepted — OS-native:
-  `sandbox-exec`/Seatbelt on macOS, bubblewrap on Linux) and the native
-  implementation is landed (`internal/sandbox`, darwin + linux). The agentic
-  executor/harness does not yet wrap stages in it — enforcement rollout (S2–S4 of
-  `../design/v1/35-sandboxing-per-goober-creds.md`) is still in progress.
+  `sandbox-exec`/Seatbelt on macOS, bubblewrap on Linux), the native
+  implementation is landed (`internal/sandbox`, darwin + linux), **and the
+  agentic harness does wrap the stage subprocess in it** (`confineArgv`,
+  `internal/harness/confine.go`, called from both the copilot and claude
+  adapters; #1305 wires the posture through `sandboxPosturesByGaggle`).
+  **Enforcement is off by default.** `sandbox.agentic` is `disabled` unless an
+  operator opts in — `api/schemas/instance.schema.json` calls isolation
+  "strictly opt-in", and a gaggle may only strengthen an operator-enforced
+  posture, never weaken it. When enforcement *is* enabled and no platform
+  sandbox is available, the stage fails closed (`ErrSandboxUnavailable`).
+  Remaining: whether to flip the default (adjudicated on
+  [#4517](https://github.com/Agent-Clubhouse/Goobers/issues/4517); note
+  `../design/trust-boundary-hardening.md` TBH-3 designed it as on-by-default and
+  shipped inverted), and narrowing read confinement, which ADR-0001 records as
+  out of scope for this mechanism. Do not read this requirement as "sandboxing
+  is unwired" — the accurate statement is "wired, opt-in, and read confinement
+  is incomplete".
 - **SEC-045 (MUST):** *(Tiers 1–2)* Credentials MUST be resolved and injected **per
   run, scoped to the stage's declared capabilities** — never ambient to the whole
   daemon. This ships at V0 (it is the enforcement mechanism behind `SEC-042`).
