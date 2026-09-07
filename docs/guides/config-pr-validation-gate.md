@@ -44,6 +44,28 @@ The action downloads and checksum-verifies the pinned Goobers release, runs
 fails the step on any validation error — findings that touch a file also
 annotate that file's lines directly on the PR diff.
 
+## Allow expected warnings without hiding drift
+
+Instead of `strict: "true"`, set `allowed-warnings-file` to a checked-in file
+such as `.github/expected-warnings.txt`. The path is relative to the caller's
+working directory, not the validated `path` directory. List exact `WARNING `
+lines from the pinned validator, one per line; an empty file requires no warnings.
+The comparison ignores line order but preserves duplicate counts. Blank lines,
+comments, and changed warning text are not ignored.
+
+```yaml
+        with:
+          version: v1.0.0
+          path: .
+          allowed-warnings-file: .github/expected-warnings.txt
+```
+
+Both new warnings and disappeared allowlisted warnings fail with a diff. Review
+the reason for each change before updating the file; do not regenerate it
+automatically in CI. Hard validation errors still fail even when all warnings
+match. `strict: "true"` and an allowlist are mutually exclusive. Omitting the
+allowlist preserves the action's existing behavior.
+
 ## Pinning a version
 
 The action's `version` input has no default: an unpinned "latest" would let a
