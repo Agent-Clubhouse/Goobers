@@ -21,7 +21,7 @@ _goobers_completion()
             flags+=" --json"
             ;;
         init)
-            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --harness --source-tree --json"
+            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --harness --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
