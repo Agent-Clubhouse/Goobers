@@ -227,13 +227,15 @@ func runPRSelectCore(
 				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
 			continue
 		}
-		blocked, gateCode := prSelectSafetyGatesBlock(
-			ctx, gateProvider, repo, pr, gateState.siblingBlocked[pr.Number], stdout, stderr,
+		blocked, blockReason, gateCode := prSelectSafetyGatesBlock(
+			ctx, gateProvider, repo, pr, gateState.siblingBlocked[pr.Number],
+			gateState.siblingHoldReason[pr.Number], stdout, stderr,
 		)
 		if gateCode != 0 {
 			return gateCode
 		}
 		if blocked {
+			pf(stdout, "excluded PR #%d: %s\n", pr.Number, blockReason)
 			continue
 		}
 		eligible = append(eligible, pr)
@@ -491,6 +493,9 @@ func (branchPolicyPRSelectSource) expectedAuthorLogin(context.Context, string) s
 type prSelectSafetyGateState struct {
 	siblingBlocked    map[int]bool
 	blockedDependents map[int]int
+	// siblingHoldReason explains each entry in siblingBlocked, so an excluded
+	// candidate can say why rather than vanishing from the log (#3095).
+	siblingHoldReason map[int]string
 }
 
 // loadPRSelectSafetyGateState performs the issue-comment-forge gates before
@@ -509,6 +514,7 @@ func loadPRSelectSafetyGateState(
 	state := prSelectSafetyGateState{
 		siblingBlocked:    make(map[int]bool),
 		blockedDependents: make(map[int]int),
+		siblingHoldReason: make(map[int]string),
 	}
 	if provider == nil {
 		return state, 0
@@ -523,9 +529,19 @@ func loadPRSelectSafetyGateState(
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
 		liveSiblingBlockers[pr.Number] = blockers
-		state.siblingBlocked[pr.Number] = len(blockers) > 0
 		for _, blocker := range blockers {
 			state.blockedDependents[blocker]++
+		}
+		// #3095: selection asks the fail-closed question, which also covers the
+		// PR that holds the label with no readable blocker record — the shape
+		// liveBlockedOnSiblingBlockers reports as unblocked by design.
+		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr)
+		if err != nil {
+			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
+		}
+		state.siblingBlocked[pr.Number] = held
+		if held {
+			state.siblingHoldReason[pr.Number] = reason
 		}
 	}
 	var couplingDependents []providers.PullRequestSummary
@@ -556,6 +572,10 @@ func loadPRSelectSafetyGateState(
 			liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
 		)
 		state.siblingBlocked[coupling.dependent.Number] = true
+		state.siblingHoldReason[coupling.dependent.Number] = fmt.Sprintf(
+			"foundation-coupled behind PR #%d (%s)",
+			coupling.foundation.Number, strings.Join(coupling.files, ", "),
+		)
 		state.blockedDependents[coupling.foundation.Number]++
 		pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
 			coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
@@ -566,24 +586,27 @@ func loadPRSelectSafetyGateState(
 // prSelectSafetyGatesBlock applies the remaining issue-comment-forge gates to
 // one otherwise eligible candidate. The nil ADO provider returns before any
 // GitHub/Gitea-only helper can issue an unsupported operation.
+// The bool reports exclusion; the string is the reason, which the caller logs
+// so an excluded candidate never disappears from the record silently (#3095).
 func prSelectSafetyGatesBlock(
 	ctx context.Context,
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	pr providers.PullRequestSummary,
 	siblingBlocked bool,
+	siblingHoldReason string,
 	stdout, stderr io.Writer,
-) (bool, int) {
+) (bool, string, int) {
 	if provider == nil {
-		return false, 0
+		return false, "", 0
 	}
 
 	parked, err := scopeGateVerdictStillParks(ctx, provider, repo, pr)
 	if err != nil {
-		return false, failProviderStage(stderr, fmt.Sprintf("check scope-gate verdict for PR #%d", pr.Number), err, "selected-pr.json")
+		return false, "", failProviderStage(stderr, fmt.Sprintf("check scope-gate verdict for PR #%d", pr.Number), err, "selected-pr.json")
 	}
 	if parked {
-		return true, 0
+		return true, "scope-gate verdict still parks this PR", 0
 	}
 	if isTutorBranch(pr.Head, providerBranchNamespace()) {
 		classification, err := classifyRemoteTutorChanges(
@@ -591,19 +614,19 @@ func prSelectSafetyGatesBlock(
 		)
 		if err != nil {
 			pf(stderr, "warning: could not classify Tutor PR #%d (%v) — requiring manual review\n", pr.Number, err)
-			return true, 0
+			return true, "Tutor PR could not be classified — manual review required", 0
 		}
 		if classification.RequiresHumanSignoff() {
 			pf(stdout, "manual review required for Tutor PR #%d: %s\n", pr.Number, classification.String())
-			return true, 0
+			return true, "Tutor PR requires human signoff: " + classification.String(), 0
 		}
 	}
 	blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
 	if err != nil {
-		return false, failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "selected-pr.json")
+		return false, "", failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "selected-pr.json")
 	}
 	if blocked {
-		return true, 0
+		return true, "an unresolved escalation still blocks this PR", 0
 	}
 	// #950: a demoted PR (repeatedly could not merge at an unchanged head)
 	// is excluded from selection so the election stops re-crowning the stuck
@@ -614,10 +637,16 @@ func prSelectSafetyGatesBlock(
 		pf(stderr, "warning: could not resolve merge-demotion state for PR #%d (%v) — treating as not demoted\n", pr.Number, err)
 		demoted = false
 	}
-	if demoted || siblingBlocked {
-		return true, 0
+	if demoted {
+		return true, "merge-demoted: repeatedly could not merge at an unchanged head", 0
 	}
-	return false, 0
+	if siblingBlocked {
+		if siblingHoldReason == "" {
+			siblingHoldReason = "blocked on a sibling"
+		}
+		return true, siblingHoldReason, 0
+	}
+	return false, "", 0
 }
 
 func restrictSelectionToTargetedPullRequest(candidates []providers.PullRequestSummary, triggerRef string) []providers.PullRequestSummary {

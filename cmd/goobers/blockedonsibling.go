@@ -120,6 +120,71 @@ func filterLiveBlockedOnSiblingBlockers(ctx context.Context, provider remediatio
 	return open, nil
 }
 
+// blockedOnSiblingSelectionHold reports whether pr must be excluded from
+// merge-review selection on sibling-sequencing grounds, and why.
+//
+// NOTE THE POLARITY, which is deliberately the opposite of
+// recordedBlockedOnSiblingBlockers'. That function fails OPEN for an absent
+// record, and stays that way: it also feeds election scoring
+// (gatherMostBlockersScores) and unpark (blockedOnSiblingStillBlocks), where
+// inventing a blocker from a missing record would distort a winner or refuse a
+// legitimate unpark.
+//
+// Selection is the one caller that must fail CLOSED (#3095). The label is
+// durable state this system writes for itself, so a PR carrying it with no
+// readable record is an inconsistency, not a clearance — and the two outcomes
+// are not symmetric. Wrongly holding a PR costs one cycle of latency and says
+// so out loud; wrongly selecting one sends a pull request through review and
+// merge ahead of the sibling it was parked behind, which is the ordering
+// guarantee the label exists to provide. Live, an older parked PR was
+// repeatedly selected ahead of an independent green younger one, and the only
+// reliable workaround was closing the parked PR.
+//
+// The three states are distinguished deliberately:
+//
+//   - no label: not held. Nothing to reconcile.
+//   - label plus a record naming blockers: held while any named blocker still
+//     blocks. This is the liveness path (#748/#950) — a cluster drains around
+//     a merged or demoted blocker, and must keep draining.
+//   - label with no readable record, or one naming no blockers at all: held.
+//     Something applied the label and its reasoning is unavailable.
+//
+// The escape hatch is the label itself: removing it clears the hold
+// immediately, and the reason text says so.
+func blockedOnSiblingSelectionHold(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, string, error) {
+	if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
+		return false, "", nil
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
+	if err != nil {
+		return false, "", err
+	}
+	state, _, found := latestBlockedOnSiblingState(comments)
+	if !found || len(state.Blockers) == 0 {
+		return true, fmt.Sprintf(
+			"holds %s but records no readable blocker; excluded until the record is restored or the label is removed",
+			blockedOnSiblingLabel,
+		), nil
+	}
+	live, err := filterLiveBlockedOnSiblingBlockers(ctx, provider, repo, state.Blockers)
+	if err != nil {
+		return false, "", err
+	}
+	if len(live) == 0 {
+		return false, "", nil
+	}
+	return true, fmt.Sprintf("blocked on sibling %s", formatPRNumbers(live)), nil
+}
+
+// formatPRNumbers renders PR numbers for a diagnostic line: "#12, #14".
+func formatPRNumbers(numbers []int) string {
+	parts := make([]string, 0, len(numbers))
+	for _, n := range numbers {
+		parts = append(parts, fmt.Sprintf("#%d", n))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // blockedOnSiblingStillBlocks reports whether pr's blocker-aware parking still
 // holds (#748). It is also used by post-merge unpark and pr-remediation.
 func blockedOnSiblingStillBlocks(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
