@@ -5,10 +5,9 @@ target repository needs, and the same mechanism runs it regardless of language. 
 states that boundary precisely — what's built into Goobers vs. what a gaggle must declare —
 and lists which stacks have a shipped, proven reference gaggle today.
 
-See
-[`docs/design/v1/polyglot-stacks.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/v1/polyglot-stacks.md)
-for the underlying design rationale; this guide documents the resulting
-operator-facing mechanism, not the design history.
+See [`docs/design/v1/polyglot-stacks.md`](../design/v1/polyglot-stacks.md) for the underlying
+design rationale; this guide documents the resulting operator-facing mechanism, not the design
+history.
 
 ## Stack-neutral (built into Goobers, no per-stack code)
 

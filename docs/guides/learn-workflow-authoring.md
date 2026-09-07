@@ -427,8 +427,8 @@ goobers trace <run-id> ./learn-goobers-demo
 ```
 
 Native Windows uses the WSL 2 path documented in the
-[Windows quickstart](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-windows.md)
-because the demo requires enforced network isolation.
+[Windows quickstart](quickstart-windows.md) because the demo requires enforced
+network isolation.
 
 ### Harness preflight
 
