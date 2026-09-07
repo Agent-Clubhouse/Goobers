@@ -8,6 +8,7 @@
 > caller**: every symbol in the package except the span-provenance key
 > constants is carried in `test/deadcode/exemptions.txt` with the note
 > "consumer wiring is follow-up".
+> Delivered-by: #4077, #4078
 >
 > Production credit attribution is a **different, older implementation**:
 > `internal/readmodel/credit.go`. See

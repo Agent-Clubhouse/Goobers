@@ -331,6 +331,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// Complexity that was decomposed by hand regrows silently without an
 		// observer watching the baseline (#4231).
 		{label: "complexity", command: tools.goCommand, args: []string{"run", "./test/complexitygate"}, group: groupChecks},
+		// Validates design/ADR lifecycle metadata AND that docs/design/README.md
+		// is current. Regenerate the index with `make docs` (#4518).
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
 		// A workflow whose schedule is commented out never runs, and nothing

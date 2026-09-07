@@ -8,6 +8,7 @@
 > `reference-workflows/gaggles/goobers/workflows/implementation.yaml`,
 > `config-examples/gaggles/acme-web/workflows/implementation.yaml`,
 > both gaggles' `backlog-curation.yaml`
+> Delivered-by: #2028, #1974
 
 ## 1. Problem
 

@@ -76,10 +76,10 @@ Ordinary unit tests should use in-process fakes; integration tests are for real
 local executables, not network services, cloud credentials, or heavyweight
 infrastructure.
 
-### Design-document status
+### Design-document status and lifecycle metadata
 
 Every Markdown document under `docs/design/` and `docs/adr/` must put a
-`Status:` marker in its first 10 lines. The first word after the marker is one
+`Status:` marker in its first 40 lines. The first word after the marker is one
 of this controlled enum:
 
 | Status | Meaning |
@@ -90,9 +90,56 @@ of this controlled enum:
 | `superseded` | Replaced in whole or in part by a newer source of record |
 | `historical` | Retained as a completed campaign, survey, or other historical record |
 
-Status values are case-insensitive. Free-text detail may follow the enum value,
-for example `> Status: **implemented — GA in #1939**`. The merge gate rejects a
-missing marker or a value outside the enum.
+Status values are case-insensitive, and free-text detail may follow the enum
+value — `> Status: **implemented — GA in #1939**`.
+
+**The enum alone was not enough.** A word anyone can type is not evidence, and
+the 2026-09-06 documentation audit found fully shipped designs still marked
+`draft`, partial implementations marked `implemented`, and superseding designs
+that never marked the records they replaced — all while the gate passed. So the
+status now travels with metadata, written as `Key: value` lines beside it in the
+same header block (#4518):
+
+```markdown
+# Design: something
+
+> Status: **implemented** — landed across the CONF wave
+> Delivered-by: #2074, #2075, #2076
+> Supersedes: docs/design/older-thing.md
+> Verified: 09db115bb (2026-09-06)
+```
+
+| Key | When it is required |
+|---|---|
+| `Delivered-by:` | **Required for `implemented`.** Name the issues or PRs that delivered it. A partial delivery is recorded by listing what *did* land and keeping an honest status (`approved`), not by claiming `implemented`. |
+| `Superseded-by:` | **Required for `superseded`.** Names the document that replaced it — a repo-relative `docs/…` path, which may be a requirements spec, not only another design. |
+| `Supersedes:` | Required *reciprocally*: if A declares `Superseded-by: B` and B is a design/ADR page, B must declare `Supersedes: A`, and vice versa. A one-sided supersession leaves a reader with no forward pointer, which is how a newer Windows design came to be written against an obsolete shape. |
+| `Verified:` | Optional. The revision and date the document's claims were last checked against the tree. |
+| `Area:` | Optional. |
+
+Two further rules the same check enforces:
+
+- **`docs/design/README.md` is generated.** It indexes every design and ADR with
+  this metadata. Regenerate it with `make docs` (or `go run ./test/designstatus
+  -write`); the merge gate fails if it is stale, so a new design cannot be added
+  without appearing in the index.
+- **A citation into somebody's home directory must say it is unreachable.** A
+  path like `~/source/Reviews/finding.md` cannot be resolved by any other
+  reader, so a document containing one must also contain the phrase *"not
+  reproducible from this repository"*. Committing the artifact or citing a
+  stable URL is better; the disclaimer is the floor. Product paths that name the
+  same location on every machine — `~/.copilot/mcp-config.json`, a Windows
+  container's `C:\Users\ContainerUser\…` — are not citations and are not
+  flagged.
+
+**When a change closes a design's work item, update that design in the same
+PR.** Add the issue to its `Delivered-by:` ledger, move the status if the
+program is complete, and record any scope delta — what was designed and did not
+ship — rather than leaving the design readable as a specification of behaviour
+that does not exist. A scheduled, non-blocking check
+(`design-ledger-reconcile.yml`) reports both directions of drift: an
+`implemented` page whose delivery issues are still open, and a `draft`/`approved`
+page whose entire ledger has closed.
 
 **Humans:** use `verify-fast` for the short edit/push loop, `ci` for the merge
 gate, and `verify-full` on a Unix-like host with the pinned envtest and native

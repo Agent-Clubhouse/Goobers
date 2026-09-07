@@ -3,7 +3,9 @@
 > Status: **draft — for review; prescriptive** · Area prefix: `UNOP` · Milestone: _proposed_
 > **Unattended Operation**
 > Origin: every load-bearing availability failure across the 2026-07 run-watch corpus
-> (`~/source/Goobers-Review/`): a silent daemon death with no watchdog
+> (`~/source/Goobers-Review/` — a review artifact held outside this repository and
+> **not reproducible from this repository**; the findings it records are restated
+> below): a silent daemon death with no watchdog
 > (observation_20260722_1803), merged fixes undeployed for 20+ hours (#1166) or
 > indefinitely (#1278/#1280), restart-orphaned agent processes (#499), an unbounded
 > `runs/` tree (18k+ dirs, #149/#550), completion metrics inflated 5–10× by no-work ticks,

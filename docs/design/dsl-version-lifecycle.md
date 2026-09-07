@@ -4,6 +4,7 @@
 > Companion to: [`versioning-and-compatibility.md`](./versioning-and-compatibility.md) — **this doc resolves that doc's Open Question §5.2** ("version the DSL independently, or app-SemVer + registry-as-authority?") in favour of an *independently-versioned, per-workflow-pinnable DSL with multiple interpreters coexisting in one binary.*
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) §11 (substrate-neutral workflow core)
 > Grounded in: `internal/workflow/{compile,machine}.go`, `api/v1alpha1/`, `api/validate/validate.go`, `internal/configsync/loader.go`, `internal/instance/config.go`
+> Delivered-by: #860, #861, #862, #863, #864, #865, #866, #867, #868, #869
 
 ---
 
@@ -39,7 +40,8 @@ more contributors.
 ## 1. Why this exists — the incident that names the gap
 
 On 2026-07-18 the live instance's hand-maintained workflow config
-(`~/source/goobers-instances/goobers`) was reconciled to the shipped workflow reference in a single
+(`~/source/goobers-instances/goobers` — an operator's own checkout, **not reproducible from this repository**)
+was reconciled to the shipped workflow reference in a single
 287-line `merge-review.yaml` diff. The headline finding:
 
 > the fork routed the review gate `pass → merge-pr`; the shipped definition had moved to

@@ -2,6 +2,7 @@
 
 **Status:** implemented for Temporal stage routing; node-pool provisioning remains
 operator-managed (issue #659, P13 of `docs/design/cross-platform-support.md` §3).
+Delivered-by: #659
 
 **Locked decisions (Lead ruling, 2026-07-25, recorded on #659):** the platform
 label is a **stage-level** attribute, an unlabeled stage defaults to **linux**, and the
