@@ -351,7 +351,7 @@ export function insightWindowFilters(
       };
 }
 
-export function insightCostFilters(
+function insightCostFilters(
   window: InsightWindow,
   now = new Date(),
 ): TelemetryCostOptions {

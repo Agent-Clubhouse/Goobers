@@ -46,7 +46,7 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
   };
 }
 
-export function formatAmounts(
+function formatAmounts(
   amounts: readonly TelemetryCostAmount[],
   empty: string,
 ): string {
