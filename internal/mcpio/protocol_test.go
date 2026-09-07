@@ -412,7 +412,7 @@ func TestPublishOutputWithoutArtifactFileErrors(t *testing.T) {
 func TestResolveInWorkspaceRejectsEscape(t *testing.T) {
 	ws := t.TempDir()
 	tool := NewToolset(Config{Workspace: ws, ArtifactFile: "../../etc/passwd"})
-	if _, err := tool.PublishOutput("x"); err == nil {
+	if _, _, err := tool.PublishOutput("x"); err == nil {
 		t.Fatal("expected escape to be rejected")
 	}
 }
@@ -439,7 +439,7 @@ func TestPublishOutputRefusesToFollowAnExistingSymlinkLeaf(t *testing.T) {
 	}
 
 	tool := NewToolset(Config{Workspace: ws, ArtifactFile: "out.md"})
-	if _, err := tool.PublishOutput("attacker-controlled content"); err == nil {
+	if _, _, err := tool.PublishOutput("attacker-controlled content"); err == nil {
 		t.Fatal("expected publish_output to refuse to write through an existing symlink")
 	}
 
@@ -493,7 +493,7 @@ func TestPublishOutputRefusesToTraverseANestedSymlinkedAncestor(t *testing.T) {
 	}
 
 	tool := NewToolset(Config{Workspace: ws, ArtifactFile: "link/new/out.md"})
-	if _, err := tool.PublishOutput("attacker-controlled content"); err == nil {
+	if _, _, err := tool.PublishOutput("attacker-controlled content"); err == nil {
 		t.Fatal("expected publish_output to refuse to traverse a symlinked ancestor")
 	}
 
