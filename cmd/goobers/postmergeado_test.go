@@ -83,7 +83,7 @@ func TestPerformPostMergeADOClosesReferencedWorkItem(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 
-	errs := performPostMergeADO(context.Background(), closer, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want none", errs)
 	}
@@ -137,7 +137,7 @@ func TestPerformPostMergeADOIdempotentWhenAlreadyDone(t *testing.T) {
 	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
 	var stdout, stderr bytes.Buffer
 
-	errs := performPostMergeADO(context.Background(), closer, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want none", errs)
 	}
@@ -157,7 +157,7 @@ func TestPerformPostMergeADONoReferenceIsNotAnError(t *testing.T) {
 	poll := providers.PullRequestPollResult{Number: 359, Body: "A manual fix, no backlog work item."}
 	var stdout, stderr bytes.Buffer
 
-	errs := performPostMergeADO(context.Background(), closer, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want none", errs)
 	}
@@ -209,7 +209,10 @@ func TestPerformPostMergeADOPublishesReceiptSummaryAndAllocation(t *testing.T) {
 // others) — mirroring closeReferencedIssues' best-effort posture.
 func TestCloseReferencedWorkItemsADOSurfacesPerItemError(t *testing.T) {
 	closer := &erroringCloser{failID: "1456"}
-	closed, errs := closeReferencedWorkItemsADO(context.Background(), closer, backlogRef, "Fixes #1456 and closes #1457", "359")
+	closed, errs := closeReferencedWorkItemsADOWithComments(context.Background(), closer, backlogRef, "Fixes #1456 and closes #1457", map[string]string{
+		"1456": "Merged in pull request #359.",
+		"1457": "Merged in pull request #359.",
+	})
 	if len(closed) != 1 || closed[0] != "1457" {
 		t.Fatalf("closed = %v, want [1457] (1456 failed)", closed)
 	}

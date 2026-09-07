@@ -381,15 +381,11 @@ func runPostMergeCore(root string, repo providers.RepositoryRef, transport postM
 	return 0
 }
 
-// performPostMergeADO is the ADO reduction of performPostMerge to its single
+// performPostMergeADOWithPRComments is the ADO reduction of performPostMerge to its single
 // mandatory action: mark done every work item the merged PR's body closes. It
 // deliberately omits all GitHub sibling/demotion/remediation machinery (see
 // runPostMergeADO's doc comment). This is what stops the PBI parking at
 // New/in-review forever after its PR lands (merge-wiring-plan.md §6).
-func performPostMergeADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
-	return performPostMergeADOWithPRComments(ctx, closer, nil, backlogRepo, poll, pullNumber, root, repo, stdout, stderr)
-}
-
 func performPostMergeADOWithPRComments(ctx context.Context, closer adoWorkItemCloser, prComments adoPostMergePRComments, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
 	issueIDs := closingIssueNumbers(poll.Body)
 	var report postMergeCostReport
@@ -408,7 +404,7 @@ func performPostMergeADOWithPRComments(ctx context.Context, closer adoWorkItemCl
 	return closeErrs
 }
 
-// closeReferencedWorkItemsADO marks done every work item the merged PR's body
+// closeReferencedWorkItemsADOWithComments marks done every work item the merged PR's body
 // references via the same closing-keyword grammar closeReferencedIssues uses
 // (Fixes/Closes/Resolves #N) — on ADO `N` is the work-item id (open-pr writes
 // "Fixes #<itemID>"; the durable WI↔PR link is the body ref, not the claim
@@ -416,14 +412,6 @@ func performPostMergeADOWithPRComments(ctx context.Context, closer adoWorkItemCl
 // closeReferencedIssues but routes through the base-Provider interface (so it
 // accepts the ADO provider) and targets backlogRepo, never the routed code repo.
 // A PR referencing no work item is a normal outcome, not an error.
-func closeReferencedWorkItemsADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, body, comment string) (closed []string, errs []error) {
-	comments := make(map[string]string)
-	for _, id := range closingIssueNumbers(body) {
-		comments[id] = comment
-	}
-	return closeReferencedWorkItemsADOWithComments(ctx, closer, backlogRepo, body, comments)
-}
-
 func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, body string, comments map[string]string) (closed []string, errs []error) {
 	for _, id := range closingIssueNumbers(body) {
 		if err := closeReferencedWorkItemADO(ctx, closer, backlogRepo, id, comments[id]); err != nil {
