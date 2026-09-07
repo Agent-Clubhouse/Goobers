@@ -47,16 +47,27 @@ type canonicalFinding struct {
 // pr-remediation, fail -> a human must look (§4 D2: fail is never burned on
 // remediation budget, unlike needs-changes).
 //
-// needs-changes gets one further split (#747): when every finding is a pure
-// cross-PR-ordering ask (FindingCrossPRBlocked) and there's at least one,
-// the PR isn't broken — it's waiting on a sibling. Routing that to
-// needs-remediation hands pr-remediation a defect that doesn't exist; it
-// reproduces the identical diff, checkpoints byte-identical, and escalates
-// (the stuck-loop pattern this issue exists to break). A mixed verdict —
-// any substantive/conflict/rebase-needed finding present alongside
-// cross-pr-blocked ones — still routes to needs-remediation unconditionally:
-// a real defect takes priority regardless of ordering, and remediation can
-// and should fix it.
+// needs-changes gets one further split (#747): when the findings carry a
+// cross-PR-ordering ask and no real defect, the PR isn't broken — it's waiting
+// on a sibling. Routing that to needs-remediation hands pr-remediation a defect
+// that doesn't exist; it reproduces the identical diff, checkpoints
+// byte-identical, and escalates (the stuck-loop pattern this issue exists to
+// break). A mixed verdict — any substantive/conflict/rebase-needed finding
+// present alongside cross-pr-blocked ones — still routes to needs-remediation
+// unconditionally: a real defect takes priority regardless of ordering, and
+// remediation can and should fix it.
+//
+// #2988: the split used to require that EVERY finding carry class
+// cross-pr-blocked, which is stricter than the contract elect-lander documents
+// ("blocked-on-sibling for the non-elected members, needs-remediation for a
+// verdict with real defects", electlander.go). A reviewer that passes the PR
+// and files its ordering notes as severity `info` — the shape observed live on
+// EFunHouse PR #533, four info findings whose own rationale said they were
+// ordering concerns and not defects — failed the every-finding test and was
+// dispatched to remediation, which reproduced the identical diff. The severity
+// floor that decides the crown (findingIsRealDefect) and the one that decides
+// the label are now the same floor, so a verdict cannot be simultaneously
+// clean enough to elect and defective enough to remediate.
 func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) string {
 	switch decision {
 	case apiv1.VerdictPass:
@@ -64,18 +75,13 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 	case apiv1.VerdictFail:
 		return "goobers:merge-escalated"
 	default:
-		if allCrossPRBlocked(findings) {
+		if sequencingOnly(findings) {
 			return blockedOnSiblingLabel
 		}
-		return "goobers:needs-remediation"
+		return needsRemediationLabel
 	}
 }
 
-// allCrossPRBlocked reports whether findings is non-empty and every finding
-// in it is FindingCrossPRBlocked — an empty findings slice is deliberately
-// NOT all-blocked (an empty needs-changes verdict with no findings at all is
-// not a cross-PR-ordering situation; it falls through to needs-remediation
-// like today).
 // findingIsRealDefect reports whether a finding is a genuine reason to withhold
 // landing authority, as opposed to an ordering note or a nit.
 //
@@ -147,15 +153,23 @@ func locationNamesFile(location string) bool {
 	}) != ""
 }
 
-// electableUnderOrdering reports whether findings leave the selected PR safely
-// crownable: it must be sequencing-blocked (at least one ordering finding, which
-// is what makes it a cluster member at all) and carry no real defect.
+// sequencingOnly reports whether findings describe a PR that is waiting its
+// turn rather than one that is broken: at least one cross-PR ordering finding
+// (which is what makes it a cluster member at all) and no real defect.
 //
-// Deliberately separate from allCrossPRBlocked rather than a change to it:
-// allCrossPRBlocked also drives verdictLabel's blocked-on-sibling vs
-// needs-remediation choice for every needs-changes PR, clustered or not, and
-// widening that would change labelling far outside the election.
-func electableUnderOrdering(findings []apiv1.Finding) bool {
+// One predicate deliberately serves two decisions that must never disagree:
+// whether the election may crown this PR (electlander.go), and whether
+// apply-verdict labels it blocked-on-sibling or needs-remediation
+// (verdictLabel). They were separate until #2988, on the reasoning that
+// widening the label test would change labelling outside the election — but
+// the disagreement WAS the bug. A verdict clean enough to be elected while
+// also being dispatched to remediation is the no-progress loop #717/#747/#2486
+// each closed by a different route; sharing the floor closes it structurally.
+//
+// An empty findings slice is deliberately not sequencing-only: a needs-changes
+// verdict with no findings at all names no sibling to wait for, so it keeps
+// falling through to needs-remediation rather than parking on nothing.
+func sequencingOnly(findings []apiv1.Finding) bool {
 	ordering := false
 	for _, finding := range findings {
 		if findingIsRealDefect(finding) {
@@ -166,18 +180,6 @@ func electableUnderOrdering(findings []apiv1.Finding) bool {
 		}
 	}
 	return ordering
-}
-
-func allCrossPRBlocked(findings []apiv1.Finding) bool {
-	if len(findings) == 0 {
-		return false
-	}
-	for _, f := range findings {
-		if f.Class != apiv1.FindingCrossPRBlocked {
-			return false
-		}
-	}
-	return true
 }
 
 // unionBlockingPRs collects the deduplicated, sorted union of BlockingPRs

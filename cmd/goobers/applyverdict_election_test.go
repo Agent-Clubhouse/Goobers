@@ -74,7 +74,7 @@ func TestResolveElectionOutcomeNeedsChanges(t *testing.T) {
 		},
 		{
 			// An empty needs-changes verdict is not "purely ordering" — there
-			// is simply nothing to reason from. Mirrors allCrossPRBlocked's own
+			// is simply nothing to reason from. Mirrors sequencingOnly's own
 			// empty-slice rule.
 			name:     "needs-changes with no findings is not elected",
 			number:   10,
@@ -400,7 +400,7 @@ func TestApplyVerdictPR2478OverlapOnlyRoutesToSiblingBlock(t *testing.T) {
 	if !ok {
 		t.Fatalf("posted comment has no recoverable verdict payload: %q", issue.comments[len(issue.comments)-1])
 	}
-	if !allCrossPRBlocked(posted.Findings) {
+	if !sequencingOnly(posted.Findings) {
 		t.Fatalf("posted findings = %+v, want cross-pr-blocked representation", posted.Findings)
 	}
 	if want := []int{2475, 2476, 2481}; !reflect.DeepEqual(unionBlockingPRs(posted.Findings), want) {

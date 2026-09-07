@@ -28,13 +28,13 @@ func TestWithOverlapBackstop(t *testing.T) {
 	t.Run("a real defect is left to remediation", func(t *testing.T) {
 		in := []apiv1.Finding{substantive()}
 		got := withOverlapBackstop(in, []int{11})
-		if allCrossPRBlocked(got) {
+		if sequencingOnly(got) {
 			t.Fatalf("a verdict with a real defect must not become all-cross-pr-blocked: %+v", got)
 		}
 	})
 	t.Run("no findings + overlap synthesizes a cross-pr-blocked finding", func(t *testing.T) {
 		got := withOverlapBackstop(nil, []int{11})
-		if !allCrossPRBlocked(got) {
+		if !sequencingOnly(got) {
 			t.Fatalf("want all-cross-pr-blocked, got %+v", got)
 		}
 		if want := []int{11}; !reflect.DeepEqual(unionBlockingPRs(got), want) {
@@ -80,7 +80,7 @@ func TestWithOverlapBackstopReclassifiesPR2478OverlapOnlyVerdict(t *testing.T) {
 	}
 
 	effective := withOverlapBackstop(findings, []int{2481, 2476, 2475})
-	if !allCrossPRBlocked(effective) {
+	if !sequencingOnly(effective) {
 		t.Fatalf("#2478 overlap-only findings were not normalized: %+v", effective)
 	}
 	if want := []int{2475, 2476, 2481}; !reflect.DeepEqual(unionBlockingPRs(effective), want) {
