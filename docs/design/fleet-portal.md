@@ -1,6 +1,10 @@
 # Design: Fleet portal and control-plane gateway
 
-> Status: **draft**
+> Status: **draft — with slices 1–2 partially shipped ahead of approval.**
+> Reconciled 2026-09-06 by
+> [#4522](https://github.com/Agent-Clubhouse/Goobers/issues/4522). The design as a
+> whole is still a proposal; §17 records what actually shipped, what diverged,
+> and what has not been built.
 > Scope: fleet-level human and API entry point, instance registration, request routing,
 > authentication, authorization, multi-instance observability, and target-scoped
 > interactive diagnostics
@@ -37,10 +41,16 @@ For example, one corporate fleet could contain `payments`, `commerce`, and
 `developer-sandboxes` groups. Users receive fleet-wide or group-scoped roles, and
 instances inherit the access policy of their group.
 
-This is a proposed change to the current architecture. Today the portal is defined as
-a window into one instance and explicitly not a control plane. If this design is
-approved, the architecture and Portal, Instance, Security, and Deployment requirements
-must be updated before implementation issues are treated as build-ready.
+This is a proposed change to the current architecture. Today the portal is a
+window into one instance and not a control plane. *(This document originally
+said that framing was explicit in `ARCHITECTURE.md`; it is not — the closest
+thing is `docs/requirements/portal.md`'s "Never configures → anything" relation.
+The claim is true as description, not as a quotation, and is corrected here so
+the argument does not rest on a source that does not say it.)*
+
+If this design is approved, the architecture and Portal, Instance, Security, and
+Deployment requirements must be updated before implementation issues are treated
+as build-ready. **That sequencing was not honoured** — see §17.
 
 ## 2. Product intent
 
@@ -906,3 +916,64 @@ are approved.
 - Requiring fleet availability for configured work to continue.
 - Supporting one instance enrolled in multiple fleets in the first version.
 - Making an arbitrary fleet safe to join without explicit trust and scoped consent.
+
+---
+
+## 17. As-built: what shipped, and what did not (recorded 2026-09-06, #4522)
+
+This document set implementation behind approval and behind requirement
+amendments (§1, §15). Slices 1 and 2 shipped anyway, on 2026-08-31 (`e42256f92`,
+PR #3934), while #3921 remained open and while
+`docs/requirements/{portal,instance,security,deployment}.md` contained no fleet
+reference at all. That is the finding, and it is a process finding as much as a
+content one.
+
+### What shipped
+
+**Instance-side enrollment and connection only.** `internal/fleet` provides
+discovery (a `GET` of `/.well-known/goobers-fleet`), enrollment, leave,
+signature verification, a persistent connection with heartbeat, and per-OS
+private-file identity storage outside the instance root. The CLI is
+`goobers fleet join|status|leave`, and `goobers up` starts the connector when the
+instance is enrolled.
+
+Requirement amendments for exactly that slice — no more — landed with this
+reconciliation: `INST-015`–`INST-017`, `PORT-030`–`PORT-032`, `SEC-050`–`SEC-052`,
+and `DEP-028`–`DEP-029`. They deliberately describe the shipped surface and
+explicitly record what has **not** shipped, rather than adopting this design's
+model. Approving this design will require extending them, not just citing them.
+
+### What diverged from the design
+
+- **`FleetGroup` does not exist.** The permission boundary this design is built
+  around — fleet → fleet group → instance — has no type, no storage, and no
+  enforcement anywhere in the tree. The shipped slice has no group concept at
+  all.
+- **None of §5.1's routes exist.** `internal/apicontract` registers no
+  `/api/v1/fleet`, `/groups`, `/enrollments`, `credentials:rotate`, or proxy
+  path. Discovery shipped in a different shape, inside `internal/fleet/client.go`
+  rather than as a daemon route, and the enrollment protocol as implemented
+  diverges from §6.
+- The doc's claim in §11.1/§14 to be revising a "blanket 'not a chat client'
+  position" cites a phrase that does not appear in `docs/requirements/portal.md`.
+
+### What has not shipped at all
+
+Slices 3–9: identity and policy, the fleet read model, the fleet dashboard,
+diagnostic sessions, packaging, production hardening, and migration. **There is
+no fleet service** — nothing in `deploy/`, `packaging/`, or the release engine
+builds or ships one, which `DEP-029` now records.
+
+Most importantly for anyone reading this page as a security surface: **no
+fleet-originated request is executed against an instance**, because no
+request-proxy path exists. Enrollment today is an outbound connection and a
+heartbeat, not delegated authority. `SEC-052` records that, and records that any
+future slice admitting fleet-originated requests is a new trust boundary needing
+its own requirement first.
+
+### What this means for approval
+
+The design is unchanged in substance and remains a proposal. Approving it should
+start from the shipped slice rather than from a clean sheet: §6's enrollment
+protocol needs reconciling with what `internal/fleet` actually does, and §5.1's
+route set needs writing against `internal/apicontract` rather than alongside it.

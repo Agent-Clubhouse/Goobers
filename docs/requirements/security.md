@@ -223,6 +223,26 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   realized at every tier by capability admission (`SEC-042`); **Tier 3 (V2)** adds
   restricted pod egress via network policy.
 
+- **SEC-050 (MUST):** *(Tiers 1–3, shipped)* Fleet enrollment MUST be
+  **operator-initiated and credential-bearing**: it consumes a one-time
+  enrollment grant, and that grant MUST NOT be accepted as a command-line
+  argument. `goobers fleet join` reads it from a protected terminal prompt, or
+  from a file that is private to its owner (`--enrollment-token-file`). This is
+  the same doctrine as `CFG-009`/`SEC-010` for inline secrets, applied to the
+  one credential that is necessarily supplied interactively.
+- **SEC-051 (MUST):** *(Tiers 1–3, shipped)* Fleet identity material MUST be
+  stored outside the instance root with owner-private permissions enforced
+  per-platform, and MUST NOT be reachable through any stage capability. No
+  capability in `internal/capability` grants fleet identity, and enrolling
+  changes no stage's credential set.
+- **SEC-052 (MUST NOT):** *(Fleet, not shipped)* Fleet enrollment MUST NOT be
+  read as granting the fleet service authority over the instance. The shipped
+  slice is enrollment and an outbound connection; **no fleet-originated request
+  is executed against the instance**, because no request-proxy path exists.
+  `docs/design/fleet-portal.md` §§5–9 design that authority — group-scoped roles,
+  a request envelope, instance-side validation, and diagnostic sessions — and
+  none of it has shipped. Any future slice that admits fleet-originated requests
+  is a new trust boundary and requires its own requirement before implementation.
 - **SEC-053 (MUST):** *(All tiers)* **Merge authority is a separate, conjunctive,
   revocable grant.** Goobers merges its own pull requests with no human in the
   critical path (`pr-lifecycle.md` G2), so the controls that make that safe are

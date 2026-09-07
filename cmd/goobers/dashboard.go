@@ -719,7 +719,7 @@ func newDashboardHandler(assets fs.FS, api http.Handler, mode dashboardMode, ins
 		// dir overrides the embedded bundle at the same /assets/ path; anything
 		// not present there (notably the portal's own /assets/index-*.js|css)
 		// falls through to the embedded file server below.
-		if strings.HasPrefix(request.URL.Path, "/assets/") &&
+		if strings.HasPrefix(request.URL.Path, portalAssetURLPrefix) &&
 			serveInstanceAsset(response, request, instanceRoot) {
 			return
 		}
@@ -745,14 +745,23 @@ func serveDashboardStatic(response http.ResponseWriter, request *http.Request, a
 	http.NotFound(response, request)
 }
 
+const (
+	// portalAssetDirName is the instance-root directory operator co-brand
+	// assets live in, and portalAssetURLPrefix is the URL prefix they are
+	// served under. Named so the validator's CBR001/CBR002 checks resolve the
+	// same path this handler serves from.
+	portalAssetDirName   = "assets"
+	portalAssetURLPrefix = "/assets/"
+)
+
 // serveInstanceAsset serves a co-branding file from the instance's assets/ dir
 // when the cleaned request path resolves to an existing regular file inside
 // that dir, and reports whether it did. On any miss — traversal outside the
 // dir, a directory, or a nonexistent file — it serves nothing and returns
 // false so the caller falls through to the embedded bundle.
 func serveInstanceAsset(w http.ResponseWriter, r *http.Request, instanceRoot string) bool {
-	assetsDir := filepath.Join(instanceRoot, "assets")
-	name := strings.TrimPrefix(r.URL.Path, "/assets/")
+	assetsDir := filepath.Join(instanceRoot, portalAssetDirName)
+	name := strings.TrimPrefix(r.URL.Path, portalAssetURLPrefix)
 	name = filepath.FromSlash(path.Clean("/" + name))
 	name = strings.TrimPrefix(name, string(filepath.Separator))
 	if name == "" {

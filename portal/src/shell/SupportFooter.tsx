@@ -24,17 +24,17 @@ export function SupportFooter() {
   if (links.length === 0) return null;
 
   return (
-    <div className="support-footer">
+    <nav className="support-footer" aria-label="Support">
       {links.map((link) => (
         <a
           key={`${link.label}:${link.url}`}
           href={link.url}
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
         >
           {link.label}
         </a>
       ))}
-    </div>
+    </nav>
   );
 }
