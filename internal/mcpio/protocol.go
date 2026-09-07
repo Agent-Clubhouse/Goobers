@@ -335,11 +335,14 @@ func (s *Server) callTool(raw json.RawMessage) (map[string]interface{}, error) {
 		if err := unmarshalArgs(params.Arguments, &args); err != nil {
 			return nil, err
 		}
-		n, err := s.tools.PublishOutput(args.Content)
+		n, digest, err := s.tools.PublishOutput(args.Content)
 		if err != nil {
 			return nil, err
 		}
-		return textResult(fmt.Sprintf(`{"status":"ok","bytesWritten":%d}`, n)), nil
+		// The digest names the content that was actually committed to the
+		// artifact file, so a caller can tell two successful publishes apart
+		// (#2422).
+		return textResult(fmt.Sprintf(`{"status":"ok","bytesWritten":%d,"digest":%q}`, n, digest)), nil
 
 	case "list_inputs":
 		items, err := s.tools.ListInputs()
