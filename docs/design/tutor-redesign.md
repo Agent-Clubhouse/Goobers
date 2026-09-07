@@ -4,6 +4,7 @@
 > Scope: the tutor edits a gaggle's **instance config** (`goobers-instances/<name>/`), never product code (§1.1). Its loop closes through **Workflow CD** (§4.6, M15).
 > Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #453 (Workflow CD / GitOps — the promotion half), #460 (WCD-6 `configrepo:read` — the tutor needs a write-sibling, §4.8), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
+> Delivered-by: #1192, #1193, #1194, #1213, #1214, #1215, #1216, #1217, #1218, #1219
 
 ## 1. Why this exists
 
@@ -27,7 +28,7 @@ requires, and a staged backlog.
 The tutor's write target is the **instance's own config namespace** — the deployed gaggle/workflow/goober
 definitions the running daemon reconciles from. **This path is operator-defined, not fixed:** the daemon is
 launched with an instance path, and *that* path is injected as the tutor's target (whatever the operator chose;
-`~/source/goobers-instances/goobers/*` is only *our* local self-hosting example — a hand-maintained fork of the
+`~/source/goobers-instances/goobers/*` (an operator's own checkout, **not reproducible from this repository**) is only *our* local self-hosting example — a hand-maintained fork of the
 sample config, see memory: instance-config-is-drifted-fork). It is **never** the Goobers product repo
 (`reference-workflows/`, `internal/`, `cmd/`, `api/schemas`). For a customer it is *their* instance — the
 workflows/goobers/skills unique to their code and area. The tutor must therefore resolve its config root from

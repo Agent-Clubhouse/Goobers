@@ -1,0 +1,57 @@
+name: Design Ledger Reconcile
+
+# #4518: the merge-tier `design-doc-status` check proves a design document's
+# lifecycle metadata is internally coherent — an `implemented` page names what
+# delivered it, a `superseded` page names its successor, a supersession is
+# reciprocal. It cannot know whether those issues are actually closed.
+#
+# That gap is where the 2026-09-06 documentation audit found the corpus rotting
+# in BOTH directions: designs marked `implemented` whose delivery issues were
+# still open, and — more often, and more damagingly — designs still marked
+# `draft` or `approved` whose entire delivery ledger had closed, inviting
+# someone to redesign a shipped feature.
+#
+# Issue state is external and moves without any change to this repository, so
+# this is a scheduled report rather than a merge gate, the same shape as
+# tracked-gap-references.yml. It also runs on every push to main so the window
+# between an issue closing and the mismatch being visible is bounded by the next
+# merge rather than by the cron cadence (#4227's argument).
+#
+# A failure means a design document's status and its delivery ledger disagree:
+# update the status, or correct the ledger.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 9 * * 1"
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: design-ledger-reconcile
+  cancel-in-progress: true
+
+jobs:
+  design-ledger-reconcile:
+    name: Design delivery ledgers match issue state
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Reconcile design delivery ledgers
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOBERS_DESIGN_LEDGER_REPO: ${{ github.repository }}
+        run: go test -tags=integration ./test/designstatus/... -run TestIntegrationDesignDeliveryLedgersMatchIssueState -v

@@ -6,6 +6,7 @@ designed but did not ship were adjudicated and closed out in #4517. Retained as
 the design of record for #3341; the code, not this document, is authoritative
 for current behaviour. **Verified against** `origin/main` @ `09db115bb`
 (2026-09-06).
+Delivered-by: #3414, #3415, #4517
 
 > **Read §5.1 "Shipped scope delta" before treating §5, §6, §8 or §9 as a
 > specification.** The body below is written in the *pre-implementation* voice

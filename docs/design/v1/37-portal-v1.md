@@ -3,6 +3,7 @@
 > Status: **superseded — for dispatch** (2026-07-16) · Historical context only
 > Requirements: [`docs/requirements/portal.md`](../../requirements/portal.md)
 > (PORT-010..025), [`docs/requirements/gate.md`](../../requirements/gate.md) (GT-003/GT-012)
+> Superseded-by: docs/design/dashboard.md
 >
 > Read/dashboard work moved to [`../dashboard.md`](../dashboard.md) and epic
 > [#440](https://github.com/Agent-Clubhouse/Goobers/issues/440). Human approval,
