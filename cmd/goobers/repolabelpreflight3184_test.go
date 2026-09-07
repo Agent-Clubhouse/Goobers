@@ -100,3 +100,39 @@ func TestReservedLabelPreflightProviderEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestReservedLabelPreflightCurrentQueryResweepDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		inputs map[string]string
+		want   string
+	}{
+		{"enabled default", map[string]string{"resweepMaxItems": "2"}, providers.LabelReady},
+		{"explicit override", map[string]string{"resweepMaxItems": "2", "resweepReadyLabel": "custom:ready"}, "custom:ready"},
+		{"disabled", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "backlog"}}}
+			set := &instance.ConfigSet{
+				Gaggles:   []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "team"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: "github", Owner: "acme", Name: "backlog"}}}},
+				Workflows: []apiv1.Workflow{{ObjectMeta: metav1.ObjectMeta{Name: "backlog-curation"}, Spec: apiv1.WorkflowSpec{Gaggle: "team", Tasks: []apiv1.Task{{Name: "query-backlog", Run: &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}}, Inputs: tc.inputs}}}}},
+			}
+			demand := gatherRepoRealityDemand(".", "config", cfg, set)[0]
+			counts := map[string]int{}
+			for _, use := range demand.labelUses {
+				counts[use.label]++
+			}
+			if tc.want != "" && counts[tc.want] != 1 {
+				t.Fatalf("missing/duplicated re-sweep label: %v", counts)
+			}
+			if tc.want != providers.LabelReady && counts[providers.LabelReady] != 0 {
+				t.Fatalf("unused default was demanded: %v", counts)
+			}
+			seed := &connectLabelSet{}
+			connectTaskAppliedLabels(set.Workflows[0].Spec.Tasks[0], seed)
+			if tc.want != "" && !strings.Contains(strings.Join(seed.sorted(), ","), tc.want) {
+				t.Fatal("onboarding and preflight disagree")
+			}
+		})
+	}
+}

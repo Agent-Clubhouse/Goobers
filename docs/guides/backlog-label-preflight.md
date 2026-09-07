@@ -1,5 +1,9 @@
 # Backlog label preflight
 
+Enabled `backlog-query` re-sweeps include the implicit `goobers:ready` default;
+an explicit `resweepReadyLabel` replaces that default. Disabled re-sweeps do not
+create a label requirement. Onboarding uses the same derivation.
+
 Run `goobers validate --check-repos <instance-root>` to compare configured
 backlog workflows with the repository's label definitions. This is read-only;
 it neither creates labels nor changes issues.
