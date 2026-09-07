@@ -44,7 +44,7 @@ func TestWorkflowRequiredProviderCapabilitiesDerivesFromStages(t *testing.T) {
 	}}
 	wf.Name = "implementation"
 
-	got := WorkflowRequiredProviderCapabilities(wf)
+	got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub)
 	want := []providers.Capability{
 		providers.CapBranchDelete,
 		providers.CapPRCompare,
@@ -78,7 +78,7 @@ func TestBacklogQueryAloneDerivesNoProviderCapabilityRequirement(t *testing.T) {
 	}}
 	wf.Name = "implementation"
 
-	if got := WorkflowRequiredProviderCapabilities(wf); len(got) != 0 {
+	if got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub); len(got) != 0 {
 		t.Fatalf("required = %v, want none", got)
 	}
 
@@ -99,7 +99,7 @@ func TestWorkflowRequiredProviderCapabilitiesEmptyForPlainWorkflow(t *testing.T)
 	}}
 	wf.Name = "plain"
 
-	if got := WorkflowRequiredProviderCapabilities(wf); got != nil {
+	if got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub); got != nil {
 		t.Fatalf("required = %v, want nil (no optional capability used)", got)
 	}
 }
@@ -114,7 +114,7 @@ func TestWorkflowRequiredProviderCapabilitiesExplicitOverridesDerivation(t *test
 	}}
 	wf.Name = "custom"
 
-	got := WorkflowRequiredProviderCapabilities(wf)
+	got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub)
 	if len(got) != 1 || got[0] != providers.CapPRReviewThreads {
 		t.Fatalf("required = %v, want an explicit override replacing the merge-pr derivation", got)
 	}

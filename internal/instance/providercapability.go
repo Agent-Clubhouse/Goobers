@@ -90,21 +90,19 @@ func derivedStageCapabilities(provider providers.ProviderKind, stage string) []p
 	return stageProviderCapabilities[stage]
 }
 
-// WorkflowRequiredProviderCapabilities returns the capabilities a single run of
-// wf needs against the provider-neutral default table. Prefer
-// WorkflowRequiredProviderCapabilitiesFor when the gaggle's provider is known:
-// a stage may reach a different provider surface on a different provider.
-func WorkflowRequiredProviderCapabilities(wf apiv1.Workflow) []providers.Capability {
-	return WorkflowRequiredProviderCapabilitiesFor(wf, "")
-}
-
 // WorkflowRequiredProviderCapabilitiesFor returns the provider capabilities a
 // single run of wf needs on provider (CONF-6, #2079):
 // wf.Spec.Requires.Capabilities when explicitly declared — which replaces
 // derivation entirely, letting an author narrow or widen it — else the union of
 // each `goobers <verb>` deterministic stage's derived capabilities, resolved
-// per provider. An empty provider uses the neutral defaults. The result is
-// sorted and de-duplicated.
+// per provider.
+//
+// The provider is a required argument rather than an optional refinement: a
+// stage can reach a DIFFERENT provider surface on a different provider (see
+// stageProviderCapabilityOverrides), so "what does this workflow require" has
+// no provider-neutral answer. An empty provider selects the neutral defaults
+// for a caller that genuinely has no gaggle in hand. The result is sorted and
+// de-duplicated.
 func WorkflowRequiredProviderCapabilitiesFor(wf apiv1.Workflow, provider providers.ProviderKind) []providers.Capability {
 	if wf.Spec.Requires != nil && len(wf.Spec.Requires.Capabilities) > 0 {
 		out := make([]providers.Capability, len(wf.Spec.Requires.Capabilities))
