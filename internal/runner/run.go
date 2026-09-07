@@ -4893,21 +4893,18 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err), nil
 		}
 		result, err = det.Run(ctx, env, *t.Run)
+		// A provider mutation can succeed before a later subprocess error
+		// (for example branch cleanup). Collect its receipts on both exit
+		// paths, before the deferred workspace teardown removes the sidecar.
+		var issues []string
+		mutations, issues = readMutationSidecar(env.Workspace)
+		if len(issues) > 0 {
+			_ = jr.Append(journal.Event{
+				Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
+				Error: &journal.ErrorDetail{Code: "mutation_sidecar_read_failed", Message: strings.Join(issues, "; ")},
+			})
+		}
 		if err == nil {
-			var issues []string
-			mutations, issues = readMutationSidecar(env.Workspace)
-			if len(issues) > 0 {
-				// Best-effort, matching finishTaskDispatch's own
-				// ref.touched projection (issue #228): a sidecar
-				// read/parse issue doesn't change what the provider
-				// mutation already did for real, so a failed Append here
-				// must not fail the stage either (#2029) — but the loss
-				// must be observable rather than silent.
-				_ = jr.Append(journal.Event{
-					Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
-					Error: &journal.ErrorDetail{Code: "mutation_sidecar_read_failed", Message: strings.Join(issues, "; ")},
-				})
-			}
 			if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
 				err = outboxErr
 			}
