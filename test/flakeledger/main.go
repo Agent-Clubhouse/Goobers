@@ -37,6 +37,8 @@ const (
 	cloudDescription    = "Claim-partition: issue belongs to the cloud (Goobernetes) instance"
 	snippetLimit        = 8 * 1024
 	signatureLimit      = 1024
+	stateOpen           = "open"
+	stateClosed         = "closed"
 )
 
 var (
@@ -93,6 +95,7 @@ type providerFactory func(token, apiURL string) ledgerProvider
 type publishResult struct {
 	Created   int
 	Refreshed int
+	Reopened  int
 	Skipped   int
 }
 
@@ -131,6 +134,9 @@ func run(
 		return 1
 	}
 	summary := fmt.Sprintf("flake ledger: %d created, %d refreshed", result.Created, result.Refreshed)
+	if result.Reopened > 0 {
+		summary += fmt.Sprintf(", %d reopened", result.Reopened)
+	}
 	if result.Skipped > 0 {
 		summary += fmt.Sprintf(", %d skipped without a distinguishing signature", result.Skipped)
 	}
@@ -305,19 +311,32 @@ func publish(
 				}
 			}
 		}
-		comment := ""
-		if !recorded {
-			comment = occurrenceComment(report.Run, failure)
-		}
-		if comment == "" {
+		if recorded {
+			// This run's occurrence is already on the issue. Do not touch it
+			// again — in particular, do not reopen an issue that was closed
+			// *after* this occurrence was recorded, which would fight the
+			// operator who closed it.
 			continue
 		}
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		// A fingerprint match against a CLOSED issue means a fixed flake came
+		// back (#4612). Without reopening, the comment lands on an issue nobody
+		// watches and no new issue is filed either, so closing an issue would
+		// permanently retire its fingerprint.
+		reopen := isClosed(item)
+		update := providers.UpdateWorkItemRequest{
 			Repository: repository,
 			ID:         item.ID,
-			Comment:    comment,
-		}); err != nil {
+			Comment:    occurrenceComment(report.Run, failure, reopen),
+		}
+		if reopen {
+			update.State = stateOpen
+		}
+		if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 			return result, fmt.Errorf("refresh issue %s for %s: %w", item.ID, failure.Fingerprint, err)
+		}
+		if reopen {
+			result.Reopened++
+			continue
 		}
 		result.Refreshed++
 	}
@@ -394,18 +413,43 @@ func issueBody(run runMetadata, failure testFailure) string {
 	}, "\n")
 }
 
-func occurrenceComment(run runMetadata, failure testFailure) string {
-	return strings.Join([]string{
+// isClosed reports whether a work item is in the provider's closed state. The
+// ledger lists issues without a state filter (the GitHub provider defaults to
+// `state: all`), so a closed issue is a normal, expected match here.
+func isClosed(item providers.WorkItem) bool {
+	return strings.EqualFold(strings.TrimSpace(item.State), stateClosed)
+}
+
+func occurrenceComment(run runMetadata, failure testFailure, reopened bool) string {
+	heading := "## Flake recurrence"
+	preamble := []string{}
+	if reopened {
+		// A reopen is the signal that a fix regressed, so it must not read like
+		// an ordinary recurrence in the issue timeline or in notifications.
+		heading = "## Flake recurrence after close — reopened"
+		runID := firstNonEmpty(failure.LastSeenRun, run.RunID, "unknown run")
+		preamble = []string{
+			"This issue was closed, but the fingerprint recurred, so the stress workflow reopened it. " +
+				"Treat it as a regression of the fix rather than a first sighting. " +
+				"Reopened by run `" + singleLine(runID) + "`.",
+			"",
+		}
+	}
+	lines := []string{
 		occurrenceMarker(run, failure),
 		"",
-		"## Flake recurrence",
+		heading,
 		"",
+	}
+	lines = append(lines, preamble...)
+	lines = append(lines,
 		occurrenceLine(run, failure),
 		"",
-		"**Normalized signature:** `" + renderedSignature(failure.FailureSignature) + "`",
+		"**Normalized signature:** `"+renderedSignature(failure.FailureSignature)+"`",
 		"",
 		failureSnippet(failure),
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func occurrenceLine(run runMetadata, failure testFailure) string {
