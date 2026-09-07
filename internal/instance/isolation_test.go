@@ -71,6 +71,10 @@ func TestIsolationInventoryClassFloorIsStrengthenOnly(t *testing.T) {
 		{Name: "safe", Host: "image:safe", Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral, RunnerRestrictionNetworkAllowlist}},
 	}}
 	inv := cfg.PlacementInventory("")
+	cfg.Isolation.Mandates = append(cfg.Isolation.Mandates, cfg.Isolation.Mandates[0])
+	if got := cfg.PlacementInventory("").ClassMandates["agentic"]; len(got) != 1 {
+		t.Fatalf("effective union duplicated a repeated mandate: %v", got)
+	}
 	rows := []runnersolve.StageRequirement{
 		{Stage: "agent", StageClass: "agentic", Restrictions: []string{"network:allowlist"}},
 		{Stage: "script", StageClass: "deterministic"},

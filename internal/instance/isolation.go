@@ -2,6 +2,7 @@ package instance
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/goobers/goobers/internal/runnersolve"
@@ -38,7 +39,10 @@ func (c *Config) PlacementInventory(selfOS string) runnersolve.Inventory {
 	inv.ClassMandates = make(map[string][]string)
 	for _, mandate := range c.Isolation.Mandates {
 		for _, restriction := range mandate.Restrictions {
-			inv.ClassMandates[mandate.Match.StageClass] = append(inv.ClassMandates[mandate.Match.StageClass], string(restriction))
+			class := mandate.Match.StageClass
+			if !slices.Contains(inv.ClassMandates[class], string(restriction)) {
+				inv.ClassMandates[class] = append(inv.ClassMandates[class], string(restriction))
+			}
 		}
 	}
 	return inv

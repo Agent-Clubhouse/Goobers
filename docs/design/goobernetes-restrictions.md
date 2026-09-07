@@ -3,12 +3,12 @@
 Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 goobernetes-decisions.md (2026-08-22).
 
-Delivered-by: #4540
+Delivered-by: #3516, #3568, #4540
 
 The instance mandate configuration and admission/status slice is delivered by
 #4540 ([operator guide](../guides/isolation-mandates.md)). This does not claim
-the entire restrictions program implemented; mechanism deployment, verification
-and the remaining delivery work below retain their own owners.
+the entire restrictions program implemented; the broader effect-list delivery
+(#3516), manifest rendering (#3568), and remaining work below retain their owners.
 
 This document defines the v1 restrictions model for all three execution modes: what a
 restriction *is* (an effect, never a mechanism), who may introduce one (runner, stage,
