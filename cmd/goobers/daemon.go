@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -184,7 +185,10 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, err
 	}
-	configDigest, err := configDirectoryDigest(l.ConfigDir())
+	// #3314: a first boot whose config comes from a remote workflowSource has
+	// no config directory yet — the daemon is what fetches it — so the tree is
+	// seeded before it is digested.
+	configDigest, err := bootstrapAndDigestConfigDir(l, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1846,3 +1850,79 @@ func buildReadModelIfNeeded(ctx context.Context, store *readmodel.Store, state r
 	}
 	return store.MarkReady(ctx)
 }
+
+// bootstrapAndDigestConfigDir seeds a first-boot config tree when one is owed
+// (#3314) and returns the digest of the tree that results.
+//
+// The two are paired here rather than at the call site because the caller is
+// already at the complexity gate's ceiling, and because they are one step: the
+// digest must describe the tree the daemon will actually validate, which on a
+// first boot is the seeded one.
+func bootstrapAndDigestConfigDir(l instance.Layout, cfg *instance.Config) (string, error) {
+	if err := ensureBootstrapConfigDir(l, cfg); err != nil {
+		return "", err
+	}
+	return configDirectoryDigest(l.ConfigDir())
+}
+
+// ensureBootstrapConfigDir seeds a config directory on a first boot whose
+// config will arrive from a remote workflowSource (#3314).
+//
+// The bootstrap order the daemon needs is credentials -> fetch -> validate ->
+// serve, and the missing link was that validation ran against a tree the fetch
+// had not created yet. `goobers up` failed with "walk /var/lib/goobers/config:
+// no such file or directory", and `goobers apply` — the one-shot reconcile that
+// would populate it — requires the live daemon that was refusing to start. The
+// component that fetches config needed the daemon, and the daemon needed the
+// config it had not fetched.
+//
+// Creating the directory is not enough on its own, and finding that out is the
+// point: an empty tree fails validation with exactly one error, CFG002 "no
+// Manifest object found in config directory". So the seed is a minimal
+// zero-gaggle Manifest — the same artifact operators were hand-writing to get
+// past this, now shipped so an adopter following the docs does not have to
+// invent it. The daemon already accepts a zero-gaggle instance, and the first
+// reconcile replaces the seed with the tracked tree.
+//
+// Deliberately narrow, in three ways:
+//
+//   - Only for a git workflowSource. With no remote source configured nothing
+//     would ever populate the tree, so a missing config directory stays a hard
+//     startup failure: a daemon serving an empty instance forever is worse than
+//     one that says why it will not start.
+//   - Only when the directory is ABSENT. An existing tree, even an invalid or
+//     empty one, is left exactly as it is — this must never overwrite config an
+//     operator or a previous sync put there.
+//   - The seed names no gaggle, so it cannot schedule anything before the real
+//     config arrives.
+func ensureBootstrapConfigDir(l instance.Layout, cfg *instance.Config) error {
+	if cfg == nil || cfg.WorkflowSource == nil || cfg.WorkflowSource.Kind != instance.WorkflowSourceKindGit {
+		return nil
+	}
+	dir := l.ConfigDir()
+	if _, err := os.Stat(dir); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("inspect config directory before first workflow-source sync: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create config directory for first workflow-source sync: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte(bootstrapManifestSeed), 0o644); err != nil {
+		return fmt.Errorf("seed manifest for first workflow-source sync: %w", err)
+	}
+	return nil
+}
+
+// bootstrapManifestSeed is the smallest config tree that validates: a Manifest
+// naming no gaggles, replaced by the first workflow-source sync (#3314).
+const bootstrapManifestSeed = `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: bootstrap
+spec:
+  instance:
+    name: bootstrap
+    environment: dev
+  gaggles: []
+`
