@@ -441,7 +441,9 @@ provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
 a plain list (no --claim) does not require it. --read-only also bypasses
 claim locks, blocked-record reconciliation, scan cursors, and read caches,
-and uses only the github:issues:read capability.
+and uses only the github:issues:read capability. When inputs.resultFile
+is declared, it also writes a read-only candidate report with scan coverage;
+candidates are for inspection, not claims or permission to re-ready work.
 
 --debug writes candidate eligibility, exclusion, and claim-loss details to
 stderr. Diagnostics contain item IDs and selection metadata only; normal
