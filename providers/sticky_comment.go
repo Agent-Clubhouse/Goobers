@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,7 +12,9 @@ import (
 type StickyCommentTargetKind string
 
 const (
-	StickyCommentIssue       StickyCommentTargetKind = "issue"
+	// StickyCommentIssue selects an issue or work-item comment transport.
+	StickyCommentIssue StickyCommentTargetKind = "issue"
+	// StickyCommentPullRequest selects a pull-request comment transport.
 	StickyCommentPullRequest StickyCommentTargetKind = "pull-request"
 )
 
@@ -91,7 +94,8 @@ func UpsertStickyComment(
 
 	comments, readErr := list(ctx)
 	if readErr != nil {
-		return StickyCommentResult{}, fmt.Errorf("create sticky comment: %w (adoption read failed: %v)", createErr, readErr)
+		return StickyCommentResult{}, fmt.Errorf("create sticky comment: %w",
+			errors.Join(createErr, fmt.Errorf("adoption read: %w", readErr)))
 	}
 	match, duplicates, ok := selectStickyComment(comments, marker)
 	if !ok {
