@@ -1,10 +1,20 @@
 package validate
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
+
+func missingSkillLocations(gaggle, skill string) string {
+	shared := filepath.ToSlash(filepath.Join("skills", skill))
+	if gaggle == "" {
+		return fmt.Sprintf("%q", shared)
+	}
+	return fmt.Sprintf("%q or %q", filepath.ToSlash(filepath.Join("gaggles", gaggle, "skills", skill)), shared)
+}
 
 func gooberInAnotherGaggle(spec apiv1.GooberSpec, gaggle string) bool {
 	return spec.Gaggle != "" && spec.Gaggle != gaggle
