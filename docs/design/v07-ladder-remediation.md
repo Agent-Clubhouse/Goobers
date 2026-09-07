@@ -6,7 +6,9 @@
 > L3 repass verdict context (#412), L6 non-retryable escalate (#415), L7 open-PR
 > backstop (#414).
 > Origin: the **V0.6 reliability eval ladder (round 2)** — epic #394, report at
-> `~/source/Goobers-Review/ladder/{scorecard,observations}.md`. First round run
+> `~/source/Goobers-Review/ladder/{scorecard,observations}.md` — held outside this
+> repository and **not reproducible from this repository**; the scored findings are
+> restated in full below. First round run
 > through the **full V0.5 lifecycle** via `goobers up` (implementation →
 > merge-review → pr-remediation, human keeps the merge).
 > References: [`docs/stage-contract.md`](../stage-contract.md),

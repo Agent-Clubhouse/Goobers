@@ -18,6 +18,7 @@
 > `internal/journal/event.go`, `api/v1alpha1/workflow_types.go`,
 > `internal/supportmatrix/supportmatrix.go`
 > Related issues: #1310, #155, #562, #817, #1427, #1430
+> Delivered-by: #1939
 
 ## 1. Decision
 

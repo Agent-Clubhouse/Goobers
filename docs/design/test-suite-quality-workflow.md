@@ -2,6 +2,7 @@
 
 > **Status:** implemented — repository review by #1568 (2026-07-30);
 > recurring-flake analysis by #1489.
+> Delivered-by: #1568, #1489
 >
 > **Canonical workflows:** [`quality-sprint`](../../reference-workflows/gaggles/goobers/workflows/quality-sprint.yaml)
 > and [`test-suite-quality`](../../reference-workflows/gaggles/goobers/workflows/test-suite-quality.yaml)

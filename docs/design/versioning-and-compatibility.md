@@ -4,6 +4,7 @@
 > Requirements: [`docs/requirements/config-as-code.md`](../requirements/config-as-code.md) (CFG-Q5), [`docs/requirements/workflow.md`](../requirements/workflow.md) (WF-016)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #279 (`--version`), #33 (packaging/release binaries), #252 (one validation path), #150 (Goober.spec.model)
+> Delivered-by: #427, #428, #429, #430, #431, #432, #433, #434
 
 ## 1. Why this exists
 

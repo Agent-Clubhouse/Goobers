@@ -8,6 +8,7 @@
 > positions are revised on measured evidence — notably one store versus two,
 > request-path reconciliation, and the absence of an authorization dimension in
 > the schema.
+> Superseded-by: docs/design/portal-read-architecture.md
 >
 > **The child issues filed from this doc (#1888–#1892) should be re-scoped
 > against the superseding design before implementation**, not started as

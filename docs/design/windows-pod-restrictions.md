@@ -1,6 +1,7 @@
 # Windows Pod Restrictions
 
 > Status: **implemented — reference worker shape**
+> Delivered-by: #3619
 
 This note records the Windows-specific parts of the reference worker in
 `deploy/reference/goobers-system/worker-windows-deployment.yaml`. It is an

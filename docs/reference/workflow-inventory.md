@@ -27,6 +27,7 @@ themselves, so no cell can drift from the YAML.
 | `ado-live-conformance.yml` | schedule, workflow_dispatch | active | — |
 | `ci.yml` | merge_group, pull_request, push | active | — |
 | `config-validate-gate-selftest.yml` | pull_request, push, workflow_dispatch | active | — |
+| `design-ledger-reconcile.yml` | push, schedule, workflow_dispatch | active | — |
 | `evals-gate.yml` | workflow_dispatch | dormant | #2681 (direction superseded; #2667/#2668 closed as redirected — retire or re-scope after ratification) |
 | `evals-tests.yml` | pull_request, push, workflow_dispatch | active | — |
 | `flake-watch.yml` | schedule, workflow_dispatch | active | — |
