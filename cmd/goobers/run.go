@@ -580,7 +580,7 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarge
 		return 2
 	}
 
-	runID, err := pollTriggerResponse(ctx, l.SchedulerDir(), requestID, triggerDelegationTimeout)
+	runID, err := pollTriggerResponse(ctx, l.SchedulerDir(), requestID, triggerResponseWait())
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
