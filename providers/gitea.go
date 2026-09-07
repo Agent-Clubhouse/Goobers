@@ -924,7 +924,7 @@ func (p *GiteaProvider) MergePullRequest(ctx context.Context, req MergePullReque
 	if req.ExpectedHeadSHA != "" {
 		body["head_commit_id"] = req.ExpectedHeadSHA
 	}
-	if err := p.do(ctx, http.MethodPost, endpoint, body, nil); err != nil {
+	if err := p.postDirectMerge(ctx, endpoint, body); err != nil {
 		return MergePullRequestResult{}, err
 	}
 	number, convErr := strconv.Atoi(req.PullID)
@@ -935,11 +935,13 @@ func (p *GiteaProvider) MergePullRequest(ctx context.Context, req MergePullReque
 	if pr, err := p.getPull(ctx, req.Repository, req.PullID); err == nil {
 		mergeSHA = pr.MergeCommitSHA
 	}
+	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
 	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, req.PullID),
-		Operation: "merge",
-		Fields:    map[string]FieldDigest{"state": {After: digestString("merged")}},
+		MergeConfirmation: newMergeConfirmation(repositoryAPIURL, req.PullID, mergeSHA),
+		Provider:          ProviderGitea,
+		Ref:               issueRef(req.Repository, req.PullID),
+		Operation:         "merge",
+		Fields:            map[string]FieldDigest{"state": {After: digestString("merged")}},
 	})
 	return MergePullRequestResult{Number: number, Merged: true, MergeSHA: mergeSHA}, nil
 }

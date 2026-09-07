@@ -443,6 +443,10 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 	if len(facts) != 2 || facts[0].Operation != "merge" || facts[1].Kind != "branch" || facts[1].Operation != "delete" {
 		t.Fatalf("mutation facts = %+v, want merge followed by branch delete", facts)
 	}
+	confirmation := facts[0].MergeConfirmation
+	if confirmation == nil || confirmation.RepositoryAPIURL != server.URL+"/repos/your-org/your-repo" || confirmation.PullID != "9" || confirmation.MergeSHA != "merge-commit-sha" {
+		t.Fatalf("CLI lost merge confirmation: %+v", confirmation)
+	}
 }
 
 func TestMergePRNeverAutoMergesHighRiskTutorChangeOmittedFromCompareFiles(t *testing.T) {
@@ -707,6 +711,11 @@ func TestMergePRMergeQueuePolicyReportsMergedWhenAlreadyMerged(t *testing.T) {
 	}
 	if st.deleteCalls != 1 {
 		t.Fatalf("branch delete called %d times, want 1 (a real merge happened, cleanup should run)", st.deleteCalls)
+	}
+	for _, fact := range readMutationFacts(t, dir) {
+		if fact.MergeConfirmation != nil {
+			t.Fatalf("observed merge was attributed to this CLI invocation: %+v", fact)
+		}
 	}
 }
 
