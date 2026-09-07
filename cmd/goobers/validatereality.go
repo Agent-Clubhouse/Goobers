@@ -940,6 +940,7 @@ func gatherRepoRealityDemand(root, configDir string, cfg *instance.Config, set *
 							wfFile, taskPath+"/status")
 					}
 				}
+				appendTaskLifecycleLabelUses(d, task, taskWhere, wfFile, taskPath)
 			}
 		}
 	}
@@ -1044,7 +1045,9 @@ func checkGitHubRepositoryReality(
 		repoLabels, err := targetRepositoryLabels(ctx, repo, token)
 		cancel()
 		if err != nil {
-			pf(stdout, "REPOSITORY %s: could not check selector labels: %s\n", label, scrubRepositoryError(err, token))
+			message := fmt.Sprintf("could not check repository labels: %s; label existence is unknown, not missing", scrubRepositoryError(err, token))
+			pf(stdout, "REPOSITORY %s: WARNING: %s\n", label, message)
+			addDiagnostic(collectors, "instance.yaml", "/repos", "REPOLABEL001", string(validate.Warning), label+": "+message)
 		} else {
 			existing := make(map[string]bool, len(repoLabels))
 			for _, name := range repoLabels {
