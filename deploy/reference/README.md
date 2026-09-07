@@ -153,6 +153,10 @@ helm template temporal temporal/temporal --version 0.62.0 \
   --namespace goobers-temporal -f deploy/reference/temporal/values.yaml >/dev/null
 ```
 
+For consumer overlay pins and actual image contents, add `--overlay-dir` and
+the image requirements described in [overlay/image preflight](../../docs/guides/overlay-image-preflight.md).
+These checks are explicitly unchecked when the overlay is omitted.
+
 `goobers doctor --k8s` (deliverable K3, issue #668) is the companion preflight: it
 verifies a target cluster against the same shape-doc requirements these manifests express.
 

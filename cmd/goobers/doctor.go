@@ -23,6 +23,9 @@ import (
 const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
 	"                          [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]\n" +
 	"                          [--temporal-hostport <host:port>] [--temporal-namespace <name>]\n" +
+	"                          [--overlay-dir <dir>] [--image-runtime docker|podman]\n" +
+	"                          [--image-pull-policy always|never]\n" +
+	"                          [--image-tools <tool,...>] [--image-ca <root.pem>]\n" +
 	"                          [--timeout <duration>]\n" +
 	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
 	"       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]\n\n" +
@@ -40,11 +43,21 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"  egress             required* §1/§5  outbound targets reachable from this host\n" +
 	"  temporal-namespace required* §2/§4  configured Temporal namespace is registered\n" +
 	"  registry           optional  §1     registry reachable (host-side sanity)\n\n" +
+	"  overlay-pin-agreement required* #4298 remote base, image, and runner pins agree\n" +
+	"  overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks\n\n" +
 	"Checks marked required* apply when their probe target is configured; left\n" +
-	"unconfigured they report a skipped warn. Every check is read-only: nothing is\n" +
+	"unconfigured they report a skipped warn. Cluster checks are read-only: nothing is\n" +
 	"created on the cluster, and a check that cannot run reports fail with the\n" +
 	"reason — never a silent pass. Reference manifests expressing the same\n" +
 	"requirements live under deploy/reference/ (#663).\n\n" +
+	"--overlay-dir additionally renders the consumer overlay with kubectl and pulls\n" +
+	"its pinned images using --image-runtime (default docker). Image checks run\n" +
+	"temporary network-isolated containers and remove them afterwards. Use trusted\n" +
+	"overlays/images only. Omitted --image-tools or --image-ca leaves that part\n" +
+	"explicitly unchecked, never PASS. --timeout bounds each render/pull/probe.\n\n" +
+	"--image-pull-policy never inspects cached artifacts only; it does not verify\n" +
+	"the registry's current tag. Default always fails if the pull fails. A configured\n" +
+	"memory high-water gate also requires gh API access to verify source ancestry.\n\n" +
 	"networkpolicy-api warns even when the API is served: a served API is only a\n" +
 	"correlate of enforcement — a CNI can serve it and still ignore policies\n" +
 	"silently. This check is API-discovery only; enforcement can only be proven\n" +
@@ -120,6 +133,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	workRoot := fs.String("work-root", "", "worker work root to enumerate with --av-exclusions (default: the worker's own default)")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path (default: the standard loading rules)")
 	kubeContext := fs.String("context", "", "kubeconfig context (default: the current context)")
+	overlayDir := fs.String("overlay-dir", "", "consumer kustomization directory for pin and image checks (--k8s only)")
+	imageRuntime := fs.String("image-runtime", "docker", "image probe runtime: docker or podman (--k8s with --overlay-dir)")
+	imagePullPolicy := fs.String("image-pull-policy", "always", "image acquisition: always pull, or never (inspect cached artifacts only)")
+	imageTools := fs.String("image-tools", "", "comma-separated required PATH tools in pinned images (omitted: unchecked)")
+	imageCA := fs.String("image-ca", "", "internal root CA PEM to verify in pinned image trust stores (omitted: unchecked)")
 	reportFormat := fs.String("report", "text", "report format: text or json")
 	oidcIssuer := fs.String("oidc-issuer", "", "OIDC issuer URL whose discovery document must be reachable")
 	registry := fs.String("registry", "", "container registry host to probe for reachability")
@@ -144,6 +162,14 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if modes != 1 {
 		pf(stderr, "goobers doctor: exactly one of --k8s, --repo or --av-exclusions is required\n\n")
 		fs.Usage()
+		return 2
+	}
+	if err := validateDoctorOverlayFlags(fs, *k8sMode, *overlayDir, *imageRuntime); err != nil {
+		pf(stderr, "goobers doctor: %v\n", err)
+		return 2
+	}
+	if *imagePullPolicy != "always" && *imagePullPolicy != "never" {
+		pf(stderr, "goobers doctor: --image-pull-policy must be always or never\n")
 		return 2
 	}
 	// --work-root belongs to --av-exclusions alone. Parsing it and quietly
@@ -188,6 +214,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	report := k8spreflight.Run(context.Background(), client, k8spreflight.Options{
+		OverlayDir:        *overlayDir,
+		ImageRuntime:      *imageRuntime,
+		ImagePullPolicy:   *imagePullPolicy,
+		ImageTools:        splitCommaList(*imageTools),
+		ImageCAFile:       *imageCA,
 		APIServerEndpoint: host,
 		OIDCIssuer:        *oidcIssuer,
 		Registry:          *registry,
@@ -210,6 +241,27 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func validateDoctorOverlayFlags(fs *flag.FlagSet, k8s bool, overlay, runtime string) error {
+	var invalid error
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "overlay-dir", "image-runtime", "image-pull-policy", "image-tools", "image-ca":
+			if !k8s {
+				invalid = fmt.Errorf("--%s applies to --k8s only", f.Name)
+			} else if f.Name != "overlay-dir" && strings.TrimSpace(overlay) == "" {
+				invalid = fmt.Errorf("--%s requires --overlay-dir", f.Name)
+			}
+		}
+	})
+	if invalid != nil {
+		return invalid
+	}
+	if runtime != "docker" && runtime != "podman" {
+		return fmt.Errorf("--image-runtime must be docker or podman")
+	}
+	return nil
 }
 
 func splitCommaList(value string) []string {

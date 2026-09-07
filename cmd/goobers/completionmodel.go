@@ -194,6 +194,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},
+		{name: "overlay-dir", takesArg: true, desc: "Consumer kustomization directory (--k8s)"},
+		{name: "image-runtime", takesArg: true, values: []string{"docker", "podman"}, desc: "Runtime for pinned image checks"},
+		{name: "image-tools", takesArg: true, desc: "Required PATH tools in pinned images"},
+		{name: "image-ca", takesArg: true, desc: "Internal root CA PEM for image trust checks"},
 		{name: "k8s", desc: "Preflight a Kubernetes cluster"},
 		{name: "repo", desc: "Compare repository forge policy with GitHub"},
 		{name: "av-exclusions", desc: "List the directories Goobers writes then reads and verify antivirus exclusions (advisory)"},
