@@ -1272,11 +1272,7 @@ func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claims
 func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, start int) error {
 	for index := start; index < len(session.claimed); {
 		item := session.claimed[index]
-		result, err := session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
-			Repository: session.env.backlogRepo,
-			ID:         item.ID,
-			RunID:      session.runID,
-		})
+		result, err := session.confirmProviderClaim(ctx, item)
 		if err != nil {
 			return fmt.Errorf("%s: %w", item.ID, err)
 		}
@@ -1290,11 +1286,7 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			pf(session.env.stderr, "warning: could not retire the surrendered provider claim on item %s left by run %s: %v\n", item.ID, result.ClaimedBy, retireErr)
 		} else if retired {
 			retiredHolder := result.ClaimedBy
-			result, err = session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
-				Repository: session.env.backlogRepo,
-				ID:         item.ID,
-				RunID:      session.runID,
-			})
+			result, err = session.confirmProviderClaim(ctx, item)
 			if err != nil {
 				return fmt.Errorf("%s: %w", item.ID, err)
 			}

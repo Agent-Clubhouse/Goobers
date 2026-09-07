@@ -640,6 +640,7 @@ func restoreInvisibleClaims(
 		}
 		item, err := provider.GetWorkItem(ctx, repo, itemID)
 		if err != nil {
+			recordClaimObservation(ctx, ledger, entry, localscheduler.ClaimVerification{State: "unavailable", ObservedAt: time.Now()}, stderr)
 			// Diagnostic, never fatal: reconciliation is a housekeeping pass and
 			// one unreadable item must not stop it correcting the others.
 			pf(stderr, "warning: could not read item %s while checking claim visibility: %v\n", itemID, err)
@@ -648,9 +649,11 @@ func restoreInvisibleClaims(
 		if item.HasLabel(providers.LabelClaimed) {
 			continue
 		}
+		recordClaimObservation(ctx, ledger, entry, localscheduler.ClaimVerification{State: "missing", ObservedAt: time.Now()}, stderr)
 		result, err := provider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
 			Repository: repo, ID: itemID, RunID: entry.RunID,
 		})
+		recordProviderClaimObservation(ctx, ledger, entry, repo, result, err, stderr)
 		if err != nil {
 			pf(stderr, "warning: could not restore the claim marker on item %s held by run %s: %v\n",
 				itemID, entry.RunID, err)

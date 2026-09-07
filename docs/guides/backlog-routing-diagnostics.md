@@ -1,5 +1,8 @@
 # Find ready issues with no label route
 
+For lease/provider drift rather than label routing, see
+[claim verification](claim-verification.md).
+
 Run `goobers validate --check-repos <instance-root>` before enabling partitioned
 claiming, and after changing backlog routing labels. The check is read-only.
 

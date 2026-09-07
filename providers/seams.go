@@ -85,12 +85,15 @@ type FieldDigest struct {
 // the fields that changed so the journal stays tamper-evident without storing the
 // raw values.
 type ExternalRef struct {
-	Provider  ProviderKind           `json:"provider"`
-	Ref       string                 `json:"ref"`           // e.g. "owner/name#7"
-	URL       string                 `json:"url,omitempty"` // canonical URL of the touched entity
-	Operation string                 `json:"operation"`     // create|update|label|milestone|close|comment|claim|review|merge|delete
-	Fields    map[string]FieldDigest `json:"fields,omitempty"`
-	RunID     string                 `json:"runId,omitempty"` // set for claim mutations
+	Provider      ProviderKind           `json:"provider"`
+	Ref           string                 `json:"ref"`           // e.g. "owner/name#7"
+	URL           string                 `json:"url,omitempty"` // canonical URL of the touched entity
+	Operation     string                 `json:"operation"`     // create|update|label|milestone|close|comment|claim|review|merge|delete
+	Fields        map[string]FieldDigest `json:"fields,omitempty"`
+	RunID         string                 `json:"runId,omitempty"`         // set for claim mutations
+	Outcome       string                 `json:"outcome,omitempty"`       // success, failure, or conflict for claim attempts
+	ErrorCode     string                 `json:"errorCode,omitempty"`     // stable classification; never raw provider error text
+	ProviderRunID string                 `json:"providerRunId,omitempty"` // observed owner for a ledger/provider mismatch
 }
 
 // RateLimitEvent describes a single rate-limit backoff decision.

@@ -617,6 +617,14 @@ func (p *GiteaProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWork
 // id in the current claim epoch. The comment-breadcrumb race protocol is
 // carried over from the GitHub provider verbatim.
 func (p *GiteaProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
+	result, err := p.claimWorkItem(ctx, req)
+	if err != nil {
+		p.recordExternalRef(ctx, claimFailureRef(ProviderGitea, req, "claim"))
+	}
+	return result, err
+}
+
+func (p *GiteaProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
 	if err := p.ready(); err != nil {
 		return ClaimResult{}, err
 	}
@@ -661,6 +669,14 @@ func (p *GiteaProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequ
 // ReleaseWorkItemClaim ends the current provider claim epoch and removes its
 // label mirror.
 func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
+	result, err := p.releaseWorkItemClaim(ctx, req)
+	if err != nil {
+		p.recordExternalRef(ctx, claimFailureRef(ProviderGitea, req, "claim-release"))
+	}
+	return result, err
+}
+
+func (p *GiteaProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
 	if err := p.ready(); err != nil {
 		return WorkItem{}, err
 	}
@@ -710,6 +726,7 @@ func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 		Ref:       issueRef(req.Repository, req.ID),
 		URL:       final.URL,
 		Operation: "claim-release",
+		Outcome:   "success",
 		RunID:     req.RunID,
 		Fields: map[string]FieldDigest{
 			"claim":  {Before: digestString("run=" + releasedRunID), After: digestString("released")},
@@ -732,6 +749,7 @@ func (p *GiteaProvider) finishClaim(ctx context.Context, repo RepositoryRef, id,
 		Ref:       issueRef(repo, id),
 		URL:       item.URL,
 		Operation: "claim",
+		Outcome:   claimAttemptOutcome(claimed),
 		RunID:     runID,
 		Fields: map[string]FieldDigest{
 			"claim": {After: digestString("run=" + winner)},
