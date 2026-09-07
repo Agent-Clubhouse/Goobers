@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
@@ -40,6 +41,9 @@ func TestConnectADOSeedCLI(t *testing.T) {
 			t.Fatalf("seed attempt %d: %d %s", attempt, code, stderr)
 		}
 		result := connectEnvelope(t, stdout)
+		if !strings.Contains(stderr, "1 open work items match selector tags") || strings.Contains(stdout, "note:") {
+			t.Fatalf("ADO reality advisory missing or corrupted JSON: stdout=%s stderr=%s", stdout, stderr)
+		}
 		if attempt == 0 && !slices.Contains(result.Created, "issue:hello-goobers") {
 			t.Fatalf("seed not reported: %+v", result)
 		}

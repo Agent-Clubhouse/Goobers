@@ -214,6 +214,12 @@ the repository-specific seed marker. The duplicate scan is bounded to 1000
 candidates and fails without creating a task if it cannot finish; large backlogs
 may need manual seeding. A seed failure does not undo the local connection.
 
+With credentials available, ADO `connect` also reports how many open work items
+match the selector tags. This is not a claim or full workflow-eligibility check.
+The query scans at most ten bounded pages; unfinished scans report a lower
+bound, and provider failures report the count as unknown. JSON callers receive
+this advisory on stderr, leaving the action envelope unchanged.
+
 `spec.backlog.project` may differ from the repository's project within the same
 organization. `validate --check-repos` queries that Boards project separately;
 Git access alone does not prove Work Items access. `BACKLOG001` identifies the

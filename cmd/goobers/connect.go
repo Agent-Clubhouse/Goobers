@@ -999,6 +999,7 @@ func connectSeedCatalog(selectors, applied []string) onboardingSeedCatalog {
 // and a provider read that fails must not retract a completed connect.
 func connectReportSelectorReality(opts connectOptions, selectors []string, stdout, stderr io.Writer) {
 	if opts.ado != nil {
+		connectReportADOSelectorReality(opts, selectors, stdout, stderr)
 		return
 	}
 	token := os.Getenv(opts.tokenEnv)
