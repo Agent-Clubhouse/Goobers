@@ -2147,6 +2147,37 @@ func validateVaultURI(raw string) error {
 	return nil
 }
 
+// maxPortalScopeMarkRunes bounds brand.scopeMark. cobrand.md specifies "a
+// single Unicode grapheme cluster"; Go has no grapheme segmenter in the
+// standard library, so the enforced rule is a small rune bound, which admits a
+// letter, an emoji, and an emoji with a variation selector while rejecting the
+// word or short phrase that actually breaks the shell layout. The design
+// records this narrowing rather than claiming grapheme segmentation (#4522).
+const maxPortalScopeMarkRunes = 2
+
+// validatePortalSupportURL checks a co-brand support link. A bare "https://"
+// passed the previous HasPrefix check, so the URL is parsed and required to
+// carry a host — the shape a browser can actually navigate to (#4522).
+func validatePortalSupportURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	if strings.TrimSpace(raw) != raw {
+		return fmt.Errorf("must not contain leading or trailing whitespace")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("must be a valid absolute URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("must start with https://")
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return fmt.Errorf("must be an absolute URL with a host, not a bare scheme")
+	}
+	return nil
+}
+
 // Validate checks portal co-branding configuration shape and URL safety.
 func (p PortalConfig) Validate() error {
 	if len(p.Brand.Name) > 64 {
@@ -2173,11 +2204,14 @@ func (p PortalConfig) Validate() error {
 			return fmt.Errorf("%s must be a plausible CSS color", name)
 		}
 	}
-	if p.Support.DocsURL != "" && !strings.HasPrefix(p.Support.DocsURL, "https://") {
-		return fmt.Errorf("support.docsUrl must start with https://")
+	if err := validatePortalSupportURL(p.Support.DocsURL); err != nil {
+		return fmt.Errorf("support.docsUrl %w", err)
 	}
-	if p.Support.IssuesURL != "" && !strings.HasPrefix(p.Support.IssuesURL, "https://") {
-		return fmt.Errorf("support.issuesUrl must start with https://")
+	if err := validatePortalSupportURL(p.Support.IssuesURL); err != nil {
+		return fmt.Errorf("support.issuesUrl %w", err)
+	}
+	if runes := []rune(p.Brand.ScopeMark); len(runes) > maxPortalScopeMarkRunes {
+		return fmt.Errorf("brand.scopeMark must be a single short mark (at most %d runes, so one letter or one emoji); got %d", maxPortalScopeMarkRunes, len(runes))
 	}
 	if p.Support.ChatURL != "" &&
 		!strings.HasPrefix(p.Support.ChatURL, "https://") &&
@@ -2195,8 +2229,8 @@ func (p PortalConfig) Validate() error {
 		if len(link.Label) > 32 {
 			return fmt.Errorf("support.links[%d].label must be 32 characters or fewer", i)
 		}
-		if !strings.HasPrefix(link.URL, "https://") {
-			return fmt.Errorf("support.links[%d].url must start with https://", i)
+		if err := validatePortalSupportURL(link.URL); err != nil {
+			return fmt.Errorf("support.links[%d].url %w", i, err)
 		}
 	}
 	return nil

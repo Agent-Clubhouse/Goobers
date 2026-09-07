@@ -136,6 +136,19 @@ These are seam contracts, satisfied by both runners; the pod wording is the tier
   claimed work under the scheduler's max-parallel conditions. **Tier 3 (V2):** pod/worker
   replica counts (change + redeploy → more replicas).
 
+- **DEP-028 (MAY):** *(Tiers 1–3, shipped)* A deployment MAY enroll its instance
+  with a Fleet service (`INST-015`). Enrollment MUST NOT become a deployment
+  prerequisite: an un-enrolled instance MUST remain fully operable, and the
+  packaged install, supervision, and upgrade paths MUST NOT depend on a fleet
+  service being reachable. The daemon starts, schedules, and runs with no fleet
+  configured.
+- **DEP-029 (MUST):** *(Fleet, not shipped)* A fleet **service** is not part of
+  this deployment contract. `docs/design/fleet-portal.md` §15 slices 7–8
+  (local/team packaging, production hardening) design one; nothing in
+  `deploy/`, `packaging/`, or the release engine builds or ships it, and this
+  requirement records that absence so a reader does not infer a deployable
+  control plane from the instance-side `goobers fleet` commands.
+
 ## Relationships
 
 - Installs/provisions → the **Instance** and the **Telemetry** store.

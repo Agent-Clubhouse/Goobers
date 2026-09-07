@@ -30,6 +30,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -149,7 +151,49 @@ func appendStaticRealityWarnings(
 	appendGateCompletionWarnings(root, configDir, set, add)
 	appendWindowsAVExclusionWarnings(root, cfg, add)
 	appendDaemonIdentitySlugWarning(root, cfg, add)
+	appendCobrandAssetWarnings(root, cfg, add)
 	return warnings
+}
+
+// appendCobrandAssetWarnings reports a co-brand logo or favicon that names a
+// file the instance's assets/ dir does not contain (#4522, implementing
+// docs/design/cobrand.md 7's CBR001/CBR002).
+//
+// PortalConfig.Validate already requires the URL to begin with "/assets/", but
+// nothing checks that anything is there. The daemon's asset handler
+// (serveInstanceAsset) treats a miss as "fall through to the embedded bundle",
+// so a typo'd filename renders the stock Goobers branding with no error on any
+// surface -- the operator's only signal is that their logo silently did not
+// appear.
+func appendCobrandAssetWarnings(
+	root string,
+	cfg *instance.Config,
+	add func(code validate.WarningCode, kind, name, file, path, message string),
+) {
+	if cfg == nil || root == "" {
+		return
+	}
+	for _, asset := range []struct {
+		code  validate.WarningCode
+		field string
+		url   string
+	}{
+		{validate.WarningCobrandMissingLogoAsset, "portal.brand.logoUrl", cfg.Portal.Brand.LogoURL},
+		{validate.WarningCobrandMissingFaviconAsset, "portal.brand.faviconUrl", cfg.Portal.Brand.FaviconURL},
+	} {
+		relative := strings.TrimPrefix(asset.url, portalAssetURLPrefix)
+		if asset.url == "" || relative == asset.url || relative == "" {
+			continue
+		}
+		full := filepath.Join(root, portalAssetDirName, filepath.FromSlash(path.Clean(relative)))
+		if info, err := os.Stat(full); err == nil && !info.IsDir() {
+			continue
+		}
+		add(asset.code, "Instance", "portal",
+			filepath.Join(root, instance.ConfigFileName), asset.field,
+			fmt.Sprintf("%s is %q, but %s does not exist; the daemon falls through to the embedded bundle, "+
+				"so the stock branding is served with no error", asset.field, asset.url, full))
+	}
 }
 
 // appendDaemonIdentitySlugWarning warns when a github-app daemonIdentity omits
