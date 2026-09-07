@@ -13,6 +13,7 @@ layout in a release-owned agent toolkit.
 | Gaggle semantics and shape | [`docs/requirements/gaggle.md`](../../../docs/requirements/gaggle.md), [`gaggle.schema.json`](../../../api/schemas/gaggle.schema.json) |
 | Goober semantics and shape | [`docs/requirements/goober.md`](../../../docs/requirements/goober.md), [`goober.schema.json`](../../../api/schemas/goober.schema.json) |
 | Workflow, task, trigger, and gate shape | [`docs/requirements/workflow.md`](../../../docs/requirements/workflow.md), [`task.md`](../../../docs/requirements/task.md), [`gate.md`](../../../docs/requirements/gate.md), [`workflow.schema.json`](../../../api/schemas/workflow.schema.json) |
+| Built-in workflow primitives and placement | [`docs/reference/workflow-primitives/`](../../../docs/reference/workflow-primitives/README.md) |
 | Stage data and completion | [`docs/stage-contract.md`](../../../docs/stage-contract.md), invocation/result/artifact schemas under [`api/schemas/`](../../../api/schemas/) |
 | Capability strings | [`internal/capability/capability.go`](../../../internal/capability/capability.go) |
 

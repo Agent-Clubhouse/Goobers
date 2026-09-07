@@ -134,6 +134,9 @@ Its bundled [terminology](../../skills/goobers-dsl-author/references/terminology
 and [DSL reference](../../skills/goobers-dsl-author/references/dsl-reference.md)
 link to release-matched copies of:
 
+- the [workflow primitive reference](../reference/workflow-primitives/README.md)
+  for every built-in trigger, execution kind, stage command, gate check,
+  capability, policy action, workspace, and terminal;
 - `docs/requirements/*.md` for semantics;
 - `docs/stage-contract.md` for stage data and completion;
 - `api/schemas/*.schema.json` for accepted resource and envelope shapes;
