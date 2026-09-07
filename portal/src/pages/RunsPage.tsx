@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { RunTiming } from "../components/RunTiming";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
@@ -6,7 +7,7 @@ import { ScopeStrip } from "../components/ScopeStrip";
 import { routeHash, type RunRouteFilters } from "../routing";
 import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
-import { formatDuration, formatTimestamp } from "../runDetailData";
+import { formatTimestamp } from "../runDetailData";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
@@ -197,7 +198,7 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
       <span>
         <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
       </span>
-      <span className="mono">{formatDuration(run.durationMillis)}</span>
+      <RunTiming run={run} />
     </DataRow>
   );
 }

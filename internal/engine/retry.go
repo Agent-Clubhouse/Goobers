@@ -87,7 +87,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		// and the attempt's own outcome event follow the dispatch.
 		mark := rec.mark()
 		startedAt := workflow.Now(ctx)
-		rec.stageStarted(startedAt, t.Name, int(attempt), class)
+		rec.stageStarted(startedAt, t, int(attempt), class)
 		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}

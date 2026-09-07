@@ -114,6 +114,7 @@ type RunRow struct {
 // OperatorFacts are journal-derived facts needed by operator run summaries.
 // They are stored with the run row so bounded list reads never reopen journals.
 type OperatorFacts struct {
+	Activity              StageActivity
 	EngineFallback        *EngineFallback
 	IssueNumber           string
 	IssueTitle            string
@@ -346,6 +347,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 		if !event.KnownSchema() {
 			continue
 		}
+		row.Operator.Activity = row.Operator.Activity.After(event)
 		if event.Stage != "" {
 			seenStages[event.Stage] = struct{}{}
 		}

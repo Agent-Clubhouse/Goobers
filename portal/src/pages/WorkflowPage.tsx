@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { RunTiming } from "../components/RunTiming";
 import type {
   DaemonClient,
   GraphAnalytics,
@@ -11,7 +12,7 @@ import type { ConfigurationWarningsProps } from "../components/ConfigurationWarn
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
 import { ScopePivot } from "../components/ScopePivot";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
-import { formatDuration, formatTimestamp } from "../runDetailData";
+import { formatTimestamp } from "../runDetailData";
 import type { Navigate } from "../routing";
 import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
@@ -381,7 +382,7 @@ function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: Workflow
               </span>
               <StatusBadge status={run.phase} />
               <span>{run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}</span>
-              <span className="mono">{formatDuration(run.durationMillis)}</span>
+              <RunTiming run={run} />
             </DataRow>
           ))}
         </DataList>
