@@ -26,14 +26,24 @@ type MergeReportQuery struct {
 
 // ConfirmedMerge is one deduplicated, unambiguous retained landing receipt.
 type ConfirmedMerge struct {
-	Provider         string    `json:"provider"`
-	RepositoryAPIURL string    `json:"repositoryApiUrl"`
-	PullID           string    `json:"pullId"`
-	MergeSHA         string    `json:"mergeSha,omitempty"`
-	InstanceID       string    `json:"instanceId"`
-	Gaggle           string    `json:"gaggle"`
-	RunID            string    `json:"runId"`
-	OccurredAt       time.Time `json:"occurredAt"`
+	Provider         string               `json:"provider"`
+	RepositoryAPIURL string               `json:"repositoryApiUrl"`
+	PullID           string               `json:"pullId"`
+	MergeSHA         string               `json:"mergeSha,omitempty"`
+	InstanceID       string               `json:"instanceId"`
+	Gaggle           string               `json:"gaggle"`
+	RunID            string               `json:"runId"`
+	OccurredAt       time.Time            `json:"occurredAt"`
+	CommitEvidence   *MergeCommitEvidence `json:"commitEvidence,omitempty"`
+}
+
+// MergeCommitEvidence preserves the source of a later receipt's commit when
+// the earliest landing receipt did not include one. It does not rewrite the
+// earliest receipt's run, timestamp, or originally returned merge SHA.
+type MergeCommitEvidence struct {
+	MergeSHA   string    `json:"mergeSha"`
+	RunID      string    `json:"runId"`
+	OccurredAt time.Time `json:"occurredAt"`
 }
 
 // DailyMerges counts unique confirmed PRs in one UTC day and ownership scope.
@@ -73,6 +83,9 @@ func (e *mergeEvidence) observe(merge ConfirmedMerge) {
 	}
 	if e.seenSHA == "" {
 		e.seenSHA = merge.MergeSHA
+		if merge.MergeSHA != "" {
+			e.receipt.CommitEvidence = &MergeCommitEvidence{MergeSHA: merge.MergeSHA, RunID: merge.RunID, OccurredAt: merge.OccurredAt}
+		}
 	}
 }
 

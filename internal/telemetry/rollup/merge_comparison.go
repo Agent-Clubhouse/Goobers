@@ -99,7 +99,14 @@ func comparisonDaily(entries []ComparedMerge) []MergeComparisonDaily {
 func compatibleInventoryCommit(merge ConfirmedMerge, entry providers.MergeInventoryEntry) bool {
 	// Receipt timestamps may lag the forge's merge time; the commit, when
 	// present on both sides, must agree. No author or branch-name inference.
-	return merge.MergeSHA == "" || entry.MergeSHA == "" || merge.MergeSHA == entry.MergeSHA
+	sha := merge.MergeSHA
+	if merge.CommitEvidence != nil {
+		if sha != "" && sha != merge.CommitEvidence.MergeSHA {
+			return false
+		}
+		sha = merge.CommitEvidence.MergeSHA
+	}
+	return sha == "" || entry.MergeSHA == "" || sha == entry.MergeSHA
 }
 
 func mergeResidualCategory(merger string, shared map[string]bool) string {

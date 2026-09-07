@@ -2,6 +2,7 @@ package rollup
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,6 +40,40 @@ func TestInventoryProofFindsDelayedReceiptsAndOutOfWindowConflicts(t *testing.T)
 	cancel()
 	if _, err := db.MergeProvenanceForInventory(ctx, query, inventory); err == nil {
 		t.Fatal("cancelled proof lookup succeeded")
+	}
+}
+
+func TestInventoryComparisonHonorsLaterCommitEvidenceAfterEmptyReceipt(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	repository := "https://forge.example/repos/acme/app"
+	for i, sha := range []string{"", "known-commit"} {
+		seedMergeReportEvent(t, db, i, strings.Repeat("a", 32), "web", repository, "9", true, start.Add(time.Duration(i)*time.Hour))
+		if _, err := db.sql.Exec(`UPDATE provider_mutations SET runner_json=json_set(runner_json, '$.mergeConfirmation.mergeSha', ?) WHERE run_id=?`, sha, fmt.Sprintf("merge-run-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := MergeReportQuery{Since: start, Until: start.Add(24 * time.Hour)}
+	inventory := []providers.MergeInventoryEntry{{Provider: providers.ProviderGitHub, RepositoryAPIURL: repository, PullID: "9", MergedAt: start, MergedBy: "shared", MergeSHA: "different-commit"}}
+	proof, err := db.MergeProvenanceForInventory(context.Background(), query, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proof.Merges) != 1 || proof.Merges[0].MergeSHA != "" || proof.Merges[0].RunID != "merge-run-0" {
+		t.Fatalf("original receipt rewritten: %+v", proof)
+	}
+	evidence := proof.Merges[0].CommitEvidence
+	if evidence == nil || evidence.MergeSHA != "known-commit" || evidence.RunID != "merge-run-1" || !evidence.OccurredAt.Equal(start.Add(time.Hour)) {
+		t.Fatalf("later commit lost its source: %+v", evidence)
+	}
+	comparison, err := CompareMergeInventory(proof, inventory, []string{"shared"})
+	if err != nil || len(comparison.Entries) != 1 || comparison.Entries[0].Category != "same-identity-unverified" {
+		t.Fatalf("later commit disagreement ignored: %+v, %v", comparison, err)
+	}
+	inventory[0].MergeSHA = "known-commit"
+	comparison, err = CompareMergeInventory(proof, inventory, []string{"shared"})
+	if err != nil || comparison.Entries[0].Category != "daemon-verified" {
+		t.Fatalf("matching later commit not verified: %+v, %v", comparison, err)
 	}
 }
 
