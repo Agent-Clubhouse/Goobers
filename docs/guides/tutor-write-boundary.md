@@ -66,24 +66,49 @@ docs run may legitimately touch several declared docs roots together in one
 change). Each of the Tutor's actions is confined to **exactly one** target
 root per run — a skill-authoring action must never also rewrite a workflow,
 and vice versa. `open-pr` enforces this via a second, opt-in check:
-`confineToActionRoots=true` with a comma/newline `actionRoots` list (e.g.
-`reference-workflows,skills`) and `internal/configboundary.ConfineExclusive`, which
-requires every changed file to resolve into the *same single* declared root —
-refusing a diff that spans two roots even though each individual path is
-legitimately within some declared root (`ErrCrossRootAction`). The dogfood
-`tutor.yaml` uses this in place of the plain single-root
-`confineToConfigRoot`/`configRoot` inputs described above, with
-`actionRoots: "reference-workflows,skills"` — an all-`reference-workflows` diff and an all-`skills`
-diff both still pass; a diff mixing the two does not.
+`confineToActionRoots=true` with a comma/newline `actionRoots` list and
+`internal/configboundary.ConfineExclusive`, which requires every changed file to
+resolve into the *same single* declared root — refusing a diff that spans two
+roots even though each individual path is legitimately within some declared
+root (`ErrCrossRootAction`). The dogfood `tutor.yaml` uses this in place of the
+plain single-root `confineToConfigRoot`/`configRoot` inputs described above.
+
+**The two roots the dogfood instance actually ships** are
+`reference-workflows/gaggles/goobers` and `skills`:
+
+```yaml
+actionRoots: "reference-workflows/gaggles/goobers,skills"
+```
+
+(`reference-workflows/gaggles/goobers/workflows/tutor.yaml`, the `open-pr`
+stage.) An all-`reference-workflows/gaggles/goobers` diff and an all-`skills`
+diff both pass; a diff mixing the two does not.
+
+Note that the first root is the **gaggle directory**, not the whole
+`reference-workflows/` tree — narrower than the single-root `configRoot`
+described in the previous section. `reference-workflows/manifest.yaml`,
+`reference-workflows/instance.yaml.example` and `reference-workflows/README.md`
+sit *outside* both action roots, so the Tutor cannot propose a change to them
+even though they are part of the reference config. Widening that is a
+deliberate config change to `actionRoots`, not an accident of the boundary.
 
 ## Governance: CODEOWNERS + branch protection
 
 Path-scoping keeps the Tutor *in* config; it does not decide whether a config
 change is *good*. That judgement is a human's, enforced by review:
 
-- **CODEOWNERS on the config root.** `.github/CODEOWNERS` owns `/reference-workflows/`, so a
-  Tutor PR to the config root requests a CODEOWNER and — once branch protection
-  requires CODEOWNER review — cannot merge without a maintainer's approval.
+- **CODEOWNERS on the config root.** `.github/CODEOWNERS` owns
+  `/reference-workflows/`, so a Tutor PR to the config root requests a CODEOWNER
+  and — once branch protection requires CODEOWNER review — cannot merge without
+  a maintainer's approval.
+- **`/skills/` is covered only by the default owner.** TUT-A5's second action
+  root has no rule of its own in `.github/CODEOWNERS`; it is owned by the
+  repo-wide `*` entry. That is sufficient ownership today, but it is *incidental*
+  ownership: a future rule that narrows or reassigns `*` would silently drop the
+  human gate on Tutor-authored skill bodies. If `/skills/` is ever meant to have
+  a different owner from the rest of the repo, give it an explicit rule rather
+  than relying on the catch-all. Skill-body changes are in any case classified
+  manual-only below, so they never reach the auto-merge path.
 - **Change-type classification.** `open-pr` stamps Tutor PR bodies with a
   deterministic classification. Persona/instruction and gate-calibration-only
   changes may enter the ordinary merge-review path. Workflow topology, gate
@@ -99,7 +124,9 @@ change is *good*. That judgement is a human's, enforced by review:
 Tutor PRs land in the **same repo as platform code** on the dogfood instance, so
 before enabling it there:
 
-1. **Config root is set to a non-empty subtree** (`reference-workflows`) — never empty.
+1. **Action roots are set to non-empty subtrees**
+   (`reference-workflows/gaggles/goobers,skills` on the dogfood instance) —
+   never empty.
 2. **CODEOWNERS covers that root** (`/reference-workflows/` → a maintainer/team) — present
    in `.github/CODEOWNERS`.
 3. **Branch protection requires CODEOWNER review** on `main` so the ownership is

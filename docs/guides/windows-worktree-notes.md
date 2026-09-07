@@ -2,7 +2,7 @@
 
 Goobers' execution model leans hard on git worktrees: every provider-chain stage
 runs in its own fresh worktree branched off a managed mirror clone, under paths
-like `workcopies/<key>/runs/<runId>-<stage>` (see [`internal/worktree`](../../internal/worktree)
+like `workcopies/<key>/runs/wt-<hash>` (see [`internal/worktree`](../../internal/worktree)
 and [ARCHITECTURE.md §6](../ARCHITECTURE.md)). Nothing here fails to compile on
 Windows, but Windows git has a cluster of behavioral differences that can corrupt
 or silently break a run. This page records the audit of those differences, the
@@ -34,8 +34,13 @@ Win32 imposes a 260-character `MAX_PATH` limit unless long-path support is enabl
 The worst-case managed worktree path Goobers constructs is:
 
 ```
-<instanceRoot>/gaggles/<gaggle>/workcopies/<16-hex-key>/runs/<runId>-<stage>/<repo-internal-path>
+<instanceRoot>/gaggles/<gaggle>/workcopies/<16-hex-key>/runs/wt-<24-hex>/<repo-internal-path>
 ```
+
+The run-specific leaf is a **hash of the run ID**, not the run ID plus the stage
+name: `worktreeDirectoryName` (`internal/worktree/manager.go`) emits
+`"wt-" + hex(sha256(runID)[:12])` — a fixed 27 characters — which is what #2263
+shortened it to from the roughly 50-character `<runId>-<stage>` form.
 
 Fixed overhead Goobers adds beyond the instance root and gaggle name (gaggle-scoped
 layout):
@@ -47,22 +52,22 @@ layout):
 | `/workcopies/` | 12 |
 | `<16-hex-key>` (repo-key, `repoKey`) | 16 |
 | `/runs/` | 6 |
-| `<runId>-<stage>` | 49 = 32 (`engine.RunID`, hex of 16 bytes) + 1 + 16 (longest shipped stage name, `park-needs-human`) |
-| **Goobers overhead (excl. instanceRoot + gaggle)** | **92** |
+| `wt-<24-hex>` (`worktreeDirectoryName`) | 27 = 3 + 2 × `worktreeDirectoryHashBytes` (12) |
+| **Goobers overhead (excl. instanceRoot + gaggle)** | **70** |
 
 Worked examples (worktree root, before the repo's own internal path):
 
-- Gaggle-scoped, `instanceRoot=C:\goobers` (10), `gaggle=acme-web` (8): **110 chars** → **149 chars of headroom** to `MAX_PATH` for the repo's deepest committed path.
-- Non-gaggle layout, `instanceRoot=C:\goobers` (10): **93 chars** → **166 chars of headroom**.
+- Gaggle-scoped, `instanceRoot=C:\goobers` (10), `gaggle=acme-web` (8): **88 chars** → **171 chars of headroom** to `MAX_PATH` for the repo's deepest committed path.
+- Non-gaggle layout, `instanceRoot=C:\goobers` (10): **71 chars** → **188 chars of headroom**.
 
-149–166 characters is enough for most repositories but **not** guaranteed for deep
+171–188 characters is enough for most repositories but **not** guaranteed for deep
 trees (nested Java/monorepo package paths, the harness scratch dir
 `.goobers/context/…`, etc.), so the budget cannot be assumed safe on Windows
 without mitigation.
 
-**Mitigation — config, not a naming change.** The run-id (32 hex) and stage leaf
-are already compact and carry debugging value; shortening them would save little
-and cost traceability. Instead:
+**Mitigation — config, not a naming change.** The leaf is already a fixed-width
+hash (#2263 took it from ~50 characters to 27); shortening it further would save
+little and cost the run-ID mapping. Instead:
 
 1. Goobers sets **`core.longpaths=true`** on every managed mirror (automatic; see
    `managedGitConfig`). Worktrees inherit it, so `git worktree add` and every
@@ -116,7 +121,7 @@ checkout. The Goobers repo itself does — see the repo-root `.gitattributes`.
 |---|---|
 | `git worktree add`/`remove`/`prune` | 2.17 (already the documented Linux floor) |
 | `core.longpaths` support | 2.7 (Git-for-Windows has shipped it far longer) |
-| Deterministic per-invocation `-c` config (`safe.bareRepository`) | 2.31 |
+| `safe.bareRepository` (test tooling only, not the shipped runtime path) | **2.38** — the release that introduced the setting |
 
 Practically, ship a **current Git-for-Windows (≥ 2.40)**: it bundles a long-path-aware
 git binary and the worktree fixes, and matches the versions Goobers is exercised on

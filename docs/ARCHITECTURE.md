@@ -4,11 +4,25 @@
 > architecture assumed by earlier specs and code. Where an older spec or code path
 > contradicts this document, this document wins and the spec/code carries a status
 > banner pointing here.
-> Last updated: 2026-08-07 · Descriptive/prescriptive status annotated 2026-07-23:
-> §4–§7 (as amended) describe shipped, verified behavior of the local runner,
-> except the capability namespace rule in §5, which is prescriptive pending its
-> atomic migration; §3.2, §10, the remaining V1 work identified in §12, and V2
-> are prescriptive roadmap — mandated, not yet built.
+> Last updated: 2026-09-06 · Descriptive/prescriptive status re-annotated
+> 2026-09-06: §4–§7 (as amended) describe shipped, verified behavior of the local
+> runner, except the capability namespace rule in §5, which is prescriptive
+> pending its atomic migration. The remaining V1 work identified in §12 is
+> prescriptive roadmap — mandated, not yet built.
+>
+> §3.2, §10 and §12's V2 entry are **no longer wholly prescriptive.** The
+> Temporal-hosted state machine (`internal/engine`), its worker host
+> (`internal/workerhost`), pod-per-stage Kubernetes dispatch
+> (`internal/dispatcher`), Azure Key Vault secret storage
+> (`internal/secretstore`), OTLP telemetry export (`internal/telemetry`), and the
+> dual-runner conformance harness (`internal/engine/conformance_test.go`, run by
+> `make test-conformance`) are shipped code, not roadmap. Read those sections as
+> a mix of delivered substrate and remaining mandate, and prefer the package
+> names above over any "not yet built" phrasing that survives here. The full
+> structural rewrite — the three execution modes, the dispatcher substrate, and
+> the daemon plane inventory — is owned by
+> [#4240](https://github.com/Agent-Clubhouse/Goobers/issues/4240), not by this
+> banner.
 
 ## 1. One system, three deployment tiers
 
@@ -62,7 +76,13 @@ execution. Two runners implement the same contract:
 - An embedded scheduler fires cron triggers and enforces run conditions
   (max-parallel, budgets).
 
-### 3.2 Temporal runner (tier 3, V2)
+### 3.2 Temporal runner (tier 3, V2 — substrate shipped)
+
+> The seam described here is no longer hypothetical. `internal/engine` hosts the
+> compiled state machine as a Temporal workflow, `internal/workerhost` runs the
+> workers, and `internal/dispatcher` dispatches agentic stages to ephemeral
+> Kubernetes pods. The prescriptive part that remains is the operator/GitOps
+> config-delivery path in §10 and the full mode-3 description owned by #4240.
 
 - The same compiled state machine hosted as a Temporal workflow; stages become
   activities dispatched to distributed workers; agentic stages run in ephemeral
@@ -114,8 +134,9 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
 
 The event schema (issue #8) marks each field normative or excluded, the V0 e2e
 walking skeleton asserts journal determinism on the local runner (the conformance
-seed), and the V2 conformance harness runs shared fixtures through both runners and
-diffs the conformance set. This property is what makes "one system, three tiers"
+seed), and the dual-runner conformance harness — shipped as
+`internal/engine/conformance_test.go` and run by `make test-conformance` — runs
+shared fixtures through both runners and diffs the conformance set. This property is what makes "one system, three tiers"
 enforceable rather than aspirational.
 
 ## 4. The run journal (provenance contract)
@@ -513,10 +534,17 @@ authentication, and Tutor surfaces beyond their current slices.
 
 ### V2 — Cloud scale
 
-The **Temporal runner** behind the same seam with journal projection and the
-conformance harness; Kubernetes stage execution (agent pods); operator + ArgoCD/GitOps
-config delivery revived; Azure substrate drop-ins (ADX exporter, Key Vault, Entra)
-per §10.
+**Partly delivered.** Shipped: the **Temporal runner** behind the same seam
+(`internal/engine`) with journal projection, the dual-runner conformance harness
+(`make test-conformance`), Kubernetes stage execution as pod-per-stage dispatch
+(`internal/dispatcher`, `internal/workerhost`), Key Vault secret storage
+(`internal/secretstore`), and OTLP telemetry export (`internal/telemetry`).
+
+Still prescriptive: reviving the operator + ArgoCD/GitOps config-delivery path
+(`internal/operator`, `cmd/operator`, `cmd/config-sync`, `infra/`, still
+quarantined per §11) and the remaining Azure substrate drop-ins (ADX exporter,
+Entra) per §10. The authoritative current-state description of cloud execution
+is owned by [#4240](https://github.com/Agent-Clubhouse/Goobers/issues/4240).
 
 ## 13. Relationship to the requirement specs
 
