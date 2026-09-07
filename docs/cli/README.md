@@ -56,6 +56,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
+| [`goobers diagnostics`](#goobers-diagnostics) | collect a portable, redacted support bundle |
+| [`goobers diagnostics bundle`](#goobers-diagnostics-bundle) | write a portable, redacted support bundle |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions |
 | [`goobers e2e`](#goobers-e2e) | check the Goobernetes distributed e2e proof harness's assertions against a recorded run |
 | [`goobers e2e kill-inject`](#goobers-e2e-kill-inject) | perform one live S6 kill-matrix cell (pod-kill) against a real cluster |
@@ -966,6 +968,70 @@ browser failure, 2 = usage/IO error.
 ~~~console
 $ goobers dashboard
 $ goobers dashboard --port=auto --no-open
+~~~
+
+## `goobers diagnostics`
+
+collect a portable, redacted support bundle
+
+~~~text
+Usage: goobers diagnostics <subcommand> [flags] [path]
+
+Collect portable, redacted support evidence from this binary and an instance
+directory alone — reading Goobers' own source must never be a prerequisite
+for reading a Goobers incident.
+
+Subcommands:
+  bundle  write a redacted diagnostics archive (or --json to stdout)
+
+Default path is ".".
+~~~
+
+**Examples**
+
+~~~console
+$ goobers diagnostics bundle ./my-instance
+~~~
+
+## `goobers diagnostics bundle`
+
+write a portable, redacted support bundle
+
+~~~text
+Usage: goobers diagnostics bundle [--run <id>] [--pr <number>] [--max-runs <n>] [--output <path>] [--json] [path]
+
+Collect a portable, redacted support bundle from this binary and an instance
+directory alone — no checkout of the Goobers source required, on this machine
+or on the one that reads it.
+
+The bundle carries the binary's build identity and contract surface (journal
+schema, admitted DSL versions, every built-in stage command with the
+capabilities it requires), daemon lifecycle, the loaded config generation and
+its workflow/goober digests, declared credentials by NAME and SOURCE, and for
+each run in scope its stage timeline, artifact metadata, selector decisions,
+and decisive error in full.
+
+It cannot contain a credential. Values are never resolved and never read:
+a credential contributes its capability, source kind and source name only.
+Agent transcripts and stage stdout are excluded wholesale rather than
+filtered, and artifacts contribute metadata, not content. Everything that
+does survive is then passed through the same secret-pattern net the journal
+writes behind.
+
+--output writes a gzipped tar (default `goobers-diagnostics-<instance>.tar.gz`
+in the working directory); --json writes the machine-readable document to
+stdout instead. Two collections of the same instance state produce identical
+bytes apart from the collection timestamp.
+
+Exit codes: 0 = bundle written, 1 = collection failed, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers diagnostics bundle ./my-instance
+$ goobers diagnostics bundle --run 8f2c --output /tmp/incident.tar.gz ./my-instance
+$ goobers diagnostics bundle --pr 4123 --json ./my-instance
 ~~~
 
 ## `goobers docs-churn`

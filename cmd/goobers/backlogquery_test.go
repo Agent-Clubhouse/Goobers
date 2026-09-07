@@ -1072,8 +1072,15 @@ func assertNoWorkResultFile(t *testing.T, workDir string) {
 			t.Fatalf("claimed-item.json = %v, business no-work must not use the generic provider failure envelope", got)
 		}
 	}
-	if len(got) != 3 {
-		t.Fatalf("claimed-item.json = %v, want only claimed, noWork, and integrity", got)
+	// #2968: the reason must be journaled as a scalar output, not left in
+	// stdout. A support bundle cannot carry stage stdout, so a no-work cycle
+	// whose reason lives only there is unexplainable from a bundle.
+	reason, _ := got["noWorkReason"].(string)
+	if strings.TrimSpace(reason) == "" {
+		t.Fatalf("claimed-item.json = %v, want a noWorkReason a bundle can read", got)
+	}
+	if len(got) != 4 {
+		t.Fatalf("claimed-item.json = %v, want only claimed, noWork, noWorkReason, and integrity", got)
 	}
 }
 

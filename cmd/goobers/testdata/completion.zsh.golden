@@ -71,6 +71,11 @@ _goobers_completion()
                 gaggle) flags+=(--force --from) ;;
             esac
             ;;
+        diagnostics)
+            case "${words[3]:-}" in
+                bundle) flags+=(--run --pr --max-runs --output --json) ;;
+            esac
+            ;;
         agent-kit)
             case "${words[3]:-}" in
                 install) flags+=(--harness) ;;
@@ -307,6 +312,13 @@ _goobers_completion()
         scaffold)
             if (( CURRENT == 3 )); then
                 candidates=(goober workflow gaggle)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        diagnostics)
+            if (( CURRENT == 3 )); then
+                candidates=(bundle)
                 _describe -V 'command' candidates
                 return
             fi

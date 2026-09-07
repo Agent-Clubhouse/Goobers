@@ -2875,7 +2875,17 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 // fails the run loudly (the acceptance criteria's negative control).
 func writeNoWorkResult(stdout, stderr io.Writer, reason string) int {
 	resultFile := providerInput("resultFile", "claimed-item.json")
-	data, err := json.Marshal(map[string]interface{}{"claimed": false, executor.OutputNoWork: true})
+	// noWorkReason is journaled as a scalar stage output (#2968), so the
+	// account of WHY a selector found nothing survives into the run journal
+	// rather than living only in stdout. A redacted support bundle cannot
+	// carry stage stdout — it is where an agent transcript or a provider
+	// string can quote a secret — so a reason that exists only there is
+	// unreachable to the operator debugging a no-work cycle from a bundle.
+	data, err := json.Marshal(map[string]interface{}{
+		"claimed":             false,
+		executor.OutputNoWork: true,
+		"noWorkReason":        reason,
+	})
 	if err != nil {
 		pf(stderr, "error: marshal no-work result: %v\n", err)
 		return 1

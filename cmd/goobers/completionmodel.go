@@ -489,6 +489,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "min-age", takesArg: true, desc: "Minimum terminal run age required for deletion"},
 		{name: "after", takesArg: true, desc: "Resume after this branch name in lexical order"},
 	},
+	"diagnostics bundle": {
+		{name: "run", takesArg: true, desc: "Limit the bundle to one run id"},
+		{name: "pr", takesArg: true, desc: "Limit the bundle to runs that touched one pull request"},
+		{name: "max-runs", takesArg: true, desc: "Maximum runs to collect when no run is named"},
+		{name: "output", takesArg: true, desc: "Archive path to write"},
+		{name: "json", desc: "Write the machine-readable document to stdout"},
+	},
 	"security-alerts-query": {
 		{name: "source", takesArg: true, values: []string{"code-scanning", "dependabot"}, desc: "Alert feed to read"},
 		{name: "state", takesArg: true, values: []string{"open", "dismissed", "fixed", "auto_dismissed", "all"}, desc: "Alert state filter (default open)"},
