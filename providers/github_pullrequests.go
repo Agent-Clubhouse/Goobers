@@ -661,7 +661,9 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 		}, nil
 	}
 	if pr.MergeQueueEntry != nil {
-		p.recordEnqueue(ctx, req.Repository, req.PullID)
+		// This is an observation, not an enqueue performed by this caller.
+		// Recording it as a mutation would attribute another actor's queue
+		// entry to this run (and inflate repeated-attempt provenance).
 		return EnqueuePullRequestResult{
 			Number:  number,
 			Message: fmt.Sprintf("pull request is already enqueued (state %s, position %d)", pr.MergeQueueEntry.State, pr.MergeQueueEntry.Position),

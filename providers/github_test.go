@@ -2560,12 +2560,8 @@ func TestGitHubProviderEnqueuePullRequestAlreadyEnqueuedIsIdempotent(t *testing.
 	if len(stub.bodies) != 1 {
 		t.Fatalf("made %d graphql requests, want 1 (no mutation for an already-enqueued pull request)", len(stub.bodies))
 	}
-	ref, ok := rec.last()
-	if !ok {
-		t.Fatalf("expected a recorded external ref for the already-enqueued pull request")
-	}
-	if ref.Operation != "enqueue" {
-		t.Fatalf("Operation = %q, want enqueue", ref.Operation)
+	if ref, ok := rec.last(); ok {
+		t.Fatalf("observation of an existing queue entry recorded a mutation: %+v", ref)
 	}
 }
 
