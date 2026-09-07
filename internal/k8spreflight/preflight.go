@@ -67,6 +67,19 @@ const DefaultTimeout = 10 * time.Second
 // Options carries the operator-supplied probe targets. The zero value runs
 // the cluster-only checks and reports the network probes as skipped warns.
 type Options struct {
+	// OverlayDir is the consumer kustomization directory. Empty means the
+	// overlay-side checks are explicitly unchecked, never a silent pass.
+	OverlayDir string
+	// ImageRuntime is docker or podman (default docker).
+	ImageRuntime string
+	// ImagePullPolicy defaults to always; never explicitly inspects cached images.
+	ImagePullPolicy string
+	// ImageTools names additional PATH tools required of the rendered images.
+	ImageTools []string
+	// ImageCAFile is the internal root CA whose image trust anchor is checked.
+	// Empty leaves that part explicitly unchecked.
+	ImageCAFile       string
+	runOverlayCommand overlayCommandRunner
 	// APIServerEndpoint is the cluster API server URL returned by kubeconfig.
 	APIServerEndpoint string
 	// OIDCIssuer is the customer OIDC issuer for portal/API auth (§1/§3);
@@ -145,6 +158,8 @@ func Run(ctx context.Context, client kubernetes.Interface, opts Options) Report 
 		checkRegistry,
 		checkEgress,
 		checkTemporalNamespace,
+		checkOverlayPinAgreement,
+		checkOverlayImageContract,
 	}
 	report := Report{Conformant: true}
 	for _, check := range checks {

@@ -18,6 +18,71 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+func checkOverlayPinAgreement(_ context.Context, _ kubernetes.Interface, opts Options) Result {
+	result := Result{ID: "overlay-pin-agreement", Title: "overlay base, image, and runner pins agree", Citation: "#4298: 140-commit base/image drift", Severity: SeverityRequired}
+	if opts.OverlayDir == "" {
+		result.Severity, result.Status = SeverityOptional, StatusWarn
+		result.Detail = "unchecked: no overlay directory supplied (checked 0)"
+		result.Hint = "supply the consumer overlay directory to inspect its upstream commit pins"
+		return result
+	}
+	pins, err := collectOverlayPins(opts.OverlayDir)
+	if err != nil {
+		result.Status, result.Detail = StatusFail, "cannot inspect all overlay pins: "+err.Error()
+		return result
+	}
+	result.Status, result.Detail = compareOverlayPins(pins)
+	if result.Status != StatusPass {
+		result.Hint = "pin the remote Goobers base, image tags, and runner hosts to one full upstream commit; preserve image identity suffixes"
+	}
+	return result
+}
+
+func compareOverlayPins(pins []overlayPin) (Status, string) {
+	if len(pins) == 0 {
+		return StatusFail, "incident: base and images can drift unnoticed; no upstream pins inspected (checked 0)"
+	}
+	commit := pins[0].Commit
+	drift := false
+	var sites []string
+	for _, pin := range pins {
+		drift = drift || pin.Commit != commit
+		sites = append(sites, fmt.Sprintf("%s:%d %s=%s%s", pin.Path, pin.Line, pin.Kind, pin.Commit, pin.Suffix))
+	}
+	if drift {
+		return StatusFail, fmt.Sprintf("incident: remote base previously drifted 140 commits behind images; checked %d sites with disagreement: %s", len(pins), strings.Join(sites, "; "))
+	}
+	return StatusPass, fmt.Sprintf("checked %d upstream pin sites; all name commit %s (image identity suffixes preserved)", len(pins), commit)
+}
+
+func checkOverlayImageContract(ctx context.Context, _ kubernetes.Interface, opts Options) Result {
+	result := Result{ID: "overlay-image-contract", Title: "pinned image satisfies binary, tool, and CA assumptions", Citation: "#4298: missing gocache-trim sidecar binary despite valid manifests", Severity: SeverityRequired}
+	if opts.OverlayDir == "" {
+		result.Severity, result.Status = SeverityOptional, StatusWarn
+		result.Detail = "unchecked: no overlay directory supplied (checked 0)"
+		result.Hint = "supply the consumer overlay and a working image runtime"
+		return result
+	}
+	checked, unchecked, err := inspectOverlayImages(ctx, opts)
+	if err != nil || checked == 0 {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("image contract not proven; checked %d requirements: %v", checked, err)
+		result.Hint = "verify image availability, binary version, required tools and the supplied root CA; an uninspected artifact is not a pass"
+		return result
+	}
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("checked %d binary, PATH/executable, and trust-anchor requirements in immutable image IDs", checked)
+	if opts.ImagePullPolicy == "never" {
+		result.Detail += "; cached artifacts only: registry tag not refreshed"
+	}
+	if len(unchecked) != 0 {
+		result.Status = StatusWarn
+		result.Detail += "; unchecked: " + strings.Join(unchecked, "; ")
+		result.Hint = "supply --image-ca and --image-tools to verify the consumer's trust anchor and required PATH tools"
+	}
+	return result
+}
+
 func checkAPIServerIPBlockDrift(ctx context.Context, client kubernetes.Interface, opts Options) Result {
 	result := Result{
 		ID:       "apiserver-ipblock-drift",

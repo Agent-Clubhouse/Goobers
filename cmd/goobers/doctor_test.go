@@ -69,6 +69,46 @@ func TestDoctorRequiresK8sFlag(t *testing.T) {
 	}
 }
 
+func TestDoctorOverlayFlagsRejectIgnoredInputs(t *testing.T) {
+	for _, args := range [][]string{
+		{"doctor", "--repo", "--overlay-dir", "overlay"},
+		{"doctor", "--av-exclusions", "--image-ca", "root.pem"},
+		{"doctor", "--k8s", "--image-tools", "git"},
+		{"doctor", "--k8s", "--overlay-dir", "overlay", "--image-runtime", "arbitrary-command"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, _, stderr := runArgs(t, args...)
+			if code != 2 || !strings.Contains(stderr, "goobers doctor:") {
+				t.Fatalf("code=%d stderr=%s", code, stderr)
+			}
+		})
+	}
+}
+
+func TestDoctorOverlayDirectoryReachesBothChecks(t *testing.T) {
+	withFakeDoctorCluster(t)
+	code, stdout, stderr := runArgs(t, "doctor", "--k8s", "--overlay-dir", t.TempDir(), "--report", "json")
+	if code != 1 {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	var report k8spreflight.Report
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, result := range report.Results {
+		if result.ID == "overlay-pin-agreement" || result.ID == "overlay-image-contract" {
+			found++
+			if result.Status != k8spreflight.StatusFail {
+				t.Fatalf("empty overlay did not fail closed: %+v", result)
+			}
+		}
+	}
+	if found != 2 {
+		t.Fatalf("overlay checks registered=%d", found)
+	}
+}
+
 func TestDoctorRejectsBadReportFormat(t *testing.T) {
 	code, _, stderr := runArgs(t, "doctor", "--k8s", "--report", "xml")
 	if code != 2 {

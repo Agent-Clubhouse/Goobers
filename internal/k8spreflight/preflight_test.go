@@ -134,6 +134,9 @@ func TestRunConformantClusterPasses(t *testing.T) {
 	for _, result := range report.Results {
 		want := StatusPass
 		switch result.ID {
+		case "overlay-pin-agreement", "overlay-image-contract":
+			// Cluster health proves nothing about an omitted consumer overlay.
+			want = StatusWarn
 		case "storage-rwx", "networkpolicy-api", "apiserver-ipblock-drift":
 			// storage-rwx: inferred, never a hard pass (§4). networkpolicy-api:
 			// API-discovery only — a served API is a correlate of enforcement,

@@ -742,6 +742,9 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--temporal-hostport <host:port>] [--temporal-namespace <name>]
+                          [--overlay-dir <dir>] [--image-runtime docker|podman]
+                          [--image-pull-policy always|never]
+                          [--image-tools <tool,...>] [--image-ca <root.pem>]
                           [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
@@ -763,11 +766,24 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   temporal-namespace required* §2/§4  configured Temporal namespace is registered
   registry           optional  §1     registry reachable (host-side sanity)
 
+  overlay-pin-agreement required* #4298 remote base, image, and runner pins agree
+  overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks
+
 Checks marked required* apply when their probe target is configured; left
-unconfigured they report a skipped warn. Every check is read-only: nothing is
+unconfigured they report a skipped warn. Cluster checks are read-only: nothing is
 created on the cluster, and a check that cannot run reports fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
+
+--overlay-dir additionally renders the consumer overlay with kubectl and pulls
+its pinned images using --image-runtime (default docker). Image checks run
+temporary network-isolated containers and remove them afterwards. Use trusted
+overlays/images only. Omitted --image-tools or --image-ca leaves that part
+explicitly unchecked, never PASS. --timeout bounds each render/pull/probe.
+
+--image-pull-policy never inspects cached artifacts only; it does not verify
+the registry's current tag. Default always fails if the pull fails. A configured
+memory high-water gate also requires gh API access to verify source ancestry.
 
 networkpolicy-api warns even when the API is served: a served API is only a
 correlate of enforcement — a CNI can serve it and still ignore policies
