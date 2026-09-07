@@ -11,14 +11,17 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-const telemetryMergesHelp = "Usage: goobers telemetry merges [--json] [--gaggle=name] [--instance-id=id] [--repository-api-url=url] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +
+const telemetryMergesHelp = "Usage: goobers telemetry merges [--json] [--gaggle=name] [--instance-id=id] [--repository-api-url=url] [--compare-github=owner/repository] [--shared-identities=login[,login]] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]\n\n" +
 	"Report confirmed PR landings and daily UTC counts from retained telemetry.\n" +
 	"Defaults to the last 7 days; maximum window 90 days and 10000 mutation events.\n" +
 	"The interval includes --since and excludes --until. Repeated receipts for\n" +
 	"one PR count once; conflicting instance/gaggle/commit claims are excluded.\n" +
 	"Legacy merge operations without explicit confirmation are not verified.\n" +
 	"Unverified event/conflict counts cover the whole window before filters.\n" +
-	"This retained-telemetry view does not yet compare the forge's full merge inventory.\n" +
+	"Use --compare-github=owner/repository --shared-identities=login[,login] for\n" +
+	"repository-wide forge residuals, independent of display filters. Requires\n" +
+	"GOOBERS_CRED_GITHUB_PR_READ with pull-request read permission.\n" +
+	"Forge pagination is not an atomic snapshot; unknown mergers stay unknown.\n" +
 	"Exit codes: 0 = OK; 2 = usage, query, or output error.\n"
 
 func runTelemetryMerges(args []string, stdout, stderr io.Writer) int {
@@ -35,6 +38,8 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 	sinceValue := fs.String("since", "", "inclusive start timestamp")
 	untilValue := fs.String("until", "", "exclusive end timestamp")
 	rebuild := fs.Bool("rebuild", false, "rebuild from retained journals before reading")
+	compareRepo := fs.String("compare-github", "", "compare an explicit GitHub owner/repository against retained provenance")
+	sharedIdentities := fs.String("shared-identities", "", "comma-separated merger logins treated as same-identity residuals")
 	fs.Usage = helpUsage(stderr, "telemetry merges")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -77,6 +82,16 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if *compareRepo != "" {
+		report.Comparison, err = compareGitHubMerges(root, *compareRepo, *sharedIdentities, db, rollup.MergeReportQuery{Since: since, Until: until})
+		if err != nil {
+			pf(stderr, "error: compare merge inventory: %v\n", err)
+			return 2
+		}
+	} else if *sharedIdentities != "" {
+		pf(stderr, "error: --shared-identities requires --compare-github\n")
+		return 2
+	}
 	if *jsonOutput {
 		if err := json.NewEncoder(stdout).Encode(report); err != nil {
 			pf(stderr, "error: write merge report: %v\n", err)
@@ -89,6 +104,14 @@ func runTelemetryMergesAt(args []string, stdout, stderr io.Writer, now time.Time
 	for _, row := range report.Daily {
 		pf(stdout, "%s\t%s\t%s\t%s\t%s\t%d\n", row.Day, row.InstanceID, row.Gaggle, row.Provider, row.RepositoryAPIURL, row.Count)
 	}
-	pf(stdout, "Coverage: retained telemetry only; no forge-inventory comparison.\n")
+	if report.Comparison == nil {
+		pf(stdout, "Coverage: retained telemetry only; no forge-inventory comparison.\n")
+	} else {
+		pf(stdout, "Repository-wide forge comparison (unfiltered; pagination is not an atomic snapshot):\n")
+		pf(stdout, "UTC DAY\tCATEGORY\tINSTANCE\tGAGGLE\tMERGES\n")
+		for _, row := range report.Comparison.Daily {
+			pf(stdout, "%s\t%s\t%s\t%s\t%d\n", row.Day, row.Category, row.InstanceID, row.Gaggle, row.Count)
+		}
+	}
 	return 0
 }

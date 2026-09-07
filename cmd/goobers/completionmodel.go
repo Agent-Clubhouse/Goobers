@@ -431,6 +431,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
 	},
 	"telemetry merges": {
+		{name: "compare-github", takesArg: true, desc: "Compare an explicit GitHub owner/repository"},
+		{name: "shared-identities", takesArg: true, desc: "Comma-separated shared merger logins"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
 		{name: "instance-id", takesArg: true, desc: "Filter by originating instance"},

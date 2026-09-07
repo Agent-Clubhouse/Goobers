@@ -264,6 +264,8 @@ complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from resolve' -l rationale -r -d 'Audit rationale'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from resolve' -l actor -r -d 'Recorded actor identity'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from resolve' -l api -r -d 'Daemon API base URL for a remote daemon'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from merges' -l compare-github -r -d 'Compare an explicit GitHub owner/repository'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from merges' -l shared-identities -r -d 'Comma-separated shared merger logins'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from merges' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from merges' -l gaggle -r -d 'Filter by gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from merges' -l instance-id -r -d 'Filter by originating instance'

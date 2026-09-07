@@ -56,6 +56,7 @@ type MergeReport struct {
 	Daily                    []DailyMerges    `json:"daily"`
 	UnverifiedMutationEvents int              `json:"unverifiedMutationEvents"`
 	ConflictingPullRequests  int              `json:"conflictingPullRequests"`
+	Comparison               *MergeComparison `json:"comparison,omitempty"`
 }
 
 type mergeKey struct{ provider, repository, pull string }

@@ -186,7 +186,7 @@ _goobers_completion()
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
-                merges) flags+=" --json --gaggle --instance-id --repository-api-url --since --until --rebuild" ;;
+                merges) flags+=" --compare-github --shared-identities --json --gaggle --instance-id --repository-api-url --since --until --rebuild" ;;
                 stats) flags+=" --json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
                 export) flags+=" --since --until" ;;
