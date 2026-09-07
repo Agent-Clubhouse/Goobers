@@ -4,6 +4,35 @@
 >
 > Scope: shipped workflow definitions under `config-examples/` and `reference-workflows/`
 > at commit `45b935a89`.
+>
+> ## ⚠️ Do not size current work from this page
+>
+> **The counts below are a 2026-07-29 snapshot and the surface has since more
+> than doubled.** Re-measured 2026-09-06 at `09db115bb`:
+>
+> | | This survey (2026-07-29) | Today (2026-09-06) |
+> |---|---:|---:|
+> | Workflow files | 17 | 32 |
+> | Agentic tasks | 13 | 34 |
+> | Agentic gates | 6 | 10 |
+> | **Agentic entries** | **19** | **44** |
+> | Agentic `repo:push` holders | 7 | 14 |
+>
+> Two whole gaggles (`java-service`, `python-service`, plus `acme-web-claude`)
+> and four workflows (`backlog-assignment`, `decomposition`, `quality-sprint`,
+> `test-suite-quality`) are absent from the coverage table. Anyone sizing TBH-1's
+> migration orders 2 and 3 from the "Deterministic-conversion candidates"
+> section would under-scope the work by roughly half, which matters because
+> TBH-1 requires that a canonical route migrate **completely**.
+>
+> **The one conclusion that still holds** — re-verified against the current tree
+> — is the load-bearing one: **zero agentic tasks declare `github:pr:merge`,
+> `github:pr:write`, or `ado:pr:complete`.** So migration order 1's finding, that
+> #1303 is executor-routing hardening rather than an agentic-stage conversion,
+> remains correct.
+>
+> **Re-run this survey before executing TBH-1 phase 1** (#1303/#1304), per
+> `trust-boundary-hardening.md` §3. Recorded #4517.
 
 ## Method and classification
 
@@ -30,8 +59,9 @@ into it, so it is not a granted capability below.
 
 ## Workflow coverage
 
-The 17 shipped workflows contain 19 agentic entries (13 tasks and 6 gates).
-The zeroes make the negative coverage explicit.
+*As of `45b935a89`, 2026-07-29 — see the staleness banner above for current
+numbers.* The 17 shipped workflows contained 19 agentic entries (13 tasks and 6
+gates). The zeroes make the negative coverage explicit.
 
 | Tree | Workflow | Agentic entries |
 |---|---|---:|
@@ -117,7 +147,8 @@ writes:
    deterministic tasks. Therefore #1303 remains executor-routing hardening,
    not an agentic-stage conversion identified here. Its proposal boundary and
    #1304's staged-lite preview path are still the first migration slice.
-2. **Push:** all seven agentic `repo:push` holders belong in one
+2. **Push:** *(count stale — 14 today, see the banner)* all seven agentic
+   `repo:push` holders belong in one
    capability-route migration. Limiting the follow-up to implementation and
    remediation would leave docs-updater, Tutor config authoring, and the
    shipped examples on direct authority, contrary to TBH-1's requirement that
@@ -130,7 +161,7 @@ writes:
 For #1834, the inventory gives the non-authoritative sink's minimum coverage:
 
 - The four direct issue writers and two milestone writers must emit
-  artifact-only proposals with no external application.
+  artifact-only proposals with no external application. *(Counts stale.)*
 - The seven push holders may produce disposable worktree commits, but receive
   no remote credential; deterministic push/PR stages must preview or sink
   their effects.

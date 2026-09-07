@@ -1,12 +1,28 @@
 # Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels
 
-> Status: **draft — TBH-1 phase-0 RFC complete; human design gate pending; prescriptive** ·
+> Status: **approved — phase-0 design gate cleared 2026-07-27 (§3); TBH-1 and
+> TBH-2 remain unimplemented, TBH-3 partially superseded, TBH-4 delivered.**
+> The previous "human design gate pending" header contradicted this document's
+> own signed §3 sign-off table; corrected in #4517.
 > Area prefix: `TBH` · Milestone: **Trust & Isolation**
 > ([#25](https://github.com/Agent-Clubhouse/Goobers/milestone/25))
-> Origin: the comparative-security review of GitHub Agentic Workflows
-> (`~/source/Goobers-Review/GH-AW-VS-GOOBERS.md`), whose central finding names our gap
-> precisely: *capability-scoped credential injection is not enough when the same
-> unconstrained agent process receives the write credential.* Also the arbitrary-repo
+>
+> **Per-workstream state, re-verified 2026-09-06 at `09db115bb`:**
+>
+> | Workstream | State |
+> |---|---|
+> | TBH-1 — proposal/executor split | **Not implemented.** `apply-proposals` appears nowhere in `internal/`, `cmd/`, `api/`, `reference-workflows/`, or `config-examples/`. The normative contract exists (`docs/stage-contract.md` §"TBH-1 mutation proposals", correctly titled *design target; not implemented*). Phase-1 gate issues #1303 and #1304 are still OPEN. This is the plan of record and the largest unclosed item here. |
+> | TBH-2 — staged mode | **Not implemented.** Gated behind TBH-1's envelope. |
+> | TBH-3 — sandbox default | **Inverted in implementation.** Sandboxing shipped (#1305) as **strictly opt-in**, not on by default. See TBH-3 below. |
+> | TBH-3 — egress posture | **Superseded by a different mechanism.** See TBH-3 below. |
+> | TBH-4 — integrity labels | **Delivered** by #1885 (`api/integrity`); the future-tense prose below is historical. |
+>
+> Origin: the comparative-security review of GitHub Agentic Workflows, whose central
+> finding names our gap precisely: *capability-scoped credential injection is not
+> enough when the same unconstrained agent process receives the write credential.*
+> (That review lives outside this repository and is not reproducible from it; it is
+> cited as provenance for the framing, not as a verifiable reference. Everything
+> normative below stands on the in-repo references that follow.) Also the arbitrary-repo
 > onboarding goal (`docs/guides/arbitrary-repo-onboarding.md`) and SEC-047's
 > untrusted-input doctrine.
 > Builds on (all landed): capability registry + fail-closed admission
@@ -148,6 +164,32 @@ before it exists.
 
 ### TBH-3 — Sandbox enforcement + egress posture (completes SEC-044, extends ADR-0001)
 
+> **As-built delta (recorded #4517).** Both halves of TBH-3 were overtaken by
+> implementation, in opposite ways. The bullets below are the *design*; read this
+> box for what shipped.
+>
+> **Sandbox default is inverted.** Enforcement wiring shipped in #1305
+> (`sandboxPosturesByGaggle`, `cmd/goobers/runnerwiring.go`) and the harness does
+> wrap the agentic subprocess (`confineArgv`, `internal/harness/confine.go`,
+> called from both the copilot and claude adapters) — but the posture is
+> **`disabled` by default**: `api/schemas/instance.schema.json` says isolation is
+> "strictly opt-in", and a gaggle may only *strengthen* an operator-enforced
+> posture, never weaken it. So the mechanism is real and the default is the
+> inverse of "on by default". Whether to flip the default is a live decision,
+> not a documentation fix, and it is what phase 2's gate ("zero un-journaled
+> opt-outs on reference-workflows") should be re-scoped against.
+>
+> **Egress moved to a different layer.** The per-goober domain allowlist with a
+> journaled network audit trail below did not ship. What shipped is
+> instance-level **CIDR groups rendered into Kubernetes NetworkPolicies**
+> (`api/schemas/instance.schema.json` egress groups, `goobers netpol-render`,
+> #3568) — a different layer (cluster, not process), a different granularity
+> (CIDR, not domain-per-goober), and deliberately *not applied by the daemon*.
+> Goobernetes NetworkPolicy composition facts are owned by
+> [#4294](https://github.com/Agent-Clubhouse/Goobers/issues/4294); this document
+> does not restate them. The design below is retained as the record of the
+> per-goober approach and is **not the plan of record for egress**.
+
 - Turn the landed native sandboxes (`internal/sandbox`: sandbox-exec / Linux
   implementation) **on by default** for agentic stages: worktree-scoped writes,
   default-deny env passthrough (explicit allowlist), no `$HOME` exposure beyond the
@@ -162,6 +204,11 @@ before it exists.
   complementary layers, not alternatives.
 
 ### TBH-4 — Input-integrity labels
+
+> **Delivered.** #1885 landed `api/integrity`'s grade vocabulary
+> (`trusted`/`maintainer`/`unapproved`/`derived`) and providers stamp it. The
+> future-tense bullets below, and TBH-4's placement in phase 3 of §3, are
+> historical: they describe work that is done. Recorded #4517.
 
 - Provenance grade carried on snapshots, context pointers, artifacts, and provider
   reads: `trusted` (operator/config), `maintainer` (trust-labeled backlog item per
@@ -180,7 +227,19 @@ before it exists.
 | 0 (design) | TBH-1 envelope schema + executor contract RFC'd against stage-contract.md | PO sign-off (architectural blast radius); no implementation issue may land first until recorded |
 | 1 | TBH-1 for merge/close; TBH-2 staged-lite on those capabilities | Reference workflow runs with merge/close behind proposals for a full watched round |
 | 2 | TBH-3 sandbox-on-by-default; TBH-1 push/issue migration | Zero un-journaled opt-outs on reference-workflows |
-| 3 | TBH-2 full staged mode; TBH-4 integrity labels | Stranger-repo pilot onboards in staged mode |
+| 3 | TBH-2 full staged mode; ~~TBH-4 integrity labels~~ (**delivered early**, #1885) | Stranger-repo pilot onboards in staged mode |
+
+> **Phasing as-built (#4517).** Phase 0 is complete (sign-off below). Phase 1 has
+> not started: #1303 and #1304 are OPEN and `apply-proposals` does not exist.
+> Phase 2's sandbox item shipped as an opt-in mechanism rather than a default, so
+> its gate needs re-scoping against a decision to flip the default rather than
+> against the mechanism's existence; phase 2's egress item was superseded (see
+> TBH-3). Phase 3's TBH-4 item landed out of order, in #1885.
+>
+> Before executing TBH-1's migration orders, re-run the capability survey:
+> `docs/design/agentic-mutation-capability-audit.md` is a pinned 2026-07-29
+> snapshot and its conversion-candidate counts are now roughly half the true
+> surface — see that document's own staleness banner.
 
 The phase-0 sign-off is recorded on this sign-off PR, which pins the RFC revision
 presented for approval to merge commit
