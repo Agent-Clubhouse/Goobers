@@ -30,11 +30,11 @@ func compareGitHubMerges(root, repository, identities string, db *rollup.DB, que
 	// Residuals have no known gaggle. Compare against every retained fleet's
 	// proof even when the displayed telemetry table selects just one fleet.
 	query.InstanceID, query.Gaggle, query.RepositoryAPIURL = "", "", ""
-	proof, err := db.MergeProvenance(context.Background(), query)
+	inventory, err := source.MergeInventory(context.Background(), providers.MergeInventoryRequest{Repository: repo, Since: query.Since, Until: query.Until, Limit: rollup.MaxMergeReportEvents})
 	if err != nil {
 		return nil, err
 	}
-	inventory, err := source.MergeInventory(context.Background(), providers.MergeInventoryRequest{Repository: repo, Since: query.Since, Until: query.Until, Limit: rollup.MaxMergeReportEvents})
+	proof, err := db.MergeProvenanceForInventory(context.Background(), query, inventory)
 	if err != nil {
 		return nil, err
 	}

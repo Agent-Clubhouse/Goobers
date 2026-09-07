@@ -93,7 +93,9 @@ func TestTelemetryMergesComparesRealForgeWithoutLosingFilteredFleetProof(t *test
 	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite)), "")
 	layout := instance.NewLayout(t.TempDir())
 	id := strings.Repeat("a", 32)
-	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{RunID: "forge-report", Workflow: "landing", Gaggle: "other-fleet", InstanceID: id}, nil, journal.WithClock(func() time.Time { return at }))
+	// A delayed durable receipt must remain proof for the forge's merge-time
+	// window even when the receipt itself is recorded two days later.
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{RunID: "forge-report", Workflow: "landing", Gaggle: "other-fleet", InstanceID: id}, nil, journal.WithClock(func() time.Time { return at.Add(48 * time.Hour) }))
 	if err != nil {
 		t.Fatal(err)
 	}

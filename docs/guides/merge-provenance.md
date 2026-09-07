@@ -55,8 +55,9 @@ list/detail responses and provider errors fail the comparison.
 
 GitHub pagination is not an atomic snapshot: concurrent repository updates can
 move records between pages. Duplicate detection catches some, not all, such
-changes. Retention and receipt-time boundaries can leave genuine daemon merges
-in the unverified residual. Treat the coverage label and unknown counts as part
+changes. Comparison verifies each listed PR against all its retained receipts,
+including receipts recorded outside the merge-time window. Retention can still
+leave genuine daemon merges in the unverified residual. Treat the coverage label and unknown counts as part
 of the report, not optional footnotes. This comparison currently supports GitHub;
 the retained telemetry view accepts GitHub, Azure DevOps and Gitea receipts.
 

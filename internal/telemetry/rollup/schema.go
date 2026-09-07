@@ -806,4 +806,11 @@ CREATE INDEX idx_stage_model_usage_run ON stage_model_usage(run_id);
 	`
 ALTER TABLE runs ADD COLUMN instance_id TEXT;
 `,
+	// v25 (#3019): bounded PR-keyed receipt lookup must not scan every run
+	// or repeatedly walk the complete mutation history for each forge PR.
+	`
+CREATE INDEX idx_provider_mutations_merge_identity
+ON provider_mutations(provider, external_id, occurred_at)
+WHERE kind = 'pr' AND operation = 'merge';
+`,
 }

@@ -94,13 +94,17 @@ func (db *DB) MergeProvenance(ctx context.Context, query MergeReportQuery) (Merg
 		return MergeReport{}, fmt.Errorf("query merge provenance: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	return readMergeProvenance(rows, query, nil)
+}
+
+func readMergeProvenance(rows *sql.Rows, query MergeReportQuery, wanted map[mergeKey]bool) (MergeReport, error) {
 	result := MergeReport{Coverage: "retained-telemetry", Since: query.Since.UTC(), Until: query.Until.UTC(), Merges: []ConfirmedMerge{}, Daily: []DailyMerges{}}
 	merges := map[mergeKey]*mergeEvidence{}
 	count := 0
 	for rows.Next() {
 		count++
 		if count > MaxMergeReportEvents {
-			return MergeReport{}, fmt.Errorf("merge report exceeds %d events; narrow the time window", MaxMergeReportEvents)
+			return MergeReport{}, fmt.Errorf("merge report exceeds %d retained events; narrow the query scope", MaxMergeReportEvents)
 		}
 		merge, valid, err := scanConfirmedMerge(rows)
 		if err != nil {
@@ -111,6 +115,9 @@ func (db *DB) MergeProvenance(ctx context.Context, query MergeReportQuery) (Merg
 			continue
 		}
 		key := mergeKey{merge.Provider, merge.RepositoryAPIURL, merge.PullID}
+		if wanted != nil && !wanted[key] {
+			continue
+		}
 		if prior, exists := merges[key]; exists {
 			prior.observe(merge)
 			continue
