@@ -272,10 +272,20 @@ at this" is a labeled, fingerprinted GitHub issue, not a chat message) that:
 - appends a comment with the new occurrence, run link, and score to an
   existing open issue for a repeat fingerprint, rather than filing a
   duplicate — same dedup rule flake-watch uses;
-- never lets a regression issue drift into the automated implementation
-  queue by accident: apply `evals:regression` and strip any `goobers:*` /
-  `goobers/status:*` labels on file/refresh, exactly as `flakeledger` does
-  for `ci:flake`.
+- files into the automated implementation queue deliberately rather than
+  drifting into it by accident: apply `evals:regression` alongside
+  `goobers:approved` and the claim-partition label, exactly as `flakeledger`
+  does for `ci:flake`, and do **not** strip `goobers:*` /
+  `goobers/status:*` labels on refresh — stripping them tears a claim
+  marker off an issue while a run holds it.
+
+  This reverses the original guidance here, which told both ledgers to strip
+  every `goobers:*` label so auto-filed issues could never reach the
+  implementation lane. Measured on 2026-09-07 the guard worked exactly as
+  written and that was the problem: 54 of 56 open `ci:flake` issues had never
+  been triaged and none could be claimed, because the trust gate they needed
+  was being removed on every refresh pass. Operator ruling: auto-filed CI
+  regressions are approved work for the cloud instance.
 
 ### 5.3 Owner escalation
 

@@ -1599,7 +1599,11 @@ jobs:
               repo: context.repo.repo,
               title,
               body,
-              labels: ["goobers:critical", "type:bug", "area:workflows"],
+              // goobers:approved is the SEC-047 trust gate and goobers:cloud is
+              // the claim partition: without both, a filed main-break issue can
+              // never be selected by the cloud instance and only accumulates
+              // (operator ruling, 2026-09-07).
+              labels: ["goobers:critical", "type:bug", "area:workflows", "goobers:approved", "goobers:cloud"],
             });
 
       # Only a fully-green push lane resolves the incident. `cancelled` and
