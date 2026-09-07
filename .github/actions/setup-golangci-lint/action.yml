@@ -1,5 +1,5 @@
 name: Set up golangci-lint
-description: Install the repository-pinned golangci-lint version with bounded retries.
+description: Install the repository-pinned golangci-lint version from the release download, falling back to the Go module proxy.
 
 inputs:
   version:
@@ -14,15 +14,43 @@ runs:
       env:
         GOLANGCI_LINT_VERSION: ${{ inputs.version }}
       run: |
-        for attempt in 1 2 3; do
+        bin="$(go env GOPATH)/bin"
+
+        # Already pinned-correct on this runner (warm tool cache, or a repeat
+        # of this action in the same job): acquire nothing.
+        if "$bin/golangci-lint" version 2>/dev/null | grep -qF "has version ${GOLANGCI_LINT_VERSION#v} "; then
+          echo "already installed: ${GOLANGCI_LINT_VERSION}"
+          echo "$bin" >> "$GITHUB_PATH"
+          exit 0
+        fi
+
+        # Source 1 — upstream install.sh, which pulls the release tarball from
+        # github.com. The script fetch retries; the tarball fetch inside it does
+        # not, so the outer ladder is the only cover for a release-CDN outage.
+        # It is exponential and totals ~2.5 minutes: the previous 5/10/15s ladder
+        # gave up ~30s in, and lost #4594 and #4595 to one 504 spell.
+        for attempt in 1 2 3 4 5; do
           if curl -sSfL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 15 \
                "https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh" \
-               | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"; then
-            echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+               | sh -s -- -b "$bin" "${GOLANGCI_LINT_VERSION}"; then
+            echo "$bin" >> "$GITHUB_PATH"
             exit 0
           fi
-          echo "::warning::golangci-lint install attempt $attempt/3 failed; retrying"
-          sleep $((attempt * 5))
+          echo "::warning::golangci-lint release download attempt $attempt/5 failed"
+          [ "$attempt" -eq 5 ] || sleep $((attempt * 10))
         done
-        echo "::error::golangci-lint install failed after 3 attempts"
+
+        # Source 2 — the Go module proxy. A different origin with an independent
+        # failure domain, and already a declared acquisition (go-modules), so
+        # this widens no network surface. It compiles rather than unpacks, which
+        # costs a minute; that is the difference between a red run and a slow
+        # one while the release CDN is down. The major-version path element is
+        # derived so a v3 pin cannot silently keep resolving v2.
+        echo "::warning::release download exhausted; falling back to the Go module proxy"
+        module="github.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION%%.*}/cmd/golangci-lint"
+        if GOBIN="$bin" go install "${module}@${GOLANGCI_LINT_VERSION}"; then
+          echo "$bin" >> "$GITHUB_PATH"
+          exit 0
+        fi
+        echo "::error::golangci-lint ${GOLANGCI_LINT_VERSION} is unavailable from both the release download and the Go module proxy"
         exit 1
