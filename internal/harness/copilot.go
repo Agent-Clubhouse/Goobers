@@ -536,15 +536,20 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// explicitly the same way Run's credentialEnv does.
 	versionCommand := append(append([]string(nil), resolveHarnessCommand(c.Command)...), args...)
 	versionProbe := fmt.Sprintf("harness: copilot-cli: %q", versionCommand)
+	versionStdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
 	res, err := c.runner().Run(ctx, ProcessRequest{
 		Command:            versionCommand,
 		Env:                baseEnv(c.ExtraEnvAllowlist),
 		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+		StdoutCapture:      versionStdout,
 	})
 	if err != nil || res.ExitCode != 0 {
 		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
 	}
-	version := firstOutputLine(res.Transcript)
+	if versionStdout.Truncated() {
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: version stdout exceeded the diagnostic output bound")
+	}
+	version := firstOutputLine(versionStdout.Bytes())
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}

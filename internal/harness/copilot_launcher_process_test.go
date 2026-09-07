@@ -22,6 +22,7 @@ func TestLauncherProcessFixture(t *testing.T) {
 		os.Exit(0)
 	}
 	if slices.Contains(os.Args, "--version") {
+		fmt.Fprintln(os.Stderr, "fixture version diagnostic: this is not the version")
 		fmt.Println("fixture-wrapper 1.0")
 		os.Exit(0)
 	}

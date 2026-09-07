@@ -44,6 +44,32 @@ func TestCopilotPreflightProbesCompleteLauncherPrefix(t *testing.T) {
 	}
 }
 
+func TestCopilotVersionPreflightRequiresBoundedStdoutNotDiagnostics(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, stdout string
+		wantError    bool
+	}{
+		{name: "stderr only", wantError: true},
+		{name: "stdout version", stdout: "fixture 1.2.3\n"},
+		{name: "oversized stdout", stdout: strings.Repeat("x", int(maxPreflightDiagnosticBytes)+1), wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &CopilotAdapter{Command: []string{program}, Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+				_, err := io.WriteString(req.StdoutCapture, tc.stdout)
+				return ProcessResult{Transcript: []byte("warning on stderr\n" + tc.stdout)}, err
+			})}
+			info, err := adapter.Preflight(context.Background())
+			if (err != nil) != tc.wantError || !tc.wantError && info.Version != "fixture 1.2.3" {
+				t.Fatalf("version=%q err=%v", info.Version, err)
+			}
+		})
+	}
+}
+
 type launcherProcessRunner func(context.Context, ProcessRequest) (ProcessResult, error)
 
 func (f launcherProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
