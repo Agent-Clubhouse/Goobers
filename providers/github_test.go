@@ -2452,7 +2452,7 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 		}),
 		mutation: map[string]interface{}{
 			"enqueuePullRequest": map[string]interface{}{
-				"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "state": "QUEUED", "position": 2},
+				"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "enqueuedAt": "2026-09-01T12:00:00Z", "state": "QUEUED", "position": 2},
 			},
 		},
 	}
@@ -2480,7 +2480,7 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 		t.Fatalf("lookup number = %v, want 9", got)
 	}
 	mutationVars := stub.variables(1)
-	if query, _ := stub.bodies[1]["query"].(string); !strings.Contains(query, "mergeQueueEntry{ id state position }") {
+	if query, _ := stub.bodies[1]["query"].(string); !strings.Contains(query, "mergeQueueEntry{ id enqueuedAt state position }") {
 		t.Fatalf("enqueue mutation did not request its receipt identity: %s", query)
 	}
 	if got := mutationVars["pullRequestId"]; got != "PR_node" {
@@ -2498,6 +2498,9 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 	}
 	if ref.Operation != "enqueue" {
 		t.Fatalf("Operation = %q, want enqueue (not merge — this pull request is not yet merged)", ref.Operation)
+	}
+	if ref.QueueAdmission == nil || ref.QueueAdmission.EntryID != result.QueueEntryID || ref.QueueAdmission.RepositoryAPIURL != server.URL+"/repos/acme/app" || ref.QueueAdmission.PullID != "9" || ref.QueueAdmission.ExpectedHeadSHA != "deadbeef" || ref.QueueAdmission.EnqueuedAt.Format(time.RFC3339) != "2026-09-01T12:00:00Z" || ref.MergeConfirmation != nil {
+		t.Fatalf("queue receipt missing or falsely promoted to a merge: %+v", ref)
 	}
 }
 

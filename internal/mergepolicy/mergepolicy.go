@@ -96,10 +96,8 @@ func (enqueueLander) Land(ctx context.Context, provider *providers.Dispatcher, r
 		return Result{}, err
 	}
 	if res.Merged {
-		// The queue's own enqueue endpoint completed the merge immediately
-		// (e.g. nothing else ahead of this pull request) — a genuine
-		// "merged" outcome, not "enqueued"; see EnqueuePullRequestResult's
-		// doc.
+		// The lookup observed an already-merged PR. This terminal outcome
+		// is not evidence that this caller enqueued or merged it.
 		return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, nil
 	}
 	return Result{Outcome: OutcomeEnqueued}, nil

@@ -18,6 +18,32 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestMutationSidecarPreservesQueueAdmissionAcrossWireConsumers(t *testing.T) {
+	t.Chdir(t.TempDir())
+	admission := &providers.QueueAdmission{RepositoryAPIURL: "https://forge.example/team/repos/acme/app", PullID: "9", EntryID: "MQE_owned", ExpectedHeadSHA: "head", EnqueuedAt: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+	sidecarMutationRecorder{kind: "pr"}.RecordExternalRef(context.Background(), providers.ExternalRef{Provider: providers.ProviderGitHub, Ref: "acme/app#9", Operation: "enqueue", QueueAdmission: admission})
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var local mutationFact
+	var remote dispatcher.SurrenderedMutation
+	var temporal engine.MutationFact
+	for _, target := range []any{&local, &remote, &temporal} {
+		if err := json.Unmarshal(data, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, got := range []*providers.QueueAdmission{local.QueueAdmission, remote.QueueAdmission, temporal.QueueAdmission} {
+		if got == nil || *got != *admission {
+			t.Fatalf("queue receipt lost in sidecar transport: %+v", got)
+		}
+	}
+	if local.MergeConfirmation != nil || remote.MergeConfirmation != nil || temporal.MergeConfirmation != nil || local.Operation != "enqueue" {
+		t.Fatal("queue acceptance promoted to merge confirmation")
+	}
+}
+
 func TestMutationSidecarPreservesMergeConfirmationAcrossWireConsumers(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

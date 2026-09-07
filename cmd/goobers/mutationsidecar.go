@@ -27,6 +27,7 @@ const mutationsSidecarFile = "mutations.jsonl"
 // RunID identifies the claim owner, which can differ from the stage's run
 // during reconciliation. Provider Fields digests are not part of this handoff.
 type mutationFact struct {
+	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
 	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
 	Provider          string                       `json:"provider"`
 	Kind              string                       `json:"kind"`
@@ -64,6 +65,7 @@ type sidecarMutationRecorder struct {
 // case and emits its own journal-level signal for that.
 func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref providers.ExternalRef) {
 	fact := mutationFact{
+		QueueAdmission:    ref.QueueAdmission,
 		MergeConfirmation: ref.MergeConfirmation,
 		Provider:          string(ref.Provider),
 		Kind:              r.kind,

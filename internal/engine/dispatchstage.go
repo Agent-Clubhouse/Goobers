@@ -875,6 +875,7 @@ func surrenderedMutationFacts(mutations []dispatcher.SurrenderedMutation) []muta
 	facts := make([]mutationFact, 0, len(mutations))
 	for _, m := range mutations {
 		facts = append(facts, mutationFact{
+			QueueAdmission:    m.QueueAdmission,
 			MergeConfirmation: m.MergeConfirmation,
 			Provider:          m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL, Operation: m.Operation,
 			RunID: m.RunID, Outcome: m.Outcome, ErrorCode: m.ErrorCode,

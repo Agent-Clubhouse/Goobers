@@ -333,7 +333,7 @@ func (r *runJournal) mutations(ctx workflow.Context, stage string, attempt int, 
 			ExternalRef: &journal.ExternalRef{
 				Provider: mutation.Provider, Kind: mutation.Kind, ID: mutation.ID, URL: mutation.URL,
 			},
-			Runner: providers.MutationRunnerFields(mutation.Operation, mutation.MergeConfirmation),
+			Runner: providers.MutationRunnerFields(mutation.Operation, mutation.MergeConfirmation, mutation.QueueAdmission),
 		}, mutation.RunID, mutation.Outcome, mutation.ErrorCode, mutation.ProviderRunID))
 	}
 }

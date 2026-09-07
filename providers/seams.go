@@ -85,6 +85,7 @@ type FieldDigest struct {
 // the fields that changed so the journal stays tamper-evident without storing the
 // raw values.
 type ExternalRef struct {
+	QueueAdmission    *QueueAdmission        `json:"queueAdmission,omitempty"`
 	MergeConfirmation *MergeConfirmation     `json:"mergeConfirmation,omitempty"`
 	Provider          ProviderKind           `json:"provider"`
 	Ref               string                 `json:"ref"`           // e.g. "owner/name#7"

@@ -291,6 +291,7 @@ type stageActivityResult = DispatchStageResult
 // the one field the runner must journal. mutationFact stays as an alias, so no
 // second type exists and the recorded JSON is untouched.
 type MutationFact struct {
+	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
 	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
 	Provider          string                       `json:"provider"`
 	Kind              string                       `json:"kind"`

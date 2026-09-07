@@ -28,7 +28,7 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirmation := &providers.MergeConfirmation{RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", MergeSHA: "commit"}
-	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: providers.MutationRunnerFields("merge", confirmation)}); err != nil {
+	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: providers.MutationRunnerFields("merge", confirmation, nil)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.Close(); err != nil {
@@ -100,7 +100,7 @@ func TestTelemetryMergesComparesRealForgeWithoutLosingFilteredFleetProof(t *test
 		t.Fatal(err)
 	}
 	confirmation := &providers.MergeConfirmation{RepositoryAPIURL: server.URL + "/repos/acme/app", PullID: "9", MergeSHA: "commit"}
-	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: providers.MutationRunnerFields("merge", confirmation)}); err != nil {
+	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: providers.MutationRunnerFields("merge", confirmation, nil)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.Close(); err != nil {

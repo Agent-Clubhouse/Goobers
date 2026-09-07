@@ -2,11 +2,18 @@ package providers
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
 func TestGitHubEnqueueDoesNotClaimAcceptanceWithoutQueueEntry(t *testing.T) {
-	for _, entry := range []any{nil, map[string]any{"state": "QUEUED", "position": 1}} {
+	for _, entry := range []any{
+		nil,
+		map[string]any{"state": "QUEUED", "position": 1},
+		map[string]any{"id": "MQE_missing_time", "state": "QUEUED"},
+		map[string]any{"id": strings.Repeat("x", 257), "enqueuedAt": "2026-09-01T12:00:00Z"},
+		map[string]any{"id": " ", "enqueuedAt": "2026-09-01T12:00:00Z"},
+	} {
 		stub := &graphQLStub{t: t, lookup: lookupResponse(map[string]any{"id": "PR_node", "merged": false}), mutation: map[string]any{"enqueuePullRequest": map[string]any{"mergeQueueEntry": entry}}}
 		server := stub.server()
 		recorder := &recordingRecorder{}

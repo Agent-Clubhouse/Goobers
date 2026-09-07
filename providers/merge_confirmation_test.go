@@ -24,7 +24,7 @@ func TestMergeConfirmationUsesCredentialFreeRepositoryRoute(t *testing.T) {
 }
 
 func TestObservedMergeOperationDoesNotGainConfirmation(t *testing.T) {
-	if _, present := MutationRunnerFields("merge", nil)["mergeConfirmation"]; present {
+	if _, present := MutationRunnerFields("merge", nil, nil)["mergeConfirmation"]; present {
 		t.Fatal("legacy operation was upgraded to confirmed landing")
 	}
 }

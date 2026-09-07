@@ -171,7 +171,7 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 			st.enqueueVars = body.Variables
 			writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{
 				"enqueuePullRequest": map[string]interface{}{
-					"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "state": "QUEUED", "position": 1},
+					"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "enqueuedAt": "2026-09-01T12:00:00Z", "state": "QUEUED", "position": 1},
 				},
 			}})
 			return
@@ -649,6 +649,14 @@ func TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging(t *testing.T) {
 	}
 	if _, ok := result["branchCleanup"]; ok {
 		t.Fatalf("result = %+v, want no branchCleanup key for an enqueued pull request", result)
+	}
+	facts := readMutationFacts(t, dir)
+	if len(facts) != 1 || facts[0].Operation != "enqueue" || facts[0].QueueAdmission == nil || facts[0].MergeConfirmation != nil {
+		t.Fatalf("accepted queue receipt missing/promoted: %+v", facts)
+	}
+	admission := facts[0].QueueAdmission
+	if admission.EntryID != "MQE_accepted" || admission.ExpectedHeadSHA != "head123" || admission.PullID != "9" || admission.RepositoryAPIURL != server.URL+"/repos/your-org/your-repo" {
+		t.Fatalf("CLI queue receipt crossed repository or head: %+v", admission)
 	}
 }
 

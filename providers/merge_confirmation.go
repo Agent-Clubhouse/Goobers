@@ -3,6 +3,7 @@ package providers
 import (
 	"net/url"
 	"strings"
+	"time"
 )
 
 // MergeConfirmation is positive evidence returned by a landing mutation, not
@@ -15,6 +16,18 @@ type MergeConfirmation struct {
 	RepositoryAPIURL string `json:"repositoryApiUrl"`
 	PullID           string `json:"pullId"`
 	MergeSHA         string `json:"mergeSha,omitempty"`
+}
+
+// QueueAdmission is a receipt for this run's accepted queue entry, not a
+// completed merge. Run and instance ownership come from the enclosing journal.
+// The expected head is the PR SHA pinned in the enqueue request, not a merge
+// group's synthetic commit. EnqueuedAt is the forge-returned entry timestamp.
+type QueueAdmission struct {
+	RepositoryAPIURL string    `json:"repositoryApiUrl"`
+	PullID           string    `json:"pullId"`
+	EntryID          string    `json:"entryId"`
+	ExpectedHeadSHA  string    `json:"expectedHeadSha,omitempty"`
+	EnqueuedAt       time.Time `json:"enqueuedAt"`
 }
 
 func newMergeConfirmation(repositoryAPIURL, pullID, mergeSHA string) *MergeConfirmation {
@@ -35,10 +48,13 @@ func newMergeConfirmation(repositoryAPIURL, pullID, mergeSHA string) *MergeConfi
 // MutationRunnerFields preserves the legacy operation while carrying
 // explicit confirmation separately. Consumers must never infer confirmation
 // from operation=merge, which can also describe an observed terminal PR.
-func MutationRunnerFields(operation string, confirmation *MergeConfirmation) map[string]any {
+func MutationRunnerFields(operation string, confirmation *MergeConfirmation, admission *QueueAdmission) map[string]any {
 	fields := map[string]any{"operation": operation}
 	if confirmation != nil {
 		fields["mergeConfirmation"] = *confirmation
+	}
+	if admission != nil {
+		fields["queueAdmission"] = *admission
 	}
 	return fields
 }

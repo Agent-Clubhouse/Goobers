@@ -567,7 +567,7 @@ const enqueuePullRequestLookupQuery = `query($owner:String!,$name:String!,$numbe
 // concurrency guard the REST merge endpoint spells "sha".
 const enqueuePullRequestMutation = `mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID){
   enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){
-    mergeQueueEntry{ id state position }
+    mergeQueueEntry{ id enqueuedAt state position }
   }
 }`
 
@@ -679,9 +679,10 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 	var mutation struct {
 		EnqueuePullRequest struct {
 			MergeQueueEntry *struct {
-				ID       string `json:"id"`
-				State    string `json:"state"`
-				Position int    `json:"position"`
+				ID         string    `json:"id"`
+				EnqueuedAt time.Time `json:"enqueuedAt"`
+				State      string    `json:"state"`
+				Position   int       `json:"position"`
 			} `json:"mergeQueueEntry"`
 		} `json:"enqueuePullRequest"`
 	}
@@ -690,10 +691,19 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 	}
 
 	entry := mutation.EnqueuePullRequest.MergeQueueEntry
-	if entry == nil || strings.TrimSpace(entry.ID) == "" || len(entry.ID) > 256 {
+	if entry == nil || strings.TrimSpace(entry.ID) == "" || len(entry.ID) > 256 || entry.EnqueuedAt.IsZero() {
 		return EnqueuePullRequestResult{}, fmt.Errorf("enqueue response lacks a valid queue entry identity; acceptance is unconfirmed")
 	}
-	p.recordEnqueue(ctx, req.Repository, req.PullID)
+	repository, err := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	confirmation := newMergeConfirmation(repository, req.PullID, "")
+	if confirmation == nil {
+		return EnqueuePullRequestResult{}, fmt.Errorf("enqueue receipt has an invalid repository address")
+	}
+	admission := &QueueAdmission{RepositoryAPIURL: confirmation.RepositoryAPIURL, PullID: req.PullID, EntryID: entry.ID, ExpectedHeadSHA: req.ExpectedHeadSHA, EnqueuedAt: entry.EnqueuedAt.UTC()}
+	p.recordEnqueue(ctx, req.Repository, req.PullID, admission)
 	message := fmt.Sprintf("pull request enqueued (state %s, position %d)", entry.State, entry.Position)
 	return EnqueuePullRequestResult{Number: number, Message: message, QueueEntryID: entry.ID}, nil
 }
@@ -701,12 +711,13 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 // recordEnqueue journals the enqueue as a mutation of the pull request's
 // external ref, so a queued-but-not-yet-merged pull request is as visible
 // in the run journal as a merged one.
-func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string) {
+func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string, admission *QueueAdmission) {
 	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(repo, pullID),
-		Operation: "enqueue",
-		Fields:    map[string]FieldDigest{"state": {After: digestString("enqueued")}},
+		QueueAdmission: admission,
+		Provider:       ProviderGitHub,
+		Ref:            issueRef(repo, pullID),
+		Operation:      "enqueue",
+		Fields:         map[string]FieldDigest{"state": {After: digestString("enqueued")}},
 	})
 }
 
