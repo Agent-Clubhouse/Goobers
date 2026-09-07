@@ -225,7 +225,7 @@ func (p *GitHubProvider) Capabilities() CapabilitySet {
 		CapPRCompare,
 		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
 		CapPRReviewSubmit, CapPRReviewThreads, CapPRReviewResolve,
-		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
+		CapPRMerge, CapPRMergeInventory, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRUpdateBranch, CapBranchDelete,
 		CapRepoPolicyRead, CapCICancel,
 		CapRepoPushPreflight,

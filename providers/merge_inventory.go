@@ -1,6 +1,15 @@
 package providers
 
-import "time"
+import (
+	"context"
+	"time"
+)
+
+// MergeInventorySource is optional; callers use Dispatcher so declaration
+// and implementation must agree before any forge request is sent.
+type MergeInventorySource interface {
+	MergeInventory(context.Context, MergeInventoryRequest) ([]MergeInventoryEntry, error)
+}
 
 // MergeInventoryRequest selects a half-open merge-time window. Limit bounds
 // raw list records, including records excluded from the requested window.

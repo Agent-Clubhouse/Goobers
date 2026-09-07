@@ -10,10 +10,6 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-type mergeInventorySource interface {
-	MergeInventory(context.Context, providers.MergeInventoryRequest) ([]providers.MergeInventoryEntry, error)
-}
-
 func validateMergeComparisonFlags(repository, identities string) error {
 	parts := strings.Split(repository, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, "?#\\ \t\r\n") {
@@ -36,14 +32,14 @@ func compareGitHubMerges(root, repository, identities string, db *rollup.DB, que
 	}
 	parts := strings.Split(repository, "/")
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: parts[0], Name: parts[1]}
-	source, err := newProviderForStageSurface[mergeInventorySource](root, repo, true, withStageProviderCapability(capability.GitHubPRRead))
+	provider, err := newProviderForStage(root, repo, true, withStageProviderCapability(capability.GitHubPRRead))
 	if err != nil {
 		return nil, err
 	}
 	// Residuals have no known gaggle. Compare against every retained fleet's
 	// proof even when the displayed telemetry table selects just one fleet.
 	query.InstanceID, query.Gaggle, query.RepositoryAPIURL = "", "", ""
-	inventory, err := source.MergeInventory(context.Background(), providers.MergeInventoryRequest{Repository: repo, Since: query.Since, Until: query.Until, Limit: rollup.MaxMergeReportEvents})
+	inventory, err := providers.NewDispatcher(provider).MergeInventory(context.Background(), providers.MergeInventoryRequest{Repository: repo, Since: query.Since, Until: query.Until, Limit: rollup.MaxMergeReportEvents})
 	if err != nil {
 		return nil, err
 	}

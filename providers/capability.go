@@ -60,6 +60,7 @@ const (
 // excludes as of CONF-1; CONF-3 (#2076) flips the gaps to conformant.
 const (
 	CapPRMerge               Capability = "pr.merge"
+	CapPRMergeInventory      Capability = "pr.merge.inventory"
 	CapPRLandingDetectPolicy Capability = "pr.landing.detect-policy"
 	CapPRLandingEnqueue      Capability = "pr.landing.enqueue"
 	CapPRLandingPoll         Capability = "pr.landing.poll"
@@ -194,6 +195,20 @@ type Dispatcher struct {
 // NewDispatcher wraps p for capability-checked dispatch.
 func NewDispatcher(p Provider) *Dispatcher {
 	return &Dispatcher{Provider: p}
+}
+
+// MergeInventory reads bounded forge observations only when the provider
+// declares the optional inventory capability. It never falls back to PR
+// authors or an incomplete list to manufacture merger attribution.
+func (d *Dispatcher) MergeInventory(ctx context.Context, req MergeInventoryRequest) ([]MergeInventoryEntry, error) {
+	if !d.Capabilities().Has(CapPRMergeInventory) {
+		return nil, ErrUnsupported{Provider: d.Kind(), Capability: CapPRMergeInventory}
+	}
+	source, ok := d.Provider.(MergeInventorySource)
+	if !ok {
+		return nil, ErrUnsupported{Provider: d.Kind(), Capability: CapPRMergeInventory}
+	}
+	return source.MergeInventory(ctx, req)
 }
 
 // MergePullRequest dispatches to the underlying provider's
