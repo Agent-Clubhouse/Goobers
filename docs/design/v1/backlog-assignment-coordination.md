@@ -1,6 +1,14 @@
 # Design: Assignment-aware backlog coordination (COORD)
 
-> Status: **draft — for review** · Area: `RUN` / `WF` / `SEC` · Milestone: **Backlog curation
+> Status: **implemented** — COORD-1..COORD-7 are all closed and assignment-aware
+> backlog selection ships (`respectAssignee`, self-identity resolution).
+> Delivered-by: #1819, #1820, #1821, #1822, #1823, #1824, #1825
+> Verified: 09db115bb (2026-09-06)
+>
+> **The baseline this document argues from is stale:** it opens by saying the
+> backlog has no assignee support. It does now — this design is what added it
+> (#4520). Read §1 as the 2026-08 record of the gap, not as current behaviour.
+> · Area: `RUN` / `WF` / `SEC` · Milestone: **Backlog curation
 > engine — continuous, reliable, agile-inspired** (epic #1224)
 > References: mixed-mode epic **#804** / **#369** (actor-aware workflows — a different axis,
 > see Terminology); UNOP-7 **#1295** / **#1779** / **#1780** (distinct daemon identity);

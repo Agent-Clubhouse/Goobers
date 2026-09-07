@@ -1,6 +1,13 @@
 # Design: Decomposition workflow
 
-> Status: **draft — proposed for staged implementation** (2026-08-02)
+> Status: **implemented** — DEC-1..DEC-5 shipped; the `decomposition` workflow
+> is in the reference config and runs on its own cadence.
+> Delivered-by: #318, #415, #419, #489
+> Verified: 09db115bb (2026-09-06)
+>
+> **Remaining, and deliberately out of this design's scope:** #491
+> (parameterized manual run arguments) is still open. Nothing else this document
+> proposes is outstanding (#4520).
 > Area prefix: `DEC`
 > Related: #318, #419, #415, #489, #491
 > Builds on: `implementation`, `backlog-curation`, the claim ledger, and the

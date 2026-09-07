@@ -1,6 +1,10 @@
 # Design: Observability substrate — OTel-standard run data for arbitrary workflows and the Tutor (V1)
 
-> Status: **draft — for review** · Area prefix: `TEL` (extends), `TUT` (feeds) · Milestone: **V1**
+> Status: **implemented** — all eight missions closed, and the implementation
+> matches the design.
+> Delivered-by: #143, #144, #145, #146, #147, #148, #149, #150
+> Verified: 09db115bb (2026-09-06)
+> · Area prefix: `TEL` (extends), `TUT` (feeds) · Milestone: **V1**
 > Requirements: [`docs/requirements/telemetry.md`](../../requirements/telemetry.md) ·
 > [`docs/requirements/tutor.md`](../../requirements/tutor.md) ·
 > Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §4 (journal), §8 (telemetry)
