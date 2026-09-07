@@ -247,11 +247,12 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 	if done {
 		return code
 	}
-	eligible, blocked, err := a.prepare(ctx, prs, worktreeHeldBranches("."))
+	held := worktreeHeldBranches(".")
+	eligible, blocked, err := a.prepare(ctx, prs, held)
 	if err != nil {
 		return failGatherPRAdapter(stderr, err)
 	}
-	selected, done, code := gatherPRContextSelectCandidate(gatherPRContextCandidateSelection{root: root, repo: repo, base: base, headPrefix: prefix, target: target, listed: listed, eligible: eligible, blockedDependents: blocked, hasPinnedCandidate: pinned, supportsBehindBaseFallback: a.features.siblingBlocking, behindBase: a.behindBase}, stdout, stderr)
+	selected, done, code := gatherPRContextSelectCandidate(gatherPRContextCandidateSelection{root: root, repo: repo, base: base, headPrefix: prefix, target: target, listed: listed, eligible: eligible, blockedDependents: blocked, hasPinnedCandidate: pinned, eligibleInput: prs, heldBranches: held, supportsBehindBaseFallback: a.features.siblingBlocking, behindBase: a.behindBase}, stdout, stderr)
 	if done {
 		return code
 	}
@@ -488,15 +489,19 @@ func gatherPRContextCandidateScope(
 }
 
 type gatherPRContextCandidateSelection struct {
-	root                       string
-	repo                       providers.RepositoryRef
-	base                       string
-	headPrefix                 string
-	target                     remediationTarget
-	listed                     []providers.PullRequestSummary
-	eligible                   []providers.PullRequestSummary
-	blockedDependents          map[int]int
-	hasPinnedCandidate         bool
+	root               string
+	repo               providers.RepositoryRef
+	base               string
+	headPrefix         string
+	target             remediationTarget
+	listed             []providers.PullRequestSummary
+	eligible           []providers.PullRequestSummary
+	blockedDependents  map[int]int
+	hasPinnedCandidate bool
+	// eligibleInput and heldBranches are carried only to explain a pinned
+	// candidate that did not survive eligibility (#3098).
+	eligibleInput              []providers.PullRequestSummary
+	heldBranches               map[string]bool
 	supportsBehindBaseFallback bool
 	behindBase                 func(providers.PullRequestSummary) (bool, error)
 }
@@ -557,6 +562,15 @@ func gatherPRContextSelectCandidate(
 		return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr, refusal)
 	}
 	if len(candidates) == 0 {
+		// #3098: a run that arrived here with a pinned candidate did not fail to
+		// find work — it LOST work its own upstream stage had already selected.
+		// That is a different event and needs a different line: the generic
+		// reason reads as an idle tick, which is how a lost handoff stayed
+		// invisible across two consecutive runs while failing CI went unfixed.
+		if selection.hasPinnedCandidate {
+			return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr,
+				pinnedHandoffLossReason(selection.eligibleInput, selection.heldBranches))
+		}
 		return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
@@ -1058,4 +1072,41 @@ func isCommitBehindBase(dir, baseSHA, headSHA string) (bool, error) {
 		return true, nil
 	}
 	return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w", baseSHA, headSHA, err)
+}
+
+// pinnedHandoffLossReason explains a pinned candidate that did not survive
+// remediation eligibility (#3098).
+//
+// The generic "no PR needs remediation this cycle" is indistinguishable from an
+// idle tick, and that is how this stayed invisible: update-behind-pr selected
+// PR #567 and emitted needsFullRemediation=true, gather-pr-context reported
+// no-work, and the run completed successfully without rebase-pr,
+// gather-ci-failures or the agent ever running. Two consecutive runs reproduced
+// it identically, and the failing CI the run existed to fix was never handed to
+// remediation. A run that LOSES work its own upstream stage selected is a
+// different event from one that finds none, and it now reads as one.
+//
+// The held-branch case is named specifically because it is both the most likely
+// cause and the one that is legitimately transient: the PR's originating
+// implementation run still has the head branch checked out, and deferring is
+// deliberate (#872/#1007) — colliding on checkout is worse. Saying so is the
+// difference between a run that looks idle and a run that says it will get
+// this PR on the next tick.
+func pinnedHandoffLossReason(pinned []providers.PullRequestSummary, heldBranches map[string]bool) string {
+	for _, pr := range pinned {
+		if heldBranches[pr.Head] {
+			return fmt.Sprintf(
+				"this run's selected PR #%d is deferred: its branch %q is still checked out by another "+
+					"in-flight run's worktree, so remediation waits rather than colliding on checkout. "+
+					"This is a same-run handoff deferral, not an idle cycle",
+				pr.Number, pr.Head)
+		}
+	}
+	if len(pinned) == 1 {
+		return fmt.Sprintf(
+			"this run's selected PR #%d was dropped by remediation eligibility after being handed down: "+
+				"a same-run handoff loss, not an idle cycle", pinned[0].Number)
+	}
+	return "this run's selected PR was dropped by remediation eligibility after being handed down: " +
+		"a same-run handoff loss, not an idle cycle"
 }
