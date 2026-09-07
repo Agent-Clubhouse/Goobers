@@ -25,6 +25,13 @@ func PrepareDraft(ctx context.Context, data []byte, pointers []apiv1.ContextPoin
 	if err != nil {
 		return nil, err
 	}
+	schema, err := draftSchema()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSchemaJSON(schema, clean); err != nil {
+		return nil, errors.New("investigation: draft violates the versioned schema")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(clean))
 	decoder.UseNumber()
 	var draft map[string]any

@@ -474,8 +474,9 @@ func toolDefs() []toolDef {
 			},
 		},
 		{
-			Name:        "publish_output",
-			Description: "Write this stage's declared output content, or its staging JSON manifest in artifactManifestFile mode. Call this with the complete final content; the runner validates and records any declared payloads after completion.",
+			Name: "publish_output",
+			Description: "Write this stage's declared output content, or its staging JSON manifest in artifactManifestFile mode. Call this with the complete final content; the runner validates and records any declared payloads after completion. " +
+				"For investigation.evidence, stage an application/json payload using goobers.dev/investigation-evidence-draft/v1alpha1 with {producerStage,name} references at every artifact position. The runner resolves these to canonical evidence pointers; never supply canonical artifact pointers yourself.",
 			InputSchema: map[string]interface{}{
 				"type":                 "object",
 				"properties":           map[string]interface{}{"content": map[string]interface{}{"type": "string", "description": "The complete output content."}},

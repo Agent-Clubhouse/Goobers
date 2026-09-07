@@ -11,9 +11,17 @@ import (
 )
 
 var evidenceSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
+	return compileEvidenceSchema("investigation-evidence.schema.json")
+})
+
+var draftSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
+	return compileEvidenceSchema("investigation-evidence-draft.schema.json")
+})
+
+func compileEvidenceSchema(target string) (*jsonschema.Schema, error) {
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
-	for _, name := range []string{"artifact-pointer.schema.json", "investigation-evidence.schema.json"} {
+	for _, name := range []string{"artifact-pointer.schema.json", "investigation-evidence.schema.json", "investigation-evidence-draft.schema.json"} {
 		data, err := schemas.FS.ReadFile(name)
 		if err != nil {
 			return nil, err
@@ -22,14 +30,18 @@ var evidenceSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
 			return nil, err
 		}
 	}
-	return compiler.Compile("https://goobers.dev/schemas/investigation-evidence.schema.json")
-})
+	return compiler.Compile("https://goobers.dev/schemas/" + target)
+}
 
 func validateEvidenceJSON(data []byte) error {
 	schema, err := evidenceSchema()
 	if err != nil {
 		return err
 	}
+	return validateSchemaJSON(schema, data)
+}
+
+func validateSchemaJSON(schema *jsonschema.Schema, data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var value any
