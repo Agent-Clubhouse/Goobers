@@ -21,6 +21,12 @@ inputs:
     description: Treat config warnings as validation errors (goobers validate --strict).
     required: false
     default: "false"
+  allowed-warnings-file:
+    description: >-
+      File of exact WARNING lines, relative to the caller's working directory.
+      New and disappeared warnings both fail. Mutually exclusive with strict.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -79,6 +85,7 @@ runs:
       env:
         GOOBERS_VALIDATE_PATH: ${{ inputs.path }}
         GOOBERS_VALIDATE_STRICT: ${{ inputs.strict }}
+        GOOBERS_ALLOWED_WARNINGS: ${{ inputs.allowed-warnings-file }}
       run: |
         set -euo pipefail
         args=(validate --source-tree --github-annotations)
@@ -86,4 +93,35 @@ runs:
           args+=(--strict)
         fi
         args+=("$GOOBERS_VALIDATE_PATH")
-        goobers "${args[@]}"
+        if [ -z "$GOOBERS_ALLOWED_WARNINGS" ]; then
+          goobers "${args[@]}"
+          exit 0
+        fi
+        if [ "$GOOBERS_VALIDATE_STRICT" = "true" ]; then
+          echo "::error::strict and allowed-warnings-file are mutually exclusive"
+          exit 1
+        fi
+        if [ ! -f "$GOOBERS_ALLOWED_WARNINGS" ] || [ ! -r "$GOOBERS_ALLOWED_WARNINGS" ]; then
+          echo "::error::allowed-warnings-file must be a readable regular file"
+          exit 1
+        fi
+
+        # Unique scratch space also isolates repeated action invocations.
+        warning_tmp=$(mktemp -d "${RUNNER_TEMP}/goobers-warnings.XXXXXX")
+        trap 'rm -f "$warning_tmp/output" "$warning_tmp/actual" "$warning_tmp/expected"; rmdir "$warning_tmp"' EXIT
+        LC_ALL=C sort < "$GOOBERS_ALLOWED_WARNINGS" > "$warning_tmp/expected"
+        set +e
+        goobers "${args[@]}" 2>&1 | tee "$warning_tmp/output"
+        pipeline_status=("${PIPESTATUS[@]}")
+        set -e
+        if [ "${pipeline_status[1]}" -ne 0 ]; then
+          echo "::error::could not capture validation output"
+          exit 1
+        fi
+        awk '/^WARNING /' "$warning_tmp/output" | LC_ALL=C sort > "$warning_tmp/actual"
+        if ! diff -u "$warning_tmp/expected" "$warning_tmp/actual"; then
+          echo "::error::warning allowlist drift: '-' expected but absent; '+' new warning"
+          exit 1
+        fi
+        # A matching warning inventory must never hide a validation error.
+        exit "${pipeline_status[0]}"

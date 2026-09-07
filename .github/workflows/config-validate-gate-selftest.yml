@@ -23,6 +23,7 @@ on:
       - "api/validate/**"
       - "test/fixtures/validate-gate/**"
       - ".github/actions/validate/**"
+      - "test/configvalidate/action_integration_test.go"
       - ".github/workflows/config-validate-gate-selftest.yml"
   pull_request:
     paths:
@@ -32,6 +33,7 @@ on:
       - "api/validate/**"
       - "test/fixtures/validate-gate/**"
       - ".github/actions/validate/**"
+      - "test/configvalidate/action_integration_test.go"
       - ".github/workflows/config-validate-gate-selftest.yml"
   workflow_dispatch:
 
@@ -58,6 +60,9 @@ jobs:
 
       - name: Build goobers
         run: go build -o /tmp/goobers ./cmd/goobers
+
+      - name: Exercise composite action warning policy
+        run: go test -tags=integration ./test/configvalidate -run '^TestIntegrationValidateActionWarningAllowlist$' -count=1
 
       - name: goobers validate --source-tree (expect pass)
         run: /tmp/goobers validate --source-tree --github-annotations test/fixtures/validate-gate/valid
