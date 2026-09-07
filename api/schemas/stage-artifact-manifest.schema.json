@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/stage-artifact-manifest.schema.json",
+  "title": "Stage artifact staging manifest",
+  "description": "Workspace-relative lift request. It contains no trusted artifact pointers and is not itself published downstream.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "entries"],
+  "properties": {
+    "schemaVersion": {"const": "goobers.dev/stage-artifact-set/v1alpha1", "description": "Artifact-set contract version."},
+    "entries": {
+      "type": "array", "maxItems": 64,
+      "description": "Zero or more files. The runner enforces unique semantic names and validates every payload before publication.",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "path", "mediaType"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$", "description": "Unique semantic key, sorted by the runner before assigning slots."},
+          "path": {"$ref": "artifact-pointer.schema.json#/properties/path", "description": "Workspace-relative regular file; runtime checks symlink containment and byte limits."},
+          "mediaType": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Payload format; unsupported or unsafe formats fail the media-aware sanitizer."}
+        }
+      }
+    }
+  }
+}

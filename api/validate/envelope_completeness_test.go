@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -22,7 +23,9 @@ type schemaFixture struct {
 
 func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 	fixtures := map[string]schemaFixture{
-		"investigation-evidence": {schema: "investigation-evidence.schema.json", value: completeInvestigationEvidence()},
+		"stage-artifact-manifest": {schema: "stage-artifact-manifest.schema.json", value: artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.ManifestEntry{{Name: "reproduction.bundle", Path: "output/bundle.tar", MediaType: "application/x-tar"}}}},
+		"stage-artifact-set":      {schema: "stage-artifact-set.schema.json", value: artifactset.Index{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.Entry{{Name: "reproduction.bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}}},
+		"investigation-evidence":  {schema: "investigation-evidence.schema.json", value: completeInvestigationEvidence()},
 		"artifact": {
 			schema: schemas.Envelope["artifact"],
 			value:  completeArtifactPointer("artifacts/review/evidence.json"),
