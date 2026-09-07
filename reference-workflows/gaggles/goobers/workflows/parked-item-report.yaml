@@ -1,0 +1,34 @@
+# Optional human-review report. No claims, label writes, or re-queueing.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: parked-item-report
+spec:
+  gaggle: goobers
+  displayName: Parked items for human review
+  triggers:
+    - type: schedule
+      schedule: "42 6 * * *"
+      enabled: false
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+  start: report-candidates
+  tasks:
+    - name: report-candidates
+      type: deterministic
+      goal: Report currently open approved remediation items for human selection without changing their state.
+      run:
+        command: ["goobers", "backlog-query", "--read-only"]
+      inputs:
+        trustLabel: "goobers:approved"
+        requireLabels: "goobers:needs-remediation"
+        maxItems: "250"
+        resultFile: "parked-item-candidates.json"
+      capabilities:
+        - github:issues:read
+      expectedOutputs:
+        - candidates
+        - candidateCount
+        - truncated

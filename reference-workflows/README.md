@@ -24,8 +24,8 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **11 goobers and 11 workflows**.
-<!-- reference-inventory: goobers=11 workflows=11 -->
+The shipped tree loads **11 goobers and 12 workflows**.
+<!-- reference-inventory: goobers=11 workflows=12 -->
 
 | Goober role | Purpose |
 |---|---|
@@ -48,12 +48,34 @@ The shipped tree loads **11 goobers and 11 workflows**.
 | `docs-updater` | Turns a documentation signal into a reviewed PR. |
 | `implementation` | Implements a ready issue and opens a PR. |
 | `merge-review` | Reviews eligible PRs and, when explicitly enabled, lands them. |
+| `parked-item-report` | Reports parked remediation candidates for human review; schedule disabled by default. |
 | `pr-remediation` | Rebases or fixes managed PRs from CI and review evidence. |
 | `quality-sprint` | Runs parallel quality audits and nominates findings. |
 | `self-update` | Stages an operator-requested Goobers binary update. |
 | `test-suite-quality` | Detects recurring flaky tests and nominates fix or bounded quarantine proposals. |
 | `tutor` | Diagnoses run evidence and proposes confined config changes. |
 | `work-nomination` | Nominates repository work from telemetry and repo signals. |
+
+## Optional parked-item report
+
+`parked-item-report` (#4544) re-reads open, approved items carrying
+`goobers:needs-remediation` and records `parked-item-candidates.json` in the run's
+artifacts. Each candidate includes its current issue metadata for human review.
+This is an inventory for selection, not a judgment that a prior failure is fixed.
+It never claims, comments, changes labels, or re-applies `goobers:ready`.
+
+To opt into the daily 06:42 schedule, set that workflow's schedule trigger
+`enabled: true` in your config and validate/apply the change through your normal
+config reload procedure. Adjust the cron expression to change cadence; set
+`enabled: false` to stop scheduled reports. Explicit manual invocation remains
+available with `goobers run --gaggle goobers parked-item-report`.
+
+The read-only scan is bounded to 250 provider candidates, oldest first. A report
+with `truncated: true` is incomplete, not evidence that other parked items do not
+exist; narrow the workflow's label scope or raise `maxItems` for a larger scan.
+An empty successful report contains `candidates: []`; provider failures fail the
+stage instead of masquerading as an empty report. Reports use ordinary run
+artifact retention. Only the human decides which items warrant remediation.
 
 ## Guardrails (confirmed, not just described)
 
@@ -198,7 +220,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 11 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 12 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to

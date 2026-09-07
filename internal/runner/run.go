@@ -837,6 +837,9 @@ func New(cfg Config) (*Runner, error) {
 
 // StartInput is what triggers one run.
 type StartInput struct {
+	// StarterSelection records the scheduler's engine decline in this run's
+	// journal, without changing the workflow definition or placement decision.
+	StarterSelection map[string]any
 	// RunID uniquely identifies this run (the OpenTelemetry trace id). Caller-
 	// supplied — typically the scheduler, which needs this same id for its
 	// claim ledger before dispatch, so claim identity and run identity are one
@@ -1027,6 +1030,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	}
 
 	defer func() { _ = jr.Close() }()
+	if len(in.StarterSelection) > 0 {
+		if err := jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, RunID: in.RunID, Gaggle: in.Gaggle, Workflow: in.Machine.Def.Name, Runner: in.StarterSelection}); err != nil {
+			return Result{}, fmt.Errorf("runner: record starter selection: %w", err)
+		}
+	}
 
 	return r.withActiveRun(ctx, in.RunID, jr, func(ctx context.Context) (result Result, retErr error) {
 		_, err := r.acquirePinnedWorkspace(ctx, jr, &in)

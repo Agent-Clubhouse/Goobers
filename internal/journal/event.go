@@ -245,6 +245,8 @@ const (
 const (
 	// RunnerAnnotationRunRecovery identifies a recovered run.
 	RunnerAnnotationRunRecovery = "run.recovery"
+	// RunnerAnnotationEngineSelection records a declined engine dispatch.
+	RunnerAnnotationEngineSelection = "engine_starter_selection"
 	// RunnerAnnotationTriggerRecovery identifies a recovered pending trigger.
 	RunnerAnnotationTriggerRecovery = "trigger.recovery"
 	// RunnerAnnotationWorkflowDigestDrift identifies in-flight runs whose

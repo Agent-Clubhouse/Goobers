@@ -9,6 +9,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -158,10 +159,16 @@ func newWireFixtures() wireFixtures {
 			},
 		},
 	}
+	engineFallback := &readmodel.EngineFallback{
+		Gaggle: "core", Workflow: "implementation", RunID: "run-1", At: time.Date(2026, 9, 7, 0, 0, 0, 0, time.UTC),
+		Reason: "implement is self-pinned", ReasonClass: "placement_ineligible", PlacementDeclared: true,
+		SelfPinnedStages: []string{"implement"}, UnpinnedGates: []string{"review"},
+	}
 	workflowSummary := readservice.WorkflowSummary{
-		Identity:    readservice.WorkflowReference{Gaggle: "core", Name: "implementation"},
-		DisplayName: "Implementation",
-		Purpose:     "Implement an approved backlog item.",
+		EngineFallback: engineFallback,
+		Identity:       readservice.WorkflowReference{Gaggle: "core", Name: "implementation"},
+		DisplayName:    "Implementation",
+		Purpose:        "Implement an approved backlog item.",
 		Triggers: []apiv1.Trigger{
 			{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"label": "approved"}},
 			{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"},
@@ -188,6 +195,7 @@ func newWireFixtures() wireFixtures {
 		Warnings: []validate.CodedWarning{warning},
 	}
 	runSummary := readservice.RunSummary{
+		EngineFallback:  engineFallback,
 		ID:              "run-123",
 		Workflow:        "implementation",
 		WorkflowVersion: 7,

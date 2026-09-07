@@ -15,6 +15,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
@@ -175,6 +176,7 @@ func measureRunDiskUsage(runDir, runID string) (runDiskUsage, error) {
 
 // runSummary is the flat, journal-derived row the run-listing commands print.
 type runSummary struct {
+	EngineFallback *readmodel.EngineFallback
 	RunID          string
 	DirName        string
 	Workflow       string

@@ -139,7 +139,9 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
 	"a plain list (no --claim) does not require it. --read-only also bypasses\n" +
 	"claim locks, blocked-record reconciliation, scan cursors, and read caches,\n" +
-	"and uses only the github:issues:read capability.\n\n" +
+	"and uses only the github:issues:read capability. When inputs.resultFile\n" +
+	"is declared, it also writes a read-only candidate report with scan coverage;\n" +
+	"candidates are for inspection, not claims or permission to re-ready work.\n\n" +
 	"--debug writes candidate eligibility, exclusion, and claim-loss details to\n" +
 	"stderr. Diagnostics contain item IDs and selection metadata only; normal\n" +
 	"output and claim behavior are unchanged.\n\n" +
@@ -2158,11 +2160,14 @@ func runReadOnlyBacklogQuery(
 		return 1
 	}
 
+	if code := writeReadOnlyBacklogReport(eligible, window.Truncated, env.stderr); code != 0 {
+		return code
+	}
+	if window.Truncated {
+		warnBacklogScanCoverage(env, opts, backlogEligibilityScan{eligible: eligible, window: window, nextCursor: window.Cursor})
+	}
 	if len(eligible) == 0 {
 		env.debugf("eligible set empty")
-		if window.Truncated {
-			warnBacklogScanCoverage(env, opts, backlogEligibilityScan{eligible: eligible, window: window, nextCursor: window.Cursor})
-		}
 		pln(env.stdout, "no eligible items")
 		return 0
 	}
