@@ -424,7 +424,9 @@ The default image carries the Copilot CLI agent harness. Its home is mounted fro
 an `emptyDir` in the reference worker so `$HOME/.copilot` remains writable while
 the container root filesystem stays read-only. To use another harness, derive an
 image that installs it and set the matching `runner.harnessCommand` in
-`instance.yaml`; the map is keyed by harness name.
+`instance.yaml`; the map is keyed by harness name. Copilot wrappers must implement
+the [explicit launcher session contract](../../docs/guides/harness-launcher-contract.md)
+and pass admission/preflight; simple argument forwarding is not sufficient.
 
 Budget for the Windows image: roughly **2.4 GB**, and about **4m30s** for a cold
 pull on a fresh node. If your operator-selected capacity policy scales the Windows

@@ -2,9 +2,14 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func TestCopilotPreflightProbesCompleteLauncherPrefix(t *testing.T) {
@@ -35,5 +40,136 @@ func TestCopilotPreflightProbesCompleteLauncherPrefix(t *testing.T) {
 	}
 	if !reflect.DeepEqual(command, original) {
 		t.Fatalf("preflight mutated configured launcher: %q", command)
+	}
+}
+
+type launcherProcessRunner func(context.Context, ProcessRequest) (ProcessResult, error)
+
+func (f launcherProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
+	return f(ctx, req)
+}
+
+func TestLauncherContractRejectsAmbiguousSessionSemantics(t *testing.T) {
+	for _, input := range []string{
+		`{}`, `{"version":2,"sessionMode":"adapter-managed"}`,
+		`{"version":1,"sessionMode":"auto"}`,
+		`{"version":1,"sessionMode":"adapter-managed","sessionArgs":["--id"]}`,
+		`{"version":1,"sessionMode":"templated"}`,
+		`{"version":1,"sessionMode":"templated","sessionArgs":["--id","fixed"]}`,
+		`{"version":1,"sessionMode":"templated","sessionArgs":["{sessionId}","{workspace}"]}`,
+		`{"version":1,"sessionMode":"wrapper-managed","unknown":true}`,
+		`{"version":1,"sessionMode":"wrapper-managed"} {}`,
+	} {
+		if _, err := parseLauncherContract([]byte(input)); err == nil {
+			t.Errorf("accepted incompatible contract: %s", input)
+		}
+	}
+}
+
+func TestIncompatibleLauncherStopsBeforeAgentOrModelDiscovery(t *testing.T) {
+	var calls int
+	adapter := &CopilotAdapter{
+		Command: []string{"wrapper", "copilot"}, RequireLauncherContract: true,
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			calls++
+			if !reflect.DeepEqual(req.Command, []string{"wrapper", "copilot", launcherContractFlag}) {
+				t.Fatalf("incompatible wrapper reached another probe or dispatch: %q", req.Command)
+			}
+			return ProcessResult{ExitCode: 2}, nil
+		}),
+	}
+	if _, err := adapter.Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "incompatible") {
+		t.Fatalf("preflight = %v", err)
+	}
+	if _, err := adapter.ResolveConfig("auto", nil); err == nil || !strings.Contains(err.Error(), "incompatible") {
+		t.Fatalf("admission = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("probes = %d, want preflight and admission only", calls)
+	}
+}
+
+func TestLauncherPreflightRejectsConflictingConfiguredSessionSelector(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command: []string{"wrapper", "copilot", "--resume", "foreign-session"}, RequireLauncherContract: true,
+		Runner: &fakeProcessRunner{result: ProcessResult{Transcript: []byte(`{"version":1,"sessionMode":"wrapper-managed"}`)}},
+	}
+	if _, err := adapter.Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "selectors conflict") {
+		t.Fatalf("conflict was not rejected before dispatch: %v", err)
+	}
+}
+
+func TestLauncherSessionModesReachRunAndCaptureTheirOwnTranscript(t *testing.T) {
+	for _, mode := range []string{"adapter-managed", "wrapper-managed", "templated"} {
+		t.Run(mode, func(t *testing.T) {
+			workspace, home := t.TempDir(), t.TempDir()
+			t.Setenv("COPILOT_HOME", home)
+			contract := launcherContract{Version: 1, SessionMode: mode}
+			if mode == "templated" {
+				contract.SessionArgs = []string{"--local-capture={sessionId}"}
+			}
+			data, err := json.Marshal(contract)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var probes, attempts int
+			var capturedPath string
+			adapter := &CopilotAdapter{
+				Command: []string{"wrapper", "copilot"}, RequireLauncherContract: true,
+				ExtraEnvAllowlist: []string{"COPILOT_HOME"},
+				Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+					if req.Command[len(req.Command)-1] == launcherContractFlag {
+						probes++
+						return ProcessResult{Transcript: data}, nil
+					}
+					attempts++
+					switch mode {
+					case "adapter-managed":
+						id := commandOptionValue(req.Command, "--session-id")
+						if id == "" {
+							t.Fatal("adapter did not supply its ID")
+						}
+						capturedPath = copilotSessionLogPath(home, id)
+					case "templated":
+						for _, arg := range req.Command {
+							if id, ok := strings.CutPrefix(arg, "--local-capture="); ok {
+								capturedPath = copilotSessionLogPath(home, id)
+							}
+						}
+					case "wrapper-managed":
+						for _, entry := range req.Env {
+							if path, ok := strings.CutPrefix(entry, "GOOBERS_SESSION_TRANSCRIPT="); ok {
+								capturedPath = path
+							}
+						}
+					}
+					if mode != "adapter-managed" && copilotCommandSelectsSession(req.Command) {
+						t.Fatal("adapter injected direct session semantics into another session mode")
+					}
+					if capturedPath == "" {
+						t.Fatal("session capture path missing")
+					}
+					if err := os.MkdirAll(filepath.Dir(capturedPath), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(capturedPath, []byte(`{"type":"assistant.message","data":{"messageId":"result","content":"unique wrapper transcript"}}`+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					return ProcessResult{}, WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+				}),
+			}
+			out, err := adapter.Run(context.Background(), RunRequest{Workspace: workspace, Envelope: testEnvelope(workspace), CompletionPath: DefaultResultPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if probes != 1 || attempts != 1 || !strings.Contains(string(out.Transcript), "unique wrapper transcript") {
+				t.Fatalf("lost launcher contract/capture: probes=%d attempts=%d transcript=%s", probes, attempts, out.Transcript)
+			}
+			if mode == "wrapper-managed" {
+				if _, err := os.Stat(capturedPath); !os.IsNotExist(err) {
+					t.Fatalf("private export not cleaned up after capture: %v", err)
+				}
+			}
+		})
 	}
 }
