@@ -1123,18 +1123,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 				wf.CheckGooberFeatureSupport(def, g.Spec, allowPreview))
 		}
 		ix.checkGooberDirectoryScope(r, g, file)
-		if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok && g.Spec.Gaggle != "" {
-			ix.referenceNotFound(r, errorGooberGaggleReference, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
-				g.Spec.Gaggle, g.Spec.Gaggle)
-		}
-		for _, wf := range g.Spec.Workflows {
-			identity := workflowIdentity{gaggle: g.Spec.Gaggle, name: wf}
-			if _, ok := ix.workflows[identity]; !ok && !ix.sharedGooberWorkflowExists(g.Spec.Gaggle, wf) {
-				ix.referenceNotFound(r, errorGooberWorkflowReference, file, "Goober", g.Name,
-					"spec.workflows references %q, but no Workflow/%s is defined in gaggle %q",
-					wf, wf, g.Spec.Gaggle)
-			}
-		}
+		ix.checkGooberReferences(r, g, file)
 		for _, value := range g.Spec.Capabilities {
 			if capability.Known(value) {
 				if !capability.StageDeclarable(value) {
@@ -2086,7 +2075,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			switch {
 			case !ok:
 				ix.referenceNotFound(r, errorTaskGooberReference, file, "Workflow", w.Name, "task %q targets goober %q which is not defined", t.Name, t.Goober)
-			case goober.Spec.Gaggle != "" && goober.Spec.Gaggle != w.Spec.Gaggle:
+			case gooberInAnotherGaggle(goober.Spec, w.Spec.Gaggle):
 				r.add(errorTaskGooberGaggle, Error, file, "Workflow", w.Name,
 					"task %q targets goober %q in gaggle %q, not workflow gaggle %q",
 					t.Name, t.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)
@@ -2104,7 +2093,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 			switch {
 			case !ok:
 				ix.referenceNotFound(r, errorGateGooberReference, file, "Workflow", w.Name, "gate %q reviewer goober %q is not defined", g.Name, g.Agentic.Goober)
-			case goober.Spec.Gaggle != "" && goober.Spec.Gaggle != w.Spec.Gaggle:
+			case gooberInAnotherGaggle(goober.Spec, w.Spec.Gaggle):
 				r.add(errorGateGooberGaggle, Error, file, "Workflow", w.Name,
 					"gate %q reviewer goober %q is in gaggle %q, not workflow gaggle %q",
 					g.Name, g.Agentic.Goober, goober.Spec.Gaggle, w.Spec.Gaggle)

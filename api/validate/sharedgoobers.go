@@ -6,6 +6,25 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+func gooberInAnotherGaggle(spec apiv1.GooberSpec, gaggle string) bool {
+	return spec.Gaggle != "" && spec.Gaggle != gaggle
+}
+
+func (ix *index) checkGooberReferences(r *Report, g apiv1.Goober, file string) {
+	if _, ok := ix.gaggles[g.Spec.Gaggle]; !ok && g.Spec.Gaggle != "" {
+		ix.referenceNotFound(r, errorGooberGaggleReference, file, "Goober", g.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
+			g.Spec.Gaggle, g.Spec.Gaggle)
+	}
+	for _, name := range g.Spec.Workflows {
+		identity := workflowIdentity{gaggle: g.Spec.Gaggle, name: name}
+		if _, ok := ix.workflows[identity]; !ok && !ix.sharedGooberWorkflowExists(g.Spec.Gaggle, name) {
+			ix.referenceNotFound(r, errorGooberWorkflowReference, file, "Goober", g.Name,
+				"spec.workflows references %q, but no Workflow/%s is defined in gaggle %q",
+				name, name, g.Spec.Gaggle)
+		}
+	}
+}
+
 func (ix *index) checkGooberDirectoryScope(r *Report, g apiv1.Goober, file string) {
 	shared := strings.HasPrefix(file, "../goobers/")
 	if shared {

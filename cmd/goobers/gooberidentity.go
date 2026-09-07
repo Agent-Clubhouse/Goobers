@@ -58,8 +58,9 @@ func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpe
 	return instructions, nil
 }
 
-func loadGooberSkillPackages(configDir, gaggle string, goobers map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
-	type skillSource struct{ name, gaggle string }
+type skillSource struct{ name, gaggle string }
+
+func gooberSkillSources(gaggle string, goobers map[string]apiv1.GooberSpec) map[string]skillSource {
 	names := map[string]skillSource{}
 	for _, goober := range goobers {
 		if goober.Gaggle != "" && goober.Gaggle != gaggle {
@@ -73,6 +74,11 @@ func loadGooberSkillPackages(configDir, gaggle string, goobers map[string]apiv1.
 			names[key] = skillSource{name: skill, gaggle: goober.Gaggle}
 		}
 	}
+	return names
+}
+
+func loadGooberSkillPackages(configDir, gaggle string, goobers map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
+	names := gooberSkillSources(gaggle, goobers)
 	sorted := make([]string, 0, len(names))
 	for name := range names {
 		sorted = append(sorted, name)
