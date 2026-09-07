@@ -232,6 +232,8 @@ Use only the target release's registry. The current set is:
 | `github:branch:delete` | Delete a remote GitHub branch. |
 | `github:pr:merge` | Merge a GitHub pull request. |
 | `contents:read` | Fetch a separately declared reference repository with its repo-scoped read credential. |
+| `github:code-scanning:read` | Read GitHub code-scanning alerts. Read-only; grants no issue, pull-request, or contents write. |
+| `github:dependabot-alerts:read` | Read GitHub Dependabot alerts. A separate GitHub permission from code scanning, so a workflow can take one feed without the other. |
 | `ado:code:read` | Inspect Azure Repos code and pull requests read-only. |
 | `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. |
 | `ado:pr:write` | Open and update Azure Repos pull requests (no completion or merge authority). |

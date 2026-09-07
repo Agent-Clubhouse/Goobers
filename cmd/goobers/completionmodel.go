@@ -489,6 +489,16 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "min-age", takesArg: true, desc: "Minimum terminal run age required for deletion"},
 		{name: "after", takesArg: true, desc: "Resume after this branch name in lexical order"},
 	},
+	"security-alerts-query": {
+		{name: "source", takesArg: true, values: []string{"code-scanning", "dependabot"}, desc: "Alert feed to read"},
+		{name: "state", takesArg: true, values: []string{"open", "dismissed", "fixed", "auto_dismissed", "all"}, desc: "Alert state filter (default open)"},
+		{name: "severity", takesArg: true, desc: "Comma-separated severity filter"},
+		{name: "tool", takesArg: true, desc: "Code-scanning analysis tool name"},
+		{name: "ref", takesArg: true, desc: "Code-scanning git ref"},
+		{name: "ecosystem", takesArg: true, desc: "Comma-separated Dependabot package ecosystems"},
+		{name: "scope", takesArg: true, values: []string{"runtime", "development"}, desc: "Dependabot dependency scope"},
+		{name: "max-results", takesArg: true, desc: "Maximum alerts to collect"},
+	},
 	"telemetry-query": {
 		{name: "window", takesArg: true, desc: "Lookback window (e.g. 24h)"},
 		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise", "workflow-untriggered", "stage-unreached", "credit-assignment", "learning-episode"}, desc: "Aggregate to detect"},

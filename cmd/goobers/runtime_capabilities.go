@@ -697,6 +697,13 @@ func init() {
 			withSynopsis(synopsisByID["post-merge"]).
 			withHelp("post-merge fan-out + close the referenced issue (a workflow stage)", postMergeHelp).
 			withExamples("goobers post-merge"),
+		stageCommand("security-alerts-query", apicontract.ActionWorkflowExecution, runSecurityAlertsQuery).
+			withSynopsis(synopsisByID["security-alerts-query"]).
+			withHelp("emit bounded, untrusted security alerts for work nomination (a connector stage)", securityAlertsQueryHelp).
+			withExamples(
+				"goobers security-alerts-query --source code-scanning --ref refs/heads/main",
+				"goobers security-alerts-query --source dependabot --severity critical,high",
+			),
 		stageCommand("telemetry-query", apicontract.ActionWorkflowExecution, runTelemetryQuery).
 			withSynopsis(synopsisByID["telemetry-query"]).
 			withHelp("emit versioned candidate findings (a connector stage)", telemetryQueryHelp).

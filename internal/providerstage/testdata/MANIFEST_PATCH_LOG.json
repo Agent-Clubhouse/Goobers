@@ -1,9 +1,9 @@
 {
-  "snapshotSha256": "1fcdbbc4560e62f3df505903a60fa3ab1cb5ed4ad1721c5f145ebde2f167f2d0",
+  "snapshotSha256": "39930c7dd0e85ecc56ac32ec914b6db42c09faa4ff1856ef79ed0128a14885e0",
   "changes": [
     {
       "version": 1,
-      "description": "Initial snapshot: the subcommand→capability-requirement table as committed when the drift guard landed. Breaks nothing — this records the live contract as-is; motivated by #2386 (TBH-1) silently narrowing backlog-dedupe/gather-issue-context/gather-pr-context requirements and breaking every shipped config."
+      "description": "Initial snapshot: the subcommand\u2192capability-requirement table as committed when the drift guard landed. Breaks nothing \u2014 this records the live contract as-is; motivated by #2386 (TBH-1) silently narrowing backlog-dedupe/gather-issue-context/gather-pr-context requirements and breaking every shipped config."
     },
     {
       "version": 2,
@@ -11,23 +11,27 @@
     },
     {
       "version": 3,
-      "description": "Add pr-comment-watch: label open goober PRs carrying unaddressed human comments (github:issues:write via label-issue). Purely additive — a new command with one requirement; no existing command's requirements change, so every shipped config keeps compiling."
+      "description": "Add pr-comment-watch: label open goober PRs carrying unaddressed human comments (github:issues:write via label-issue). Purely additive \u2014 a new command with one requirement; no existing command's requirements change, so every shipped config keeps compiling."
     },
     {
       "version": 4,
-      "description": "Add file-issues (#2251, TBH-1 first slice): the nomination workflows' deterministic issue filer. --check requires the exact github:issues:read grant for the dedupe scan; the write path requires github:issues:write. The filer never applies goobers:approved (the SEC-047 trust label is a maintainer's decision), so it declares no github:issues:approve requirement. Purely additive — a new command; no existing command's requirements change, so every shipped config keeps compiling."
+      "description": "Add file-issues (#2251, TBH-1 first slice): the nomination workflows' deterministic issue filer. --check requires the exact github:issues:read grant for the dedupe scan; the write path requires github:issues:write. The filer never applies goobers:approved (the SEC-047 trust label is a maintainer's decision), so it declares no github:issues:approve requirement. Purely additive \u2014 a new command; no existing command's requirements change, so every shipped config keeps compiling."
     },
     {
       "version": 5,
-      "description": "file-issues (#2251, decision 004): declare github:issues:approve as an OPTIONAL use. The filer applies goobers:approved only to a nomination whose evidence matches a deterministic tool finding (go vet / golangci-lint / go test) byte for byte, and only when the autoApprove=deterministic-only INPUT opts in — the manifest sees only args, so it cannot require the credential on that input; admission requires it through the policy table instead (the input prescribes approve-issue, whose contract requires github:issues:approve). The label add goes through the approve credential alone. Optional is never required, so no shipped config's admission changes."
+      "description": "file-issues (#2251, decision 004): declare github:issues:approve as an OPTIONAL use. The filer applies goobers:approved only to a nomination whose evidence matches a deterministic tool finding (go vet / golangci-lint / go test) byte for byte, and only when the autoApprove=deterministic-only INPUT opts in \u2014 the manifest sees only args, so it cannot require the credential on that input; admission requires it through the policy table instead (the input prescribes approve-issue, whose contract requires github:issues:approve). The label add goes through the approve credential alone. Optional is never required, so no shipped config's admission changes."
     },
     {
       "version": 6,
-      "description": "Add ResultFileSupport (#4415): a tri-state (Unsupported/Always/Optional) classification of whether a built-in command produces a result file, resolved via the new SupportsResultFile accessor and consumed by a new admission check (v_2_0/v_3_0 compile.go's resultFileContractProblem) that rejects a stage declaring inputs.resultFile/expectedOutputs for a command that never writes one (e.g. record-merge-refusal). Purely additive metadata: an explicit ResultFileOptional override on reconcile-branches/telemetry-query (previously implicit Unsupported by omission, since they declare no ResultFile string, even though both can write one conditionally). Deliberately NOT extended to the capability-free built-ins builtincmd also inventories (__demo-provider, cancel-pending-ci, check-fail-first, docs-churn, gate-removal-guard, ios-simulator-test, mcp-io, self-update, validate) — this manifest covers only commands with declared capability requirements (see the package comment), and SupportsResultFile's ok=false for an absent command is treated as permissive by the new check, not as ResultFileUnsupported, so leaving them out changes nothing about what it rejects. No existing command's Capabilities/ResultFile/claim-ledger fields change, so every shipped config's capability admission is unaffected."
+      "description": "Add ResultFileSupport (#4415): a tri-state (Unsupported/Always/Optional) classification of whether a built-in command produces a result file, resolved via the new SupportsResultFile accessor and consumed by a new admission check (v_2_0/v_3_0 compile.go's resultFileContractProblem) that rejects a stage declaring inputs.resultFile/expectedOutputs for a command that never writes one (e.g. record-merge-refusal). Purely additive metadata: an explicit ResultFileOptional override on reconcile-branches/telemetry-query (previously implicit Unsupported by omission, since they declare no ResultFile string, even though both can write one conditionally). Deliberately NOT extended to the capability-free built-ins builtincmd also inventories (__demo-provider, cancel-pending-ci, check-fail-first, docs-churn, gate-removal-guard, ios-simulator-test, mcp-io, self-update, validate) \u2014 this manifest covers only commands with declared capability requirements (see the package comment), and SupportsResultFile's ok=false for an absent command is treated as permissive by the new check, not as ResultFileUnsupported, so leaving them out changes nothing about what it rejects. No existing command's Capabilities/ResultFile/claim-ledger fields change, so every shipped config's capability admission is unaffected."
     },
     {
       "version": 7,
-      "description": "Add preflight-repo-write (#4414): the repository-write credential preflight stage, wired first in the implementation workflow. Requires repo:push, the same capability push-branch already requires — the check runs read-only requests with that credential. Purely additive — a new command with one requirement; no existing command's requirements change, so every shipped config keeps compiling."
+      "description": "Add preflight-repo-write (#4414): the repository-write credential preflight stage, wired first in the implementation workflow. Requires repo:push, the same capability push-branch already requires \u2014 the check runs read-only requests with that credential. Purely additive \u2014 a new command with one requirement; no existing command's requirements change, so every shipped config keeps compiling."
+    },
+    {
+      "version": 8,
+      "description": "Add security-alerts-query (#2984, #2987): the read-only security-alert intake connector stage. Each of the two feeds requires its own EXACT least-privilege read grant, selected by --source: github:code-scanning:read for code scanning, github:dependabot-alerts:read for Dependabot. Exact, so an issue-write or PR-write grant can never release either credential; and split, so a workflow that only nominates dependency work never receives code-scanning access. The stage declares no write capability at all \u2014 it reads alerts and emits an artifact, and the nomination that follows is a separate, separately credentialed stage. Purely additive: a new command with new capabilities; no existing command's requirements change, so every shipped config keeps compiling."
     }
   ]
 }

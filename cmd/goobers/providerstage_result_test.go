@@ -17,7 +17,11 @@ import (
 
 func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 	tests := []struct {
-		command     string
+		command string
+		// args are extra arguments the command needs before it can reach its
+		// first provider-stage failure, for a command whose own flags are
+		// validated first (a usage error is not what this test is about).
+		args        []string
 		errorReason string
 	}{
 		{command: "apply-verdict", errorReason: "selectedNumber is required"},
@@ -37,6 +41,7 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 		{command: "rebase-pr", errorReason: "selectedNumber and head are required"},
 		{command: "reconcile-post-merge", errorReason: "instance.yaml"},
 		{command: "remediation-checkpoint", errorReason: "GOOBERS_RUN_ID is not set"},
+		{command: "security-alerts-query", args: []string{"--source", "code-scanning"}, errorReason: "instance.yaml"},
 		{command: "update-behind-pr", errorReason: "instance.yaml"},
 	}
 
@@ -53,7 +58,7 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 			}
 			missingRoot := filepath.Join(t.TempDir(), "missing-instance")
 
-			code, _, stderr := runArgs(t, tt.command, missingRoot)
+			code, _, stderr := runArgs(t, append(append([]string{tt.command}, tt.args...), missingRoot)...)
 			if code != 1 {
 				t.Fatalf("code = %d, stderr = %q, want 1", code, stderr)
 			}
@@ -83,6 +88,7 @@ func TestProviderChainCommandsWriteEarlyFailureResult(t *testing.T) {
 func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
 	tests := []struct {
 		command     string
+		args        []string
 		resultFile  string
 		errorReason string
 	}{
@@ -92,6 +98,7 @@ func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
 		{command: "post-merge", resultFile: "post-merge-result.json", errorReason: "instance.yaml"},
 		{command: "reconcile-post-merge", resultFile: "reconcile-post-merge-result.json", errorReason: "instance.yaml"},
 		{command: "remediation-checkpoint", resultFile: "checkpoint-result.json", errorReason: "GOOBERS_RUN_ID is not set"},
+		{command: "security-alerts-query", resultFile: "security-alerts.json", args: []string{"--source", "dependabot"}, errorReason: "instance.yaml"},
 		{command: "update-behind-pr", resultFile: "update-behind-result.json", errorReason: "instance.yaml"},
 	}
 
@@ -104,7 +111,7 @@ func TestProviderChainCommandsUseDefaultResultFile(t *testing.T) {
 			t.Chdir(workDir)
 			missingRoot := filepath.Join(t.TempDir(), "missing-instance")
 
-			code, _, stderr := runArgs(t, tt.command, missingRoot)
+			code, _, stderr := runArgs(t, append(append([]string{tt.command}, tt.args...), missingRoot)...)
 			if code != 1 {
 				t.Fatalf("code = %d, stderr = %q, want 1", code, stderr)
 			}
