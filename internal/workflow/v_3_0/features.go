@@ -603,7 +603,6 @@ const (
 	featureGaggleRunControlsMaxRunDuration      FeatureID = "gaggle.spec.runControls.maxRunDuration"
 	featureGaggleOutboxMirrorPath               FeatureID = "gaggle.spec.outboxMirrorPath"
 	featureGaggleWorkcopiesRoot                 FeatureID = "gaggle.spec.workcopies.root"
-	featureGaggleCostEnabled                    FeatureID = "gaggle.spec.cost.enabled"
 	featureGaggleRequireLabels                  FeatureID = "gaggle.spec.requireLabels"
 	featureGaggleSiblings                       FeatureID = "gaggle.spec.siblings"
 
@@ -842,7 +841,6 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleRunControlsMaxRunDuration,
 		featureGaggleOutboxMirrorPath,
 		featureGaggleWorkcopiesRoot,
-		featureGaggleCostEnabled,
 		featureGaggleRequireLabels,
 		featureGaggleSiblings,
 		featureTaskRunsOn,
@@ -1287,9 +1285,6 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 	}
 	if spec.Workcopies != nil {
 		used.add(featureGaggleWorkcopiesRoot)
-	}
-	if spec.Cost != nil && spec.Cost.Enabled != nil {
-		used.add(featureGaggleCostEnabled)
 	}
 	if spec.RequireLabels != nil {
 		used.add(featureGaggleRequireLabels)

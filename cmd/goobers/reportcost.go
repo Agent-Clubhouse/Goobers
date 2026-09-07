@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -70,29 +71,6 @@ func runReportCost(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
-	db, err := openRollup(instance.NewLayout(root), false)
-	if err != nil {
-		return failProviderStage(stderr, "open cost rollup", err, costReportResultFile)
-	}
-	defer func() { _ = db.Close() }()
-	runDir := filepath.Join(instance.NewLayout(root).ForGaggle(os.Getenv(executor.GaggleEnvVar)).RunsDir(), runID)
-	if err := db.IngestRun(ctx, runDir); err != nil {
-		return failProviderStage(stderr, "ingest current run cost", err, costReportResultFile)
-	}
-
-	prIDs, issueIDs, err := db.CostTargetsForRun(ctx, string(repo.Provider), runID)
-	if err != nil {
-		return failProviderStage(stderr, "query cost targets", err, costReportResultFile)
-	}
-	prCosts, err := db.PullRequestCosts(ctx, string(repo.Provider))
-	if err != nil {
-		return failProviderStage(stderr, "query pull-request costs", err, costReportResultFile)
-	}
-	issueCosts, err := db.IssueCosts(ctx, string(repo.Provider))
-	if err != nil {
-		return failProviderStage(stderr, "query issue costs", err, costReportResultFile)
-	}
-
 	provider, err := newProviderForStage(root, repo, false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 		withStageProviderMutations("cost-report"),
@@ -100,10 +78,64 @@ func runReportCost(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "construct report provider", err, costReportResultFile)
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
+	publication, err := publishCostReports(ctx, root, os.Getenv(executor.GaggleEnvVar), runID, repo, provider)
+	if err != nil {
+		return failProviderStage(stderr, "publish cost reports", err, costReportResultFile)
+	}
 
-	published := 0
-	duplicates := 0
+	if err := writeProviderStageResult(providerInput("resultFile", costReportResultFile), map[string]interface{}{
+		"enabled": true, "published": publication.Published, "pullRequests": publication.PullRequests,
+		"issues": publication.Issues, "duplicateMarkers": publication.DuplicateMarkers,
+	}); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "published %d sticky cost report(s)\n", publication.Published)
+	return 0
+}
+
+type costReportPublication struct {
+	Published        int
+	PullRequests     int
+	Issues           int
+	DuplicateMarkers int
+}
+
+func publishCostReports(
+	ctx context.Context,
+	root, gaggle, runID string,
+	repo providers.RepositoryRef,
+	provider providers.Provider,
+) (costReportPublication, error) {
+	db, err := openRollup(instance.NewLayout(root), false)
+	if err != nil {
+		return costReportPublication{}, fmt.Errorf("open cost rollup: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	runDir := filepath.Join(instance.NewLayout(root).ForGaggle(gaggle).RunsDir(), runID)
+	if err := db.IngestRun(ctx, runDir); err != nil {
+		return costReportPublication{}, fmt.Errorf("ingest current run cost: %w", err)
+	}
+
+	prIDs, issueIDs, err := db.CostTargetsForRun(ctx, string(repo.Provider), runID)
+	if err != nil {
+		return costReportPublication{}, fmt.Errorf("query cost targets: %w", err)
+	}
+	prCosts, err := db.PullRequestCosts(ctx, string(repo.Provider))
+	if err != nil {
+		return costReportPublication{}, fmt.Errorf("query pull-request costs: %w", err)
+	}
+	issueCosts, err := db.IssueCosts(ctx, string(repo.Provider))
+	if err != nil {
+		return costReportPublication{}, fmt.Errorf("query issue costs: %w", err)
+	}
+
+	publication := costReportPublication{
+		PullRequests: len(prIDs),
+		Issues:       len(issueIDs),
+	}
+	backlogRepo := backlogRepoRefForGaggle(instance.NewLayout(root).ForGaggle(gaggle), repo)
 	for _, id := range prIDs {
 		aggregate, ok := findCostAggregate(prCosts, id)
 		if !ok {
@@ -111,16 +143,16 @@ func runReportCost(args []string, stdout, stderr io.Writer) int {
 		}
 		breakdown, err := db.CostBreakdown(ctx, string(repo.Provider), rollup.CostExternalKindPR, id)
 		if err != nil {
-			return failProviderStage(stderr, "query pull-request cost breakdown", err, costReportResultFile)
+			return costReportPublication{}, fmt.Errorf("query pull-request cost breakdown: %w", err)
 		}
 		result, err := providers.UpsertStickyComment(ctx, provider, repo,
 			providers.StickyCommentTarget{Kind: providers.StickyCommentPullRequest, ID: id},
 			costReportMarker, renderCostReport("PR", aggregate, breakdown))
 		if err != nil {
-			return failProviderStage(stderr, "publish pull-request cost report", err, costReportResultFile)
+			return costReportPublication{}, fmt.Errorf("publish pull-request cost report: %w", err)
 		}
-		published++
-		duplicates += len(result.DuplicateIDs)
+		publication.Published++
+		publication.DuplicateMarkers += len(result.DuplicateIDs)
 	}
 	for _, id := range issueIDs {
 		aggregate, ok := findCostAggregate(issueCosts, id)
@@ -129,27 +161,18 @@ func runReportCost(args []string, stdout, stderr io.Writer) int {
 		}
 		breakdown, err := db.CostBreakdown(ctx, string(repo.Provider), rollup.CostExternalKindIssue, id)
 		if err != nil {
-			return failProviderStage(stderr, "query issue cost breakdown", err, costReportResultFile)
+			return costReportPublication{}, fmt.Errorf("query issue cost breakdown: %w", err)
 		}
 		result, err := providers.UpsertStickyComment(ctx, provider, backlogRepo,
 			providers.StickyCommentTarget{Kind: providers.StickyCommentIssue, ID: id},
 			costReportMarker, renderCostReport("issue", aggregate, breakdown))
 		if err != nil {
-			return failProviderStage(stderr, "publish issue cost report", err, costReportResultFile)
+			return costReportPublication{}, fmt.Errorf("publish issue cost report: %w", err)
 		}
-		published++
-		duplicates += len(result.DuplicateIDs)
+		publication.Published++
+		publication.DuplicateMarkers += len(result.DuplicateIDs)
 	}
-
-	if err := writeProviderStageResult(providerInput("resultFile", costReportResultFile), map[string]interface{}{
-		"enabled": true, "published": published, "pullRequests": len(prIDs),
-		"issues": len(issueIDs), "duplicateMarkers": duplicates,
-	}); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	pf(stdout, "published %d sticky cost report(s)\n", published)
-	return 0
+	return publication, nil
 }
 
 func effectiveCostReporting(root, gaggleName string) (bool, error) {

@@ -96,9 +96,6 @@ type Config struct {
 	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Portal         PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
 	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
-	// Cost controls provider-native sticky cost-report publication. Omitted or
-	// enabled omitted defaults on; a gaggle's spec.cost.enabled overrides it.
-	Cost *apiv1.CostConfig `json:"cost,omitempty" yaml:"cost,omitempty"`
 	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
 	// projection loop disabled; standalone engine commands still use defaults.
 	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`

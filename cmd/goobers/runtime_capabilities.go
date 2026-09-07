@@ -665,10 +665,6 @@ func init() {
 			withSynopsis(synopsisByID["report-pr-status"]).
 			withHelp("publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)", reportPRStatusHelp).
 			withExamples("goobers report-pr-status"),
-		stageCommand("report-cost", apicontract.ActionWorkflowExecution, runReportCost).
-			withSynopsis(synopsisByID["report-cost"]).
-			withHelp("publish cumulative sticky cost reports on this run's PR and addressed issues (a workflow stage)", reportCostHelp).
-			withExamples("goobers report-cost"),
 		stageCommand("gate-removal-guard", apicontract.ActionWorkflowExecution, runGateRemovalGuard).
 			withSynopsis(synopsisByID["gate-removal-guard"]).
 			withHelp("block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)", gateRemovalGuardHelp).

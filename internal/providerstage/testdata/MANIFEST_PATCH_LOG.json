@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "326b7da082667e23456676ca0e38e6de4c9a85247eb401d39d59403aee60b8d3",
+  "snapshotSha256": "1fcdbbc4560e62f3df505903a60fa3ab1cb5ed4ad1721c5f145ebde2f167f2d0",
   "changes": [
     {
       "version": 1,
@@ -28,10 +28,6 @@
     {
       "version": 7,
       "description": "Add preflight-repo-write (#4414): the repository-write credential preflight stage, wired first in the implementation workflow. Requires repo:push, the same capability push-branch already requires — the check runs read-only requests with that credential. Purely additive — a new command with one requirement; no existing command's requirements change, so every shipped config keeps compiling."
-    },
-    {
-      "version": 8,
-      "description": "Add report-cost (#4393): the terminal sticky-report publisher requires the exact stage-scoped github:issues:write credential. Purely additive — no existing command's requirements change, and only workflows that explicitly add the new stage acquire the requirement."
     }
   ]
 }

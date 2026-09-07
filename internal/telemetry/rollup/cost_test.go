@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -204,52 +203,6 @@ func TestCostAggregatesBoundsWindowAndFiltersExternalID(t *testing.T) {
 		result.PullRequests[0].ExternalID != "10" ||
 		result.PullRequests[0].NanoAIU == nil || *result.PullRequests[0].NanoAIU != 20 {
 		t.Fatalf("bounded result = %+v", result)
-	}
-}
-
-func TestCostTargetsAndBreakdownForRun(t *testing.T) {
-	db := openTestDB(t, t.TempDir())
-	seedCostRow(t, db, "run-issue", fixtureStart, []costRef{{"issue", "7"}}, []costUsage{{nanoAIU: int64Pointer(20_000_000_000)}})
-	seedCostRow(t, db, "run-pr", fixtureStart.Add(time.Hour), []costRef{{"issue", "7"}, {"pr", "9"}}, []costUsage{{
-		nanoAIU: int64Pointer(2_000_000_000),
-	}})
-	for _, row := range []struct {
-		run, model string
-		input      int64
-		nano       int64
-	}{
-		{"run-issue", "claude-sonnet-5", 10, 20_000_000_000},
-		{"run-pr", "gpt-5.6-sol", 30, 2_000_000_000},
-	} {
-		if _, err := db.sql.Exec(`
-			INSERT INTO stage_model_usage
-				(run_id, stage, traversal, attempt, model, input_tokens, nano_aiu, cost_usd, billing_model, cost_basis)
-			VALUES (?, 'implement', 1, 1, ?, ?, ?, ?, 'ai_credits', 'vendor_reported')`,
-			row.run, row.model, row.input, row.nano, telemetry.NanoAIUToUSD(row.nano)); err != nil {
-			t.Fatalf("insert model usage: %v", err)
-		}
-	}
-
-	prs, issues, err := db.CostTargetsForRun(context.Background(), "github", "run-pr")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(prs, []string{"9"}) || !reflect.DeepEqual(issues, []string{"7"}) {
-		t.Fatalf("targets = prs %v issues %v", prs, issues)
-	}
-	rows, err := db.CostBreakdown(context.Background(), "github", CostExternalKindPR, "9")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 2 || rows[0].RunID != "run-issue" || rows[1].RunID != "run-pr" {
-		t.Fatalf("PR breakdown = %#v", rows)
-	}
-	issueRows, err := db.CostBreakdown(context.Background(), "github", CostExternalKindIssue, "7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(issueRows) != 2 || issueRows[0].Model != "claude-sonnet-5" || issueRows[1].Model != "gpt-5.6-sol" {
-		t.Fatalf("issue breakdown = %#v", issueRows)
 	}
 }
 

@@ -431,17 +431,6 @@
     ]
   },
   {
-    "command": "report-cost",
-    "resultFile": "cost-report-result.json",
-    "capabilities": [
-      {
-        "capability": "github:issues:write",
-        "consequence": "the capability-scoped credential is not injected, so sticky cost-report publication fails at runtime",
-        "exact": true
-      }
-    ]
-  },
-  {
     "command": "report-pr-status",
     "resultFile": "status-result.json",
     "capabilities": [

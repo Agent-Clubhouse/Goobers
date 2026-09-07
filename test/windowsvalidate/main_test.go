@@ -108,7 +108,6 @@ func implementationJournal(t *testing.T, completed bool, events []journal.Event)
 
 func implementationEvents() []journal.Event {
 	return []journal.Event{
-		{Type: journal.EventStageStarted, Stage: "preflight-repo-write"},
 		{Type: journal.EventStageStarted, Stage: "query-backlog"},
 		{Type: journal.EventStageStarted, Stage: "gather-implement-context"},
 		{Type: journal.EventStageStarted, Stage: "warm-module-cache"},
@@ -123,6 +122,5 @@ func implementationEvents() []journal.Event {
 		{Type: journal.EventStageStarted, Stage: "ci-poll"},
 		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: "pass"},
 		{Type: journal.EventStageStarted, Stage: "close-out"},
-		{Type: journal.EventStageStarted, Stage: "report-cost"},
 	}
 }

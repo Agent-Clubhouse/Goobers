@@ -82,10 +82,6 @@
       "description": "Local telemetry rollup store, optional collector push, and journal/rollup retention.",
       "$ref": "#/$defs/telemetry"
     },
-    "cost": {
-      "description": "Provider-native sticky cost-report publication. Omitted defaults to enabled; a gaggle's spec.cost.enabled overrides this instance default.",
-      "$ref": "#/$defs/cost"
-    },
     "externalTelemetry": {
       "description": "Named, read-only operational telemetry connectors workflows may query. A workflow selects only a connector name and generic query inputs, so provider-specific fields stay confined to this section.",
       "type": "object",
@@ -164,17 +160,6 @@
     }
   },
   "$defs": {
-    "cost": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Publish sticky cost reports from successful terminal workflow stages. Omitted defaults to true."
-        }
-      }
-    },
     "tokenRef": {
       "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, a secret in a declared secretStores entry, or one explicitly selected GitHub CLI account. An inline secret value is rejected at load.",
       "type": "object",

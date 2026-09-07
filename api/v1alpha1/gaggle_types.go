@@ -86,11 +86,6 @@ type GaggleSpec struct {
 	// this gaggle. Root is an absolute base path; the gaggle name is appended.
 	// +optional
 	Workcopies *GaggleWorkcopies `json:"workcopies,omitempty" yaml:"workcopies,omitempty"`
-	// Cost overrides the instance-wide cost-report publication setting for
-	// this gaggle. Omitted inherits instance.yaml cost.enabled, which itself
-	// defaults to true.
-	// +optional
-	Cost *CostConfig `json:"cost,omitempty" yaml:"cost,omitempty"`
 	// RequireLabels is the default `requireLabels` value every workflow's
 	// `backlog-query` task in this gaggle inherits, mirroring
 	// BranchNamespace's gaggle-default/per-task-override shape (MIRC-2,
@@ -128,14 +123,6 @@ type GaggleSpec struct {
 	// siblings is a no-op — purely additive, opt-in config.
 	// +optional
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
-}
-
-// CostConfig controls publication of provider-native sticky cost reports.
-type CostConfig struct {
-	// Enabled publishes reports when true. A pointer preserves omitted
-	// (inherit/default-on) separately from an explicit false.
-	// +optional
-	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
 // GaggleRunsOn is the gaggle-level placement floor of DSL 3.0 (dsl-3.0.md §2):

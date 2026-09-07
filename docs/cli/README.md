@@ -167,7 +167,6 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
-| [`goobers report-cost`](#goobers-report-cost) | publish cumulative sticky cost reports on this run's PR and addressed issues (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers resolve-review-threads`](#goobers-resolve-review-threads) | reply to and resolve remediated native review threads (a workflow stage) |
 | [`goobers respond-to-findings`](#goobers-respond-to-findings) | post a validated per-finding remediation response to the claimed PR (a workflow stage) |
@@ -2880,28 +2879,6 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers remediation-checkpoint
-~~~
-
-## `goobers report-cost`
-
-publish cumulative sticky cost reports on this run's PR and addressed issues (a workflow stage)
-
-~~~text
-Usage: goobers report-cost [path]
-
-Publish one versioned sticky cost report on each pull request and addressed
-issue attributed to this run. Reports aggregate all known runs, preserve
-unmeasured versus measured-zero values, and disclose incomplete coverage.
-
-Publication defaults on. instance.yaml cost.enabled sets the default and a
-gaggle's spec.cost.enabled overrides it. The stage requires the explicit
-github:issues:write credential capability.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers report-cost
 ~~~
 
 ## `goobers report-pr-status`

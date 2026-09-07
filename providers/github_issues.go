@@ -273,13 +273,6 @@ func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, 
 	return nil
 }
 
-// UpdateWorkItemComment updates an issue or pull-request issue comment. The
-// target id is accepted for provider-neutral parity; GitHub addresses comments
-// by repository-wide comment id.
-func (p *GitHubProvider) UpdateWorkItemComment(ctx context.Context, repo RepositoryRef, _ string, commentID, body string) error {
-	return p.UpdateComment(ctx, repo, commentID, body)
-}
-
 // DeleteComment removes an issue/PR comment. A missing comment is already in
 // the desired state, so deletion is idempotent for concurrent reconcilers.
 func (p *GitHubProvider) DeleteComment(ctx context.Context, repo RepositoryRef, commentID string) error {

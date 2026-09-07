@@ -90,7 +90,6 @@ var synopsisByID = map[string]string{
 	"check-fail-first":       "  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)\n",
 	"open-pr":                "  goobers open-pr                        open or update the run's PR (a workflow stage)\n",
 	"report-pr-status":       "  goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)\n",
-	"report-cost":            "  goobers report-cost                    publish cumulative sticky cost reports (a workflow stage)\n",
 	"gate-removal-guard":     "  goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)\n",
 	"issue-close-out":        "  goobers issue-close-out                comment + close out the claimed issue (a workflow stage)\n",
 	"pr-comment-watch":       "  goobers pr-comment-watch               label open goober PRs with unaddressed human comments goobers:needs-remediation (a workflow stage)\n",

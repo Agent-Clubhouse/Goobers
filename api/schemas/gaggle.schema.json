@@ -101,17 +101,6 @@
             "root": { "type": "string", "minLength": 1, "description": "Absolute base path for this gaggle's managed mirrors and worktrees. Overrides instance.yaml workcopies.root." }
           }
         },
-        "cost": {
-          "description": "Per-gaggle override for provider-native sticky cost reports. Omitted inherits instance.yaml cost.enabled; an omitted enabled value also inherits.",
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean",
-              "description": "Whether successful terminal workflow stages publish sticky cost reports for this gaggle."
-            }
-          }
-        },
         "requireLabels": {
           "description": "Default requireLabels value every workflow's backlog-query task in this gaggle inherits unless the task declares its own requireLabels input (full replace, not merge — same shape as branchNamespace/headPrefix) (MIRC-2, #1901).",
           "type": "array",
