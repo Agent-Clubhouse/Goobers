@@ -30,6 +30,7 @@ on:
 permissions:
   contents: read
   issues: read
+  pull-requests: read
 
 concurrency:
   group: design-ledger-reconcile
@@ -55,3 +56,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOBERS_DESIGN_LEDGER_REPO: ${{ github.repository }}
         run: go test -tags=integration ./test/designstatus/... -run TestIntegrationDesignDeliveryLedgersMatchIssueState -v
+
+      - name: Reconcile dormant workflow blockers
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOBERS_DESIGN_LEDGER_REPO: ${{ github.repository }}
+        run: go test -tags=integration ./test/workflowinventory/... -run TestIntegrationDormantWorkflowBlockersRemainOpen -v

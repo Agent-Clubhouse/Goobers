@@ -80,46 +80,25 @@ func TestIntegrationDesignDeliveryLedgersMatchIssueState(t *testing.T) {
 			t.Errorf("resolve %s on %s: %v", ref, spec, err)
 			return false, false
 		}
-		state := strings.EqualFold(item.State, "closed")
+		state, err := deliveryReferenceClosed(item, func(id string) (providers.PullRequestSummary, error) {
+			return provider.GetPullRequest(ctx, repo, id)
+		})
+		if err != nil {
+			t.Errorf("resolve delivery %s on %s: %v", ref, spec, err)
+			return false, false
+		}
 		closed[ref] = state
 		return state, true
 	}
 
 	var checked int
 	for _, doc := range docs {
-		if len(doc.DeliveredBy) == 0 {
-			continue
-		}
-		var open []string
-		resolvedAll := true
-		for _, ref := range doc.DeliveredBy {
-			isClosed, ok := resolve(ref)
-			if !ok {
-				resolvedAll = false
-				continue
-			}
-			if !isClosed {
-				open = append(open, ref)
-			}
-		}
-		if !resolvedAll {
+		if len(doc.DeliveredBy)+len(doc.Tracking)+len(doc.Remaining) == 0 {
 			continue
 		}
 		checked++
-
-		switch doc.Status {
-		case "implemented":
-			if len(open) > 0 {
-				t.Errorf("%s is marked `implemented` but its delivery ledger still has open issue(s) %s — "+
-					"either the status ran ahead of the work, or the ledger names issues that are not delivery",
-					doc.Path, strings.Join(open, ", "))
-			}
-		case "draft", "approved":
-			if len(open) == 0 {
-				t.Errorf("%s is marked `%s` but every issue in its delivery ledger (%s) is closed — "+
-					"if it shipped, mark it `implemented`; if the ledger is only partial, say what remains",
-					doc.Path, doc.Status, strings.Join(doc.DeliveredBy, ", "))
-			}
+		for _, problem := range reconcileDelivery(doc, resolve) {
+			t.Error(problem)
 		}
 	}
 	t.Logf("reconciled %d design document(s) with a delivery ledger against %s", checked, spec)
