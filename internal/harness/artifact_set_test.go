@@ -89,3 +89,44 @@ func TestExecutorManifestArtifactSet(t *testing.T) {
 		})
 	}
 }
+
+func TestExecutorReviewManifestArtifactSet(t *testing.T) {
+	for _, reported := range []bool{false, true} {
+		rec := &fakeRecorder{}
+		adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+			manifest := artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.ManifestEntry{{Name: "review.report", Path: "report.txt", MediaType: "text/plain"}}}
+			data, err := json.Marshal(manifest)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(req.Workspace, "manifest.json"), data, 0o600); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(req.Workspace, "report.txt"), []byte("review evidence"), 0o600); err != nil {
+				return err
+			}
+			verdict := apiv1.Verdict{Decision: apiv1.VerdictPass}
+			if reported {
+				verdict.Evidence = []apiv1.ArtifactPointer{{Path: "artifacts/forged", Digest: apiv1.Digest(nil)}}
+			}
+			return WriteCompletion(req.Workspace, req.CompletionPath, verdict)
+		}}
+		e, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), rec, rec, rec, journal.NewRegistryScrubber(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		env := testEnvelope(t.TempDir())
+		env.Inputs = map[string]interface{}{InputArtifactManifestFile: "manifest.json"}
+		verdict, err := e.Review(context.Background(), env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reported {
+			if verdict.Decision != apiv1.VerdictFail || len(verdict.Evidence) != 0 || len(rec.artifacts) != 0 {
+				t.Fatalf("untrusted review pointers accepted: %+v", verdict)
+			}
+		} else if verdict.Decision != apiv1.VerdictPass || len(verdict.Evidence) != 2 || verdict.Evidence[0].Digest != apiv1.Digest(rec.artifacts[1].data) {
+			t.Fatalf("review did not publish index first: %+v", verdict)
+		}
+	}
+}

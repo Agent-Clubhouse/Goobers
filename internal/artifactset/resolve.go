@@ -179,12 +179,12 @@ func decodeDocument(data []byte, target any) error {
 	// A second member with the same name must not silently override the first,
 	// including within embedded pointers. Bound nesting independently of bytes.
 	if err := uniqueJSON(json.NewDecoder(bytes.NewReader(data)), 0); err != nil {
-		return fmt.Errorf("%w: malformed index: %w", ErrInvalid, err)
+		return fmt.Errorf("%w: malformed artifact-set document", ErrInvalid)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("%w: malformed index: %w", ErrInvalid, err)
+		return fmt.Errorf("%w: malformed artifact-set document", ErrInvalid)
 	}
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: trailing JSON", ErrInvalid)
