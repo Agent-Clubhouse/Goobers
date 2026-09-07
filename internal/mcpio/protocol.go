@@ -475,7 +475,7 @@ func toolDefs() []toolDef {
 		},
 		{
 			Name:        "publish_output",
-			Description: "Write this stage's declared output content. Replaces writing a file yourself — call this with your finished output instead of using a file-editing tool, so it's reliably picked up by the runner.",
+			Description: "Write this stage's declared output content, or its staging JSON manifest in artifactManifestFile mode. Call this with the complete final content; the runner validates and records any declared payloads after completion.",
 			InputSchema: map[string]interface{}{
 				"type":                 "object",
 				"properties":           map[string]interface{}{"content": map[string]interface{}{"type": "string", "description": "The complete output content."}},

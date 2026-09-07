@@ -121,15 +121,17 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 		return "", nil
 	}
 	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
+	artifactManifestFile, _ := req.Envelope.Inputs[InputArtifactManifestFile].(string)
 	cfg := mcpio.Config{
-		Workspace:    req.Workspace,
-		ArtifactFile: artifactFile,
-		ReceiptFile:  goobersIOReceiptFile(),
-		Inputs:       req.ContextPaths,
-		RunID:        req.Envelope.RunID,
-		WorkflowID:   req.Envelope.WorkflowID,
-		TaskID:       req.Envelope.TaskID,
-		Gaggle:       req.Envelope.Gaggle,
+		Workspace:            req.Workspace,
+		ArtifactFile:         artifactFile,
+		ArtifactManifestFile: artifactManifestFile,
+		ReceiptFile:          goobersIOReceiptFile(),
+		Inputs:               req.ContextPaths,
+		RunID:                req.Envelope.RunID,
+		WorkflowID:           req.Envelope.WorkflowID,
+		TaskID:               req.Envelope.TaskID,
+		Gaggle:               req.Envelope.Gaggle,
 	}
 	configRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
 	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
@@ -173,10 +175,14 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 // falls back to apply_patch/create every time.
 func goobersIOPromptSection(req RunRequest) string {
 	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
+	artifactManifestFile, _ := req.Envelope.Inputs[InputArtifactManifestFile].(string)
 	var b strings.Builder
 	b.WriteString("## goobers-io tools\n\n")
 	if artifactFile != "" {
 		b.WriteString("Call `publish_output` with your complete final output when you are done — do not write it to a file yourself with any other tool.\n\n")
+	}
+	if artifactManifestFile != "" {
+		b.WriteString("Write the declared payload files inside your workspace, then call `publish_output` with the complete artifact-set staging JSON manifest (schemaVersion: goobers.dev/stage-artifact-set/v1alpha1; entries: unique name, workspace-relative path, mediaType). This publishes only the staging manifest. Leave completion artifacts/evidence empty: the runner validates, sanitizes, and records the payloads and authors the slot-0 index. Do not invent artifact paths or digests.\n\n")
 	}
 	if len(req.ContextPaths) > 0 {
 		b.WriteString("Use `list_inputs`, `grep_input`, and `read_input` to examine the upstream content listed under Context above, instead of opening those files directly. Prefer `grep_input` to search a large input, or `read_input` with a line range around a match, rather than reading a large input in one call.\n\n")
