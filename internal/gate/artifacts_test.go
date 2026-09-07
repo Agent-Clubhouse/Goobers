@@ -78,3 +78,50 @@ func TestArtifactCheckRegistryRefusesAmbiguity(t *testing.T) {
 		t.Fatal("ambiguous registry accepted")
 	}
 }
+
+func TestArtifactReaderFactoryFailuresNeverInvokeCheck(t *testing.T) {
+	infra := errors.New("journal unavailable")
+	for _, tc := range []struct {
+		name        string
+		factory     OpenArtifactReader
+		wantOutcome string
+		wantErr     error
+	}{
+		{name: "missing factory"},
+		{name: "nil reader", factory: func(context.Context, string, string) (ArtifactReader, error) { return nil, nil }},
+		{name: "invalid journal", factory: func(context.Context, string, string) (ArtifactReader, error) { return nil, artifactset.ErrInvalid }, wantOutcome: OutcomeFail},
+		{name: "unavailable journal", factory: func(context.Context, string, string) (ArtifactReader, error) { return nil, infra }, wantErr: infra},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &AutomatedEvaluator{OpenArtifacts: tc.factory, ArtifactChecks: map[string]ArtifactCheckFunc{"evidence": func(context.Context, map[string]interface{}, map[string]string, []apiv1.ContextPointer, artifactset.Reader) (string, error) {
+				t.Fatal("check invoked without a valid reader")
+				return OutcomePass, nil
+			}}}
+			got, err := e.Evaluate(context.Background(), apiv1.AutomatedGate{Check: "evidence"}, apiv1.InvocationEnvelope{})
+			if got != tc.wantOutcome || (err == nil) != (tc.wantOutcome == OutcomeFail) {
+				t.Fatalf("Evaluate = %q, %v", got, err)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("lost infrastructure error: %v", err)
+			}
+		})
+	}
+}
+
+func TestArtifactReaderCloseFailureCannotPass(t *testing.T) {
+	closeErr := errors.New("close failed")
+	checkErr := errors.New("check failed")
+	for _, failure := range []error{nil, artifactset.ErrInvalid, checkErr} {
+		r := &testArtifactReader{closeErr: closeErr}
+		e := &AutomatedEvaluator{OpenArtifacts: func(context.Context, string, string) (ArtifactReader, error) { return r, nil }, ArtifactChecks: map[string]ArtifactCheckFunc{"evidence": func(context.Context, map[string]interface{}, map[string]string, []apiv1.ContextPointer, artifactset.Reader) (string, error) {
+			return OutcomePass, failure
+		}}}
+		got, err := e.Evaluate(context.Background(), apiv1.AutomatedGate{Check: "evidence"}, apiv1.InvocationEnvelope{})
+		if got != "" || !r.closed || !errors.Is(err, closeErr) {
+			t.Fatalf("close failure did not fail closed: %q, %v, closed=%v", got, err, r.closed)
+		}
+		if errors.Is(failure, checkErr) && !errors.Is(err, checkErr) {
+			t.Fatalf("close failure masked check failure: %v", err)
+		}
+	}
+}
