@@ -2,13 +2,43 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/goobers/goobers/internal/runner"
 )
+
+func TestDrainDaemonRunsWaitsForLateSchedulerRegistration(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var runs sync.WaitGroup
+		release := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			drainDaemonRuns(&runs, func() {
+				// An admitted dispatch may not enter Start (and register its
+				// run) until after shutdown has begun joining the scheduler.
+				runs.Add(1)
+				go func() {
+					<-release
+					runs.Done()
+				}()
+			}, newDaemonRunnerRegistry(), 0, nil, io.Discard, nil)
+			close(done)
+		}()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Error("drain returned before the late-registered run finished")
+		default:
+		}
+		close(release)
+		<-done
+	})
+}
 
 func TestDrainDaemonRunsReportsProgressUntilCleanCompletion(t *testing.T) {
 	oldInterval := drainProgressInterval
