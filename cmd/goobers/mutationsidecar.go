@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
 	"os"
 	"strings"
 
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -85,10 +88,33 @@ func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref provid
 		log.Printf("mutation sidecar: open %s: %v", mutationsSidecarFile, err)
 		return
 	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		log.Printf("mutation sidecar: write %s: %v", mutationsSidecarFile, err)
+	if err := persistMutationSidecar(f, append(data, '\n'), func() error { return durability.SyncDir(".") }); err != nil {
+		log.Printf("mutation sidecar: persist %s: %v", mutationsSidecarFile, err)
 	}
+}
+
+type mutationSidecarWriter interface {
+	io.WriteCloser
+	Sync() error
+}
+
+// persistMutationSidecar flushes the receipt before its process can surrender
+// the workspace. Syncing the parent also persists a newly created sidecar name.
+// It cannot close the earlier gap between a forge mutation and this callback;
+// that requires a separately persisted pre-mutation intent and reconciliation.
+func persistMutationSidecar(file mutationSidecarWriter, data []byte, syncParent func() error) error {
+	n, err := file.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	err = errors.Join(err, file.Close())
+	if err != nil {
+		return err
+	}
+	return syncParent()
 }
 
 // externalRefID extracts the bare identifier from a providers.ExternalRef.Ref
