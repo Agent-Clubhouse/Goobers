@@ -765,10 +765,11 @@ type repoRealityDemand struct {
 	labelUses []labelUse
 	selectors []gaggleSelectorQuery
 	ciPoll    []ciPollUse
+	orphans   []backlogRoutingScope
 }
 
 func (d repoRealityDemand) empty() bool {
-	return len(d.labelUses) == 0 && len(d.selectors) == 0 && len(d.ciPoll) == 0
+	return len(d.labelUses) == 0 && len(d.selectors) == 0 && len(d.ciPoll) == 0 && len(d.orphans) == 0
 }
 
 // isGoobersStageCommand reports whether a deterministic task shells out to
@@ -944,6 +945,7 @@ func gatherRepoRealityDemand(root, configDir string, cfg *instance.Config, set *
 			}
 		}
 	}
+	appendBacklogRoutingDemand(cfg, set, demand)
 	return demand
 }
 
@@ -1040,6 +1042,7 @@ func checkGitHubRepositoryReality(
 	stdout io.Writer,
 	collectors ...*diagnosticCollector,
 ) {
+	warnOrphanBacklogItems(label, repo, token, demand.orphans, stdout, collectors...)
 	if len(demand.labelUses) > 0 || len(demand.selectors) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
 		repoLabels, err := targetRepositoryLabels(ctx, repo, token)

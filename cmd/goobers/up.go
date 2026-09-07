@@ -1855,8 +1855,11 @@ func drainDaemonRuns(
 ) daemonDrainResult {
 	done := make(chan struct{})
 	go func() {
-		wg.Wait()
+		// Admitted scheduler dispatches can still enter Start and add to wg.
+		// Join those producers before waiting on the run counter; otherwise
+		// an Add from zero can race with Wait (or arrive after it returned).
 		waitScheduler()
+		wg.Wait()
 		close(done)
 	}()
 
