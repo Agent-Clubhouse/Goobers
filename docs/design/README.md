@@ -36,7 +36,7 @@ word — read the page, not this table, before depending on it.
 | [Agentic mutation-capability audit](agentic-mutation-capability-audit.md) | `historical` | — | — | — |
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `approved` | — | — | — |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — |
-| [Design: Dashboard co-branding and support hooks](cobrand.md) | `implemented` | #1381, #4522 | — | — |
+| [Design: Dashboard co-branding and support hooks](cobrand.md) | `implemented` | #1381 | — | — |
 | [Credit graph contract](credit-graph.md) | `implemented` | #4077, #4078 | — | — |
 | [Cross-Platform Support — Linux & Windows nodes](cross-platform-support.md) | `approved` | — | — | — |
 | [Daemon identity on multi-owner instances](daemon-identity-multi-owner.md) | `implemented` | #3414, #3415, #4517 | — | — |

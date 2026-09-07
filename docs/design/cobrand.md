@@ -6,7 +6,7 @@
 > Area prefix: `CBR`
 > Milestone: **V1 — arbitrary repos / teams / hardening**
 > Related: [`docs/design/dashboard.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/dashboard.md) · [`docs/requirements/portal.md`](../requirements/portal.md) · [`docs/requirements/instance.md`](../requirements/instance.md)
-> Delivered-by: #1381, #4522
+> Delivered-by: #1381
 
 > **Read §13 before treating §3.1, §4.1, §5.4, §6 or §7 as a specification.**
 > Several of them describe promises the implementation did not keep, or keeps
