@@ -476,7 +476,49 @@ func performPostMerge(ctx context.Context, provider, issuesProvider remediationP
 	errs = append(errs, closeErrs...)
 	pf(stdout, "post-merge: labeled %d pr(s) %s (%d clean siblings left untouched), unparked %d blocked-on-sibling pr(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s), closed %d issue(s)\n",
 		len(labeled), needsRemediationLabel, len(skipped), len(unparked), len(unescalated), len(undemoted), len(closed))
+	requestPostMergeReTick(ctx, root, len(unparked)+len(unescalated)+len(undemoted), stdout, stderr)
 	return errs
+}
+
+// requestPostMergeReTick queues an immediate re-tick of this workflow when this
+// merge just made at least one other pull request eligible again (#2492).
+//
+// Clearing the label was never the slow part. The three unpark passes above
+// already remove goobers:blocked-on-sibling, goobers:merge-escalated and the
+// demotion marker the moment a merge resolves them — but nothing then looked at
+// the pull requests they freed, so they waited for the next unrelated trigger.
+// Live on 2026-08-05, PR #2474 was unblocked at 15:32Z when its cited sibling
+// merged and sat untouched until a human merged it by hand at 01:16Z the next
+// day: a 9h44m stale block, against a §8 acceptance bar of no starvation over
+// an hour. A second cohort of five sat idle another 5h15m and was then batch
+// merged by hand in 74 seconds.
+//
+// One re-tick, not one per freed PR: merge-review selects a single pull request
+// per run, and that run's own merge lands back here and re-ticks again, so a
+// cohort drains as a cascade. It is the same mechanism and the same bounded
+// shape as apply-verdict's crowned-lander re-tick, including the idempotency
+// key that collapses repeat requests from one source run, and the daemon still
+// applies ordinary scheduler admission, budgets and concurrency limits to it.
+//
+// A failure here is a warning, never a stage error. The merge has already
+// happened, the labels are already correct, and the next scheduled tick still
+// finds the freed pull requests — so the cost of a failed re-tick is the
+// latency this function exists to remove, not a lost merge.
+func requestPostMergeReTick(ctx context.Context, root string, freed int, stdout, stderr io.Writer) {
+	if freed == 0 {
+		return
+	}
+	runID, workflowName, err := providerRunContext()
+	if err != nil {
+		pf(stderr, "warning: skip post-merge re-tick: %v\n", err)
+		return
+	}
+	if _, err := dispatchPriorityTrigger(ctx, layoutFor(root), providerGaggle(), workflowName, runID); err != nil {
+		pf(stderr, "warning: queue post-merge re-tick: %v\n", err)
+		return
+	}
+	pf(stdout, "queued an immediate %s re-tick: %d pr(s) became eligible when this merge cleared their blocker\n",
+		workflowName, freed)
 }
 
 // unparkSelfHealedEscalations removes goobers:merge-escalated from any open PR
