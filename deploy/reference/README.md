@@ -7,6 +7,10 @@ sync, or reconcile these files at runtime, and provisioning code (Bicep/Terrafor
 accounts) is explicitly out of scope per the shape doc's status header. The quarantined
 `infra/` tree is unrelated and stays quarantined.
 
+Before rollout, review the [control-plane network contract](goobers-system/NETWORKING.md).
+The base is deny-first; proxy, collector and cluster-specific API/ingress paths
+require explicit adopter configuration, not a broad egress bypass.
+
 Every manifest carries a comment citing the shape-doc section it implements, so drift
 between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy/reference`).
 
