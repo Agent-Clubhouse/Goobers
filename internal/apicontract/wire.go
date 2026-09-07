@@ -282,10 +282,11 @@ func newWireFixtures() wireFixtures {
 
 	return wireFixtures{
 		Health: readservice.Health{
-			APIVersion:    readservice.APIVersion,
-			SchemaVersion: readservice.SchemaVersion,
-			Ready:         true,
-			Healthy:       true,
+			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},
+			APIVersion:       readservice.APIVersion,
+			SchemaVersion:    readservice.SchemaVersion,
+			Ready:            true,
+			Healthy:          true,
 			Instance: readservice.InstanceIdentity{
 				Name:        "fixture",
 				Environment: apiv1.EnvironmentDev,

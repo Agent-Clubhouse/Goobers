@@ -24,7 +24,7 @@ import (
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
-func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
+func TestUpReloadsValidConfigByDefaultAndRejectsInvalidEdit(t *testing.T) {
 	previousReloadInterval := configReloadInterval
 	previousDelegationInterval := delegationSweepInterval
 	configReloadInterval = 20 * time.Millisecond
@@ -55,7 +55,7 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 	started := &daemonStartedWriter{started: make(chan struct{})}
 	daemonDone := make(chan int, 1)
 	go func() {
-		daemonDone <- runUpContext(ctx, []string{"--quiet", "--watch-config", root}, started, io.Discard)
+		daemonDone <- runUpContext(ctx, []string{"--quiet", root}, started, io.Discard)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -103,6 +103,10 @@ func TestUpReloadsValidConfigAndRejectsInvalidEdit(t *testing.T) {
 		t.Fatalf("config.reloaded digests = %+v, want distinct old/new digests", reloaded.Runner)
 	}
 	reloadedHealth := waitForDaemonHealth(t, address, "reloaded-example", apiv1.EnvironmentStaging)
+	waitForConfigValue(t, "health to publish the applied digest", func() (struct{}, bool) {
+		status := readDaemonHealth(t, address).DefinitionReload
+		return struct{}{}, status != nil && status.Watching && status.State == "current" && status.AppliedDigest == newDigest && status.ObservedDigest == newDigest && !status.ObservedAt.IsZero()
+	})
 	if !reloadedHealth.Freshness.DefinitionsLoadedAt.After(initialHealth.Freshness.DefinitionsLoadedAt) {
 		t.Fatalf(
 			"definitionsLoadedAt = %s, want after startup value %s",
@@ -208,6 +212,10 @@ spec:
 	if rejected.Error == nil || rejected.Error.Code != "config_reload_rejected" || rejected.Error.Message == "" {
 		t.Fatalf("config.reload.rejected error = %+v", rejected.Error)
 	}
+	waitForConfigValue(t, "health to distinguish rejected disk contents from loaded definitions", func() (struct{}, bool) {
+		status := readDaemonHealth(t, address).DefinitionReload
+		return struct{}{}, status != nil && status.State == "rejected" && status.AppliedDigest != "" && status.ObservedDigest != "" && status.AppliedDigest != status.ObservedDigest
+	})
 
 	code, stdout, stderr = runArgs(t, "run", "--no-wait", "reloaded-implement", root)
 	if code != 0 {

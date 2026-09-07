@@ -280,8 +280,9 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
 	"is always active, and authenticated GitHub push deliveries wake it when\n" +
 	"webhook.secret is configured. Invalid revisions are rejected with the\n" +
-	"last-known-good definitions left running. --watch-config separately watches\n" +
-	"direct edits to the materialized config directory.\n\n" +
+	"last-known-good definitions left running. Direct edits to the materialized\n" +
+	"config directory are watched by default; --watch-config=false explicitly\n" +
+	"disables that watcher. Existing runs retain their pinned definitions.\n\n" +
 	"--diagnostics turns on deep, opt-in capture for hard hangs: any\n" +
 	"deterministic stage still running past a couple of minutes gets a\n" +
 	"periodic native process sample + process tree + open-fd (lsof)\n" +
@@ -294,7 +295,7 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"deploy — use it if the read-model list path is ever suspected of serving\n" +
 	"wrong or incomplete results.\n\n" +
 	"These five behavior controls are intentionally flag-only: --watch-config\n" +
-	"selects a process-local development watcher, --diagnostics is temporary\n" +
+	"controls the process-local definition watcher, --diagnostics is temporary\n" +
 	"debug capture, --drain-timeout applies only after this process receives a\n" +
 	"shutdown signal, --skip-preflight is an unsafe startup escape hatch, and\n" +
 	"--disable-read-model-reads is an emergency rollback. Keeping them out of\n" +
@@ -356,7 +357,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
-	watchConfig := fs.Bool("watch-config", false, "hot-reload edits to the materialized config directory (Git workflow sources reconcile automatically)")
+	watchConfig := fs.Bool("watch-config", true, "hot-reload edits to the materialized config directory (default true; Git workflow sources reconcile automatically)")
 	drainTimeout := fs.Duration("drain-timeout", 0, "force shutdown if graceful drain exceeds this duration (default: wait indefinitely)")
 	var notifications notifyFlag
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
@@ -1224,6 +1225,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// flag only decides whether its own ticker loop (wired further below)
 	// runs automatically.
 	reloader := &configReloader{
+		watching:       *watchConfig,
 		layout:         l,
 		setup:          setup,
 		scheduler:      sched,
@@ -1240,6 +1242,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// attach it so subsequent SetWorkflowEnabled calls can drive on-demand
 	// pollOnce reloads and roll back their on-disk edit on rejection.
 	workflowMutations.AttachReloader(reloader)
+	reloader.publishReloadStatus(time.Now())
 
 	// #3969/#4420 follow-up: this MUST run before crash-resume below, not
 	// after. Resuming a run dispatches its next stage in a background
