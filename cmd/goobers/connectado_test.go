@@ -79,3 +79,27 @@ func TestConnectADORoundTrip(t *testing.T) {
 		t.Fatalf("repeat changed configuration: code=%d err=%v stderr=%s", code, err, stderr)
 	}
 }
+
+func TestADOOnboardingExampleValidatesWithScaffold(t *testing.T) {
+	t.Setenv("GOOBERS_ADO_TOKEN", "")
+	root := filepath.Join(t.TempDir(), "ado")
+	code, _, stderr := runArgs(t, "init", "--template=standard", "--provider=ado", "--ci-command=[\"dotnet\",\"test\"]", "--required-capabilities=dotnet@8", root)
+	if code != 0 {
+		t.Fatalf("init: %d %s", code, stderr)
+	}
+	code, _, stderr = runArgs(t, "connect", "contoso/platform/widgets", root)
+	if code != 0 {
+		t.Fatalf("connect: %d %s", code, stderr)
+	}
+	example, err := os.ReadFile(filepath.Join("..", "..", "examples", "ado-onboarding", "gaggle.yaml.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml"), example, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("example invalid: %d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}

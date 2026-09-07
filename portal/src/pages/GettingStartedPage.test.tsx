@@ -189,6 +189,46 @@ describe("GettingStartedPage", () => {
     window.sessionStorage.clear();
   });
 
+  it.each([true, false])("requires explicit approval for an ADO starter task (complete scan: %s)", async (complete) => {
+    const user = userEvent.setup();
+    const requests: unknown[] = [];
+    render(<GettingStartedPage client={clientWith({
+      "/guided/state": () => ({ body: guidedState({ instanceExists: true }) }),
+      "/guided/actions/inspect-repository": () => ({ body: adoReadyInspection }),
+      "/guided/actions/prepare-repository": (init) => {
+        const body = parseBody(init) as { apply: boolean; createStarterIssue: boolean };
+        requests.push(body);
+        return { body: {
+          provider: "ado", repository: "acme/platform/widgets",
+          selectorLabels: ["ready"], lifecycleLabels: [], missingLabels: [],
+          usesWorkItemTags: true, tagMatchCount: body.apply ? 1 : 0,
+          tagScanComplete: complete, starterIssueCreated: body.apply,
+        } };
+      },
+    })} />);
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+    await screen.findByText("Azure CLI authentication is ready as azure-user@example.com.");
+    for (let step = 0; step < 6; step += 1) await continueWizard(user);
+    await user.click(screen.getByRole("button", { name: "Check labels and ready issues" }));
+    await screen.findByText("Azure DevOps uses work-item tags");
+    expect(requests).toEqual([{ apply: false, createStarterIssue: false }]);
+    expect(screen.getByText(/This is not full workflow eligibility/)).toBeInTheDocument();
+    if (!complete) {
+      expect(screen.getByText(/at least 0/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Create starter task" })).not.toBeInTheDocument();
+      return;
+    }
+    const checkbox = screen.getByRole("checkbox", { name: "Create one safe Azure Boards Task with the selector tags." });
+    if (!(checkbox as HTMLInputElement).checked) await user.click(checkbox);
+    await user.click(screen.getByRole("button", { name: "Create starter task" }));
+    await waitFor(() => expect(requests).toEqual([
+      { apply: false, createStarterIssue: false }, { apply: true, createStarterIssue: true },
+    ]));
+    await screen.findByText(/Open tag matches: 1/);
+  });
+
   it("explains how to open setup when guided endpoints are unavailable", async () => {
     render(<GettingStartedPage client={clientWith({})} />);
 
