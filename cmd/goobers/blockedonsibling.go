@@ -228,6 +228,29 @@ const blockedOnSiblingResolvedReason = "removed `goobers:blocked-on-sibling` bec
 // that named blockers exist and are all resolved; absent record means no
 // action.
 //
+// A blocker resolves by MERGING OR BY BEING CLOSED BY HAND, and it may be a
+// pull request or an issue (#4545): namedBlockerStillBlocks and
+// liveLedgerBlockers both decide on provider state alone, because the question
+// the marker answers is whether the sibling is still in flight, not how it
+// ended.
+//
+// NATIVE ISSUE DEPENDENCIES ARE DELIBERATELY NOT A THIRD PROOF SOURCE HERE
+// (#4545). Reading them looks like the obvious completion of this function --
+// an item whose every native blocker has closed is provably unblocked, and
+// ListWorkItemBlockers would say so. It is the wrong place for it, because
+// backlog-query's blocked re-sweep already owns that case:
+// appendBlockedResweepCandidates (backlogquery.go) selects exactly those items
+// into a `dependency-recheck` curation run, where a curator decides whether
+// the work deserves another attempt.
+//
+// The two cannot both act. Reconciliation runs BEFORE selection inside one
+// `backlog-query --claim --curation` invocation, so clearing the marker here
+// removes the item from the re-sweep's own input in the same pass -- and,
+// having lost its park label, the item then falls through to ORDINARY
+// eligibility and is claimed for implementation with no curation review at
+// all. That is strictly worse than the stale label it set out to fix.
+// TestReconcileLeavesNativelyBlockedItemsToTheDependencyRecheckLane pins it.
+//
 // It also deliberately does not re-apply goobers:ready. Clearing a stale block
 // marker states that a condition no longer holds; deciding an item deserves
 // another attempt is a separate judgement that stays with a human (operator
