@@ -73,6 +73,7 @@ func (l *openPRLoop) stopCurrent() {
 }
 
 type configReloader struct {
+	watching  bool
 	layout    instance.Layout
 	setup     *schedulerSetup
 	scheduler *localscheduler.Scheduler
@@ -104,6 +105,9 @@ type configReloader struct {
 	// do," which poll's own plain error return cannot (reject reports success
 	// once the rejection is durably journaled).
 	lastRejectionMessage string
+	// Kept separately from the per-apply response message, which pollOnce
+	// clears even when unchanged rejected contents remain on disk.
+	rejectedDigest string
 }
 
 func (r *configReloader) Run(ctx context.Context) error {
@@ -162,6 +166,7 @@ func (r *configReloader) workflowSource(gaggle, workflow string) (string, bool) 
 // drives non-idempotent side effects (scheduler.Reload, RunnerRegistry
 // .Replace, openPRs.Replace) with no internal synchronization of its own.
 func (r *configReloader) poll(now time.Time) error {
+	defer r.publishReloadStatus(now)
 	digest, err := configDirectoryDigest(r.layout.ConfigDir())
 	if err != nil {
 		message := err.Error()
@@ -289,9 +294,35 @@ func (r *configReloader) poll(now time.Time) error {
 	return nil
 }
 
+func (r *configReloader) publishReloadStatus(now time.Time) {
+	if r.reads == nil {
+		return
+	}
+	r.reads.PublishDefinitionReload(r.reloadStatus(now))
+}
+
+func (r *configReloader) reloadStatus(now time.Time) readservice.DefinitionReloadStatus {
+	state := "current"
+	switch {
+	case r.lastDigestError != "":
+		state = "unreadable"
+	case r.appliedDigest != r.observedDigest && r.rejectedDigest == r.observedDigest:
+		state = "rejected"
+	case r.appliedDigest != r.observedDigest:
+		state = "pending"
+	case !r.watching:
+		state = "not-watching"
+	}
+	return readservice.DefinitionReloadStatus{
+		AppliedDigest: r.appliedDigest, ObservedDigest: r.observedDigest,
+		ObservedAt: now.UTC(), Watching: r.watching, State: state,
+	}
+}
+
 func (r *configReloader) reject(newDigest string, reloadErr error) error {
 	message := configReloadErrorMessage(reloadErr)
 	r.lastRejectionMessage = message
+	r.rejectedDigest = newDigest
 	event := journal.Event{
 		Type: journal.EventConfigReloadRejected,
 		Error: &journal.ErrorDetail{

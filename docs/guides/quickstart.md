@@ -461,10 +461,17 @@ heartbeat while retaining startup and shutdown messages.
 the daemon. How definitions reach the materialized `config/` directory depends
 on the configured source:
 
-- With the default instance-local config, `config/` is also read once at
-  startup. Pass the opt-in `goobers up --watch-config` flag to watch direct
-  edits to that directory. Valid edits swap in atomically; invalid edits leave
-  the last-known-good definitions active.
+- With the default instance-local config, `config/` is watched automatically.
+  Valid edits swap in atomically for new runs; invalid edits leave the
+  last-known-good definitions active. Existing runs retain their pinned
+  workflow snapshots, including across a restart. `--watch-config=false`
+  explicitly disables local watching; use `goobers apply` to admit changes
+  in that mode. `instance.yaml` itself still requires a restart.
+  The health API's `definitionReload` reports the applied and last-observed
+  directory digests, observation time, watcher setting and state. `rejected`
+  means disk contents differ from the last-known-good definitions; `unreadable`
+  means the watcher could not read them. `not-watching` does not claim the disk
+  is current. This is the last background observation, not a request-time scan.
 - A Git `workflowSource` continuously reconciles its tracked ref without
   `--watch-config`. Periodic fetch-and-compare polling is always active, local
   Git ref changes wake reconciliation immediately, and authenticated GitHub
