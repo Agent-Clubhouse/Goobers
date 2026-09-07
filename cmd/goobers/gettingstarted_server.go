@@ -468,7 +468,7 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 		return
 	}
 	gaggle := set.Gaggles[0]
-	selectors, applied, _ := connectDerivedLabels(set, gaggle.Spec.Project.Owner, gaggle.Spec.Project.Name)
+	selectors, applied, _ := connectDerivedLabelsForRepo(set, gaggle.Spec.Project)
 	response := guidedRepositoryReadiness{
 		Provider:        string(gaggle.Spec.Project.Provider),
 		Repository:      guidedRepositoryDisplayName(string(gaggle.Spec.Project.Provider), gaggle.Spec.Project.Owner, gaggle.Spec.Project.Project, gaggle.Spec.Project.Name),

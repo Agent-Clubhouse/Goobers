@@ -18,6 +18,31 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestConnectLabelsDoNotCrossProviderIdentity(t *testing.T) {
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
+		{ObjectMeta: metav1.ObjectMeta{Name: "github"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}, Backlog: apiv1.BacklogRef{Labels: []string{"github-only"}}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "ado"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "boards", Name: "web"}, Backlog: apiv1.BacklogRef{Labels: []string{"ado-only"}}}},
+	}}
+	selectors, _, _ := connectDerivedLabels(set, "acme", "web")
+	if !slices.Equal(selectors, []string{"github-only"}) {
+		t.Fatalf("GitHub connection borrowed ADO selectors: %v", selectors)
+	}
+}
+
+func TestConnectADOLabelsDoNotCrossProjects(t *testing.T) {
+	set := &instance.ConfigSet{}
+	for _, project := range []string{"one", "two"} {
+		set.Gaggles = append(set.Gaggles, apiv1.Gaggle{ObjectMeta: metav1.ObjectMeta{Name: project}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: project, Name: "web"}, Backlog: apiv1.BacklogRef{Labels: []string{project + "-only"}}}})
+		set.Workflows = append(set.Workflows, apiv1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: project + "-flow"}, Spec: apiv1.WorkflowSpec{Gaggle: project}})
+	}
+	target := set.Gaggles[1].Spec.Project
+	target.Branch = "another-branch"
+	selectors, _, workflow := connectDerivedLabelsForRepo(set, target)
+	if !slices.Equal(selectors, []string{"two-only"}) || workflow != "two-flow" {
+		t.Fatalf("ADO project identity crossed: selectors=%v workflow=%s", selectors, workflow)
+	}
+}
+
 // connectTestInstance scaffolds a template instance in an isolated temp dir
 // and returns its root. template is "starter" (bare init) or "quickstart".
 // The default token env is cleared so an ambient developer token can never

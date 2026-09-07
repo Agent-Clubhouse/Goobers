@@ -847,11 +847,17 @@ var connectExcludedLabelInputs = []string{"excludeLabels", "parkLabels"}
 // the starter issue — an issue born goobers:claimed or goobers/status:in-review
 // would be excluded by the very selectors meant to find it.
 func connectDerivedLabels(set *instance.ConfigSet, owner, name string) (selectors, applied []string, workflow string) {
+	return connectDerivedLabelsForRepo(set, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: owner, Name: name})
+}
+
+// connectDerivedLabelsForRepo keeps independent forge and Azure Boards project
+// identities separate even when their owner/repository names happen to match.
+func connectDerivedLabelsForRepo(set *instance.ConfigSet, target apiv1.RepoRef) (selectors, applied []string, workflow string) {
 	selectorSet := &connectLabelSet{}
 	appliedSet := &connectLabelSet{}
 	for _, gaggle := range set.Gaggles {
 		project := gaggle.Spec.Project
-		if project.Owner != owner || project.Name != name {
+		if project.Provider != target.Provider || project.BaseURL != target.BaseURL || project.Owner != target.Owner || project.Project != target.Project || project.Name != target.Name {
 			continue
 		}
 		// Selectors come from the shared derivation in repolabels.go so the
