@@ -72,6 +72,11 @@ an autonomous consumer normally begins with a deterministic
 
 All backlog-item triggers in one workflow must use the same `trustLabel`.
 
+There is no free-form provider query parameter here or on `gaggle.spec.backlog`
+(#1677): `selector`/`labels`, `labelPredicate` and `fieldPredicate` are the
+whole selection surface, and they mean the same thing on every backlog
+provider. Declaring `query:` is a validation error, not an ignored field.
+
 ```yaml
 triggers:
   - type: backlog-item

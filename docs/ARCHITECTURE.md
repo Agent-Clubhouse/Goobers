@@ -481,6 +481,16 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label selection and FIFO remain unchanged. On public repos, eligibility
   requires a maintainer-applied trust label: backlog content is untrusted input
   (`SEC-047`).
+
+  **There is no free-form provider query, on any provider (#1677).** `labels`,
+  `labelPredicate` and `fieldPredicate` are the entire backlog selection
+  surface, and they are provider-neutral: the same gaggle selects the same work
+  on GitHub, Azure DevOps and Gitea. An earlier `BacklogRef.Query` field was
+  serializable and documented but read by no provider, so the schema advertised
+  a selection capability that silently did nothing; it was deleted before the
+  DSL was tagged, with zero readers. A config that still declares `query:`
+  under `backlog:` is a hard validation error naming what replaced it — never a
+  silently ignored field.
 - **A claim's lifetime is the ledger's, and the marker's lifetime is the
   claim's.** `scheduler/claims.json` is the only source of truth for
   exactly-once processing (`BL-005`); the provider-visible `goobers:claimed`

@@ -93,7 +93,13 @@ func resolveSchemaFinding(e *jsonschema.ValidationError, schema *jsonschema.Sche
 				line, col = key.Line, key.Column
 			}
 		}
-		if candidates := schemaPropertyNames(schemaObjectAt(schema, segments)); len(candidates) > 0 {
+		if hint, ok := retiredFieldHint(segments, names[0]); ok {
+			// A retired field is not a typo, so the near-miss suggestion is
+			// the wrong answer here: it would point an author at whichever
+			// surviving field happens to be closest in spelling instead of at
+			// the one that replaced the field they wrote.
+			message += "; " + hint
+		} else if candidates := schemaPropertyNames(schemaObjectAt(schema, segments)); len(candidates) > 0 {
 			if suggestion, ok := didYouMean(names[0], candidates); ok {
 				message += fmt.Sprintf("; did you mean %q?", suggestion)
 			}
@@ -106,6 +112,44 @@ func resolveSchemaFinding(e *jsonschema.ValidationError, schema *jsonschema.Sche
 		line, col = target.Line, target.Column
 	}
 	return schemaFinding{message: fmt.Sprintf("%s: %s", loc, message), line: line, col: col}
+}
+
+// retiredFieldHints explains a field the config contract used to carry, keyed
+// by the instance location of its parent object plus the field name. The
+// generic "additionalProperties 'x' not allowed" is the correct *verdict* for
+// such a field but a poor *diagnosis*: it reads identically to a typo, and it
+// leaves the author with no idea what the field became.
+//
+// A retired field belongs here and not in the DSL feature registry
+// (internal/workflow/.../features.go) when it never shipped in a tagged DSL
+// version. The registry's `removed` level requires a last-supporting version
+// to reject against, which a field deleted before the first tag does not have.
+var retiredFieldHints = map[string]string{
+	// #1677: `BacklogRef.Query` was a serializable, documented DSL field that
+	// no provider ever read, so the schema implied a selection capability that
+	// silently did nothing. It was deleted before the DSL was tagged (#3320),
+	// with zero readers. This is what keeps the resolution enforced rather
+	// than merely done: an author who still writes it is told what happened
+	// and what selects work instead, and a config carrying it fails to load
+	// rather than having the ineffective query silently accepted.
+	"/spec/backlog:query": "`query` was removed before the DSL was tagged (#1677): no backlog provider ever " +
+		"consumed it, so it selected nothing. Narrow backlog work with `labels`, `labelPredicate` and " +
+		"`fieldPredicate`, which every backlog provider honors",
+}
+
+// retiredFieldHint looks up an explanation for a rejected property. Numeric
+// segments are collapsed to "*" so one entry covers every element of a list.
+func retiredFieldHint(segments []string, name string) (string, bool) {
+	normalized := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if _, err := strconv.Atoi(segment); err == nil {
+			normalized = append(normalized, "*")
+			continue
+		}
+		normalized = append(normalized, segment)
+	}
+	hint, ok := retiredFieldHints["/"+strings.Join(normalized, "/")+":"+name]
+	return hint, ok
 }
 
 // additionalPropertyNames extracts the quoted, rejected property name(s) from
