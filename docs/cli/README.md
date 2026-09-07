@@ -868,9 +868,9 @@ $ goobers config show --json
 connect an instance to your own GitHub repository
 
 ~~~text
-Usage: goobers connect <owner>/<repo> [--token-env NAME] [--seed] [--replace] [--json] [path]
+Usage: goobers connect <repository> [--token-env NAME] [--seed] [--replace] [--json] [path]
 
-Connect an instance to your own GitHub repository — the connect rung of the
+Connect an instance to a GitHub or Azure DevOps repository — the connect rung of the
 onboarding ladder. The command rewrites the template placeholders
 (your-org/your-repo) in instance.yaml repos[] and in every materialized
 gaggle's project and backlog under config/gaggles/, then validates the
@@ -882,12 +882,13 @@ variable name (default GOOBERS_GITHUB_TOKEN) in the repo's token
 reference. Token values never pass through this command; a value that looks
 like a pasted token is rejected.
 
-Only GitHub repositories can be connected. An Azure DevOps identity (an
-organization/project/repository slug or a dev.azure.com URL) is refused
-with the instance.yaml block to write by hand — see
-docs/guides/ado-authentication.md.
+Use owner/repository for GitHub, or organization/project/repository (or a
+dev.azure.com URL) for Azure DevOps. Initialize ADO instances with
+--template=standard --provider=ado first. ADO defaults to GOOBERS_ADO_TOKEN
+and records PAT authentication. Connect never changes an existing provider.
+See docs/guides/ado-authentication.md for other authentication modes.
 
---seed derives two label sets from the connected gaggles and idempotently
+For GitHub, --seed derives two label sets from the connected gaggles and idempotently
 ensures every one of them exists on the repository: the backlog SELECTORS
 (backlog labels plus each workflow's trustLabel/requireLabels inputs) and
 the labels those workflows WRITE or exclude on (the goobers:claimed claim
@@ -898,11 +899,19 @@ the selector labels only, never the lifecycle ones. Seeding uses the same
 --token-env; when that variable is unset the issue is reported pending and
 the local rewrite still completes.
 
+For ADO, --seed creates an Azure Boards Task with selector tags only, in
+the connected gaggle's backlog.project. Tags are not a global label catalog.
+Repeat runs recognize the repository-specific seed marker. The duplicate
+scan is bounded to 1000 items and refuses creation if incomplete. Multiple
+Boards projects require explicit seeding. Provider seed failures leave the
+validated local connection in place; fix access and rerun --seed.
+
 When the token variable is set, the target repository's reachability is
 checked with the exact credential path a real run would use BEFORE any
 file is written, and a failed connect leaves the instance exactly as it
-was. After a successful connect the same credential reports how many of
-the repository's open issues your backlog selectors currently match.
+was. After a successful GitHub connect the same credential reports how many
+open issues match your selectors. For ADO, validate --check-repos also checks
+the Boards project and Work Items read access independently of Git access.
 
 Flags:
   --token-env <name>  repository token environment variable name (default GOOBERS_GITHUB_TOKEN)

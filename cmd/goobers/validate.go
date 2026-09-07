@@ -454,7 +454,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 			diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "INSTANCE002", string(validate.Error), err.Error())
 			return 1
 		}
-		if !checkTargetRepositoriesAtFile(cfg.Repos, stores, stdout, diagnosticFile(root, configFile), diagnostics) {
+		if !checkConfiguredRepositoryAccess(root, configDir, configFile, cfg, set, stores, stdout, diagnostics) {
 			return 1
 		}
 		// Selector/CI reality (2026-08-08 cold-start audit, README item 1):

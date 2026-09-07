@@ -289,11 +289,7 @@ func TestConnectRejectsNonRepoPositional(t *testing.T) {
 	}
 }
 
-// TestConnectRefusesAzureDevOpsIdentity reproduces cold-start ado #7 attempt 1:
-// the honest three-part ADO identity used to get a bare "GitHub is the only
-// supported provider in v1" refusal that named no way forward. Every ADO
-// spelling now gets the exact instance.yaml block to write by hand, and
-// nothing on disk is touched.
+// ADO identities must not silently convert an existing GitHub template.
 func TestConnectRefusesAzureDevOpsIdentity(t *testing.T) {
 	root := connectTestInstance(t, "quickstart")
 	configFile := instance.NewLayout(root).ConfigFile()
@@ -309,20 +305,12 @@ func TestConnectRefusesAzureDevOpsIdentity(t *testing.T) {
 		"git@ssh.dev.azure.com:v3/contoso/example-project/example-repo",
 	} {
 		code, _, stderr := runArgs(t, "connect", identity, "--token-env", "GOOBERS_ADO_TOKEN", root)
-		if code != 2 {
-			t.Fatalf("connect %q code = %d, want 2; stderr=%q", identity, code, stderr)
+		if code != 1 {
+			t.Fatalf("connect %q code = %d, want 1; stderr=%q", identity, code, stderr)
 		}
 		for _, want := range []string{
-			connectADOIdentityCode,
-			"Azure DevOps organization/project/repository identity",
-			"provider: ado",
-			"owner: contoso",
-			"project: example-project",
-			"name: example-repo",
-			"env: GOOBERS_ADO_TOKEN",
-			"spec.backlog.project",
-			"docs/guides/ado-authentication.md",
-			"reference-workflows/instance.yaml.example",
+			"--template=standard --provider=ado",
+			"never changes an existing repository's provider",
 		} {
 			if !strings.Contains(stderr, want) {
 				t.Errorf("connect %q stderr lacks %q:\n%s", identity, want, stderr)
@@ -403,7 +391,7 @@ func TestConnectADORefusalNeverEchoesPastedToken(t *testing.T) {
 	if strings.Contains(stderr, "ghp_abcdef0123456789") {
 		t.Fatalf("refusal echoed the pasted token: %q", stderr)
 	}
-	if !strings.Contains(stderr, "env: "+connectADOTokenEnvHint) {
+	if !strings.Contains(stderr, "valid token environment variable name") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }

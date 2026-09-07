@@ -14,7 +14,7 @@ var synopsisByID = map[string]string{
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
 	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",
 	"init":                   "  goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir=<dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--provider=github|ado] --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]\n                                scaffold an instance, open guided setup with placement choices, or create a checked-in config source\n",
-	"connect":                "  goobers connect <owner>/<repo> [--token-env NAME] [--seed] [--replace] [--json] [path]\n                                connect an instance to your own GitHub repository\n",
+	"connect":                "  goobers connect <repository> [--token-env NAME] [--seed] [--replace] [--json] [path]\n                                connect an instance to a GitHub or Azure DevOps repository\n",
 	"preflight":              "  goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]\n                                check WSL full-isolation readiness and optionally hand off a command\n",
 	"onboarding":             "  goobers onboarding stub-agent-instructions [flags]\n                                run non-interactive onboarding actions\n",
 	"examples":               "  goobers examples list | show <name>\n                                browse canonical workflow examples embedded in the binary\n",
