@@ -20,15 +20,19 @@ type Journal interface {
 // recordStart durably marks a gate evaluation before its evaluator is
 // dispatched. repassAttempt is the prospective per-gate count, allowing Resume
 // to recover a dangling evaluation before its branch target is known.
-func recordStart(j Journal, gateName string, repassAttempt int) error {
+func recordStart(j Journal, gate apiv1.Gate, repassAttempt int) error {
 	if j == nil {
 		return nil
 	}
-	return j.Append(journal.Event{
+	event := journal.Event{
 		Type:   journal.EventGateStarted,
-		Gate:   gateName,
+		Gate:   gate.Name,
 		Runner: map[string]any{"repassAttempt": repassAttempt},
-	})
+	}
+	if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil {
+		event.Runner["goober"] = gate.Agentic.Goober
+	}
+	return j.Append(event)
 }
 
 // recordEvaluatorRetry journals one failed, retryable gate-evaluator attempt

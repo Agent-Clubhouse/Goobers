@@ -611,7 +611,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				gerr    error
 			)
 			if knownOutcome != "" {
-				rec.gateStarted(ctx, g.Name, repassBudget.Attempts[g.Name]+1, 0)
+				rec.gateStarted(ctx, g, repassBudget.Attempts[g.Name]+1, 0)
 				if err := rec.emitPending(ctx); err != nil {
 					return RunResult{}, err
 				}
@@ -1081,7 +1081,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		// An automated gate never dispatches a pod (podAttempt: 0, omitted).
-		rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, 0)
+		rec.gateStarted(ctx, g, gatePolicyAttempts[g.Name]+1, 0)
 		// Pre-evaluation emission: gate.paused + gate.started go live before
 		// the evaluator dispatches, so a run waiting at a gate is visible
 		// waiting at that gate.
@@ -1115,7 +1115,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// here, at the last point before dispatch, so the short-circuit is
 		// visibly one branch away from the dispatch it replaces.
 		if ev.CachedVerdict != nil {
-			rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, 0)
+			rec.gateStarted(ctx, g, gatePolicyAttempts[g.Name]+1, 0)
 			if err := rec.emitPending(ctx); err != nil {
 				return "", nil, GateReviewResult{}, err
 			}
@@ -1143,7 +1143,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if remote {
 			podAttempt = gateDispatches[g.Name] + 1
 		}
-		rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, podAttempt)
+		rec.gateStarted(ctx, g, gatePolicyAttempts[g.Name]+1, podAttempt)
 		// Pre-evaluation emission, as on the automated arm above.
 		if err := rec.emitPending(ctx); err != nil {
 			return "", nil, GateReviewResult{}, err

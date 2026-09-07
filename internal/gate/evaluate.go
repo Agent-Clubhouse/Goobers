@@ -338,7 +338,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 		return Result{}, fmt.Errorf("gate %q: unknown evaluator %q", g.Name, g.Evaluator)
 	}
 
-	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
+	if err := recordStart(e.Journal, g, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
 	// #765: the evaluator call below is invoked through evaluateWithRetry, which
@@ -523,7 +523,7 @@ func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, 
 	if g.Evaluator != apiv1.EvaluatorAutomated {
 		return Result{}, fmt.Errorf("gate %q: only automated gates accept a known outcome", g.Name)
 	}
-	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
+	if err := recordStart(e.Journal, g, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
 	return e.resolveOutcome(g, outcome, nil, "", false, false, false, "", findingResolution{})

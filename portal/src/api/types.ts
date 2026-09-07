@@ -567,6 +567,15 @@ export interface EngineFallback {
 }
 
 export interface RunSummary {
+  activeStages?: Array<{
+    name: string;
+    kind: string;
+    branch?: number;
+    attempt?: number;
+    goober?: string;
+    startedAt: string;
+  }>;
+  activityTruncated?: boolean;
   engineFallback?: EngineFallback;
   id: string;
   workflow: string;

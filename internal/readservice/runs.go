@@ -158,20 +158,22 @@ type WorkflowRunActivity struct {
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
 // run detail.
 type RunSummary struct {
-	EngineFallback  *readmodel.EngineFallback `json:"engineFallback,omitempty"`
-	ID              string                    `json:"id"`
-	Workflow        string                    `json:"workflow"`
-	WorkflowVersion int                       `json:"workflowVersion"`
-	WorkflowDigest  string                    `json:"workflowDigest,omitempty"`
-	Gaggle          string                    `json:"gaggle"`
-	Trigger         journal.Trigger           `json:"trigger"`
-	Phase           journal.RunPhase          `json:"phase"`
-	Terminal        bool                      `json:"terminal"`
-	CurrentStage    string                    `json:"currentStage,omitempty"`
-	StartedAt       time.Time                 `json:"startedAt"`
-	FinishedAt      *time.Time                `json:"finishedAt,omitempty"`
-	DurationMillis  int64                     `json:"durationMillis"`
-	LastActivityAt  time.Time                 `json:"lastActivityAt"`
+	ActiveStages      []readmodel.ActiveStage   `json:"activeStages,omitempty"`
+	ActivityTruncated bool                      `json:"activityTruncated,omitempty"`
+	EngineFallback    *readmodel.EngineFallback `json:"engineFallback,omitempty"`
+	ID                string                    `json:"id"`
+	Workflow          string                    `json:"workflow"`
+	WorkflowVersion   int                       `json:"workflowVersion"`
+	WorkflowDigest    string                    `json:"workflowDigest,omitempty"`
+	Gaggle            string                    `json:"gaggle"`
+	Trigger           journal.Trigger           `json:"trigger"`
+	Phase             journal.RunPhase          `json:"phase"`
+	Terminal          bool                      `json:"terminal"`
+	CurrentStage      string                    `json:"currentStage,omitempty"`
+	StartedAt         time.Time                 `json:"startedAt"`
+	FinishedAt        *time.Time                `json:"finishedAt,omitempty"`
+	DurationMillis    int64                     `json:"durationMillis"`
+	LastActivityAt    time.Time                 `json:"lastActivityAt"`
 	// Stale is true only for a running run when both its last activity and the
 	// daemon scheduler heartbeat are older than runner.livenessTimeout.
 	Stale            bool   `json:"stale"`
@@ -1594,6 +1596,7 @@ func summarizeRunForStage(
 	phase := journal.PhaseRunning
 	var finishedAt *time.Time
 	var engineFallback *readmodel.EngineFallback
+	var activity readmodel.StageActivity
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
@@ -1634,6 +1637,7 @@ func summarizeRunForStage(
 		if !event.KnownSchema() {
 			continue
 		}
+		activity = activity.After(event)
 		if event.Stage != "" {
 			seenStages[event.Stage] = struct{}{}
 		}
@@ -1830,30 +1834,32 @@ func summarizeRunForStage(
 	}
 
 	return RunSummary{
-		ID:               run.identity.RunID,
-		Workflow:         run.identity.Workflow,
-		WorkflowVersion:  run.identity.WorkflowVersion,
-		WorkflowDigest:   run.identity.WorkflowDigest,
-		Gaggle:           run.identity.Gaggle,
-		Trigger:          run.identity.Trigger,
-		Phase:            phase,
-		Terminal:         phase != journal.PhaseRunning,
-		CurrentStage:     currentStage,
-		StartedAt:        run.identity.StartedAt,
-		FinishedAt:       finishedAt,
-		DurationMillis:   duration,
-		LastActivityAt:   lastActivityAt,
-		LastSeq:          lastSeq,
-		RepassCount:      repasses,
-		RetryCount:       retries,
-		PolicyRetryCount: policyRetries,
-		InfraRetryCount:  infraRetries,
-		NoWork:           noWork,
-		TerminalReason:   terminalReason,
-		Operator:         operator,
-		EngineFallback:   engineFallback,
-		Stages:           stages,
-		stageAttempts:    stageAttempts,
+		ID:                run.identity.RunID,
+		Workflow:          run.identity.Workflow,
+		WorkflowVersion:   run.identity.WorkflowVersion,
+		WorkflowDigest:    run.identity.WorkflowDigest,
+		Gaggle:            run.identity.Gaggle,
+		Trigger:           run.identity.Trigger,
+		Phase:             phase,
+		Terminal:          phase != journal.PhaseRunning,
+		CurrentStage:      currentStage,
+		StartedAt:         run.identity.StartedAt,
+		FinishedAt:        finishedAt,
+		DurationMillis:    duration,
+		LastActivityAt:    lastActivityAt,
+		LastSeq:           lastSeq,
+		RepassCount:       repasses,
+		RetryCount:        retries,
+		PolicyRetryCount:  policyRetries,
+		InfraRetryCount:   infraRetries,
+		NoWork:            noWork,
+		TerminalReason:    terminalReason,
+		Operator:          operator,
+		EngineFallback:    engineFallback,
+		ActiveStages:      activity.Active,
+		ActivityTruncated: activity.Truncated,
+		Stages:            stages,
+		stageAttempts:     stageAttempts,
 	}, nil
 }
 

@@ -195,12 +195,16 @@ func newWireFixtures() wireFixtures {
 		Warnings: []validate.CodedWarning{warning},
 	}
 	runSummary := readservice.RunSummary{
-		EngineFallback:  engineFallback,
-		ID:              "run-123",
-		Workflow:        "implementation",
-		WorkflowVersion: 7,
-		WorkflowDigest:  "sha256:workflow",
-		Gaggle:          "core",
+		// Fully populated wire fixture exercises optional activity fields;
+		// production terminal summaries clear these through the journal fold.
+		ActiveStages:      []readmodel.ActiveStage{{Name: "implement", Kind: "stage", Branch: 1, Attempt: 2, Goober: "implementer", StartedAt: startedAt}},
+		ActivityTruncated: true,
+		EngineFallback:    engineFallback,
+		ID:                "run-123",
+		Workflow:          "implementation",
+		WorkflowVersion:   7,
+		WorkflowDigest:    "sha256:workflow",
+		Gaggle:            "core",
 		Trigger: journal.Trigger{
 			Kind: journal.TriggerItem,
 			Ref:  "673",
