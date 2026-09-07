@@ -50,6 +50,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	want := []string{
 		"fmt-check",
+		"runtime-acquisitions",
 		"tidy-check",
 		"no-phone-home",
 		"stage-name-lint",
@@ -316,7 +317,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check runtime-acquisitions tidy-check no-phone-home stage-name-lint vet flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
