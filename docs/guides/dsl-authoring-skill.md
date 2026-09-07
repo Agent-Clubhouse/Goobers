@@ -132,8 +132,7 @@ You can also use the skill as a docs finder:
 
 Its bundled [terminology](../../skills/goobers-dsl-author/references/terminology.md)
 and [DSL reference](../../skills/goobers-dsl-author/references/dsl-reference.md)
-link to the canonical workflow primitive reference and release-matched copies
-of the supporting contracts:
+link to release-matched copies of:
 
 - the [workflow primitive reference](../reference/workflow-primitives/README.md)
   for every built-in trigger, execution kind, stage command, gate check,
