@@ -21,6 +21,9 @@ import (
 )
 
 type fakeTelemetryStore struct {
+	costs          rollup.CostResult
+	costReq        rollup.CostQuery
+	costCalls      int
 	stats          rollup.StatsResult
 	signatures     []rollup.ErrorSignature
 	errors         []rollup.ErrorEvent
@@ -36,6 +39,12 @@ type fakeTelemetryStore struct {
 	outcomes       []rollup.ImplementationOutcome
 	outcomeGaggle  string
 	outcomeSince   time.Time
+}
+
+func (f *fakeTelemetryStore) CostAggregates(_ context.Context, req rollup.CostQuery) (rollup.CostResult, error) {
+	f.costCalls++
+	f.costReq = req
+	return f.costs, f.err
 }
 
 func (f *fakeTelemetryStore) ImplementationOutcomes(_ context.Context, gaggle string, since time.Time) ([]rollup.ImplementationOutcome, error) {

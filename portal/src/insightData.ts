@@ -1,6 +1,8 @@
 import type { QueryState } from "./api/queryState";
 import type {
   DaemonClient,
+  TelemetryCostOptions,
+  TelemetryCostResult,
   TelemetryErrorSignaturesOptions,
   TelemetryErrorSignaturesResult,
   TelemetryStatsOptions,
@@ -60,6 +62,13 @@ export interface InsightCostRollupSnapshot {
    * Insight already reports cost, by percentile. */
   byGaggle: InsightGaggleSpend[];
   window: InsightWindow;
+}
+
+export interface InsightExternalCostSnapshot {
+  filters: TelemetryCostOptions;
+  result: TelemetryCostResult;
+  window: InsightWindow;
+  boundedAllTime: boolean;
 }
 
 export function useInsightStats(
@@ -238,6 +247,29 @@ export function useInsightCostRollup(
   });
 }
 
+export function useInsightExternalCosts(
+  client: DaemonClient,
+  window: InsightWindow,
+  enabled = true,
+): {
+  retry: () => void;
+  state: QueryState<InsightExternalCostSnapshot>;
+} {
+  return useLiveQuery<InsightExternalCostSnapshot>({
+    cacheKey: dataCacheKey("insight-external-costs", window),
+    enabled,
+    dependencies: RUN_DATA_DEPENDENCIES,
+    models: RUN_MODELS,
+    isCurrent: (data) => data.window === window,
+    errorMessage: "Unable to read pull request and issue costs.",
+    load: async (signal) => {
+      const filters = insightCostFilters(window);
+      const result = await client.getTelemetryCosts(filters, { signal });
+      return { filters, result, window, boundedAllTime: window === "all" };
+    },
+  });
+}
+
 function costRollupFromStats(
   filters: TelemetryStatsOptions,
   stats: TelemetryStatsResult,
@@ -304,6 +336,8 @@ const WINDOW_MILLISECONDS: Record<Exclude<InsightWindow, "all">, number> = {
   "30d": 30 * 24 * 60 * 60 * 1_000,
 };
 
+const MAX_COST_WINDOW_MILLISECONDS = 90 * 24 * 60 * 60 * 1_000;
+
 export function insightWindowFilters(
   window: InsightWindow,
   now = new Date(),
@@ -315,6 +349,20 @@ export function insightWindowFilters(
         since: new Date(now.getTime() - WINDOW_MILLISECONDS[window]).toISOString(),
         until,
       };
+}
+
+export function insightCostFilters(
+  window: InsightWindow,
+  now = new Date(),
+): TelemetryCostOptions {
+  const until = now.toISOString();
+  const duration =
+    window === "all" ? MAX_COST_WINDOW_MILLISECONDS : WINDOW_MILLISECONDS[window];
+  return {
+    scope: "summary",
+    since: new Date(now.getTime() - duration).toISOString(),
+    until,
+  };
 }
 
 function insightStatsFilters(

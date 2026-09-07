@@ -16,6 +16,23 @@ const (
 	CostExternalKindIssue = "issue"
 )
 
+// CostQuery selects bounded cost aggregates. An empty ExternalKind returns
+// both pull-request and issue aggregates; an empty Provider returns every
+// provider represented in the selected window.
+type CostQuery struct {
+	Provider     string
+	ExternalKind string
+	ExternalID   string
+	Since        time.Time
+	Until        time.Time
+}
+
+// CostResult contains deterministic per-provider aggregates.
+type CostResult struct {
+	PullRequests []CostAggregate
+	Issues       []CostAggregate
+}
+
 // RunCostAttribution is one durable relationship between a run and an
 // external issue or pull request.
 type RunCostAttribution struct {
@@ -136,10 +153,98 @@ func (db *DB) RunCostAttributions(ctx context.Context, runID string) ([]RunCostA
 // PullRequestCosts returns exact per-PR aggregates for provider. Every
 // attributed attempt contributes, including failed attempts and retries.
 func (db *DB) PullRequestCosts(ctx context.Context, provider string) ([]CostAggregate, error) {
-	runs, err := db.loadCostRuns(ctx, provider)
+	result, err := db.CostAggregates(ctx, CostQuery{
+		Provider:     provider,
+		ExternalKind: CostExternalKindPR,
+	})
 	if err != nil {
 		return nil, err
 	}
+	return result.PullRequests, nil
+}
+
+// IssueCosts returns deterministic per-issue aggregates. Runs naming an issue
+// are direct attribution. PR-only runs are split by known direct nano-AIU
+// weights for the addressed issues, or evenly when no weights are known.
+func (db *DB) IssueCosts(ctx context.Context, provider string) ([]CostAggregate, error) {
+	result, err := db.CostAggregates(ctx, CostQuery{
+		Provider:     provider,
+		ExternalKind: CostExternalKindIssue,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.Issues, nil
+}
+
+// CostAggregates returns bounded pull-request and/or issue aggregates through
+// one typed store boundary.
+func (db *DB) CostAggregates(ctx context.Context, query CostQuery) (CostResult, error) {
+	if query.ExternalKind != "" &&
+		query.ExternalKind != CostExternalKindPR &&
+		query.ExternalKind != CostExternalKindIssue {
+		return CostResult{}, fmt.Errorf("rollup: unsupported cost external kind %q", query.ExternalKind)
+	}
+	if !query.Since.IsZero() && !query.Until.IsZero() && !query.Since.Before(query.Until) {
+		return CostResult{}, fmt.Errorf("rollup: cost since must be before until")
+	}
+	providers, err := db.costProviders(ctx, query.Provider, query.Since, query.Until)
+	if err != nil {
+		return CostResult{}, err
+	}
+	result := CostResult{
+		PullRequests: []CostAggregate{},
+		Issues:       []CostAggregate{},
+	}
+	for _, provider := range providers {
+		runs, err := db.loadCostRuns(ctx, provider, query.Since, query.Until)
+		if err != nil {
+			return CostResult{}, err
+		}
+		if query.ExternalKind == "" || query.ExternalKind == CostExternalKindPR {
+			result.PullRequests = append(result.PullRequests,
+				filterCostAggregates(pullRequestCostAggregates(provider, runs), query.ExternalID)...)
+		}
+		if query.ExternalKind == "" || query.ExternalKind == CostExternalKindIssue {
+			result.Issues = append(result.Issues,
+				filterCostAggregates(issueCostAggregates(provider, runs), query.ExternalID)...)
+		}
+	}
+	return result, nil
+}
+
+func (db *DB) costProviders(ctx context.Context, provider string, since, until time.Time) ([]string, error) {
+	if provider != "" {
+		return []string{provider}, nil
+	}
+	query := `
+		SELECT DISTINCT a.provider
+		FROM run_cost_attribution a
+		JOIN runs r ON r.run_id = a.run_id
+		WHERE a.provider <> ''`
+	var args []any
+	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query += ` ORDER BY a.provider`
+	rows, err := db.readDB().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query cost providers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var providers []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, fmt.Errorf("rollup: scan cost provider: %w", err)
+		}
+		providers = append(providers, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rollup: iterate cost providers: %w", err)
+	}
+	return providers, nil
+}
+
+func pullRequestCostAggregates(provider string, runs []*costRun) []CostAggregate {
 	prIssues := addressedIssuesByPR(runs)
 	prRuns := make(map[string]map[string]*costRun)
 	for _, run := range runs {
@@ -148,17 +253,10 @@ func (db *DB) PullRequestCosts(ctx context.Context, provider string) ([]CostAggr
 		}
 	}
 	foldOrphanRuns(runs, prIssues, prRuns)
-	return aggregateCostRuns(provider, CostExternalKindPR, prRuns), nil
+	return aggregateCostRuns(provider, CostExternalKindPR, prRuns)
 }
 
-// IssueCosts returns deterministic per-issue aggregates. Runs naming an issue
-// are direct attribution. PR-only runs are split by known direct nano-AIU
-// weights for the addressed issues, or evenly when no weights are known.
-func (db *DB) IssueCosts(ctx context.Context, provider string) ([]CostAggregate, error) {
-	runs, err := db.loadCostRuns(ctx, provider)
-	if err != nil {
-		return nil, err
-	}
+func issueCostAggregates(provider string, runs []*costRun) []CostAggregate {
 	prIssues := addressedIssuesByPR(runs)
 	directWeights := make(map[string]int64)
 	for _, run := range runs {
@@ -216,10 +314,22 @@ func (db *DB) IssueCosts(ctx context.Context, provider string) ([]CostAggregate,
 			addModelsToIssueAggregate(aggregate, run, targets, weights, issue)
 		}
 	}
-	return sortedAggregates(aggregates), nil
+	return sortedAggregates(aggregates)
 }
 
-func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, error) {
+func filterCostAggregates(aggregates []CostAggregate, externalID string) []CostAggregate {
+	if externalID == "" {
+		return aggregates
+	}
+	for _, aggregate := range aggregates {
+		if aggregate.ExternalID == externalID {
+			return []CostAggregate{aggregate}
+		}
+	}
+	return []CostAggregate{}
+}
+
+func (db *DB) loadCostRuns(ctx context.Context, provider string, since, until time.Time) ([]*costRun, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("rollup: cost provider is required")
 	}
@@ -229,14 +339,14 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	byID, order, err := loadCostRunReferences(ctx, tx, provider)
+	byID, order, err := loadCostRunReferences(ctx, tx, provider, since, until)
 	if err != nil {
 		return nil, err
 	}
-	if err := loadCostAttemptUsage(ctx, tx, provider, byID); err != nil {
+	if err := loadCostAttemptUsage(ctx, tx, provider, since, until, byID); err != nil {
 		return nil, err
 	}
-	if err := loadCostModelUsage(ctx, tx, provider, byID); err != nil {
+	if err := loadCostModelUsage(ctx, tx, provider, since, until, byID); err != nil {
 		return nil, err
 	}
 
@@ -250,14 +360,18 @@ func (db *DB) loadCostRuns(ctx context.Context, provider string) ([]*costRun, er
 	return out, nil
 }
 
-func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string) (map[string]*costRun, []string, error) {
-	rows, err := tx.QueryContext(ctx, `
+func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time) (map[string]*costRun, []string, error) {
+	query := `
 		SELECT r.run_id, r.started_at, a.external_kind, a.external_id
 		FROM runs r
 		JOIN run_cost_attribution a ON a.run_id = r.run_id
-		WHERE a.provider = ? AND a.external_kind IN ('pr', 'issue')
+		WHERE a.provider = ? AND a.external_kind IN ('pr', 'issue')`
+	args := []any{provider}
+	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query += `
 		GROUP BY r.run_id, r.started_at, a.external_kind, a.external_id
-		ORDER BY r.started_at, r.run_id, a.external_kind, a.external_id`, provider)
+		ORDER BY r.started_at, r.run_id, a.external_kind, a.external_id`
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("rollup: query cost-attributed runs: %w", err)
 	}
@@ -296,21 +410,25 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string) (ma
 	return byID, order, nil
 }
 
-func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, byID map[string]*costRun) error {
-	usageRows, err := tx.QueryContext(ctx, `
+func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time, byID map[string]*costRun) error {
+	query := `
 		SELECT sa.run_id, su.input_tokens, su.output_tokens,
 		       su.cache_read_tokens, su.cache_write_tokens, su.reasoning_tokens,
 		       su.copilot_premium_requests, su.nano_aiu, su.cost_usd,
 		       su.billing_model, su.cost_basis
 		FROM stage_attempts sa
+		JOIN runs r ON r.run_id = sa.run_id
 		LEFT JOIN stage_usage su
 			ON su.run_id = sa.run_id AND su.stage = sa.stage
 			AND su.traversal = sa.traversal AND su.branch IS sa.branch
 		WHERE EXISTS (
 			SELECT 1 FROM run_cost_attribution a
 			WHERE a.run_id = sa.run_id AND a.provider = ?
-		)
-		ORDER BY sa.run_id, sa.stage, sa.traversal`, provider)
+		)`
+	args := []any{provider}
+	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query += ` ORDER BY sa.run_id, sa.stage, sa.traversal`
+	usageRows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("rollup: query attributed attempt usage: %w", err)
 	}
@@ -345,18 +463,22 @@ func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, byID
 	return nil
 }
 
-func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, byID map[string]*costRun) error {
-	modelRows, err := tx.QueryContext(ctx, `
+func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, since, until time.Time, byID map[string]*costRun) error {
+	query := `
 		SELECT smu.run_id, smu.model, smu.input_tokens, smu.output_tokens,
 		       smu.cache_read_tokens, smu.cache_write_tokens, smu.reasoning_tokens,
 		       smu.copilot_premium_requests, smu.nano_aiu, smu.cost_usd,
 		       smu.billing_model, smu.cost_basis
 		FROM stage_model_usage smu
+		JOIN runs r ON r.run_id = smu.run_id
 		WHERE EXISTS (
 			SELECT 1 FROM run_cost_attribution a
 			WHERE a.run_id = smu.run_id AND a.provider = ?
-		)
-		ORDER BY smu.run_id, smu.stage, smu.traversal, smu.model`, provider)
+		)`
+	args := []any{provider}
+	query, args = appendCostWindow(query, args, "r.started_at", since, until)
+	query += ` ORDER BY smu.run_id, smu.stage, smu.traversal, smu.model`
+	modelRows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("rollup: query attributed model usage: %w", err)
 	}
@@ -397,6 +519,18 @@ func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, byID m
 		return fmt.Errorf("rollup: close attributed model usage: %w", err)
 	}
 	return nil
+}
+
+func appendCostWindow(query string, args []any, column string, since, until time.Time) (string, []any) {
+	if !since.IsZero() {
+		query += " AND " + column + " >= ?"
+		args = append(args, formatTime(since).String)
+	}
+	if !until.IsZero() {
+		query += " AND " + column + " < ?"
+		args = append(args, formatTime(until).String)
+	}
+	return query, args
 }
 
 func (m *costMeasures) addRow(input, output, cacheRead, cacheWrite, reasoning sql.NullInt64, premium sql.NullFloat64, nanoAIU sql.NullInt64, costUSD sql.NullFloat64, billingModel, costBasis sql.NullString) {

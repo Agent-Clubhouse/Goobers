@@ -177,6 +177,29 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	}
 }
 
+func TestCostAggregatesBoundsWindowAndFiltersExternalID(t *testing.T) {
+	tmp := t.TempDir()
+	db := openTestDB(t, tmp)
+	defer func() { _ = db.Close() }()
+	seedCostRow(t, db, "before", fixtureStart, []costRef{{"pr", "10"}, {"issue", "1"}}, []costUsage{{nanoAIU: int64Pointer(10)}})
+	seedCostRow(t, db, "inside-a", fixtureStart.Add(time.Hour), []costRef{{"pr", "10"}, {"issue", "1"}}, []costUsage{{nanoAIU: int64Pointer(20)}})
+	seedCostRow(t, db, "inside-b", fixtureStart.Add(2*time.Hour), []costRef{{"pr", "11"}, {"issue", "2"}}, []costUsage{{nanoAIU: int64Pointer(30)}})
+	seedCostRow(t, db, "after", fixtureStart.Add(3*time.Hour), []costRef{{"pr", "10"}, {"issue", "1"}}, []costUsage{{nanoAIU: int64Pointer(40)}})
+
+	result, err := db.CostAggregates(context.Background(), CostQuery{
+		Provider: "github", ExternalKind: CostExternalKindPR, ExternalID: "10",
+		Since: fixtureStart.Add(30 * time.Minute), Until: fixtureStart.Add(3 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.PullRequests) != 1 || len(result.Issues) != 0 ||
+		result.PullRequests[0].ExternalID != "10" ||
+		result.PullRequests[0].NanoAIU == nil || *result.PullRequests[0].NanoAIU != 20 {
+		t.Fatalf("bounded result = %+v", result)
+	}
+}
+
 func TestCostMigrationUpgradeAndConcurrentFreshOpen(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "telemetry.db")

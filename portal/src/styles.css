@@ -1750,6 +1750,53 @@ summary:focus-visible {
   margin: -4px 0 10px;
 }
 
+.external-cost-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+}
+
+.external-cost-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.external-cost-title {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+}
+
+.external-cost-title span,
+.external-cost-totals dt,
+.cost-coverage-warning,
+.external-cost-models {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.external-cost-totals {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0;
+}
+
+.external-cost-totals dd {
+  font-weight: 720;
+  margin: 3px 0 0;
+}
+
+.cost-coverage-warning {
+  color: var(--warning);
+}
+
+.external-cost-models {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
 .curation-health {
   display: grid;
   gap: 1px;

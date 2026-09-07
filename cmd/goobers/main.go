@@ -172,6 +172,7 @@ func writeCommandIndexEntry(w io.Writer, command, description string) {
 var coreCommandIndexDescriptions = map[string]string{
 	"completion":    "Generate shell completion scripts.",
 	"connect":       "Connect an instance to a GitHub repository.",
+	"cost":          "Show cost attributed to pull requests and issues.",
 	"dashboard":     "Open the local operations portal.",
 	"down":          "Gracefully stop a running daemon.",
 	"escalations":   "List escalated runs.",

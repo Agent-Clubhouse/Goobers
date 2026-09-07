@@ -871,6 +871,80 @@ export interface TelemetryStatsOptions {
   trendPreviousUntil?: string;
 }
 
+export type TelemetryCostScope = "summary" | "pr" | "issue";
+export type TelemetryCostUnit = "aiCredits" | "usd" | "premiumRequests";
+
+export interface TelemetryCostOptions {
+  provider?: string;
+  scope: TelemetryCostScope;
+  id?: string;
+  since: string;
+  until: string;
+}
+
+export interface TelemetryCostAmount {
+  unit: TelemetryCostUnit;
+  value: number;
+  estimated: boolean;
+}
+
+export interface TelemetryCostCoverage {
+  totalRuns: number;
+  measuredRuns: number;
+  totalAttempts: number;
+  measuredAttempts: number;
+  complete: boolean;
+  lowerBound: boolean;
+}
+
+export interface TelemetryCostModelAggregate {
+  model: string;
+  usageAttempts: number;
+  measuredAttempts: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  copilotPremiumRequests?: number;
+  nativeTotals: TelemetryCostAmount[];
+  normalizedTotals: TelemetryCostAmount[];
+  billingModels: string[];
+  costBases: string[];
+}
+
+export interface TelemetryCostAggregate {
+  provider: string;
+  externalKind: "pr" | "issue";
+  externalId: string;
+  totalRuns: number;
+  measuredRuns: number;
+  totalAttempts: number;
+  measuredAttempts: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  copilotPremiumRequests?: number;
+  nativeTotals: TelemetryCostAmount[];
+  normalizedTotals: TelemetryCostAmount[];
+  billingModels: string[];
+  costBases: string[];
+  coverage: TelemetryCostCoverage;
+  models: TelemetryCostModelAggregate[];
+}
+
+export interface TelemetryCostResult {
+  provider?: string;
+  scope: TelemetryCostScope;
+  externalId?: string;
+  since: string;
+  until: string;
+  pullRequests: TelemetryCostAggregate[];
+  issues: TelemetryCostAggregate[];
+}
+
 export interface TelemetryTrendBucket {
   since: string;
   until: string;
@@ -1203,6 +1277,10 @@ export interface DaemonClient {
     request?: TelemetryStatsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryStatsResult>;
+  getTelemetryCosts(
+    request: TelemetryCostOptions,
+    options?: RequestOptions,
+  ): Promise<TelemetryCostResult>;
   getTelemetryErrorSignatures(
     request?: TelemetryErrorSignaturesOptions,
     options?: RequestOptions,

@@ -12,6 +12,7 @@ import type {
   RunDetail,
   EventList,
   AttemptList,
+  TelemetryCostResult,
   TelemetryStatsResult,
   TelemetryErrorSignaturesResult,
   TelemetryErrorsPage,
@@ -40,6 +41,7 @@ export interface GoWireFixtures {
   runDetail: RunDetail;
   runEvents: EventList;
   stageAttempts: AttemptList;
+  telemetryCosts: TelemetryCostResult;
   telemetryStats: TelemetryStatsResult;
   telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
@@ -759,6 +761,135 @@ export const goWireFixtures = {
         "startedAt": "2026-07-18T12:32:56Z",
         "durationMillis": 0,
         "artifacts": []
+      }
+    ]
+  },
+  "telemetryCosts": {
+    "provider": "github",
+    "scope": "summary",
+    "since": "2026-07-18T12:32:56Z",
+    "until": "2026-07-18T12:34:56Z",
+    "pullRequests": [
+      {
+        "provider": "github",
+        "externalKind": "pr",
+        "externalId": "4398",
+        "totalRuns": 3,
+        "measuredRuns": 2,
+        "totalAttempts": 4,
+        "measuredAttempts": 3,
+        "inputTokens": 36000,
+        "outputTokens": 12000,
+        "nativeTotals": [
+          {
+            "unit": "aiCredits",
+            "value": 2.5,
+            "estimated": false
+          }
+        ],
+        "normalizedTotals": [
+          {
+            "unit": "aiCredits",
+            "value": 2.5,
+            "estimated": true
+          },
+          {
+            "unit": "usd",
+            "value": 0.025,
+            "estimated": true
+          }
+        ],
+        "billingModels": [
+          "ai_credits"
+        ],
+        "costBases": [
+          "vendor_reported"
+        ],
+        "coverage": {
+          "totalRuns": 3,
+          "measuredRuns": 2,
+          "totalAttempts": 4,
+          "measuredAttempts": 3,
+          "complete": false,
+          "lowerBound": true
+        },
+        "models": [
+          {
+            "model": "gpt-5.6-sol",
+            "usageAttempts": 3,
+            "measuredAttempts": 3,
+            "inputTokens": 36000,
+            "outputTokens": 12000,
+            "nativeTotals": [
+              {
+                "unit": "aiCredits",
+                "value": 2.5,
+                "estimated": false
+              }
+            ],
+            "normalizedTotals": [
+              {
+                "unit": "aiCredits",
+                "value": 2.5,
+                "estimated": true
+              },
+              {
+                "unit": "usd",
+                "value": 0.025,
+                "estimated": true
+              }
+            ],
+            "billingModels": [
+              "ai_credits"
+            ],
+            "costBases": [
+              "vendor_reported"
+            ]
+          }
+        ]
+      }
+    ],
+    "issues": [
+      {
+        "provider": "github",
+        "externalKind": "issue",
+        "externalId": "4398",
+        "totalRuns": 3,
+        "measuredRuns": 2,
+        "totalAttempts": 4,
+        "measuredAttempts": 3,
+        "nativeTotals": [
+          {
+            "unit": "usd",
+            "value": 0.025,
+            "estimated": false
+          }
+        ],
+        "normalizedTotals": [
+          {
+            "unit": "aiCredits",
+            "value": 2.5,
+            "estimated": true
+          },
+          {
+            "unit": "usd",
+            "value": 0.025,
+            "estimated": true
+          }
+        ],
+        "billingModels": [],
+        "costBases": [
+          "vendor_reported"
+        ],
+        "coverage": {
+          "totalRuns": 3,
+          "measuredRuns": 2,
+          "totalAttempts": 4,
+          "measuredAttempts": 3,
+          "complete": false,
+          "lowerBound": true
+        },
+        "models": []
       }
     ]
   },

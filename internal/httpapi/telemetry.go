@@ -21,6 +21,20 @@ const (
 )
 
 func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader, podRunGaggle func(context.Context, string) (string, error), errorLog *log.Logger) {
+	router.Handle(apicontract.RouteTelemetryCosts, func(w http.ResponseWriter, request *http.Request) {
+		query, err := parseTelemetryCostQuery(request.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+			return
+		}
+		result, err := reader.TelemetryCosts(request.Context(), query)
+		if err != nil {
+			writeTelemetryReadError(w, errorLog, "costs", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
 	router.Handle(apicontract.RouteTelemetryStats, func(w http.ResponseWriter, request *http.Request) {
 		query, err := parseTelemetryStatsQuery(request.URL.Query())
 		if err != nil {
@@ -85,6 +99,24 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 		}
 		writeJSON(w, http.StatusOK, result)
 	})
+}
+
+func parseTelemetryCostQuery(values url.Values) (readservice.TelemetryCostRequest, error) {
+	if err := validateQueryValues(values, "provider", "scope", "id", "since", "until"); err != nil {
+		return readservice.TelemetryCostRequest{}, err
+	}
+	since, err := parseOptionalTime(values.Get("since"), "since")
+	if err != nil {
+		return readservice.TelemetryCostRequest{}, err
+	}
+	until, err := parseOptionalTime(values.Get("until"), "until")
+	if err != nil {
+		return readservice.TelemetryCostRequest{}, err
+	}
+	return readservice.TelemetryCostRequest{
+		Provider: values.Get("provider"), Scope: values.Get("scope"),
+		ExternalID: values.Get("id"), Since: since, Until: until,
+	}, nil
 }
 
 // containPodTelemetryRead applies decision 005 R4's containment to the

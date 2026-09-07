@@ -15,13 +15,16 @@ import { ScopeStrip } from "../components/ScopeStrip";
 import {
   type InsightCostRollupSnapshot,
   type InsightErrorSignaturesSnapshot,
+  type InsightExternalCostSnapshot,
   type InsightGaggleSpend,
   type InsightWindow,
   useInsightCostRollup,
   useInsightCostTrend,
   useInsightErrorSignatures,
+  useInsightExternalCosts,
   useInsightStats,
 } from "../insightData";
+import { deriveExternalCostRows } from "../costView";
 import {
   deriveInsightCostTrendState,
   deriveInsightViewModel,
@@ -69,7 +72,7 @@ export function InsightPage({
   const setWindow = (nextWindow: InsightWindow) =>
     navigate({ page: "insight", filters: insightScopeRouteFilters(requestedScope, nextWindow) });
   const errorScope = insightScopeApiParameters(requestedScope);
-  // Keep the daemon's CostAggregate ceiling unchanged; these four page loads
+  // Keep the daemon's CostAggregate ceiling unchanged; these five page loads
   // take turns instead of competing with one another.
   const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
   const statsSettled = query.state.status !== "loading";
@@ -91,6 +94,8 @@ export function InsightPage({
   );
   const trendSettled = costTrend.state.status !== "loading";
   const costRollup = useInsightCostRollup(client, window, trendSettled);
+  const costRollupSettled = costRollup.state.status !== "loading";
+  const externalCosts = useInsightExternalCosts(client, window, costRollupSettled);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -104,7 +109,8 @@ export function InsightPage({
   if (
     errorSignatures.state.status === "loading" ||
     costTrend.state.status === "loading" ||
-    costRollup.state.status === "loading"
+    costRollup.state.status === "loading" ||
+    externalCosts.state.status === "loading"
   ) {
     return <DaemonLoadingState standalone={standalone} />;
   }
@@ -182,6 +188,8 @@ export function InsightPage({
         costTrendRetry={costTrend.retry}
         errorSignatures={errorSignatures.state}
         errorSignaturesRetry={errorSignatures.retry}
+        externalCosts={externalCosts.state}
+        externalCostsRetry={externalCosts.retry}
         view={view}
       />
     </>
@@ -195,6 +203,8 @@ function InsightContent({
   costTrendRetry,
   errorSignatures,
   errorSignaturesRetry,
+  externalCosts,
+  externalCostsRetry,
   view,
 }: {
   costRollup: QueryState<InsightCostRollupSnapshot>;
@@ -203,6 +213,8 @@ function InsightContent({
   costTrendRetry: () => void;
   errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
   errorSignaturesRetry: () => void;
+  externalCosts: QueryState<InsightExternalCostSnapshot>;
+  externalCostsRetry: () => void;
   view: InsightViewModel;
 }) {
   const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage, window } =
@@ -228,6 +240,7 @@ function InsightContent({
   return (
     <>
       <InstanceCostRollup costRollup={costRollup} retry={costRollupRetry} window={window} />
+      <ExternalCostBreakdown costs={externalCosts} retry={externalCostsRetry} />
 
       {isEmpty ? (
         <section className="empty-state insight-empty">
@@ -1026,6 +1039,90 @@ function writeStoredThreshold(value: number | undefined): void {
     // set alongside this call still drives the UI for the rest of the
     // session; it just won't survive a reload.
   }
+}
+
+function ExternalCostBreakdown({
+  costs,
+  retry,
+}: {
+  costs: QueryState<InsightExternalCostSnapshot>;
+  retry: () => void;
+}) {
+  if (costs.status === "error") {
+    return (
+      <section className="content-section">
+        <ExternalCostHeading />
+        <div className="insight-inline-error">
+          <span>Unable to load pull request and issue costs.</span>
+          <button onClick={retry} type="button">Retry</button>
+        </div>
+      </section>
+    );
+  }
+  if (costs.status !== "ready" && costs.status !== "stale") {
+    return null;
+  }
+  const rows = deriveExternalCostRows(costs.data.result);
+  return (
+    <section className="content-section">
+      <ExternalCostHeading />
+      {costs.status === "stale" && costs.error && (
+        <div className="insight-inline-error">
+          <span>Attributed cost refresh failed. Showing the last successful read.</span>
+          <button onClick={retry} type="button">Retry</button>
+        </div>
+      )}
+      {costs.data.boundedAllTime && (
+        <p className="usage-description">
+          “All time” cost attribution is bounded to the latest 90 days.
+        </p>
+      )}
+      {rows.length === 0 ? (
+        <p className="inline-empty">No pull request or issue cost was attributed in this window.</p>
+      ) : (
+        <div className="external-cost-list">
+          {rows.map((row) => (
+            <article className="external-cost-card" key={row.key}>
+              <div className="external-cost-title">
+                <strong>{row.label}</strong>
+                <span>{row.provider}</span>
+              </div>
+              <dl className="external-cost-totals">
+                <div>
+                  <dt>Provider-native</dt>
+                  <dd>{row.native}</dd>
+                </div>
+                <div>
+                  <dt>Normalized estimate</dt>
+                  <dd>{row.normalized}</dd>
+                </div>
+              </dl>
+              <p className={row.lowerBound ? "cost-coverage-warning" : "usage-description"}>
+                {row.coverage}
+              </p>
+              {row.models.length > 0 && (
+                <ul className="external-cost-models" aria-label={`${row.label} model breakdown`}>
+                  {row.models.map((model) => <li key={model}>{model}</li>)}
+                </ul>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ExternalCostHeading() {
+  return (
+    <div className="section-heading">
+      <div>
+        <p className="section-kicker">Attribution</p>
+        <h2>Cost by pull request and issue</h2>
+      </div>
+      <span className="section-count">Exact recorded usage</span>
+    </div>
+  );
 }
 
 function useBudgetThreshold(): [number | undefined, (value: number | undefined) => void] {
