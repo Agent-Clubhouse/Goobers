@@ -210,6 +210,11 @@ func (r Runner) enforces(effect string) bool {
 type StageRequirement struct {
 	// Stage is the task name, for diagnostics.
 	Stage string
+	// StageClass selects the operator's class-scoped isolation floor.
+	StageClass string
+	// ControlPlane marks a non-dispatchable gate. Inventory matching must
+	// never borrow a remote runner's protections for local gate execution.
+	ControlPlane bool
 	// OS is the required operating system ("" = no requirement, D3).
 	OS string
 	// CPU, Memory, and Disk are minimum quantities, verbatim Kubernetes
@@ -234,11 +239,11 @@ type Inventory struct {
 	Runners []Runner
 	// Mandates is the instance isolation floor (decision record D7: "the
 	// instance posture is a mandate"): effects merged into every stage's
-	// restriction requirement before matching. SEAM — no instance.yaml
-	// surface declares mandates yet (the restrictions companion doc owns
-	// that shape); callers pass nil today, and when the config field lands
-	// it plumbs through here without touching the match.
+	// restriction requirement before matching. ClassMandates carries the
+	// instance.yaml class selectors; this field retains the global-floor seam.
 	Mandates []string
+	// ClassMandates strengthens matching stages in addition to the global floor.
+	ClassMandates map[string][]string
 }
 
 // LocalMode reports whether this inventory has no non-self runner — modes
@@ -274,7 +279,7 @@ func (inv Inventory) LocalMode() bool {
 // the dispatch-reachable runner set and the checkpoints widen with it,
 // without touching the match.
 func (inv Inventory) ExecutableSubstrate() Inventory {
-	substrate := Inventory{Mandates: inv.Mandates}
+	substrate := Inventory{Mandates: inv.Mandates, ClassMandates: inv.ClassMandates}
 	for _, r := range inv.Runners {
 		if r.Self {
 			substrate.Runners = append(substrate.Runners, r)
@@ -430,8 +435,12 @@ type runnerMatch struct {
 }
 
 func solveStage(inv Inventory, stage StageRequirement, localMode bool) StagePlacement {
+	if stage.ControlPlane {
+		inv = inv.ExecutableSubstrate()
+	}
 	placement := StagePlacement{Stage: stage.Stage}
 	restrictions := effectiveRestrictions(stage.Restrictions, inv.Mandates)
+	restrictions = effectiveRestrictions(restrictions, inv.ClassMandates[stage.StageClass])
 	matches := make([]runnerMatch, 0, len(inv.Runners))
 	for _, runner := range inv.Runners {
 		matches = append(matches, evaluateRunner(runner, stage, restrictions))

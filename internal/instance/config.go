@@ -145,6 +145,9 @@ type Config struct {
 	// Inventory edits are restart-only in v1 (accept-and-pin, D9): instance.yaml
 	// is startup-only, so in-flight runs finish against their pinned snapshot.
 	Runners []RunnerEntry `json:"runners,omitempty" yaml:"runners,omitempty"`
+	// Isolation is the operator's strengthen-only placement floor. It never
+	// grants a runner a protection; runners must already enforce every effect.
+	Isolation *IsolationConfig `json:"isolation,omitempty" yaml:"isolation,omitempty"`
 	// Egress is the operator-supplied network destination set the
 	// per-runner-class NetworkPolicy renderer (`goobers netpol-render`,
 	// issue #3568) fills into the rendered reference manifests. Nil renders

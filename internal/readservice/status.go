@@ -27,6 +27,9 @@ type StatusReader interface {
 // SchedulerStatus is scheduler state projected from the instance journal for
 // local status adapters.
 type SchedulerStatus struct {
+	// IsolationMandates is the effective, operator-owned class floor loaded
+	// by this daemon. Nil means no instance mandate is configured.
+	IsolationMandates     map[string][]string
 	EngineFallbacks       []readmodel.EngineFallback
 	ProviderQuotaResumeAt *time.Time
 	DaemonRestart         *DaemonRestartStatus
@@ -352,6 +355,9 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		}
 	}
 	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}
+	if s.sources.Config != nil {
+		status.IsolationMandates = s.sources.Config.PlacementInventory("").ClassMandates
+	}
 	for _, key := range projected.engineFallbacks.order {
 		status.EngineFallbacks = append(status.EngineFallbacks, projected.engineFallbacks.items[key])
 	}
