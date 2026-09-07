@@ -6,6 +6,8 @@ import (
 )
 
 func TestAttributionRoundTripAndReplacement(t *testing.T) {
+	nanoAIU := int64(12_345_000_000)
+	premium := 1.5
 	attribution := Attribution{
 		Instance: "MDB1",
 		Gaggle:   "efunhouse",
@@ -13,6 +15,11 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 		Task:     "escalate",
 		Goober:   "implementer",
 		Run:      "224712dcde5c4deda9717a03a8c26770",
+		Cost: &CostReceipt{
+			JournalSequence:        42,
+			CopilotPremiumRequests: &premium,
+			NanoAIU:                &nanoAIU,
+		},
 	}
 	first, err := withAttribution("review findings", attribution, "verdict")
 	if err != nil {
@@ -30,7 +37,11 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 		parsed.Task != attribution.Task ||
 		parsed.Goober != attribution.Goober ||
 		parsed.Run != attribution.Run ||
-		parsed.Action != "verdict" {
+		parsed.Action != "verdict" ||
+		parsed.Cost == nil ||
+		parsed.Cost.JournalSequence != 42 ||
+		parsed.Cost.NanoAIU == nil || *parsed.Cost.NanoAIU != nanoAIU ||
+		parsed.Cost.CopilotPremiumRequests == nil || *parsed.Cost.CopilotPremiumRequests != premium {
 		t.Fatalf("parsed attribution = %+v", parsed)
 	}
 
@@ -39,6 +50,9 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 	}
 	if !strings.Contains(first, "| version `dev`") {
 		t.Fatalf("visible attribution version missing from %q", first)
+	}
+	if !strings.Contains(first, "| Cost: 12.35 AIC") {
+		t.Fatalf("visible attribution cost missing from %q", first)
 	}
 
 	second, err := withAttribution(first, attribution, "comment-update")

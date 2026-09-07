@@ -201,6 +201,35 @@ func RollupAgentUsage(events []Event) AgentUsage {
 	return rollupAgentUsage(events, runID, stage)
 }
 
+// RollupRunAgentUsage sums finalized usage across every agentic stage in one
+// run. RollupAgentUsage intentionally follows the first observed stage for
+// callers rendering one invocation tree; provider cost receipts need the wider
+// workflow total, including implementation, review, and remediation stages.
+//
+// Stages are folded independently so a repass in one stage does not discard a
+// different stage whose latest attempt number is lower.
+func RollupRunAgentUsage(events []Event, runID string) AgentUsage {
+	stages := make(map[string]struct{})
+	for _, event := range events {
+		if event.Type != EventAgentLifecycle || event.Agent == nil ||
+			event.Agent.Stage == "" || (runID != "" && event.Agent.RunID != runID) {
+			continue
+		}
+		stages[event.Agent.Stage] = struct{}{}
+	}
+	names := make([]string, 0, len(stages))
+	for stage := range stages {
+		names = append(names, stage)
+	}
+	sort.Strings(names)
+
+	var result AgentUsage
+	for _, stage := range names {
+		addAgentUsage(&result, rollupAgentUsage(events, runID, stage))
+	}
+	return result
+}
+
 func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
 	latestAttempt := 0
 	for _, event := range events {
@@ -348,12 +377,7 @@ func addAgentUsage(dst *AgentUsage, src AgentUsage) {
 	addAgentUsageInt64(&dst.CacheWriteTokens, src.CacheWriteTokens)
 	addAgentUsageInt64(&dst.ReasoningTokens, src.ReasoningTokens)
 	addAgentUsageInt64(&dst.NanoAIU, src.NanoAIU)
-	if src.CostUSD != nil {
-		if dst.CostUSD == nil {
-			dst.CostUSD = new(float64)
-		}
-		*dst.CostUSD += *src.CostUSD
-	}
+	addAgentUsageFloat64(&dst.CostUSD, src.CostUSD)
 }
 
 func addAgentUsageInt64(dst **int64, src *int64) {
@@ -362,6 +386,16 @@ func addAgentUsageInt64(dst **int64, src *int64) {
 	}
 	if *dst == nil {
 		*dst = new(int64)
+	}
+	**dst += *src
+}
+
+func addAgentUsageFloat64(dst **float64, src *float64) {
+	if src == nil {
+		return
+	}
+	if *dst == nil {
+		*dst = new(float64)
 	}
 	**dst += *src
 }

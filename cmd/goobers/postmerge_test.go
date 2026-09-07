@@ -45,6 +45,7 @@ type postMergeServerState struct {
 	issueLabels   map[int][]string
 	issueState    map[int]string
 	issueComments map[int][]string
+	prComments    []string
 	commentIDs    map[int][]int
 	nextCommentID int
 
@@ -157,7 +158,27 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, st.mergedNumber), func(w http.ResponseWriter, r *http.Request) {
-		writeFakeJSON(w, []map[string]interface{}{})
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			comments := make([]map[string]interface{}, 0, len(st.prComments))
+			for i, comment := range st.prComments {
+				comments = append(comments, map[string]interface{}{
+					"id": i + 1, "body": comment, "user": map[string]string{"login": "goobers"},
+				})
+			}
+			writeFakeJSON(w, comments)
+		case http.MethodPost:
+			var body struct {
+				Body string `json:"body"`
+			}
+			decodeFakeJSON(r, &body)
+			st.prComments = append(st.prComments, body.Body)
+			writeFakeJSON(w, map[string]interface{}{"id": len(st.prComments), "body": body.Body})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 	// The merged PR's own touched files (fanOutNeedsRemediation's fixed
 	// overlap side) — served for the merged number only, distinct from the

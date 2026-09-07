@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -26,15 +28,33 @@ type attributionContextKey struct{}
 // Values are encoded before entering the HTML comment so untrusted names can
 // never terminate or corrupt the marker.
 type Attribution struct {
-	Schema   int    `json:"schema"`
-	Goobers  bool   `json:"goobers"`
-	Instance string `json:"instance"`
-	Gaggle   string `json:"gaggle"`
-	Workflow string `json:"workflow"`
-	Task     string `json:"task"`
-	Goober   string `json:"goober"`
-	Run      string `json:"run"`
-	Action   string `json:"action"`
+	Schema   int          `json:"schema"`
+	Goobers  bool         `json:"goobers"`
+	Instance string       `json:"instance"`
+	Gaggle   string       `json:"gaggle"`
+	Workflow string       `json:"workflow"`
+	Task     string       `json:"task"`
+	Goober   string       `json:"goober"`
+	Run      string       `json:"run"`
+	Action   string       `json:"action"`
+	Cost     *CostReceipt `json:"cost,omitempty"`
+}
+
+// CostReceipt is the cumulative measured AI usage known for one run when a
+// provider write is made. It rides with the existing attribution marker so
+// provider comments form a distributed, best-effort receipt stream without
+// making telemetry projection availability part of comment correctness.
+type CostReceipt struct {
+	JournalSequence        uint64   `json:"journalSequence"`
+	Model                  string   `json:"model,omitempty"`
+	InputTokens            *int64   `json:"inputTokens,omitempty"`
+	OutputTokens           *int64   `json:"outputTokens,omitempty"`
+	CacheReadTokens        *int64   `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens       *int64   `json:"cacheWriteTokens,omitempty"`
+	ReasoningTokens        *int64   `json:"reasoningTokens,omitempty"`
+	CopilotPremiumRequests *float64 `json:"copilotPremiumRequests,omitempty"`
+	NanoAIU                *int64   `json:"nanoAiu,omitempty"`
+	CostUSD                *float64 `json:"costUsd,omitempty"`
 }
 
 // AttributionConfigurer is implemented by providers that can stamp authored
@@ -93,6 +113,9 @@ func withAttribution(body string, attribution Attribution, action string) (strin
 	)
 	if attribution.Instance != "" {
 		visible += " | instance `" + markdownCode(attribution.Instance) + "`"
+	}
+	if attribution.Cost != nil && attribution.Cost.NanoAIU != nil {
+		visible += " | Cost: " + formatAIC(*attribution.Cost.NanoAIU)
 	}
 	body = strings.TrimSpace(attributionMarkerPattern.ReplaceAllString(body, ""))
 	if attributionMarkerStartPattern.MatchString(body) {
@@ -170,7 +193,45 @@ func validateAttribution(attribution Attribution) error {
 			return fmt.Errorf("comment attribution %s exceeds 256 characters", name)
 		}
 	}
+	if attribution.Cost != nil {
+		if err := validateCostReceipt(*attribution.Cost); err != nil {
+			return fmt.Errorf("comment attribution cost: %w", err)
+		}
+	}
 	return nil
+}
+
+func validateCostReceipt(receipt CostReceipt) error {
+	for name, value := range map[string]*int64{
+		"input tokens":       receipt.InputTokens,
+		"output tokens":      receipt.OutputTokens,
+		"cache-read tokens":  receipt.CacheReadTokens,
+		"cache-write tokens": receipt.CacheWriteTokens,
+		"reasoning tokens":   receipt.ReasoningTokens,
+		"nano-AIU":           receipt.NanoAIU,
+	} {
+		if value != nil && *value < 0 {
+			return fmt.Errorf("%s cannot be negative", name)
+		}
+	}
+	for name, value := range map[string]*float64{
+		"Copilot premium requests": receipt.CopilotPremiumRequests,
+		"USD cost":                 receipt.CostUSD,
+	} {
+		if value != nil && (*value < 0 || math.IsNaN(*value) || math.IsInf(*value, 0)) {
+			return fmt.Errorf("%s must be a finite non-negative value", name)
+		}
+	}
+	if receipt.Model != "" &&
+		(!utf8.ValidString(receipt.Model) || strings.ContainsAny(receipt.Model, "\r\n\x00") ||
+			utf8.RuneCountInString(receipt.Model) > 256) {
+		return fmt.Errorf("model contains invalid text")
+	}
+	return nil
+}
+
+func formatAIC(nanoAIU int64) string {
+	return strconv.FormatFloat(float64(nanoAIU)/1e9, 'f', 2, 64) + " AIC"
 }
 
 func markdownCode(value string) string {

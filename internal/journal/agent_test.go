@@ -203,9 +203,7 @@ func TestRollupAgentUsageForRunSumsDeduplicatedStages(t *testing.T) {
 		agentLifecycleEvent(now, "reviewer", "", "run", "review", 1, AgentCompleted, AgentUsage{InputTokens: &review}),
 		agentLifecycleEvent(now, "other", "", "other-run", "implement", 1, AgentCompleted, AgentUsage{InputTokens: &oldAttempt}),
 	}
-	var usage AgentUsage
-	addAgentUsage(&usage, rollupAgentUsage(events, "run", "implement"))
-	addAgentUsage(&usage, rollupAgentUsage(events, "run", "review"))
+	usage := RollupRunAgentUsage(events, "run")
 	if usage.InputTokens == nil || *usage.InputTokens != 27 {
 		t.Fatalf("run usage = %#v, want 27", usage.InputTokens)
 	}

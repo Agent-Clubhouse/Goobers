@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -145,6 +148,53 @@ func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 		got.Goober != "implementer" ||
 		got.Run != "run-123456789" {
 		t.Fatalf("attribution = %+v", got)
+	}
+}
+
+func TestStageAttributionIncludesCurrentRunCostReceipt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "MDB1")
+	runID := "run-123456789"
+	gaggle := "efunhouse"
+	now := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	nanoAIU := int64(8_305_840_000)
+	run, err := journal.Create(instance.NewLayout(root).ForGaggle(gaggle).RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          gaggle,
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       now,
+	}, nil)
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventAgentLifecycle,
+		Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "implementer",
+			RunID: runID, Stage: "implement", Attempt: 1,
+			Lifecycle: journal.AgentCompleted, StartedAt: now, UpdatedAt: now,
+			Usage: journal.AgentUsage{Model: "gpt-5.6", NanoAIU: &nanoAIU},
+		},
+	}); err != nil {
+		t.Fatalf("append agent usage: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close run: %v", err)
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_GAGGLE", gaggle)
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv(executor.TaskEnvVar, "publish-result")
+	t.Setenv(executor.GooberEnvVar, "implementer")
+
+	got, ok := stageAttribution(root)
+	if !ok || got.Cost == nil || got.Cost.NanoAIU == nil {
+		t.Fatalf("stage attribution receipt = %+v, ok=%v", got.Cost, ok)
+	}
+	if *got.Cost.NanoAIU != nanoAIU || got.Cost.Model != "gpt-5.6" || got.Cost.JournalSequence == 0 {
+		t.Fatalf("stage attribution receipt = %+v", got.Cost)
 	}
 }
 

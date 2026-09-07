@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/providers"
@@ -14,13 +15,15 @@ import (
 // routes through), so the test never touches a concrete *GitHubProvider and can
 // assert exactly which work-item id was mutated and against which repo.
 type fakeADOWorkItemCloser struct {
-	item     providers.WorkItem
-	comments []providers.Comment
+	item       providers.WorkItem
+	comments   []providers.Comment
+	prComments []providers.Comment
 
-	statusReqs  []providers.UpdateWorkItemStatusRequest
-	commentReqs []providers.UpdateWorkItemRequest
-	getIDs      []string
-	getRepos    []providers.RepositoryRef
+	statusReqs    []providers.UpdateWorkItemStatusRequest
+	commentReqs   []providers.UpdateWorkItemRequest
+	prCommentReqs []string
+	getIDs        []string
+	getRepos      []providers.RepositoryRef
 }
 
 func (f *fakeADOWorkItemCloser) GetWorkItem(_ context.Context, repo providers.RepositoryRef, id string) (providers.WorkItem, error) {
@@ -41,6 +44,19 @@ func (f *fakeADOWorkItemCloser) UpdateWorkItem(_ context.Context, req providers.
 func (f *fakeADOWorkItemCloser) UpdateWorkItemStatus(_ context.Context, req providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error) {
 	f.statusReqs = append(f.statusReqs, req)
 	return providers.WorkItem{}, nil
+}
+
+func (f *fakeADOWorkItemCloser) AuthenticatedLogin(context.Context) (string, error) {
+	return "goobers", nil
+}
+
+func (f *fakeADOWorkItemCloser) ListPullRequestThreadComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	return f.prComments, nil
+}
+
+func (f *fakeADOWorkItemCloser) PostPullRequestThreadComment(_ context.Context, _ providers.RepositoryRef, _ string, body string) (providers.Comment, error) {
+	f.prCommentReqs = append(f.prCommentReqs, body)
+	return providers.Comment{Body: body}, nil
 }
 
 // backlogRef is a distinguishing ADO backlog RepositoryRef: its Project differs
@@ -67,7 +83,7 @@ func TestPerformPostMergeADOClosesReferencedWorkItem(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 
-	errs := performPostMergeADO(context.Background(), closer, backlogRef, poll, "359", &stdout, &stderr)
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want none", errs)
 	}
@@ -121,7 +137,7 @@ func TestPerformPostMergeADOIdempotentWhenAlreadyDone(t *testing.T) {
 	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
 	var stdout, stderr bytes.Buffer
 
-	errs := performPostMergeADO(context.Background(), closer, backlogRef, poll, "359", &stdout, &stderr)
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want none", errs)
 	}
@@ -141,7 +157,7 @@ func TestPerformPostMergeADONoReferenceIsNotAnError(t *testing.T) {
 	poll := providers.PullRequestPollResult{Number: 359, Body: "A manual fix, no backlog work item."}
 	var stdout, stderr bytes.Buffer
 
-	errs := performPostMergeADO(context.Background(), closer, backlogRef, poll, "359", &stdout, &stderr)
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %v, want none", errs)
 	}
@@ -154,12 +170,49 @@ func TestPerformPostMergeADONoReferenceIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestPerformPostMergeADOPublishesReceiptSummaryAndAllocation(t *testing.T) {
+	closer := &fakeADOWorkItemCloser{
+		item:       providers.WorkItem{ID: "1456", State: "open"},
+		comments:   []providers.Comment{costComment(t, "goobers", "implementation", "run-impl", 20, 8_000_000_000)},
+		prComments: []providers.Comment{costComment(t, "goobers", "merge-review", "run-review", 30, 2_000_000_000)},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(
+		context.Background(),
+		closer,
+		closer,
+		backlogRef,
+		poll,
+		"359",
+		"",
+		providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "code", Name: "repo"},
+		&stdout,
+		&stderr,
+	)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.prCommentReqs) != 1 || !strings.Contains(closer.prCommentReqs[0], "**10.00 AIC**") {
+		t.Fatalf("PR summary comments = %q, want 10.00 AIC", closer.prCommentReqs)
+	}
+	if len(closer.commentReqs) != 1 ||
+		!strings.Contains(closer.commentReqs[0].Comment, "**Total Goobers cost for this PR:** 10.00 AIC") ||
+		!strings.Contains(closer.commentReqs[0].Comment, "**Cost attributed to this issue:** 10.00 AIC") {
+		t.Fatalf("work item close-out comments = %+v, want total and allocation", closer.commentReqs)
+	}
+}
+
 // TestCloseReferencedWorkItemsADOMultipleAndError proves each distinct closing
 // ref is marked done, and a per-item failure is collected (not fatal to the
 // others) — mirroring closeReferencedIssues' best-effort posture.
 func TestCloseReferencedWorkItemsADOSurfacesPerItemError(t *testing.T) {
 	closer := &erroringCloser{failID: "1456"}
-	closed, errs := closeReferencedWorkItemsADO(context.Background(), closer, backlogRef, "Fixes #1456 and closes #1457", "359")
+	closed, errs := closeReferencedWorkItemsADOWithComments(context.Background(), closer, backlogRef, "Fixes #1456 and closes #1457", map[string]string{
+		"1456": "Merged in pull request #359.",
+		"1457": "Merged in pull request #359.",
+	})
 	if len(closed) != 1 || closed[0] != "1457" {
 		t.Fatalf("closed = %v, want [1457] (1456 failed)", closed)
 	}
