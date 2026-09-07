@@ -836,6 +836,37 @@ export const goWireFixtures = {
               "vendor_reported"
             ]
           }
+        ],
+        "runs": [
+          {
+            "runId": "run-123",
+            "startedAt": "2026-07-18T12:32:56Z",
+            "usageAttempts": 3,
+            "measuredAttempts": 3,
+            "inputTokens": 36000,
+            "outputTokens": 12000,
+            "nativeTotals": [
+              {
+                "unit": "aiCredits",
+                "value": 2.5,
+                "estimated": false
+              }
+            ],
+            "normalizedTotals": [
+              {
+                "unit": "usd",
+                "value": 0.025,
+                "estimated": true
+              }
+            ],
+            "billingModels": [
+              "ai_credits"
+            ],
+            "costBases": [
+              "vendor_reported"
+            ],
+            "models": []
+          }
         ]
       }
     ],
@@ -874,7 +905,34 @@ export const goWireFixtures = {
           "complete": false,
           "lowerBound": true
         },
-        "models": []
+        "models": [],
+        "runs": [
+          {
+            "runId": "run-124",
+            "startedAt": "2026-07-18T12:32:56Z",
+            "usageAttempts": 2,
+            "measuredAttempts": 2,
+            "nativeTotals": [
+              {
+                "unit": "usd",
+                "value": 0.025,
+                "estimated": false
+              }
+            ],
+            "normalizedTotals": [
+              {
+                "unit": "aiCredits",
+                "value": 2.5,
+                "estimated": true
+              }
+            ],
+            "billingModels": [],
+            "costBases": [
+              "vendor_reported"
+            ],
+            "models": []
+          }
+        ]
       }
     ]
   },

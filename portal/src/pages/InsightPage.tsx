@@ -1105,6 +1105,14 @@ function ExternalCostBreakdown({
                   {row.models.map((model) => <li key={model}>{model}</li>)}
                 </ul>
               )}
+              {row.runs.length > 0 && (
+                <details className="external-cost-runs">
+                  <summary>{row.runs.length} run{row.runs.length === 1 ? "" : "s"}</summary>
+                  <ul aria-label={`${row.label} run breakdown`}>
+                    {row.runs.map((run) => <li key={run}>{run}</li>)}
+                  </ul>
+                </details>
+              )}
             </article>
           ))}
         </div>

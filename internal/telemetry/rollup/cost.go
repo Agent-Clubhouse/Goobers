@@ -64,6 +64,7 @@ type CostAggregate struct {
 	BillingModels          []string
 	CostBases              []string
 	Models                 []CostModelAggregate
+	Runs                   []CostRunAggregate
 }
 
 // CostModelAggregate preserves the model dimension beneath an external cost
@@ -82,6 +83,26 @@ type CostModelAggregate struct {
 	CostUSD                *float64
 	BillingModels          []string
 	CostBases              []string
+}
+
+// CostRunAggregate preserves the run dimension beneath an external cost
+// aggregate.
+type CostRunAggregate struct {
+	RunID                  string
+	StartedAt              time.Time
+	UsageAttempts          int
+	MeasuredAttempts       int
+	InputTokens            *int64
+	OutputTokens           *int64
+	CacheReadTokens        *int64
+	CacheWriteTokens       *int64
+	ReasoningTokens        *int64
+	CopilotPremiumRequests *float64
+	NanoAIU                *int64
+	CostUSD                *float64
+	BillingModels          []string
+	CostBases              []string
+	Models                 []CostModelAggregate
 }
 
 type costMeasures struct {
@@ -312,7 +333,11 @@ func issueCostAggregates(provider string, runs []*costRun) []CostAggregate {
 			}
 			addMeasuresToAggregate(aggregate, shares[issue])
 			addModelsToIssueAggregate(aggregate, run, targets, weights, issue)
+			aggregate.Runs = append(aggregate.Runs, issueCostRunAggregate(run, shares[issue], targets, weights, issue))
 		}
+	}
+	for _, aggregate := range aggregates {
+		sortCostRuns(aggregate.Runs)
 	}
 	return sortedAggregates(aggregates)
 }
@@ -664,7 +689,9 @@ func aggregateCostRuns(provider, kind string, groups map[string]map[string]*cost
 			aggregate.MeasuredAttempts += run.measuredAttempts
 			addMeasuresToAggregate(aggregate, run.measures)
 			addModelsToAggregate(aggregate, run)
+			aggregate.Runs = append(aggregate.Runs, directCostRunAggregate(run))
 		}
+		sortCostRuns(aggregate.Runs)
 		out[externalID] = aggregate
 	}
 	return sortedAggregates(out)
@@ -709,6 +736,41 @@ func addModelsToIssueAggregate(dst *CostAggregate, run *costRun, targets []strin
 		addMeasuresToModelAggregate(target, shares[issue])
 	}
 	sort.Slice(dst.Models, func(i, j int) bool { return dst.Models[i].Model < dst.Models[j].Model })
+}
+
+func directCostRunAggregate(run *costRun) CostRunAggregate {
+	aggregate := CostAggregate{}
+	addMeasuresToAggregate(&aggregate, run.measures)
+	addModelsToAggregate(&aggregate, run)
+	return costRunAggregateFrom(run, aggregate)
+}
+
+func issueCostRunAggregate(run *costRun, measures costMeasures, targets []string, weights map[string]int64, issue string) CostRunAggregate {
+	aggregate := CostAggregate{}
+	addMeasuresToAggregate(&aggregate, measures)
+	addModelsToIssueAggregate(&aggregate, run, targets, weights, issue)
+	return costRunAggregateFrom(run, aggregate)
+}
+
+func costRunAggregateFrom(run *costRun, aggregate CostAggregate) CostRunAggregate {
+	return CostRunAggregate{
+		RunID: run.id, StartedAt: run.started,
+		UsageAttempts: run.attempts, MeasuredAttempts: run.measuredAttempts,
+		InputTokens: aggregate.InputTokens, OutputTokens: aggregate.OutputTokens,
+		CacheReadTokens: aggregate.CacheReadTokens, CacheWriteTokens: aggregate.CacheWriteTokens,
+		ReasoningTokens: aggregate.ReasoningTokens, CopilotPremiumRequests: aggregate.CopilotPremiumRequests,
+		NanoAIU: aggregate.NanoAIU, CostUSD: aggregate.CostUSD,
+		BillingModels: aggregate.BillingModels, CostBases: aggregate.CostBases, Models: aggregate.Models,
+	}
+}
+
+func sortCostRuns(runs []CostRunAggregate) {
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].RunID < runs[j].RunID
+		}
+		return runs[i].StartedAt.Before(runs[j].StartedAt)
+	})
 }
 
 func modelAggregate(dst *CostAggregate, model string) *CostModelAggregate {

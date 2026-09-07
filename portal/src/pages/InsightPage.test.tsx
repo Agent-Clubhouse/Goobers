@@ -314,6 +314,9 @@ describe("Insight page", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("gpt-5.6-sol: 2.5 AI credits · 3/3 attempts")).toBeInTheDocument();
     expect(screen.getByText("claude-sonnet: $0.42 · 2/2 attempts")).toBeInTheDocument();
+    expect(
+      screen.getByText("01JZ455ESCALATE: 2.5 AI credits · 3/3 attempts"),
+    ).toBeInTheDocument();
     expect(getTelemetryCosts).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: "summary",

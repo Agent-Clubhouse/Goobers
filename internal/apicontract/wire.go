@@ -606,6 +606,19 @@ func newWireFixtures() wireFixtures {
 					BillingModels: []string{"ai_credits"},
 					CostBases:     []string{"vendor_reported"},
 				}},
+				Runs: []readservice.TelemetryCostRunAggregate{{
+					RunID: "run-123", StartedAt: startedAt, UsageAttempts: 3, MeasuredAttempts: 3,
+					InputTokens: &modelInputTokens, OutputTokens: &modelOutputTokens,
+					NativeTotals: []readservice.TelemetryCostAmount{{
+						Unit: "aiCredits", Value: 2.5,
+					}},
+					NormalizedTotals: []readservice.TelemetryCostAmount{{
+						Unit: "usd", Value: 0.025, Estimated: true,
+					}},
+					BillingModels: []string{"ai_credits"},
+					CostBases:     []string{"vendor_reported"},
+					Models:        []readservice.TelemetryCostModelAggregate{},
+				}},
 			}},
 			Issues: []readservice.TelemetryCostAggregate{{
 				Provider: "github", ExternalKind: "issue", ExternalID: "4398",
@@ -623,6 +636,18 @@ func newWireFixtures() wireFixtures {
 					LowerBound: true,
 				},
 				Models: []readservice.TelemetryCostModelAggregate{},
+				Runs: []readservice.TelemetryCostRunAggregate{{
+					RunID: "run-124", StartedAt: startedAt, UsageAttempts: 2, MeasuredAttempts: 2,
+					NativeTotals: []readservice.TelemetryCostAmount{{
+						Unit: "usd", Value: 0.025,
+					}},
+					NormalizedTotals: []readservice.TelemetryCostAmount{{
+						Unit: "aiCredits", Value: 2.5, Estimated: true,
+					}},
+					BillingModels: []string{},
+					CostBases:     []string{"vendor_reported"},
+					Models:        []readservice.TelemetryCostModelAggregate{},
+				}},
 			}},
 		},
 		TelemetryStats: readservice.TelemetryStatsResult{

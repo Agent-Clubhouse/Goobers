@@ -13,6 +13,7 @@ export interface ExternalCostRow {
   coverage: string;
   lowerBound: boolean;
   models: string[];
+  runs: string[];
 }
 
 export function deriveExternalCostRows(result: TelemetryCostResult): ExternalCostRow[] {
@@ -37,6 +38,10 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
     models: aggregate.models.map(
       (model) =>
         `${model.model}: ${formatAmounts(model.nativeTotals, "unmeasured")} · ${model.measuredAttempts}/${model.usageAttempts} attempts`,
+    ),
+    runs: aggregate.runs.map(
+      (run) =>
+        `${run.runId}: ${formatAmounts(run.nativeTotals, "unmeasured")} · ${run.measuredAttempts}/${run.usageAttempts} attempts`,
     ),
   };
 }

@@ -159,6 +159,9 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 		pr.TotalAttempts != 5 || pr.MeasuredAttempts != 4 || pr.NanoAIU == nil || *pr.NanoAIU != 520 {
 		t.Fatalf("PR aggregate = %#v", pr)
 	}
+	if len(pr.Runs) != 4 || pr.Runs[0].RunID != "run-a" || pr.Runs[3].RunID != "run-d" {
+		t.Fatalf("PR run breakdown = %#v", pr.Runs)
+	}
 
 	issues, err := db.IssueCosts(context.Background(), "github")
 	if err != nil {
@@ -174,6 +177,9 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	if issues[0].MeasuredRuns != 3 || issues[0].TotalRuns != 4 ||
 		issues[1].MeasuredRuns != 2 || issues[1].TotalRuns != 3 {
 		t.Fatalf("issue coverage = %#v", issues)
+	}
+	if len(issues[0].Runs) != 4 || len(issues[1].Runs) != 3 {
+		t.Fatalf("issue run breakdown = %#v", issues)
 	}
 }
 

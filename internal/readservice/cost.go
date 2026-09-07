@@ -63,6 +63,7 @@ type TelemetryCostAggregate struct {
 	CostBases              []string                      `json:"costBases"`
 	Coverage               TelemetryCostCoverage         `json:"coverage"`
 	Models                 []TelemetryCostModelAggregate `json:"models"`
+	Runs                   []TelemetryCostRunAggregate   `json:"runs"`
 }
 
 // TelemetryCostModelAggregate preserves model-level native and normalized cost.
@@ -80,6 +81,26 @@ type TelemetryCostModelAggregate struct {
 	NormalizedTotals       []TelemetryCostAmount `json:"normalizedTotals"`
 	BillingModels          []string              `json:"billingModels"`
 	CostBases              []string              `json:"costBases"`
+}
+
+// TelemetryCostRunAggregate preserves the run-level attribution beneath an
+// external work item.
+type TelemetryCostRunAggregate struct {
+	RunID                  string                        `json:"runId"`
+	StartedAt              time.Time                     `json:"startedAt"`
+	UsageAttempts          int                           `json:"usageAttempts"`
+	MeasuredAttempts       int                           `json:"measuredAttempts"`
+	InputTokens            *int64                        `json:"inputTokens,omitempty"`
+	OutputTokens           *int64                        `json:"outputTokens,omitempty"`
+	CacheReadTokens        *int64                        `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens       *int64                        `json:"cacheWriteTokens,omitempty"`
+	ReasoningTokens        *int64                        `json:"reasoningTokens,omitempty"`
+	CopilotPremiumRequests *float64                      `json:"copilotPremiumRequests,omitempty"`
+	NativeTotals           []TelemetryCostAmount         `json:"nativeTotals"`
+	NormalizedTotals       []TelemetryCostAmount         `json:"normalizedTotals"`
+	BillingModels          []string                      `json:"billingModels"`
+	CostBases              []string                      `json:"costBases"`
+	Models                 []TelemetryCostModelAggregate `json:"models"`
 }
 
 // TelemetryCostAmount names a unit explicitly so clients never guess whether
@@ -177,6 +198,7 @@ func projectCostAggregate(source rollup.CostAggregate) TelemetryCostAggregate {
 		CostBases:     append([]string(nil), source.CostBases...),
 		Coverage:      costCoverage(source.TotalRuns, source.MeasuredRuns, source.TotalAttempts, source.MeasuredAttempts),
 		Models:        make([]TelemetryCostModelAggregate, 0, len(source.Models)),
+		Runs:          make([]TelemetryCostRunAggregate, 0, len(source.Runs)),
 	}
 	for _, model := range source.Models {
 		item.Models = append(item.Models, projectCostModel(model))
@@ -186,6 +208,9 @@ func projectCostAggregate(source rollup.CostAggregate) TelemetryCostAggregate {
 		item.NativeTotals = nativeCostTotals(source.NanoAIU, source.CostUSD, source.CopilotPremiumRequests, source.BillingModels, source.CostBases)
 	}
 	item.NormalizedTotals = normalizedCostTotals(source.NanoAIU, item.NativeTotals)
+	for _, run := range source.Runs {
+		item.Runs = append(item.Runs, projectCostRun(run))
+	}
 	return item
 }
 
@@ -200,6 +225,27 @@ func projectCostModel(source rollup.CostModelAggregate) TelemetryCostModelAggreg
 		NormalizedTotals: normalizedCostTotals(source.NanoAIU, native),
 		BillingModels:    append([]string(nil), source.BillingModels...),
 		CostBases:        append([]string(nil), source.CostBases...),
+	}
+}
+
+func projectCostRun(source rollup.CostRunAggregate) TelemetryCostRunAggregate {
+	models := make([]TelemetryCostModelAggregate, 0, len(source.Models))
+	for _, model := range source.Models {
+		models = append(models, projectCostModel(model))
+	}
+	native := aggregateNativeCostTotals(models)
+	if len(native) == 0 {
+		native = nativeCostTotals(source.NanoAIU, source.CostUSD, source.CopilotPremiumRequests, source.BillingModels, source.CostBases)
+	}
+	return TelemetryCostRunAggregate{
+		RunID: source.RunID, StartedAt: source.StartedAt,
+		UsageAttempts: source.UsageAttempts, MeasuredAttempts: source.MeasuredAttempts,
+		InputTokens: source.InputTokens, OutputTokens: source.OutputTokens,
+		CacheReadTokens: source.CacheReadTokens, CacheWriteTokens: source.CacheWriteTokens,
+		ReasoningTokens: source.ReasoningTokens, CopilotPremiumRequests: source.CopilotPremiumRequests,
+		NativeTotals: native, NormalizedTotals: normalizedCostTotals(source.NanoAIU, native),
+		BillingModels: append([]string(nil), source.BillingModels...),
+		CostBases:     append([]string(nil), source.CostBases...), Models: models,
 	}
 }
 

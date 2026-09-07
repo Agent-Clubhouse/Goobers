@@ -218,6 +218,12 @@ func writeCostReport(output io.Writer, result readservice.TelemetryCostResult) e
 					model.Model, formatCostAmounts(model.NativeTotals, "unmeasured"),
 					model.MeasuredAttempts, model.UsageAttempts)
 			}
+			for _, run := range item.Runs {
+				fmt.Fprintf(&buffer, "  Run %s (%s): %s; %d/%d attempts measured\n",
+					run.RunID, run.StartedAt.Format(time.RFC3339),
+					formatCostAmounts(run.NativeTotals, "unmeasured"),
+					run.MeasuredAttempts, run.UsageAttempts)
+			}
 		}
 	}
 	_, err := io.Copy(output, &buffer)

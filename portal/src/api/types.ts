@@ -913,6 +913,24 @@ export interface TelemetryCostModelAggregate {
   costBases: string[];
 }
 
+export interface TelemetryCostRunAggregate {
+  runId: string;
+  startedAt: string;
+  usageAttempts: number;
+  measuredAttempts: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  copilotPremiumRequests?: number;
+  nativeTotals: TelemetryCostAmount[];
+  normalizedTotals: TelemetryCostAmount[];
+  billingModels: string[];
+  costBases: string[];
+  models: TelemetryCostModelAggregate[];
+}
+
 export interface TelemetryCostAggregate {
   provider: string;
   externalKind: "pr" | "issue";
@@ -933,6 +951,7 @@ export interface TelemetryCostAggregate {
   costBases: string[];
   coverage: TelemetryCostCoverage;
   models: TelemetryCostModelAggregate[];
+  runs: TelemetryCostRunAggregate[];
 }
 
 export interface TelemetryCostResult {

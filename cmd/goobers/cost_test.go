@@ -89,6 +89,11 @@ func TestCostCommandSupportsIssueAndSummaryHumanOutput(t *testing.T) {
 						Model: "gpt-5.6-sol", UsageAttempts: 2, MeasuredAttempts: 2,
 						NativeTotals: []readservice.TelemetryCostAmount{{Unit: "aiCredits", Value: 2.5}},
 					}},
+					Runs: []readservice.TelemetryCostRunAggregate{{
+						RunID: "run-1", StartedAt: now.Add(-time.Hour),
+						UsageAttempts: 2, MeasuredAttempts: 2,
+						NativeTotals: []readservice.TelemetryCostAmount{{Unit: "aiCredits", Value: 2.5}},
+					}},
 				}},
 				Issues: []readservice.TelemetryCostAggregate{},
 			}}
@@ -109,6 +114,7 @@ func TestCostCommandSupportsIssueAndSummaryHumanOutput(t *testing.T) {
 				"Normalized estimate: $0.0250 estimated",
 				"Coverage: lower bound; 1/2 runs, 2/3 attempts measured",
 				"Model gpt-5.6-sol: 2.5000 AI credits; 2/2 attempts measured",
+				"Run run-1 (2026-09-07T00:02:03Z): 2.5000 AI credits; 2/2 attempts measured",
 			}
 			for _, fragment := range wantFragments {
 				if !strings.Contains(stdout.String(), fragment) {

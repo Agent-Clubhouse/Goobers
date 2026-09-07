@@ -31,6 +31,13 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 				BillingModels: []string{telemetry.BillingModelAICredits},
 				CostBases:     []string{telemetry.CostBasisVendorReported},
 			}},
+			Runs: []rollup.CostRunAggregate{{
+				RunID: "run-1", StartedAt: since.Add(time.Hour),
+				UsageAttempts: 3, MeasuredAttempts: 3,
+				NanoAIU: &nanoAIU, CostUSD: &costUSD,
+				BillingModels: []string{telemetry.BillingModelAICredits},
+				CostBases:     []string{telemetry.CostBasisVendorReported},
+			}},
 		}},
 	}}
 	service := &Telemetry{store: store}
@@ -69,6 +76,10 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 	}
 	if len(item.Models) != 1 || item.Models[0].Model != "gpt-5.6-sol" {
 		t.Fatalf("models = %+v", item.Models)
+	}
+	if len(item.Runs) != 1 || item.Runs[0].RunID != "run-1" ||
+		len(item.Runs[0].NativeTotals) != 1 || item.Runs[0].NativeTotals[0].Unit != "aiCredits" {
+		t.Fatalf("runs = %+v", item.Runs)
 	}
 	issueStore := &fakeTelemetryStore{costs: rollup.CostResult{
 		Issues: []rollup.CostAggregate{{

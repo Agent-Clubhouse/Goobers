@@ -40,6 +40,19 @@ describe("external cost view model", () => {
               costBases: ["vendor_reported"],
             },
           ],
+          runs: [
+            {
+              runId: "run-1",
+              startedAt: "2026-08-01T01:00:00Z",
+              usageAttempts: 3,
+              measuredAttempts: 3,
+              nativeTotals: [{ unit: "aiCredits", value: 2.5, estimated: false }],
+              normalizedTotals: [{ unit: "usd", value: 0.025, estimated: true }],
+              billingModels: ["ai_credits"],
+              costBases: ["vendor_reported"],
+              models: [],
+            },
+          ],
         },
       ],
       issues: [],
@@ -55,6 +68,7 @@ describe("external cost view model", () => {
         coverage: "Lower bound: 2 of 3 runs and 3 of 4 attempts measured.",
         lowerBound: true,
         models: ["gpt-5.6-sol: 2.5 AI credits · 3/3 attempts"],
+        runs: ["run-1: 2.5 AI credits · 3/3 attempts"],
       },
     ]);
   });

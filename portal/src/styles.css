@@ -1797,6 +1797,17 @@ summary:focus-visible {
   padding-left: 18px;
 }
 
+.external-cost-runs {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 10px;
+}
+
+.external-cost-runs ul {
+  margin-bottom: 0;
+  padding-left: 18px;
+}
+
 .curation-health {
   display: grid;
   gap: 1px;
