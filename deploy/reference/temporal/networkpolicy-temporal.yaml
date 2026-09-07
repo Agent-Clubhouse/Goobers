@@ -1,7 +1,7 @@
 # Temporal isolation (k8s-infra-shape.md §5: "Temporal reachable only from
-# workers and operator"). Apply alongside the Helm release in the
-# goobers-temporal namespace; the egress half for dedicated per-gaggle workers
-# lives in ../gaggle-namespace/base/networkpolicies.yaml.
+# workers, operator and the scheduling daemon"). Apply alongside the Helm
+# release in goobers-temporal; control-plane egress grants live in
+# ../goobers-system/networkpolicies.yaml.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -18,10 +18,8 @@ spec:
     - Ingress
   ingress:
     - from:
-        # Workers + operator in the control plane (§2/§3). Pod-scoped so the
-        # API pod (and anything else that lands in goobers-system) is NOT
-        # admitted — §5 says workers and operator only, and this ingress half
-        # must enforce that without leaning on source-side egress policies.
+        # Only the named control-plane components, not arbitrary pods in
+        # goobers-system. The API deployment hosts the scheduling daemon.
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: goobers-system
@@ -32,6 +30,7 @@ spec:
                 values:
                   - operator
                   - worker
+                  - api
       ports:
         - protocol: TCP
           port: 7233
