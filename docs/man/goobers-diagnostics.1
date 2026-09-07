@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS DIAGNOSTICS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers diagnostics \- collect a portable, redacted support bundle
+.SH SYNOPSIS
+\fBgoobers diagnostics\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers diagnostics <subcommand> [flags] [path]
+
+Collect portable, redacted support evidence from this binary and an instance
+directory alone — reading Goobers' own source must never be a prerequisite
+for reading a Goobers incident.
+
+Subcommands:
+  bundle  write a redacted diagnostics archive (or --json to stdout)
+
+Default path is ".".
+.fi
+.SH EXAMPLES
+.nf
+goobers diagnostics bundle ./my-instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

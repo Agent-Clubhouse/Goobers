@@ -255,7 +255,7 @@ func runPRSelectCore(
 	}
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
-		requiredOptInLabel, respectAssignee, selfIdentity, stdout, stderr)
+		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr)
 }
 
 // completePRSelection is the provider-neutral selection decision after a
@@ -273,6 +273,13 @@ func completePRSelection(
 	expectedAuthorLogin, requiredOptInLabel string,
 	respectAssignee bool,
 	selfIdentity string,
+	// noEligibleReason is the caller's own exclusion tally (#2969). It is
+	// threaded in rather than re-derived so the no-work RESULT carries the
+	// same account the log line does: before this, "queue parked: 7 of 7
+	// excluded — escalated 7" went to stdout while the journaled result said
+	// only "no eligible PR to select this cycle", and stdout is exactly what
+	// a redacted diagnostics bundle cannot carry (#2968).
+	noEligibleReason string,
 	stdout, stderr io.Writer,
 ) int {
 	observation, err := observePRSelectEligibility(root, repo, prs, eligible, completeness, now)
@@ -281,7 +288,10 @@ func completePRSelection(
 		return 1
 	}
 	if len(eligible) == 0 {
-		return writeNoWorkResult(stdout, stderr, "no eligible PR to select this cycle")
+		if strings.TrimSpace(noEligibleReason) == "" {
+			noEligibleReason = "no eligible PR to select this cycle"
+		}
+		return writeNoWorkResult(stdout, stderr, noEligibleReason)
 	}
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,

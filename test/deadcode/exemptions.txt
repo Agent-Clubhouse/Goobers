@@ -69,7 +69,6 @@ github.com/goobers/goobers/internal/workflow/ir.validateSchemas # Schema validat
 github.com/goobers/goobers/internal/flake.Quarantine # Issue-backed quarantine API (#664) intentionally ships with zero occupants until a flake is diagnosed.
 github.com/goobers/goobers/internal/flake.quarantine # Clock-injected quarantine helper exercised by expiry and validation tests.
 github.com/goobers/goobers/internal/harness.ConformanceCoveredAdapterNames # Cross-package registry-completeness contract (#2776), exercised by cmd/goobers's TestBuildHarnessRegistryAdaptersAreConformanceCovered.
-github.com/goobers/goobers/internal/providerstage.Commands # Cross-package provider-stage inventory exercised by cmd/goobers's blessed-tier dispatch conformance gate (CONF-10, #2499).
 github.com/goobers/goobers/telemetryconnector/v1alpha1/contracttest.Run # Shared connector conformance helper retained for built-in and external adapter tests.
 
 # Test seams retained to exercise fail-closed and lifecycle behavior.

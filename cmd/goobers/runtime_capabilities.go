@@ -201,6 +201,20 @@ func init() {
 			withHelp("scaffold a goober, workflow, or gaggle", scaffoldHelp).
 			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow", "goobers scaffold gaggle ledger --from example"),
 		groupCommand(
+			"diagnostics",
+			runDiagnostics,
+			subcommand("diagnostics bundle", "bundle", apicontract.ActionReadOnlyNavigation, runDiagnosticsBundle).
+				withHelp("write a portable, redacted support bundle", diagnosticsBundleHelp).
+				withExamples(
+					"goobers diagnostics bundle ./my-instance",
+					"goobers diagnostics bundle --run 8f2c --output /tmp/incident.tar.gz ./my-instance",
+					"goobers diagnostics bundle --pr 4123 --json ./my-instance",
+				),
+		).
+			withSynopsis(synopsisByID["diagnostics"]).
+			withHelp("collect a portable, redacted support bundle", diagnosticsHelp).
+			withExamples("goobers diagnostics bundle ./my-instance"),
+		groupCommand(
 			"agent-kit",
 			runAgentKit,
 			subcommand("agent-kit install", "install", apicontract.ActionConfigTime, runAgentKitInstall).

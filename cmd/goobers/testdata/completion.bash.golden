@@ -42,6 +42,11 @@ _goobers_completion()
                 gaggle) flags+=" --force --from" ;;
             esac
             ;;
+        diagnostics)
+            case "${COMP_WORDS[2]:-}" in
+                bundle) flags+=" --run --pr --max-runs --output --json" ;;
+            esac
+            ;;
         agent-kit)
             case "${COMP_WORDS[2]:-}" in
                 install) flags+=" --harness" ;;
@@ -274,6 +279,11 @@ _goobers_completion()
         scaffold)
             if (( COMP_CWORD == 2 )); then
                 candidates="goober workflow gaggle"
+            fi
+            ;;
+        diagnostics)
+            if (( COMP_CWORD == 2 )); then
+                candidates="bundle"
             fi
             ;;
         agent-kit)
