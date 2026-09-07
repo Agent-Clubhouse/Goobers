@@ -116,10 +116,11 @@ func (r *Registry) Latest(name string) (wf.Definition, bool) {
 
 // StartSpec describes a run to start; it is the non-pinned part of a RunInput.
 type StartSpec struct {
-	RunID   string
-	Gaggle  string
-	RepoRef apiv1.RepoRef
-	Item    *apiv1.BacklogItem
+	InstanceID string
+	RunID      string
+	Gaggle     string
+	RepoRef    apiv1.RepoRef
+	Item       *apiv1.BacklogItem
 	// TriggerRef identifies the event or item that caused the run (bounded
 	// scheduler metadata, threaded into every stage envelope).
 	TriggerRef string
@@ -235,6 +236,7 @@ func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s St
 	}
 	previewEnabled := allowPreviewFeatures
 	return RunInput{
+		InstanceID:             s.InstanceID,
 		RunID:                  s.RunID,
 		Gaggle:                 s.Gaggle,
 		WorkflowName:           name,

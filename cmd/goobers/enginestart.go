@@ -141,7 +141,13 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "note: no daemon holds %s; starting directly on Temporal (no scheduler slot, no terminal hooks)\n", l.SchedulerDir())
 	}
 
+	instanceID, err := l.EnsureIdentity(ctx)
+	if err != nil {
+		pf(stderr, "error: pin instance identity: %v\n", err)
+		return 1
+	}
 	spec, err := engineRunSpec(engineRunRequest{
+		instanceID:  instanceID,
 		cfg:         cfg,
 		set:         set,
 		gaggle:      target,

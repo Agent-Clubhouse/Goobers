@@ -170,6 +170,10 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 	spec.triggerRef = req.Trigger.Ref
 	spec.gooberDigest = req.GooberDigest
 	spec.liveJournal = s.liveJournal
+	spec.instanceID, err = s.layout.EnsureIdentity(ctx)
+	if err != nil {
+		return localscheduler.StartResult{Phase: journal.PhaseFailed}, fmt.Errorf("pin engine instance identity: %w", err)
+	}
 
 	startSpec, err := engineRunSpec(spec)
 	if err != nil {

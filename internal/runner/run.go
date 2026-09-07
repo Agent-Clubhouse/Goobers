@@ -420,6 +420,8 @@ type AgentProvenance struct {
 // definition a daemon knows about; the compiled Machine for a specific run is
 // supplied per call in StartInput, not fixed here.
 type Config struct {
+	// InstanceID is pinned into each new run, never inferred during replay.
+	InstanceID string
 	// NewDeterministic constructs this run's deterministic-task executor
 	// (invoke.Deterministic). Required if any workflow run through this
 	// Runner has a deterministic task.
@@ -1012,6 +1014,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	registrar, scrubber := journal.DefaultScrubber()
 	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
+		InstanceID:          r.cfg.InstanceID,
 		RunID:               in.RunID,
 		Workflow:            in.Machine.Def.Name,
 		WorkflowVersion:     in.Machine.Def.Version,

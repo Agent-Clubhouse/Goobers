@@ -116,6 +116,7 @@ const (
 // YAML via json-tagged structs (sigs.k8s.io/yaml, already a repo dependency),
 // so this mirror decodes with the same library against the same tags.
 type runIdentity struct {
+	InstanceID      string            `json:"instanceId,omitempty"`
 	Schema          string            `json:"schema"`
 	RunID           string            `json:"runId"`
 	Workflow        string            `json:"workflow"`

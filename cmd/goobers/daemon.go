@@ -1295,7 +1295,8 @@ func buildRuntimeRunner(
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	// The daemon owns root identity creation; tier-3 workers must not create
 	// independent identities while loading a copied configuration tree.
-	if _, err := l.EnsureIdentity(context.Background()); err != nil {
+	runnerCfg.InstanceID, err = l.EnsureIdentity(context.Background())
+	if err != nil {
 		return nil, nil, nil, fmt.Errorf("initialize daemon instance identity: %w", err)
 	}
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault

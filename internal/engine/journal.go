@@ -205,6 +205,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 	rec := &runJournal{
 		proj: JournalProjection{
 			Identity: journal.RunIdentity{
+				InstanceID:      in.InstanceID,
 				RunID:           in.RunID,
 				Workflow:        in.WorkflowName,
 				WorkflowVersion: in.Version,

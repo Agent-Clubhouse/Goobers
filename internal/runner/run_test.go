@@ -1850,6 +1850,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		},
 	}
 	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+	r.cfg.InstanceID = "e62c1c105fdc4273a72d199394b41cb0"
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:        "run-1",
@@ -1886,6 +1887,9 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	}
 	if id.GooberDigest != gooberDigest {
 		t.Errorf("run.yaml gooberDigest = %q, want %q", id.GooberDigest, gooberDigest)
+	}
+	if id.InstanceID != r.cfg.InstanceID {
+		t.Fatalf("run.yaml instance identity = %q, want %q", id.InstanceID, r.cfg.InstanceID)
 	}
 	if id.RunControls == nil || id.RunControls.MaxRepasses != 2 ||
 		id.RunControls.StalledRunTimeout != "2h0m0s" || id.RunControls.MaxRunDuration != "6h0m0s" {
