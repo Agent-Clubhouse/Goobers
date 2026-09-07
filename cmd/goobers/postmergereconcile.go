@@ -208,7 +208,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 				report.Pending++
 				continue
 			}
-			actionErrs := performPostMergeADO(ctx, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, stdout, stderr)
+			actionErrs := performPostMergeADO(ctx, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, root, repo, stdout, stderr)
 			if len(actionErrs) > 0 {
 				report.Pending++
 				ledger.Entries[key] = entry
