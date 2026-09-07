@@ -1,14 +1,43 @@
 # Provider Contract & Conformance — capability-declared providers, test-defined parity
 
-> Status: **draft — for review.**
+> Status: **implemented** — every item in §7's delivery plan is closed
+> (CONF-1 #2074 … CONF-6 #2079), as are the three call-site sweeps the plan did
+> not anticipate (CONF-7 #2496, CONF-8 #2497, CONF-9 #2498) and the gate
+> extension CONF-10 #2499. Reconciled 2026-09-06 by #2061/#2179.
 > Driving epic: #2061 (hero: ADO end-to-end). Related: #2026, #2050, #2059, #2064.
 > Author: state-of-repo review follow-up, 2026-07-31.
+
+> **§1 is the 2026-07-31 problem statement, kept as the record of why this
+> design exists. Do not read it as current state.** Its three gaps are closed:
+> the ADO landing surfaces are implemented and declared conformant, capability
+> gaps are refused at config load rather than discovered at runtime, and the
+> capability × provider matrix is generated and CI-gated. The line-number
+> citations in §1 and §7 are stale — the stubs they pointed at were removed by
+> CONF-3 — and are retained only as the historical record of what was replaced.
+>
+> **Two things §7's plan did not deliver, closed by #2061/#2179 in 2026-09:**
+>
+> 1. **§6's stage → capability derivation was written against the GitHub meaning
+>    of each stage**, so `apply-verdict` derived `pr.review.submit` on every
+>    provider. ADO deliberately does not declare it — its `apply-verdict`
+>    implementation publishes the verdict as a PR status plus a thread comment
+>    instead — so config load *rejected* the shipped merge-review workflow on an
+>    ADO gaggle, and a passing test enshrined the rejection. Derivation is now
+>    **per provider** (`stageProviderCapabilityOverrides`), so a stage that
+>    reaches a different provider surface declares the capability it actually
+>    needs. See §6.1.
+> 2. **§4's "the matrix cannot drift from declarations" was not enforced.**
+>    `AllCapabilities()` is a hand-maintained list, and its only guard compared
+>    that list to itself, so `repo.push.preflight` and `ci.cancel` were declared,
+>    used, and absent from both the generated matrix and `ValidateBlessedTier`
+>    while CI stayed green. Completeness is now checked against the capability
+>    constants themselves, read from `capability.go`'s AST.
 
 ## 1. Problem
 
 Goobers abstracts forges behind `providers.Provider` (`RepoProvider` + `BacklogProvider` + `TriggerProvider`), with optional capability interfaces (`BranchDeleter`, `PolicyProvider`, `PullRequestReviewThreadProvider`, …) so GitHub-only features "do not widen every backend." The pattern is right, but it has three gaps the 2026-07-30 state-of-repo review made concrete:
 
-1. **Parity is undefined.** GitHub implements everything; ADO implements the read half. The landing surfaces — merge, enqueue, branch-delete, compare — return "unimplemented" (`providers/ado.go:227,587,600,605`), so an ADO workflow cannot complete. Nothing states which gaps are *policy* and which are *debt*.
+1. **Parity is undefined.** GitHub implements everything; ADO implements the read half. The landing surfaces — merge, enqueue, branch-delete, compare — returned "unimplemented" (in `providers/ado.go`, since replaced by CONF-3), so an ADO workflow could not complete. Nothing states which gaps are *policy* and which are *debt*.
 2. **Gaps are discovered at runtime, sometimes silently.** Optional interfaces are probed by type assertion at the call site. Worst case, a gap fails open: `HasOpenWorkItemBlocker` waves work through a gate on error (#2059). There is no preflight that says "this workflow needs capabilities this provider lacks" before a run starts.
 3. **Conformance is asymmetric.** The GitHub↔ADO contract corpus covers shared read surfaces; the landing surfaces have no contract tests because only one provider implements them. Behavior differences (retry semantics — #2026 — pagination, identity) live in per-provider tests, so parity drifts invisibly.
 
@@ -107,7 +136,7 @@ Workflows (and stages) already imply capability needs; make them explicit and ch
 
 1. **Contract layer**: `Capability`, `CapabilitySet`, `ErrUnsupported`, dispatch shim; GitHub + ADO declare current truth (ADO's declaration will honestly exclude landing — that is the point). Cross-check test: declaration ⇔ interface satisfaction.
 2. **Matrix generation + CI gate**: capability × provider doc generated and drift-gated; blessed-tier rule enforced.
-3. **ADO landing implementation** against §4: auto-complete enqueue, poll, merge, compare, branch-delete (`providers/ado.go:227,587,600,605`), retiring the stub-error pattern.
+3. **ADO landing implementation** against §4: auto-complete enqueue, poll, merge, compare, branch-delete (in `providers/ado.go`), retiring the stub-error pattern. **Delivered** (CONF-3, #2076).
 4. **Corpus extension**: landing + review-thread + blocker contract suites run against both blessed providers; ADO live test scheduled in CI.
 5. **Fail-closed sweep**: #2059 plus an audit of every optional-interface probe site, migrated to the dispatch shim.
 6. **Workflow preflight**: `requires.capabilities` + scheduler refusal.
@@ -118,3 +147,45 @@ Ordering: 1–2 first (small, unblocks honest visibility), 3–4 as the bulk, 5�
 ## 8. Acceptance (epic gate, restated from #2061)
 
 An ADO repo completes issue → curated → implemented → **merged** autonomously in the conformance harness; the capability matrix shows GitHub and ADO fully conformant on the workflow-required set; and both facts are pinned CI gates so parity cannot silently regress.
+
+---
+
+## 6.1 Per-provider stage derivation (added #2061/#2179)
+
+§6 derives a workflow's required provider capabilities from the `goobers <verb>`
+stages it runs. That table is provider-neutral, which is right for most stages
+and **wrong for a stage whose implementation reaches a different provider
+surface on a different provider**.
+
+`apply-verdict` is the case. On GitHub it submits a native review, so its
+requirement is `pr.review.submit`. On Azure DevOps there is no native
+self-review to submit, and `apply-verdict`'s ADO path deliberately does not try:
+it publishes a `goobers`/`validation` PR status an ADO branch policy can gate
+on, plus the machine-readable verdict payload as a PR thread comment. Its ADO
+requirement is therefore `pr.status.publish`, which ADO does declare.
+
+Deriving `pr.review.submit` for both providers refused an ADO gaggle at config
+load over a capability its lane never uses. The fix is a per-provider override
+that **replaces** the neutral derivation for one (provider, stage) pair — not an
+addition, because the point is a different surface, not an extra one:
+
+```go
+var stageProviderCapabilityOverrides = map[providers.ProviderKind]map[string][]providers.Capability{
+    providers.ProviderADO: {"apply-verdict": {providers.CapPRStatusPublish}},
+}
+```
+
+Rules for this table:
+
+- **An override is only correct when the stage has a real implementation on that
+  provider.** It is not a way to make a preflight quiet. A stage with no path on
+  a provider must keep deriving the capability that provider lacks, so config
+  load refuses it — `gather-review-threads` on ADO stays refused, and a test
+  pins that.
+- **A workflow's explicit `requires.capabilities` still replaces derivation
+  entirely**, for both providers.
+- **The acceptance evidence is a test over the shipped definition**, not a
+  fixture: `TestShippedMergeReviewWorkflowValidatesOnADO` loads
+  `reference-workflows/.../merge-review.yaml` and asserts it validates on an ADO
+  gaggle *and* on a GitHub one. A future stage added to that lane which ADO
+  cannot serve fails there, rather than on a consumer's instance.

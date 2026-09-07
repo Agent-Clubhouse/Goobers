@@ -1,8 +1,12 @@
 package instance
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
@@ -129,22 +133,48 @@ func TestCheckProviderCapabilityRequirementsPassesOnGitHub(t *testing.T) {
 	}
 }
 
-func TestCheckProviderCapabilityRequirementsRejectsADOGapOnLanding(t *testing.T) {
-	// apply-verdict (pr.review.submit), not merge-pr: CONF-3 (#2076) flipped
-	// ADO's pr.merge/pr.landing.*/pr.compare/branch.delete declarations to
-	// conformant, so merge-pr no longer exercises a real ADO gap here.
-	// pr.review.submit remains genuinely undeclared (no ADO implementation
-	// exists) — see TestADOStillExcludesUnimplementedSurfaces in providers.
+// #2061/#2179: apply-verdict on ADO used to be refused at config load because
+// its derived requirement was pr.review.submit, which ADO deliberately does not
+// declare — rejecting a lane cmd/goobers/applyverdict.go implements through
+// PR status + thread comment and ado-provider-parity.md documents. The stage
+// now derives pr.status.publish on ADO, which ADO does declare.
+func TestCheckProviderCapabilityRequirementsAdmitsADOApplyVerdict(t *testing.T) {
 	wf := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
 		Gaggle: "web",
 		Tasks:  []apiv1.Task{deterministicStage("apply", "apply-verdict")},
+	}}
+	wf.Name = "merge-review"
+	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{wf}}
+
+	if err := CheckProviderCapabilityRequirements(set); err != nil {
+		t.Fatalf("ADO apply-verdict must validate: %v", err)
+	}
+
+	got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderADO)
+	if len(got) != 1 || got[0] != providers.CapPRStatusPublish {
+		t.Errorf("ADO derivation = %v, want [%s]", got, providers.CapPRStatusPublish)
+	}
+	// The GitHub derivation is unchanged: the override replaces the default
+	// only for the provider it names.
+	if got := WorkflowRequiredProviderCapabilitiesFor(wf, providers.ProviderGitHub); len(got) != 1 || got[0] != providers.CapPRReviewSubmit {
+		t.Errorf("GitHub derivation = %v, want [%s]", got, providers.CapPRReviewSubmit)
+	}
+}
+
+// A genuine ADO gap must still refuse. gather-review-threads derives
+// pr.review.threads, which ADO does not declare and for which no ADO path
+// exists — the shape apply-verdict was wrongly lumped in with.
+func TestCheckProviderCapabilityRequirementsRejectsRealADOGap(t *testing.T) {
+	wf := apiv1.Workflow{Spec: apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Tasks:  []apiv1.Task{deterministicStage("threads", "gather-review-threads")},
 	}}
 	wf.Name = "implementation"
 	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{wf}}
 
 	err := CheckProviderCapabilityRequirements(set)
 	if err == nil {
-		t.Fatal("expected error — ADO does not declare pr.review.submit")
+		t.Fatal("expected error — ADO does not declare pr.review.threads")
 	}
 	if !strings.Contains(err.Error(), "implementation") || !strings.Contains(err.Error(), "ado") {
 		t.Errorf("error must name the workflow and the provider: %v", err)
@@ -192,5 +222,49 @@ func TestCheckProviderCapabilityRequirementsSkipsDanglingGaggleReference(t *test
 
 	if err := CheckProviderCapabilityRequirements(set); err != nil {
 		t.Fatalf("unexpected error (dangling gaggle ref is api/validate's concern, not this check's): %v", err)
+	}
+}
+
+// TestShippedMergeReviewWorkflowValidatesOnADO is the #2061 acceptance
+// evidence in test form: the merge-review workflow this repository actually
+// ships must be configurable on an Azure DevOps gaggle.
+//
+// It could not be, before #2061's fix. ado-provider-parity.md documents an
+// end-to-end ADO merge-review lane and cmd/goobers/applyverdict.go implements
+// it, but apply-verdict derived pr.review.submit for every provider, ADO does
+// not declare it, and config load rejected the whole workflow. The documented
+// lane, the conformance design, and the shipped workflow did not describe one
+// executable product.
+//
+// This reads the real reference-workflows definition rather than a fixture, so
+// a future stage added to that lane that ADO cannot serve fails here instead of
+// on a customer's instance.
+func TestShippedMergeReviewWorkflowValidatesOnADO(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "merge-review.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read shipped merge-review workflow: %v", err)
+	}
+	var wf apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		t.Fatalf("unmarshal shipped merge-review workflow: %v", err)
+	}
+	if len(wf.Spec.Tasks) == 0 {
+		t.Fatal("shipped merge-review workflow has no tasks; the check would pass vacuously")
+	}
+	wf.Spec.Gaggle = "web"
+
+	set := &ConfigSet{Gaggles: []apiv1.Gaggle{adoGaggle("web")}, Workflows: []apiv1.Workflow{wf}}
+	if err := CheckProviderCapabilityRequirements(set); err != nil {
+		t.Fatalf("the shipped merge-review workflow must be configurable on ADO (#2061): %v", err)
+	}
+
+	// The same workflow must still validate on GitHub, where apply-verdict
+	// derives the native-review capability instead.
+	set.Gaggles = []apiv1.Gaggle{githubGaggle("web")}
+	if err := CheckProviderCapabilityRequirements(set); err != nil {
+		t.Fatalf("the shipped merge-review workflow must remain configurable on GitHub: %v", err)
 	}
 }

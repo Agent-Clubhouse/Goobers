@@ -52,13 +52,60 @@ var stageProviderCapabilities = map[string][]providers.Capability{
 	// `requires.capabilities`.
 }
 
-// WorkflowRequiredProviderCapabilities returns the provider capabilities a
-// single run of wf needs (CONF-6, #2079): wf.Spec.Requires.Capabilities when
-// explicitly declared — which replaces derivation entirely, letting an
-// author narrow or widen it — else the union of stageProviderCapabilities
-// for every `goobers <verb>` deterministic stage command wf uses. The
-// result is sorted and de-duplicated.
+// stageProviderCapabilityOverrides replaces the default derivation for one
+// (provider, stage) pair, for a stage whose Go implementation deliberately
+// reaches a DIFFERENT provider surface on that provider.
+//
+// The default table above was written against the GitHub meaning of each
+// stage. `apply-verdict` is the case that proves per-provider derivation is
+// necessary rather than tidy: on GitHub it submits a native review
+// (pr.review.submit), but on Azure DevOps it deliberately does not — ADO has
+// no native self-review to submit, so publishADOPassVerdict/
+// publishADONonPassVerdict (cmd/goobers/applyverdict.go) publish the verdict on
+// two provider-native surfaces instead: a "goobers"/"validation" PR status an
+// ADO branch policy can gate on, plus the machine-readable verdict payload as a
+// PR thread comment.
+//
+// Without this override the derived requirement was pr.review.submit, which ADO
+// (correctly) does not declare, so config load REFUSED the shipped merge-review
+// workflow on an ADO gaggle — rejecting a lane the code implements and
+// ado-provider-parity.md documents. #2061/#2179.
+var stageProviderCapabilityOverrides = map[providers.ProviderKind]map[string][]providers.Capability{
+	providers.ProviderADO: {
+		"apply-verdict": {providers.CapPRStatusPublish},
+	},
+}
+
+// derivedStageCapabilities returns the provider capabilities stage needs on
+// provider: the (provider, stage) override when one exists, else the
+// provider-neutral default. An override REPLACES the default rather than
+// adding to it — the point is that the stage reaches a different surface, not
+// an additional one.
+func derivedStageCapabilities(provider providers.ProviderKind, stage string) []providers.Capability {
+	if byStage, ok := stageProviderCapabilityOverrides[provider]; ok {
+		if override, ok := byStage[stage]; ok {
+			return override
+		}
+	}
+	return stageProviderCapabilities[stage]
+}
+
+// WorkflowRequiredProviderCapabilities returns the capabilities a single run of
+// wf needs against the provider-neutral default table. Prefer
+// WorkflowRequiredProviderCapabilitiesFor when the gaggle's provider is known:
+// a stage may reach a different provider surface on a different provider.
 func WorkflowRequiredProviderCapabilities(wf apiv1.Workflow) []providers.Capability {
+	return WorkflowRequiredProviderCapabilitiesFor(wf, "")
+}
+
+// WorkflowRequiredProviderCapabilitiesFor returns the provider capabilities a
+// single run of wf needs on provider (CONF-6, #2079):
+// wf.Spec.Requires.Capabilities when explicitly declared — which replaces
+// derivation entirely, letting an author narrow or widen it — else the union of
+// each `goobers <verb>` deterministic stage's derived capabilities, resolved
+// per provider. An empty provider uses the neutral defaults. The result is
+// sorted and de-duplicated.
+func WorkflowRequiredProviderCapabilitiesFor(wf apiv1.Workflow, provider providers.ProviderKind) []providers.Capability {
 	if wf.Spec.Requires != nil && len(wf.Spec.Requires.Capabilities) > 0 {
 		out := make([]providers.Capability, len(wf.Spec.Requires.Capabilities))
 		for i, c := range wf.Spec.Requires.Capabilities {
@@ -73,7 +120,7 @@ func WorkflowRequiredProviderCapabilities(wf apiv1.Workflow) []providers.Capabil
 		if t.Type != apiv1.TaskDeterministic || t.Run == nil || len(t.Run.Command) < 2 || t.Run.Command[0] != "goobers" {
 			continue
 		}
-		for _, capability := range stageProviderCapabilities[t.Run.Command[1]] {
+		for _, capability := range derivedStageCapabilities(provider, t.Run.Command[1]) {
 			seen[capability] = struct{}{}
 		}
 	}
@@ -125,7 +172,7 @@ func CheckProviderCapabilityRequirements(set *ConfigSet) error {
 			// against here.
 			continue
 		}
-		required := WorkflowRequiredProviderCapabilities(*wf)
+		required := WorkflowRequiredProviderCapabilitiesFor(*wf, providers.ProviderKind(gaggle.Spec.Project.Provider))
 		if len(required) == 0 {
 			continue
 		}
