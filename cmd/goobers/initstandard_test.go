@@ -16,9 +16,9 @@ func TestInitStandardNonInteractive(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
-	set, _, err := instance.LoadConfigDir(filepath.Join(root, "config"))
+	set, report, err := instance.LoadConfigDir(filepath.Join(root, "config"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
 	if len(set.Workflows) != 2 || len(set.Goobers) != 3 {
 		t.Fatalf("got %d workflows and %d goobers, want canonical pair and its three personas", len(set.Workflows), len(set.Goobers))
