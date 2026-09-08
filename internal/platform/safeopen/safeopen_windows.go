@@ -23,6 +23,10 @@ func open(path string) (*os.File, error) {
 	return openNoFollow(path)
 }
 
+func openInRoot(root *os.Root, name string) (*os.File, error) {
+	return root.Open(name)
+}
+
 // openAt resolves name against dir's path and opens it no-follow. x/sys/windows
 // exposes no fd-relative open (that needs NtCreateFile with a RootDirectory
 // handle), so unlike the unix openat this keeps the atomic per-leaf no-follow

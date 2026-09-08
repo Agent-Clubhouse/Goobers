@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
@@ -366,7 +367,7 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		result.Outputs["transcriptTruncated"] = true
 		result.Outputs["transcriptDroppedBytes"] = float64(out.TranscriptDroppedBytes)
 	}
-	ptr, err := e.liftArtifactFile(env)
+	result.Artifacts, err = e.liftArtifacts(ctx, env, result.Artifacts)
 	if err != nil {
 		if code, summary, ok := declaredArtifactFailure(err); ok {
 			result.Status = apiv1.ResultFailure
@@ -375,9 +376,6 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 			return result, nil
 		}
 		return result, err
-	}
-	if ptr != nil {
-		result.Artifacts = append(result.Artifacts, *ptr)
 	}
 	return result, nil
 }
@@ -403,7 +401,7 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	if err := json.Unmarshal(out.Payload, &verdict); err != nil {
 		return apiv1.Verdict{}, fmt.Errorf("%w: decode verdict: %w", ErrInvalidCompletion, err)
 	}
-	ptr, err := e.liftArtifactFile(env)
+	verdict.Evidence, err = e.liftArtifacts(ctx, env, verdict.Evidence)
 	if err != nil {
 		if _, summary, ok := declaredArtifactFailure(err); ok {
 			verdict.Decision = apiv1.VerdictFail
@@ -411,9 +409,6 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 			return verdict, nil
 		}
 		return apiv1.Verdict{}, err
-	}
-	if ptr != nil {
-		verdict.Evidence = append(verdict.Evidence, *ptr)
 	}
 	return verdict, nil
 }
@@ -425,6 +420,8 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 // else, which callers must propagate as a hard executor error instead.
 func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 	switch {
+	case errors.Is(err, artifactset.ErrInvalid):
+		return "invalid_declared_artifact_set", "declared artifact set is invalid", true
 	case errors.Is(err, ErrDeclaredArtifactMissing):
 		return "missing_declared_artifact", "declared artifact file missing", true
 	case errors.Is(err, ErrDeclaredArtifactPathEscape):

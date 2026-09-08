@@ -49,15 +49,17 @@ func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error)
 		return "", nil
 	}
 	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
+	artifactManifestFile, _ := req.Envelope.Inputs[InputArtifactManifestFile].(string)
 	cfg := mcpio.Config{
-		Workspace:    req.Workspace,
-		ArtifactFile: artifactFile,
-		ReceiptFile:  goobersIOReceiptFile(),
-		Inputs:       req.ContextPaths,
-		RunID:        req.Envelope.RunID,
-		WorkflowID:   req.Envelope.WorkflowID,
-		TaskID:       req.Envelope.TaskID,
-		Gaggle:       req.Envelope.Gaggle,
+		Workspace:            req.Workspace,
+		ArtifactFile:         artifactFile,
+		ArtifactManifestFile: artifactManifestFile,
+		ReceiptFile:          goobersIOReceiptFile(),
+		Inputs:               req.ContextPaths,
+		RunID:                req.Envelope.RunID,
+		WorkflowID:           req.Envelope.WorkflowID,
+		TaskID:               req.Envelope.TaskID,
+		Gaggle:               req.Envelope.Gaggle,
 	}
 	configRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
 	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)

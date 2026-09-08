@@ -1988,6 +1988,7 @@ func repoIdentity(ref apiv1.RepoRef) string {
 }
 
 func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+	checkArtifactManifestInputs(r, w, file)
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
 		ix.referenceNotFound(r, errorWorkflowGaggleReference, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 			w.Spec.Gaggle, w.Spec.Gaggle)

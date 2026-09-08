@@ -253,6 +253,9 @@ func TestManagerReapGitTimeoutOnOneOrphanDoesNotAbortOthers(t *testing.T) {
 	t.Cleanup(func() { cleanupGitTimeout, cleanupKillWaitDelay = originalTimeout, originalWait })
 
 	results, warnings, err := m.Reap(ctx, ReapOptions{})
+	for _, warning := range warnings {
+		t.Logf("reap diagnostic: warning=%+v errorType=%T error=%v", warning, warning.Err, warning.Err)
+	}
 	if err != nil {
 		t.Fatalf("Reap: %v (a single git-subprocess timeout must not abort the whole pass)", err)
 	}
