@@ -1,6 +1,7 @@
 package rollup
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -46,5 +47,35 @@ func TestMergeComparisonSeparatesProofFromIdentity(t *testing.T) {
 	}
 	if _, err := CompareMergeInventory(report, inventory, nil); err == nil {
 		t.Fatal("missing shared identity silently classified every actor external")
+	}
+}
+
+// An accepted queue entry followed by a merged PR is also consistent with
+// another actor intervening. Even a matching head/shared identity cannot
+// promote the admission into a receipt for the later merge.
+func TestMergeComparisonDoesNotCreditLaterMergeToAcceptedQueue(t *testing.T) {
+	for _, merger := range []string{"shared", "external", ""} {
+		t.Run("merger="+merger, func(t *testing.T) {
+			db := openTestDB(t, t.TempDir())
+			at := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+			repo := "https://api.github.com/repos/acme/app"
+			seedQueueReportEvent(t, db, 1, strings.Repeat("a", 32), repo, "accepted-entry", at)
+			report, err := db.MergeProvenance(context.Background(), MergeReportQuery{Since: at, Until: at.Add(time.Hour)})
+			if err != nil || len(report.QueueAdmissions) != 1 {
+				t.Fatalf("lost actual queue receipt: %+v %v", report, err)
+			}
+			inventory := []providers.MergeInventoryEntry{{Provider: providers.ProviderGitHub, RepositoryAPIURL: repo, PullID: "9", MergedAt: at.Add(time.Minute), MergedBy: merger, MergeSHA: "head"}}
+			comparison, err := CompareMergeInventory(report, inventory, []string{"shared"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]string{"shared": "same-identity-unverified", "external": "external", "": "merger-unknown"}[merger]
+			if len(report.Merges) != 0 || len(report.Daily) != 0 || len(comparison.Entries) != 1 || comparison.Entries[0].Category != want || comparison.Entries[0].InstanceID != "" || comparison.Entries[0].Gaggle != "" {
+				t.Fatalf("enqueue promoted to completed merge ownership: %+v %+v", report, comparison)
+			}
+			if len(comparison.Daily) != 1 || comparison.Daily[0].Category != want || comparison.Daily[0].Count != 1 || comparison.Daily[0].InstanceID != "" {
+				t.Fatalf("residual KPI invented ownership: %+v", comparison.Daily)
+			}
+		})
 	}
 }

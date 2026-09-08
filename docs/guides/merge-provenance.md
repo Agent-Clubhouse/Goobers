@@ -91,3 +91,13 @@ the retained telemetry view accepts GitHub, Azure DevOps and Gitea receipts.
 Queue-completion attribution and crash recovery remain under development in
 #3019; the presence of this report does not establish that every landing path
 emits a durable confirmation.
+
+The GitHub [GraphQL pull-request reference](https://docs.github.com/en/graphql/reference/pulls#mergequeueentrystate)
+documents only pending/check/mergeability states for a queue entry, not a
+completed-merge state. Its `MergedEvent` identifies a commit and actor but no
+queue-entry ID. The current poller reads PR-level merged state; that is not a
+receipt linking the merge to this instance's accepted enqueue. A manual merge
+can intervene after enqueue, including under the same shared identity. Such a
+merge stays in the corresponding unverified/external residual unless separate
+merge evidence proves ownership. Accepted enqueue and auto-complete records
+remain queryable, but are not substitutes for that missing proof.
