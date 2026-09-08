@@ -917,6 +917,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		// a single lifecycle event.
 		Activity: agentTelemetry.activityObserver(),
 	})
+	// A native-log read/write failure observed during this process is not a
+	// missing completion contract. Preserve it and do not launch recovery.
+	processErr = errors.Join(processErr, nativeCheckpoints.worker.observedError())
 	runErr = processErr
 	var payload []byte
 	var completionErr error

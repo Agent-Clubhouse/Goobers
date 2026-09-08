@@ -57,6 +57,29 @@ func TestTranscriptCheckpointWorkerDoesNotRetryFailedWrite(t *testing.T) {
 	}
 }
 
+func TestTranscriptCheckpointFailureIsObservableBeforeFinish(t *testing.T) {
+	failure := errors.New("native log replaced")
+	worker := startTranscriptCheckpointWorker(time.Millisecond, func(string) error { return failure })
+	t.Cleanup(func() { _ = worker.finish("process-exit") })
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := worker.observedError(); err != nil {
+				if !errors.Is(err, failure) {
+					t.Fatalf("lost cause: %v", err)
+				}
+				return
+			}
+		case <-deadline.C:
+			t.Fatal("checkpoint failure hidden until process termination")
+		}
+	}
+}
+
 func TestTranscriptCheckpointProcessHelper(t *testing.T) {
 	if os.Getenv("GOOBERS_CHECKPOINT_HELPER") != "1" {
 		return

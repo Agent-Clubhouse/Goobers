@@ -1,6 +1,9 @@
 package harness
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // DefaultTranscriptCheckpointInterval bounds the ordinary checkpoint cadence.
 const DefaultTranscriptCheckpointInterval = time.Minute
@@ -58,8 +61,23 @@ func (s *transcriptCheckpointState) capture(reason string) error {
 }
 
 type transcriptCheckpoints struct {
-	stop chan string
-	done chan error
+	stop    chan string
+	done    chan error
+	failure *transcriptCheckpointFailure
+}
+
+type transcriptCheckpointFailure struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (c transcriptCheckpoints) observedError() error {
+	if c.failure == nil {
+		return nil
+	}
+	c.failure.mu.Lock()
+	defer c.failure.mu.Unlock()
+	return c.failure.err
 }
 
 func startTranscriptCheckpoints(buffer *syncBuffer, interval time.Duration, sink func(TranscriptDelta) error) transcriptCheckpoints {
@@ -74,7 +92,7 @@ func startTranscriptCheckpointWorker(interval time.Duration, capture func(string
 	if interval <= 0 {
 		interval = DefaultTranscriptCheckpointInterval
 	}
-	worker := transcriptCheckpoints{stop: make(chan string), done: make(chan error, 1)}
+	worker := transcriptCheckpoints{stop: make(chan string), done: make(chan error, 1), failure: &transcriptCheckpointFailure{}}
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -84,6 +102,9 @@ func startTranscriptCheckpointWorker(interval time.Duration, capture func(string
 			select {
 			case <-ticks:
 				if err = capture("checkpoint"); err != nil {
+					worker.failure.mu.Lock()
+					worker.failure.err = err
+					worker.failure.mu.Unlock()
 					// Do not retry an uncertain durable write or repeatedly
 					// copy the same growing transcript after storage fails.
 					ticks = nil
