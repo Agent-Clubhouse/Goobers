@@ -887,9 +887,10 @@ var controlEnvReference = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
 // a name the DISPATCHER owns, and leaves every other $(VAR) expansion (a
 // stage composing PATH, or referencing its own earlier key) working.
 //
-// Inputs need no check: InputEnvVar prefixes every one with GOOBERS_INPUT_,
-// which no control variable can collide with (pinned by
-// TestInputEnvVarCannotCollideWithControlEnv). Run context is dispatcher-built.
+// Input names cannot collide with control variables (InputEnvVar prefixes
+// every one with GOOBERS_INPUT_). Input values, scripts, commands, and run
+// context are escaped by literalPodEnv, so kubelet cannot expand their data
+// against a control-plane bearer stamped earlier in the environment.
 func refuseControlEnvOverrides(attempt Attempt) error {
 	for _, name := range sortedKeys(attempt.Env) {
 		if slices.Contains(DispatcherControlEnv, name) {
@@ -1068,6 +1069,17 @@ func activeDeadlineSeconds(cfg Config, attempt Attempt) int64 {
 	return int64(deadline.Seconds())
 }
 
+// literalPodEnv preserves data through kubelet's $(VAR) expansion pass.
+// Scripts and inputs are interpreted inside the stage process, after its
+// control-plane environment has been stripped. Expanding them at pod startup
+// would copy bearer values into workflow-controlled data before that boundary.
+// The same rule applies to dispatcher/provider data such as a PR branch name:
+// a valid git ref can contain $(GOOBERS_POD_TOKEN). Only authored env values
+// retain Kubernetes expansion semantics, behind refuseControlEnvOverrides.
+func literalPodEnv(value string) string {
+	return strings.ReplaceAll(value, "$", "$$")
+}
+
 // stageEnv renders the dispatcher-owned half of the stage container's
 // environment. class is the RESOLVED RUNNER's enforced restriction set — the
 // same map every other binding in this file reads — because one of those
@@ -1082,20 +1094,20 @@ func activeDeadlineSeconds(cfg Config, attempt Attempt) int64 {
 // The image path passes nil.
 func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnContainer []string) []corev1.EnvVar {
 	env := []corev1.EnvVar{
-		{Name: EnvRunID, Value: attempt.RunID},
-		{Name: EnvGaggle, Value: attempt.Gaggle},
-		{Name: EnvWorkflow, Value: attempt.Workflow},
-		{Name: EnvStage, Value: attempt.Stage},
+		{Name: EnvRunID, Value: literalPodEnv(attempt.RunID)},
+		{Name: EnvGaggle, Value: literalPodEnv(attempt.Gaggle)},
+		{Name: EnvWorkflow, Value: literalPodEnv(attempt.Workflow)},
+		{Name: EnvStage, Value: literalPodEnv(attempt.Stage)},
 		{Name: EnvAttempt, Value: fmt.Sprintf("%d", attempt.Number)},
 	}
 	if cfg.BlobEndpoint != "" {
-		env = append(env, corev1.EnvVar{Name: EnvBlobEndpoint, Value: cfg.BlobEndpoint})
+		env = append(env, corev1.EnvVar{Name: EnvBlobEndpoint, Value: literalPodEnv(cfg.BlobEndpoint)})
 	}
 	if cfg.WriteAPIBase != "" {
-		env = append(env, corev1.EnvVar{Name: EnvDaemonAPI, Value: cfg.WriteAPIBase})
+		env = append(env, corev1.EnvVar{Name: EnvDaemonAPI, Value: literalPodEnv(cfg.WriteAPIBase)})
 	}
 	if attempt.PodToken != "" {
-		env = append(env, corev1.EnvVar{Name: EnvPodToken, Value: attempt.PodToken})
+		env = append(env, corev1.EnvVar{Name: EnvPodToken, Value: literalPodEnv(attempt.PodToken)})
 	}
 	env = append(env, planeEnv(cfg, attempt)...)
 	if len(attempt.Command) > 0 {
@@ -1104,10 +1116,10 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		// is standard for this exact shape (encoding/json's own doc example
 		// does the same for json.Marshal([]string)).
 		encoded, _ := json.Marshal(attempt.Command)
-		env = append(env, corev1.EnvVar{Name: EnvStageCommand, Value: string(encoded)})
+		env = append(env, corev1.EnvVar{Name: EnvStageCommand, Value: literalPodEnv(string(encoded))})
 	}
 	if attempt.Script != "" {
-		env = append(env, corev1.EnvVar{Name: EnvStageScript, Value: attempt.Script})
+		env = append(env, corev1.EnvVar{Name: EnvStageScript, Value: literalPodEnv(attempt.Script)})
 	}
 	env = append(env, corev1.EnvVar{Name: EnvStageTimeout, Value: attempt.stageTimeout().String()})
 	for _, key := range sortedKeys(attempt.Env) {
@@ -1116,14 +1128,14 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	// Declared inputs, named exactly as the local executor names them so a
 	// stage reads GOOBERS_INPUT_<KEY> identically on both substrates.
 	for _, key := range sortedKeys(attempt.Inputs) {
-		env = append(env, corev1.EnvVar{Name: InputEnvVar(key), Value: attempt.Inputs[key]})
+		env = append(env, corev1.EnvVar{Name: InputEnvVar(key), Value: literalPodEnv(attempt.Inputs[key])})
 	}
 	// Run context, for goobers-CLI stages ONLY. stageEnvironment() in the pod
 	// strips the dispatcher's control plane, and these names overlap it — so
 	// they are re-stamped here under a distinct prefix-free contract and
 	// re-admitted in the pod only when the stage is a CLI stage.
 	for _, key := range sortedKeys(attempt.RunContext) {
-		env = append(env, corev1.EnvVar{Name: key, Value: attempt.RunContext[key]})
+		env = append(env, corev1.EnvVar{Name: key, Value: literalPodEnv(attempt.RunContext[key])})
 	}
 	if attempt.CLIStage {
 		env = append(env, corev1.EnvVar{Name: EnvStageIsCLI, Value: "true"})
@@ -1133,32 +1145,32 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		// for why the stamp is unconditional (a runner image cannot then
 		// supply the name) and why an empty value and an absent one are two
 		// different facts on the far side.
-		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: providerBotLogin(cfg, attempt)})
+		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: literalPodEnv(providerBotLogin(cfg, attempt))})
 	}
 	if stamp := externalTelemetryConnectorStamp(cfg, attempt); stamp != "" {
-		env = append(env, corev1.EnvVar{Name: ExternalTelemetryConnectorEnv, Value: stamp})
+		env = append(env, corev1.EnvVar{Name: ExternalTelemetryConnectorEnv, Value: literalPodEnv(stamp)})
 	}
 	if ws := strings.TrimSpace(attempt.Workspace); ws != "" {
-		env = append(env, corev1.EnvVar{Name: EnvStageWorkspace, Value: ws})
+		env = append(env, corev1.EnvVar{Name: EnvStageWorkspace, Value: literalPodEnv(ws)})
 	}
 	if attempt.KitDigest != "" {
-		env = append(env, corev1.EnvVar{Name: EnvAgenticKitDigest, Value: attempt.KitDigest})
+		env = append(env, corev1.EnvVar{Name: EnvAgenticKitDigest, Value: literalPodEnv(attempt.KitDigest)})
 	}
 	if cap := attempt.CheckoutCapability; cap != "" {
-		env = append(env, corev1.EnvVar{Name: EnvCheckoutCapability, Value: cap})
+		env = append(env, corev1.EnvVar{Name: EnvCheckoutCapability, Value: literalPodEnv(cap)})
 	}
 	if attempt.WorkspaceDelta != "" {
-		env = append(env, corev1.EnvVar{Name: EnvWorkspaceDelta, Value: attempt.WorkspaceDelta})
+		env = append(env, corev1.EnvVar{Name: EnvWorkspaceDelta, Value: literalPodEnv(attempt.WorkspaceDelta)})
 	}
 	if branch := strings.TrimSpace(attempt.WorkspaceBranch); branch != "" {
-		env = append(env, corev1.EnvVar{Name: EnvWorkspaceBranch, Value: branch})
+		env = append(env, corev1.EnvVar{Name: EnvWorkspaceBranch, Value: literalPodEnv(branch)})
 	}
 	if attempt.SyncBase {
 		env = append(env, corev1.EnvVar{Name: EnvStageSyncBase, Value: "true"})
 	}
 	if len(attempt.Capabilities) > 0 {
 		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {
-			env = append(env, corev1.EnvVar{Name: EnvStageCapabilities, Value: string(encoded)})
+			env = append(env, corev1.EnvVar{Name: EnvStageCapabilities, Value: literalPodEnv(string(encoded))})
 		}
 	}
 	// env:default-deny (#3725). Stamped ONLY for a class that enforces it, so
@@ -1167,7 +1179,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		allow, _ := json.Marshal(stageEnvAllowlist(cfg, attempt, alreadyOnContainer))
 		env = append(env,
 			corev1.EnvVar{Name: EnvStageEnvDefaultDeny, Value: "true"},
-			corev1.EnvVar{Name: EnvStageEnvAllow, Value: string(allow)},
+			corev1.EnvVar{Name: EnvStageEnvAllow, Value: literalPodEnv(string(allow))},
 		)
 	}
 	return env
@@ -1264,14 +1276,14 @@ func planeEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	}
 	base := cfg.WriteAPIBase
 	return []corev1.EnvVar{
-		{Name: ClaimsEndpointEnv, Value: base},
-		{Name: ClaimsTokenEnv, Value: attempt.PlaneTokens.Claims},
-		{Name: StateEndpointEnv, Value: base},
-		{Name: StateTokenEnv, Value: attempt.PlaneTokens.State},
-		{Name: JournalEndpointEnv, Value: base},
-		{Name: JournalTokenEnv, Value: attempt.PlaneTokens.Journal},
-		{Name: TelemetryEndpointEnv, Value: base},
-		{Name: TelemetryTokenEnv, Value: attempt.PlaneTokens.Telemetry},
+		{Name: ClaimsEndpointEnv, Value: literalPodEnv(base)},
+		{Name: ClaimsTokenEnv, Value: literalPodEnv(attempt.PlaneTokens.Claims)},
+		{Name: StateEndpointEnv, Value: literalPodEnv(base)},
+		{Name: StateTokenEnv, Value: literalPodEnv(attempt.PlaneTokens.State)},
+		{Name: JournalEndpointEnv, Value: literalPodEnv(base)},
+		{Name: JournalTokenEnv, Value: literalPodEnv(attempt.PlaneTokens.Journal)},
+		{Name: TelemetryEndpointEnv, Value: literalPodEnv(base)},
+		{Name: TelemetryTokenEnv, Value: literalPodEnv(attempt.PlaneTokens.Telemetry)},
 	}
 }
 

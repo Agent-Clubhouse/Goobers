@@ -194,6 +194,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
+		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
 		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},
 		{name: "overlay-dir", takesArg: true, desc: "Consumer kustomization directory (--k8s)"},
 		{name: "image-runtime", takesArg: true, values: []string{"docker", "podman"}, desc: "Runtime for pinned image checks"},

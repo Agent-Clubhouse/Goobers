@@ -10,9 +10,13 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/app"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/netpolrender"
+	"github.com/goobers/goobers/internal/workerhost"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -387,4 +391,67 @@ func validateManifestArgs(args []string, fs *flag.FlagSet, required []string, ma
 		}
 	}
 	return nil
+}
+
+// Release the RWO root before starting a replacement and let activity cleanup
+// finish before kubelet sends SIGKILL. Writable temp is required for worker
+// config snapshots and git helpers with a read-only container root.
+func TestDeployReferenceWorkerRolloutAndCleanup(t *testing.T) {
+	for _, name := range []string{"worker-deployment.yaml", "worker-windows-deployment.yaml"} {
+		raw, err := os.ReadFile("../../deploy/reference/goobers-system/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var deployment appsv1.Deployment
+		if err := yaml.Unmarshal(raw, &deployment); err != nil {
+			t.Fatal(err)
+		}
+		spec := deployment.Spec.Template.Spec
+		minimum := workerhost.DefaultDrainTimeout + dispatcher.DefaultDisposalTimeout
+		if spec.TerminationGracePeriodSeconds == nil || time.Duration(*spec.TerminationGracePeriodSeconds)*time.Second <= minimum {
+			t.Errorf("%s: pod shutdown grace must exceed %s for worker drain and stage cleanup", name, minimum)
+		}
+		if name != "worker-deployment.yaml" {
+			continue
+		}
+		if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+			t.Error("RWO instance worker must finish before replacement starts")
+		}
+		if !slices.ContainsFunc(spec.Containers[0].VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == "tmp" && m.MountPath == "/tmp" && !m.ReadOnly }) {
+			t.Error("read-only worker root has no writable /tmp mount")
+		}
+		if !slices.ContainsFunc(spec.Volumes, func(v corev1.Volume) bool {
+			return v.Name == "tmp" && v.EmptyDir != nil && v.EmptyDir.SizeLimit != nil && !v.EmptyDir.SizeLimit.IsZero()
+		}) {
+			t.Error("worker temp must use bounded pod-private storage")
+		}
+	}
+}
+
+func TestAPIServerDriftCronJobUsesOnlyItsAuthorizedCheck(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/examples/apiserver-drift-check/cronjob.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job batchv1.CronJob
+	if err := yaml.Unmarshal(raw, &job); err != nil {
+		t.Fatal(err)
+	}
+	if deadline := job.Spec.JobTemplate.Spec.ActiveDeadlineSeconds; deadline == nil || *deadline <= 0 || *deadline > 300 {
+		t.Fatal("recurring drift check must bound stuck jobs before the next hourly run")
+	}
+	spec := job.Spec.JobTemplate.Spec.Template.Spec
+	container := spec.Containers[0]
+	if err := validateManifestArgs(container.Args[1:], registeredCommandFlagSet(t, "doctor"), []string{"k8s", "checks"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(container.Args, []string{"doctor", "--k8s", "--checks", "apiserver-ipblock-drift", "--apiserver-endpoint", "https://CHANGE-ME.apiserver.example.com:443", "--report", "json"}) {
+		t.Fatalf("monitor runs beyond its NetworkPolicy-only grant: %v", container.Args)
+	}
+	if spec.NodeSelector[corev1.LabelOSStable] != "linux" {
+		t.Fatal("Linux drift monitor is not OS-pinned")
+	}
+	if spec.SecurityContext == nil || spec.SecurityContext.RunAsNonRoot == nil || !*spec.SecurityContext.RunAsNonRoot {
+		t.Fatal("monitor lacks non-root security context")
+	}
 }

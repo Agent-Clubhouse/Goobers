@@ -45,6 +45,10 @@ const (
 	// liveness relays.
 	DefaultSupervisionInterval = 15 * time.Second
 
+	// DefaultDisposalTimeout bounds cleanup independently of the activity, so
+	// cancellation stops the stage pod instead of leaving it executing.
+	DefaultDisposalTimeout = 30 * time.Second
+
 	// DefaultUnschedulableGrace is how long a pod may report Unschedulable
 	// before its attempt is failed. Five minutes is chosen to outlast an AKS
 	// node scale-up, which is the legitimate reason a pod is briefly
@@ -869,7 +873,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// protect; that infra error is returned unchanged and DisposeErr rides
 	// alongside on the report. superviseErr is never overwritten here, because
 	// there is no superviseErr == nil state that is not a settled outcome.
-	if delErr := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); delErr != nil {
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), DefaultDisposalTimeout)
+	defer cancelCleanup()
+	if delErr := d.pods.DeletePod(cleanupCtx, pod.Namespace, pod.Name); delErr != nil {
 		report.DisposeErr = fmt.Errorf("dispatcher: dispose pod %s/%s: %w", pod.Namespace, pod.Name, delErr)
 	} else {
 		report.Disposed = true
@@ -1011,6 +1017,20 @@ func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, 
 		}
 		if phase == corev1.PodSucceeded || phase == corev1.PodFailed {
 			return phase, nil
+		}
+		// DI-9 templates can carry resident sidecars. The stage container's
+		// exit settles execution even while those sidecars keep the pod Running;
+		// surrender is still confirmed by Dispatch before disposal.
+		if stage := stageContainerIn(pod.Spec.Containers); stage != nil {
+			for _, status := range pod.Status.ContainerStatuses {
+				if status.Name != stage.Name || status.State.Terminated == nil {
+					continue
+				}
+				if status.State.Terminated.ExitCode != 0 {
+					return corev1.PodFailed, nil
+				}
+				return corev1.PodSucceeded, nil
+			}
 		}
 		// A pod no node can accept reaches NEITHER terminal phase, so without
 		// this the loop polls until the activity's own deadline expires — the

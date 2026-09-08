@@ -499,3 +499,54 @@ for Windows workers, and do not copy the Linux security context into them.
 after a cluster is deleted and recreated under the same name — it can keep
 resolving the old control-plane FQDN and fail with `no such host`. Re-run it
 explicitly as a step rather than trusting the flag.
+
+### Worker replacement and shutdown
+
+The Linux reference worker uses `Recreate` because its instance root holds locks
+on an RWO volume: the old pod must exit before its replacement starts. This
+introduces a brief polling interruption during upgrades; Temporal retains queued
+work. Keep this worker at one replica until instance storage is separated for
+additional workers. Both worker templates allow 90 seconds for shutdown, covering
+the default 30-second Temporal drain, up to 30 seconds of stage-pod cleanup, and
+process exit. Increase the pod grace period when increasing `--drain-timeout`.
+The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
+and git helpers can write temporary files under a read-only root filesystem.
+
+### Scoped cloud preflight checks
+
+`goobers doctor --k8s --checks apiserver-ipblock-drift` runs only the
+API-server drift check. Unknown, empty, or repeated check selections are usage
+errors. Omitting `--checks` runs the full preflight. This lets the recurring
+monitor retain its NetworkPolicy-only RBAC instead of acquiring the install,
+node, storage, and pod permissions that the full report requires.
+
+Mark **dedicated API-server egress policies** with
+`goobers.dev/apiserver-egress: "true"`. The checker inspects their egress
+`ipBlock` entries against the configured comparison endpoint (the kubeconfig server by default);
+ordinary provider allowlists and ingress client CIDRs are excluded. Use an
+exact `/32` (IPv4) or `/128` (IPv6), and do not exclude the endpoint with an
+`except` entry. The example monitor includes a policy for its own API egress;
+replace its documentation IP with the control-plane IP and set the CronJob's
+`--apiserver-endpoint` to its matching DNS URL. In-cluster client configuration
+normally names the Kubernetes Service ClusterIP; it may differ from the
+control-plane address the CNI evaluates after destination NAT. The comparison
+override does not change the monitor's authenticated client connection. The
+namespace's DNS grant must also be present. Inspecting zero marked egress
+entries fails with a checked-zero diagnostic. Migration from older overlays
+requires adding the purpose label to their API egress policies.
+
+`runner-class-capacity` checks each active runner pod against one compatible
+node, including its node selector, required node affinity, hard taints,
+resource requests, init-container peak, restartable init sidecars, and pod
+overhead. Several replicas of a class do not become one giant pod, and CPU on
+one node cannot satisfy a pod whose memory fits only on another node. This is
+static request fit, not current free capacity or a complete scheduler verdict:
+inter-pod placement, volume constraints, and dynamic allocation still need
+scheduler observation. No active runner pods means unverified, not success.
+
+The current `otlp-signal-set` implementation is **not release evidence of
+telemetry ingestion**. Its endpoint option is not connected to the CLI, and
+its library probe issues HTTP GET requests, whereas OTLP/HTTP ingestion uses
+POST. Do not count a skipped check or a generic HTTP success as proof that
+traces, metrics, and logs were received; capture actual collector/backend
+observations for the smoke until a protocol-correct check is wired.

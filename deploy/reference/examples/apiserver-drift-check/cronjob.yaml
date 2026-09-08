@@ -13,6 +13,9 @@ spec:
         goobers.dev/role: apiserver-drift-check
     spec:
       backoffLimit: 1
+      # A stuck image pull or unschedulable pod must not suppress every
+      # later hourly check under concurrencyPolicy: Forbid.
+      activeDeadlineSeconds: 300
       template:
         metadata:
           labels:
@@ -20,11 +23,37 @@ spec:
         spec:
           serviceAccountName: goobers-apiserver-drift-check
           restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/os: linux
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
           containers:
             - name: check
               image: goobers
               args:
                 - doctor
                 - --k8s
+                - --checks
+                - apiserver-ipblock-drift
+                # Compare the external control-plane endpoint, not the
+                # in-cluster client's Kubernetes Service ClusterIP.
+                - --apiserver-endpoint
+                - https://CHANGE-ME.apiserver.example.com:443
                 - --report
                 - json
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
