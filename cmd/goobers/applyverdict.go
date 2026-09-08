@@ -762,7 +762,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// blocked-on-sibling and needs-remediation.
 	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, serializedCluster, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
 		posted.Decision = apiv1.VerdictFail
-		posted.Rationale = reason
+		posted.Rationale = preserveReviewerRationale(reason, posted.Rationale)
 	}
 
 	// Election resolves single-lander status for EVERY sibling-overlap PR —
@@ -1191,6 +1191,15 @@ func isMergeReviewStatusComment(body string) bool {
 // The findings are deliberately left intact on the published verdict. The
 // ordering asks were real observations and stay visible; only the decision they
 // rolled up to changes, and the rationale states exactly why.
+
+// preserveReviewerRationale keeps the policy explanation first for legacy
+// no-lander consumers, without dropping or truncating the underlying review.
+func preserveReviewerRationale(disposition, original string) string {
+	if original == "" {
+		return disposition
+	}
+	return disposition + "\n\nOriginal reviewer rationale:\n\n" + original
+}
 
 // resolveElectionOutcome resolves single-lander election for a sibling-
 // overlap PR (#1071/PRL-021), regardless of whether the reviewer's raw

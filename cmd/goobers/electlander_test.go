@@ -307,6 +307,10 @@ func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
 	if len(comments) != 1 {
 		t.Fatalf("comments = %v, want one escalation comment", comments)
 	}
+	posted, ok := parseVerdictComment(comments[0])
+	if !ok || !strings.Contains(posted.Rationale, "the overlap is a substantive conflict") {
+		t.Fatalf("derived election disposition discarded reviewer rationale: %+v", posted)
+	}
 	hasEscalationLabel := false
 	for _, label := range labels {
 		if label == "goobers:merge-escalated" {
