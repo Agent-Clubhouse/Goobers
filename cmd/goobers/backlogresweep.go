@@ -16,11 +16,8 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-const defaultBacklogResweepInterval = 24 * time.Hour
-
 type backlogResweepPolicy struct {
 	maxItems   int
-	interval   time.Duration
 	readyLabel string
 }
 
@@ -47,6 +44,9 @@ func compactLabels(values ...string) []string {
 }
 
 func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) {
+	if providerInput("resweepInterval", "") != "" {
+		return backlogResweepPolicy{}, false, errors.New("resweepInterval is retired; configure schedule and readiness on a separate workflow using backlog-query --claim --resweep")
+	}
 	rawMax := strings.TrimSpace(providerInput("resweepMaxItems", ""))
 	if rawMax == "" {
 		return backlogResweepPolicy{}, false, nil
@@ -59,19 +59,11 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 			maxItems,
 		)
 	}
-	rawInterval := strings.TrimSpace(providerInput("resweepInterval", defaultBacklogResweepInterval.String()))
-	interval, err := time.ParseDuration(rawInterval)
-	if err != nil || interval <= 0 {
-		return backlogResweepPolicy{}, false, fmt.Errorf(
-			"invalid resweepInterval %q (want a positive duration)",
-			rawInterval,
-		)
-	}
 	readyLabel := strings.TrimSpace(providerInput("resweepReadyLabel", providers.LabelReady))
 	if readyLabel == "" {
 		return backlogResweepPolicy{}, false, errors.New("resweepReadyLabel must not be empty")
 	}
-	return backlogResweepPolicy{maxItems: resweepMax, interval: interval, readyLabel: readyLabel}, true, nil
+	return backlogResweepPolicy{maxItems: resweepMax, readyLabel: readyLabel}, true, nil
 }
 
 // backlogResweepStateKey is the scheduler-state key holding the re-sweep
@@ -163,10 +155,6 @@ func advanceBacklogResweepState(
 		})
 }
 
-func backlogResweepDue(state backlogResweepState, observedAt time.Time, interval time.Duration) bool {
-	return state.LastSweepAt.IsZero() || !observedAt.Before(state.LastSweepAt.Add(interval))
-}
-
 func sortBacklogResweepCandidates(
 	items []providers.WorkItem,
 	priorityLabels []string,
@@ -200,12 +188,12 @@ func recordBacklogResweep(
 	state backlogResweepState,
 	selected []providers.WorkItem,
 	observedAt time.Time,
-	interval time.Duration,
 ) backlogResweepState {
 	if state.LastSweptAt == nil {
 		state.LastSweptAt = map[string]time.Time{}
 	}
-	retainFor := max(30*24*time.Hour, 4*interval)
+	// Selection-history retention is independent of workflow cadence.
+	const retainFor = 30 * 24 * time.Hour
 	for id, sweptAt := range state.LastSweptAt {
 		if observedAt.Sub(sweptAt) > retainFor {
 			delete(state.LastSweptAt, id)

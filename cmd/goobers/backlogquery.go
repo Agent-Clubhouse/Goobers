@@ -524,7 +524,6 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	forwardEligibleCount := len(eligible)
 
 	resweep, code := runBacklogResweep(ctx, env, backlogResweepOptions{
-		scheduled:         mode == backlogQueryModeResweep,
 		enabled:           resweepEnabled,
 		policy:            resweepPolicy,
 		eligible:          eligible,
@@ -1394,9 +1393,6 @@ func (session *backlogClaimSession) releaseLedger(ctx context.Context, item prov
 }
 
 type backlogResweepOptions struct {
-	// scheduled delegates cadence to the workflow trigger/readiness guards.
-	// Cursor and selection-history persistence are still shared across runners.
-	scheduled  bool
 	enabled    bool
 	policy     backlogResweepPolicy
 	eligible   []providers.WorkItem
@@ -1467,9 +1463,6 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 		return result, 1
 	}
 	result.observed = result.state.Generation
-	if !opts.scheduled && !backlogResweepDue(result.state, opts.observedAt, opts.policy.interval) {
-		return result, 0
-	}
 	result.modeByID = make(map[string]string)
 	selected, code := appendBlockedResweepCandidates(ctx, env, opts, &result)
 	if code != 0 {
@@ -1480,7 +1473,7 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 		return result, code
 	}
 	selected = append(selected, ready...)
-	result.state = recordBacklogResweep(result.state, selected, opts.observedAt, opts.policy.interval)
+	result.state = recordBacklogResweep(result.state, selected, opts.observedAt)
 	result.state.Cursor = nextCursor.Cursor
 	result.dirty = true
 	return result, 0

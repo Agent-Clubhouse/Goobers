@@ -3,11 +3,39 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestBacklogScheduledResweepRejectsLegacyInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     backlogQueryMode
+		max      string
+		interval string
+		ready    string
+	}{
+		{"inline max", backlogQueryModeClaim, "1", "", ""},
+		{"inline label", backlogQueryModeClaim, "", "", providers.LabelReady},
+		{"inline interval", backlogQueryModeClaim, "", "24h", ""},
+		{"scheduled interval", backlogQueryModeResweep, "1", "24h", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GOOBERS_INPUT_CURATION", "true")
+			t.Setenv("GOOBERS_INPUT_MAXITEMS", "2")
+			t.Setenv("GOOBERS_INPUT_RESWEEPMAXITEMS", tc.max)
+			t.Setenv("GOOBERS_INPUT_RESWEEPINTERVAL", tc.interval)
+			t.Setenv("GOOBERS_INPUT_RESWEEPREADYLABEL", tc.ready)
+			_, err := readBacklogQueryPolicies(tc.mode)
+			if err == nil || !strings.Contains(err.Error(), "retired") || !strings.Contains(err.Error(), "--claim --resweep") {
+				t.Fatalf("legacy input lacks migration refusal: %v", err)
+			}
+		})
+	}
+}
 
 func TestBacklogScheduledResweepOwnsCadenceButNotForwardClaims(t *testing.T) {
 	root := initDemo(t)
@@ -16,7 +44,7 @@ func TestBacklogScheduledResweepOwnsCadenceButNotForwardClaims(t *testing.T) {
 	server.addIssue(7, "In-flight context", providers.LabelApproved, providers.LabelReady, inReviewStatusLabel)
 	server.addIssue(8, "Other in-flight context", providers.LabelApproved, providers.LabelReady, inReviewStatusLabel)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "scheduled-resweep")
-	configureCurationResweep(t, "2", "2", "24h")
+	configureCurationResweep(t, "2", "2")
 	t.Setenv("GOOBERS_INPUT_RECONCILEMETADATA", "false")
 	workDir := t.TempDir()
 	t.Chdir(workDir)

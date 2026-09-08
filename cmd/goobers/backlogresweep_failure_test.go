@@ -18,10 +18,10 @@ func TestBacklogResweepDependencyFailureDoesNotAdvanceSweep(t *testing.T) {
 	server.addIssue(7, "Parked item", providers.LabelApproved, blockedOnSiblingLabel)
 	server.dependencyFailureStatus = map[int]int{7: http.StatusForbidden}
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "resweep-failure")
-	configureCurationResweep(t, "2", "2", "24h")
+	configureCurationResweep(t, "2", "2")
 	t.Setenv("GOOBERS_INPUT_RECONCILEMETADATA", "false")
 	t.Chdir(t.TempDir())
-	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code == 0 || !strings.Contains(stderr, "dependency recheck item 7") {
 		t.Fatalf("dependency failure hidden: code=%d stderr=%q", code, stderr)
 	}

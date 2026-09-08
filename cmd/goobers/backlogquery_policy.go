@@ -38,8 +38,8 @@ func readBacklogQueryPolicies(mode backlogQueryMode) (backlogQueryPolicies, erro
 	if err != nil {
 		return p, err
 	}
-	if p.resweepEnabled && !p.curation {
-		return p, errors.New("re-sweep inputs are only valid for backlog-curation --claim runs or --resweep")
+	if mode != backlogQueryModeResweep && (p.resweepEnabled || providerInput("resweepReadyLabel", "") != "") {
+		return p, errors.New("inline re-sweep is retired; move re-sweep inputs to a separate scheduled workflow using backlog-query --claim --resweep")
 	}
 	if mode == backlogQueryModeResweep && !p.resweepEnabled {
 		return p, errors.New("--resweep requires a bounded resweepMaxItems input")
