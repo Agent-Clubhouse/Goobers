@@ -96,6 +96,13 @@ come from its configured repositories; package snapshot pinning, vulnerability
 scanning, provenance/signing, compressed-size enforcement, authenticated harness stages,
 published Windows images, and publish-time native smoke remain release work.
 
+To prepare the three supported base contexts during the normal five-platform
+archive build, use `-image-targets linux/amd64,linux/arm64,windows/amd64` with
+`-image-contexts` and leave the archive `-targets` at its default. Darwin archives
+are still built; only context preparation uses the selected subset. Every selected
+image target must occur exactly once in the archive matrix, and a failure in any
+requested archive still discards the complete context batch.
+
 ## Build images from final release archives
 
 Signing changes executable bytes, so image workers must consume the **final**
