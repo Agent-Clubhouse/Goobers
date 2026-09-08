@@ -74,6 +74,8 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 		return "goobers:merge-ready"
 	case apiv1.VerdictFail:
 		return "goobers:merge-escalated"
+	case apiv1.VerdictDefer:
+		return blockedOnSiblingLabel
 	default:
 		if sequencingOnly(findings) {
 			return blockedOnSiblingLabel
