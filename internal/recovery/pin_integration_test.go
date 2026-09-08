@@ -5,13 +5,13 @@ package recovery
 import (
 	"context"
 	"errors"
-	"github.com/goobers/goobers/internal/testgit"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 

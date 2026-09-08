@@ -40,17 +40,34 @@ func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *testing.T) {
 	testdep.Require(t, "git")
 	for _, mode := range []string{"record", "issue", "http-issue", "resume-issue", "resume-prepared", "resume-adopted"} {
-		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode) })
+		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode, false) })
 	}
 }
 
-func testRecoveryRestoreCommand(t *testing.T, mode string) {
+func TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository(t *testing.T) {
+	testdep.Require(t, "git")
+	for _, mode := range []string{"record", "resume-issue", "http-issue"} {
+		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode, true) })
+	}
+}
+
+func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool) {
 	resume := strings.HasPrefix(mode, "resume-")
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "local-only-recovery-fixture-token")
 	root := initDemo(t)
 	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if gitea {
+		t.Setenv("GOOBERS_GITHUB_TOKEN", "")
+		cfg.Repos[0].Provider = "gitea"
+		cfg.Repos[0].BaseURL = "https://gitea.example.invalid"
+		cfg.Repos[0].Token = instance.TokenRef{Env: "GOOBERS_GITEA_TOKEN"}
+		t.Setenv("GOOBERS_GITEA_TOKEN", "local-only-gitea-recovery-token")
+		if err := instance.WriteConfig(instance.NewLayout(root).ConfigFile(), cfg); err != nil {
+			t.Fatal(err)
+		}
 	}
 	configured := cfg.Repos[0]
 	identity := providers.RepositoryRef{Provider: providers.ProviderKind(configured.Provider), URL: configured.BaseURL, Owner: configured.Owner, Project: configured.Project, Name: configured.Name}
