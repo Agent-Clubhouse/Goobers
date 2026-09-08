@@ -181,7 +181,7 @@ func validateStageDispatchConfig(cfg *instance.Config, daemonAPI, blobEndpoint s
 		{"GOOBERS_BLOB_ENDPOINT", blobEndpoint},
 	} {
 		if err := validateStageDispatchEndpoint(endpoint.value); err != nil {
-			return nil, fmt.Errorf("stage dispatch: %s %s", endpoint.name, err)
+			return nil, fmt.Errorf("stage dispatch: %s %w", endpoint.name, err)
 		}
 	}
 	signed, err := podTokenMinter(cfg)
