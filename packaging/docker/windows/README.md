@@ -102,10 +102,13 @@ ContainerUser runtime.
 The opt-in [Windows image workflow](../../../.github/workflows/windows-image-verify.yml)
 uses `workflow_dispatch` and a `windows-2022` host. Its candidate defaults to
 `v0.4.0-rc.1` and published baseline to `v0.3.3`, both explicit dispatch inputs.
-It downloads the baseline snapshots with a read-only GitHub token, prepares the release inputs,
-checks archive checksums and exact binary parity, builds the local Windows image,
-then verifies both image binaries and runs quickstart plus the shipped mock demo
-as ContainerUser. It uploads logs and image/container inspection evidence even
+It downloads the baseline snapshots with a read-only GitHub token and invokes
+`go run ./release` with `-build-images -image-prefix` using a unique local prefix
+for the run. The release engine builds the image and verifies its native runtime
+and binary hashes. The workflow requires `image-evidence.json` to identify exactly
+one native Windows base image, then checks archive parity and runs quickstart
+plus the shipped mock demo as ContainerUser using that same image. It retains
+the engine evidence and checks the image ID before the additional smoke. It uploads logs and image/container inspection evidence even
 when verification fails, and never pushes an image. The demo allows unisolated
 `network: none` execution for this trusted, credential-free mock workload;
 this is not proof of Windows network enforcement.

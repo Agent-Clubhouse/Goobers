@@ -26,7 +26,7 @@ jobs:
   windows-image:
     name: Server 2022 native image verification
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
@@ -100,8 +100,8 @@ jobs:
           npm --prefix portal run build
           if ($LASTEXITCODE -ne 0) { throw 'Portal build failed' }
 
-      - name: Prepare native archive and Windows image context
-        timeout-minutes: 25
+      - name: Build and verify Windows image through the release engine
+        timeout-minutes: 50
         env:
           CANDIDATE_VERSION: ${{ inputs.candidate_version }}
         run: |
@@ -115,14 +115,26 @@ jobs:
           $assetsDir = Join-Path $env:RUNNER_TEMP 'windows-image-assets'
           $contextsDir = Join-Path $env:RUNNER_TEMP 'windows-image-contexts'
           $evidenceDir = Join-Path $env:RUNNER_TEMP 'windows-image-evidence'
+          $imagePrefix = "goobers-windows-verify-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          "WINDOWS_SMOKE_IMAGE_PREFIX=$imagePrefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           go run ./release -version $smokeVersion -commit $sourceCommit -date $sourceDate `
             -targets windows/amd64 -output $assetsDir -image-contexts $contextsDir `
+            -build-images -image-prefix $imagePrefix `
             -previous-features (Join-Path $baselineDir 'feature-registry.json') `
             -previous-support-matrix (Join-Path $baselineDir 'dsl-support-matrix.json') `
             2>&1 | Tee-Object -FilePath (Join-Path $evidenceDir 'release-preparation.txt')
-          if ($LASTEXITCODE -ne 0) { throw 'Windows release context preparation failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release image build or native verification failed' }
+          $engineEvidencePath = Join-Path $contextsDir 'image-evidence.json'
+          Copy-Item -LiteralPath $engineEvidencePath -Destination $evidenceDir
+          $engineEvidence = Get-Content -Raw -LiteralPath $engineEvidencePath | ConvertFrom-Json
+          $builtImages = @($engineEvidence.images)
+          if ($engineEvidence.schemaVersion -ne 1 -or $engineEvidence.native -isnot [bool] -or $engineEvidence.native -ne $true -or $engineEvidence.enginePlatform -ne 'windows/amd64') { throw 'Engine evidence must prove native Windows verification' }
+          if ($builtImages.Count -ne 1 -or $builtImages[0].family -ne 'goobers-base-windows' -or $builtImages[0].platform -ne 'windows/amd64' -or $builtImages[0].user -ne 'ContainerUser') { throw 'Engine evidence must contain exactly one Windows base image' }
+          $builtImage = $builtImages[0]
+          if ($builtImage.imageID -notmatch '^sha256:[a-f0-9]{64}$' -or -not $builtImage.reference.StartsWith("$imagePrefix/goobers-base-windows:", [StringComparison]::Ordinal)) { throw 'Engine image identity is outside this verification run' }
           "WINDOWS_SMOKE_VERSION=$smokeVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "WINDOWS_SMOKE_IMAGE=goobers-base:verify-$sourceCommit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_SMOKE_IMAGE=$($builtImage.reference)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_SMOKE_IMAGE_ID=$($builtImage.imageID)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "WINDOWS_SMOKE_CONTAINER=goobers-image-verify-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           $contextDir = Join-Path $contextsDir 'windows-amd64'
           foreach ($file in @('release.json', 'dependencies.json', 'SHA256SUMS')) {
@@ -150,21 +162,13 @@ jobs:
           Assert-ImageReleaseStamp -Release $release -Output $versionOutput -Binary 'archived goobers'
           $versionOutput | Set-Content (Join-Path $env:RUNNER_TEMP 'windows-image-evidence\archive-version.txt')
 
-      - name: Build Windows image locally
-        timeout-minutes: 25
-        run: |
-          $contextDir = Join-Path $env:RUNNER_TEMP 'windows-image-contexts\windows-amd64'
-          docker build --isolation=process --tag $env:WINDOWS_SMOKE_IMAGE $contextDir `
-            2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'windows-image-evidence\docker-build.txt')
-          if ($LASTEXITCODE -ne 0) { throw 'Native Windows image build failed' }
-
       - name: Verify ContainerUser archive parity and quickstart demo
         timeout-minutes: 10
         run: |
           $evidenceDir = Join-Path $env:RUNNER_TEMP 'windows-image-evidence'
           $contextDir = Join-Path $env:RUNNER_TEMP 'windows-image-contexts\windows-amd64'
           $image = docker image inspect $env:WINDOWS_SMOKE_IMAGE | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $image[0].Config.User -ne 'ContainerUser' -or $image[0].Os -ne 'windows') { throw 'Image must declare Windows ContainerUser' }
+          if ($LASTEXITCODE -ne 0 -or $image[0].Config.User -ne 'ContainerUser' -or $image[0].Os -ne 'windows' -or $image[0].Id -ne $env:WINDOWS_SMOKE_IMAGE_ID) { throw 'Image identity or Windows ContainerUser declaration differs from engine evidence' }
           docker create --isolation=process --name $env:WINDOWS_SMOKE_CONTAINER --entrypoint powershell `
             $env:WINDOWS_SMOKE_IMAGE -NoLogo -NoProfile -NonInteractive -File C:\image-smoke.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Cannot create native smoke container' }
@@ -190,6 +194,12 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $evidenceDir = Join-Path $env:RUNNER_TEMP 'windows-image-evidence'
           New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+          if ($env:WINDOWS_SMOKE_IMAGE_PREFIX) {
+            $attemptedImages = @(docker image ls --quiet --no-trunc --filter "reference=$($env:WINDOWS_SMOKE_IMAGE_PREFIX)/*")
+            if ($LASTEXITCODE -eq 0 -and $attemptedImages.Count -gt 0) {
+              docker image inspect @attemptedImages 2>&1 | Set-Content (Join-Path $evidenceDir 'engine-attempted-images.json')
+            }
+          }
           if ($env:WINDOWS_SMOKE_IMAGE) {
             docker image inspect $env:WINDOWS_SMOKE_IMAGE 2>&1 | Set-Content (Join-Path $evidenceDir 'image-inspect.json')
           }

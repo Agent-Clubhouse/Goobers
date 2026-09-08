@@ -79,3 +79,48 @@ func TestWindowsImageWorkflowUsesRealReleasePolicy(t *testing.T) {
 		t.Fatal("manual native verifier must require the integration dependency under Windows PowerShell 5.1")
 	}
 }
+
+func TestWindowsImageWorkflowBuildsThroughReleaseEngine(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", ".github", "workflows", "windows-image-verify.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct{ Run string } `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var engineRun, allRuns strings.Builder
+	for _, step := range workflow.Jobs["windows-image"].Steps {
+		allRuns.WriteString(step.Run)
+		if strings.Contains(step.Run, "go run ./release") {
+			engineRun.WriteString(step.Run)
+		}
+	}
+	for _, required := range []string{
+		"-build-images -image-prefix $imagePrefix", "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT",
+		"Join-Path $contextsDir 'image-evidence.json'", "Copy-Item -LiteralPath $engineEvidencePath -Destination $evidenceDir",
+		"$engineEvidence.native -isnot [bool]", "$engineEvidence.native -ne $true",
+		"$engineEvidence.enginePlatform -ne 'windows/amd64'", "$builtImages.Count -ne 1",
+		"$builtImages[0].family -ne 'goobers-base-windows'", "$builtImages[0].platform -ne 'windows/amd64'",
+		"WINDOWS_SMOKE_IMAGE=$($builtImage.reference)", "WINDOWS_SMOKE_IMAGE_ID=$($builtImage.imageID)",
+	} {
+		if !strings.Contains(engineRun.String(), required) {
+			t.Errorf("release engine step omits native image evidence requirement %q", required)
+		}
+	}
+	if strings.Contains(allRuns.String(), "docker build") {
+		t.Fatal("native workflow must exercise the release engine's image build, without a separate Docker build")
+	}
+	for _, required := range []string{
+		"$image[0].Id -ne $env:WINDOWS_SMOKE_IMAGE_ID", "Archive/image-input binary bytes differ",
+		"Smoke-Image.ps1", "Image $binary differs from release input", "engine-attempted-images.json",
+	} {
+		if !strings.Contains(allRuns.String(), required) {
+			t.Errorf("native workflow lost archive parity, smoke or failure evidence check %q", required)
+		}
+	}
+}
