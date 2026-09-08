@@ -1,0 +1,24 @@
+[Unit]
+Description=Goobers dashboard read-only synthetic monitor
+Documentation=file:%h/Goobers/tools/uiwatch/README.md
+# Only meaningful while the thing it watches is up.
+After=goobers-portal.service
+Wants=goobers-portal.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Goobers
+ExecStart=/usr/bin/env node %h/Goobers/tools/uiwatch/uiwatch.mjs run
+# A probe failure is a finding, not a unit failure: the timer must keep firing
+# so the ledger can see the streak and, later, the recovery.
+SuccessExitStatus=0 1
+TimeoutStartSec=180
+# The monitor reads; it needs no write access to the repo or the instance.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/goobers-uiwatch %h/.cache/ms-playwright
+PrivateTmp=no
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

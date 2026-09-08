@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the Goobers dashboard monitor periodically
+
+[Timer]
+# First run shortly after login, then every five minutes.
+OnStartupSec=2min
+OnUnitActiveSec=5min
+# Jitter keeps the probe from landing on the scheduler's own tick every time.
+RandomizedDelaySec=30s
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

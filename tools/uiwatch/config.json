@@ -1,0 +1,64 @@
+{
+  "baseUrl": "http://127.0.0.1:8081",
+  "daemonUrl": "http://127.0.0.1:8080",
+  "browsers": [
+    "chromium",
+    "firefox"
+  ],
+  "stateDir": null,
+  "thresholds": {
+    "routeHeadingMs": 10000,
+    "liveConnectedMs": 8000,
+    "navigationMs": 15000,
+    "minConsecutiveFailures": 2
+  },
+  "routes": [
+    {
+      "path": "#/overview",
+      "heading": "need attention",
+      "regex": true
+    },
+    {
+      "path": "#/workflows",
+      "heading": "Workflows"
+    },
+    {
+      "path": "#/goobers",
+      "heading": "Goobers"
+    },
+    {
+      "path": "#/runs",
+      "heading": "Runs"
+    },
+    {
+      "path": "#/insight",
+      "heading": "Insight"
+    },
+    {
+      "path": "#/errors",
+      "heading": "Matching errors"
+    }
+  ],
+  "connectedText": "Live updates connected",
+  "ignoreConsole": [
+    "Download the React DevTools",
+    "favicon.ico"
+  ],
+  "retention": {
+    "keepRuns": 200,
+    "keepEvidence": 40
+  },
+  "intervalSeconds": 300,
+  "session": {
+    "enabled": true,
+    "browser": "firefox",
+    "sampleSeconds": 60,
+    "baselineSamples": 3,
+    "minSamples": 5,
+    "maxNodeGrowthPct": 50,
+    "maxHeapGrowthPct": 60,
+    "maxSseReconnects": 5,
+    "maxBadgeFlaps": 3,
+    "restartAfterHours": 12
+  }
+}

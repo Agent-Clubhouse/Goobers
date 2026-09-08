@@ -1,0 +1,28 @@
+#!/bin/sh
+# Start/stop the local Goobers dashboard monitor.
+#
+#   ./monitor start     begin watching in the background
+#   ./monitor stop      stop watching
+#   ./monitor state     is it running, and how many findings are open
+#   ./monitor status    list tracked findings
+#
+# Windows equivalent: monitor.cmd (same subcommands).
+# Everything below is a thin wrapper; the logic lives in tools/uiwatch.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cli="$root/tools/uiwatch/uiwatch.mjs"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "monitor: node is required but was not found on PATH" >&2
+  exit 1
+fi
+if [ ! -f "$cli" ]; then
+  echo "monitor: cannot find $cli" >&2
+  exit 1
+fi
+
+if [ $# -eq 0 ]; then
+  exec node "$cli" state
+fi
+exec node "$cli" "$@"
