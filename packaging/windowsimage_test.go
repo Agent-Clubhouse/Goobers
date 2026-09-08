@@ -193,7 +193,7 @@ func TestWindowsImagePowerShellSyntax(t *testing.T) {
 	powerShell := findImageTestPowerShell(t)
 	// Parse all scripts even where their Windows APIs cannot execute. Windows
 	// PowerShell 5.1 remains a separate native validation requirement.
-	for _, name := range []string{"Verify-Inputs.ps1", "Configure-Image.ps1", "Verify-Image.ps1", "Release-Metadata.ps1"} {
+	for _, name := range []string{"Verify-Inputs.ps1", "Configure-Image.ps1", "Verify-Image.ps1", "Release-Metadata.ps1", "Smoke-Image.ps1"} {
 		path, err := filepath.Abs(filepath.Join("docker/windows", name))
 		if err != nil {
 			t.Fatal(err)
@@ -217,6 +217,20 @@ func readWindowsImageFile(t *testing.T, name string) []byte {
 
 func findImageTestPowerShell(t *testing.T) string {
 	t.Helper()
+	if os.Getenv("GOOBERS_REQUIRE_WINDOWS_POWERSHELL") == "1" {
+		// The required Windows CI lane must execute the same 5.1 runtime as
+		// Server Core, even if PowerShell 7 is the runner's default shell.
+		path, err := exec.LookPath("powershell.exe")
+		if err != nil {
+			t.Fatal("mandatory Windows PowerShell 5.1 image verification is unavailable: ", err)
+		}
+		command := `$PSVersionTable.PSEdition + '/' + $PSVersionTable.PSVersion.Major + '.' + $PSVersionTable.PSVersion.Minor`
+		output, err := exec.Command(path, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command).CombinedOutput()
+		if err != nil || strings.TrimSpace(string(output)) != "Desktop/5.1" {
+			t.Fatalf("mandatory image verifier requires Windows PowerShell Desktop/5.1, got %q (%v)", output, err)
+		}
+		return path
+	}
 	for _, name := range []string{"powershell", "pwsh"} {
 		if path, err := exec.LookPath(name); err == nil {
 			return path
