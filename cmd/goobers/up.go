@@ -2133,6 +2133,12 @@ func emitHeartbeats(
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			// The output writer can wake a shutdown caller before this loop
+			// gets back to its select. Do not process a tick that was already
+			// queued when cancellation won that race.
+			if ctx.Err() != nil {
+				return
+			}
 			if tail == nil {
 				tail, err = journal.OpenInstanceLogTail(schedulerDir)
 			}
