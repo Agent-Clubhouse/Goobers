@@ -10,8 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -26,6 +25,43 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Manual reruns are supported on release tags, never branch refs. Peeling
+      # both identities supports annotated tags without trusting short stamps.
+      - name: Authorize release source
+        id: release-source
+        shell: bash
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT" != push && "$RELEASE_EVENT" != workflow_dispatch ]]; then
+            echo '::error::Release requires a tag push or a manual run on a release tag.'
+            exit 1
+          fi
+          core='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          release_ref="^refs/tags/v${core}\.${core}\.${core}(-${identifier}(\.${identifier})*)?$"
+          if [[ ! "$RELEASE_REF" =~ $release_ref ]]; then
+            echo '::error::Release requires a canonical vMAJOR.MINOR.PATCH tag with an optional SemVer prerelease suffix.'
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Release event source must be a full Git object identity.'
+            exit 1
+          fi
+          tag_commit="$(git rev-parse --verify "${RELEASE_REF}^{commit}")"
+          event_commit="$(git rev-parse --verify "${EXPECTED_SOURCE}^{commit}")"
+          checkout_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [[ "$tag_commit" != "$event_commit" || "$checkout_commit" != "$event_commit" ]]; then
+            echo '::error::Release tag, event source, and checked-out commit must agree.'
+            exit 1
+          fi
+          echo "commit=$event_commit" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -42,7 +78,7 @@ jobs:
 
       - name: Build Portal asset artifact
         env:
-          GOOBERS_PORTAL_COMMIT: ${{ github.sha }}
+          GOOBERS_PORTAL_COMMIT: ${{ steps.release-source.outputs.commit }}
           GOOBERS_PORTAL_VERSION: ${{ github.ref_name }}
         run: |
           npm --prefix portal ci --no-audit --no-fund
@@ -82,7 +118,7 @@ jobs:
 
       - name: Build release artifacts
         env:
-          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_SHA: ${{ steps.release-source.outputs.commit }}
           FIRST_FEATURE_SNAPSHOT: ${{ steps.feature-baseline.outputs.first }}
           PREVIOUS_FEATURES: ${{ steps.feature-baseline.outputs.path }}
           PREVIOUS_SUPPORT_MATRIX: ${{ steps.feature-baseline.outputs.support-path }}
@@ -242,6 +278,9 @@ jobs:
 
   sign-windows:
     name: Sign Windows binary
+    permissions:
+      contents: read
+      id-token: write
     needs: sign-macos
     runs-on: windows-latest
     timeout-minutes: 30
@@ -420,6 +459,8 @@ jobs:
 
   verify-and-publish:
     name: Verify and publish ${{ github.ref_name }}
+    permissions:
+      contents: write
     needs: [sign-windows, native-smoke]
     runs-on: ubuntu-latest
     steps:
@@ -431,6 +472,43 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Manual reruns are supported on release tags, never branch refs. Peeling
+      # both identities supports annotated tags without trusting short stamps.
+      - name: Authorize release source
+        id: release-source
+        shell: bash
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT" != push && "$RELEASE_EVENT" != workflow_dispatch ]]; then
+            echo '::error::Release requires a tag push or a manual run on a release tag.'
+            exit 1
+          fi
+          core='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          release_ref="^refs/tags/v${core}\.${core}\.${core}(-${identifier}(\.${identifier})*)?$"
+          if [[ ! "$RELEASE_REF" =~ $release_ref ]]; then
+            echo '::error::Release requires a canonical vMAJOR.MINOR.PATCH tag with an optional SemVer prerelease suffix.'
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Release event source must be a full Git object identity.'
+            exit 1
+          fi
+          tag_commit="$(git rev-parse --verify "${RELEASE_REF}^{commit}")"
+          event_commit="$(git rev-parse --verify "${EXPECTED_SOURCE}^{commit}")"
+          checkout_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [[ "$tag_commit" != "$event_commit" || "$checkout_commit" != "$event_commit" ]]; then
+            echo '::error::Release tag, event source, and checked-out commit must agree.'
+            exit 1
+          fi
+          echo "commit=$event_commit" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
