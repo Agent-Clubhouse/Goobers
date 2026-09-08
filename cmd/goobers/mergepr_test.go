@@ -34,20 +34,21 @@ type mergePRServerState struct {
 	// mergeableState is GitHub's mergeable_state enum for the PR detail
 	// ("unstable" = mergeable, only advisory checks red; "blocked" = required
 	// checks failing/pending). Empty omits the field (the pre-#961 shape).
-	mergeableState  string
-	headSHA         string
-	headBranch      string
-	headOwner       string
-	headRepo        string
-	baseSHA         string
-	stacked         bool
-	pullListStatus  int
-	deleteStatus    int
-	mergeCalls      int
-	pullListCalls   int
-	deleteCalls     int
-	baseListCalls   int
-	baseDeleteCalls int
+	mergeableState   string
+	headSHA          string
+	headBranch       string
+	headOwner        string
+	headRepo         string
+	baseSHA          string
+	stacked          bool
+	pullListStatus   int
+	deleteStatus     int
+	mergeCalls       int
+	beforeMergeReply func() error
+	pullListCalls    int
+	deleteCalls      int
+	baseListCalls    int
+	baseDeleteCalls  int
 	// mergeRefusalStatus/mergeRefusalBody make the REST merge endpoint answer
 	// with a refusal instead of merging — #1751's conflict case and its
 	// false-positive guard both drive the same handler with different bodies.
@@ -301,6 +302,13 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 	})
 	mux.HandleFunc(prefix+"/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
 		st.mergeCalls++
+		if st.beforeMergeReply != nil {
+			if err := st.beforeMergeReply(); err != nil {
+				t.Errorf("prepare merge reply: %v", err)
+				http.Error(w, "fixture failed", http.StatusInternalServerError)
+				return
+			}
+		}
 		if err := json.NewDecoder(r.Body).Decode(&st.mergeBody); err != nil {
 			t.Errorf("decode merge request body: %v", err)
 		}
