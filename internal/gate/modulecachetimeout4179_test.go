@@ -41,6 +41,21 @@ func TestModuleDownloadFailureReachesInfrastructureGate(t *testing.T) {
 			hint:    "credentials and repository access", outcome: gate.OutcomeInfra,
 		},
 		{
+			name:    "Go filename connection failure",
+			message: `--- FAIL: TestAPI: foo.go: connection refused`,
+			outcome: gate.OutcomeFail,
+		},
+		{
+			name:    "Go filename authentication failure",
+			message: `--- FAIL: TestAPI: main.go: 401 Unauthorized`,
+			outcome: gate.OutcomeFail,
+		},
+		{
+			name:    "non-download go command failure",
+			message: `go: invoking tool: connection refused`,
+			outcome: gate.OutcomeFail,
+		},
+		{
 			name:    "checksum mismatch",
 			message: `go: downloading example.com/mod v1.2.3: checksum mismatch against sum.golang.org`,
 			outcome: gate.OutcomeFail,

@@ -10,6 +10,36 @@ func TestIsDependencyTransportDenial(t *testing.T) {
 		want    bool
 	}{
 		{
+			name:    "Go filename authentication diagnostic",
+			message: `main.go: 401 Unauthorized`,
+			want:    false,
+		},
+		{
+			name:    "Go test filename connection failure",
+			message: `--- FAIL: TestAPI: foo.go: connection refused`,
+			want:    false,
+		},
+		{
+			name:    "non-download go command failure",
+			message: `go: invoking tool: connection refused`,
+			want:    false,
+		},
+		{
+			name:    "non-download go DNS failure",
+			message: `go: running tool: lookup api.example.com: no such host`,
+			want:    false,
+		},
+		{
+			name:    "filename resembling module fetch",
+			message: `main.go: example.com/mod@v1.2.3: Get "https://modules.example.com/mod.zip": no such host`,
+			want:    false,
+		},
+		{
+			name:    "private module DNS in recorded failure section",
+			message: `command exited 1; failure: go: example.com/mod@v1.2.3: Get "https://modules.example.com/mod.zip": no such host; hint: check runner DNS`,
+			want:    true,
+		},
+		{
 			name:    "private module DNS failure without public proxy host",
 			message: `go: example.com/mod@v1.2.3: Get "https://modules.example.com/mod.zip": dial tcp: lookup modules.example.com: no such host`,
 			want:    true,

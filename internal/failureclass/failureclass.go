@@ -9,7 +9,10 @@
 // imports internal/executor, so the vocabulary cannot live in either of them.
 package failureclass
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // dependencyFetchMarkers say the failing command was a dependency or
 // artifact fetch: a module-proxy/package-registry host, or a toolchain's own
@@ -20,7 +23,8 @@ import "strings"
 // could not be, on a host list. Go also prefixes private-proxy DNS errors with
 // "go: <module>@<version>: Get ...", without naming a public proxy.
 var dependencyFetchMarkers = []string{
-	"go: ",
+	"go: downloading",
+	"go: module ",
 	"go mod download",
 	"verifying module",
 	"reading https://",
@@ -34,6 +38,16 @@ var dependencyFetchMarkers = []string{
 	"files.pythonhosted.org",
 	"pypi.org",
 	"index.crates.io",
+}
+
+// Private proxies need not appear in the host markers above. Recognize Go's
+// module-version GET diagnostic only at the beginning of an output line or
+// the executor's recorded failure section. A filename ending in .go: or an
+// unrelated go: command failure is not evidence of a dependency download.
+var goModuleFetchPattern = regexp.MustCompile(`(?m)(?:^|; failure: )go: [^\s@]+@[^\s:]+: get "https?://`)
+
+func isDependencyFetch(message string) bool {
+	return containsAny(message, dependencyFetchMarkers) || goModuleFetchPattern.MatchString(message)
 }
 
 // transportDenialTokens say the network refused or could not reach that
@@ -60,7 +74,7 @@ var transportDenialTokens = []string{
 // ordinary build chatter. Matching is case-insensitive.
 func IsDependencyTransportDenial(message string) bool {
 	message = strings.ToLower(message)
-	return containsAny(message, dependencyFetchMarkers) &&
+	return isDependencyFetch(message) &&
 		(containsAny(message, transportDenialTokens) || dependencyTransportHint(message) != "")
 }
 
@@ -70,7 +84,7 @@ func IsDependencyTransportDenial(message string) bool {
 // The original scrubbed diagnostic remains the evidence for the failure.
 func DependencyTransportHint(message string) string {
 	message = strings.ToLower(message)
-	if !containsAny(message, dependencyFetchMarkers) {
+	if !isDependencyFetch(message) {
 		return ""
 	}
 	return dependencyTransportHint(message)
