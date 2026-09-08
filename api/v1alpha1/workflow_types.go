@@ -119,7 +119,8 @@ type ReadinessConditions struct {
 	// +kubebuilder:default=1
 	// +optional
 	MaxConcurrentRuns int32 `json:"maxConcurrentRuns,omitempty" yaml:"maxConcurrentRuns,omitempty"`
-	// MaxRunsPerHour is a run budget that bounds emergent chains (WF-015).
+	// MaxRunsPerHour is an automatic-run budget that bounds emergent chains
+	// (WF-015). Explicit manual invocations bypass the ceiling.
 	// Unset falls back to a spec default of 10 (internal/localscheduler's
 	// Conditions.Admit), not "unenforced" — every workflow gets some
 	// guardrail against a runaway chain out of the box (#339).
@@ -133,8 +134,9 @@ type ReadinessConditions struct {
 	// +kubebuilder:default=10
 	// +optional
 	MaxRunsPerHour int32 `json:"maxRunsPerHour,omitempty" yaml:"maxRunsPerHour,omitempty"`
-	// MaxRunsPerDay is a native daily run budget (#340), enforced the same
-	// way as MaxRunsPerHour over a rolling 24h window. Before this field
+	// MaxRunsPerDay is a native daily automatic-run budget (#340), enforced the
+	// same way as MaxRunsPerHour over a rolling 24h window. Explicit manual
+	// invocations bypass the ceiling. Before this field
 	// existed, a daily ceiling could only be faked by combining a specific
 	// cron cadence with MaxRunsPerHour (e.g. 2x/day cadence x
 	// maxRunsPerHour:1 = a ceiling of 2/day) — fragile and impossible to

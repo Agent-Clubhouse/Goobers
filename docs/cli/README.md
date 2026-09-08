@@ -17,7 +17,7 @@
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
-| [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
+| [`goobers run`](#goobers-run) | trigger a run manually (bypasses cadence budgets) |
 | [`goobers scaffold`](#goobers-scaffold) | scaffold a goober, workflow, or gaggle |
 | [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
@@ -3204,7 +3204,7 @@ $ goobers roots discover --json
 
 ## `goobers run`
 
-trigger a run manually (still honors run conditions)
+trigger a run manually (bypasses cadence budgets)
 
 ~~~text
 Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
@@ -3218,6 +3218,8 @@ Trigger a run of a config/ workflow manually, through the same scheduler
 daemon uses, then wait for it to reach a terminal state unless
 --no-wait is set (default path "."). Use --gaggle or the qualified
 <gaggle>/<workflow> form when multiple gaggles share a workflow name.
+Manual runs bypass hourly and daily cadence budgets, but still honor other
+run conditions such as concurrency and provider quota.
 If a live `goobers up` daemon already
 holds the instance lock,
 delegates the trigger to it instead of failing (#343) — dispatched through

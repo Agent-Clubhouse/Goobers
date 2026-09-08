@@ -1141,11 +1141,7 @@ func TestRequeueTriggerRequestNeverTornUnderConcurrentReads(t *testing.T) {
 	}
 }
 
-// TestSweepFailsFastOnNonTransientRefusal is the other half of the contract:
-// only capacity refusals requeue. A spent budget cannot clear by waiting, so
-// requeueing one would trade a clear error for a silent 30s hang before the
-// staleness check finally answered.
-func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
+func TestSweepManualTriggerBypassesSpentBudget(t *testing.T) {
 	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
 	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
 		Workflow:  "implement",
@@ -1153,7 +1149,6 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 		Starter:   starter,
 	}})
 
-	// Spend the hourly budget.
 	firstID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
@@ -1164,19 +1159,6 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	if _, err := pollTriggerResponse(context.Background(), schedulerDir, firstID, testResponseWait); err != nil {
 		t.Fatalf("first pollTriggerResponse: %v", err)
 	}
-	// The first request's RESPONSE lands as soon as Trigger returns a run id,
-	// which is strictly before that run's slot is released: dispatch hands the
-	// Starter call to a goroutine and only its `defer ReleaseWorkflow` frees
-	// the max-parallel slot (see TriggerRejectedError.Transient's doc). So
-	// polling the response above proves nothing about capacity. Without this
-	// Wait the second trigger races that release and, whenever the goroutine
-	// is slow to be scheduled (ordinary CI load), is refused for max-parallel
-	// — a TRANSIENT reason, which the sweep requeues rather than answering,
-	// leaving this test to burn the full testResponseWait failsafe and fail
-	// on a timeout instead of the budget refusal it is actually about
-	// (#958/#962). Waiting for the dispatch to finish makes the slot
-	// deterministically free, so the only refusal left to observe is the
-	// spent hourly budget.
 	sched.Wait()
 
 	secondID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
@@ -1186,12 +1168,12 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, time.Now); err != nil {
 		t.Fatalf("second sweepPendingTriggers: %v", err)
 	}
-	_, err = pollTriggerResponse(context.Background(), schedulerDir, secondID, testResponseWait)
-	if err == nil {
-		t.Fatal("expected the budget refusal to be reported, not requeued")
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, secondID, testResponseWait); err != nil {
+		t.Fatalf("second pollTriggerResponse: %v", err)
 	}
-	if !strings.Contains(err.Error(), "run conditions rejected the trigger") {
-		t.Fatalf("err = %v, want the run-conditions rejection", err)
+	sched.Wait()
+	if got := starter.count(); got != 2 {
+		t.Fatalf("starter calls = %d, want 2 manual runs despite maxRunsPerHour=1", got)
 	}
 }
 

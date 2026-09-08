@@ -22,7 +22,7 @@ _goobers_completion()
             'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
             'service:install and manage the platform-supervised daemon'
             'dashboard:serve and open the local operations portal'
-            'run:trigger a run manually (still honors run conditions)'
+            'run:trigger a run manually (bypasses cadence budgets)'
             'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
             'status:validate config, show warnings, list runs, report daemon health, or list live agentic stages'

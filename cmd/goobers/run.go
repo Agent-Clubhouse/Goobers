@@ -58,6 +58,8 @@ const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr 
 	"daemon uses, then wait for it to reach a terminal state unless\n" +
 	"--no-wait is set (default path \".\"). Use --gaggle or the qualified\n" +
 	"<gaggle>/<workflow> form when multiple gaggles share a workflow name.\n" +
+	"Manual runs bypass hourly and daily cadence budgets, but still honor other\n" +
+	"run conditions such as concurrency and provider quota.\n" +
 	"If a live `goobers up` daemon already\n" +
 	"holds the instance lock,\n" +
 	"delegates the trigger to it instead of failing (#343) — dispatched through\n" +

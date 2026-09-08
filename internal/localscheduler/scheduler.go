@@ -1885,10 +1885,11 @@ func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, r
 	})
 }
 
-// Trigger manually fires workflow now, bypassing its cron schedule but still
-// honoring run conditions (SCH-002; `goobers run <workflow>` CLI wiring calls
-// this — issue #134). Returns the dispatched run's id once conditions admit
-// it — before the run itself completes, since dispatch always continues
+// Trigger manually fires workflow now, bypassing its cron schedule and cadence
+// budgets while still honoring every other run condition (SCH-002; `goobers
+// run <workflow>` CLI wiring calls this — issue #134). Returns the dispatched
+// run's id once conditions admit it — before the run itself completes, since
+// dispatch always continues
 // asynchronously (see dispatch's goroutine) — so a caller that wants to
 // observe the run to completion polls that id's own journal, the same way
 // `goobers status`/`trace` do. Returns an error if the workflow is unknown or
@@ -2414,7 +2415,13 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	}
 	provider := quotaProvider(entry.RepoRef.Provider)
 	s.journalProviderQuotaReset(provider, now)
-	ok, reason := s.conditions.AdmitProviderWorkflow(identity, provider, entry.Readiness, now)
+	ok, reason := s.conditions.admitProviderWorkflow(
+		identity,
+		provider,
+		entry.Readiness,
+		now,
+		trigger.Kind == journal.TriggerManual,
+	)
 	if !ok {
 		s.journalEvent(journal.Event{
 			Type:     journal.EventTickSkipped,
