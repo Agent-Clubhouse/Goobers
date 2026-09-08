@@ -710,6 +710,7 @@ func (e *Evaluator) invalidNeedsHumanVerdict(g apiv1.Gate, verdict apiv1.Verdict
 }
 
 func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, env *apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, g apiv1.Gate, verdict *apiv1.Verdict) (bool, error) {
+	_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 	maxAttempts, backoff := retryBounds(policy)
 	for attempt := 1; ; attempt++ {
 		attemptCtx := ctx

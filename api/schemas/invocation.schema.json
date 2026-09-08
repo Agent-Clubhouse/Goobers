@@ -38,6 +38,7 @@
       "description": "Content digest of the goober kit this run was admitted against (run.yaml's gooberDigest); absent for a run started before the pin existed, which resolves the worker's current config tree unchanged. A SELECTOR, not decoration: the worker serves the config tree whose goober digest equals this value or refuses the attempt by name (gate_pin_missing / run_pin_unverifiable) rather than silently substituting its currently-configured goober (#3884)."
     },
     "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
+    "reviewerDeferralAllowed": { "type": "boolean", "description": "Runner-owned capability derived from the reviewer gate's declared deferral branch; enables the expanded reviewer completion vocabulary for this invocation only." },
     "attempt": { "type": "integer", "minimum": 1, "description": "One-based attempt number for this stage execution." },
     "ownershipBoundary": { "type": "string", "minLength": 1, "description": "Runner-authored boundary identifying the work this invocation owns." },
     "instructionAddendum": {

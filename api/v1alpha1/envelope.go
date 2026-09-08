@@ -108,6 +108,10 @@ type InvocationEnvelope struct {
 	// agent's instructions for this invocation. It is never part of the workflow
 	// definition and is empty for ordinary invocations.
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
+	// ReviewerDeferralAllowed is set by the runner from the gate's declared
+	// deferral branch, never from task inputs or reviewer output. It enables
+	// the expanded completion vocabulary for this reviewer invocation only.
+	ReviewerDeferralAllowed bool `json:"reviewerDeferralAllowed,omitempty"`
 	// Workspace is the absolute path to the fresh, isolated, disposable working
 	// copy (§5) this stage runs in. The runner guarantees it exists.
 	Workspace string `json:"workspace"`

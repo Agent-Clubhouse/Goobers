@@ -21,6 +21,26 @@ func TestReviewerDeferralWithoutDeclaredRouteFailsClosed(t *testing.T) {
 	}
 }
 
+func TestReviewerDeferralCapabilityIsDerivedFromGate(t *testing.T) {
+	for _, declared := range []bool{false, true} {
+		g := fixtureSpec().Gates[1]
+		if declared {
+			g.Branches["defer"] = "park"
+		}
+		reviewer := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictPass}}
+		ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: reviewer}}
+		// Deliberately supply the opposite value: only the pinned gate decides.
+		base := apiv1.InvocationEnvelope{ReviewerDeferralAllowed: !declared}
+		_, err := ev.Evaluate(context.Background(), g, base, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reviewer.lastReviewEnv.ReviewerDeferralAllowed != declared {
+			t.Fatalf("gate declaration=%v, invocation=%+v", declared, reviewer.lastReviewEnv)
+		}
+	}
+}
+
 func TestReviewerDeferralRoutesWithoutRejectionOrRepass(t *testing.T) {
 	for _, reason := range []apiv1.VerdictReasonCode{apiv1.VerdictReasonOrdering, apiv1.VerdictReasonNoLander} {
 		t.Run(string(reason), func(t *testing.T) {
