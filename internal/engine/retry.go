@@ -50,7 +50,7 @@ const (
 // envelope because it is a fact about the attempt loop, not the stage's
 // result: a retried attempt's bundle describes a workspace that was thrown
 // away with its pod or worktree, and only the winner's may be carried.
-func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -96,7 +96,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
-			activityResult, err = dispatch(ctx, int(attempt))
+			activityResult, err = dispatch(ctx, int(attempt), class)
 			res = activityResult.ResultEnvelope
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
 				return apiv1.ResultEnvelope{}, err

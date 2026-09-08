@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
@@ -78,6 +79,9 @@ func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
 // written, and an existing history must replay identically
 // (dispatchone_test.go's recorded-history fixture is the guard).
 type DispatchStageInput struct {
+	// Class is supplied by the retry driver, independently of the pod ordinal.
+	// Omitted in legacy histories, which retain the initial-attempt default.
+	Class     journal.AttemptClass     `json:"class,omitempty"`
 	Envelope  apiv1.InvocationEnvelope `json:"envelope"`
 	Placement PinnedPlacement          `json:"placement"`
 	Run       *apiv1.DeterministicRun  `json:"run,omitempty"`
@@ -194,7 +198,7 @@ func gatePodAttempt(gateDispatches map[string]int, gate string) int {
 // #3844's instance-root refusal list is command-keyed and a gate declares
 // no command, so there is nothing of it to apply here; the pod entrypoint's
 // backstop still stands for anything a reviewer's harness might spawn.
-func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int) (apiv1.Verdict, error) {
+func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int, class journal.AttemptClass) (apiv1.Verdict, error) {
 	workspace := g.EffectiveWorkspace()
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
@@ -207,6 +211,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
 	if err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
 		Placement:        placement,
 		Workspace:        workspace,
@@ -312,7 +317,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			return dispatchInstanceRootRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
 		}
 	}
-	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
@@ -321,6 +326,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		// is claimID+"-run", which no id composed from the pod's labels or
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
 		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+			Class:            dispatchAttemptClass(ctx, class),
 			Envelope:         attemptEnv,
 			Placement:        placement,
 			Run:              t.Run,
@@ -380,7 +386,7 @@ func instanceRootRefusalReason(taskName string, command []string, kind string) s
 // the walk's continuity record must see an empty digest rather than inherit the
 // previous stage's by omission.
 func dispatchInstanceRootRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, reason string) (apiv1.ResultEnvelope, error) {
-	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
 		return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Summary: "stage requires the daemon's instance root; refused before a pod was created",
@@ -492,6 +498,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		Workflow:       input.Envelope.WorkflowID,
 		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
 		Number:         int(input.Envelope.Attempt),
+		Class:          input.Class,
 		LedgerTouching: input.Placement.LedgerTouching,
 		CPU:            input.Placement.CPU,
 		Memory:         input.Placement.Memory,

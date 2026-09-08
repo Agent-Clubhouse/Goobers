@@ -617,7 +617,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				}
 				outcome = knownOutcome
 			} else {
-				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, rec)
+				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, gateInitialAttemptClass(repassBudget.Attempts[g.Name], repassBudget.InfrastructureAttempts[g.Name]), rec)
 			}
 			if gerr != nil {
 				return RunResult{}, gerr
@@ -1004,7 +1004,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// task's own declaration — the same one the continuity selector
 		// decided the delta from — so the worktree the agent is cut and the
 		// commits it is handed can never disagree.
-		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := env
 			attemptEnv.Attempt = int32(attempt)
@@ -1032,7 +1032,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// taskWorkspaceMode already read it. Pure over the pinned spec, so
 	// replay-deterministic.
 	run.Workspace = t.EffectiveWorkspace()
-	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
@@ -1056,7 +1056,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // ActReviewGoober with the arguments it always has (ruling 8, as amended by
 // #3845): that arm is untouched, and the walk's continuity selector already
 // hands both arms the same delta.
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, firstClass journal.AttemptClass, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -1089,7 +1089,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			return "", nil, GateReviewResult{}, err
 		}
 		var outcome string
-		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
+		if err := evaluateWithInfraRetry(ctx, g, rec, "", func(ctx workflow.Context, _ journal.AttemptClass) error {
 			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
@@ -1160,9 +1160,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// both zero-valued, which disables both short-circuits — precisely the
 		// pre-#3882 behaviour.
 		var review GateReviewResult
-		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
+		if err := evaluateWithInfraRetry(ctx, g, rec, firstClass, func(ctx workflow.Context, class journal.AttemptClass) error {
 			if remote {
-				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name))
+				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class)
 				if err != nil {
 					return err
 				}

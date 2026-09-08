@@ -90,6 +90,8 @@ const (
 	EnvWorkflow = "GOOBERS_WORKFLOW"
 	EnvStage    = "GOOBERS_STAGE"
 	EnvAttempt  = "GOOBERS_ATTEMPT"
+	// EnvAttemptClass preserves the driver-supplied lineage for pod artifacts.
+	EnvAttemptClass = "GOOBERS_ATTEMPT_CLASS"
 	// ProviderBotLoginEnv carries the login the stage's forge credential
 	// authenticates AS for the routed repository — the instance config's
 	// declared GitHub App bot login, resolved DAEMON-SIDE at dispatch, where
@@ -348,7 +350,7 @@ var DispatcherPrivilegedEnv = []string{
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
 var DispatcherRunIdentityEnv = append([]string{
-	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, ProviderBotLoginEnv,
+	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, ProviderBotLoginEnv,
 }, runContextEnv...)
 
 // DispatcherPlaneEnv is the THIRD category, and it exists because neither of
@@ -1099,6 +1101,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		{Name: EnvWorkflow, Value: literalPodEnv(attempt.Workflow)},
 		{Name: EnvStage, Value: literalPodEnv(attempt.Stage)},
 		{Name: EnvAttempt, Value: fmt.Sprintf("%d", attempt.Number)},
+		{Name: EnvAttemptClass, Value: literalPodEnv(string(attempt.Class))},
 	}
 	if cfg.BlobEndpoint != "" {
 		env = append(env, corev1.EnvVar{Name: EnvBlobEndpoint, Value: literalPodEnv(cfg.BlobEndpoint)})

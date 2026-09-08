@@ -880,6 +880,8 @@ func recordStageArtifactsTyped(
 	if err != nil || attempt < 1 {
 		attempt = 1
 	}
+	// Absent on legacy pods means initial; never infer lineage from the ordinal.
+	class := journal.AttemptClass(os.Getenv(dispatcher.EnvAttemptClass))
 	names := make([]string, 0, len(streams))
 	for name := range streams {
 		names = append(names, name)
@@ -925,6 +927,7 @@ func recordStageArtifactsTyped(
 			Artifact: &livejournal.ArtifactOp{
 				Stage:   stage,
 				Attempt: attempt,
+				Class:   class,
 				Name:    stage + "/" + name,
 				Data:    data,
 			},
@@ -959,6 +962,7 @@ func recordStageArtifactsTyped(
 			Artifact: &livejournal.ArtifactOp{
 				Stage:   stage,
 				Attempt: attempt,
+				Class:   class,
 				Name:    stage + "/" + blobWriteThroughFailureArtifact,
 				Data:    []byte(body),
 			},

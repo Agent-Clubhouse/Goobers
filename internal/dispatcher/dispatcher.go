@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // Defaults for Config fields left zero. Each is a named constant so a
@@ -280,6 +281,9 @@ type Attempt struct {
 	Workflow string
 	Stage    string
 	Number   int
+	// Class is the driver-supplied retry lineage; empty identifies an initial
+	// or legacy attempt. The pod ordinal cannot determine this class.
+	Class journal.AttemptClass
 	// LedgerTouching marks a stage that mutates instance-ledger state
 	// (claims, close-out). Such a stage NEVER places on Windows
 	// (architecture §6/§11.7) — the solver refuses it upstream and the
