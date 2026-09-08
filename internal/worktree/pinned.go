@@ -102,7 +102,14 @@ func (l *PinnedLease) Release() error {
 		return nil
 	}
 	var err error
-	if l.record != "" {
+	if l.Worktree != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		err = l.Worktree.manager.handoffPinnedState(ctx, l.Worktree.key, l.Worktree.RunID)
+		cancel()
+	}
+	// A failed final handoff leaves the lease record in place. Another run
+	// cannot acquire and reset this state until explicit recovery succeeds.
+	if l.record != "" && err == nil {
 		err = os.WriteFile(l.record, nil, 0o644)
 	}
 	err = errors.Join(err, l.handle.Release())
@@ -252,7 +259,7 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 		return nil, fmt.Errorf("worktree: persist pinned lease: %w", err)
 	}
 
-	wt, err := m.preparePinned(ctx, key, opts)
+	wt, err := m.preparePinnedWithCustody(ctx, key, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -314,6 +321,9 @@ func (m *Manager) ResetPinned(ctx context.Context, opts PinnedResetOptions) (str
 	if err := m.pinnedProcessKiller(pinDir); err != nil {
 		return "", fmt.Errorf("worktree: terminate pinned workspace processes: %w", err)
 	}
+	if err := m.handoffPinnedState(ctx, key, ""); err != nil {
+		return "", err
+	}
 	if err := os.RemoveAll(pinDir); err != nil {
 		return "", fmt.Errorf("worktree: remove pinned workspace: %w", err)
 	}
@@ -325,7 +335,7 @@ func (m *Manager) ResetPinned(ctx context.Context, opts PinnedResetOptions) (str
 			return "", fmt.Errorf("worktree: clear pinned reset state: %w", err)
 		}
 	}
-	workspace, err := m.preparePinned(ctx, key, PinnedOptions{
+	workspace, err := m.preparePinnedWithCustody(ctx, key, PinnedOptions{
 		RepoURL: opts.RepoURL,
 		RunID:   "workspace-reset",
 		BaseRef: opts.BaseRef,
@@ -521,6 +531,9 @@ func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions
 	}
 	if opts.BaseRef == "" || opts.Branch == "" {
 		return fmt.Errorf("worktree: pinned stage BaseRef and Branch are required")
+	}
+	if err := wt.manager.handoffPinnedState(ctx, wt.key, wt.RunID); err != nil {
+		return err
 	}
 	repoDir := filepath.Join(wt.manager.pinnedRoot, wt.key, "repo.git")
 	refspecs := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
