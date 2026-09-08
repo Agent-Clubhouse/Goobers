@@ -493,6 +493,7 @@ func init() {
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).
 			withExamples("goobers reset-rate-limit"),
 		command("recovery-restore", apicontract.ActionMaintenance, runRecoveryRestore).
+			withSynopsis(synopsisByID["recovery-restore"]).
 			withHelp("restore retained implementation onto current main", recoveryRestoreHelp).
 			withExamples("goobers recovery-restore --record ./retained/record.json --repository ./checkout --branch recovered-work ./instance"),
 		groupCommand(

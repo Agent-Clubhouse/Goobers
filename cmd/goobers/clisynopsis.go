@@ -66,6 +66,7 @@ var synopsisByID = map[string]string{
 	"explain":                "  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema\n",
 	"reset-rate-limit":       "  goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/\n",
 	"workspace":              "  goobers workspace reset <repo> [path]  explicitly re-materialize a pinned workspace\n",
+	"recovery-restore":       "  goobers recovery-restore --record <record.json> --repository <checkout> --branch <new-branch> [instance]  restore retained implementation\n",
 	"blocked list":           "  goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)\n",
 	"blocked clear":          "  goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock\n",
 	"claims list":            "  goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]\n                                print current claim leases, optionally only expired leases\n",

@@ -148,6 +148,7 @@ Advanced operator commands:
   portal-extension  install, inspect, or update the user-scoped Goobers Portal canvas extension bundled with this binary
   preflight         check WSL full-isolation readiness and optionally hand off a command
   queue-explain     explain historical PR queue eligibility and claim observations
+  recovery-restore  restore retained implementation onto current main
   rerun-stage       rerun a stage with a recorded instruction addendum
   reset-rate-limit  clear the hourly run-rate budget without deleting runs/
   roots decommission mark a stopped instance root as historical
@@ -1973,6 +1974,15 @@ head, apply goobers:merge-demoted so the election crowns a sibling
 instead and the cluster drains around the stuck PR. Runs on
 merge-gate's fail branch. Exit codes: 0 = recorded (or nothing to
 do), 1 = business error, 2 = usage/IO error.
+
+### recovery-restore
+Usage: goobers recovery-restore --record <record.json> --repository <checkout> --branch <new-branch> [instance]
+
+Restore a retained implementation archive onto freshly fetched main from
+the matching configured repository. The archive must be snapshot.bundle
+beside record.json. The destination checkout and index remain unchanged;
+the new local branch must not exist. Expired records and runtime asset
+changes are refused. This does not push, open a PR, or abandon recovery.
 
 ### remediation-checkpoint
 Usage: goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]] [path]

@@ -362,6 +362,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Gaggle namespace"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow that evaluated the queue"},
 	},
+	"recovery-restore": {
+		{name: "record", takesArg: true, desc: "Published recovery record"},
+		{name: "repository", takesArg: true, desc: "Destination Git repository"},
+		{name: "branch", takesArg: true, desc: "New local operator branch"},
+	},
 	"stats": {
 		{name: "since", takesArg: true, desc: "Only include activity from the preceding duration"},
 		{name: "json", desc: "Emit JSON"},
