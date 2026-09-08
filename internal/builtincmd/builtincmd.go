@@ -79,6 +79,8 @@ var names = []string{
 	"reconcile-branches",
 	"reconcile-post-merge",
 	"record-merge-refusal",
+	"recovery-restore",
+	"recovery-resume",
 	"remediation-checkpoint",
 	"report-pr-status",
 	"resolve-review-threads",
