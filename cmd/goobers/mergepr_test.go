@@ -170,6 +170,13 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		if strings.Contains(body.Query, "enqueuePullRequest(input:") {
 			st.enqueueCalls++
 			st.enqueueVars = body.Variables
+			if st.beforeMergeReply != nil {
+				if err := st.beforeMergeReply(); err != nil {
+					t.Errorf("prepare enqueue reply: %v", err)
+					http.Error(w, "fixture failed", http.StatusInternalServerError)
+					return
+				}
+			}
 			writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{
 				"enqueuePullRequest": map[string]interface{}{
 					"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "enqueuedAt": "2026-09-01T12:00:00Z", "state": "QUEUED", "position": 1},

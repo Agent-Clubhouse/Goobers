@@ -720,16 +720,16 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 	if intent != nil {
 		admission.IntentID = intent.ID
 	}
-	p.recordEnqueue(ctx, req.Repository, req.PullID, admission)
 	message := fmt.Sprintf("pull request enqueued (state %s, position %d)", entry.State, entry.Position)
-	return EnqueuePullRequestResult{Number: number, Message: message, QueueEntryID: entry.ID}, nil
+	result := EnqueuePullRequestResult{Number: number, Message: message, QueueEntryID: entry.ID}
+	return result, p.recordEnqueue(ctx, req.Repository, req.PullID, admission)
 }
 
 // recordEnqueue journals the enqueue as a mutation of the pull request's
 // external ref, so a queued-but-not-yet-merged pull request is as visible
 // in the run journal as a merged one.
-func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string, admission *QueueAdmission) {
-	p.recordExternalRef(ctx, ExternalRef{
+func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string, admission *QueueAdmission) error {
+	return recordLandingReceipt(ctx, p.recorder, ExternalRef{
 		QueueAdmission: admission,
 		Provider:       ProviderGitHub,
 		Ref:            issueRef(repo, pullID),

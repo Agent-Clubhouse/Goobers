@@ -12,6 +12,7 @@ package mergepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/goobers/goobers/providers"
@@ -96,14 +97,17 @@ func (enqueueLander) Land(ctx context.Context, provider *providers.Dispatcher, r
 		MergeMethod: req.MergeMethod,
 	})
 	if err != nil {
-		return Result{}, err
+		var receiptErr *providers.LandingReceiptError
+		if !errors.As(err, &receiptErr) {
+			return Result{}, err
+		}
 	}
 	if res.Merged {
 		// The lookup observed an already-merged PR. This terminal outcome
 		// is not evidence that this caller enqueued or merged it.
-		return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, nil
+		return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, err
 	}
-	return Result{Outcome: OutcomeEnqueued}, nil
+	return Result{Outcome: OutcomeEnqueued}, err
 }
 
 // ForPolicy returns the Lander for policy. An empty policy is treated as

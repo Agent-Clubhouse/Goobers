@@ -176,9 +176,11 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	// ADO has no queue-entry ID. Record the acknowledged auto-complete
 	// mutation, but do not invent a GitHub-style admission or merge receipt.
 	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == detail.CreatedBy.ID {
-		p.mutationRecorder.RecordExternalRef(ctx, ExternalRef{
+		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
 			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "enqueue", LandingIntent: intent,
-		})
+		}); err != nil {
+			return EnqueuePullRequestResult{Number: out.PullRequestID, Merged: strings.EqualFold(out.Status, "completed"), MergeSHA: out.LastMergeCommit.CommitID}, err
+		}
 	}
 	if strings.EqualFold(out.Status, "completed") {
 		return EnqueuePullRequestResult{Number: out.PullRequestID, Merged: true, MergeSHA: out.LastMergeCommit.CommitID}, nil
@@ -327,10 +329,12 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 		if intent != nil {
 			confirmation.IntentID = intent.ID
 		}
-		p.mutationRecorder.RecordExternalRef(ctx, ExternalRef{
+		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
 			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "merge",
 			MergeConfirmation: confirmation,
-		})
+		}); err != nil {
+			return MergePullRequestResult{Number: final.PullRequestID, Merged: true, MergeSHA: final.LastMergeCommit.CommitID}, err
+		}
 	}
 	return MergePullRequestResult{Number: final.PullRequestID, Merged: true, MergeSHA: final.LastMergeCommit.CommitID}, nil
 }

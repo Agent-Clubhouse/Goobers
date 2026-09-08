@@ -75,3 +75,32 @@ func TestLandingReceiptSidecarReturnsFailureAndFlushesCancelledContext(t *testin
 		t.Fatal("receipt persistence failure swallowed")
 	}
 }
+
+func TestMergePRReceiptFailurePreservesAcceptedQueue(t *testing.T) {
+	st := &mergePRServerState{checkState: "success", headSHA: "head123", baseSHA: "base456", mergeQueueRules: true}
+	server := newMergePRServer(t, "your-org", "your-repo", st)
+	root, dir := mergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
+	})
+	st.beforeMergeReply = func() error {
+		path := filepath.Join(dir, mutationsSidecarFile)
+		if err := os.Rename(path, path+".saved"); err != nil {
+			return err
+		}
+		return os.Mkdir(path, 0700)
+	}
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	if code != 1 || !strings.Contains(stderr, "durable receipt persistence failed") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if st.enqueueCalls != 1 || st.mergeCalls != 0 || st.deleteCalls != 0 {
+		t.Fatalf("enqueue=%d merge=%d delete=%d", st.enqueueCalls, st.mergeCalls, st.deleteCalls)
+	}
+	result := readMergeResult(t, dir)
+	if result["merged"] != false || result["landOutcome"] != "enqueued" || result[executor.OutputErrorCode] != "landing_receipt_persistence_failed" || result[executor.OutputErrorRetryable] != false {
+		t.Fatalf("queue receipt failure lost acceptance or promoted merge: %+v", result)
+	}
+	if _, exists := result["mergeSha"]; exists {
+		t.Fatalf("invented merge SHA: %+v", result)
+	}
+}
