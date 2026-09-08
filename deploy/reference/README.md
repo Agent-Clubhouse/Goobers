@@ -140,6 +140,11 @@ scale-to-zero default.
 
 ### Mode-3 authority and storage prerequisites
 
+The opt-in [authenticated topology preparer](authenticated/README.md) produces a
+self-contained single-gaggle deployment with separate writable state, shared blobs,
+immutable config rollouts, authenticated endpoints, and explicit network grants.
+It requires validated adopter configuration and the documented external inputs.
+
 A configured deployment needs all of these inputs before enabling stage dispatch:
 
 - Run the daemon as the sole owner of its writable instance/journal volume, in
