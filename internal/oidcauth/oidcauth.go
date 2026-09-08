@@ -41,6 +41,12 @@ const (
 	// daemon into an issuer-hammering loop. Key rotation still converges: the
 	// first token signed by a fresh key triggers one refetch.
 	defaultRefreshInterval = time.Minute
+	// Bound trust in cached keys even when every caller uses a known kid.
+	// Revoking a signing key at the issuer must eventually revoke it here.
+	defaultKeyCacheTTL = 5 * time.Minute
+	// Refresh serves every caller, so one disconnected unauthenticated
+	// request cannot cancel it and consume the shared refresh throttle.
+	defaultFetchTimeout = 10 * time.Second
 	// fetchLimit bounds discovery and JWKS response bodies.
 	fetchLimit = 1 << 20
 )
@@ -88,6 +94,8 @@ type Authenticator struct {
 	// re-fetched by every unknown-kid request.
 	lastAttempt     time.Time
 	refreshInterval time.Duration
+	keysFetchedAt   time.Time
+	keyCacheTTL     time.Duration
 	// refreshDone is non-nil while one goroutine fetches the JWKS outside
 	// the lock; concurrent unknown-kid requests wait on it instead of
 	// stacking fetches.
@@ -135,12 +143,28 @@ func New(cfg Config) (*Authenticator, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
+	// Preserve caller transport/timeouts and redirect policy without mutating
+	// a shared client. Every redirect must keep discovery/key fetches secure;
+	// checking only the advertised jwks_uri misses an HTTPS -> HTTP redirect.
+	secureClient := *client
+	secureClient.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) > 0 && strings.EqualFold(via[len(via)-1].URL.Scheme, "https") && !strings.EqualFold(request.URL.Scheme, "https") {
+			return errors.New("OIDC discovery and JWKS redirects must not downgrade https")
+		}
+		if client.CheckRedirect != nil {
+			return client.CheckRedirect(request, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
 	return &Authenticator{
 		issuer:     cfg.Issuer,
 		audience:   cfg.Audience,
 		rolesClaim: rolesClaim,
 		roles:      roles,
-		client:     client,
+		client:     &secureClient,
 		parser: jwt.NewParser(
 			jwt.WithValidMethods(signingAlgorithms),
 			jwt.WithIssuer(cfg.Issuer),
@@ -150,6 +174,7 @@ func New(cfg Config) (*Authenticator, error) {
 		),
 		keys:            make(map[string]*rsa.PublicKey),
 		refreshInterval: defaultRefreshInterval,
+		keyCacheTTL:     defaultKeyCacheTTL,
 	}, nil
 }
 
@@ -235,14 +260,15 @@ func (a *Authenticator) keyFunc(ctx context.Context) jwt.Keyfunc {
 }
 
 // signingKey resolves kid against the cached JWKS, refetching at most once
-// per refreshInterval when the kid is unknown (key rotation). The throttle
+// per refreshInterval when the kid is unknown or the cache expires. The throttle
 // counts attempts rather than successes, and the network fetch runs outside
-// a.mu — cached-kid authentications never wait on issuer I/O, so a slow or
-// down issuer cannot stall requests whose keys are already known.
+// a.mu — fresh cached-key authentications never wait on issuer I/O, so a slow or
+// down issuer cannot stall requests whose keys are still fresh. Expired keys
+// fail closed if refresh fails; revoked keys cannot stay trusted indefinitely.
 func (a *Authenticator) signingKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	a.mu.Lock()
 	for {
-		if key, ok := a.keys[kid]; ok {
+		if key, ok := a.keys[kid]; ok && time.Since(a.keysFetchedAt) < a.keyCacheTTL {
 			a.mu.Unlock()
 			return key, nil
 		}
@@ -270,13 +296,16 @@ func (a *Authenticator) signingKey(ctx context.Context, kid string) (*rsa.Public
 	jwksURI := a.jwksURI
 	a.mu.Unlock()
 
-	keys, resolvedURI, err := a.fetchKeys(ctx, jwksURI)
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultFetchTimeout)
+	keys, resolvedURI, err := a.fetchKeys(refreshCtx, jwksURI)
+	cancel()
 
 	a.mu.Lock()
 	a.refreshDone = nil
 	if err == nil {
 		a.jwksURI = resolvedURI
 		a.keys = keys
+		a.keysFetchedAt = time.Now()
 	}
 	key, ok := a.keys[kid]
 	a.mu.Unlock()

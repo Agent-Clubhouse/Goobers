@@ -849,7 +849,11 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err := apicontract.ValidateRoutes(expected, router.routes); err != nil {
 		return nil, fmt.Errorf("register HTTP API routes: %w", err)
 	}
-	_, isNull := config.authenticator.(NullAuthenticator)
+	isNull := false
+	switch config.authenticator.(type) {
+	case NullAuthenticator, *NullAuthenticator:
+		isNull = true
+	}
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
