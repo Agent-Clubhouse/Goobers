@@ -2,6 +2,31 @@ package gate
 
 import apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
+func (e *Evaluator) setInterruptedVerdict(g apiv1.Gate, result *Result) error {
+	if !StructuredMechanicalEscalation(g) {
+		return nil
+	}
+	var prior *apiv1.Verdict
+	if e.RecoveryVerdict != nil {
+		var err error
+		prior, err = e.RecoveryVerdict(g.Name)
+		if err != nil {
+			return err
+		}
+	}
+	verdict := apiv1.Verdict{}
+	if prior != nil {
+		verdict = *prior
+	}
+	if verdict.Rationale == "" {
+		verdict.Rationale = "The interrupted review exhausted its repass budget; no prior reviewer rationale was recorded."
+	}
+	verdict = MechanicalVerdict(verdict, apiv1.VerdictReasonRepassBudget, true)
+	result.Outcome = string(verdict.Decision)
+	result.Verdict = &verdict
+	return nil
+}
+
 // StructuredMechanicalEscalation reports whether this gate opts into the
 // expanded disposition vocabulary and supplies a separate mechanical route.
 // Legacy gates retain their existing synthesized verdicts.

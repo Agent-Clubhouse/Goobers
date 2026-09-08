@@ -2,11 +2,38 @@ package gate
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
+
+func TestInterruptedMechanicalRecoveryPreservesPriorReview(t *testing.T) {
+	g := fixtureSpec().Gates[1]
+	g.Branches["defer"], g.Branches["escalate"] = "park", "mechanical-stop"
+	prior := apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Rationale: "  Original rationale.\n\nUnabridged evidence.  ", Findings: []apiv1.Finding{{Severity: apiv1.SeverityError, Message: "Original finding."}}}
+	ev := &Evaluator{Journal: newTestJournal(t), MaxRepasses: 1, Attempts: map[string]int{g.Name: 2}, RecoveryVerdict: func(string) (*apiv1.Verdict, error) { return &prior, nil }}
+	got, recovered, err := ev.RecoverInterrupted(g, "sha256:aaaa")
+	if err != nil || !recovered {
+		t.Fatalf("recovered=%v err=%v", recovered, err)
+	}
+	if got.Outcome != "escalate" || got.Target != "mechanical-stop" || got.VerdictArtifact == nil || got.Verdict == nil {
+		t.Fatalf("lost mechanical recovery: %+v", got)
+	}
+	if got.Verdict.ReasonCode != apiv1.VerdictReasonRepassBudget || got.Verdict.Rationale != prior.Rationale || !reflect.DeepEqual(got.Verdict.Findings, prior.Findings) {
+		t.Fatalf("lost review evidence: %+v", got.Verdict)
+	}
+	if prior.Decision != apiv1.VerdictNeedsChanges {
+		t.Fatal("mutated prior verdict")
+	}
+	broken := errors.New("unreadable verdict")
+	ev.RecoveryVerdict = func(string) (*apiv1.Verdict, error) { return nil, broken }
+	if _, _, err := ev.RecoverInterrupted(g, ""); !errors.Is(err, broken) {
+		t.Fatalf("lost evidence silently accepted: %v", err)
+	}
+}
 
 func TestBudgetMechanicalEscalationPreservesReviewerRationale(t *testing.T) {
 	g := fixtureSpec().Gates[1]

@@ -217,6 +217,9 @@ type Evaluator struct {
 	// Journal records gate verdicts. Optional — nil disables journaling
 	// (e.g. in unit tests that only care about branch resolution).
 	Journal Journal
+	// RecoveryVerdict resolves the latest durable review in this execution
+	// scope. Called only for an opted-in interrupted-budget recovery.
+	RecoveryVerdict func(gateName string) (*apiv1.Verdict, error)
 	// MaxRepasses is the inherited run budget. Gate.MaxRepasses takes precedence.
 	MaxRepasses int
 
@@ -596,6 +599,9 @@ func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result,
 		Escalated:   true,
 		Interrupted: true,
 		Reason:      ReasonRepassBudgetExhausted,
+	}
+	if err := e.setInterruptedVerdict(g, &r); err != nil {
+		return Result{}, true, fmt.Errorf("gate %q: recover prior review: %w", g.Name, err)
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
