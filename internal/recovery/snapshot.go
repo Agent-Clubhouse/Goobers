@@ -82,12 +82,16 @@ func CaptureSnapshot(ctx context.Context, repository, runID string, identityTime
 	}
 	var snapshot boundedRefOutput
 	date := identityTime.UTC().Format(time.RFC3339)
+	// Git's author/committer dates retain only whole seconds. Bind the full
+	// durable capture window in the message too, or two distinct windows can
+	// share a snapshot ref while their immutable retention metadata conflicts.
+	message := "Retain recovery state for " + runID + "\n\nCapture identity: " + identityTime.UTC().Format(time.RFC3339Nano)
 	environment = append(environment,
 		"GIT_AUTHOR_NAME=Goobers Recovery", "GIT_AUTHOR_EMAIL=recovery@goobers.invalid",
 		"GIT_COMMITTER_NAME=Goobers Recovery", "GIT_COMMITTER_EMAIL=recovery@goobers.invalid",
 		"GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
 	if err := recoveryGitWithEnv(ctx, repository, &snapshot, environment,
-		"-c", "commit.gpgsign=false", "commit-tree", treeID, "-p", parent, "-m", "Retain recovery state for "+runID); err != nil {
+		"-c", "commit.gpgsign=false", "commit-tree", treeID, "-p", parent, "-m", message); err != nil {
 		return "", fmt.Errorf("write recovery snapshot commit: %w", err)
 	}
 	id := strings.TrimSpace(snapshot.String())
