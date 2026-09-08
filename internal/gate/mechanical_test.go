@@ -35,6 +35,26 @@ func TestInterruptedMechanicalRecoveryPreservesPriorReview(t *testing.T) {
 	}
 }
 
+func TestUninspectedEvidenceUsesMechanicalRouteAndKeepsPriorReview(t *testing.T) {
+	g := fixtureSpec().Gates[1]
+	g.Branches["defer"], g.Branches["escalate"] = "park", "mechanical-stop"
+	prior := apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Rationale: "  Original rationale.\n\nFull detail.  ", Findings: []apiv1.Finding{{Severity: apiv1.SeverityError, Message: "Original finding."}}}
+	ev := &Evaluator{Journal: newTestJournal(t), RecoveryVerdict: func(string) (*apiv1.Verdict, error) { return &prior, nil }}
+	got, err := ev.EscalateUninspectedRemediation(g, &apiv1.ErrorInfo{Message: "required log was never read"}, 3, "sha256:aaaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != "escalate" || got.Target != "mechanical-stop" || got.VerdictArtifact == nil || got.Verdict == nil {
+		t.Fatalf("wrong route: %+v", got)
+	}
+	if got.Verdict.ReasonCode != apiv1.VerdictReasonEvidenceNotInspected || !strings.Contains(got.Verdict.Rationale, prior.Rationale) || !strings.Contains(got.Verdict.Rationale, "required log was never read") || !reflect.DeepEqual(got.Verdict.Findings, prior.Findings) {
+		t.Fatalf("lost evidence: %+v", got.Verdict)
+	}
+	if prior.Decision != apiv1.VerdictNeedsChanges {
+		t.Fatal("mutated prior review")
+	}
+}
+
 func TestBudgetMechanicalEscalationPreservesReviewerRationale(t *testing.T) {
 	g := fixtureSpec().Gates[1]
 	g.Branches["defer"], g.Branches["escalate"] = "park", "mechanical-stop"

@@ -371,6 +371,7 @@ const (
 	VerdictReasonUnchangedRepass        VerdictReasonCode = "unchanged-repass"
 	VerdictReasonRepassBudget           VerdictReasonCode = "repass-budget-exhausted"
 	VerdictReasonFindingOscillation     VerdictReasonCode = "finding-set-oscillation"
+	VerdictReasonEvidenceNotInspected   VerdictReasonCode = "remediation-evidence-not-inspected"
 )
 
 // Severity ranks a finding.

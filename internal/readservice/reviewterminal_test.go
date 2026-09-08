@@ -28,6 +28,7 @@ func TestTerminalReviewPreservesDispositionAndEvidence(t *testing.T) {
 			{apiv1.VerdictEscalate, apiv1.VerdictReasonUnchangedRepass},
 			{apiv1.VerdictEscalate, apiv1.VerdictReasonRepassBudget},
 			{apiv1.VerdictEscalate, apiv1.VerdictReasonFindingOscillation},
+			{apiv1.VerdictEscalate, apiv1.VerdictReasonEvidenceNotInspected},
 		} {
 			t.Run(string(phase)+"/"+string(disposition.decision)+"/"+string(disposition.reason), func(t *testing.T) {
 				service, layout, machine := fixtureService(t)

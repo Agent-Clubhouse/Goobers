@@ -2,6 +2,28 @@ package gate
 
 import apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
+func (e *Evaluator) setEvidenceInspectionVerdict(g apiv1.Gate, result *Result) error {
+	if !StructuredMechanicalEscalation(g) {
+		return nil
+	}
+	verdict := *result.Verdict
+	if e.RecoveryVerdict != nil {
+		prior, err := e.RecoveryVerdict(g.Name)
+		if err != nil {
+			return err
+		}
+		if prior != nil {
+			mechanicalReason := verdict.Rationale
+			verdict = *prior
+			verdict.Rationale += "\n\nMechanical stop: " + mechanicalReason
+		}
+	}
+	verdict = MechanicalVerdict(verdict, apiv1.VerdictReasonEvidenceNotInspected, true)
+	result.Verdict = &verdict
+	result.Outcome = string(verdict.Decision)
+	return nil
+}
+
 func (e *Evaluator) setInterruptedVerdict(g apiv1.Gate, result *Result) error {
 	if !StructuredMechanicalEscalation(g) {
 		return nil

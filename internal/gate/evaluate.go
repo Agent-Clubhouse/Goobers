@@ -651,6 +651,9 @@ func (e *Evaluator) EscalateUninspectedRemediation(g apiv1.Gate, cause *apiv1.Er
 			Rationale: rationale,
 		},
 	}
+	if err := e.setEvidenceInspectionVerdict(g, &r); err != nil {
+		return Result{}, fmt.Errorf("gate %q: recover uninspected remediation evidence: %w", g.Name, err)
+	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal uninspected remediation escalation: %w", g.Name, err)

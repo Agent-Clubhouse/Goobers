@@ -11,7 +11,7 @@ summaries expose `reasonCode`, `findings`, and `legacyFailAmbiguous`.
 | `needs-changes` | Repairable implementation findings | None |
 | `fail` | Terminal implementation or policy rejection | `implementation-rejected`, `policy-rejected` |
 | `defer` | Withhold landing authority for sibling ordering | `ordering`, `no-lander` |
-| `escalate` | Mechanical stop, not substantive rejection | `empty-diff`, `unchanged-repass`, `repass-budget-exhausted`, `finding-set-oscillation` |
+| `escalate` | Mechanical stop, not substantive rejection | `empty-diff`, `unchanged-repass`, `repass-budget-exhausted`, `finding-set-oscillation`, `remediation-evidence-not-inspected` |
 
 Typed rejection, deferral, and escalation require a non-empty rationale.
 Deferrals and mechanical stops cannot claim `elected: true`.

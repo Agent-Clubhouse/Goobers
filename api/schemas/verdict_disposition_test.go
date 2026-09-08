@@ -28,6 +28,8 @@ func TestVerdictDispositionContract(t *testing.T) {
 		valid     bool
 	}{
 		{"legacy fail", `{"decision":"fail"}`, true},
+		{"uninspected evidence", `{"decision":"escalate","reasonCode":"remediation-evidence-not-inspected","rationale":"Required evidence was not read."}`, true},
+		{"uninspected evidence is not rejection", `{"decision":"fail","reasonCode":"remediation-evidence-not-inspected","rationale":"Required evidence was not read."}`, false},
 		{"mechanical stop", `{"decision":"escalate","reasonCode":"empty-diff","rationale":"No diff to review."}`, true},
 		{"mechanical stop requires reason", `{"decision":"escalate","rationale":"Stopped."}`, false},
 		{"mechanical stop cannot reject", `{"decision":"escalate","reasonCode":"implementation-rejected","rationale":"Stopped."}`, false},
