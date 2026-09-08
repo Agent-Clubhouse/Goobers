@@ -17,6 +17,17 @@
     }
   ],
   "properties": {
+    "cost": {
+      "type": "object",
+      "description": "Instance default for external cost publication; local usage accounting remains active.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": ["boolean", "null"],
+          "description": "Enables provider-visible cost receipts and summaries by default. Omitted or null means true; a gaggle may override this setting."
+        }
+      }
+    },
     "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this instance file." },
     "kind": { "const": "Instance", "description": "Definition kind; always Instance." },
     "schemaVersion": {

@@ -168,7 +168,9 @@ func stageAttribution(root string) (providers.Attribution, bool) {
 	// journaled completion events. Snapshot those durable events here so every
 	// existing human-readable status comment can carry the same run's
 	// machine-readable cost receipt without consulting telemetry.db.
-	attribution.Cost = stageCostReceipt(root, runID)
+	if costPublicationAllowed(root, gaggle, providers.RepositoryRef{}, os.Stderr) {
+		attribution.Cost = stageCostReceipt(root, runID)
+	}
 	return attribution, true
 }
 

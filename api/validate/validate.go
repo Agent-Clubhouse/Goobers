@@ -1989,6 +1989,7 @@ func repoIdentity(ref apiv1.RepoRef) string {
 // and controls and reports feature support only when an interpreter exists.
 // Its result gates the deeper semantic checks, avoiding version-error cascades.
 func (ix *index) checkWorkflowVersionAndReferences(r *Report, w apiv1.Workflow, file string, allowPreview bool) bool {
+	checkArtifactManifestInputs(r, w, file)
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
 		ix.referenceNotFound(r, errorWorkflowGaggleReference, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 			w.Spec.Gaggle, w.Spec.Gaggle)

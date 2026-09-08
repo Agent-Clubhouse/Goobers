@@ -15,6 +15,7 @@ gaggle.spec.backlog.provider.gitea                       2.0          ga        
 gaggle.spec.backlog.provider.github                      2.0          ga               supported        dev
 gaggle.spec.branchNamespace                              2.0          ga               supported        dev
 gaggle.spec.ciCommand                                    2.0          ga               supported        dev
+gaggle.spec.cost.enabled                                 2.0          ga               supported        v0.4.0
 gaggle.spec.displayName                                  2.0          ga               supported        dev
 gaggle.spec.isolation.identityRef                        2.0          ga               supported        dev
 gaggle.spec.isolation.namespace                          2.0          ga               supported        dev
@@ -197,6 +198,7 @@ gaggle.spec.backlog.provider.gitea                       3.0          ga        
 gaggle.spec.backlog.provider.github                      3.0          ga               preview          dev
 gaggle.spec.branchNamespace                              3.0          ga               preview          dev
 gaggle.spec.ciCommand                                    3.0          ga               preview          dev
+gaggle.spec.cost.enabled                                 3.0          ga               preview          v0.4.0
 gaggle.spec.displayName                                  3.0          ga               preview          dev
 gaggle.spec.isolation.identityRef                        3.0          ga               preview          dev
 gaggle.spec.isolation.namespace                          3.0          ga               preview          dev
@@ -382,4 +384,4 @@ workflow.terminal.abort                                  3.0          ga        
 workflow.terminal.complete                               3.0          ga               preview          dev
 workflow.terminal.escalate                               3.0          ga               preview          dev
 
-382 feature/version row(s)
+384 feature/version row(s)

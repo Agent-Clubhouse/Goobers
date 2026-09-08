@@ -986,9 +986,9 @@ func readMutationSidecar(workspace string) (facts []mutationFact, issues []strin
 	return facts, issues
 }
 
-// EvaluateAutomated runs an automated gate check. Automated gates are pure
-// functions over env.Inputs and never receive a workspace, matching the local
-// runner (#112) — no provisioning here.
+// EvaluateAutomated runs an automated gate check. Scalar checks remain pure;
+// artifact-aware checks use runner-bound journal readers. Neither kind receives
+// a workspace, matching the local runner (#112) — no provisioning here.
 func (a *Activities) EvaluateAutomated(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
 	if a.Auto == nil {
 		return "", classifySeamError(ErrNotConfigured)

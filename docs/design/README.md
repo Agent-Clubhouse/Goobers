@@ -42,7 +42,7 @@ word — read the page, not this table, before depending on it.
 | [Daemon identity on multi-owner instances](daemon-identity-multi-owner.md) | `implemented` | — | — | #3414, #3415, #4527 | — | — | — |
 | [Design: Dashboard / Portal - calm operations workbench over the daemon API](dashboard.md) | `approved` | — | — | — | — | — | — |
 | [Design: Decomposition workflow](decomposition-workflow.md) | `implemented` | — | — | #318, #415, #419, #489 | — | — | 09db115bb (2026-09-06) |
-| [Design: Deep-investigation workflow](deep-investigation-workflow.md) | `approved` | — | — | — | — | — | — |
+| [Design: Deep-investigation workflow](deep-investigation-workflow.md) | `approved` | — | — | #1484 | #1482, #1483 | — | a4696d7c5 (2026-09-07) |
 | [Distributed state and coordination](distributed-state-and-coordination.md) | `approved` | — | — | — | — | — | — |
 | [DSL 3.0](dsl-3.0.md) | `approved` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: DSL Version Lifecycle & Multi-Version Runtime](dsl-version-lifecycle.md) | `implemented` | — | — | #860, #861, #862, #863, #864, #865, #866, #867, #868, #869 | — | — | — |

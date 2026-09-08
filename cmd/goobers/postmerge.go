@@ -389,7 +389,7 @@ func runPostMergeCore(root string, repo providers.RepositoryRef, transport postM
 func performPostMergeADOWithPRComments(ctx context.Context, closer adoWorkItemCloser, prComments adoPostMergePRComments, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
 	issueIDs := closingIssueNumbers(poll.Body)
 	var report postMergeCostReport
-	if prComments != nil {
+	if prComments != nil && costPublicationAllowed(root, providerGaggle(), repo, stderr) {
 		report = collectADOPostMergeCostReport(ctx, closer, prComments, backlogRepo, repo, pullNumber, issueIDs, stderr)
 	}
 	comments := make(map[string]string, len(issueIDs))
@@ -489,7 +489,10 @@ func performPostMerge(ctx context.Context, provider, issuesProvider remediationP
 	errs = append(errs, undemoteErrs...)
 
 	issueIDs := closingIssueNumbers(poll.Body)
-	report := collectGitHubPostMergeCostReport(ctx, provider, issuesProvider, repo, pullNumber, issueIDs, stderr)
+	var report postMergeCostReport
+	if costPublicationAllowed(root, providerGaggle(), repo, stderr) {
+		report = collectGitHubPostMergeCostReport(ctx, provider, issuesProvider, repo, pullNumber, issueIDs, stderr)
+	}
 	comments := make(map[string]string, len(issueIDs))
 	for _, issueID := range issueIDs {
 		comments[issueID] = mergedPullRequestComment(pullNumber, report, issueID)
