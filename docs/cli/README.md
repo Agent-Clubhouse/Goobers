@@ -4232,6 +4232,12 @@ from their last durable checkpoints on the next startup before
 exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
 2 = usage/IO error.
 
+After readiness and every 15 minutes, the daemon scans a bounded seven-day
+window of recently merged GitHub Goobers pull requests and publishes
+any missing or updated cost summary. This is a workflow-independent
+backstop; the normal post-merge stage still publishes synchronously when
+Goobers merges.
+
 Legacy spans-only run directories are reported as cleanup candidates
 and preserved by default. --cleanup-spans-only-runs deletes them at
 startup after reporting each candidate.
