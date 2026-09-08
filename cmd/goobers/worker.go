@@ -156,6 +156,20 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --config-history-depth must not be negative\n")
 		return 2
 	}
+	// Validate mode-3 authority before starting background work or printing
+	// endpoints. Invalid URLs may contain credentials and must never be echoed.
+	if *dispatchNamespace != "" && *instanceRoot != "" {
+		cfg, err := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
+		if err != nil {
+			pf(stderr, "error: stage dispatch: load instance config: %v\n", err)
+			return 2
+		}
+		if _, err := validateStageDispatchConfig(cfg, *daemonAPI, os.Getenv("GOOBERS_BLOB_ENDPOINT")); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+	}
+
 	engineConfig, err := resolveEngineConfig(*instanceRoot)
 	if err != nil {
 		pf(stderr, "error: load engine config: %v\n", err)

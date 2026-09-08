@@ -10,8 +10,10 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"k8s.io/client-go/kubernetes"
@@ -94,6 +96,12 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: load instance config: %w", err)
 	}
+	blobEndpoint := os.Getenv("GOOBERS_BLOB_ENDPOINT")
+	signed, err := validateStageDispatchConfig(cfg, daemonAPI, blobEndpoint)
+	if err != nil {
+		return stageDispatch{}, err
+	}
+
 	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {
 		if issues := validationIssueSummary(report); issues != "" {
@@ -128,39 +136,19 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
-	// The dispatcher runs HERE, in the worker — a different process from the
-	// daemon that will receive the surrender. So the pod's bearer must be
-	// verifiable without shared memory: a configured shared key gives
-	// stateless signed tokens (Goobers#3701). Without one, PodToken stays
-	// empty and the pod surrenders unauthenticated, which only works against
-	// a null-auth loopback daemon in the same process.
-	signed, kerr := podTokenMinter(cfg)
-	if kerr != nil {
-		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", kerr)
-	}
-	// Assigned through an explicitly-typed nil interface rather than passing
-	// `signed` straight in. A nil *SignedKey stored in a TokenMinter makes the
-	// interface NON-nil, so the dispatcher's `TokenMinter != nil` guard would
-	// pass and then call Mint on a nil pointer — the no-key posture would panic
-	// instead of dispatching unauthenticated.
-	var minter dispatcher.TokenMinter
-	if signed != nil {
-		minter = signed
-	}
-
 	build := version.Get()
 	d, err := newStageDispatcher(dispatcher.Config{
-		TokenMinter: minter,
-		// The kit writer needs the same signing key's peer facility — the blob
-		// plane — plus the instance config only the worker has. Nil when no
-		// blob endpoint is configured, which makes Dispatch refuse agentic
-		// stages explicitly instead of creating a pod that would find no kit.
-		KitWriter:       agenticKitWriterFor(instanceRoot, seams, os.Getenv("GOOBERS_BLOB_ENDPOINT"), signed),
+		// Validation guarantees a non-nil signer before it enters the interface.
+		TokenMinter: signed,
+		// The kit writer uses the same key and the worker's pinned config
+		// snapshots. A test constructor without seams still refuses agentic
+		// dispatch explicitly instead of creating a pod that would find no kit.
+		KitWriter:       agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
 		Namespace:       namespace,
 		Owner:           owner,
 		EmbeddedCommit:  build.Commit,
 		EmbeddedVersion: build.Version,
-		BlobEndpoint:    os.Getenv("GOOBERS_BLOB_ENDPOINT"),
+		BlobEndpoint:    blobEndpoint,
 		WriteAPIBase:    daemonAPI,
 		// The same operator-declared passthrough list the local executor gets
 		// (runnerwiring_executors.go: shell.ExtraEnvAllowlist), so a stage on a
@@ -181,6 +169,49 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
 	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d}, nil
+}
+
+// validateStageDispatchConfig checks the remote planes before the worker can
+// poll or create pods. Even a scratch deterministic stage must authenticate its
+// surrender; agentic kits and artifact outputs additionally use the blob plane.
+// Keep errors independent of the supplied URL: it may contain a leaked secret.
+func validateStageDispatchConfig(cfg *instance.Config, daemonAPI, blobEndpoint string) (*podauth.SignedKey, error) {
+	for _, endpoint := range []struct{ name, value string }{
+		{"--daemon-api (or GOOBERS_DAEMON_API)", daemonAPI},
+		{"GOOBERS_BLOB_ENDPOINT", blobEndpoint},
+	} {
+		if err := validateStageDispatchEndpoint(endpoint.value); err != nil {
+			return nil, fmt.Errorf("stage dispatch: %s %s", endpoint.name, err)
+		}
+	}
+	signed, err := podTokenMinter(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile: %w", err)
+	}
+	if signed == nil {
+		return nil, fmt.Errorf("stage dispatch: api.podTokenKeyFile is required for authenticated stage surrender")
+	}
+	return signed, nil
+}
+
+func validateStageDispatchEndpoint(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("is required")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" {
+		return fmt.Errorf("must be an absolute HTTP(S) URL")
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.Contains(raw, "#") {
+		return fmt.Errorf("must not contain credentials, a query, or a fragment")
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("must have a valid TCP port")
+		}
+	}
+	return nil
 }
 
 // mergeQueues appends every dispatch queue not already served, preserving

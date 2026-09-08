@@ -127,14 +127,58 @@ scale-to-zero default.
 - **CRDs**: initial CRD install is a cluster-admin action (§1) from the operator release
   you deploy. The committed `config/crd/bases` are generated from `api/v1alpha1`; update
   them with `make manifests`. The merge gate regenerates the CRDs and rejects any diff.
-- **Stubs**: the worker `args` (`goobers worker`, v2-cloud-scale A1.6/#632) are stubbed
-  with CHANGE-ME comments until they land. The daemon API Deployment is explicitly
-  disabled (`replicas: 0`) until its in-cluster listener (#652) lands; enabling the
-  current lock-owning daemon would also contend with the worker for the RWO instance
-  volume. The operator Deployment is disabled the same way (`replicas: 0`):
-  `internal/operator` is quarantined Tier-3 (V2) and the runtime image its reconciler
-  schedules is not published, so applying it as shipped would only produce
-  `ImagePullBackOff` workloads. Per #663 the manifests express the target shape now.
+- **Configuration scaffolding, not a runnable mode-3 installation**: the worker
+  flags are implemented, but its seed only creates empty directories. An adopter
+  must supply `instance.yaml`, the complete config tree, runner inventory, and
+  credentials. The API Deployment remains disabled (`replicas: 0`); its Service
+  consequently has no backend. Off-loopback TLS and signed pod authentication
+  are implemented, but this base does not configure them. The worker also lacks
+  its daemon/blob endpoints and shared signing key. It now refuses this incomplete
+  dispatch configuration at startup, before polling or creating stage pods.
+  The operator Deployment is also disabled (`replicas: 0`); configure and validate
+  its runtime image and adopted topology before enabling it.
+
+### Mode-3 authority and storage prerequisites
+
+A configured deployment needs all of these inputs before enabling stage dispatch:
+
+- Run the daemon as the sole owner of its writable instance/journal volume, in
+  its own Deployment and ServiceAccount. Set `api.listen`, `api.tls.certFile`,
+  `api.tls.keyFile`, and `api.podTokenKeyFile` in its instance configuration.
+  A pod-only listener can use signed pod authentication without a human OIDC
+  provider; enabling human access requires its own supported authentication.
+- Give the worker `--daemon-api` (or `GOOBERS_DAEMON_API`) and
+  `GOOBERS_BLOB_ENDPOINT`, normally both
+  `https://goobers-api.goobers-system.svc:8080`, and the same signing key through
+  its own `api.podTokenKeyFile`. These must be absolute HTTP(S) base URLs without
+  user information, query parameters, or fragments. Startup validates syntax
+  and key material, not endpoint reachability or remote key agreement. Use TLS
+  for the in-cluster listener. The certificate must cover the Service name;
+  workers and **all stage images** must trust its CA. Successful kubelet HTTPS
+  probes alone do not establish client trust.
+- Share the RWX blob volume: the daemon's `<instance>/blobstore` and the worker's
+  `--blob-store` must refer to the same backing tree, including its `surrender/`
+  directory. Stage pods use the authenticated network planes, never the PVC.
+- Give the worker its **own writable instance root** and private `--work-root`,
+  with matching config supplied through a whole mounted config tree or a
+  maintained sync source. `--work-root` alone does not relocate all writes:
+  workspace setup constructs per-gaggle worktree managers under the instance,
+  and local execution stages artifacts there. A read-only mount of the daemon's
+  whole instance is therefore insufficient. RWO same-node affinity does not
+  solve state ownership. See the reload section below for propagation and pin
+  retention requirements; copying config once does not provide live sync.
+- Add explicit deny-first network grants for worker-to-daemon, worker-to-Kubernetes
+  API, worker-to-Temporal, and stage-to-daemon traffic, with DNS available.
+  Retain namespace **and** pod selectors on cross-namespace blob/API grants.
+  Keep pod-creation RBAC on the worker ServiceAccount and out of the daemon's
+  ServiceAccount. The base does not supply adopter-specific API-server addresses
+  or a fully connected authority topology.
+
+Do not enable the API beside the worker while both use the base's same writable
+instance PVC. The manifests require an adopter overlay implementing the ownership
+and configuration above, followed by an actual authenticated stage execution,
+artifact retrieval, surrender, and restart test. Static manifest validation does
+not demonstrate those runtime properties.
 
 ## Validation
 
