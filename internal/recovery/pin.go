@@ -74,6 +74,10 @@ func recoveryGit(ctx context.Context, repository string, stdout io.Writer, args 
 }
 
 func recoveryGitWithEnv(ctx context.Context, repository string, stdout io.Writer, environment []string, args ...string) error {
+	return recoveryGitIO(ctx, repository, stdout, nil, environment, args...)
+}
+
+func recoveryGitIO(ctx context.Context, repository string, stdout io.Writer, stdin io.Reader, environment []string, args ...string) error {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", repository, "--no-replace-objects", "-c", "core.hooksPath=" + os.DevNull}, args...)...)
 	// These local object/ref operations need no inherited Git transport or
 	// repository overrides. In particular GIT_DIR must not defeat -C.
@@ -84,6 +88,7 @@ func recoveryGitWithEnv(ctx context.Context, repository string, stdout io.Writer
 	}
 	command.Env = append(command.Env, environment...)
 	command.Stdout = stdout
+	command.Stdin = stdin
 	// Git diagnostics can contain local paths or credential-bearing remote
 	// URLs. Return the operation's exit error without echoing those bytes.
 	command.Stderr = io.Discard
