@@ -59,3 +59,60 @@ func TestGitHubLandingIntentPrecedesMutationAndFailurePreventsHTTP(t *testing.T)
 		})
 	}
 }
+
+func TestOtherProvidersPersistIntentBeforeDirectMerge(t *testing.T) {
+	for _, kind := range []ProviderKind{ProviderADO, ProviderGitea} {
+		for _, fail := range []bool{false, true} {
+			t.Run(string(kind)+map[bool]string{false: "/persisted", true: "/storage-failure"}[fail], func(t *testing.T) {
+				r := &intentTestRecorder{}
+				failure := errors.New("intent storage unavailable")
+				if fail {
+					r.err = failure
+				}
+				var mutations atomic.Int64
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					if req.Method != http.MethodGet {
+						mutations.Add(1)
+						if !r.ready.Load() {
+							t.Error("mutation preceded durable intent")
+						}
+					}
+					if kind == ProviderADO {
+						status := "active"
+						if req.Method == http.MethodPatch {
+							status = "completed"
+						}
+						writeJSON(t, w, map[string]any{"pullRequestId": 42, "status": status, "mergeStatus": "succeeded", "lastMergeSourceCommit": map[string]string{"commitId": "head"}, "lastMergeCommit": map[string]string{"commitId": "merged"}})
+						return
+					}
+					if req.Method == http.MethodGet {
+						writeJSON(t, w, map[string]any{"number": 42, "merge_commit_sha": "merged"})
+					}
+				}))
+				defer server.Close()
+				req := MergePullRequestRequest{Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head"}
+				var result MergePullRequestResult
+				var err error
+				if kind == ProviderADO {
+					p := NewADOProvider("org", "project", "fixture", func(p *ADOProvider) { p.BaseURL = server.URL })
+					p.SetMutationRecorder(r)
+					result, err = p.MergePullRequest(context.Background(), req)
+				} else {
+					req.Repository = RepositoryRef{Owner: "acme", Name: "app"}
+					p := NewGiteaProvider(server.URL, "fixture", WithGiteaMutationRecorder(r))
+					result, err = p.MergePullRequest(context.Background(), req)
+				}
+				if fail {
+					if !errors.Is(err, failure) || result.Merged || mutations.Load() != 0 {
+						t.Fatalf("storage failure allowed mutation: %+v %v calls=%d", result, err, mutations.Load())
+					}
+					return
+				}
+				ref, ok := r.last()
+				if err != nil || !result.Merged || mutations.Load() != 1 || !ok || ref.MergeConfirmation == nil || len(r.intent.ID) != 32 || ref.MergeConfirmation.IntentID != r.intent.ID || r.intent.ExpectedHeadSHA != "head" {
+					t.Fatalf("merge/intent mismatch: %+v %v intent=%+v ref=%+v calls=%d", result, err, r.intent, ref, mutations.Load())
+				}
+			})
+		}
+	}
+}

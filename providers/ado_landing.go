@@ -285,6 +285,14 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 			MergeCommitMessage: req.CommitMessage,
 		},
 	}
+	repositoryAPIURL, err := p.repoURL(req.Repository)
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
+	intent, err := prepareLandingIntent(ctx, p.mutationRecorder, ProviderADO, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA)
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
 	var out adoPullRequestDetail
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
 		return MergePullRequestResult{}, err
@@ -294,10 +302,13 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 		return MergePullRequestResult{}, err
 	}
 	if p.mutationRecorder != nil {
-		repositoryAPIURL, _ := p.repoURL(req.Repository)
+		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, final.LastMergeCommit.CommitID)
+		if intent != nil {
+			confirmation.IntentID = intent.ID
+		}
 		p.mutationRecorder.RecordExternalRef(ctx, ExternalRef{
 			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "merge",
-			MergeConfirmation: newMergeConfirmation(repositoryAPIURL, req.PullID, final.LastMergeCommit.CommitID),
+			MergeConfirmation: confirmation,
 		})
 	}
 	return MergePullRequestResult{Number: final.PullRequestID, Merged: true, MergeSHA: final.LastMergeCommit.CommitID}, nil

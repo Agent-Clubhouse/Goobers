@@ -924,6 +924,11 @@ func (p *GiteaProvider) MergePullRequest(ctx context.Context, req MergePullReque
 	if req.ExpectedHeadSHA != "" {
 		body["head_commit_id"] = req.ExpectedHeadSHA
 	}
+	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
+	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitea, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA)
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
 	if err := p.postDirectMerge(ctx, endpoint, body); err != nil {
 		return MergePullRequestResult{}, err
 	}
@@ -935,9 +940,12 @@ func (p *GiteaProvider) MergePullRequest(ctx context.Context, req MergePullReque
 	if pr, err := p.getPull(ctx, req.Repository, req.PullID); err == nil {
 		mergeSHA = pr.MergeCommitSHA
 	}
-	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
+	confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, mergeSHA)
+	if intent != nil {
+		confirmation.IntentID = intent.ID
+	}
 	p.recordExternalRef(ctx, ExternalRef{
-		MergeConfirmation: newMergeConfirmation(repositoryAPIURL, req.PullID, mergeSHA),
+		MergeConfirmation: confirmation,
 		Provider:          ProviderGitea,
 		Ref:               issueRef(req.Repository, req.PullID),
 		Operation:         "merge",
