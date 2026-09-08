@@ -101,6 +101,9 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
 				return apiv1.ResultEnvelope{}, err
 			}
+			if err != nil && activityResult.Placement == nil {
+				activityResult.Placement = DispatchFailurePlacement(err)
+			}
 			// Placement provenance for THIS attempt, before anything the
 			// attempt's outcome decides (#3875). Journaled for a failed
 			// dispatch too when the dispatch reported one, so the record of

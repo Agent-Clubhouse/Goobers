@@ -836,14 +836,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// caller that inspects the returned report after a create failure still
 	// sees which image was about to run.
 	//
-	// Scope note, because the comment used to over-promise: this does NOT
-	// reach the engine's callers. engine.DispatchStage discards the report on
-	// every error that left surrender unconfirmed, so the only reports whose
-	// Image crosses that activity boundary are settled ones, which by
-	// definition already created their pod (see engine.StagePlacement). The
-	// stamp stays here regardless: it costs nothing, it is the honest ordering
-	// for a direct caller, and it is what a future failure-carrying seam would
-	// read.
+	// The engine transports settled reports in the result and failed reports
+	// in versioned error details. Keeping this stamp before creation preserves
+	// the selected image even when creation fails, without inventing a pod.
 	report.Image = stageContainerImage(pod)
 
 	if err := d.pods.CreatePod(ctx, pod); err != nil {

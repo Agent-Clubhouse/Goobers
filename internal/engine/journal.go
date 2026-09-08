@@ -355,19 +355,11 @@ func (r *runJournal) stageStarted(at time.Time, task apiv1.Task, attempt int, cl
 // actually ran, and how long the attempt waited for capacity") is the whole
 // reason it exists, and the stall sweep is its first reader.
 //
-// AFTER the dispatch, not beside stage.started, and that ordering is forced
-// rather than chosen: a pod attempt's placement is not KNOWN until the pod has
-// been created and the attempt has settled (StagePlacement's "settled attempts
-// only" contract), and inventing one at stage.started would journal the
-// placement the walk ASKED for instead of the one it got — precisely the fact
-// finding 002's inventory row says is missing. It still lands between this
-// attempt's stage.started and the next event a reader correlates it with, so
-// "every stage.started is followed by a runner.placement" holds on the wire.
-//
-// An attempt whose dispatch FAILED carries no placement (every dispatcher error
-// discards the report) and journals nothing: absence is honest here, and a
-// fabricated block would be the first untested branch in a contract that has
-// none.
+// AFTER dispatch returns, when the observed report is available. A failure can
+// carry partial observations through application-error details; it need not
+// surrender a result to report where it ran. Older failures and refusals before
+// runner selection carry no placement and journal none. Missing pod/node/time
+// fields stay absent rather than borrowing values from the requested pin.
 func (r *runJournal) placement(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result stageActivityResult) {
 	placement, ok := attemptPlacement(result)
 	if !ok {

@@ -666,7 +666,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// dispatch fault here. Keying off SurrenderConfirmed rather than the error
 	// kind alone closes the whole class of post-surrender dispatcher errors.
 	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) && !report.SurrenderConfirmed {
-		return stageActivityResult{}, classifyDispatchError(err)
+		return dispatchFailureResult(classifyDispatchError(err), report)
 	}
 	if err == nil && report.Local {
 		// SelectRunner resolved self inside an eligible set the workflow routed
@@ -688,24 +688,25 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// Infra-classed — the attempt retries on a fresh pod (D1), never
 		// burning the policy budget on a data-plane fault.
 		if errors.Is(rerr, dispatcher.ErrNoSurrender) {
-			return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, rerr)))
+			return dispatchFailureResult(classifySeamError(invoke.InfrastructureFailure(fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, rerr))), report)
 		}
-		return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(rerr))
+		return dispatchFailureResult(classifySeamError(invoke.InfrastructureFailure(rerr)), report)
 	}
 	if surrendered.Result.Status == "" {
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number))
+		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
 	}
 	if input.Review {
-		return a.reviewActivityResult(input, attempt.Number, surrendered, report)
+		result, reviewErr := a.reviewActivityResult(input, attempt.Number, surrendered, report)
+		return result, withDispatchFailurePlacement(reviewErr, report)
 	}
 	if surrendered.Verdict != nil {
 		// A task attempt has no reviewer; a verdict here means the pod ran
 		// under a review kit it was not dispatched with. Refused rather than
 		// dropped: a silently ignored verdict is exactly the shape a
 		// substituted surrender document would take to look harmless.
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number))
+		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
 	}
-	return a.scrubStageActivityResult(stageActivityResult{
+	result, resultErr := a.scrubStageActivityResult(stageActivityResult{
 		ResultEnvelope:     surrendered.Result,
 		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
 		MutationIssues:     surrendered.MutationIssues,
@@ -721,6 +722,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
 		Placement:               placementProvenance(report),
 	})
+	return result, withDispatchFailurePlacement(resultErr, report)
 }
 
 // reviewActivityResult projects a REVIEW attempt's surrender (decision 001
@@ -842,9 +844,9 @@ func validateSurrenderedVerdict(verdict apiv1.Verdict) error {
 // activity was handed: the point of the block is to record what the substrate
 // did, so echoing the request back would make it evidence of nothing.
 //
-// A Local report yields nil — DispatchStage already refuses that case as a
-// pin/selection disagreement, and nil keeps "provenance present" equivalent to
-// "a pod ran this".
+// A Local report yields nil because it has no pod substrate observations.
+// Failed dispatches can carry partial observations; a selected runner alone
+// does not imply that a pod was created or started.
 func placementProvenance(report dispatcher.Report) *StagePlacement {
 	if report.Local {
 		return nil
