@@ -675,4 +675,11 @@ CREATE TABLE IF NOT EXISTS monitor_nomination (
 	`
 ALTER TABLE monitor_nomination ADD COLUMN improvement_claimed_at TEXT;
 `,
+
+	// v19: refresh existing reviewer evidence without discarding run rows or
+	// retention/nomination state. Startup rebuild upgrades each row once.
+	`
+ALTER TABLE run ADD COLUMN projection_version INTEGER NOT NULL DEFAULT 0;
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+`,
 }
