@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
@@ -58,9 +59,16 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	if err := os.Mkdir(subdirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := CaptureSnapshot(context.Background(), subdirectory, "run-1")
+	identityTime := storageTestRecord().CreatedAt
+	snapshot, err := CaptureSnapshot(context.Background(), subdirectory, "run-1", identityTime)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := recoveryTestGit(t, repository, "show", "-s", "--format=%aI%n%cI", snapshot); got != identityTime.Format(time.RFC3339)+"\n"+identityTime.Format(time.RFC3339) {
+		t.Fatalf("capture timestamp was not pinned: %s", got)
+	}
+	if again, err := CaptureSnapshot(context.Background(), subdirectory, "run-1", identityTime); err != nil || again != snapshot {
+		t.Fatalf("identical capture retry changed identity: %s -> %s: %v", snapshot, again, err)
 	}
 	var captured bytes.Buffer
 	if err := recoveryGit(context.Background(), repository, &captured, "cat-file", "blob", snapshot+":tracked.txt"); err != nil || captured.String() != "changed\r\n" {

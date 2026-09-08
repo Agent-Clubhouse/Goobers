@@ -28,7 +28,7 @@ func TestIntegrationCaptureDoesNotAcknowledgeUnarchivedNestedState(t *testing.T)
 	if err := os.WriteFile(path, []byte{0, 255, 1}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot, err := CaptureSnapshot(context.Background(), repository, "nested-run"); !errors.Is(err, ErrNestedRecoveryRequired) || snapshot != "" {
+	if snapshot, err := CaptureSnapshot(context.Background(), repository, "nested-run", storageTestRecord().CreatedAt); !errors.Is(err, ErrNestedRecoveryRequired) || snapshot != "" {
 		t.Fatalf("parent-only snapshot acknowledged nested recovery: %q %v", snapshot, err)
 	}
 	if got := recoveryTestGit(t, repository, "rev-parse", "HEAD"); got != head {

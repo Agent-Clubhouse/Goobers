@@ -49,7 +49,7 @@ func TestIntegrationCaptureSnapshotPreservesSparseFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := CaptureSnapshot(context.Background(), repository, "sparse-run")
+	snapshot, err := CaptureSnapshot(context.Background(), repository, "sparse-run", storageTestRecord().CreatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,7 +28,7 @@ func TestIntegrationRestoreFullPatchOntoCurrentMain(t *testing.T) {
 	recoveryTestGit(t, repository, "commit", "-m", "reviewed implementation")
 	writeRestoreFixture(t, repository, "uncommitted.bin", "\x00\xff\x01")
 	var err error
-	record.SnapshotSHA, err = CaptureSnapshot(context.Background(), repository, record.RunID)
+	record.SnapshotSHA, err = CaptureSnapshot(context.Background(), repository, record.RunID, record.CreatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 // CaptureSnapshot records the current tracked and non-ignored untracked files
@@ -15,9 +16,15 @@ import (
 // returned object is not durable recovery until pinned and archived. Captured
 // content is not permission to restore reserved runtime assets: the restoration
 // coordinator must enforce those protections before applying a retained patch.
-func CaptureSnapshot(ctx context.Context, repository, runID string) (string, error) {
+// identityTime must be durable and stable across retries (for example, the
+// owning run's recorded start time), not a fresh wall-clock reading per attempt.
+// Actual archive capture/retention times are recorded separately in Record.
+func CaptureSnapshot(ctx context.Context, repository, runID string, identityTime time.Time) (string, error) {
 	if _, err := RefForRun(runID); err != nil {
 		return "", err
+	}
+	if identityTime.IsZero() {
+		return "", fmt.Errorf("snapshot requires a stable identity timestamp")
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -71,9 +78,11 @@ func CaptureSnapshot(ctx context.Context, repository, runID string) (string, err
 		return "", err
 	}
 	var snapshot boundedRefOutput
+	date := identityTime.UTC().Format(time.RFC3339)
 	environment = append(environment,
 		"GIT_AUTHOR_NAME=Goobers Recovery", "GIT_AUTHOR_EMAIL=recovery@goobers.invalid",
-		"GIT_COMMITTER_NAME=Goobers Recovery", "GIT_COMMITTER_EMAIL=recovery@goobers.invalid")
+		"GIT_COMMITTER_NAME=Goobers Recovery", "GIT_COMMITTER_EMAIL=recovery@goobers.invalid",
+		"GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
 	if err := recoveryGitWithEnv(ctx, repository, &snapshot, environment,
 		"-c", "commit.gpgsign=false", "commit-tree", treeID, "-p", parent, "-m", "Retain recovery state for "+runID); err != nil {
 		return "", fmt.Errorf("write recovery snapshot commit: %w", err)
