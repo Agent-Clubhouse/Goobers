@@ -1,18 +1,10 @@
-# One native harness and its bundled runtime/assets layered on a release base.
-# GOOBERS_BASE_IMAGE must name the base built from this release's context.
+# Prepared by the release engine's imageinputs helper: one verified native
+# harness package and fixed runtime launcher, with no build scripts or downloads.
 ARG GOOBERS_BASE_IMAGE
-ARG AZURE_LINUX_IMAGE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:daa1142fc6b44e27c8112ec6b4c2d579ddb9bc6b3747504e666010a45a51faa4
-FROM ${AZURE_LINUX_IMAGE} AS harness-files
-RUN tdnf install -y ca-certificates curl tar gzip coreutils findutils
-ARG HARNESS
-ARG TARGETARCH
-COPY prepare.sh copilot.sh claude.sh /inputs/
-RUN sh /inputs/prepare.sh "$HARNESS" "$TARGETARCH"
-
 FROM ${GOOBERS_BASE_IMAGE}
-COPY --from=harness-files /out/package/ /opt/goobers-harness/
-COPY --from=harness-files /out/bin/ /usr/local/bin/
-COPY --from=harness-files /out/version /out/source /usr/share/goobers/harness/
+COPY package/ /opt/goobers-harness/
+COPY bin/ /usr/local/bin/
+COPY version source /usr/share/goobers/harness/
 USER 65532:65532
 ARG HARNESS
 # The final user's actual command checks bundled native dependencies as well as

@@ -3,30 +3,36 @@
 This Dockerfile adds exactly one harness to the Azure Linux release base. The
 native upstream packages include their own runtime; no separate Node installation
 or second Goobers build is needed. All package files, including licenses and
-bundled native modules, remain in the image. `prepare.sh` pins each architecture's
-public npm archive with SHA-512 and verifies it before extraction.
+bundled native modules, remain in the image. The Go release helper in
+`release/internal/imageinputs` pins each architecture's public npm archive with
+SHA-512 and verifies it before bounded extraction. It refuses traversal paths,
+links, devices, duplicate files, and privileged file modes, and publishes the
+prepared context only after the complete operation succeeds.
 
-Build the base with the [release-generated context](../base/README.md), then build
-each family from that exact base. Use a digest reference for retained release
-builds; a local tag is useful while testing unpublished images:
+The release engine prepares the package, launcher, version, source provenance,
+and Dockerfile together. The repository directory alone is not a build context:
+no Docker build downloads or executes a project-authored preparation script.
+To rebuild a prepared context, select the exact base from that release. Use a
+digest reference for retained builds; a local tag is useful for unpublished
+image testing:
 
 ```sh
 docker build --platform linux/arm64 \
   --build-arg GOOBERS_BASE_IMAGE=goobers-base:local-rc-check \
   --build-arg HARNESS=copilot \
-  -t goobers-harness-copilot:local-rc-check packaging/docker/harness
+  -t goobers-harness-copilot:local-rc-check /path/to/prepared-copilot-context
 docker build --platform linux/arm64 \
   --build-arg GOOBERS_BASE_IMAGE=goobers-base:local-rc-check \
   --build-arg HARNESS=claude \
-  -t goobers-harness-claude:local-rc-check packaging/docker/harness
+  -t goobers-harness-claude:local-rc-check /path/to/prepared-claude-context
 ```
 
 `linux/amd64` has separate pinned upstream archives. Other architectures and
 harness names fail before downloading. The build checks the harness's version
 as UID 65532. The base supplies the Goobers and operator binaries unchanged,
 along with its entrypoint, default command, writable home, git, CA roots, and
-time zone data. The image builder's package manager, curl, and downloaded archive
-remain outside the final image.
+time zone data. The downloaded archive remains outside the final image; package preparation
+uses the Go release tooling and adds no package manager or curl layer.
 
 Run the stricter runtime check with a read-only root and **noexec** temporary
 home; change the image name and command together for Claude:

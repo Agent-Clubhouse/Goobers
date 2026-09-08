@@ -1,5 +1,6 @@
 *
 !Dockerfile
-!prepare.sh
-!copilot.sh
-!claude.sh
+!package/**
+!bin/**
+!version
+!source
