@@ -414,6 +414,12 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 		runID, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID, relationship); err != nil {
 		return fmt.Errorf("rollup: insert cost attribution seq %d: %w", ev.Seq, err)
 	}
+	// An intent relates this run to the PR, but acknowledges only local
+	// durable storage. It must never inflate the external mutation ledger.
+	// The complete attempt remains available in the retained run journal.
+	if relationship == "merge-intent" {
+		return nil
+	}
 	rj, err := runnerJSON(ev.Runner)
 	if err != nil {
 		return err
