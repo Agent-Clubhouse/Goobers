@@ -68,7 +68,11 @@ These recipes prepare the two Linux families required by
 [the image contract](../../../docs/design/goobernetes-deployment-images.md).
 The release engine's opt-in `-build-images` path builds these contexts and
 checks exact binary bytes, release stamps, inherited base layers, and restricted
-runtime behavior. Signing/pushing, published image availability, native AMD64
+runtime behavior. The Copilot check also exercises the actual adapter arguments
+without credentials or networking and requires the expected authentication
+refusal. A version or help response alone cannot establish that the argument
+parser accepts the adapter interface. This probe does not establish authenticated
+execution or production of a valid usage file. Signing/pushing, published image availability, native AMD64
 checks, authenticated agentic stages, and distributed S1–S9 evidence
 are still required before promotion. Windows harness publishing remains the
 design's open scope decision; this Dockerfile does not target Windows.
