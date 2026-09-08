@@ -73,6 +73,25 @@ func (f *fakeStarter) count() int {
 	return len(f.starts)
 }
 
+type dispatchRegistrationStarter struct {
+	wg         *sync.WaitGroup
+	registered chan struct{}
+	started    chan struct{}
+	release    chan struct{}
+}
+
+func (s *dispatchRegistrationStarter) RegisterDispatch() func() {
+	s.wg.Add(1)
+	close(s.registered)
+	return s.wg.Done
+}
+
+func (s *dispatchRegistrationStarter) Start(context.Context, StartRequest) (StartResult, error) {
+	close(s.started)
+	<-s.release
+	return StartResult{Phase: journal.PhaseCompleted}, nil
+}
+
 func newTestScheduler(t *testing.T, entries []WorkflowEntry, opts ...Option) (*Scheduler, string) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "scheduler")
@@ -82,6 +101,45 @@ func newTestScheduler(t *testing.T, entries []WorkflowEntry, opts ...Option) (*S
 	}
 	t.Cleanup(func() { _ = log.Close() })
 	return New(entries, log, opts...), dir
+}
+
+func TestDispatchRegistrationKeepsShutdownWaitUntilStarterCompletes(t *testing.T) {
+	var tracked sync.WaitGroup
+	starter := &dispatchRegistrationStarter{
+		wg:         &tracked,
+		registered: make(chan struct{}),
+		started:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow: "delayed",
+		Starter:  starter,
+	}})
+
+	if _, err := scheduler.Trigger(context.Background(), "delayed", time.Now()); err != nil {
+		t.Fatalf("Trigger() error = %v", err)
+	}
+	<-starter.registered
+	<-starter.started
+
+	waited := make(chan struct{})
+	go func() {
+		tracked.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		t.Fatal("shutdown wait returned before the delayed starter completed")
+	default:
+	}
+
+	close(starter.release)
+	select {
+	case <-waited:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown wait did not return after the starter completed")
+	}
+	scheduler.Wait()
 }
 
 func TestRunRefreshesHeartbeatAndCapsIdleWait(t *testing.T) {
