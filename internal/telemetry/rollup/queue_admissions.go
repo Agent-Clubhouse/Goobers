@@ -40,6 +40,7 @@ func (db *DB) readQueueAdmissions(ctx context.Context, query MergeReportQuery, r
 	entries := map[queueEntryKey]AcceptedQueueEntry{}
 	conflicts := map[queueEntryKey]bool{}
 	for rows.Next() {
+		report.examinedEvents++
 		remaining--
 		if remaining < 0 {
 			return fmt.Errorf("merge report exceeds %d retained events; narrow the query scope", MaxMergeReportEvents)

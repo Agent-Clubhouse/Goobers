@@ -813,4 +813,18 @@ CREATE INDEX idx_provider_mutations_merge_identity
 ON provider_mutations(provider, external_id, occurred_at)
 WHERE kind = 'pr' AND operation = 'merge';
 `,
+	// v26 (#3019): attempts are queryable independently of external effects.
+	// Per-run deletion/rebuild and the journal retention caller own lifetime.
+	`
+CREATE TABLE landing_intents (
+ run_id TEXT NOT NULL,
+ seq INTEGER NOT NULL,
+ provider TEXT NOT NULL,
+ external_id TEXT NOT NULL,
+ occurred_at TEXT NOT NULL,
+ runner_json TEXT,
+ PRIMARY KEY (run_id, seq)
+);
+CREATE INDEX idx_landing_intents_time ON landing_intents(occurred_at, run_id, seq);
+`,
 }

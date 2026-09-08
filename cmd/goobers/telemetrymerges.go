@@ -122,6 +122,10 @@ func writeMergeReport(output io.Writer, report rollup.MergeReport) error {
 	for _, entry := range report.QueueAdmissions {
 		pf(stdout, "%s\t%s\t%s\tPR %s\t%s\n", entry.InstanceID, entry.Gaggle, entry.RepositoryAPIURL, entry.PullID, entry.EntryID)
 	}
+	pf(stdout, "Persisted landing attempts (not merge proof): %d; unverified intent events: %d\n", len(report.LandingIntents), report.UnverifiedIntentEvents)
+	for _, intent := range report.LandingIntents {
+		pf(stdout, "%s\t%s\t%s\tPR %s\t%s\t%s\t%s\n", intent.InstanceID, intent.Gaggle, intent.RepositoryAPIURL, intent.PullID, intent.Operation, intent.ID, intent.RunID)
+	}
 	if report.Comparison == nil {
 		pf(stdout, "Coverage: retained telemetry only; no forge-inventory comparison.\n")
 	} else {

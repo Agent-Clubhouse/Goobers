@@ -17,7 +17,17 @@ instance and gaggle identity. They retain the expected PR head and actual
 enqueue timestamp. An accepted enqueue is **not** a completed merge and never
 increments the daily merge count. Unknown and conflicting queue receipts have
 separate counters; display filters cannot hide an ownership conflict. The
-10,000-event bound covers merge and enqueue events together, before filtering.
+10,000-event bound covers merge, enqueue and intent events together, before filtering.
+
+`landingIntents` exposes persisted attempts, including the intended operation,
+repository, PR, expected head, intent ID, run, instance and gaggle. Direct merge
+and enqueue callers persist these before requesting the external mutation.
+An intent is not proof that the request was sent, accepted or completed; do not
+add intent counts to the merge KPI. Invalid intent rows remain visible through
+`unverifiedIntentEvents`. The human report lists attempts separately as well.
+Intent rows are derived from retained journals, bounded to 16 KiB of metadata
+per event, and deleted by the same unattended per-run retention path as other
+rollup rows. They cannot recover a sidecar that never reached its journal.
 
 ```sh
 goobers telemetry merges --json --since=2026-09-01T00:00:00Z --until=2026-09-08T00:00:00Z /path/to/instance

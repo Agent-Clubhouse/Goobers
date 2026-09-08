@@ -28,6 +28,10 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirmation := &providers.MergeConfirmation{RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", MergeSHA: "commit"}
+	intent := &providers.LandingIntent{ID: strings.Repeat("b", 32), Operation: "merge", RepositoryAPIURL: confirmation.RepositoryAPIURL, PullID: "11", ExpectedHeadSHA: "head"}
+	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "11"}, Runner: providers.MutationRunnerFields("merge-intent", nil, nil, intent)}); err != nil {
+		t.Fatal(err)
+	}
 	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: providers.MutationRunnerFields("merge", confirmation, nil, nil)}); err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +68,13 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 	}
 	if len(report.QueueAdmissions) != 1 || report.QueueAdmissions[0].EntryID != "owned-entry" || report.QueueAdmissions[0].PullID != "10" || report.QueueAdmissions[0].InstanceID != id || report.QueueAdmissions[0].RunID != "merge-report" {
 		t.Fatalf("CLI lost queue ownership: %+v", report.QueueAdmissions)
+	}
+	if len(report.LandingIntents) != 1 || report.LandingIntents[0].LandingIntent != *intent || report.LandingIntents[0].InstanceID != id {
+		t.Fatalf("CLI lost persisted attempt: %+v", report.LandingIntents)
+	}
+	code, stdout, stderr = runArgs(t, "telemetry", "merges", "--since=2026-09-01T00:00:00Z", "--until=2026-09-02T00:00:00Z", layout.Root)
+	if code != 0 || !strings.Contains(stdout, "Persisted landing attempts (not merge proof): 1") || !strings.Contains(stdout, intent.ID) || !strings.Contains(stdout, "Confirmed merges: 1;") {
+		t.Fatalf("human report conflated attempts and merges: %d %s %s", code, stdout, stderr)
 	}
 }
 

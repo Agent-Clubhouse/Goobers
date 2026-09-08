@@ -85,7 +85,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
+var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "landing_intents", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -418,7 +418,19 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 	// durable storage. It must never inflate the external mutation ledger.
 	// The complete attempt remains available in the retained run journal.
 	if relationship == "merge-intent" {
-		return nil
+		raw, err := runnerJSON(ev.Runner)
+		if err != nil {
+			return err
+		}
+		// Keep an invalid/oversized attempt visible as an unverified row,
+		// without retaining an unbounded payload in the read model.
+		if len(raw.String) > 16384 {
+			raw = sql.NullString{}
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO landing_intents
+			(run_id, seq, provider, external_id, occurred_at, runner_json) VALUES (?, ?, ?, ?, ?, ?)`,
+			runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.ID, formatTime(ev.Time), raw)
+		return err
 	}
 	rj, err := runnerJSON(ev.Runner)
 	if err != nil {

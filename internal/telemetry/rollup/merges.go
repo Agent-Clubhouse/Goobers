@@ -59,9 +59,11 @@ type DailyMerges struct {
 // MergeReport is a retained-telemetry report, not a forge inventory. Unknown
 // events and conflicts are explicit; neither is silently promoted to verified.
 type MergeReport struct {
-	QueueAdmissions          []AcceptedQueueEntry `json:"queueAdmissions"`
-	UnverifiedQueueEvents    int                  `json:"unverifiedQueueEvents"`
-	ConflictingQueueEntries  int                  `json:"conflictingQueueEntries"`
+	LandingIntents           []RecordedLandingIntent `json:"landingIntents"`
+	UnverifiedIntentEvents   int                     `json:"unverifiedIntentEvents"`
+	QueueAdmissions          []AcceptedQueueEntry    `json:"queueAdmissions"`
+	UnverifiedQueueEvents    int                     `json:"unverifiedQueueEvents"`
+	ConflictingQueueEntries  int                     `json:"conflictingQueueEntries"`
 	examinedEvents           int
 	Coverage                 string           `json:"coverage"`
 	Since                    time.Time        `json:"since"`
@@ -119,6 +121,9 @@ func (db *DB) MergeProvenance(ctx context.Context, query MergeReportQuery) (Merg
 		return MergeReport{}, err
 	}
 	if err := db.readQueueAdmissions(ctx, query, &report); err != nil {
+		return MergeReport{}, err
+	}
+	if err := db.readLandingIntents(ctx, query, &report); err != nil {
 		return MergeReport{}, err
 	}
 	return report, nil
