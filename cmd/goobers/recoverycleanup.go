@@ -19,7 +19,7 @@ import (
 )
 
 func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber) (worktree.ManagerOption, error) {
-	callback, err := recoveryCleanupHandler(layout, cfg, cleanupRoot, cloneURL, scrubber)
+	callback, err := recoveryCleanupHandler(layout, cfg, cleanupRoot, cloneURL, scrubber, false)
 	if err != nil {
 		return nil, err
 	}
@@ -28,7 +28,7 @@ func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanup
 	}, nil
 }
 
-func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber) (func(context.Context, worktree.CleanupTarget) error, error) {
+func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber, terminal bool) (func(context.Context, worktree.CleanupTarget) error, error) {
 	identities := make(map[string]string)
 	for _, repo := range cfg.Repos {
 		project := apiv1.RepoRef{Provider: apiv1.Provider(repo.Provider), BaseURL: repo.BaseURL, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
@@ -62,13 +62,17 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		if identity.RunID != target.OwnerRunID || identity.StartedAt.IsZero() {
 			return fmt.Errorf("recovery run identity does not match cleanup ownership")
 		}
+		captureAt, err := recoveryCaptureTime(ctx, reader, identity.StartedAt, terminal)
+		if err != nil {
+			return err
+		}
 		root, err := prepareRecoveryInventory(layout.Root)
 		if err != nil {
 			return err
 		}
 		_, _, err = recovery.Retain(ctx, recovery.RetentionRequest{
 			Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID,
-			BaseRef: "main", IdentityTime: identity.StartedAt, RetainUntil: identity.StartedAt.Add(30 * 24 * time.Hour),
+			BaseRef: "main", IdentityTime: captureAt, RetainUntil: captureAt.Add(30 * 24 * time.Hour),
 			InventoryRoot: root, CleanupRoots: []string{cleanupRoot}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20, SkipEmpty: true,
 		}, recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber})
 		return err
@@ -89,7 +93,7 @@ func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Mana
 		if cloneURL == nil {
 			cloneURL = runner.DefaultRepoCloneURL
 		}
-		callback, err := recoveryCleanupHandler(layout, cfg, manager.Root, cloneURL, journal.NewRegistryScrubber())
+		callback, err := recoveryCleanupHandler(layout, cfg, manager.Root, cloneURL, journal.NewRegistryScrubber(), true)
 		if err != nil {
 			return err
 		}

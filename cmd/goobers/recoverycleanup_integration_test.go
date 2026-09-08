@@ -42,7 +42,11 @@ func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	const runID = "cleanup-recovery"
-	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "example", StartedAt: time.Now().UTC()}, nil)
+	startedAt := time.Now().UTC()
+	if terminal {
+		startedAt = startedAt.Add(-45 * 24 * time.Hour)
+	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "example", StartedAt: startedAt}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +73,9 @@ func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
 		t.Fatal(err)
 	}
 	if terminal {
+		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+			t.Fatal(err)
+		}
 		// Mimic a standalone startup/abort finalizer that did not construct
 		// the worktree and has never gone through buildRunnerConfig.
 		standalone, createErr := worktree.NewManager(workcopies)
@@ -101,6 +108,9 @@ func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
 	}
 	if retained.RunID != runID {
 		t.Fatal("cleanup removed worktree without a bound recovery record")
+	}
+	if terminal && !retained.RetainUntil.After(time.Now().Add(29*24*time.Hour)) {
+		t.Fatalf("long-running terminal job lost its recovery window: started=%s deadline=%s", startedAt, retained.RetainUntil)
 	}
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
