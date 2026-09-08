@@ -213,7 +213,7 @@ func TestNoLanderEscalationReason(t *testing.T) {
 	}
 }
 
-func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
+func TestAsymmetricFindingsDeferClusterWithoutLander(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 
@@ -293,8 +293,8 @@ func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
 	if err := json.Unmarshal(data, &applied); err != nil {
 		t.Fatalf("unmarshal apply-verdict result: %v", err)
 	}
-	if applied["decision"] != string(apiv1.VerdictFail) {
-		t.Fatalf("applied decision = %q, want fail", applied["decision"])
+	if applied["decision"] != string(apiv1.VerdictDefer) {
+		t.Fatalf("applied decision = %q, want defer", applied["decision"])
 	}
 	if applied["scopeGateParked"] != "true" {
 		t.Fatalf("applied scopeGateParked = %q, want true", applied["scopeGateParked"])
@@ -303,23 +303,33 @@ func TestAsymmetricFindingsEscalateClusterWithoutLander(t *testing.T) {
 	server.mu.Lock()
 	labels := append([]string(nil), server.issues[selectedNumber].labels...)
 	comments := append([]string(nil), server.issues[selectedNumber].comments...)
+	reviews := append([]fakeReview(nil), server.prs[selectedNumber].reviews...)
 	server.mu.Unlock()
+	if len(reviews) != 1 || reviews[0].state != "COMMENTED" {
+		t.Fatalf("no-lander deferral cast a native review vote: %+v", reviews)
+	}
 	if len(comments) != 1 {
 		t.Fatalf("comments = %v, want one escalation comment", comments)
 	}
 	posted, ok := parseVerdictComment(comments[0])
+	if !ok || posted.ReasonCode != apiv1.VerdictReasonNoLander || posted.Elected {
+		t.Fatalf("missing non-rejecting no-lander disposition: %+v", posted)
+	}
 	if !ok || !strings.Contains(posted.Rationale, "the overlap is a substantive conflict") {
 		t.Fatalf("derived election disposition discarded reviewer rationale: %+v", posted)
 	}
 	hasEscalationLabel := false
 	for _, label := range labels {
-		if label == "goobers:merge-escalated" {
+		if label == "goobers:merge-escalated" || label == "goobers:needs-human" {
+			t.Fatalf("deferral was published as rejection: %v", labels)
+		}
+		if label == blockedOnSiblingLabel {
 			hasEscalationLabel = true
 			break
 		}
 	}
 	if !hasEscalationLabel {
-		t.Fatalf("labels = %v, want goobers:merge-escalated (apply-verdict stdout = %q)", labels, stdout)
+		t.Fatalf("labels = %v, want blocked-on-sibling (apply-verdict stdout = %q)", labels, stdout)
 	}
 	for _, want := range []string{"Cluster has no lander", "#10", "#11", "fifo"} {
 		if !strings.Contains(comments[0], want) {

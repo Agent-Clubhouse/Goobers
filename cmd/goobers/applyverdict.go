@@ -759,11 +759,12 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// A deterministic winner with a real defect cannot safely land, and every
-	// sibling will defer to it. Publish that zero-winner state as a distinct
-	// human escalation instead of silently splitting the cluster between
-	// blocked-on-sibling and needs-remediation.
+	// sibling will defer to it. Publish a typed no-lander deferral, retaining
+	// the original findings without reclassifying the implementation as rejected.
 	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, serializedCluster, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
-		posted.Decision = apiv1.VerdictFail
+		posted.Decision = apiv1.VerdictDefer
+		posted.ReasonCode = apiv1.VerdictReasonNoLander
+		posted.Elected = false
 		posted.Rationale = preserveReviewerRationale(reason, posted.Rationale)
 	}
 
@@ -950,7 +951,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	priorityDispatchRequested := false
-	if label == blockedOnSiblingLabel {
+	if shouldDispatchCrownedLander(label, posted.ReasonCode) {
 		// #952: publish the blocker record first so the re-tick's selector can
 		// rank the elected predecessor from durable state.
 		if _, err := dispatchPriorityTrigger(ctx, l, providerGaggle(), workflowName, runID); err != nil {
@@ -1739,12 +1740,18 @@ func publishADONonPassVerdict(
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", stderr)
 }
 
+func shouldDispatchCrownedLander(label string, reason apiv1.VerdictReasonCode) bool {
+	return label == blockedOnSiblingLabel && reason != apiv1.VerdictReasonNoLander
+}
+
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {
 	switch decision {
 	case apiv1.VerdictPass:
 		return providers.ReviewDecisionApproved, nil
 	case apiv1.VerdictNeedsChanges, apiv1.VerdictFail:
 		return providers.ReviewDecisionChangesRequested, nil
+	case apiv1.VerdictDefer:
+		return providers.ReviewDecisionComment, nil
 	default:
 		return "", fmt.Errorf("unsupported verdict decision %q", decision)
 	}
