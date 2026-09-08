@@ -36,9 +36,13 @@ func TestIntegrationPreparationPreservesEarlierStageCommitsAndDirtyWork(t *testi
 	if record.BaseSHA != base {
 		t.Fatal("preparation used the stage start instead of cumulative base")
 	}
-	published, err := PublishRetainedState(ctx, repository, t.TempDir(), []string{repository}, record, 1<<20)
+	inventory := t.TempDir()
+	published, recordPath, err := PublishToInventory(ctx, repository, inventory, []string{repository}, record, 1, 1<<20)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if retry, path, err := PublishToInventory(ctx, repository, inventory, []string{repository}, record, 1, 1<<20); err != nil || retry != published || path != recordPath {
+		t.Fatalf("full inventory rejected identical publication retry: %+v %q %v", retry, path, err)
 	}
 	commit, err := RestoreSnapshot(ctx, repository, published, base, "restored", 1<<20)
 	if err != nil {
