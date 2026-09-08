@@ -265,6 +265,9 @@ func (r *configReloader) poll(now time.Time) error {
 	r.setup.OpenPRRefresher = definitions.OpenPRRefresher
 	r.setup.Worktrees = definitions.Worktrees
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
+	if r.setup.MergedPRCostReconciler != nil {
+		r.setup.MergedPRCostReconciler.Replace(definitions.Set)
+	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		r.observedDigest = r.appliedDigest
