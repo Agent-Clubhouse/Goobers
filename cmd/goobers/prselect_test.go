@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -125,7 +124,7 @@ func TestPRSelectScopesIndependentInstancesToTheirPolicySet(t *testing.T) {
 			t.Fatalf("read %s selected-pr.json: %v", check.number, err)
 		}
 		var selected map[string]string
-		if err := json.Unmarshal(data, &selected); err != nil {
+		if err := decodePRSelectionTestResult(data, &selected); err != nil {
 			t.Fatalf("unmarshal %s selection: %v", check.number, err)
 		}
 		if selected["number"] != check.number {
@@ -286,7 +285,7 @@ func TestGatherSiblingContextAdvisoryModeConsistentWithDaemonIdentity(t *testing
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selectedResult map[string]string
-	if err := json.Unmarshal(data, &selectedResult); err != nil {
+	if err := decodePRSelectionTestResult(data, &selectedResult); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selectedResult["advisoryMode"] != "false" {
@@ -321,7 +320,7 @@ func TestPRSelectDispatchesADOAndSelectsPR(t *testing.T) {
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selected["number"] != "359" {

@@ -178,6 +178,12 @@ func (f *fakeReader) Workflow(_ context.Context, gaggle, workflow string) (reads
 	return f.workflow, f.err
 }
 
+func (f *fakeReader) QueueEligibility(_ context.Context, gaggle, workflow string) (readservice.QueueEligibilityView, error) {
+	f.called++
+	f.lastGaggle, f.lastWorkflow = gaggle, workflow
+	return readservice.QueueEligibilityView{Gaggle: gaggle, Workflow: workflow, Status: "not-observed"}, f.err
+}
+
 func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	reader := &fakeReader{health: readservice.Health{
 		APIVersion:    readservice.APIVersion,

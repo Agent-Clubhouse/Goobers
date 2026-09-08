@@ -89,6 +89,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension status`](#goobers-portal-extension-status) | report installed Goobers Portal extension version and drift |
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
+| [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
@@ -2851,6 +2852,28 @@ Exit codes: 0 = pushed (or an idempotent no-op), 1 = business error,
 $ goobers push-remediated
 ~~~
 
+## `goobers queue-explain`
+
+explain historical PR queue eligibility and claim observations
+
+~~~text
+Usage: goobers queue-explain --gaggle=<name> --workflow=<name> --pr=<number> [--json] [path]
+
+Explain one PR using the latest retained selection observation for that exact
+workflow. This is historical evidence, not permission to claim or merge.
+Reads the daemon's existing projection without rebuilding journal history or
+querying providers. An absent PR is unknown, not eligible; reports can be partial
+or truncated. Empty --gaggle selects only the legacy unscoped namespace.
+Exit codes: 0 = observation displayed, 1 = evidence unavailable/not observed,
+2 = usage or I/O error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers queue-explain --gaggle=core --workflow=merge-review --pr=42
+~~~
+
 ## `goobers rebase-pr`
 
 rebase-first, finding-driven remediation routing (a workflow stage)
@@ -3869,6 +3892,10 @@ Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
+and next steps from the existing daemon projection, never current claim authority.
+At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle
+and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.
 It lists parked backlog items too — open issues carrying a park disposition without
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 Shared baseline failures are listed with the subjects waiting on them: runs parked

@@ -36,6 +36,7 @@ import type {
   TelemetryStatsResult,
   TranscriptContent,
   WorkflowDetail,
+  QueueEligibilityView,
   WorkflowPage,
 } from "./types";
 
@@ -169,6 +170,11 @@ export class FixtureDaemonClient implements DaemonClient {
       required(this.fixtures.workflowDetails, fixtureKey(gaggle, workflow), "workflow"),
       options,
     );
+  }
+
+  async getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView> {
+    required(this.fixtures.workflowDetails, fixtureKey(gaggle, workflow), "workflow");
+    return fixture({ gaggle, workflow, asOf: "2026-09-08T00:00:00Z", status: "not-observed", problem: "No queue eligibility observation is included in this fixture." }, options);
   }
 
   // Emulates the daemon's deterministic run listing so filtered and paginated

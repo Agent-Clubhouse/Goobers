@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -462,7 +461,7 @@ func TestPRSelectRoutesOnlyLowRiskTutorChangesToAutomatedReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatal(err)
 	}
 	if selected["number"] != "11" {

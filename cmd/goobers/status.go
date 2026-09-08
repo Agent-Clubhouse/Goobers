@@ -268,6 +268,7 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
+	QueueEligibility  *statusQueueEvidence             `json:"queueEligibility,omitempty"`
 	EngineFallbacks   []readmodel.EngineFallback       `json:"engineFallbacks,omitempty"`
 	Warnings          []validate.CodedWarning          `json:"warnings"`
 	TimeToFirstPR     *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
@@ -678,6 +679,10 @@ const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phas
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
+	"PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,\n" +
+	"and next steps from the existing daemon projection, never current claim authority.\n" +
+	"At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle\n" +
+	"and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.\n" +
 	"It lists parked backlog items too — open issues carrying a park disposition without\n" +
 	"goobers:ready, which backlog selection can no longer see and no workflow re-readies.\n" +
 	"Shared baseline failures are listed with the subjects waiting on them: runs parked\n" +
@@ -948,6 +953,8 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			return "", nil
 		}
 		var text strings.Builder
+		queue := loadStatusQueueEvidence(ctx, sources, set.Workflows, *gaggleFilter, *workflowFilter)
+		text.WriteString(statusQueueText(queue))
 		timeToFirstPR, err := timeToFirstPRCache.Load(ctx)
 		if err != nil {
 			text.WriteString(timeToFirstPRStatusUnavailableText(err))
@@ -1083,6 +1090,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			baselineBlockers = &snapshot
 		}
 		output := statusJSONOutput{
+			QueueEligibility:  optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
 			EngineFallbacks:   engineFallbacks,
 			Warnings:          warnings,
 			TimeToFirstPR:     timeToFirstPR,
