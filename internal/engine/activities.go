@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -967,14 +968,7 @@ func (a *Activities) scrubber() journal.Scrubber {
 }
 
 func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
-	full, err := apiv1.ResolveContainedPath(workspace, mutationsSidecarFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, []string{fmt.Sprintf("resolve sidecar path: %v", err)}
-	}
-	data, err := os.ReadFile(full)
+	data, err := mutationsidecar.Read(workspace)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

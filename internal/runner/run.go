@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -5290,9 +5291,8 @@ type mutationFact struct {
 // describes already happened for real regardless of whether this sidecar
 // can be trusted, so failing the stage over it would be disproportionate
 // (and a way for a compromised subcommand to sabotage an otherwise-successful
-// stage). ResolveContainedPath still applies the #120 path/symlink-escape
-// containment check others use for declared-output files, so a malicious
-// sidecar path is never followed.
+// stage). The shared bounded reader opens relative to the workspace directory,
+// refuses symlinks and nonregular files, and rejects oversized handoffs.
 //
 // Unlike the read path before #2029, a present-but-corrupt sidecar (an
 // escape/containment failure, a read error other than absence, or a
@@ -5301,18 +5301,7 @@ type mutationFact struct {
 // best-effort journal signal, since a lost mutation record must at least be
 // observable even though it can't be allowed to fail the stage.
 func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
-	full, err := apiv1.ResolveContainedPath(workspace, mutationsSidecarFile)
-	if err != nil {
-		// ResolveContainedPath's own EvalSymlinks requires the target to
-		// exist, so a sidecar that was never written (the overwhelmingly
-		// common case) surfaces here, not just from the ReadFile below —
-		// still benign, not an issue.
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, []string{fmt.Sprintf("resolve sidecar path: %v", err)}
-	}
-	data, err := os.ReadFile(full)
+	data, err := mutationsidecar.Read(workspace)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

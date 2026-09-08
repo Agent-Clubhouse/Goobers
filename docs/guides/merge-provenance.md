@@ -74,6 +74,12 @@ merge timestamp, not the PR's last-update timestamp.
 
 ## Bounds and coverage
 
+Local and Temporal stage readers reject mutation sidecars larger than 16 MiB
+or 10,000 lines rather than decoding a partial receipt set. Sidecars must be
+regular files; symlink leaves and special files are refused. Read failures are
+reported as provenance diagnostics, not interpreted as evidence of no mutation.
+These read bounds do not close the crash-recovery gap described below.
+
 The interval includes `--since` and excludes `--until`. The default is seven
 days; the maximum is 90 days. More than 10,000 telemetry events or raw forge
 records causes an error, not a partial count. Forge scanning also has a
