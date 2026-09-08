@@ -77,6 +77,40 @@ repos:
 Omitting `auth` while configuring `token` preserves the legacy PAT behavior.
 Token files must pass Goobers' private-file permission check.
 
+Select scopes for the operations you enable, not full access:
+
+| Operation | PAT scope |
+| --- | --- |
+| Read repository content | Code (read), `vso.code` |
+| Push branches and create pull requests | Code (read and write), `vso.code_write` |
+| Query the Boards backlog and validate its project | Work Items (read), `vso.work` |
+| Seed tasks, update tags, and mutate work items | Work Items (read and write), `vso.work_write` |
+| Publish PR status evidence | Code (status), `vso.code_status` |
+
+These are Azure DevOps scopes, not Goobers stage capabilities. The identity also
+needs access to the target organization, repository and Boards project; scopes
+do not override branch policies or project permissions. See Microsoft's
+[scope reference](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/oauth?view=azure-devops)
+and [PR status API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses/create?view=azure-devops-rest-7.1).
+
+For the PAT-based onboarding path, `connect --seed` uses the same named token
+for Git reachability and Boards creation. `validate --check-repos` separately
+checks Boards read access. See the [production onboarding guide](arbitrary-repo-onboarding.md#3-initialize-the-instance).
+
+## Publishing review and CI evidence
+
+`goobers report-pr-status` is a workflow stage that publishes a provider-native
+Azure DevOps PR status. Place it after successful review and local-CI gates;
+its default `succeeded` state relies on that ordering and is not an independent
+test runner. Feed `prNumber` from the `open-pr` result through task inputs.
+
+The default status context is genre `goobers`, name `validation`. Inputs also
+allow `state` (`succeeded`, `failed`, or `pending`), `description`, `targetUrl`,
+and `resultFile`. Configure the repository's status-check branch policy to
+require the intended context; publishing status does not install a policy or
+bypass other required checks. Run `goobers report-pr-status --help` for the
+current input contract.
+
 ## Runtime environment
 
 The `goober-runtime` worker that read these sources from `GOOBERS_ADO_*`

@@ -108,6 +108,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate, standardInitTemplate}, desc: "Seed a named onboarding template"},
 		{name: "ci-command", takesArg: true, desc: "With --template=standard, local CI command as JSON argv"},
 		{name: "required-capabilities", takesArg: true, desc: "With --template=standard, comma-separated toolchain capabilities"},
+		{name: "provider", takesArg: true, values: []string{"github", "ado"}, desc: "With --template=standard, repository provider"},
 		{name: "harness", takesArg: true, values: []string{string(apiv1.HarnessCopilot), string(apiv1.HarnessClaudeCode)}, desc: "With --template, the harness every seeded goober uses"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
 		{name: "json", desc: "Emit the config-source action result as JSON"},
