@@ -54,6 +54,12 @@ func ReadInventory(ctx context.Context, root string, maxEntries int) ([]Inventor
 		if name == ".inventory.lock" {
 			continue
 		}
+		if isRetiredName(name) {
+			if err := validateRetiredDirectory(root, name); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		entry, err := readInventoryEntry(root, name)
 		if err != nil {
 			return nil, fmt.Errorf("inspect recovery reservation %s: %w", name, err)
