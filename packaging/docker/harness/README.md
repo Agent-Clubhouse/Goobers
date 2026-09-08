@@ -58,7 +58,7 @@ still belong in the invocation's writable home/workspace and are never image
 inputs.
 
 Pins were resolved from the public npm manifests for
-[`@github/copilot`](https://registry.npmjs.org/@github/copilot/1.0.80) and
+[`@github/copilot`](https://registry.npmjs.org/@github/copilot/1.0.83) and
 [`@anthropic-ai/claude-code`](https://registry.npmjs.org/@anthropic-ai/claude-code/2.1.263)
 and their exact optional platform packages. Updating a pin requires checking the
 new package's native runtime and launcher behavior, repeating the restricted

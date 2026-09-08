@@ -22,11 +22,11 @@ func pinnedHarness(name, arch string) (harnessPin, error) {
 	var pkg string
 	switch name + "/" + arch {
 	case "copilot/amd64":
-		pkg, p.version = "@github/copilot-linux-x64", "1.0.80"
-		p.digest = "aafd72b553700372032bb91c428c3e7c08a40faeede36f8043c5f8d9b2bfee8b9d362bf87eb55930ed328750d821e6d545c9848663ef6d53d8fe9b5550addc6c"
+		pkg, p.version = "@github/copilot-linux-x64", "1.0.83"
+		p.digest = "1b8a5ee7fe1ac6350b305a49054eeb6a7ebdfbeed1227e709459fc5cc857685102075f1c3d539f53b07dc60a0215b1c61404f89004e5e3915af5db6c84a50d9a"
 	case "copilot/arm64":
-		pkg, p.version = "@github/copilot-linux-arm64", "1.0.80"
-		p.digest = "f285f037696ec871232284a4f009004c18d70e146842dba252f0bddc6a5f40a14723e2357a8395c08b00ab97ca3fc8cd085dab3ab60521c4e3c2646ddfc90271"
+		pkg, p.version = "@github/copilot-linux-arm64", "1.0.83"
+		p.digest = "a60552eb4797d66549f0c168f520ec6a53365f911acb0abafeb58983aae81c463818736e231deb1c521d9e841f6dc20772e198a47b90ff005b5a24a030a74d11"
 	case "claude/amd64":
 		pkg, p.version = "@anthropic-ai/claude-code-linux-x64", "2.1.263"
 		p.digest = "d08aefa4b77fd053f469c430e7d4f80afc7faf89f0017281ad6d16ca1217ca6cd85aeacf08bced07e21cbbd32479ec00508fa9dcf4d7b127e68a5bff9fa5e501"
