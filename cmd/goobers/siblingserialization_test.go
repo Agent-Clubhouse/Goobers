@@ -146,7 +146,7 @@ func TestApplyVerdictOrderingPublishesClusterEvidenceWithoutOverlapSet(t *testin
 			name:           "loser is parked with cluster evidence and no election",
 			selectedNumber: 31,
 			findings:       []apiv1.Finding{blockedFinding(30)},
-			wantDecision:   apiv1.VerdictNeedsChanges,
+			wantDecision:   apiv1.VerdictDefer,
 			wantElected:    false,
 		},
 	} {
@@ -195,6 +195,9 @@ func TestApplyVerdictOrderingPublishesClusterEvidenceWithoutOverlapSet(t *testin
 			}
 			if posted.Decision != tc.wantDecision {
 				t.Fatalf("posted.Decision = %q, want %q", posted.Decision, tc.wantDecision)
+			}
+			if posted.Decision == apiv1.VerdictDefer && posted.ReasonCode != apiv1.VerdictReasonOrdering {
+				t.Fatalf("ordering deferral has no structured reason: %+v", posted)
 			}
 			if posted.Elected != tc.wantElected {
 				t.Fatalf("posted.Elected = %v, want %v", posted.Elected, tc.wantElected)

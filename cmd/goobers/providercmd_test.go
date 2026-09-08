@@ -1202,7 +1202,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			_, _ = fmt.Fprint(w, `{"message":"Not Found","documentation_url":"https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request"}`)
 			return
 		}
-		if pr.selfReview {
+		if pr.selfReview && (body.Event == "APPROVE" || body.Event == "REQUEST_CHANGES") {
 			// GitHub's exact categorical refusal (#870): author == reviewer.
 			verb := "approve"
 			if body.Event == "REQUEST_CHANGES" {
@@ -1218,6 +1218,8 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			state = "APPROVED"
 		case "REQUEST_CHANGES":
 			state = "CHANGES_REQUESTED"
+		case "COMMENT":
+			state = "COMMENTED"
 		default:
 			http.Error(w, "bad review event", http.StatusUnprocessableEntity)
 			return

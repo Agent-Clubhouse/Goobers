@@ -1186,9 +1186,7 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		if r.Operator.Issue != nil && r.Operator.Issue.Title != "" {
 			pf(stdout, "  work: #%s %s\n", r.Operator.Issue.Number, r.Operator.Issue.Title)
 		}
-		if r.Operator.Review != nil && r.Operator.Review.Rationale != "" {
-			pf(stdout, "  review %s: %s\n", r.Operator.Review.Verdict, r.Operator.Review.Rationale)
-		}
+		renderStatusReview(stdout, r.Operator.Review)
 		if len(r.Operator.PotentialBlockers) > 0 {
 			pf(stdout, "  blockers: %s\n", strings.Join(r.Operator.PotentialBlockers, "; "))
 		}
@@ -1198,6 +1196,20 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 			pf(stdout, "  diagnostics limited (not a run blocker): %s\n",
 				strings.Join(r.Operator.DiagnosticsLimitations, "; "))
 		}
+	}
+}
+
+func renderStatusReview(stdout io.Writer, review *readservice.OperatorReview) {
+	if review == nil {
+		return
+	}
+	if review.Rationale != "" {
+		pf(stdout, "  review %s: %s\n", review.Verdict, review.Rationale)
+	}
+	if review.ReasonCode != "" {
+		pf(stdout, "  review reason: %s\n", review.ReasonCode)
+	} else if review.LegacyFailAmbiguous || review.Verdict == string(apiv1.VerdictFail) {
+		pf(stdout, "  review reason: %s\n", legacyFailAmbiguous)
 	}
 }
 
