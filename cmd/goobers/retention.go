@@ -185,7 +185,7 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 			pf(stdout, "retention deleted rule=%s kind=%s %s reclaimedBytes=%d\n", result.Rule, result.Kind, target, result.BytesReclaimed)
 		}
 	}
-	return nil
+	return reapConfiguredRecovery(ctx, l, cfg, stdout, stderr)
 }
 
 func retentionManagers(l instance.Layout, setup *schedulerSetup) ([]*worktree.Manager, map[string]string, error) {
