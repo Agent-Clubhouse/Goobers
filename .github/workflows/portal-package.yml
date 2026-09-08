@@ -1,0 +1,73 @@
+name: Portal package
+on:
+  pull_request:
+    paths:
+      - "portal/**"
+      - ".github/workflows/portal-package.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package SemVer (empty creates a development artifact)"
+        required: false
+        type: string
+      release:
+        description: "Publish a new portal-v<version> release from main"
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: portal
+      - run: npm run typecheck && npm test -- src/package.test.tsx src/App.test.tsx src/liveData.test.tsx
+        working-directory: portal
+      - run: npm run package:portal && npm run test:package
+        working-directory: portal
+        env:
+          GOOBERS_PORTAL_PACKAGE_VERSION: ${{ inputs.version }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: goobers-portal-${{ github.sha }}
+          path: |
+            portal/.portal-package/*.tgz
+            portal/.portal-package/*.sha256
+            portal/.portal-package/package/portal-artifact.json
+          if-no-files-found: error
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main' && inputs.version != ''
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: goobers-portal-${{ github.sha }}
+          path: portal-package
+      - name: Create immutable-name portal release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PACKAGE_VERSION -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw 'A SemVer package version is required.'
+          }
+          $assets = @(Get-ChildItem portal-package -Recurse -File | ForEach-Object FullName)
+          gh release create "portal-v$env:PACKAGE_VERSION" @assets --target $env:SOURCE_SHA --title "Portal $env:PACKAGE_VERSION" --notes "Reusable portal package built from $env:SOURCE_SHA." --latest=false
+          if ($LASTEXITCODE) { throw 'Release creation failed; existing releases are never overwritten.' }

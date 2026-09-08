@@ -9,7 +9,7 @@ import {
   type ConfigurationWarningSource,
   useConfigurationWarnings,
 } from "./configurationWarnings";
-import { LiveDataProvider } from "./liveData";
+import { LiveDataProvider, type LiveDataConfig } from "./liveData";
 import {
   createPortalDiagnostics,
   type PortalDiagnostics,
@@ -46,19 +46,23 @@ export function App({
   client = daemonClient,
   warningClient = client,
   diagnostics = portalDiagnostics,
+  mode = dashboardMode(),
+  cursorScope,
+  liveDataConfig,
 }: {
   client?: DaemonClient;
   warningClient?: ConfigurationWarningClient;
   diagnostics?: PortalDiagnostics;
+  mode?: DashboardMode;
+  cursorScope?: string;
+  liveDataConfig?: Partial<LiveDataConfig>;
 } = {}) {
-  const mode = dashboardMode();
-
   if (mode === "getting-started") {
     return <GettingStartedApplication />;
   }
 
   return (
-    <LiveDataProvider client={client} diagnostics={diagnostics}>
+    <LiveDataProvider client={client} diagnostics={diagnostics} cursorScope={cursorScope} config={liveDataConfig}>
       <Portal client={client} mode={mode} warningClient={warningClient} />
     </LiveDataProvider>
   );

@@ -1,0 +1,8 @@
+{
+  "entry": [
+    "src/main.tsx!",
+    "src/package-entry.ts!",
+    "scripts/package-portal.mjs!",
+    "scripts/test-portal-package.mjs!"
+  ]
+}
