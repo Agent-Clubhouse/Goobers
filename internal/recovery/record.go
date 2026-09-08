@@ -1,0 +1,94 @@
+// Package recovery describes retained implementation state independently of
+// the lifetime of a run's worktree or its provider-visible branch.
+package recovery
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/goobers/goobers/providers"
+)
+
+var (
+	runIdentity = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$`)
+	gitObjectID = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+	patchDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
+
+// Record binds a retained ref to its original base, exact patch bytes, owner,
+// and recovery deadline. It is not proof that the referenced objects exist;
+// capture must verify durability before publishing it or authorizing cleanup.
+type Record struct {
+	Version       int       `json:"version"`
+	RunID         string    `json:"runId"`
+	RepositoryKey string    `json:"repositoryKey"`
+	Ref           string    `json:"ref"`
+	BaseSHA       string    `json:"baseSha"`
+	SnapshotSHA   string    `json:"snapshotSha"`
+	PatchDigest   string    `json:"patchDigest"`
+	CreatedAt     time.Time `json:"createdAt"`
+	RetainUntil   time.Time `json:"retainUntil"`
+}
+
+// RefForRun returns a private Git ref, never a provider branch name. Rejecting
+// arbitrary ref syntax prevents a restore or reap request from naming main.
+func RefForRun(runID string) (string, error) {
+	if !runIdentity.MatchString(runID) {
+		return "", fmt.Errorf("invalid recovery run identity")
+	}
+	return "refs/goobers/recovery/" + runID, nil
+}
+
+// Validate verifies record shape, not artifact existence or merge state.
+func (r Record) Validate() error {
+	if r.Version != 1 {
+		return fmt.Errorf("unsupported recovery record version")
+	}
+	ref, err := RefForRun(r.RunID)
+	if err != nil {
+		return err
+	}
+	if r.Ref != ref {
+		return fmt.Errorf("recovery ref does not match run identity")
+	}
+	if !validRepositoryKey(r.RepositoryKey) {
+		return fmt.Errorf("invalid recovery repository identity")
+	}
+	if !gitObjectID.MatchString(r.BaseSHA) || !gitObjectID.MatchString(r.SnapshotSHA) || len(r.BaseSHA) != len(r.SnapshotSHA) {
+		return fmt.Errorf("invalid recovery Git object identity")
+	}
+	if !patchDigest.MatchString(r.PatchDigest) {
+		return fmt.Errorf("invalid recovery patch digest")
+	}
+	if r.CreatedAt.IsZero() || r.RetainUntil.IsZero() || !r.RetainUntil.After(r.CreatedAt) {
+		return fmt.Errorf("recovery deadline must follow capture time")
+	}
+	return nil
+}
+
+func validRepositoryKey(key string) bool {
+	if len(key) > 4096 || !utf8.ValidString(key) || strings.ContainsAny(key, "\x00\r\n") {
+		return false
+	}
+	parts := strings.Split(key, "|")
+	if len(parts) != 6 || parts[3] == "" || parts[4] == "" {
+		return false
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderKind(parts[0]), URL: parts[1], Project: parts[2], Owner: parts[3], Name: parts[4], ID: parts[5]}
+	if repo.CanonicalKey() != key {
+		return false
+	}
+	switch repo.Provider {
+	case providers.ProviderGitHub:
+		return true
+	case providers.ProviderADO:
+		return repo.Project != ""
+	case providers.ProviderGitea:
+		return repo.URL != ""
+	default:
+		return false
+	}
+}
