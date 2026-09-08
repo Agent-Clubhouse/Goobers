@@ -1,6 +1,8 @@
 package harness
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,14 +34,45 @@ func copilotUsageCapture(reported string) string {
 	return "session-transcript"
 }
 
-func prepareCopilotUsageOutput(req RunRequest, argv []string) ([]string, string, func()) {
+// copilotCapturePaths owns both captures for one invocation, so a failed
+// launcher handshake also releases any usage directory prepared before it.
+type copilotCapturePaths struct {
+	argv, env                 []string
+	transcriptPath, usagePath string
+	cleanup                   func()
+}
+
+func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequest, argv, env []string) (copilotCapturePaths, error) {
+	argv, usagePath, cleanupUsage, err := prepareCopilotUsageOutput(req, argv)
+	if err != nil {
+		return copilotCapturePaths{}, err
+	}
+	argv, env, transcriptPath, cleanupSession, err := c.prepareLauncherSession(ctx, req.Workspace, argv, env)
+	if err != nil {
+		cleanupUsage()
+		return copilotCapturePaths{}, err
+	}
+	return copilotCapturePaths{
+		argv: argv, env: env, transcriptPath: transcriptPath, usagePath: usagePath,
+		cleanup: func() { cleanupSession(); cleanupUsage() },
+	}, nil
+}
+
+func prepareCopilotUsageOutput(req RunRequest, argv []string) ([]string, string, func(), error) {
 	if !copilotSupportsUsageOutput(req.HarnessVersion) {
 		// Unknown versions retain the same isolated native-session accounting as
 		// older CLIs. No stale usage file may upgrade that fallback's cost basis.
-		return argv, "", func() {}
+		return argv, "", func() {}, nil
 	}
-	relative := filepath.Join(".goobers", "copilot-usage.json")
-	path := filepath.Join(req.Workspace, relative)
-	_ = os.Remove(path)
-	return append(argv, "--usage-output-file", relative), path, func() { _ = os.Remove(path) }
+	// The prompt has already established .goobers as writable. Keep capture
+	// inside it (and therefore inside the sandbox's workspace grant), but use
+	// a new private directory for EVERY invocation. Cleanup can fail or the
+	// host can crash: neither makes an old document eligible for the next run.
+	dir, err := os.MkdirTemp(filepath.Join(req.Workspace, ".goobers"), "copilot-usage-")
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("prepare fresh Copilot usage capture: %w", err)
+	}
+	relative := filepath.Join(".goobers", filepath.Base(dir), "usage.json")
+	path := filepath.Join(dir, "usage.json")
+	return append(argv, "--usage-output-file", relative), path, func() { _ = os.RemoveAll(dir) }, nil
 }

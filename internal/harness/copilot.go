@@ -844,15 +844,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			argv = append(argv, "--disable-builtin-mcps")
 		}
 	}
-	nativeTranscriptPath := ""
-	argv, usageOutputPath, cleanupUsage := prepareCopilotUsageOutput(req, argv)
-	defer cleanupUsage()
-	var cleanupSession func()
-	argv, env, nativeTranscriptPath, cleanupSession, err = c.prepareLauncherSession(ctx, req.Workspace, argv, env)
+	captures, err := c.prepareCopilotCaptures(ctx, req, argv, env)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
-	defer cleanupSession()
+	defer captures.cleanup()
+	argv, env = captures.argv, captures.env
+	nativeTranscriptPath, usageOutputPath := captures.transcriptPath, captures.usagePath
 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
