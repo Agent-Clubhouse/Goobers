@@ -3,6 +3,8 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -15,7 +17,7 @@ import (
 // when), the interrupted attempt's structured infrastructure failure outcome,
 // both attempts' placement, the successor's infra start class and fresh pod,
 // and the run's successful terminal event."
-const KillMatrixObserver = "CellInjectionRecord (D5) + StageAttempt.RetryFailureClass==\"infra\" + typed infrastructure cause + successor Class==\"infra\" + both Placement.Pod + run terminal phase"
+const KillMatrixObserver = "CellInjectionRecord (D5) + InjectedTarget matches interrupted Placement.Pod/Node + StageAttempt.RetryFailureClass==\"infra\" + typed infrastructure cause + successful successor Class==\"infra\" + both Placement.Pod + run terminal phase"
 
 // StageClass is the kill matrix's first axis (goobernetes-smoke.md §2/S6):
 // the three stage classes one smoke run's kill matrix covers. This is a
@@ -105,6 +107,9 @@ type CellInjectionRecord struct {
 	RunID string         `json:"runId"`
 	// InjectedAt and InjectedTarget record D5's "what was killed, when" —
 	// InjectedTarget is a pod name or node name depending on Cell.Failure.
+	// InjectedAt comes from the injection observer, while attempt timestamps
+	// come from the journal. No shared-clock or maximum-skew contract is
+	// declared, so the observer does not infer a strict interval across them.
 	InjectedAt     time.Time `json:"injectedAt"`
 	InjectedTarget string    `json:"injectedTarget"`
 	// InterruptedAttempt is the attempt that was executing when the
@@ -130,8 +135,8 @@ type CellInjectionRecord struct {
 // taxonomy, consumed exactly as the failure-streak breaker and
 // success-rate denominator already do (#3364).
 func ClassifyCellResult(record CellInjectionRecord) AssertionResult {
-	if record.InjectedTarget == "" || record.InjectedAt.IsZero() {
-		return invalid(fmt.Sprintf("cell %s: no injection recorded (D5 requires every injection be recorded)", record.Cell), record)
+	if reason := invalidCellInjection(record); reason != "" {
+		return invalid(reason, record)
 	}
 
 	interrupted := record.InterruptedAttempt
@@ -141,14 +146,13 @@ func ClassifyCellResult(record CellInjectionRecord) AssertionResult {
 	if interrupted.ErrorCode == "" || !telemetry.ClassifyError(interrupted.ErrorCode).InfraFault() || !telemetry.ErrorClass(interrupted.ErrorClass).InfraFault() {
 		return classify("", false, fmt.Sprintf("cell %s: interrupted attempt lacks a typed infrastructure cause", record.Cell), nil, record)
 	}
-	if interrupted.Placement == nil || interrupted.Placement.Pod == "" {
-		return invalid(fmt.Sprintf("cell %s: interrupted attempt carries no placement provenance", record.Cell), record)
-	}
-
 	if record.SuccessorAttempt == nil {
 		return classify("", false, fmt.Sprintf("cell %s: no successor attempt recorded — the retry never ran in a fresh pod (S1)", record.Cell), nil, record)
 	}
 	successor := *record.SuccessorAttempt
+	if successor.Status != "success" {
+		return classify("", false, fmt.Sprintf("cell %s: successor attempt did not succeed", record.Cell), nil, record)
+	}
 	if successor.Class != string(journal.AttemptInfra) || successor.Number != interrupted.Number+1 || successor.Visit != interrupted.Visit {
 		return classify("", false, fmt.Sprintf("cell %s: successor is not the interrupted attempt's infrastructure retry", record.Cell), nil, record)
 	}
@@ -164,6 +168,32 @@ func ClassifyCellResult(record CellInjectionRecord) AssertionResult {
 	}
 
 	return classify("", true, "", record, nil)
+}
+
+// Bind the injection to the interrupted attempt before judging recovery.
+// A nonempty target alone could describe an unrelated pod or node.
+func invalidCellInjection(record CellInjectionRecord) string {
+	if strings.TrimSpace(record.RunID) == "" {
+		return fmt.Sprintf("cell %s: no run identity recorded", record.Cell)
+	}
+	if !slices.Contains(KillMatrix(), record.Cell) {
+		return fmt.Sprintf("cell %s: unknown stage class or failure kind", record.Cell)
+	}
+	if record.InjectedTarget == "" || record.InjectedAt.IsZero() {
+		return fmt.Sprintf("cell %s: no injection recorded (D5 requires every injection be recorded)", record.Cell)
+	}
+	placement := record.InterruptedAttempt.Placement
+	if placement == nil || placement.Pod == "" {
+		return fmt.Sprintf("cell %s: interrupted attempt carries no placement provenance", record.Cell)
+	}
+	target := placement.Pod
+	if record.Cell.Failure == FailureKindNodeKill {
+		target = placement.Node
+	}
+	if target == "" || record.InjectedTarget != target {
+		return fmt.Sprintf("cell %s: injected target %q does not match interrupted placement target %q", record.Cell, record.InjectedTarget, target)
+	}
+	return ""
 }
 
 // StaticCellDriver is a CellDriver over a fixed, pre-recorded map of results
