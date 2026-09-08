@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -59,7 +60,18 @@ func TestIntegrationRecoveryBundleSurvivesMissingSourceRepository(t *testing.T) 
 	}
 	restored := t.TempDir()
 	recoveryTestGit(t, restored, "init", "--initial-branch=main")
-	recoveryTestGit(t, restored, "fetch", bundle, record.SnapshotSHA+":refs/heads/recovered")
+	if err := ImportSnapshotBundle(context.Background(), restored, bundle, "sha256:"+strings.Repeat("0", 64), record, 1<<20); err == nil {
+		t.Fatal("unverified archive imported")
+	}
+	if refs := recoveryTestGit(t, restored, "for-each-ref", "--format=%(refname)"); refs != "" {
+		t.Fatalf("bad digest created refs: %s", refs)
+	}
+	if err := ImportSnapshotBundle(context.Background(), restored, bundle, digest, record, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestoreSnapshot(context.Background(), restored, record, record.BaseSHA, "recovered", 1<<20); err != nil {
+		t.Fatalf("restore after source removal: %v", err)
+	}
 	recoveryTestGit(t, restored, "cat-file", "-e", record.BaseSHA+"^{commit}")
 	recoveryTestGit(t, restored, "cat-file", "-e", record.SnapshotSHA+":payload.bin")
 }

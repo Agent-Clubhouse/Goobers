@@ -28,15 +28,18 @@ func WriteSnapshotBundle(ctx context.Context, repository string, record Record, 
 	if err := recoveryGit(ctx, repository, output, "bundle", "create", "--version=3", "-", record.Ref); err != nil {
 		return "", fmt.Errorf("capture recovery bundle: %w", err)
 	}
+	if string(output.header) != expectedBundleHeader(record) {
+		return "", fmt.Errorf("recovery bundle does not contain the expected self-contained snapshot")
+	}
+	return fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
+}
+
+func expectedBundleHeader(record Record) string {
 	format := "sha1"
 	if len(record.SnapshotSHA) == 64 {
 		format = "sha256"
 	}
-	expected := fmt.Sprintf("# v3 git bundle\n@object-format=%s\n%s %s\n\n", format, record.SnapshotSHA, record.Ref)
-	if string(output.header) != expected {
-		return "", fmt.Errorf("recovery bundle does not contain the expected self-contained snapshot")
-	}
-	return fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
+	return fmt.Sprintf("# v3 git bundle\n@object-format=%s\n%s %s\n\n", format, record.SnapshotSHA, record.Ref)
 }
 
 type boundedBundleWriter struct {
