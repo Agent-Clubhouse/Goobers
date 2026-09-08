@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
@@ -21,9 +22,8 @@ func TestIntegrationReleaseSourceAuthorization(t *testing.T) {
 	repository := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = repository
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+filepath.Join(repository, "missing-global-config"))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -76,7 +76,7 @@ func TestIntegrationReleaseSourceAuthorization(t *testing.T) {
 			cmd := exec.Command("bash", "--noprofile", "--norc", "-c", script)
 			cmd.Dir = repository
 			outputFile := filepath.Join(t.TempDir(), "github-output")
-			cmd.Env = append(os.Environ(), "RELEASE_EVENT="+tc.event, "RELEASE_REF="+tc.ref, "EXPECTED_SOURCE="+tc.expected, "GITHUB_OUTPUT="+outputFile)
+			cmd.Env = append(testgit.Environment(), "RELEASE_EVENT="+tc.event, "RELEASE_REF="+tc.ref, "EXPECTED_SOURCE="+tc.expected, "GITHUB_OUTPUT="+outputFile)
 			out, err := cmd.CombinedOutput()
 			if (err == nil) != tc.allowed {
 				t.Fatalf("authorization allowed=%v; want %v: %v\n%s", err == nil, tc.allowed, err, out)
