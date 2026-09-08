@@ -38,6 +38,16 @@ for (const [name, { path, heading }] of Object.entries(ROUTES)) {
     await page.goto(path);
 
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    if (name === "workflow") {
+      const queue = page.getByRole("region", { name: "PR queue eligibility" });
+      await expect(queue.getByRole("table", { name: "Per-PR eligibility" })).toBeVisible();
+      await expect(queue).toContainText("#42");
+      await expect(queue).toContainText("Historical selection evidence—not permission to claim or merge.");
+      await expect(queue).toContainText("Partial provider snapshot");
+      await expect(queue).toContainText("2 matching PRs; 1 omitted");
+      await expect(queue).toContainText("Provider claimed label: present");
+      await expect(queue).toContainText("Check other instances before reconciling the label.");
+    }
     expect(consoleErrors).toEqual([]);
   });
 }

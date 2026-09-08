@@ -281,6 +281,23 @@ const responses = new Map([
   ],
   ["/api/v1/gaggles/core/workflows", { items: [workflow], page }],
   ["/api/v1/gaggles/core/workflows/implementation", workflowDetail],
+  ["/api/v1/gaggles/core/workflows/implementation/queue-eligibility", {
+    gaggle: "core", workflow: "implementation", asOf: "2026-09-08T00:01:00Z",
+    status: "observed", sourceRunId: "queue-observation",
+    report: {
+      version: 1, repositoryKey: "github|||Agent-Clubhouse|Goobers|", gaggle: "core",
+      workflow: "implementation", runId: "queue-observation", observedAt: "2026-09-08T00:00:00Z",
+      completeSnapshot: false, matchingItems: 2, omittedItems: 1,
+      items: [{
+        number: 42, eligible: false, reason: "escalated, human action required",
+        nextStep: "Resolve the escalation and request a human retry.",
+        claim: {
+          state: "unclaimed", providerClaimLabel: true, comparison: "provider-label-without-live-local-lease",
+          nextStep: "Check other instances before reconciling the label.",
+        },
+      }],
+    },
+  }],
   [
     "/api/v1/gaggles/core/connections",
     {
