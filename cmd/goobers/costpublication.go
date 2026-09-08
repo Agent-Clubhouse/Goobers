@@ -35,9 +35,11 @@ func resolveCostPublication(root, gaggle string, repo providers.RepositoryRef) (
 		// Unscoped legacy calls without a definitions tree retain the default.
 		return cfg.CostReportingEnabled(nil), nil
 	}
-	set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		return false, errors.New("gaggle configuration is unreadable or invalid")
+		// Preserve structured findings for callers without exposing raw config
+		// values through the optional publication warning.
+		return false, &configReportError{report: report, err: errors.New("gaggle configuration is unreadable or invalid")}
 	}
 	if gaggle != "" {
 		for i := range set.Gaggles {

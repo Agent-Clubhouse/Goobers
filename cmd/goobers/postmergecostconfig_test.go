@@ -58,9 +58,9 @@ func TestCostPublicationLoadsGaggleOverride(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := initDemo(t)
 			layout := instance.NewLayout(root)
-			set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+			set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 			if err != nil || len(set.Gaggles) != 1 {
-				t.Fatalf("load demo: %v", err)
+				t.Fatalf("load demo: %v (report: %+v)", err, report)
 			}
 			gaggle := set.Gaggles[0].Name
 			source, ok := set.GaggleSource(gaggle)

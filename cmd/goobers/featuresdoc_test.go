@@ -78,6 +78,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"WorkflowSpec.Parallels": {"workflow.spec.parallels"},
 
 		"GaggleSpec.DisplayName":  {"gaggle.spec.displayName"},
+		"GaggleSpec.Cost":         {"gaggle.spec.cost.enabled"},
 		"GaggleSpec.SelfIdentity": {"gaggle.spec.selfIdentity"},
 		"GaggleSpec.Project": {
 			"gaggle.spec.project",

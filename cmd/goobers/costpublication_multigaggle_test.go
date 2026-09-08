@@ -17,9 +17,9 @@ import (
 func mixedCostGaggles(t *testing.T, root string) (string, string) {
 	t.Helper()
 	layout := instance.NewLayout(root)
-	set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load demo: %v (report: %+v)", err, report)
 	}
 	if len(set.Gaggles) != 1 {
 		t.Fatal("expected single demo gaggle")

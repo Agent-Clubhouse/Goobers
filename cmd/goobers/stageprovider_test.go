@@ -154,9 +154,9 @@ func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 func TestStageAttributionIncludesCurrentRunCostReceipt(t *testing.T) {
 	root := initDemo(t)
 	runID := "run-123456789"
-	set, _, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
 	if err != nil || len(set.Gaggles) != 1 {
-		t.Fatalf("load demo gaggle: %v", err)
+		t.Fatalf("load demo gaggle: %v (report: %+v)", err, report)
 	}
 	gaggle := set.Gaggles[0].Name
 	now := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)

@@ -15,6 +15,7 @@ gaggle.spec.backlog.provider.gitea                 2.0          ga              
 gaggle.spec.backlog.provider.github                2.0          ga               supported        dev
 gaggle.spec.branchNamespace                        2.0          ga               supported        dev
 gaggle.spec.ciCommand                              2.0          ga               supported        dev
+gaggle.spec.cost.enabled                           2.0          ga               supported        v0.4.0
 gaggle.spec.displayName                            2.0          ga               supported        dev
 gaggle.spec.isolation.identityRef                  2.0          ga               supported        dev
 gaggle.spec.isolation.namespace                    2.0          ga               supported        dev
@@ -182,4 +183,4 @@ workflow.terminal.abort                            2.0          ga              
 workflow.terminal.complete                         2.0          ga               supported        dev
 workflow.terminal.escalate                         2.0          ga               supported        dev
 
-182 feature/version row(s)
+183 feature/version row(s)
