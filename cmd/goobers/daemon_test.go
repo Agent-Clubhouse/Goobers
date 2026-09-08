@@ -775,6 +775,41 @@ func TestBuildReadModelIfNeededCompletesReconstructionBeforeReady(t *testing.T) 
 	}
 }
 
+func TestBuildReadModelIfNeededIgnoresCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	l := instance.NewLayout(t.TempDir())
+	createTerminalRun(t, l.ForGaggle("example"), "cancelled-context-run")
+	store, err := readmodel.Open(l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	before, err := store.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Ready {
+		t.Fatal("fresh projection is ready before its journal build")
+	}
+	if err := buildReadModelIfNeeded(ctx, store, before, l); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Ready {
+		t.Fatal("projection stays unready when startup context was already canceled")
+	}
+	if _, ok, err := store.GetRun(context.Background(), "cancelled-context-run"); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("projection was not reconstructed despite a canceled startup context")
+	}
+}
+
 // TestUpDisableReadModelReadsFlagStartsCleanly is the operator-facing half of
 // #2036's rollback fix: --disable-read-model-reads must parse and let `goobers
 // up` start normally (the mechanism itself — that it actually forces the
