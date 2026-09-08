@@ -446,10 +446,21 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
       - name: Download fully signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: dist-signed
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
           path: dist
       - name: Execute native release binary
         shell: bash
@@ -521,10 +532,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
       - name: Download fully signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: dist-signed
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
           path: dist
       - name: Download original image inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -640,10 +662,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: pwsh
+        run: |
+          if ($env:ARTIFACT_ID -cnotmatch '\A[1-9][0-9]*\z') {
+            throw 'Expected one positive decimal artifact ID; refusing download-all fallback.'
+          }
       - name: Download fully signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: dist-signed
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
           path: dist
       - name: Download original image inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -783,6 +814,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
       - name: Download signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
@@ -952,12 +993,32 @@ jobs:
           fi
           echo "commit=$event_commit" >> "$GITHUB_OUTPUT"
 
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
       - name: Download immutable final signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
           merge-multiple: true
           path: dist
+      - name: Validate generated notes artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.validate-release.outputs.notes-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
       - name: Download validated release notes as data
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:

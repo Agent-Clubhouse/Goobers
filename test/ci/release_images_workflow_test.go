@@ -64,7 +64,11 @@ func TestReleaseNativeImageJobsImportSignedArtifactsWithoutRebuild(t *testing.T)
 			retains, uploads, checkout := false, false, false
 			for _, step := range job.Steps {
 				commands.WriteString(step.Run)
-				downloads[step.With["name"]] = step.With["path"]
+				key := step.With["name"]
+				if step.With["artifact-ids"] == "${{ needs.sign-windows.outputs.signed-artifact-id }}" && step.With["merge-multiple"] == "true" {
+					key = "dist-signed"
+				}
+				downloads[key] = step.With["path"]
 				if step.Name == "Checkout authorized image tooling" {
 					checkout = step.With["ref"] == "${{ needs.build.outputs.source-commit }}" && step.With["persist-credentials"] == "false"
 				}

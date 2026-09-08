@@ -22,7 +22,7 @@ func TestReleasePublisherNeverExecutesReleaseContent(t *testing.T) {
 	publisher := workflow.Jobs["verify-and-publish"]
 	// Keep an exact step allowlist: introducing another executable verification
 	// step into this contents:write job must require deliberate policy review.
-	expected := []string{"Checkout", "Authorize release source", "Download immutable final signed artifacts", "Download validated release notes as data", "Publish GitHub Release"}
+	expected := []string{"Checkout", "Authorize release source", "Validate final signed artifact ID", "Download immutable final signed artifacts", "Validate generated notes artifact ID", "Download validated release notes as data", "Publish GitHub Release"}
 	if len(publisher.Steps) != len(expected) {
 		t.Fatalf("publisher acquired extra executable steps: %d", len(publisher.Steps))
 	}
@@ -72,7 +72,7 @@ func TestReleasePublisherUsesImmutableSignerAndNotesArtifactIDs(t *testing.T) {
 	if validation.Outputs["notes-artifact-id"] != "${{ steps.release-notes-upload.outputs.artifact-id }}" {
 		t.Fatal("validation must expose a separate notes artifact identity")
 	}
-	for _, jobName := range []string{"validate-release", "verify-and-publish"} {
+	for _, jobName := range []string{"native-smoke", "native-linux-images", "native-windows-image", "validate-release", "verify-and-publish"} {
 		for _, step := range workflow.Jobs[jobName].Steps {
 			switch step.With["path"] {
 			case "dist":
@@ -88,5 +88,36 @@ func TestReleasePublisherUsesImmutableSignerAndNotesArtifactIDs(t *testing.T) {
 				t.Fatal("validation may transfer only notes, never mutated release assets")
 			}
 		}
+	}
+}
+
+func TestReleaseArtifactIDDownloadsCannotFallBackToAllArtifacts(t *testing.T) {
+	workflow := loadReleaseAuthorizationWorkflow(t)
+	downloads := 0
+	for jobName, job := range workflow.Jobs {
+		for index, step := range job.Steps {
+			identifier := step.With["artifact-ids"]
+			if identifier == "" {
+				continue
+			}
+			downloads++
+			if index == 0 {
+				t.Fatalf("%s artifact ID download has no preceding guard", jobName)
+			}
+			guard := job.Steps[index-1]
+			if guard.Env["ARTIFACT_ID"] != identifier || guard.If != "" || guard.ContinueOnError || step.If != "" || step.ContinueOnError || step.With["name"] != "" || step.With["pattern"] != "" || step.With["merge-multiple"] != "true" {
+				t.Fatalf("%s artifact download can bypass identity guard", jobName)
+			}
+			if jobName == "native-windows-image" {
+				if guard.Shell != "pwsh" || !strings.Contains(guard.Run, `-cnotmatch '\A[1-9][0-9]*\z'`) || !strings.Contains(guard.Run, "throw ") {
+					t.Fatal("Windows artifact identity guard is not fail-closed")
+				}
+			} else if guard.Shell != "bash" || !strings.Contains(guard.Run, `"${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$`) || !strings.Contains(guard.Run, "exit 1") {
+				t.Fatalf("%s artifact identity guard is not fail-closed", jobName)
+			}
+		}
+	}
+	if downloads != 6 {
+		t.Fatalf("expected six guarded immutable downloads, got %d", downloads)
 	}
 }

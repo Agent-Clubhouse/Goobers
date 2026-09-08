@@ -437,7 +437,9 @@ publication. The separate `verify-and-publish` job independently downloads the
 final signer artifact by immutable artifact ID, checks the exact release asset
 set and every checksum, and uploads an explicit file list. It treats the
 validation job’s generated release notes as data and never executes release
-binaries, installers, or build tools with publication permission.
+binaries, installers, or build tools with publication permission. Every
+post-signing gate uses that same immutable artifact ID; missing, malformed, or
+multiple IDs fail before download rather than selecting all run artifacts.
 
 This supersedes the earlier #2039 decision to publish Linux ARM64 and macOS
 AMD64 without execution coverage. Native smoke proves startup and packaged
