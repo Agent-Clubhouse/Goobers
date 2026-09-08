@@ -65,6 +65,7 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	verdictData, err := json.Marshal(map[string]any{
 		"decision":  "needs-changes",
 		"rationale": "Add operator-facing claim drift.",
+		"findings":  []map[string]any{{"severity": "error", "class": "substantive", "message": "Claim drift is invisible."}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,6 +147,9 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 		got.Review == nil || got.Review.Verdict != "needs-changes" ||
 		got.Review.Rationale != "Add operator-facing claim drift." {
 		t.Fatalf("error/review = %+v", got)
+	}
+	if len(got.Review.Findings) != 1 || got.Review.Findings[0].Message != "Claim drift is invisible." || got.Review.LegacyFailAmbiguous {
+		t.Fatalf("journal-backed review lost findings: %+v", got.Review)
 	}
 	if got.NextTransition != "finish implementation" || len(got.PotentialBlockers) != 2 {
 		t.Fatalf("next/blockers = %+v", got)

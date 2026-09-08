@@ -785,6 +785,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	posted = orderingDeferralVerdict(posted)
 	verdictAuthor, err := prProvider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
@@ -968,7 +969,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	} else {
 		pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
 	}
-	return writeApplyVerdictResultWithPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, priorityDispatchRequested, stderr)
+	return writeApplyVerdictResultWithReasonAndPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, publishedVerdictReason(posted), priorityDispatchRequested, stderr)
 }
 
 // verdictEscalationStillBlocks reads the merge-escalation self-heal state for
@@ -1848,6 +1849,9 @@ func readLatestGateVerdict(root, runID, gateName string) (*apiv1.Verdict, error)
 // driftable channel.
 func renderVerdictComment(v apiv1.Verdict) string {
 	s := fmt.Sprintf("%s\n**merge-review verdict: %s**\n\n%s", mergeReviewStatusMarker, v.Decision, v.Summary)
+	if publishedVerdictReason(v) == legacyFailAmbiguous {
+		s += "\n\nDisposition: legacy-fail-ambiguous. This producer supplied no structured rejection reason; fail alone does not establish that the implementation was rejected."
+	}
 	if v.Rationale != "" {
 		s += "\n\n" + v.Rationale
 	}

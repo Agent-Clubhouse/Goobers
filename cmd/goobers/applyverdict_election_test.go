@@ -294,7 +294,7 @@ func TestApplyVerdictGenuinePassOverlapEndToEnd(t *testing.T) {
 			name:           "non-crowned member is parked blocked-on-sibling instead of landing ungated",
 			selectedNumber: 22,
 			overlap:        "21",
-			wantDecision:   apiv1.VerdictNeedsChanges,
+			wantDecision:   apiv1.VerdictDefer,
 			wantLabel:      blockedOnSiblingLabel,
 			wantElected:    false,
 		},
@@ -337,6 +337,9 @@ func TestApplyVerdictGenuinePassOverlapEndToEnd(t *testing.T) {
 			}
 			if posted.Decision != tc.wantDecision {
 				t.Fatalf("posted.Decision = %q, want %q", posted.Decision, tc.wantDecision)
+			}
+			if posted.Decision == apiv1.VerdictDefer && posted.ReasonCode != apiv1.VerdictReasonOrdering {
+				t.Fatalf("ordering deferral has no structured reason: %+v", posted)
 			}
 			if !posted.OverlapCluster {
 				t.Fatalf("posted.OverlapCluster = false, want true")
