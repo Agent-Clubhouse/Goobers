@@ -38,6 +38,57 @@ func TestSelectIssueRecoveryUsesNewestUnexpiredTerminalMatch(t *testing.T) {
 	}
 }
 
+func TestRecoveryCaptureOrderIgnoresRenewalOrderAndTimezoneRepresentation(t *testing.T) {
+	layout := instance.NewLayout(initDemo(t))
+	now := time.Now().In(time.FixedZone("fixture", -7*60*60))
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
+	path := seedRecoverySelection(t, layout, repo, "capture-order", "7", now.Add(-time.Hour), now.Add(time.Hour), true)
+	first, err := recovery.ReadRecord(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.SnapshotSHA = strings.Repeat("c", 40)
+	second.Ref, err = recovery.RefForSnapshot(second.RunID, second.SnapshotSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []journal.Event
+	for _, record := range []recovery.Record{first, second, first} {
+		event, err := recovery.RetainedEvent(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) < 2 {
+			event.Runner["recoveryCapture"] = true
+		}
+		events = append(events, event)
+	}
+	first.RetainUntil = first.RetainUntil.Add(24 * time.Hour)
+	for index, record := range []recovery.Record{first, second} {
+		got, err := recoveryCaptureOrder(context.Background(), events, record)
+		if err != nil || got != index {
+			t.Fatalf("capture %d ordered at %d: %v", index, got, err)
+		}
+	}
+	conflict := second
+	conflict.ArchiveBytes++
+	if _, err := recoveryCaptureOrder(context.Background(), events, conflict); err == nil {
+		t.Fatal("different archive identity accepted as ordering evidence")
+	}
+	// Returning to a previously captured state is a new capture, not a
+	// renewal. It must outrank the intervening implementation snapshot.
+	recaptured, err := recovery.RetainedEvent(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recaptured.Runner["recoveryCapture"] = true
+	events = append(events, recaptured)
+	if got, err := recoveryCaptureOrder(context.Background(), events, first); err != nil || got != 3 {
+		t.Fatalf("recapture order = %d, %v", got, err)
+	}
+}
+
 func seedRecoverySelection(t *testing.T, layout instance.Layout, repo providers.RepositoryRef, runID, issueID string, created, deadline time.Time, terminal bool) string {
 	t.Helper()
 	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: runID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: created.Add(-time.Hour)}, nil)

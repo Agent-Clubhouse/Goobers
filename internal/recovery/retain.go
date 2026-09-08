@@ -57,6 +57,10 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 	if err != nil {
 		return Record{}, "", err
 	}
+	// Only actual source capture establishes ordering. Inventory readbacks
+	// and retention renewals also emit custody metadata, but must not make
+	// an older snapshot look like the current implementation.
+	event.Runner["recoveryCapture"] = true
 	if err := ctx.Err(); err != nil {
 		return Record{}, "", err
 	}

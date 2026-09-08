@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -25,7 +26,7 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 	if err != nil {
 		return recovery.InventoryEntry{}, err
 	}
-	var selected recovery.InventoryEntry
+	var candidates []recovery.InventoryEntry
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return recovery.InventoryEntry{}, err
@@ -66,15 +67,67 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 		if !terminalRunPhase(phase) {
 			continue
 		}
-		if selected.RecordPath != "" && selected.Record.CreatedAt.Equal(entry.Record.CreatedAt) {
-			return recovery.InventoryEntry{}, fmt.Errorf("multiple recovery snapshots have the same capture time; select an explicit record")
+		candidates = append(candidates, entry)
+	}
+	if len(candidates) == 0 {
+		return recovery.InventoryEntry{}, fmt.Errorf("no unexpired terminal recovery snapshot matches the claimed issue")
+	}
+	// Resolve ties only at the newest capture time. Older ambiguous captures
+	// must not prevent selecting a later, independently identified run.
+	slices.SortFunc(candidates, func(a, b recovery.InventoryEntry) int { return b.Record.CreatedAt.Compare(a.Record.CreatedAt) })
+	selected := candidates[0]
+	for _, entry := range candidates[1:] {
+		if !entry.Record.CreatedAt.Equal(selected.Record.CreatedAt) {
+			break
 		}
-		if selected.RecordPath == "" || entry.Record.CreatedAt.After(selected.Record.CreatedAt) {
+		if entry.Record.RunID != selected.Record.RunID {
+			return recovery.InventoryEntry{}, fmt.Errorf("multiple recovery runs have the same capture time; select an explicit record")
+		}
+		prior, err := recoveryCaptureOrder(ctx, events, selected.Record)
+		if err != nil {
+			return recovery.InventoryEntry{}, err
+		}
+		next, err := recoveryCaptureOrder(ctx, events, entry.Record)
+		if err != nil {
+			return recovery.InventoryEntry{}, err
+		}
+		if next > prior {
 			selected = entry
 		}
 	}
-	if selected.RecordPath == "" {
-		return recovery.InventoryEntry{}, fmt.Errorf("no unexpired terminal recovery snapshot matches the claimed issue")
-	}
 	return selected, nil
+}
+
+// Stage snapshots share the run's immutable start timestamp. Explicit capture
+// observations order source state, including a deliberate return to an earlier
+// snapshot. Renewal/readback events must never reorder captured implementation.
+func recoveryCaptureOrder(ctx context.Context, events []journal.Event, expected recovery.Record) (int, error) {
+	latest := -1
+	for index, event := range events {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if event.Runner["recoveryCapture"] != true || event.RunID != expected.RunID || event.Runner["recoveryRepositoryKey"] != expected.RepositoryKey || event.Runner["recoveryRef"] != expected.Ref {
+			continue
+		}
+		records, err := recovery.RecordsFromEvents([]journal.Event{event}, expected.RunID)
+		if err != nil {
+			return 0, err
+		}
+		if len(records) == 0 {
+			continue
+		}
+		observed := records[0]
+		observed.RetainUntil = expected.RetainUntil
+		observed.CreatedAt = observed.CreatedAt.UTC()
+		expected.CreatedAt = expected.CreatedAt.UTC()
+		if observed != expected {
+			return 0, recovery.ErrRecordConflict
+		}
+		latest = index
+	}
+	if latest >= 0 {
+		return latest, nil
+	}
+	return 0, fmt.Errorf("recovery capture order lacks a matching durable observation; select an explicit record")
 }
