@@ -11,7 +11,6 @@ package workflow
 
 import (
 	"fmt"
-	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
@@ -38,6 +37,9 @@ func StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string
 // v30StagePlacements adapts the 3.0 interpreter's builder to the router
 // signature.
 func v30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error) {
+	if _, err := v30.FeaturesForGaggle(gaggle); err != nil {
+		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
+	}
 	return v30.StagePlacements(def, gaggle.RunsOn, goobers), nil
 }
 
@@ -57,8 +59,8 @@ func v30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[str
 // validate's checkpoint solve and the run-start pin read StagePlacements
 // directly.
 func preV30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, _ map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error) {
-	if problems := preV30WindowsAdminProblems(def, gaggle.RequiredCapabilities); len(problems) > 0 {
-		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	if err := refusePreV30Surface(def, compileConfig{gaggleRunsOn: gaggle.RunsOn, gaggleRequiredCapabilities: gaggle.RequiredCapabilities}); err != nil {
+		return nil, err
 	}
 	requirements := make([]runnersolve.StageRequirement, 0, len(def.Spec.Tasks))
 	for _, task := range def.Spec.Tasks {

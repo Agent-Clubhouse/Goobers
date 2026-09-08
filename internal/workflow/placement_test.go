@@ -102,10 +102,8 @@ func TestStagePlacementsV30(t *testing.T) {
 // TestStagePlacementsPreV30 verifies the pre-3.0 arm degrades to the declared
 // requiredCapabilities union with the gaggle floor — no OS, no quantities, no
 // restrictions, no derivation, and no gate rows — so a byte-untouched 2.0
-// workflow produces the same admission input as every previous release. The
-// fixture gate DECLARES runsOn so the no-gate-rows property is load-bearing:
-// a pre-3.0 arm that placed gates would emit a "review" row here and fail
-// (the router refuses the field separately, via preV30SurfaceProblems).
+// workflow produces the same admission input as every previous release.
+// Gates on 2.0 have no placement surface and produce no solver row.
 func TestStagePlacementsPreV30(t *testing.T) {
 	def := Definition{
 		Name:       "wf",
@@ -128,7 +126,6 @@ func TestStagePlacementsPreV30(t *testing.T) {
 			Gates: []apiv1.Gate{{
 				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
 				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
-				RunsOn:   &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi"},
 				Branches: map[string]string{"pass": "", "fail": "@abort"},
 			}},
 		},
@@ -148,7 +145,7 @@ func TestStagePlacementsPreV30(t *testing.T) {
 	}
 	for _, requirement := range requirements {
 		if requirement.Stage == "review" {
-			t.Fatalf("pre-3.0 arm must emit no gate row even for a gate declaring runsOn: %#v", requirement)
+			t.Fatalf("pre-3.0 arm must emit no gate row: %#v", requirement)
 		}
 		if requirement.OS != "" || requirement.CPU != "" || requirement.Memory != "" || requirement.Disk != "" || requirement.Restrictions != nil {
 			t.Fatalf("pre-3.0 requirement must carry only capabilities: %#v", requirement)
@@ -210,5 +207,41 @@ func TestStagePlacementsPreV30RefusesWindowsAdmin(t *testing.T) {
 	}
 	if len(requirements) != 1 || requirements[0].OS != "windows" || !runnercap.HasWindowsAdmin(requirements[0].Capabilities) {
 		t.Fatalf("requirements = %#v, want one windows row carrying the token", requirements)
+	}
+}
+
+func TestStagePlacementsRefusesIncompatibleVersionSurfaces(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version string
+		task    apiv1.Task
+		gaggle  apiv1.GaggleSpec
+		want    string
+	}{
+		{name: "v3 legacy gaggle floor", version: "3.0", gaggle: apiv1.GaggleSpec{RequiredCapabilities: []string{"os=linux"}}, want: "gaggle spec.requiredCapabilities does not exist in DSL 3.0"},
+		{name: "v2 typed gaggle floor", version: "2.0", gaggle: apiv1.GaggleSpec{RunsOn: &apiv1.GaggleRunsOn{OS: "linux"}}, want: "runsOn"},
+		{name: "v2 task restrictions", version: "2.0", task: apiv1.Task{RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:none"}}}, want: "runsOn"},
+		{name: "v2 repo handoff", version: "2.0", task: apiv1.Task{RepoFrom: apiv1.RepoFrom{"producer"}}, want: "repoFrom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.task.Name = "consume"
+			rows, err := StagePlacements(Definition{Name: "wf", DSLVersion: tc.version,
+				Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{tc.task}}}, tc.gaggle, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || len(rows) != 0 {
+				t.Fatalf("StagePlacements = %v, %v; want no rows and %q refusal", rows, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestStagePlacementsPreV30RefusesPlacedGates(t *testing.T) {
+	def := Definition{Name: "wf", DSLVersion: "2.0", Spec: apiv1.WorkflowSpec{
+		Gates: []apiv1.Gate{{Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+			Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
+			RunsOn:  &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi"}}},
+	}}
+	rows, err := StagePlacements(def, apiv1.GaggleSpec{}, nil)
+	if err == nil || !strings.Contains(err.Error(), `gate "review" declares runsOn`) || len(rows) != 0 {
+		t.Fatalf("StagePlacements = %v, %v; want refused gate placement", rows, err)
 	}
 }

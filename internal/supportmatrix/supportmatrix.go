@@ -64,7 +64,11 @@ type SupportTransition struct {
 
 // VersionSupport describes the host's lifecycle contract for one DSL version.
 type VersionSupport struct {
-	Level            Level               `json:"level"`
+	Level Level `json:"level"`
+	// EffectiveIn records when the current level actually took effect when
+	// correcting an already-published mismatch with the policy history.
+	// History remains the append-only record of the published support promise.
+	EffectiveIn      string              `json:"effectiveIn,omitempty"`
 	UnsupportedAfter string              `json:"unsupportedAfter,omitempty"`
 	Replacement      string              `json:"replacement,omitempty"`
 	History          []SupportTransition `json:"history"`
@@ -77,6 +81,7 @@ type SupportMatrix map[string]VersionSupport
 type Version struct {
 	Version          string              `json:"version"`
 	Level            Level               `json:"level"`
+	EffectiveIn      string              `json:"effectiveIn,omitempty"`
 	UnsupportedAfter string              `json:"unsupportedAfter,omitempty"`
 	Replacement      string              `json:"replacement,omitempty"`
 	History          []SupportTransition `json:"history"`
@@ -92,14 +97,15 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 	// package internal/workflow/v_current is deleted; the migrator's 1.4→2.0
 	// edge survives as the recovery path DVL030 names.
 	//
-	// The unsupported transition lands at v0.5.0, honoring the deprecation's
-	// previously-published unsupportedAfter target. The append-only lifecycle
-	// rules (supportpolicy.go) are satisfied: 1.4 was deprecated at v0.1.0 in
-	// every released matrix, the transition version v0.5.0 is later than the
-	// latest tag, and it clears the 3-minor support window measured from 2.0's
-	// first release (ValidateSupportPolicy / validateSupportMatrixEvolution).
+	// The beta binaries removed 1.4 on the v0.4.0 line, EARLIER than the
+	// published v0.5.0 support promise (#4271). Preserve that promise in the
+	// append-only history and report the actual enforcement in effectiveIn.
+	// This is a correction of a shipped policy breach, not a new permission
+	// to shorten support windows; supportpolicy.go limits the exception to
+	// this exact historical transition.
 	CurrentDSLVersion: {
 		Level:       LevelUnsupported,
+		EffectiveIn: "v0.4.0",
 		Replacement: NextDSLVersion,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
@@ -144,6 +150,7 @@ func (m SupportMatrix) Versions() []Version {
 		versions = append(versions, Version{
 			Version:          version,
 			Level:            support.Level,
+			EffectiveIn:      support.EffectiveIn,
 			UnsupportedAfter: support.UnsupportedAfter,
 			Replacement:      support.Replacement,
 			History:          slices.Clone(support.History),

@@ -444,6 +444,7 @@ func versionsToSupportMatrix(versions []Version) SupportMatrix {
 	for _, version := range versions {
 		matrix[version.Version] = VersionSupport{
 			Level:            version.Level,
+			EffectiveIn:      version.EffectiveIn,
 			UnsupportedAfter: version.UnsupportedAfter,
 			Replacement:      version.Replacement,
 			History:          version.History,
