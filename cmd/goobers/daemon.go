@@ -123,6 +123,10 @@ type schedulerSetup struct {
 	// never nil — an instance with no declared stores gets a registry that
 	// fails every store ref closed.
 	SecretStores *secretstore.Registry
+	// MergedPRCostReconciler is the daemon-owned, workflow-independent
+	// backstop that publishes cost summaries for recently merged Goobers PRs.
+	// Config reload replaces its definition snapshot in place.
+	MergedPRCostReconciler *daemonMergedPRCostReconciler
 
 	// shutdownOnce/shutdownErr make Shutdown idempotent: `up` closes the setup
 	// explicitly so a flush or close failure can fail the command, while the
