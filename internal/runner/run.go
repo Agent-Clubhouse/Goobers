@@ -247,6 +247,7 @@ type journalAppender interface {
 type executionJournal interface {
 	journalAppender
 	AppendIfAbsent(journal.Event, func(journal.Event) bool) (bool, error)
+	AppendBatchIfAbsent(context.Context, []journal.Event, func(journal.Event) string) (int, error)
 	Dir() string
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 	RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error)
@@ -420,6 +421,10 @@ type AgentProvenance struct {
 // definition a daemon knows about; the compiled Machine for a specific run is
 // supplied per call in StartInput, not fixed here.
 type Config struct {
+	// RecoveryEvents supplies verified retained-state observations after a
+	// successful workspace cleanup. The active writer copies them into this
+	// run's journal so later local and remote stages can read the same evidence.
+	RecoveryEvents func(context.Context, string) ([]journal.Event, error)
 	// NewDeterministic constructs this run's deterministic-task executor
 	// (invoke.Deterministic). Required if any workflow run through this
 	// Runner has a deterministic task.
@@ -4838,7 +4843,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 				}
 			}
 		}
-		removeErr = workspace.Remove(ctx)
+		removeErr = r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.Remove(ctx))
 	}()
 
 	// Surface any non-fatal worktree-provisioning warnings (today: symlinks a
@@ -5511,7 +5516,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 					err = errors.Join(err, fmt.Errorf("gate %q: %w", g.Name, validationErr))
 				}
 			}
-			removeErr = workspace.Remove(ctx)
+			removeErr = r.recordRecoveryAfterCleanup(ctx, jr, in.RunID, workspace.Remove(ctx))
 		}()
 		wt = workspace.worktree
 

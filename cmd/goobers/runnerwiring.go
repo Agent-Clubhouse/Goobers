@@ -282,7 +282,8 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 
 	rc := runner.Config{
-		RunControls: cfg.RunConditions.RunControls(),
+		RecoveryEvents: recoveryRunEvents(l),
+		RunControls:    cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			return buildDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
