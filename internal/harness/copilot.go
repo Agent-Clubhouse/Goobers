@@ -845,11 +845,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 	}
 	nativeTranscriptPath := ""
-	usageOutputArg := filepath.Join(".goobers", "copilot-usage.json")
-	usageOutputPath := filepath.Join(req.Workspace, usageOutputArg)
-	_ = os.Remove(usageOutputPath)
-	argv = append(argv, "--usage-output-file", usageOutputArg)
-	defer func() { _ = os.Remove(usageOutputPath) }()
+	argv, usageOutputPath, cleanupUsage := prepareCopilotUsageOutput(req, argv)
+	defer cleanupUsage()
 	var cleanupSession func()
 	argv, env, nativeTranscriptPath, cleanupSession, err = c.prepareLauncherSession(ctx, req.Workspace, argv, env)
 	if err != nil {
