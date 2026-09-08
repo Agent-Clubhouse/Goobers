@@ -170,7 +170,7 @@ jobs:
           $image = docker image inspect $env:WINDOWS_SMOKE_IMAGE | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $image[0].Config.User -ne 'ContainerUser' -or $image[0].Os -ne 'windows' -or $image[0].Id -ne $env:WINDOWS_SMOKE_IMAGE_ID) { throw 'Image identity or Windows ContainerUser declaration differs from engine evidence' }
           docker create --isolation=process --name $env:WINDOWS_SMOKE_CONTAINER --entrypoint powershell `
-            $env:WINDOWS_SMOKE_IMAGE -NoLogo -NoProfile -NonInteractive -File C:\image-smoke.ps1
+            $env:WINDOWS_SMOKE_IMAGE_ID -NoLogo -NoProfile -NonInteractive -File C:\image-smoke.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Cannot create native smoke container' }
           docker cp packaging/docker/windows/Smoke-Image.ps1 "$($env:WINDOWS_SMOKE_CONTAINER):C:/image-smoke.ps1"
           if ($LASTEXITCODE -ne 0) { throw 'Cannot stage smoke script' }
