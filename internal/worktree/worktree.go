@@ -768,11 +768,18 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 	mk, markerErr := readMarker(markerPath)
 	switch {
 	case markerErr == nil:
+		if err := m.prepareCleanup(ctx, path, runID, mk.OwnerRunID); err != nil {
+			return err
+		}
 		if err := m.restoreReservedBranchFromMarker(ctx, key, path, mk); err != nil {
 			return fmt.Errorf("restore guarded branch for stale worktree: %w", err)
 		}
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("read stale marker: %w", markerErr)
+	default:
+		if err := m.prepareCleanup(ctx, path, runID, ""); err != nil {
+			return err
+		}
 	}
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", path)
@@ -828,11 +835,18 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		if worktreeMeasured {
 			mk.SizeBytes = &worktreeBytes
 		}
+		if err := wt.manager.prepareCleanup(ctx, wt.Path, wt.RunID, ownerRunID); err != nil {
+			return err
+		}
 		if err := wt.manager.restoreReservedBranchFromMarker(ctx, wt.key, wt.Path, mk); err != nil {
 			return fmt.Errorf("worktree: restore guarded branch for run %s: %w", wt.RunID, err)
 		}
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("worktree: read marker for run %s: %w", wt.RunID, markerErr)
+	default:
+		if err := wt.manager.prepareCleanup(ctx, wt.Path, wt.RunID, ""); err != nil {
+			return err
+		}
 	}
 
 	if opts.Keep {
