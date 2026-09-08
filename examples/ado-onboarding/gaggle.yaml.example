@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  displayName: Azure DevOps example
+  project:
+    provider: ado
+    owner: contoso
+    project: platform
+    name: widgets
+    branch: main
+  backlog:
+    provider: ado
+    project: platform
+    labels:
+      - goobers
+  # Keep this aligned with the scaffold's local-ci task.
+  ciCommand: [dotnet, test]
+  requiredCapabilities: [dotnet@8]
+  isolation:
+    namespace: gaggle-example

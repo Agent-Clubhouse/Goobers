@@ -63,6 +63,7 @@ complete -c goobers -n '__fish_seen_subcommand_from init' -l insecure -d 'Allow 
 complete -c goobers -n '__fish_seen_subcommand_from init' -l template -r -a 'quickstart standard' -d 'Seed a named onboarding template'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l ci-command -r -d 'With --template=standard, local CI command as JSON argv'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l required-capabilities -r -d 'With --template=standard, comma-separated toolchain capabilities'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l provider -r -a 'github ado' -d 'With --template=standard, repository provider'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l harness -r -a 'copilot claude-code' -d 'With --template, the harness every seeded goober uses'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l source-tree -r -d 'Seed the template as a checked-in config source'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l json -d 'Emit the config-source action result as JSON'

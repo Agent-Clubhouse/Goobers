@@ -967,7 +967,11 @@ func recordStageArtifactsTyped(
 	if len(ops) == 0 {
 		return nil
 	}
-	emitter := &livejournal.HTTPEmitter{BaseURL: daemonAPI, Token: os.Getenv(dispatcher.EnvPodToken)}
+	emitter := &livejournal.HTTPEmitter{
+		BaseURL:       daemonAPI,
+		Token:         os.Getenv(dispatcher.EnvPodToken),
+		RetryDeadline: 3 * time.Second,
+	}
 	if _, err := emitter.Emit(ctx, livejournal.EmitRequest{
 		RunID:  runID,
 		Gaggle: os.Getenv(dispatcher.EnvGaggle),

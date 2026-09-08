@@ -43,6 +43,25 @@ func TestInitStandardNonInteractive(t *testing.T) {
 	}
 }
 
+func TestInitStandardADO(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "ado")
+	code, stdout, stderr := runArgs(t, "init", "--template=standard", "--provider=ado", "--ci-command=[\"dotnet\",\"test\"]", "--required-capabilities=dotnet@8", root)
+	if code != 0 {
+		t.Fatalf("ADO init code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	set, report, err := instance.LoadConfigDir(filepath.Join(root, "config"))
+	if err != nil || report.HasErrors() {
+		t.Fatalf("load: %v report=%+v", err, report)
+	}
+	if len(set.Gaggles) != 1 || set.Gaggles[0].Spec.Project.Provider != "ado" || set.Gaggles[0].Spec.Project.Project != "your-project" || set.Gaggles[0].Spec.Backlog.Provider != "ado" || set.Gaggles[0].Spec.Backlog.Project != "your-project" {
+		t.Fatalf("ADO identity not preserved: %+v", set.Gaggles)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "instance.yaml"))
+	if err != nil || !strings.Contains(string(data), "GOOBERS_ADO_TOKEN") || strings.Contains(string(data), "GOOBERS_GITHUB") {
+		t.Fatalf("ADO credentials incorrect: %s %v", data, err)
+	}
+}
+
 func TestInitStandardRejectsUnsafeOrIncompleteOptions(t *testing.T) {
 	for _, extra := range [][]string{
 		{}, {"--ci-command=[]", "--required-capabilities=node@24"},
@@ -83,6 +102,9 @@ func TestInitStandardPreservesExistingTarget(t *testing.T) {
 
 func TestInitStandardModeBoundaries(t *testing.T) {
 	for _, flags := range [][]string{
+		{"--provider=ado"},
+		{"--template=quickstart", "--provider=ado"},
+		{"--template=standard", "--ci-command=[\"npm\"]", "--required-capabilities=node@24", "--provider=unknown"},
 		{"--ci-command=[\"npm\"]", "--required-capabilities=node@24"},
 		{"--template=quickstart", "--ci-command=[\"npm\"]"},
 		{"--template=standard", "--ci-command=[\"npm\"]", "--required-capabilities=node@24", "--demo"},

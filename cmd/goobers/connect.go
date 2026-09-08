@@ -50,9 +50,6 @@ const (
 // greppable identities for the three ways a connect can be wrong before it is
 // ever run, in the same spirit as validate's REPO001/PLACEHOLDER001 codes.
 const (
-	// connectADOIdentityCode: the positional argument names an Azure DevOps
-	// repository, which connect cannot provision (cold-start ado #7).
-	connectADOIdentityCode = "CONNECT001"
 	// connectForeignProviderCode: the repos[] entry connect would rewrite
 	// declares a provider other than github, so the rewrite would silently
 	// re-provider an existing instance.
@@ -65,12 +62,6 @@ const (
 	connectSelectorRealityCode = "CONNECT004"
 )
 
-// connectADOTokenEnvHint is the token variable the Azure DevOps refusal
-// suggests when the caller kept connect's GitHub default (or handed us
-// something that is not a usable variable name — a pasted value must never be
-// echoed back into a diagnostic).
-const connectADOTokenEnvHint = "GOOBERS_ADO_TOKEN"
-
 const connectSeedIssueTitle = "Hello Goobers: add a HELLO-GOOBERS.md introducing your new workforce"
 
 const connectSeedIssueBody = "A safe first task for your new Goobers workforce: add a `HELLO-GOOBERS.md` " +
@@ -81,8 +72,8 @@ const connectSeedIssueBody = "A safe first task for your new Goobers workforce: 
 	"Created by `goobers connect --seed`. Re-running the command is idempotent: the `goobers run-id` footer " +
 	"below deduplicates, so no second copy of this issue is ever filed.\n"
 
-const connectHelp = "Usage: goobers connect <owner>/<repo> [--token-env NAME] [--seed] [--replace] [--json] [path]\n\n" +
-	"Connect an instance to your own GitHub repository — the connect rung of the\n" +
+const connectHelp = "Usage: goobers connect <repository> [--token-env NAME] [--seed] [--replace] [--json] [path]\n\n" +
+	"Connect an instance to a GitHub or Azure DevOps repository — the connect rung of the\n" +
 	"onboarding ladder. The command rewrites the template placeholders\n" +
 	"(your-org/your-repo) in instance.yaml repos[] and in every materialized\n" +
 	"gaggle's project and backlog under config/gaggles/, then validates the\n" +
@@ -92,11 +83,12 @@ const connectHelp = "Usage: goobers connect <owner>/<repo> [--token-env NAME] [-
 	"variable name (default " + connectDefaultTokenEnv + ") in the repo's token\n" +
 	"reference. Token values never pass through this command; a value that looks\n" +
 	"like a pasted token is rejected.\n\n" +
-	"Only GitHub repositories can be connected. An Azure DevOps identity (an\n" +
-	"organization/project/repository slug or a dev.azure.com URL) is refused\n" +
-	"with the instance.yaml block to write by hand — see\n" +
-	"docs/guides/ado-authentication.md.\n\n" +
-	"--seed derives two label sets from the connected gaggles and idempotently\n" +
+	"Use owner/repository for GitHub, or organization/project/repository (or a\n" +
+	"dev.azure.com URL) for Azure DevOps. Initialize ADO instances with\n" +
+	"--template=standard --provider=ado first. ADO defaults to GOOBERS_ADO_TOKEN\n" +
+	"and records PAT authentication. Connect never changes an existing provider.\n" +
+	"See docs/guides/ado-authentication.md for other authentication modes.\n\n" +
+	"For GitHub, --seed derives two label sets from the connected gaggles and idempotently\n" +
 	"ensures every one of them exists on the repository: the backlog SELECTORS\n" +
 	"(backlog labels plus each workflow's trustLabel/requireLabels inputs) and\n" +
 	"the labels those workflows WRITE or exclude on (the goobers:claimed claim\n" +
@@ -106,11 +98,18 @@ const connectHelp = "Usage: goobers connect <owner>/<repo> [--token-env NAME] [-
 	"the selector labels only, never the lifecycle ones. Seeding uses the same\n" +
 	"--token-env; when that variable is unset the issue is reported pending and\n" +
 	"the local rewrite still completes.\n\n" +
+	"For ADO, --seed creates an Azure Boards Task with selector tags only, in\n" +
+	"the connected gaggle's backlog.project. Tags are not a global label catalog.\n" +
+	"Repeat runs recognize the repository-specific seed marker. The duplicate\n" +
+	"scan is bounded to 1000 items and refuses creation if incomplete. Multiple\n" +
+	"Boards projects require explicit seeding. Provider seed failures leave the\n" +
+	"validated local connection in place; fix access and rerun --seed.\n\n" +
 	"When the token variable is set, the target repository's reachability is\n" +
 	"checked with the exact credential path a real run would use BEFORE any\n" +
 	"file is written, and a failed connect leaves the instance exactly as it\n" +
-	"was. After a successful connect the same credential reports how many of\n" +
-	"the repository's open issues your backlog selectors currently match.\n\n" +
+	"was. After a successful GitHub connect the same credential reports how many\n" +
+	"open issues match your selectors. For ADO, validate --check-repos also checks\n" +
+	"the Boards project and Work Items read access independently of Git access.\n\n" +
 	"Flags:\n" +
 	"  --token-env <name>  repository token environment variable name (default " + connectDefaultTokenEnv + ")\n" +
 	"  --seed              ensure selector labels + one starter issue on the repository\n" +
@@ -243,51 +242,6 @@ func adoIdentityFromSegments(segments []string) (connectADORepo, bool) {
 	return connectADORepo{Organization: trimmed[0], Project: trimmed[1], Repository: trimmed[2]}, true
 }
 
-// connectADOTokenEnv picks the token variable name the refusal prints. A
-// caller that kept connect's GitHub default gets the ADO-shaped suggestion,
-// and a value that is not a legal variable name (a pasted secret) is never
-// echoed back.
-func connectADOTokenEnv(tokenEnv string) string {
-	tokenEnv = strings.TrimSpace(tokenEnv)
-	if tokenEnv == "" || tokenEnv == connectDefaultTokenEnv || !instance.ValidGuidedTokenEnvName(tokenEnv) {
-		return connectADOTokenEnvHint
-	}
-	return tokenEnv
-}
-
-// connectADORefusal is the CONNECT001 diagnostic: what is wrong, what it would
-// cost at runtime, and the exact file edits that replace the connect rung for
-// an Azure DevOps instance. The engine itself is provider-neutral — only this
-// onboarding command is GitHub-shaped — so the remedy is a hand-written
-// config, not a missing feature.
-func connectADORefusal(repo connectADORepo, tokenEnv string) string {
-	return fmt.Sprintf("error: %s %q is an Azure DevOps organization/project/repository identity; "+
-		"`goobers connect` writes provider: github entries only, so connecting it would record an Azure DevOps "+
-		"organization as a github.com repository and every run would fail at repository reachability.\n"+
-		"Azure DevOps instances are configured by hand (the engine itself is provider-neutral):\n"+
-		"  1. %s — replace the repos[] entry with:\n"+
-		"       repos:\n"+
-		"         - provider: ado\n"+
-		"           owner: %s\n"+
-		"           project: %s\n"+
-		"           name: %s\n"+
-		"           auth:\n"+
-		"             kind: %s            # or %s, %s, %s\n"+
-		"           token:\n"+
-		"             env: %s\n"+
-		"  2. each config/gaggles/*/gaggle.yaml — set spec.project to the same four fields and\n"+
-		"     spec.backlog.project to the Azure Boards project.\n"+
-		"  3. run `goobers validate --strict --check-repos <path>`; it checks the ADO credential and\n"+
-		"     reachability directly. `--seed` is GitHub-only, so seed Azure Boards tags by hand.\n"+
-		"See docs/guides/ado-authentication.md for the credential kinds and\n"+
-		"reference-workflows/instance.yaml.example for the surrounding file.\n",
-		connectADOIdentityCode, repo.String(), instance.ConfigFileName,
-		repo.Organization, repo.Project, repo.Repository,
-		instance.ADOAuthPAT, instance.ADOAuthAzureCLI, instance.ADOAuthWorkloadIdentity, instance.ADOAuthManagedIdentity,
-		connectADOTokenEnv(tokenEnv),
-	)
-}
-
 func runConnect(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -309,12 +263,28 @@ func runConnect(args []string, stdout, stderr io.Writer) int {
 		// parseGitHubRepo and used to be written to disk as a provider:
 		// github entry pointing at an ADO organization (cold-start ado #7);
 		// the honest three-part identity got a bare "v1" refusal that named
-		// no way forward. Recognize the ADO forms and hand back the exact
-		// manual steps instead. The two-part guess is caught later, before
+		// no way forward. Recognize the ADO forms and connect all three
+		// identity coordinates. The two-part guess is caught later, before
 		// any write, by the reachability preflight.
 		if ado, ok := connectADOIdentity(fs.Arg(0)); ok {
-			pf(stderr, "%s", connectADORefusal(ado, *tokenEnv))
-			return 2
+			root := "."
+			if fs.NArg() == 2 {
+				root = fs.Arg(1)
+			}
+			explicitToken := false
+			fs.Visit(func(f *flag.Flag) {
+				if f.Name == "token-env" {
+					explicitToken = true
+				}
+			})
+			if !explicitToken {
+				*tokenEnv = "GOOBERS_ADO_TOKEN"
+			}
+			if !instance.ValidGuidedTokenEnvName(*tokenEnv) {
+				pf(stderr, "error: ADO connect requires a valid token environment variable name\n")
+				return 2
+			}
+			return executeConnect(connectOptions{ado: &ado, owner: ado.Organization, name: ado.Repository, root: root, tokenEnv: *tokenEnv, seed: *seed, replace: *replace, json: *jsonOutput}, stdout, stderr)
 		}
 		pf(stderr, "error: %v (GitHub is the only supported provider in v1)\n", err)
 		return 2
@@ -342,6 +312,7 @@ func runConnect(args []string, stdout, stderr io.Writer) int {
 }
 
 type connectOptions struct {
+	ado      *connectADORepo
 	owner    string
 	name     string
 	root     string
@@ -398,17 +369,17 @@ func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
 		}
 		var scoped []instance.RepoRef
 		for _, repo := range cfg.Repos {
-			if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == opts.owner && repo.Name == opts.name {
+			if connectTargetMatches(repo, opts) {
 				scoped = append(scoped, repo)
 			}
 		}
 		var checkOutput strings.Builder
 		if !checkTargetRepositoriesAtFile(scoped, stores, &checkOutput, diagnosticFile(opts.root, configFile)) {
 			pf(stderr, "%s", checkOutput.String())
-			pf(stderr, "error: %s %s/%s is not reachable with the credential named by %s; nothing was written. "+
-				"Fix the token or repository access, or — if this is not a GitHub repository — configure %s by hand "+
+			pf(stderr, "error: %s %s is not reachable with the credential named by %s; nothing was written. "+
+				"Check the repository identity, credential and access permissions "+
 				"(docs/guides/ado-authentication.md for Azure DevOps), then re-run `goobers connect`\n",
-				connectUnreachableCode, opts.owner, opts.name, opts.tokenEnv, instance.ConfigFileName)
+				connectUnreachableCode, connectRepositoryName(opts), opts.tokenEnv)
 			return 1
 		}
 		if !opts.json {
@@ -448,7 +419,7 @@ func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
 			pf(stderr, "error: %s: %v%s\n", display, err, restore.rollback())
 			return 1
 		}
-		changed, err := connectRewriteGaggleFile(path, opts.owner, opts.name, opts.replace)
+		changed, err := connectRewriteTargetGaggle(path, opts)
 		if err != nil {
 			pf(stderr, "error: %s: %v%s\n", display, err, restore.rollback())
 			return 1
@@ -482,7 +453,7 @@ func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
 			pf(stderr, "error: load connected configuration: %v (report: %+v)\n", err, report)
 			return 1
 		}
-		derivedSelectors, applied, workflow := connectDerivedLabels(set, opts.owner, opts.name)
+		derivedSelectors, applied, workflow := connectDerivedLabelsForRepo(set, connectTargetProject(opts))
 		selectors, connectedWorkflow = derivedSelectors, workflow
 		if opts.seed {
 			if code := connectSeedRepository(opts, selectors, applied, &result, stderr); code != 0 {
@@ -612,6 +583,9 @@ func connectForeignProviderRefusal(index int, repo instance.RepoRef) error {
 // and --replace was not given, or when the entry it would rewrite belongs to
 // another provider.
 func connectRewriteInstanceConfig(cfg *instance.Config, opts connectOptions) (bool, error) {
+	if opts.ado != nil {
+		return connectRewriteADOInstanceConfig(cfg, opts)
+	}
 	target := instance.RepoRef{
 		Provider: string(providers.ProviderGitHub),
 		Owner:    opts.owner,
@@ -846,12 +820,14 @@ var connectExcludedLabelInputs = []string{"excludeLabels", "parkLabels"}
 // (cold-start python #7). They are ensured on the repository but never put on
 // the starter issue — an issue born goobers:claimed or goobers/status:in-review
 // would be excluded by the very selectors meant to find it.
-func connectDerivedLabels(set *instance.ConfigSet, owner, name string) (selectors, applied []string, workflow string) {
+// connectDerivedLabelsForRepo keeps independent forge and Azure Boards project
+// identities separate even when their owner/repository names happen to match.
+func connectDerivedLabelsForRepo(set *instance.ConfigSet, target apiv1.RepoRef) (selectors, applied []string, workflow string) {
 	selectorSet := &connectLabelSet{}
 	appliedSet := &connectLabelSet{}
 	for _, gaggle := range set.Gaggles {
 		project := gaggle.Spec.Project
-		if project.Owner != owner || project.Name != name {
+		if project.Provider != target.Provider || project.BaseURL != target.BaseURL || project.Owner != target.Owner || project.Project != target.Project || project.Name != target.Name {
 			continue
 		}
 		// Selectors come from the shared derivation in repolabels.go so the
@@ -1018,6 +994,10 @@ func connectSeedCatalog(selectors, applied []string) onboardingSeedCatalog {
 // never a failure — the answer depends on what someone labelled this morning,
 // and a provider read that fails must not retract a completed connect.
 func connectReportSelectorReality(opts connectOptions, selectors []string, stdout, stderr io.Writer) {
+	if opts.ado != nil {
+		connectReportADOSelectorReality(opts, selectors, stdout, stderr)
+		return
+	}
 	token := os.Getenv(opts.tokenEnv)
 	if token == "" || len(selectors) == 0 {
 		return
@@ -1053,6 +1033,9 @@ func connectReportSelectorReality(opts connectOptions, selectors []string, stdou
 // the connect recorded — deliberately closing the historical
 // GOOBERS_GITHUB_ISSUES_TOKEN vs GOOBERS_GITHUB_TOKEN fork.
 func connectSeedRepository(opts connectOptions, selectors, applied []string, result *onboardingActionResult, stderr io.Writer) int {
+	if opts.ado != nil {
+		return connectSeedADORepository(opts, selectors, result, stderr)
+	}
 	catalog := connectSeedCatalog(selectors, applied)
 	if os.Getenv(opts.tokenEnv) == "" {
 		appendPendingSeedIssues(result, catalog, "credentials unavailable")
@@ -1074,7 +1057,7 @@ func connectSeedRepository(opts connectOptions, selectors, applied []string, res
 }
 
 func printConnectResult(stdout io.Writer, opts connectOptions, result onboardingActionResult) {
-	pf(stdout, "connected %s/%s at %s\n", opts.owner, opts.name, result.Path)
+	pf(stdout, "connected %s at %s\n", connectRepositoryName(opts), result.Path)
 	for _, item := range result.Updated {
 		pf(stdout, "  updated  %s\n", item)
 	}

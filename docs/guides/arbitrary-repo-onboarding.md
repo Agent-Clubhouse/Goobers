@@ -182,6 +182,53 @@ gh repo view $env:GOOBERS_TARGET
 
 ## 3. Initialize the instance
 
+For Azure DevOps, the guided path below discovers an existing ADO clone; use
+[Azure DevOps authentication](ado-authentication.md) for Azure CLI, PAT, or
+unattended identity setup rather than the GitHub token commands above.
+For noninteractive scaffolding, select the provider explicitly:
+
+```sh
+goobers init --template=standard --provider=ado --ci-command='["dotnet","test"]' --required-capabilities=dotnet@8 ./ado-instance
+```
+
+This creates ADO repository and Azure Boards project placeholders, with a
+`GOOBERS_ADO_TOKEN` PAT reference, without reading a token or starting a run.
+Connect the real organization, project and repository before running:
+
+```sh
+# Set GOOBERS_ADO_TOKEN securely in your environment; pass its name, not its value.
+goobers connect organization/project/repository --seed ./ado-instance
+goobers validate --strict --check-repos ./ado-instance
+```
+
+`connect` preserves the provider boundary: it will not convert an existing
+GitHub instance to ADO. It records PAT authentication; use the authentication
+guide for Azure CLI or unattended identity configuration instead. Without the
+token, the local connection completes and the starter task is reported pending.
+
+Azure Boards tags are attached to work items, not provisioned as a GitHub-style
+label catalog. `--seed` creates a `Task` carrying only the connected workflow's
+selector tags, never lifecycle tags such as `goobers:claimed`. Your Boards
+process must support the `Task` work-item type. Repeating the command recognizes
+the repository-specific seed marker. The duplicate scan is bounded to 1000
+candidates and fails without creating a task if it cannot finish; large backlogs
+may need manual seeding. A seed failure does not undo the local connection.
+
+With credentials available, ADO `connect` also reports how many open work items
+match the selector tags. This is not a claim or full workflow-eligibility check.
+The query scans at most ten bounded pages; unfinished scans report a lower
+bound, and provider failures report the count as unknown. JSON callers receive
+this advisory on stderr, leaving the action envelope unchanged.
+
+`spec.backlog.project` may differ from the repository's project within the same
+organization. `validate --check-repos` queries that Boards project separately;
+Git access alone does not prove Work Items access. `BACKLOG001` identifies the
+gaggle field to check for a misspelling or missing permission. When multiple
+connected gaggles use different Boards projects, seed their backlogs explicitly.
+
+Choose the CI command and toolchain for your repository;
+the .NET command here is an example, not an ADO requirement.
+
 ```sh
 goobers init --guided
 ```
