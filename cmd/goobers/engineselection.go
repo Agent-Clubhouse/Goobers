@@ -40,6 +40,19 @@ type engineSelection struct {
 	Refusal error
 }
 
+// schedulerSelfCapabilities scopes the legacy schedule-time capability check
+// to the substrate that executes the entry. Engine selection already proved
+// each stage placeable on its own eligible remote runners; checking their
+// combined requirements against the daemon would reject valid DSL 2.0 lanes.
+// A missing selection or any local fallback retains the original host check.
+// The tracked starter separately keeps the complete host-preflight requirement.
+func (selection engineSelection) schedulerSelfCapabilities(required []string) []string {
+	if selection.UseEngine {
+		return nil
+	}
+	return required
+}
+
 // selectEngineForEntry decides whether one scheduler entry dispatches through
 // the engine.
 //
