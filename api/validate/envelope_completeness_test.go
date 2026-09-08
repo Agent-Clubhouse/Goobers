@@ -11,6 +11,8 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/artifactset"
+	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -21,6 +23,9 @@ type schemaFixture struct {
 
 func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 	fixtures := map[string]schemaFixture{
+		"stage-artifact-manifest": {schema: schemas.StageArtifactManifest, value: artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.ManifestEntry{{Name: "reproduction.bundle", Path: "output/bundle.tar", MediaType: "application/x-tar"}}}},
+		"stage-artifact-set":      {schema: schemas.StageArtifactSet, value: artifactset.Index{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.Entry{{Name: "reproduction.bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}}},
+		"investigation-evidence":  {schema: schemas.InvestigationEvidence, value: completeInvestigationEvidence()},
 		"artifact": {
 			schema: schemas.Envelope["artifact"],
 			value:  completeArtifactPointer("artifacts/review/evidence.json"),
@@ -481,6 +486,9 @@ func pointer[T any](value T) *T {
 }
 
 var completenessOmissions = map[reflect.Type]map[string]string{
+	reflect.TypeOf(investigation.Validation{}): {
+		"SymptomObservationsAfter": "schema requires constant zero; non-omitempty field is always serialized and negative writer fixtures verify nonzero rejection",
+	},
 	reflect.TypeOf(apiv1.RepoRef{}): {
 		"Checkout": "workspace materialization config is intentionally projected out by RepoRef.EnvelopeRef",
 	},

@@ -36,14 +36,15 @@ const ReceiptFileName = "input-inspection-receipts.jsonl"
 // human-readable name to a workspace-relative path already materialized by
 // materializeContext.
 type Config struct {
-	Workspace    string            `json:"workspace"`
-	ArtifactFile string            `json:"artifactFile,omitempty"`
-	ReceiptFile  string            `json:"receiptFile,omitempty"`
-	Inputs       map[string]string `json:"inputs,omitempty"`
-	RunID        string            `json:"runId"`
-	WorkflowID   string            `json:"workflowId"`
-	TaskID       string            `json:"taskId"`
-	Gaggle       string            `json:"gaggle"`
+	Workspace            string            `json:"workspace"`
+	ArtifactFile         string            `json:"artifactFile,omitempty"`
+	ArtifactManifestFile string            `json:"artifactManifestFile,omitempty"`
+	ReceiptFile          string            `json:"receiptFile,omitempty"`
+	Inputs               map[string]string `json:"inputs,omitempty"`
+	RunID                string            `json:"runId"`
+	WorkflowID           string            `json:"workflowId"`
+	TaskID               string            `json:"taskId"`
+	Gaggle               string            `json:"gaggle"`
 }
 
 // LoadConfig reads and validates a config file at path.

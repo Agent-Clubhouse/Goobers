@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/investigation-evidence-draft.schema.json",
+  "title": "Investigation evidence draft",
+  "description": "Agent-authored staging document. The runner resolves semantic references to verified current-run pointers before publishing canonical evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "subject", "environment", "reproduction", "diagnosis", "fix", "validation"],
+  "properties": {
+    "schemaVersion": {"const": "goobers.dev/investigation-evidence-draft/v1alpha1", "description": "Draft contract, distinct from runner-authored canonical evidence."},
+    "subject": {"$ref": "investigation-evidence.schema.json#/properties/subject", "description": "Issue and immutable source revisions."},
+    "environment": {"$ref": "investigation-evidence.schema.json#/properties/environment", "description": "Sanitized comparison environment."},
+    "reproduction": {
+      "type": "object", "additionalProperties": false,
+      "description": "Semantic references to reproduction evidence.",
+      "required": ["harness", "baseline", "sourceSnapshotDigest", "oracleDigest", "symptom"],
+      "properties": {
+        "harness": {"$ref": "#/$defs/semanticRef", "description": "Reproduction harness semantic name."},
+        "baseline": {"$ref": "#/$defs/semanticRef", "description": "Baseline result semantic name."},
+        "sourceSnapshotDigest": {"$ref": "investigation-evidence.schema.json#/$defs/digest", "description": "Baseline source snapshot digest."},
+        "oracleDigest": {"$ref": "investigation-evidence.schema.json#/$defs/digest", "description": "Symptom oracle digest."},
+        "symptom": {"$ref": "investigation-evidence.schema.json#/properties/reproduction/properties/symptom", "description": "Bounded symptom description."}
+      }
+    },
+    "diagnosis": {
+      "type": "object", "additionalProperties": false,
+      "description": "Causal diagnosis and supporting semantic references.",
+      "required": ["report", "confidence", "evidence"],
+      "properties": {
+        "report": {"$ref": "#/$defs/semanticRef", "description": "Diagnosis report semantic name."},
+        "confidence": {"const": "confirmed", "description": "Causal confidence, independently checked by gates."},
+        "evidence": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/evidenceRef"}, "description": "Supporting diagnostic references."}
+      }
+    },
+    "fix": {
+      "type": "object", "additionalProperties": false,
+      "description": "Implementation evidence and diff identity.",
+      "required": ["report", "diffDigest"],
+      "properties": {
+        "report": {"$ref": "#/$defs/semanticRef", "description": "Implementation report semantic name."},
+        "diffDigest": {"$ref": "investigation-evidence.schema.json#/$defs/digest", "description": "Canonical base-to-fix diff digest."}
+      }
+    },
+    "validation": {
+      "type": "object", "additionalProperties": false,
+      "description": "Successful reproduction-clearing result reference and scalar evidence.",
+      "required": ["result", "sourceSnapshotDigest", "harnessDigest", "oracleDigest", "completedAttempts", "symptomObservationsBefore", "symptomObservationsAfter", "passed"],
+      "properties": {
+        "result": {"$ref": "#/$defs/semanticRef", "description": "Validation result semantic name."},
+        "sourceSnapshotDigest": {"$ref": "investigation-evidence.schema.json#/$defs/digest", "description": "Fixed source snapshot digest."},
+        "harnessDigest": {"$ref": "investigation-evidence.schema.json#/$defs/digest", "description": "Reused harness digest."},
+        "oracleDigest": {"$ref": "investigation-evidence.schema.json#/$defs/digest", "description": "Reused oracle digest."},
+        "completedAttempts": {"type": "integer", "minimum": 1, "description": "Completed validation attempts."},
+        "symptomObservationsBefore": {"type": "integer", "minimum": 1, "description": "Observed pre-fix symptom count."},
+        "symptomObservationsAfter": {"const": 0, "description": "No observed post-fix symptoms."},
+        "passed": {"const": true, "description": "Validation signal, not a replacement for runner attestation."}
+      }
+    },
+    "attachments": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/evidenceRef"}, "description": "Optional diagnostics, without placeholder entries."}
+  },
+  "$defs": {
+    "semanticRef": {
+      "type": "object", "additionalProperties": false, "required": ["producerStage", "name"],
+      "properties": {
+        "producerStage": {"$ref": "investigation-evidence.schema.json#/$defs/evidenceRef/properties/producerStage", "description": "Current-run stage whose normalized index owns the payload."},
+        "name": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$", "description": "Semantic entry name inside that stage's normalized index, not a context-pointer name."}
+      }
+    },
+    "evidenceRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "artifact", "producerStage", "description", "captureContext"],
+      "properties": {
+        "kind": {"$ref": "investigation-evidence.schema.json#/$defs/evidenceRef/properties/kind", "description": "Diagnostic kind."},
+        "artifact": {"$ref": "#/$defs/semanticRef", "description": "Semantic reference resolved by the runner."},
+        "producerStage": {"$ref": "investigation-evidence.schema.json#/$defs/evidenceRef/properties/producerStage", "description": "Producer attribution, verified against the resolved pointer."},
+        "description": {"$ref": "investigation-evidence.schema.json#/$defs/evidenceRef/properties/description", "description": "Sanitized capture explanation."},
+        "captureContext": {"$ref": "investigation-evidence.schema.json#/$defs/dimensions", "description": "Bounded scalar capture dimensions."}
+      }
+    }
+  }
+}
