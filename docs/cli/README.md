@@ -90,6 +90,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
+| [`goobers recovery-restore`](#goobers-recovery-restore) | restore retained implementation onto current main |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers roots`](#goobers-roots) | inspect and manage instance roots |
@@ -2981,6 +2982,26 @@ do), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers record-merge-refusal
+~~~
+
+## `goobers recovery-restore`
+
+restore retained implementation onto current main
+
+~~~text
+Usage: goobers recovery-restore --record <record.json> --repository <checkout> --branch <new-branch> [instance]
+
+Restore a retained implementation archive onto freshly fetched main from
+the matching configured repository. The archive must be snapshot.bundle
+beside record.json. The destination checkout and index remain unchanged;
+the new local branch must not exist. Expired records and runtime asset
+changes are refused. This does not push, open a PR, or abandon recovery.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers recovery-restore --record ./retained/record.json --repository ./checkout --branch recovered-work ./instance
 ~~~
 
 ## `goobers remediation-checkpoint`
