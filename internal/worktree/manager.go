@@ -855,11 +855,9 @@ func flattenedSymlinks(root string, symlinkPaths []string, lstat func(string) (o
 //     "directory not empty". Detaching buys nothing here: the daemon already
 //     serializes mirror work behind the per-repo lock, and a fetch that
 //     returns while housekeeping is still running only moves that work onto
-//     an unsupervised process whose failures nobody reads. Maintenance still
-//     runs on exactly the same schedule (`gc.auto`/`maintenance.auto` are
-//     untouched), so mirror hygiene is unchanged. `gc.autoDetach` is git's
-//     older name for the same switch and is the fallback the newer key defers
-//     to; setting both covers every git version we support.
+//     an unsupervised process whose failures nobody reads. Automatic
+//     housekeeping is disabled for these commands; explicit maintenance runs
+//     remain available to the lifecycle that owns the mirror.
 func hardenedGitArgs(args []string) []string {
 	return append(append([]string{
 		"-c", "safe.bareRepository=all",
@@ -888,6 +886,8 @@ func hardenedGitArgs(args []string) []string {
 // Returns a fresh slice: callers append their own arguments to it.
 func ForegroundMaintenanceArgs() []string {
 	return []string{
+		"-c", "gc.auto=0",
+		"-c", "maintenance.auto=0",
 		"-c", "maintenance.autoDetach=false",
 		"-c", "gc.autoDetach=false",
 	}
