@@ -15,6 +15,7 @@ import (
 
 type recoveryDeliveryService struct {
 	layout instance.Layout
+	setup  *schedulerSetup
 }
 
 func (s recoveryDeliveryService) StreamRecovery(ctx context.Context, runID, repositoryKey, issueID string, out io.Writer) error {
@@ -72,6 +73,13 @@ func (s recoveryDeliveryService) StreamRecovery(ctx context.Context, runID, repo
 // an untrusted request field. The returned deadline bounds the transfer context;
 // this does not authorize arbitrary cross-run reads or bypass archive selection.
 func authorizeRecoveryDelivery(ctx context.Context, layout instance.Layout, runID, repositoryKey, issueID string, now time.Time) (time.Time, error) {
+	return withAuthorizedRecoveryDelivery(ctx, layout, runID, repositoryKey, issueID, now, nil)
+}
+
+// withAuthorizedRecoveryDelivery holds the claim lock through an optional short
+// durable acknowledgement. Callers must never transfer archive bytes or acquire
+// repository locks in acknowledge: claim release must not wait for a transfer.
+func withAuthorizedRecoveryDelivery(ctx context.Context, layout instance.Layout, runID, repositoryKey, issueID string, now time.Time, acknowledge func() error) (time.Time, error) {
 	if err := ctx.Err(); err != nil {
 		return time.Time{}, err
 	}
@@ -96,10 +104,17 @@ func authorizeRecoveryDelivery(ctx context.Context, layout instance.Layout, runI
 			return err
 		}
 		claims := ledger.ForRunAll(runID)
+		// Waiting for the lock must not extend a lease that expired meanwhile.
+		if current := time.Now().UTC(); current.After(now) {
+			now = current
+		}
 		if len(claims) != 1 || claims[0].ItemID != issueID || claims[0].ReleasedAt != nil || !claims[0].ExpiresAt.After(now) {
 			return fmt.Errorf("recovery delivery requires exactly one current unexpired issue lease")
 		}
 		deadline = claims[0].ExpiresAt
+		if acknowledge != nil {
+			return acknowledge()
+		}
 		return nil
 	})
 	if err != nil {

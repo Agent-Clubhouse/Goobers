@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -36,6 +37,10 @@ func TestIntegrationArchiveIntakeRequiresVerifiedDurableAcknowledgement(t *testi
 	}
 	recoveryTestGit(t, host, "init", "--bare")
 	request := RetentionRequest{Repository: host, RepositoryKey: record.RepositoryKey, RunID: record.RunID, IdentityTime: record.CreatedAt, RetainUntil: record.RetainUntil, InventoryRoot: inventory, CleanupRoots: []string{host}, MaxSnapshots: 1, MaxArchiveBytes: 1 << 20}
+	// The host supplies its own run identity time and retention policy, not
+	// whatever dates the worker placed in its otherwise valid envelope.
+	request.IdentityTime = request.IdentityTime.Add(-time.Hour)
+	request.RetainUntil = request.RetainUntil.Add(30 * 24 * time.Hour)
 	fullRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(fullRoot, "occupied"), 0o700); err != nil {
 		t.Fatal(err)
@@ -70,6 +75,9 @@ func TestIntegrationArchiveIntakeRequiresVerifiedDurableAcknowledgement(t *testi
 	}
 	if got.SnapshotSHA != record.SnapshotSHA || got.PatchDigest != record.PatchDigest {
 		t.Fatal("host changed implementation identity")
+	}
+	if !got.CreatedAt.Equal(request.IdentityTime) || !got.RetainUntil.Equal(request.RetainUntil) {
+		t.Fatal("intake trusted worker retention dates")
 	}
 	if data := recoveryTestGit(t, host, "show", got.Ref+":implementation"); data != "worker implementation" {
 		t.Fatalf("host pin: %q", data)

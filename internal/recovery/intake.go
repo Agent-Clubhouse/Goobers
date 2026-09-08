@@ -33,14 +33,18 @@ func AcceptArchive(ctx context.Context, source io.Reader, request RetentionReque
 	}
 	defer func() { _ = os.RemoveAll(directory) }()
 	record, err := receiveArchiveEnvelope(ctx, source, directory, request.MaxArchiveBytes, func(record Record) error {
-		if record.RunID != request.RunID || record.RepositoryKey != request.RepositoryKey || !record.CreatedAt.Equal(request.IdentityTime) || !record.RetainUntil.Equal(request.RetainUntil) {
-			return fmt.Errorf("archive intake identity or retention mismatch")
+		if record.RunID != request.RunID || record.RepositoryKey != request.RepositoryKey {
+			return fmt.Errorf("archive intake identity mismatch")
 		}
 		return nil
 	})
 	if err != nil {
 		return Record{}, "", err
 	}
+	// Worker clocks and retention wishes are not authoritative. These fields
+	// do not affect bundle/patch identity; host policy binds the durable record.
+	record.CreatedAt = request.IdentityTime
+	record.RetainUntil = request.RetainUntil
 	// Reserve capacity under the inventory lock before importing objects or
 	// creating a host ref. Failed imports leave a bounded retry reservation.
 	retained, path, err := publishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, record, request.MaxSnapshots, request.MaxArchiveBytes, func() error {

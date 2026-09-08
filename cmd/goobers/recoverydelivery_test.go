@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/providers"
 )
@@ -120,6 +122,57 @@ func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 				}
 			} else if err == nil || !deadline.IsZero() {
 				t.Fatalf("unauthorized transfer admitted: %s %v", deadline, err)
+			}
+		})
+	}
+}
+
+func TestRecoveryDeliveryAcknowledgementHoldsCurrentClaim(t *testing.T) {
+	for _, mode := range []string{"live", "released", "ack-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			layout := instance.NewLayout(initDemo(t))
+			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			const runID = "publication-run"
+			if ok, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil || !ok {
+				t.Fatalf("claim: %t %v", ok, err)
+			}
+			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
+			seedItemRepositoryForTest(t, layout, runID, "7", repo)
+			if mode == "released" {
+				if err := ledger.Release("7", runID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ackFailure := errors.New("durable acknowledgement failed")
+			called := false
+			deadline, err := withAuthorizedRecoveryDelivery(context.Background(), layout, runID, repo.CanonicalKey(), "7", time.Now().UTC(), func() error {
+				called = true
+				// A competing release uses this same lock. It cannot enter between
+				// authorization and the journal's durable acknowledgement.
+				held, lockErr := lock.TryAcquire(filepath.Join(layout.SchedulerDir(), claimLockFileName))
+				if held != nil {
+					_ = held.Release()
+				}
+				if !errors.Is(lockErr, lock.ErrHeld) {
+					t.Fatalf("acknowledgement did not hold claim lock: %v", lockErr)
+				}
+				if mode == "ack-failure" {
+					return ackFailure
+				}
+				return nil
+			})
+			if mode == "live" {
+				if err != nil || !called || deadline.IsZero() {
+					t.Fatalf("live acknowledgement: called=%t deadline=%s err=%v", called, deadline, err)
+				}
+			} else if err == nil || !deadline.IsZero() || called != (mode == "ack-failure") {
+				t.Fatalf("unsafe acknowledgement: called=%t deadline=%s err=%v", called, deadline, err)
+			}
+			if mode == "ack-failure" && !errors.Is(err, ackFailure) {
+				t.Fatalf("lost acknowledgement error: %v", err)
 			}
 		})
 	}
