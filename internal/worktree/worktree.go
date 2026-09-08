@@ -749,6 +749,9 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("read stale marker: %w", markerErr)
 	}
+	if err := m.prepareCleanup(ctx, path, runID, mk.OwnerRunID); err != nil {
+		return err
+	}
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", path)
 	}); err != nil {
@@ -822,6 +825,9 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		return nil
 	}
 
+	if err := wt.manager.prepareCleanup(ctx, wt.Path, wt.RunID, ownerRunID); err != nil {
+		return err
+	}
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", wt.Path)
 	}); err != nil {
