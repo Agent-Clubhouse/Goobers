@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,11 @@ func PublishRetainedState(ctx context.Context, repository, directory string, cle
 	}
 	defer func() { _ = handle.Release() }()
 	archive := filepath.Join(directory, BundleFileName)
+	if existing, err := ReadRecord(filepath.Join(directory, RecordFileName)); err == nil {
+		return republishRetainedState(ctx, repository, directory, prepared, existing, maxBytes)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Record{}, err
+	}
 	digest, err := PublishSnapshotBundle(ctx, repository, archive, prepared, maxBytes)
 	if err != nil {
 		return Record{}, err
