@@ -1556,8 +1556,6 @@ type trackedStarter struct {
 }
 
 func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
-	s.wg.Add(1)
-	defer s.wg.Done()
 	untrack := s.runners.Track(req.RunID, s.machine.Def.Name, s.r)
 	defer untrack()
 	res, err := s.r.Start(ctx, runner.StartInput{
@@ -1581,6 +1579,14 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		FailureCode:    res.FailureCode,
 		FailureMessage: res.FailureMessage,
 	}, err
+}
+
+func (s *trackedStarter) RegisterDispatch() func() {
+	if s.wg == nil {
+		return func() {}
+	}
+	s.wg.Add(1)
+	return s.wg.Done
 }
 
 // resumeInterruptedRuns scans runsDir for any run left non-terminal by a
