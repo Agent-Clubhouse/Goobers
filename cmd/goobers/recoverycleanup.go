@@ -32,7 +32,7 @@ func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanup
 		}
 		identities[digest] = key
 	}
-	return worktree.WithBeforeCleanup(func(ctx context.Context, target worktree.CleanupTarget) error {
+	callback := func(ctx context.Context, target worktree.CleanupTarget) error {
 		key, ok := identities[target.RepositoryDigest]
 		if !ok || target.OwnerRunID == "" {
 			return fmt.Errorf("recovery cleanup requires verified repository and run ownership")
@@ -61,7 +61,12 @@ func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanup
 			InventoryRoot: root, CleanupRoots: []string{cleanupRoot}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20, SkipEmpty: true,
 		}, recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber})
 		return err
-	}), nil
+	}
+	return func(manager *worktree.Manager) {
+		// Both arguments are fixed, valid values; installing the same named
+		// guard replaces it on reload rather than stacking archive callbacks.
+		_ = manager.SetCleanupGuard("recovery", callback)
+	}, nil
 }
 
 func prepareRecoveryInventory(instanceRoot string) (string, error) {

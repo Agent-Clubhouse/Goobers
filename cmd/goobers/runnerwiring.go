@@ -167,6 +167,10 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// not retain a manager rooted in the opposite lifecycle namespace.
 		wtMgr = nil
 	}
+	recoveryOption, recoveryErr := recoveryCleanupOption(l, cfg, absoluteWorkcopiesRoot, cloneURLFn, sharedReg)
+	if recoveryErr != nil {
+		return runner.Config{}, nil, recoveryErr
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -178,11 +182,6 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 			worktree.WithPinnedRoot(l.WorkcopiesBaseDir()),
 		}
-		recoveryOption, recoveryErr := recoveryCleanupOption(l, cfg, absoluteWorkcopiesRoot, cloneURLFn, sharedReg)
-		if recoveryErr != nil {
-			return runner.Config{}, nil, recoveryErr
-		}
-		managerOptions = append(managerOptions, recoveryOption)
 		for repoURL, limit := range pathLimits {
 			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
 		}
@@ -210,6 +209,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
 	}
+	recoveryOption(wtMgr)
 	if _, err := buildExternalTelemetryRegistry(cfg.ExternalTelemetry, sharedReg); err != nil {
 		return runner.Config{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
 	}

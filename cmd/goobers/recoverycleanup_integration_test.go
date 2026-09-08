@@ -39,10 +39,12 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := worktree.NewManager(workcopies, option)
+	manager, err := worktree.NewManager(workcopies)
 	if err != nil {
 		t.Fatal(err)
 	}
+	option(manager)
+	option(manager) // A configuration reload must replace, not duplicate.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: "main", Branch: "goobers/implementation/" + runID})
@@ -78,10 +80,13 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	observations := 0
 	for _, event := range events {
 		if event.RunID == runID && event.Runner["recoveryRef"] == retained.Ref {
-			return
+			observations++
 		}
 	}
-	t.Fatal("cleanup removed worktree without a recovery publication event")
+	if observations != 1 {
+		t.Fatalf("cleanup requires exactly one recovery publication observation, got %d", observations)
+	}
 }

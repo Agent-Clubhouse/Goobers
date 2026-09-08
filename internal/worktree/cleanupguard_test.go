@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -32,5 +34,50 @@ func TestCleanupHandoffsComposeAndStopOnFailure(t *testing.T) {
 		if !slices.Equal(calls, want) || errors.Is(err, blocked) != fail {
 			t.Fatalf("handoff composition: calls=%v error=%v", calls, err)
 		}
+	}
+}
+
+func TestNamedCleanupGuardReplacementPreservesOtherHandoffs(t *testing.T) {
+	manager := &Manager{}
+	var calls []string
+	WithBeforeCleanup(func(context.Context, CleanupTarget) error { calls = append(calls, "original"); return nil })(manager)
+	for _, name := range []string{"provenance", "recovery", "recovery"} {
+		if err := manager.SetCleanupGuard(name, func(context.Context, CleanupTarget) error { calls = append(calls, name); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.prepareCleanup(context.Background(), "path", "stage", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(calls, []string{"original", "provenance", "recovery"}) {
+		t.Fatalf("reload replaced unrelated guards or duplicated recovery: %v", calls)
+	}
+}
+
+func TestNamedCleanupGuardConcurrentReplacement(t *testing.T) {
+	manager := &Manager{}
+	var calls atomic.Int64
+	callback := func(context.Context, CleanupTarget) error { calls.Add(1); return nil }
+	if err := manager.SetCleanupGuard("recovery", callback); err != nil {
+		t.Fatal(err)
+	}
+	var workers sync.WaitGroup
+	workers.Go(func() {
+		for range 100 {
+			if err := manager.SetCleanupGuard("recovery", callback); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	workers.Go(func() {
+		for range 100 {
+			if err := manager.prepareCleanup(context.Background(), "path", "stage", "owner"); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	workers.Wait()
+	if calls.Load() != 100 {
+		t.Fatalf("reload duplicated or lost cleanup acknowledgements: %d", calls.Load())
 	}
 }
