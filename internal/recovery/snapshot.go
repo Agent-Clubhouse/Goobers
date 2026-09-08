@@ -22,6 +22,11 @@ func CaptureSnapshot(ctx context.Context, repository, runID string) (string, err
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	root, err := snapshotRoot(ctx, repository)
+	if err != nil {
+		return "", err
+	}
+	repository = root
 	var head boundedRefOutput
 	if err := recoveryGit(ctx, repository, &head, "rev-parse", "--verify", "HEAD^{commit}"); err != nil {
 		return "", fmt.Errorf("read recovery snapshot parent: %w", err)

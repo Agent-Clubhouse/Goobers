@@ -54,7 +54,11 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	recoveryTestGit(t, repository, "config", "core.excludesFile", excludes)
-	snapshot, err := CaptureSnapshot(context.Background(), repository, "run-1")
+	subdirectory := filepath.Join(repository, "nested")
+	if err := os.Mkdir(subdirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := CaptureSnapshot(context.Background(), subdirectory, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}

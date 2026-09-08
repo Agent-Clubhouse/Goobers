@@ -52,6 +52,20 @@ func snapshotEnvironment(ctx context.Context, repository, directory, parent stri
 
 type snapshotPathOutput struct{ bytes.Buffer }
 
+// Git commands accept a subdirectory, but GIT_WORK_TREE needs the actual root;
+// otherwise a capture from a nested directory can record root files as deleted.
+func snapshotRoot(ctx context.Context, repository string) (string, error) {
+	var output snapshotPathOutput
+	if err := recoveryGit(ctx, repository, &output, "rev-parse", "--show-toplevel"); err != nil {
+		return "", fmt.Errorf("locate recovery worktree root: %w", err)
+	}
+	root := strings.TrimSuffix(output.String(), "\n")
+	if !filepath.IsAbs(root) || strings.ContainsAny(root, "\r\n\x00") {
+		return "", fmt.Errorf("invalid recovery worktree root")
+	}
+	return root, nil
+}
+
 func (w *snapshotPathOutput) Write(data []byte) (int, error) {
 	if w.Len()+len(data) > 8192 {
 		return 0, fmt.Errorf("recovery object path exceeds byte budget")
