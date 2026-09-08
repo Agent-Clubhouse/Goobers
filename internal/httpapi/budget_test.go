@@ -89,6 +89,7 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 			if route.ID != apicontract.RouteRunArtifact && route.ID != apicontract.RouteRunTranscript &&
 				route.ID != apicontract.RouteCredentialResolve && route.ID != apicontract.RouteBlobGet &&
 				route.ID != apicontract.RouteRunRecovery &&
+				route.ID != apicontract.RouteRunRecoveryPublish &&
 				budget >= clientAbortBackstop {
 				t.Errorf("%s budget %s is not strictly below the client's %s abort; the client would "+
 					"give up first and the server would keep working",

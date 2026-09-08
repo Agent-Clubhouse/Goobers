@@ -247,6 +247,7 @@ const (
 	RouteStageAttempts            RouteID = "stageAttempts"
 	RouteRunArtifact              RouteID = "runArtifact"
 	RouteRunRecovery              RouteID = "runRecovery"
+	RouteRunRecoveryPublish       RouteID = "runRecoveryPublish"
 	RouteRunTranscript            RouteID = "runTranscript"
 	RouteTelemetryCosts           RouteID = "telemetryCosts"
 	RouteTelemetryStats           RouteID = "telemetryStats"
@@ -403,6 +404,7 @@ var v1Routes = []Route{
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteRunRecovery, Method: http.MethodGet, Path: RunRecoveryPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteRunRecoveryPublish, Method: http.MethodPost, Path: RunRecoveryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: BlobBudget},
 	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteTelemetryCosts, Method: http.MethodGet, Path: TelemetryCostsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},

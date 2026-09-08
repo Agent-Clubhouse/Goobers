@@ -438,7 +438,7 @@ func podRouteScope(request *http.Request) (scope string, admitted bool) {
 	if runReadPlanePath(path) && method == http.MethodGet {
 		return ScopeJournal, true
 	}
-	if recoveryPlanePath(path) && method == http.MethodGet {
+	if recoveryPlanePath(path) && (method == http.MethodGet || method == http.MethodPost) {
 		return ScopeClaims, true
 	}
 	return "", false
@@ -904,7 +904,12 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, errorLog)
-	router.Handle(apicontract.RouteRunRecovery, recoveryArchiveHandler(config.recovery, errorLog))
+	router.HandleByMethod(map[string]apicontract.RouteID{
+		http.MethodGet: apicontract.RouteRunRecovery, http.MethodPost: apicontract.RouteRunRecoveryPublish,
+	}, map[apicontract.RouteID]http.HandlerFunc{
+		apicontract.RouteRunRecovery:        recoveryArchiveHandler(config.recovery, errorLog),
+		apicontract.RouteRunRecoveryPublish: recoveryPublishHandler(config.recovery, errorLog),
+	})
 	registerSurrenderPlaneRoutes(router, config, errorLog)
 	registerStatePlaneRoutes(router, config.state, errorLog)
 }

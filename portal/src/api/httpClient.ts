@@ -114,6 +114,7 @@ const clientRoutes = {
   // route. The Portal does not consume this binary response, but tracks the
   // complete daemon route contract here.
   runRecovery: apiRoutes.runRecovery,
+  runRecoveryPublish: apiRoutes.runRecoveryPublish,
   triggerIngest: apiRoutes.triggerIngest,
   resolveEscalation: apiRoutes.resolveEscalation,
   // Remote run cancellation (#3807): the CLI's `goobers run cancel --api` asks
