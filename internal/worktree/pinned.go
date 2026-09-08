@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/lock"
@@ -89,11 +90,13 @@ func (e *StalePinnedLeaseError) Error() string {
 
 // PinnedLease owns a pinned workspace for an entire run.
 type PinnedLease struct {
-	Worktree *Worktree
-	handle   *lock.Handle
-	queue    string
-	record   string
-	root     string
+	Worktree    *Worktree
+	handle      *lock.Handle
+	queue       string
+	record      string
+	root        string
+	releaseOnce sync.Once
+	releaseErr  error
 }
 
 // Release relinquishes the whole-run lease without removing the workspace.
@@ -101,6 +104,11 @@ func (l *PinnedLease) Release() error {
 	if l == nil {
 		return nil
 	}
+	l.releaseOnce.Do(func() { l.releaseErr = l.release() })
+	return l.releaseErr
+}
+
+func (l *PinnedLease) release() error {
 	var err error
 	if l.Worktree != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

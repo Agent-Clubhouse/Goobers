@@ -115,3 +115,29 @@ func TestIntegrationPinnedCustodyTransfersOnlyAfterAcknowledgement(t *testing.T)
 		t.Fatalf("new custody not published: %+v %v", owner, err)
 	}
 }
+
+func TestIntegrationPinnedReleaseCannotReenterAfterLeaseTransfer(t *testing.T) {
+	testdep.Require(t, "git")
+	manager, repo := pinnedFixture(t)
+	first := acquirePinnedFixture(t, manager, repo, "same-run", PinnedCleanNone)
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	next := acquirePinnedFixture(t, manager, repo, "same-run", PinnedCleanNone)
+	defer func() { _ = next.Release() }()
+	calls := 0
+	if err := manager.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error { calls++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatal("released lease recaptured a new owner's active workspace")
+	}
+	recordPath := filepath.Join(manager.pinnedRoot, repoKey(repo), "pin.lease.json")
+	data, err := os.ReadFile(recordPath)
+	if err != nil || !strings.Contains(string(data), "same-run") {
+		t.Fatalf("old release cleared new lease: %q %v", data, err)
+	}
+}
