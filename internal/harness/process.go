@@ -97,13 +97,25 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 // hit. Safe to call concurrently with Write (see the type doc for why that
 // matters here).
 func (b *syncBuffer) Bytes() []byte {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	out := append([]byte(nil), b.buf.Bytes()...)
-	if b.dropped > 0 {
-		out = append(out, transcriptTruncationMarker(b.dropped)...)
+	out, _, dropped := b.delta(0)
+	if dropped > 0 {
+		out = append(out, transcriptTruncationMarker(dropped)...)
 	}
 	return out
+}
+
+// delta copies only retained bytes after offset. The returned offset advances
+// over actual data, never the changing truncation marker. Checkpoint callers
+// must commit their offset only after the corresponding write is durable.
+func (b *syncBuffer) delta(offset int) (data []byte, next int, dropped int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if offset < 0 || offset > b.buf.Len() {
+		// The buffer never shrinks. An invalid cursor must not silently
+		// restart from zero and duplicate previously committed bytes.
+		return nil, offset, b.dropped
+	}
+	return append([]byte(nil), b.buf.Bytes()[offset:]...), b.buf.Len(), b.dropped
 }
 
 func transcriptTruncationMarker(dropped int64) []byte {
