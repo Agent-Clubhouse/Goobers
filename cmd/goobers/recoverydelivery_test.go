@@ -1,15 +1,85 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestRecoveryDeliveryServiceStreamsOnlyVerifiedClaimedState(t *testing.T) {
+	for _, mode := range []string{"valid", "released", "busy-source", "corrupt"} {
+		t.Run(mode, func(t *testing.T) {
+			layout := instance.NewLayout(initDemo(t))
+			now := time.Now().UTC()
+			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
+			path := seedRecoverySelection(t, layout, repo, "source-run", "7", now.Add(-time.Hour), now.Add(time.Hour), true)
+			record, err := recovery.ReadRecord(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive := []byte(fmt.Sprintf("# v3 git bundle\n@object-format=sha1\n%s %s\n\nfixture", record.SnapshotSHA, record.Ref))
+			record.ArchiveBytes = int64(len(archive))
+			record.ArchiveDigest = fmt.Sprintf("sha256:%x", sha256.Sum256(archive))
+			metadata, err := recovery.Encode(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, metadata, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "corrupt" {
+				archive[len(archive)-1] ^= 1
+			}
+			if err := os.WriteFile(filepath.Join(filepath.Dir(path), recovery.BundleFileName), archive, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok, _, err := ledger.Claim("7", "receiving-run", "implementation-recovery", time.Hour); err != nil || !ok {
+				t.Fatalf("claim: %t %v", ok, err)
+			}
+			seedItemRepositoryForTest(t, layout, "receiving-run", "7", repo)
+			if mode == "released" {
+				if err := ledger.Release("7", "receiving-run"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "busy-source" {
+				run, _, err := journal.Recover(filepath.Join(layout.RunsDir(), "source-run"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = run.Close() }()
+			}
+			var out bytes.Buffer
+			err = (recoveryDeliveryService{layout: layout}).StreamRecovery(context.Background(), "receiving-run", repo.CanonicalKey(), "7", &out)
+			if mode == "valid" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := recovery.ReceiveArchiveEnvelope(context.Background(), &out, t.TempDir(), 4096)
+				if err != nil || got != record {
+					t.Fatalf("received wrong recovery: %+v %v", got, err)
+				}
+			} else if err == nil || out.Len() != 0 {
+				t.Fatalf("unsafe delivery: bytes=%d err=%v", out.Len(), err)
+			}
+		})
+	}
+}
 
 func TestRecoveryDeliveryRequiresCurrentSingleIssueLease(t *testing.T) {
 	for _, mode := range []string{"live", "expired", "released", "multiple", "foreign-run", "foreign-repository"} {
