@@ -78,11 +78,12 @@ func (r *recoveryExhaustionReviewer) Review(context.Context, apiv1.InvocationEnv
 func TestIntegrationRecoverySurvivesPrePRExhaustion(t *testing.T) {
 	testdep.Require(t, "git")
 	for _, mode := range []string{"local-ci", "unchanged-repass"} {
-		t.Run(mode, func(t *testing.T) { testPrePRRecovery(t, mode) })
+		t.Run(mode, func(t *testing.T) { testPrePRRecovery(t, mode, false) })
+		t.Run("pinned-"+mode, func(t *testing.T) { testPrePRRecovery(t, mode, true) })
 	}
 }
 
-func testPrePRRecovery(t *testing.T, mode string) {
+func testPrePRRecovery(t *testing.T, mode string, pinned bool) {
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -113,7 +114,8 @@ func testPrePRRecovery(t *testing.T, mode string) {
 	finalized := false
 	var finalizationErr error
 	r, err := runner.New(runner.Config{
-		RunsDir: layout.RunsDir(), Worktrees: manager, RepoCloneURL: cloneURL,
+		PinnedWorkspace: pinned,
+		RunsDir:         layout.RunsDir(), Worktrees: manager, RepoCloneURL: cloneURL,
 		MaxRepasses: 1, Automated: gate.NewAutomatedEvaluator(), RecoveryEvents: recoveryRunEvents(layout),
 		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
 			return executor, nil
@@ -143,7 +145,11 @@ func testPrePRRecovery(t *testing.T, mode string) {
 		t.Fatalf("terminal cleanup did not complete: called=%t error=%v", finalized, finalizationErr)
 	}
 	for _, path := range executor.workspaces {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
+		_, err := os.Stat(path)
+		if pinned && err != nil {
+			t.Fatalf("pinned terminal workspace was removed: %v", err)
+		}
+		if !pinned && !os.IsNotExist(err) {
 			t.Fatalf("terminal cleanup left execution workspace: %v", err)
 		}
 	}
