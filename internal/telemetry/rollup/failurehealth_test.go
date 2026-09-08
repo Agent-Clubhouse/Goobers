@@ -74,3 +74,49 @@ func TestStageHealthUsesFailureOutcomeAndCountsRecovery(t *testing.T) {
 		t.Fatalf("summary = %+v", summary)
 	}
 }
+
+// Runner recovery writes interrupted as a real error code with a marker, not
+// as an absent error. Ingestion derives "unknown" for that legacy code; this
+// fallback must not turn infrastructure interruption into a failed work verdict.
+func TestStageHealthPreservesLegacyInterruptionExclusion(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	for i, tc := range []struct {
+		stage, class, code, runner string
+	}{
+		{"interrupted-retry", "infra", "interrupted", `{"interruptedAttempt":true}`},
+		{"known-policy", "infra", "timeout", `{}`},
+		{"explicit-policy", "infra", "custom_check_failed", `{"retryFailureClass":"policy"}`},
+		{"unknown-initial", "", "custom_check_failed", `{}`},
+	} {
+		runID := fmt.Sprintf("%032d", i+1)
+		dir := filepath.Join(runsDir, runID)
+		mustMkdirAll(t, dir)
+		mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(runID, fixtureStart))
+		lines := []string{
+			eventLine(1, fixtureStart, `"type":"run.started"`),
+			eventLine(2, fixtureStart.Add(time.Second), fmt.Sprintf(`"type":"stage.started","stage":%q,"attempt":2,"attemptClass":%q`, tc.stage, tc.class)),
+			eventLine(3, fixtureStart.Add(2*time.Second), fmt.Sprintf(`"type":"stage.finished","stage":%q,"attempt":2,"attemptClass":%q,"status":"failure","error":{"code":%q},"runner":%s`, tc.stage, tc.class, tc.code, tc.runner)),
+			eventLine(4, fixtureStart.Add(3*time.Second), `"type":"run.finished","status":"failed"`),
+		}
+		mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+	}
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	stats, err := db.Stats(context.Background(), StatsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byStage := map[string]StageStats{}
+	for _, stage := range stats.Stages {
+		byStage[stage.Stage] = stage
+	}
+	if stage, ok := byStage["interrupted-retry"]; ok {
+		t.Errorf("legacy interruption counted as work: %+v", stage)
+	}
+	for _, name := range []string{"known-policy", "explicit-policy", "unknown-initial"} {
+		if stage := byStage[name]; stage.TotalAttempts != 1 || stage.FailedAttempts != 1 {
+			t.Errorf("%s = %+v, want one failed work attempt", name, stage)
+		}
+	}
+}

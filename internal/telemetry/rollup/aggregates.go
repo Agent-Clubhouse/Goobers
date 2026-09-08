@@ -628,10 +628,12 @@ func (db *DB) stageStats(ctx context.Context, req StatsRequest) ([]StageStats, e
 	// and its infra-started successor can succeed or encounter a policy failure.
 	// Retain the legacy exclusion only for infra-started attempts whose outcome
 	// has no structured classification. A successful recovery is a work verdict.
+	// Ingestion also stores the "unknown" fallback for legacy error codes such
+	// as interrupted; a non-NULL class alone is not evidence of a work failure.
 	clauses = append(clauses, `(sa.status = 'success' OR (
   COALESCE(sa.error_class, '') NOT IN (`+infraFailureClassesSQL+`)
   AND COALESCE(json_extract(sa.runner_json, '$.retryFailureClass'), '') != 'infra'
-  AND (COALESCE(sa.attempt_class, '') != 'infra' OR sa.error_class IS NOT NULL
+  AND (COALESCE(sa.attempt_class, '') != 'infra' OR COALESCE(sa.error_class, '') NOT IN ('', '`+string(telemetry.ErrorClassUnknown)+`')
        OR json_extract(sa.runner_json, '$.retryFailureClass') = 'policy')
  ))`)
 	join := ""
