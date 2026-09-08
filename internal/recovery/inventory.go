@@ -37,8 +37,7 @@ func PublishToInventory(ctx context.Context, repository, root string, cleanupRoo
 		return Record{}, "", err
 	}
 	defer func() { _ = handle.Release() }()
-	identity := sha256.Sum256([]byte(prepared.RepositoryKey + "\x00" + prepared.RunID + "\x00" + prepared.SnapshotSHA))
-	directory, err := reserveSnapshotDirectory(root, fmt.Sprintf("%x", identity), maxSnapshots)
+	directory, err := reserveSnapshotDirectory(root, inventoryDirectoryName(prepared), maxSnapshots)
 	if err != nil {
 		return Record{}, "", err
 	}
@@ -47,6 +46,11 @@ func PublishToInventory(ctx context.Context, repository, root string, cleanupRoo
 		return Record{}, "", err
 	}
 	return published, filepath.Join(directory, RecordFileName), nil
+}
+
+func inventoryDirectoryName(record Record) string {
+	identity := sha256.Sum256([]byte(record.RepositoryKey + "\x00" + record.RunID + "\x00" + record.SnapshotSHA))
+	return fmt.Sprintf("%x", identity)
 }
 
 // Caller holds the inventory lock. Count every entry except that lock: unknown
