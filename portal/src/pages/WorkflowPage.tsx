@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { RunTiming } from "../components/RunTiming";
+import { QueueEligibilityPanel } from "../components/QueueEligibilityPanel";
 import type {
   DaemonClient,
   GraphAnalytics,
@@ -99,6 +100,7 @@ export function WorkflowPage({
             : undefined
         }
       />
+      <QueueEligibilityPanel key={`${gaggle}/${workflowName}`} client={client} gaggle={gaggle} workflow={workflowName} />
     </>
   );
 }

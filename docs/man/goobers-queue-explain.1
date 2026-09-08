@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS QUEUE EXPLAIN" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers queue-explain \- explain historical PR queue eligibility and claim observations
+.SH SYNOPSIS
+\fBgoobers queue-explain\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers queue-explain --gaggle=<name> --workflow=<name> --pr=<number> [--json] [path]
+
+Explain one PR using the latest retained selection observation for that exact
+workflow. This is historical evidence, not permission to claim or merge.
+Reads the daemon's existing projection without rebuilding journal history or
+querying providers. An absent PR is unknown, not eligible; reports can be partial
+or truncated. Empty --gaggle selects only the legacy unscoped namespace.
+Exit codes: 0 = observation displayed, 1 = evidence unavailable/not observed,
+2 = usage or I/O error.
+.fi
+.SH EXAMPLES
+.nf
+goobers queue-explain --gaggle=core --workflow=merge-review --pr=42
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

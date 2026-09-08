@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/prqueue"
 )
 
 // TestPRSelectReportsSevenEscalatedPullRequestsRatherThanBareNoWork is #2969's
@@ -48,6 +51,25 @@ func TestPRSelectReportsSevenEscalatedPullRequestsRatherThanBareNoWork(t *testin
 	if !strings.Contains(stdout, exclusionEscalated) {
 		t.Fatalf("stdout = %q, want the normalized reason %q so an operator can act without reading "+
 			"pr-select's source", stdout, exclusionEscalated)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "selected-pr.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		NoWork bool           `json:"noWork"`
+		Queue  prqueue.Report `json:"queueEligibility"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.NoWork || result.Queue.Version != 1 || result.Queue.MatchingItems != 7 || len(result.Queue.Items) != 7 || result.Queue.OmittedItems != 0 || !result.Queue.CompleteSnapshot || result.Queue.Workflow != "merge-review" {
+		t.Fatalf("no-work artifact lost queue evidence: %+v", result)
+	}
+	for _, item := range result.Queue.Items {
+		if item.Number < 533 || item.Number > 539 || item.Eligible || item.Reason != exclusionEscalated || item.NextStep != prqueue.NextStep(exclusionEscalated) {
+			t.Fatalf("incorrect persisted exclusion: %+v", item)
+		}
 	}
 }
 

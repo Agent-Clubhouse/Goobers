@@ -165,6 +165,9 @@ _goobers_completion()
         schema)
             flags+=" --list --human"
             ;;
+        queue-explain)
+            flags+=" --json --pr --gaggle --workflow"
+            ;;
         explain)
             flags+=" --human"
             ;;

@@ -356,6 +356,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "watch", desc: "Refresh the status board until interrupted"},
 		{name: "interval", takesArg: true, desc: "Watch refresh interval"},
 	},
+	"queue-explain": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "pr", takesArg: true, desc: "PR number to explain"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle namespace"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow that evaluated the queue"},
+	},
 	"stats": {
 		{name: "since", takesArg: true, desc: "Only include activity from the preceding duration"},
 		{name: "json", desc: "Emit JSON"},

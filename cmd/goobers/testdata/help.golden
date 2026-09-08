@@ -147,6 +147,7 @@ Advanced operator commands:
   override          override a nondeterministic gate with a rationale
   portal-extension  install, inspect, or update the user-scoped Goobers Portal canvas extension bundled with this binary
   preflight         check WSL full-isolation readiness and optionally hand off a command
+  queue-explain     explain historical PR queue eligibility and claim observations
   rerun-stage       rerun a stage with a recorded instruction addendum
   reset-rate-limit  clear the hourly run-rate budget without deleting runs/
   roots decommission mark a stopped instance root as historical
@@ -1902,6 +1903,17 @@ agentic chain sits between this stage and the one that selected the PR.
 Exit codes: 0 = pushed (or an idempotent no-op), 1 = business error,
 2 = usage/IO error.
 
+### queue-explain
+Usage: goobers queue-explain --gaggle=<name> --workflow=<name> --pr=<number> [--json] [path]
+
+Explain one PR using the latest retained selection observation for that exact
+workflow. This is historical evidence, not permission to claim or merge.
+Reads the daemon's existing projection without rebuilding journal history or
+querying providers. An absent PR is unknown, not eligible; reports can be partial
+or truncated. Empty --gaggle selects only the legacy unscoped namespace.
+Exit codes: 0 = observation displayed, 1 = evidence unavailable/not observed,
+2 = usage or I/O error.
+
 ### rebase-pr
 Usage: goobers rebase-pr [path]
 
@@ -2494,6 +2506,10 @@ Normal and daemon status identify the root path, durable instance ID, and owning
 and warn when the root is marked historical or its identity cannot be verified.
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
+and next steps from the existing daemon projection, never current claim authority.
+At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle
+and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.
 It lists parked backlog items too — open issues carrying a park disposition without
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 Shared baseline failures are listed with the subjects waiting on them: runs parked

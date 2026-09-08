@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/pr-queue-eligibility-v1.schema.json",
+  "title": "PR queue eligibility observation",
+  "description": "Historical pre-selection evidence, never authorization to claim or merge. Runtime additionally verifies unique PR identities, exact count arithmetic, claim-state consistency and a 4 MiB byte bound.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "repositoryKey", "gaggle", "workflow", "runId", "observedAt", "completeSnapshot", "matchingItems", "omittedItems", "items"],
+  "properties": {
+    "version": {"const": 1, "description": "Wire contract version."},
+    "repositoryKey": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Provider-complete canonical repository identity."},
+    "gaggle": {"type": "string", "maxLength": 256, "description": "Gaggle namespace; empty denotes legacy unscoped execution."},
+    "workflow": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Workflow that evaluated this queue."},
+    "runId": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Run that produced this observation."},
+    "observedAt": {"type": "string", "format": "date-time", "description": "Selection observation time, not a claim freshness guarantee."},
+    "completeSnapshot": {"type": "boolean", "description": "Whether provider coverage was complete; distinct from report truncation."},
+    "matchingItems": {"type": "integer", "minimum": 0, "description": "Count of PRs matching the workflow's responsibility scope."},
+    "omittedItems": {"type": "integer", "minimum": 0, "description": "Observed matching PRs omitted from this bounded report."},
+    "items": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/item"}, "description": "Bounded per-PR observations in selector order."}
+  },
+  "$defs": {
+    "item": {
+      "type": "object", "additionalProperties": false,
+      "required": ["number", "eligible", "nextStep", "claim"],
+      "properties": {
+        "number": {"type": "integer", "minimum": 1, "description": "Repository-local PR number."},
+        "eligible": {"type": "boolean", "examples": [true], "description": "Passed selection policy; does not imply claim availability."},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Selector's first decisive exclusion reason, absent when eligible."},
+        "nextStep": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Conservative operator guidance for this policy decision."},
+        "claim": {"$ref": "#/$defs/claim", "description": "Independent durable-ledger and provider-label observations."}
+      },
+      "if": {"properties": {"eligible": {"const": true}}},
+      "then": {"not": {"required": ["reason"]}},
+      "else": {"required": ["reason"]}
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "providerClaimLabel", "comparison", "nextStep"],
+      "properties": {
+        "state": {"enum": ["unknown", "unclaimed", "expired", "held-by-this-run", "held-by-other-run", "held-in-legacy-namespace"], "description": "Local ledger observation, not global claim authority."},
+        "ownerRunId": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Recorded lease owner when known."},
+        "expiresAt": {"type": "string", "format": "date-time", "description": "Recorded lease expiry, compared at observation time."},
+        "providerClaimLabel": {"type": "boolean", "description": "Presence of the provider-visible claimed label in the snapshot."},
+        "comparison": {"enum": ["unavailable", "no-local-lease-or-provider-label", "local-lease-and-provider-label", "provider-label-without-live-local-lease", "local-lease-without-provider-label"], "description": "Factual comparison; disagreement never authorizes removing a marker."},
+        "nextStep": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Conservative next step that preserves claim ownership."}
+      },
+      "if": {"properties": {"state": {"enum": ["unknown", "unclaimed"]}}},
+      "then": {"not": {"anyOf": [{"required": ["ownerRunId"]}, {"required": ["expiresAt"]}]}},
+      "else": {"required": ["ownerRunId", "expiresAt"]}
+    }
+  }
+}

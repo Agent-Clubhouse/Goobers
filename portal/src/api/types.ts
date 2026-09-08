@@ -6,6 +6,39 @@ export const SCHEMA_VERSION = "v1";
 export type JsonScalar = string | number | boolean | null;
 export type JsonValue = JsonScalar | JsonValue[] | { [key: string]: JsonValue };
 
+export interface PRQueueClaimObservation {
+  state: "unknown" | "unclaimed" | "expired" | "held-by-this-run" | "held-by-other-run" | "held-in-legacy-namespace";
+  ownerRunId?: string;
+  expiresAt?: string;
+  providerClaimLabel: boolean;
+  comparison: "unavailable" | "no-local-lease-or-provider-label" | "local-lease-and-provider-label" | "provider-label-without-live-local-lease" | "local-lease-without-provider-label";
+  nextStep: string;
+}
+
+export interface PRQueueEligibilityReport {
+  version: 1;
+  repositoryKey: string;
+  gaggle: string;
+  workflow: string;
+  runId: string;
+  observedAt: string;
+  completeSnapshot: boolean;
+  matchingItems: number;
+  omittedItems: number;
+  items: Array<{ number: number; eligible: boolean; reason?: string; nextStep: string; claim: PRQueueClaimObservation }>;
+}
+
+export interface QueueEligibilityView extends WithReadState {
+  gaggle: string;
+  workflow: string;
+  asOf: string;
+  status: "unavailable" | "not-observed" | "observed";
+  sourceRunId?: string;
+  sourceStage?: string;
+  report?: PRQueueEligibilityReport;
+  problem?: string;
+}
+
 export type Environment = "dev" | "staging" | "prod";
 export type Provider = "github" | "ado";
 export type InstanceStatus = "starting" | "ready" | "degraded";
@@ -1316,6 +1349,7 @@ export interface DaemonClient {
   listWorkflows(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<WorkflowPage>;
   getGaggleConnections(gaggle: string, options?: RequestOptions): Promise<GaggleConnections>;
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
+  getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;

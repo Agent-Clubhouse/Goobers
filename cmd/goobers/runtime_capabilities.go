@@ -480,6 +480,10 @@ func init() {
 			withSynopsis(synopsisByID["schema"]).
 			withHelp("emit a JSON Schema embedded in this build", schemaHelp).
 			withExamples("goobers schema --list", "goobers schema workflow", "goobers schema --human goober"),
+		command("queue-explain", apicontract.ActionReadOnlyNavigation, runQueueExplain).
+			withSynopsis(synopsisByID["queue-explain"]).
+			withHelp("explain historical PR queue eligibility and claim observations", queueExplainHelp).
+			withExamples("goobers queue-explain --gaggle=core --workflow=merge-review --pr=42"),
 		command("explain", apicontract.ActionReadOnlyNavigation, runExplain).
 			withSynopsis(synopsisByID["explain"]).
 			withHelp("project field facts from an embedded JSON Schema", explainHelp).

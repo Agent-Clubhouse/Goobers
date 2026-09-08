@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/prqueue"
 )
 
 type schemaFixture struct {
@@ -23,6 +24,7 @@ type schemaFixture struct {
 
 func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 	fixtures := map[string]schemaFixture{
+		"pr-queue-eligibility":    {schema: schemas.PRQueueEligibility, value: completePRQueueEligibility()},
 		"stage-artifact-manifest": {schema: schemas.StageArtifactManifest, value: artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.ManifestEntry{{Name: "reproduction.bundle", Path: "output/bundle.tar", MediaType: "application/x-tar"}}}},
 		"stage-artifact-set":      {schema: schemas.StageArtifactSet, value: artifactset.Index{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.Entry{{Name: "reproduction.bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}}},
 		"investigation-evidence":  {schema: schemas.InvestigationEvidence, value: completeInvestigationEvidence()},
@@ -78,6 +80,17 @@ func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 			}
 		})
 	}
+}
+
+func completePRQueueEligibility() prqueue.Report {
+	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
+	r := prqueue.Report{Version: 1, RepositoryKey: "github|||org|repo|", Gaggle: "team", Workflow: "review", RunID: "review-run", ObservedAt: now, CompleteSnapshot: true, Items: []prqueue.Item{}}
+	r.Add(42, prqueue.Escalated)
+	r.Add(43, "")
+	r.Items[0].Claim = prqueue.ObserveClaim(true, "review-run", "review-run", now.Add(time.Minute), now, true)
+	r.MatchingItems++
+	r.OmittedItems++
+	return r
 }
 
 func completeArtifactPointer(path string) apiv1.ArtifactPointer {
