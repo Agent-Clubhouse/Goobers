@@ -23,6 +23,10 @@ var ErrInventoryFull = errors.New("recovery inventory is full")
 // reconciled, bounding crash/retry debris as well as successful records. Each
 // archive is bounded by maxArchiveBytes; this helper never evicts old records.
 func PublishToInventory(ctx context.Context, repository, root string, cleanupRoots []string, prepared Record, maxSnapshots int, maxArchiveBytes int64) (Record, string, error) {
+	return publishToInventory(ctx, repository, root, cleanupRoots, prepared, maxSnapshots, maxArchiveBytes, nil)
+}
+
+func publishToInventory(ctx context.Context, repository, root string, cleanupRoots []string, prepared Record, maxSnapshots int, maxArchiveBytes int64, beforePublish func() error) (Record, string, error) {
 	if err := prepared.validateSnapshot(); err != nil {
 		return Record{}, "", err
 	}
@@ -40,6 +44,11 @@ func PublishToInventory(ctx context.Context, repository, root string, cleanupRoo
 	directory, err := reserveSnapshotDirectory(root, inventoryDirectoryName(prepared), maxSnapshots)
 	if err != nil {
 		return Record{}, "", err
+	}
+	if beforePublish != nil {
+		if err := beforePublish(); err != nil {
+			return Record{}, "", err
+		}
 	}
 	published, err := PublishRetainedState(ctx, repository, directory, cleanupRoots, prepared, maxArchiveBytes)
 	if err != nil {

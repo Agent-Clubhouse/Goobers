@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -35,6 +36,18 @@ func TestIntegrationArchiveIntakeRequiresVerifiedDurableAcknowledgement(t *testi
 	}
 	recoveryTestGit(t, host, "init", "--bare")
 	request := RetentionRequest{Repository: host, RepositoryKey: record.RepositoryKey, RunID: record.RunID, IdentityTime: record.CreatedAt, RetainUntil: record.RetainUntil, InventoryRoot: inventory, CleanupRoots: []string{host}, MaxSnapshots: 1, MaxArchiveBytes: 1 << 20}
+	fullRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(fullRoot, "occupied"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	full := request
+	full.InventoryRoot = fullRoot
+	if _, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), full, retentionJournalFunc(func(journal.Event) error { t.Fatal("full inventory acknowledged intake"); return nil })); !errors.Is(err, ErrInventoryFull) {
+		t.Fatalf("full inventory accepted intake: %v", err)
+	}
+	if refs := recoveryTestGit(t, host, "for-each-ref", "--format=%(refname)"); refs != "" {
+		t.Fatalf("intake created refs before reserving capacity: %s", refs)
+	}
 	denied := errors.New("journal acknowledgement failed")
 	got, path, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, retentionJournalFunc(func(journal.Event) error { return denied }))
 	if !errors.Is(err, denied) || got != (Record{}) || path != "" {
