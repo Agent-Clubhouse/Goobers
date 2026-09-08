@@ -1511,45 +1511,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}()
 
-	mergedPRCostSweepGate := &mergedPRCostSweepGate{}
-	mergedPRCostSweepErrors := newSweepErrorReporter(setup.InstanceLog, "merged_pr_cost_sweep_failed")
-	sweepMergedPRCosts := func(now time.Time) error {
-		report, err := setup.MergedPRCostReconciler.Sweep(ctx, now)
-		if report.Updated > 0 {
-			journalErr := setup.InstanceLog.Append(journal.Event{
-				Type:   journal.EventRunnerAnnotation,
-				Reason: fmt.Sprintf("reconciled cost summaries on %d recently merged pull request(s)", report.Updated),
-				Runner: map[string]any{
-					"kind":         "merged_pr_cost_reconciliation",
-					"repositories": report.Repositories,
-					"scanned":      report.Scanned,
-					"eligible":     report.Eligible,
-					"updated":      report.Updated,
-				},
-			})
-			err = errors.Join(err, journalErr)
-		}
-		return err
-	}
-	mergedPRCostTicker := time.NewTicker(mergedPRCostSweepInterval)
-	mergedPRCostTickerDone := make(chan struct{})
-	go func() {
-		defer close(mergedPRCostTickerDone)
-		defer mergedPRCostTicker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case now := <-mergedPRCostTicker.C:
-				err := mergedPRCostSweepGate.run(func() error {
-					return sweepMergedPRCosts(now)
-				})
-				if !errors.Is(err, errMergedPRCostSweepAlreadyRunning) {
-					mergedPRCostSweepErrors.report(err)
-				}
-			}
-		}
-	}()
+	mergedPRCostSweeps := startMergedPRCostSweepRuntime(ctx, setup)
 
 	apiReadCacheLockSweepTickerDone := startAPIReadCacheLockSweepTicker(ctx, l)
 
@@ -1717,13 +1679,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// was actually reached, so the shutdown join below never blocks on a
 	// sweep that was never launched.
 	startupRetentionSweepDone := startDeferredRetentionSweep(ctx, l, setup, retentionGate, worktreeRetentionErrors, readyNow)
-	startupMergedPRCostSweepDone := startDeferredMergedPRCostSweep(
-		ctx,
-		mergedPRCostSweepGate,
-		mergedPRCostSweepErrors,
-		sweepMergedPRCosts,
-		readyNow,
-	)
+	startupMergedPRCostSweepDone := mergedPRCostSweeps.startDeferred(ctx, readyNow)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", root, len(setup.Entries), apiServer.Scheme(), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
 		pf(stdout, "GitHub webhooks listening at http://%s%s\n", webhookServer.Address(), webhookhttp.Path)
@@ -1850,7 +1806,7 @@ daemonLoop:
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-startupRetentionSweepDone
-	<-mergedPRCostTickerDone
+	<-mergedPRCostSweeps.tickerDone
 	<-startupMergedPRCostSweepDone
 	<-apiReadCacheLockSweepTickerDone
 	<-delegationTickerDone

@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -67,6 +68,63 @@ func startDeferredMergedPRCostSweep(
 		}
 	}()
 	return done
+}
+
+type mergedPRCostSweepRuntime struct {
+	gate       *mergedPRCostSweepGate
+	reporter   *sweepErrorReporter
+	sweep      func(time.Time) error
+	tickerDone <-chan struct{}
+}
+
+func startMergedPRCostSweepRuntime(ctx context.Context, setup *schedulerSetup) *mergedPRCostSweepRuntime {
+	runtime := &mergedPRCostSweepRuntime{
+		gate:     &mergedPRCostSweepGate{},
+		reporter: newSweepErrorReporter(setup.InstanceLog, "merged_pr_cost_sweep_failed"),
+	}
+	runtime.sweep = func(now time.Time) error {
+		report, err := setup.MergedPRCostReconciler.Sweep(ctx, now)
+		if report.Updated > 0 {
+			err = errors.Join(err, setup.InstanceLog.Append(journal.Event{
+				Type:   journal.EventRunnerAnnotation,
+				Reason: fmt.Sprintf("reconciled cost summaries on %d recently merged pull request(s)", report.Updated),
+				Runner: map[string]any{
+					"kind":         "merged_pr_cost_reconciliation",
+					"repositories": report.Repositories,
+					"scanned":      report.Scanned,
+					"eligible":     report.Eligible,
+					"updated":      report.Updated,
+				},
+			}))
+		}
+		return err
+	}
+
+	ticker := time.NewTicker(mergedPRCostSweepInterval)
+	tickerDone := make(chan struct{})
+	runtime.tickerDone = tickerDone
+	go func() {
+		defer close(tickerDone)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				err := runtime.gate.run(func() error {
+					return runtime.sweep(now)
+				})
+				if !errors.Is(err, errMergedPRCostSweepAlreadyRunning) {
+					runtime.reporter.report(err)
+				}
+			}
+		}
+	}()
+	return runtime
+}
+
+func (r *mergedPRCostSweepRuntime) startDeferred(ctx context.Context, ready bool) <-chan struct{} {
+	return startDeferredMergedPRCostSweep(ctx, r.gate, r.reporter, r.sweep, ready)
 }
 
 type recentlyMergedCostProvider interface {
