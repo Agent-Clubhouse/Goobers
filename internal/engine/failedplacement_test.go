@@ -22,7 +22,7 @@ func TestDispatchFailurePlacementSurvivesTemporalEncodingWithoutChangingRetry(t 
 	retryAt := now.Add(17 * time.Minute)
 	report := dispatcher.Report{Runner: "actual-runner", Pod: "observed-pod", Image: "actual-image", Node: "observed-node", OS: "linux", QueuedAt: now, PodStartedAt: now.Add(time.Second)}
 	for _, retryReset := range []bool{false, true} {
-		var cause error = invoke.InfrastructureFailure(errors.New("pod lost"))
+		cause := invoke.InfrastructureFailure(errors.New("pod lost"))
 		if retryReset {
 			cause = invoke.InfrastructureFailureUntil(errors.New("pod lost"), retryAt)
 		}
@@ -68,11 +68,11 @@ func TestDispatchFailurePlacementToleratesOlderUnknownAndPartialEvidence(t *test
 		}
 	}
 	unknown := temporal.NewApplicationError("existing details", FailureTypeInfrastructure, map[string]string{"future": "data"})
-	if withDispatchFailurePlacement(unknown, partial) != unknown {
+	if withDispatchFailurePlacement(unknown, partial) != unknown { //nolint:errorlint // Unknown detail schemas must return the exact original error, without wrapping.
 		t.Fatal("unrecognized existing details were overwritten")
 	}
 	extension := temporal.NewApplicationError("existing extension", FailureTypeInfrastructure, queued, "other data")
-	if withDispatchFailurePlacement(extension, partial) != extension {
+	if withDispatchFailurePlacement(extension, partial) != extension { //nolint:errorlint // Preserve the exact error carrying another detail extension.
 		t.Fatal("another detail extension was overwritten")
 	}
 }

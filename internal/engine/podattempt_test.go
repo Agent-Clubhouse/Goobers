@@ -60,7 +60,7 @@ func TestDispatchOneBindsPhysicalIdentityIndependentlyOfJournal(t *testing.T) {
 		putSurrendered(t, plane, in.Envelope.RunID, "build", identity, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}})
 		var suite testsuite.WorkflowTestSuite
 		env := temporaltest.NewWorkflowEnvironment(&suite)
-		env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: DispatchOneWorkflowID(in.Envelope.RunID, "build", int32(identity))})
+		env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: DispatchOneWorkflowID(in.Envelope.RunID, "build", identity)})
 		env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: d, Surrenders: plane})
 		env.ExecuteWorkflow(DispatchOne, in)
 		if err := env.GetWorkflowError(); err != nil {

@@ -135,8 +135,26 @@ type CellInjectionRecord struct {
 // taxonomy, consumed exactly as the failure-streak breaker and
 // success-rate denominator already do (#3364).
 func ClassifyCellResult(record CellInjectionRecord) AssertionResult {
-	if reason := invalidCellInjection(record); reason != "" {
-		return invalid(reason, record)
+	// Bind the recorded injection to this attempt before judging recovery.
+	if strings.TrimSpace(record.RunID) == "" {
+		return invalid(fmt.Sprintf("cell %s: no run identity recorded", record.Cell), record)
+	}
+	if !slices.Contains(KillMatrix(), record.Cell) {
+		return invalid(fmt.Sprintf("cell %s: unknown stage class or failure kind", record.Cell), record)
+	}
+	if record.InjectedTarget == "" || record.InjectedAt.IsZero() {
+		return invalid(fmt.Sprintf("cell %s: no injection recorded (D5 requires every injection be recorded)", record.Cell), record)
+	}
+	placement := record.InterruptedAttempt.Placement
+	if placement == nil || placement.Pod == "" {
+		return invalid(fmt.Sprintf("cell %s: interrupted attempt carries no placement provenance", record.Cell), record)
+	}
+	target := placement.Pod
+	if record.Cell.Failure == FailureKindNodeKill {
+		target = placement.Node
+	}
+	if target == "" || record.InjectedTarget != target {
+		return invalid(fmt.Sprintf("cell %s: injected target %q does not match interrupted placement target %q", record.Cell, record.InjectedTarget, target), record)
 	}
 
 	interrupted := record.InterruptedAttempt
@@ -168,32 +186,6 @@ func ClassifyCellResult(record CellInjectionRecord) AssertionResult {
 	}
 
 	return classify("", true, "", record, nil)
-}
-
-// Bind the injection to the interrupted attempt before judging recovery.
-// A nonempty target alone could describe an unrelated pod or node.
-func invalidCellInjection(record CellInjectionRecord) string {
-	if strings.TrimSpace(record.RunID) == "" {
-		return fmt.Sprintf("cell %s: no run identity recorded", record.Cell)
-	}
-	if !slices.Contains(KillMatrix(), record.Cell) {
-		return fmt.Sprintf("cell %s: unknown stage class or failure kind", record.Cell)
-	}
-	if record.InjectedTarget == "" || record.InjectedAt.IsZero() {
-		return fmt.Sprintf("cell %s: no injection recorded (D5 requires every injection be recorded)", record.Cell)
-	}
-	placement := record.InterruptedAttempt.Placement
-	if placement == nil || placement.Pod == "" {
-		return fmt.Sprintf("cell %s: interrupted attempt carries no placement provenance", record.Cell)
-	}
-	target := placement.Pod
-	if record.Cell.Failure == FailureKindNodeKill {
-		target = placement.Node
-	}
-	if target == "" || record.InjectedTarget != target {
-		return fmt.Sprintf("cell %s: injected target %q does not match interrupted placement target %q", record.Cell, record.InjectedTarget, target)
-	}
-	return ""
 }
 
 // StaticCellDriver is a CellDriver over a fixed, pre-recorded map of results

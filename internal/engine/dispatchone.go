@@ -35,11 +35,7 @@ import (
 // runner (step 6/7) and the assertion below cannot disagree about the shape —
 // a second spelling is exactly the D15 drift that would make ruling 6's
 // restart safety silently untrue.
-func DispatchOneWorkflowID(runID, stage string, attempt int32) string {
-	return composeDispatchWorkflowID(runID, stage, int(attempt))
-}
-
-func composeDispatchWorkflowID(runID, stage string, attempt int) string {
+func DispatchOneWorkflowID(runID, stage string, attempt int) string {
 	return fmt.Sprintf("%s/%s/%d", runID, stage, attempt)
 }
 
@@ -140,7 +136,7 @@ func refuseUnboundAttemptIdentity(workflowID string, env apiv1.InvocationEnvelop
 	}
 	stage := strings.TrimPrefix(env.TaskID, env.RunID+":")
 	physical := (dispatcher.Attempt{Number: int(env.Attempt), PodAttempt: podAttempt}).IdentityAttempt()
-	want := composeDispatchWorkflowID(env.RunID, stage, physical)
+	want := DispatchOneWorkflowID(env.RunID, stage, physical)
 	if workflowID == want {
 		return nil
 	}
