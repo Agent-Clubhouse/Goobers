@@ -16,6 +16,9 @@ import (
 // environment entries. It leaves HEAD, the index and FETCH_HEAD unchanged.
 // The result is main as observed by this fetch, not a lease on the remote ref.
 func FetchCurrentMain(ctx context.Context, repository, remoteURL string, credentialEnvironment []string) (string, error) {
+	if err := validateCredentialEnvironment(credentialEnvironment); err != nil {
+		return "", err
+	}
 	if remoteURL == "" || strings.HasPrefix(remoteURL, "-") || strings.ContainsAny(remoteURL, "\x00\r\n") {
 		return "", fmt.Errorf("invalid recovery main remote")
 	}
