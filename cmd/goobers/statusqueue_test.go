@@ -47,7 +47,7 @@ func TestStatusQueueScopesBeforeBound(t *testing.T) {
 func TestStatusAndExplainReadRealQueueProjection(t *testing.T) {
 	root := initScheduledDemo(t)
 	layout := instance.NewLayout(root)
-	set, _, err := loadConfigDirectory(layout.ConfigDir())
+	set, validation, err := loadConfigDirectory(layout.ConfigDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestStatusAndExplainReadRealQueueProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	queue := loadStatusQueueEvidence(ctx, readservice.LocalSources{Layout: layout, Config: cfg, Definitions: set}, set.Workflows, def.Spec.Gaggle, def.Name)
+	queue := loadStatusQueueEvidence(ctx, readservice.LocalSources{Layout: layout, Config: cfg, Definitions: set, Validation: validation}, set.Workflows, def.Spec.Gaggle, def.Name)
 	if len(queue.Workflows) != 1 || queue.Workflows[0].Report == nil {
 		t.Fatalf("queue collector replayed events: %+v", queue)
 	}
