@@ -106,6 +106,7 @@ func TestReconcileRecentlyMergedPRCostsIsBoundedOwnedAndIdempotent(t *testing.T)
 	if !strings.Contains(prProvider.updates[0].Comment, "Your cost for this PR was **6.00 AIC**") {
 		t.Fatalf("summary = %q, want 6.00 AIC", prProvider.updates[0].Comment)
 	}
+	prProvider.comments["20"][len(prProvider.comments["20"])-1].Body += "\n\nPosted by **Goobers**"
 
 	report, err = reconcileRecentlyMergedPRCosts(
 		context.Background(),
@@ -122,7 +123,7 @@ func TestReconcileRecentlyMergedPRCostsIsBoundedOwnedAndIdempotent(t *testing.T)
 		t.Fatalf("second reconcileRecentlyMergedPRCosts: %v", err)
 	}
 	if report.Updated != 0 || len(prProvider.updates) != 1 {
-		t.Fatalf("unchanged reconciliation = %+v updates=%d, want no duplicate", report, len(prProvider.updates))
+		t.Fatalf("attributed reconciliation = %+v updates=%d, want no duplicate", report, len(prProvider.updates))
 	}
 
 	prProvider.comments["20"] = append(prProvider.comments["20"],
@@ -141,11 +142,8 @@ func TestReconcileRecentlyMergedPRCostsIsBoundedOwnedAndIdempotent(t *testing.T)
 	if err != nil {
 		t.Fatalf("refreshed reconcileRecentlyMergedPRCosts: %v", err)
 	}
-	if report.Updated != 1 || len(prProvider.updates) != 2 {
-		t.Fatalf("refreshed reconciliation = %+v updates=%d, want one refresh", report, len(prProvider.updates))
-	}
-	if !strings.Contains(prProvider.updates[1].Comment, "Your cost for this PR was **7.00 AIC**") {
-		t.Fatalf("refreshed summary = %q, want 7.00 AIC", prProvider.updates[1].Comment)
+	if report.Updated != 0 || len(prProvider.updates) != 1 {
+		t.Fatalf("receipt-changed reconciliation = %+v updates=%d, want existing summary preserved", report, len(prProvider.updates))
 	}
 }
 
