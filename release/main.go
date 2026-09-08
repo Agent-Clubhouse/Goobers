@@ -33,6 +33,8 @@ type options struct {
 	date                  string
 	outDir                string
 	imageContexts         string
+	imageArtifacts        string
+	imageInputs           string
 	buildImages           bool
 	imagePrefix           string
 	previousFeatures      string
@@ -49,6 +51,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	if err := checkSupportMatrixForRelease(opts.version); err != nil {
 		return err
+	}
+	if opts.imageArtifacts != "" {
+		return runImageArtifactImport(opts, stdout)
 	}
 	imageBuild, err := prepareLocalImageBuild(opts)
 	if err != nil {
@@ -204,6 +209,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
 		imageContexts    = fs.String("image-contexts", "", "prepare Linux or Windows base-image build inputs in a new directory (requires explicit supported -targets; does not build or publish images)")
+		imageArtifacts   = fs.String("image-artifacts", "", "consume final checksummed release archives without rebuilding binaries or release assets")
+		imageInputs      = fs.String("image-inputs", "", "original checksummed base contexts supplying the release operator and pinned dependencies; required with -image-artifacts")
 		buildImages      = fs.Bool("build-images", false, "build and verify local images on a matching native Docker engine; never pushes or signs")
 		imagePrefix      = fs.String("image-prefix", "", "repository prefix for local image tags; required with -build-images")
 		previousFeatures = fs.String("previous-features", "", "feature-registry.json from the previous release")
@@ -220,6 +227,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	opts := options{
 		outDir:                *outDir,
 		imageContexts:         *imageContexts,
+		imageArtifacts:        *imageArtifacts,
+		imageInputs:           *imageInputs,
 		buildImages:           *buildImages,
 		imagePrefix:           *imagePrefix,
 		previousFeatures:      strings.TrimSpace(*previousFeatures),
@@ -232,15 +241,11 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	opts.commit = firstNonEmpty(*commit, gitOutput("rev-parse", "--short", "HEAD"), "none")
 	opts.date = firstNonEmpty(*date, gitOutput("show", "-s", "--format=%cI", "HEAD"), "unknown")
 
-	switch {
-	case opts.previousFeatures == "" && !*firstFeatures:
-		return options{}, fmt.Errorf("feature baseline required: pass -previous-features or explicitly acknowledge -first-feature-snapshot")
-	case opts.previousFeatures != "" && *firstFeatures:
-		return options{}, fmt.Errorf("-previous-features and -first-feature-snapshot are mutually exclusive")
-	case opts.previousFeatures != "" && opts.previousSupportMatrix == "":
-		return options{}, fmt.Errorf("support-matrix baseline required with -previous-features: pass -previous-support-matrix")
-	case *firstFeatures && opts.previousSupportMatrix != "":
-		return options{}, fmt.Errorf("-previous-support-matrix and -first-feature-snapshot are mutually exclusive")
+	if err := validateImageImportFlags(opts, fs); err != nil {
+		return options{}, err
+	}
+	if err := validateReleaseBaseline(opts, *firstFeatures); err != nil {
+		return options{}, err
 	}
 
 	targets, err := parseTargets(*targetCSV)
@@ -322,4 +327,22 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func validateReleaseBaseline(opts options, firstFeatures bool) error {
+	if opts.imageArtifacts != "" {
+		return nil
+	}
+	switch {
+	case opts.previousFeatures == "" && !firstFeatures:
+		return fmt.Errorf("feature baseline required: pass -previous-features or explicitly acknowledge -first-feature-snapshot")
+	case opts.previousFeatures != "" && firstFeatures:
+		return fmt.Errorf("-previous-features and -first-feature-snapshot are mutually exclusive")
+	case opts.previousFeatures != "" && opts.previousSupportMatrix == "":
+		return fmt.Errorf("support-matrix baseline required with -previous-features: pass -previous-support-matrix")
+	case firstFeatures && opts.previousSupportMatrix != "":
+		return fmt.Errorf("-previous-support-matrix and -first-feature-snapshot are mutually exclusive")
+	}
+
+	return nil
 }

@@ -95,3 +95,43 @@ separate decision. The Azure Linux builder is digest-pinned, while RPM packages
 come from its configured repositories; package snapshot pinning, vulnerability
 scanning, provenance/signing, compressed-size enforcement, authenticated harness stages,
 published Windows images, and publish-time native smoke remain release work.
+
+## Build images from final release archives
+
+Signing changes executable bytes, so image workers must consume the **final**
+archive after signing and checksum regeneration. Retain the original
+`-image-contexts` output from the archive build; it supplies the same-build
+operator and pinned Windows dependencies. Then use the release engine's import
+mode on each native image worker:
+
+```sh
+go run ./release \
+  -version v0.4.0-rc.1 -commit 0123456789ab -date 2026-09-07T12:00:00Z \
+  -targets linux/arm64 \
+  -image-artifacts /path/to/final-dist \
+  -image-inputs /path/to/original-image-contexts \
+  -image-contexts /path/to/new-image-contexts \
+  -build-images -image-prefix goobers-rc-local
+```
+
+Use the exact version, embedded commit stamp, and build date from the archive
+job. The destination must be new, its parent must exist, and it must be separate
+from both input directories. Import mode takes no feature baseline or release
+output flags: it does not build either Go binary, regenerate release assets, or
+change the input files. Omitting `-build-images` prepares contexts without Docker;
+mixed Linux/Windows targets are supported for preparation.
+
+Both input directories need their original `SHA256SUMS` files. The importer checks
+the selected archive before bounded parsing, preserves its exact executable
+bytes (including Windows signing data), and retains the original operator. It
+checks context metadata against the explicit release identity, checks recipes
+against the current checkout, and verifies Windows dependency pins again. Any
+failed target discards the entire prepared batch. Checksummed
+`artifact-import.json` records the consumed archive identity and original context
+checksums; native image evidence covers the resulting context manifest.
+
+Inputs must come from a trusted release job. Checksums establish byte integrity;
+this mode does not verify Authenticode, notarization, or publisher identity.
+Native image verification checks embedded release stamps and exact binary bytes.
+The release workflow still needs to connect its final signed artifact delivery to
+this mode before official publication; no image is pushed or signed by import.
