@@ -705,6 +705,12 @@ type Report struct {
 	// load-bearing (it IS the skew comparison), so the provenance has to name
 	// the image that actually ran.
 	Image string
+	// Node is the assigned spec.nodeName read from a supervised API pod.
+	// OS is that assigned pod's spec.os, falling back to a recognized
+	// kubernetes.io/os scheduling constraint. It is not an independent node
+	// kernel measurement. Both remain absent until an assignment is observed.
+	Node string
+	OS   string
 	// Phase is the pod's terminal phase.
 	Phase corev1.PodPhase
 	// SurrenderConfirmed reports whether the disposal gate confirmed output
@@ -842,7 +848,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()
 
-	phase, superviseErr := d.supervise(ctx, attempt, pod.Namespace, pod.Name)
+	phase, superviseErr := d.supervise(ctx, attempt, pod.Namespace, pod.Name, &report)
 	report.Phase = phase
 
 	if superviseErr == nil {
@@ -1004,13 +1010,17 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 // observation to the live journal. Errors from the relay are swallowed by
 // design (the journal is observability, not control flow); errors from the
 // pod read are fatal to supervision.
-func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, name string) (corev1.PodPhase, error) {
+func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, name string, report *Report) (corev1.PodPhase, error) {
 	var unschedulableSince time.Time
 	for {
 		pod, err := d.pods.GetPod(ctx, namespace, name)
 		if err != nil {
 			return "", fmt.Errorf("dispatcher: supervise pod %s/%s: %w", namespace, name, err)
 		}
+		// Short stages can pass from Pending to terminal between polls. Read
+		// assignment before every phase/sidecar exit, without inventing a
+		// Running observation or changing the existing creation timestamp.
+		observePodPlacement(report, pod)
 		phase := pod.Status.Phase
 		if d.journal != nil {
 			_ = d.journal.RelayLiveness(ctx, attempt, name, phase)

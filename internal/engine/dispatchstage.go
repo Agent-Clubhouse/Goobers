@@ -846,6 +846,8 @@ func placementProvenance(report dispatcher.Report) *StagePlacement {
 		Runner:       report.Runner,
 		Pod:          report.Pod,
 		Image:        report.Image,
+		Node:         report.Node,
+		OS:           report.OS,
 		QueuedAt:     report.QueuedAt,
 		PodStartedAt: report.PodStartedAt,
 	}

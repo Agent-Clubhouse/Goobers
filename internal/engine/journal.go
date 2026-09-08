@@ -387,6 +387,8 @@ func attemptPlacement(result stageActivityResult) (journal.Placement, bool) {
 			Runner: pod.Runner,
 			Pod:    pod.Pod,
 			Image:  pod.Image,
+			Node:   pod.Node,
+			OS:     pod.OS,
 		}
 		// Absent rather than zero: journal.Placement's timestamps are pointers
 		// precisely so "this attempt never queued" and "it queued at the zero

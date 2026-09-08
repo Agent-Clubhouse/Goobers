@@ -79,6 +79,7 @@ func TestDispatchOne(t *testing.T) {
 	})
 	fake := &fakeStageDispatcher{report: dispatcher.Report{
 		Runner: "win-ci", Pod: "goobers-run-dispatch-one-build-1", Image: "ghcr.io/example/win:v1",
+		Node: "windows-node-1", OS: "windows",
 		Phase: corev1.PodSucceeded, SurrenderConfirmed: true, Disposed: true,
 		QueuedAt: queuedAt, PodStartedAt: podStartedAt,
 	}}
@@ -155,10 +156,11 @@ func TestDispatchOne(t *testing.T) {
 		}
 		want := StagePlacement{
 			Runner: "win-ci", Pod: "goobers-run-dispatch-one-build-1", Image: "ghcr.io/example/win:v1",
+			Node: "windows-node-1", OS: "windows",
 			QueuedAt: queuedAt, PodStartedAt: podStartedAt,
 		}
 		got := *result.Placement
-		if got.Runner != want.Runner || got.Pod != want.Pod || got.Image != want.Image ||
+		if got.Runner != want.Runner || got.Pod != want.Pod || got.Image != want.Image || got.Node != want.Node || got.OS != want.OS ||
 			!got.QueuedAt.Equal(want.QueuedAt) || !got.PodStartedAt.Equal(want.PodStartedAt) {
 			t.Fatalf("placement = %+v, want %+v (lifted verbatim from dispatcher.Report)", got, want)
 		}

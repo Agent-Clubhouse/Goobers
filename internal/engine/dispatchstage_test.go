@@ -1477,10 +1477,8 @@ func TestStagePlacementAccompaniesSettledAttemptsOnly(t *testing.T) {
 	} {
 		t.Run("settled: "+tc.name+" populates every field", func(t *testing.T) {
 			got := settled(t, tc.dispatchErr, tc.phase)
-			// Field by field rather than a DeepEqual against a want: the
-			// claim under test is "no field is ever zero", and a struct
-			// comparison would still pass if the contract later grew a
-			// sixth field nobody populated.
+			// These five established fields are always populated. The additive
+			// Node/OS observations remain optional, including for older workers.
 			if got.Runner == "" || got.Pod == "" || got.Image == "" ||
 				got.QueuedAt.IsZero() || got.PodStartedAt.IsZero() {
 				t.Fatalf("placement = %+v; a settled attempt must populate runner, pod, image, queuedAt and podStartedAt — "+

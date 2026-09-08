@@ -238,9 +238,9 @@ type UnpushedDiffCapture struct {
 // requires CreatePod to have already succeeded, and Dispatch stamps Runner and
 // QueuedAt before it renders, Image off the rendered spec, and Pod and
 // PodStartedAt immediately after the create. So a non-nil *StagePlacement
-// always names all five. Do NOT write a branch for a partially populated
-// block: it is unreachable, and code that handles it is untested code that
-// will rot.
+// always names all five. The additive Node and OS fields are separate:
+// they remain absent if supervision never observed an assignment or a
+// recognized OS constraint, including reports recorded by older workers.
 //
 // The corollary is the honest cost of this shape, and a caller journalling
 // §11 acceptance 6 has to know it: the placement failures an operator most
@@ -269,6 +269,11 @@ type StagePlacement struct {
 	// runner's declared host, so a deployment-templated runner reports the
 	// template's image and not the Deployment name.
 	Image string `json:"image,omitzero"`
+	// Node is the API-observed pod assignment. OS is the assigned pod's
+	// explicit OS or recognized OS scheduling constraint, not a separate
+	// measurement of the node kernel. Older reports leave both absent.
+	Node string `json:"node,omitzero"`
+	OS   string `json:"os,omitzero"`
 	// QueuedAt and PodStartedAt bound the attempt's wait for capacity:
 	// QueuedAt is stamped when the dispatcher accepted the attempt,
 	// PodStartedAt when the pod was created.
