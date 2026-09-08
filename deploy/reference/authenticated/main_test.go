@@ -168,8 +168,9 @@ func TestPreparedTopologySeparatesAuthorityAndKeepsConfigImmutable(t *testing.T)
 	if cfg.API.Listen != "0.0.0.0:8080" || cfg.API.PodTokenKeyFile != "/run/goobers/pod-auth/pod-token.key" || cfg.API.TLS == nil {
 		t.Fatal("authenticated listener was not wired")
 	}
-	if _, _, err := instance.LoadConfigDir(filepath.Join(root, "config")); err != nil {
-		t.Fatalf("prepared config is not loadable: %v", err)
+	_, report, err := instance.LoadConfigDir(filepath.Join(root, "config"))
+	if err != nil || report == nil || report.HasErrors() {
+		t.Fatalf("prepared config is not valid: error=%v report=%v", err, report)
 	}
 	args := strings.Join(worker.Spec.Template.Spec.Containers[0].Args, " ")
 	if !strings.Contains(args, "--daemon-api "+apiURL) || !strings.Contains(args, "--dispatch-namespace "+o.StageNamespace) {
