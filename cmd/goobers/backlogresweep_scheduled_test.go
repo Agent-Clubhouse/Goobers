@@ -102,3 +102,35 @@ func TestBacklogScheduledResweepLegacyCLIRefusesBeforeSelection(t *testing.T) {
 			server.issueListRequests, server.dependencyRequests, len(server.issues[7].comments))
 	}
 }
+
+func TestBacklogForwardCurationDoesNotResweepWithSpareCapacity(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(1, "Forward item", providers.LabelApproved)
+	server.addIssue(7, "Ready item", providers.LabelApproved, providers.LabelReady)
+	server.addIssue(8, "Blocked item", providers.LabelApproved, blockedOnSiblingLabel)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "forward-only")
+	configureCurationResweep(t, "3", "")
+	t.Setenv("GOOBERS_INPUT_RESWEEPREADYLABEL", "")
+	t.Setenv("GOOBERS_INPUT_RECONCILEMETADATA", "false")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("forward query: code=%d stderr=%q", code, stderr)
+	}
+	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+	if len(items) != 1 || items[0].ID != "1" {
+		t.Fatalf("forward query selected re-sweep work: %+v", items)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.dependencyRequests != 0 {
+		t.Fatalf("forward query made %d dependency recheck calls", server.dependencyRequests)
+	}
+	for _, query := range server.issueListQueries {
+		if strings.Contains(query, "goobers%3Aready") || strings.Contains(query, "goobers%3Ablocked-on-sibling") {
+			t.Fatalf("forward query performed a re-sweep listing: %s", query)
+		}
+	}
+}
