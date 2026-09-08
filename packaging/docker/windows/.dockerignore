@@ -1,0 +1,14 @@
+**
+!Dockerfile
+!.dockerignore
+!goobers.exe
+!goobers-operator.exe
+!release.json
+!SHA256SUMS
+!mingit.zip
+!zoneinfo.zip
+!dependencies.json
+!Verify-Inputs.ps1
+!Configure-Image.ps1
+!Verify-Image.ps1
+!Shell-Contract.sh

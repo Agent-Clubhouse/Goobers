@@ -1,0 +1,12 @@
+{
+  "windowsBase": "mcr.microsoft.com/windows/servercore:ltsc2022@sha256:6b43c814ed2a800563083ce3193e5f1951d4d6a18fd2879ff45173851db82bd5",
+  "windowsVersion": "10.0.20348.5499",
+  "mingit": {
+    "url": "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip",
+    "sha256": "56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e"
+  },
+  "zoneinfo": {
+    "url": "https://raw.githubusercontent.com/golang/go/go1.26.6/lib/time/zoneinfo.zip",
+    "sha256": "8f55634d05f8bca1f7bc7c69c5933428c69357e0bdf565e5ba224e3f88ff12e8"
+  }
+}
