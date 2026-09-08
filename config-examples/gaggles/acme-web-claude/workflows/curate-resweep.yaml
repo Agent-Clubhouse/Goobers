@@ -2,7 +2,7 @@ apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "2.0"
 metadata:
-  name: curate-resweep
+  name: claude-curate-resweep
 spec:
   gaggle: acme-web-claude
   displayName: Scheduled backlog re-sweep

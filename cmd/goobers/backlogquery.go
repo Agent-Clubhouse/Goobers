@@ -1605,6 +1605,13 @@ func appendReadyResweepCandidates(
 	opts backlogResweepOptions,
 	result *backlogResweepResult,
 ) ([]providers.WorkItem, backlogScanCursor, int) {
+	// Both lanes share one re-sweep allowance. Forward candidates reserve
+	// total-batch slots but do not spend the re-sweep-specific allowance.
+	selected := len(result.eligible) - len(opts.eligible) + len(result.readOnly)
+	budget := min(opts.policy.maxItems-selected, opts.maxItems-len(result.eligible)-len(result.readOnly))
+	if budget <= 0 {
+		return nil, backlogScanCursor{Cursor: result.state.Cursor}, 0
+	}
 	items, readyWindow, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
@@ -1659,7 +1666,6 @@ func appendReadyResweepCandidates(
 		pf(env.stderr, "error: order backlog re-sweep: %v\n", err)
 		return nil, readyWindow.Cursor, 1
 	}
-	budget := min(opts.policy.maxItems, opts.maxItems-len(result.eligible))
 	if len(items) > budget {
 		for _, item := range items[budget:] {
 			env.debugf("excluded %s: ready re-sweep selection capacity exhausted", item.ID)

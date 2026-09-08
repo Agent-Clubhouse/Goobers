@@ -5,6 +5,9 @@ The former revisits blocked dependencies and ready items; the latter advances
 new work toward readiness. The reference and both web example gaggles include
 the separate workflow.
 
+The Claude example names it `claude-curate-resweep`, following that example's
+prefix convention so combined config-sync output has unique Kubernetes names.
+
 The query stage runs `goobers backlog-query --claim --resweep`, with an explicit
 `maxItems` and `resweepMaxItems` (positive and no greater than `maxItems`).
 The shipped schedule is `47 4 * * *`, with readiness limits of one concurrent
