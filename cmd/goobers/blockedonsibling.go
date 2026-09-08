@@ -188,6 +188,11 @@ func formatPRNumbers(numbers []int) string {
 // blockedOnSiblingStillBlocks reports whether pr's blocker-aware parking still
 // holds (#748). It is also used by post-merge unpark and pr-remediation.
 func blockedOnSiblingStillBlocks(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+	// A no-lander disposition is pinned to the election inputs, not to a
+	// named sibling. An empty blocker list must not erase that current hold.
+	if held, err := noLanderDeferralStillHolds(ctx, provider, repo, pr); held || err != nil {
+		return held, err
+	}
 	blockers, err := recordedBlockedOnSiblingBlockers(ctx, provider, repo, pr)
 	if err != nil {
 		return false, err

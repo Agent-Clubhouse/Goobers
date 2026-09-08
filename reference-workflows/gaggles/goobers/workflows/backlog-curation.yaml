@@ -96,7 +96,7 @@ spec:
     # issue/child state; a clean backlog produces no mutations.
     - name: query-backlog
       type: deterministic
-      goal: Claim trust-labeled forward work first, then fill leftover capacity with a bounded ready-item re-sweep.
+      goal: Claim trust-labeled forward work; scheduled rechecks belong to curate-resweep.
       run:
         command: ["goobers", "backlog-query", "--claim"]
       inputs:
@@ -121,14 +121,7 @@ spec:
         # now honors maxItems (it was a dead input) and, for a batch, writes a
         # claimed-items.json array.
         maxItems: "20"
-        # Continuous re-curation (CURE-1): only leftover batch capacity may be
-        # used for ready-item re-sweeps. The same daily, rotating pass checks at
-        # most five blocked items before claim and selects only resolved gates
-        # or blockers carrying a current human decision. Unchanged blockers are
-        # never claimed. In-flight ready items are read-only context.
-        resweepMaxItems: "5"
-        resweepInterval: "24h"
-        resweepReadyLabel: "goobers:ready"
+        # Re-sweep selection and cadence are declared in curate-resweep.yaml.
         # Serves two purposes, both requiring the file be declared:
         # (#236) lifts the claimed-items array into a journal artifact so it
         # reaches the curator as a context pointer — without this input the file

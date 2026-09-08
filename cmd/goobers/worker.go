@@ -188,6 +188,15 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	if len(queues) == 0 {
 		queues = repeatableFlag{engineConfig.TaskQueue}
 	}
+	// Instance-backed workers write staging artifacts beneath this root as
+	// well as their separate work root. Identify it before either allocation,
+	// and never activate a root that an operator marked historical.
+	if *instanceRoot != "" {
+		if err := prepareManualRoot(instance.NewLayout(*instanceRoot), stderr); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+	}
 
 	root := *workRoot
 	if root == "" {

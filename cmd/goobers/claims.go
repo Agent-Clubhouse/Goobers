@@ -205,6 +205,10 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 
+	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	previewResp, err := runClaimAdmin(root, claimAdminRequest{
 		Operation: claimAdminOperationList,
 		Gaggle:    *gaggle,

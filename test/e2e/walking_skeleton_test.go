@@ -1006,11 +1006,16 @@ func TestConformanceWalkingSkeletonCrashResume(t *testing.T) {
 	// "implement" saw exactly one failed attempt (the crash, journaled by
 	// Resume) and one success — the acceptance scenario's own words.
 	var implementEvents []journal.Event
+	var implementLifecycleEvents []journal.Event
 	var types []journal.EventType
 	for _, e := range events {
 		types = append(types, e.Type)
 		if e.Stage == "implement" {
 			implementEvents = append(implementEvents, e)
+			if e.Type != journal.EventArtifactRecorded ||
+				(e.Name != "implement/unpushed-diff.patch" && e.Name != "implement/unpushed-diff.json") {
+				implementLifecycleEvents = append(implementLifecycleEvents, e)
+			}
 		}
 	}
 	// The resumed attempt commits work, so it also records #3366's
@@ -1018,37 +1023,43 @@ func TestConformanceWalkingSkeletonCrashResume(t *testing.T) {
 	// context manifest and stage.finished — the runner persists a run branch's
 	// committed-but-unpublished diff after every agentic attempt. The
 	// interrupted attempt 1 has no such pair: Resume journals its terminal
-	// failure from the journal alone, never dispatching it.
+	// failure from the journal alone, never dispatching it. Keep the
+	// unpushed-diff artifacts out of this lifecycle assertion so recovery
+	// metadata cannot change the crash-resume event contract.
 	wantTypes := []journal.EventType{
 		journal.EventStageStarted, // attempt 1, pre-crash (hand-built above)
 		journal.EventArtifactRecorded,
 		journal.EventStageFinished,    // attempt 1, infra, journaled by Resume
 		journal.EventStageStarted,     // attempt 2, the crash-driven continuation
 		journal.EventArtifactRecorded, // context manifest
-		journal.EventArtifactRecorded, // implement/unpushed-diff.patch (#3366)
-		journal.EventArtifactRecorded, // implement/unpushed-diff.json (#3366)
 		journal.EventStageFinished,    // attempt 2, the crash-driven continuation, success
 	}
-	if len(implementEvents) != len(wantTypes) {
-		t.Fatalf("implement-stage events = %d, want %d: %+v", len(implementEvents), len(wantTypes), implementEvents)
+	if len(implementLifecycleEvents) != len(wantTypes) {
+		t.Fatalf("implement lifecycle events = %d, want %d: %+v", len(implementLifecycleEvents), len(wantTypes), implementLifecycleEvents)
 	}
-	for i, e := range implementEvents {
+	for i, e := range implementLifecycleEvents {
 		if e.Type != wantTypes[i] {
 			t.Errorf("event[%d].Type = %q, want %q", i, e.Type, wantTypes[i])
 		}
 	}
-	if implementEvents[2].Attempt != 1 || implementEvents[2].AttemptClass != journal.AttemptInfra || implementEvents[2].Status != string(apiv1.ResultFailure) {
-		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", implementEvents[2])
+	if implementLifecycleEvents[2].Attempt != 1 || implementLifecycleEvents[2].AttemptClass != journal.AttemptInfra || implementLifecycleEvents[2].Status != string(apiv1.ResultFailure) {
+		t.Errorf("interrupted-attempt event = %+v, want attempt=1 class=infra status=failure", implementLifecycleEvents[2])
 	}
 	// #111: the continuation dispatched right after the interrupted attempt
 	// is driven by the crash, not Task.Retry — it must be tagged "infra",
 	// not "policy" (which would wrongly make it conformance-normative,
 	// §3.3, adding a phantom retry event a crash-free run never produces).
-	if implementEvents[3].Attempt != 2 || implementEvents[3].AttemptClass != journal.AttemptInfra {
-		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", implementEvents[3])
+	if implementLifecycleEvents[3].Attempt != 2 || implementLifecycleEvents[3].AttemptClass != journal.AttemptInfra {
+		t.Errorf("resumed-attempt stage.started = %+v, want attempt=2 class=infra", implementLifecycleEvents[3])
 	}
-	if implementEvents[4].Attempt != 2 || implementEvents[4].AttemptClass != journal.AttemptInfra || implementEvents[4].Type != journal.EventArtifactRecorded {
-		t.Errorf("resumed-attempt context artifact = %+v, want attempt=2 class=infra artifact.recorded", implementEvents[4])
+	var resumedArtifacts []journal.Event
+	for _, e := range implementEvents {
+		if e.Type == journal.EventArtifactRecorded && e.Attempt == 2 {
+			resumedArtifacts = append(resumedArtifacts, e)
+		}
+	}
+	if len(resumedArtifacts) != 3 {
+		t.Fatalf("resumed-attempt artifacts = %d, want 3 (context manifest and unpushed diff pair): %+v", len(resumedArtifacts), resumedArtifacts)
 	}
 	for _, want := range []string{"implement/unpushed-diff.patch", "implement/unpushed-diff.json"} {
 		var found bool
@@ -1061,16 +1072,16 @@ func TestConformanceWalkingSkeletonCrashResume(t *testing.T) {
 			t.Errorf("resumed attempt recorded no %q — its committed work is unrecoverable if the run dies before publication (#3366)", want)
 		}
 	}
-	last := len(implementEvents) - 1
-	if implementEvents[last].Attempt != 2 || implementEvents[last].AttemptClass != journal.AttemptInfra || implementEvents[last].Status != string(apiv1.ResultSuccess) {
-		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", implementEvents[last])
+	last := len(implementLifecycleEvents) - 1
+	if implementLifecycleEvents[last].Attempt != 2 || implementLifecycleEvents[last].AttemptClass != journal.AttemptInfra || implementLifecycleEvents[last].Status != string(apiv1.ResultSuccess) {
+		t.Errorf("resumed-attempt stage.finished = %+v, want attempt=2 class=infra status=success", implementLifecycleEvents[last])
 	}
 	// Every post-crash "implement" event is excluded from conformance
 	// (§3.3) — confirm IsConformanceNormative agrees for all of them, same as
 	// internal/runner's own crash-resume test.
-	for i := 2; i <= last; i++ {
-		if implementEvents[i].IsConformanceNormative() {
-			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3)", i, implementEvents[i])
+	for i, e := range implementEvents {
+		if e.Attempt > 1 && e.IsConformanceNormative() {
+			t.Errorf("event[%d] = %+v must be excluded from conformance (§3.3)", i, e)
 		}
 	}
 

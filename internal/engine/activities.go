@@ -710,7 +710,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 		// #415: an agentic stage asked to change something changed nothing.
 		// No reviewer can turn that into a pass. Scoped to an agentic subject
 		// because a DETERMINISTIC one legitimately produces no diff.
-		verdict := gate.EmptyDiffVerdict()
+		verdict := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, env.ReviewerMechanicalEscalationAllowed)
 		out.Verdict = verdict
 		out.EmptyDiff = true
 		return out, nil
@@ -720,7 +720,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 		// the reviewer could only repeat its previous verdict. Resolving here
 		// is what stops a non-convergent loop from spending the whole repass
 		// budget on reviewer calls with a foregone conclusion.
-		verdict := gate.DuplicateDiffVerdict(out.DiffDigest, nil)
+		verdict := gate.MechanicalVerdict(gate.DuplicateDiffVerdict(out.DiffDigest, nil), apiv1.VerdictReasonUnchangedRepass, env.ReviewerMechanicalEscalationAllowed)
 		out.Verdict = verdict
 		out.DuplicateDiff = true
 		return out, nil

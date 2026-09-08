@@ -268,6 +268,8 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
+	Root              *statusRootIdentity              `json:"root,omitempty"`
+	QueueEligibility  *statusQueueEvidence             `json:"queueEligibility,omitempty"`
 	EngineFallbacks   []readmodel.EngineFallback       `json:"engineFallbacks,omitempty"`
 	Warnings          []validate.CodedWarning          `json:"warnings"`
 	TimeToFirstPR     *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
@@ -676,8 +678,14 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
+	"Normal and daemon status identify the root path, durable instance ID, and owning PID,\n" +
+	"and warn when the root is marked historical or its identity cannot be verified.\n" +
 	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
+	"PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,\n" +
+	"and next steps from the existing daemon projection, never current claim authority.\n" +
+	"At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle\n" +
+	"and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.\n" +
 	"It lists parked backlog items too — open issues carrying a park disposition without\n" +
 	"goobers:ready, which backlog selection can no longer see and no workflow re-readies.\n" +
 	"Shared baseline failures are listed with the subjects waiting on them: runs parked\n" +
@@ -948,6 +956,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			return "", nil
 		}
 		var text strings.Builder
+		text.WriteString(statusRootText(l, now))
+		queue := loadStatusQueueEvidence(ctx, sources, set.Workflows, *gaggleFilter, *workflowFilter)
+		text.WriteString(statusQueueText(queue))
 		timeToFirstPR, err := timeToFirstPRCache.Load(ctx)
 		if err != nil {
 			text.WriteString(timeToFirstPRStatusUnavailableText(err))
@@ -1083,6 +1094,8 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			baselineBlockers = &snapshot
 		}
 		output := statusJSONOutput{
+			Root:              optionalStatusRoot(supportsWatch, l, now),
+			QueueEligibility:  optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
 			EngineFallbacks:   engineFallbacks,
 			Warnings:          warnings,
 			TimeToFirstPR:     timeToFirstPR,
@@ -1186,9 +1199,7 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 		if r.Operator.Issue != nil && r.Operator.Issue.Title != "" {
 			pf(stdout, "  work: #%s %s\n", r.Operator.Issue.Number, r.Operator.Issue.Title)
 		}
-		if r.Operator.Review != nil && r.Operator.Review.Rationale != "" {
-			pf(stdout, "  review %s: %s\n", r.Operator.Review.Verdict, r.Operator.Review.Rationale)
-		}
+		renderStatusReview(stdout, r.Operator.Review)
 		if len(r.Operator.PotentialBlockers) > 0 {
 			pf(stdout, "  blockers: %s\n", strings.Join(r.Operator.PotentialBlockers, "; "))
 		}
@@ -1198,6 +1209,20 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 			pf(stdout, "  diagnostics limited (not a run blocker): %s\n",
 				strings.Join(r.Operator.DiagnosticsLimitations, "; "))
 		}
+	}
+}
+
+func renderStatusReview(stdout io.Writer, review *readservice.OperatorReview) {
+	if review == nil {
+		return
+	}
+	if review.Rationale != "" {
+		pf(stdout, "  review %s: %s\n", review.Verdict, review.Rationale)
+	}
+	if review.ReasonCode != "" {
+		pf(stdout, "  review reason: %s\n", review.ReasonCode)
+	} else if review.LegacyFailAmbiguous || review.Verdict == string(apiv1.VerdictFail) {
+		pf(stdout, "  review reason: %s\n", legacyFailAmbiguous)
 	}
 }
 
@@ -1323,6 +1348,11 @@ func statusOutputIsTerminal(stdout io.Writer) bool {
 }
 
 func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writer) int {
+	root := inspectStatusRoot(l, now)
+	writeStatusRoot(stdout, root)
+	if root.DaemonState == "ownership-unverified" {
+		return 1
+	}
 	running, identity, liveness, err := inspectDaemonLiveness(filepath.Join(l.SchedulerDir(), "up.lock"), now)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

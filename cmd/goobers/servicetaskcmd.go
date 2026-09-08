@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/service"
 )
 
@@ -31,6 +32,10 @@ func runServiceTaskInstall(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
 	status, err := manager.InstallTask(context.Background())
 	if err != nil {
@@ -62,6 +67,10 @@ func runServiceTaskStart(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
 	status, err := manager.StartTask(context.Background())
 	if errors.Is(err, service.ErrNotInstalled) {
@@ -125,6 +134,9 @@ func runTaskErrorCommand(args []string, stdout, stderr io.Writer, name string, a
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
+		return 2
 	}
 	if err := action(manager); errors.Is(err, service.ErrNotInstalled) {
 		pln(stdout, "scheduled task is not installed")

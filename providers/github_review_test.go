@@ -26,6 +26,7 @@ func TestGitHubSubmitPullRequestReview(t *testing.T) {
 	}{
 		{name: "approve", decision: ReviewDecisionApproved, wantEvent: "APPROVE", wantState: "APPROVED"},
 		{name: "request changes", decision: ReviewDecisionChangesRequested, wantEvent: "REQUEST_CHANGES", wantState: "CHANGES_REQUESTED"},
+		{name: "comment without vote", decision: ReviewDecisionComment, wantEvent: "COMMENT", wantState: "COMMENTED"},
 	}
 
 	for _, tt := range tests {

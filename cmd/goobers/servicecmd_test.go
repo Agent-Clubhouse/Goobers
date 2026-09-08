@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/instance"
 	daemonservice "github.com/goobers/goobers/internal/service"
 )
 
@@ -58,7 +60,7 @@ func TestServiceInstall(t *testing.T) {
 	useFakeDaemonServiceManager(t, manager)
 
 	code, stdout, stderr := runArgs(t, "service", "install", root)
-	if code != 0 || stderr != "" {
+	if code != 0 || stderr != manualServiceRootHeader(t, root) {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 	if !manager.installed || !strings.Contains(stdout, "installed and running under systemd") {
@@ -90,7 +92,7 @@ func TestServiceStop(t *testing.T) {
 	useFakeDaemonServiceManager(t, manager)
 
 	code, stdout, stderr := runArgs(t, "service", "stop", root)
-	if code != 0 || stderr != "" {
+	if code != 0 || stderr != stoppedStatusRootHeader(t, root, 0) {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 	if !manager.stopped || !strings.Contains(stdout, "service stopped") {
@@ -104,7 +106,7 @@ func TestServiceStopNotInstalled(t *testing.T) {
 	useFakeDaemonServiceManager(t, manager)
 
 	code, stdout, stderr := runArgs(t, "service", "stop", root)
-	if code != 1 || stderr != "" || !strings.Contains(stdout, "not installed") {
+	if code != 1 || stderr != stoppedStatusRootHeader(t, root, 0) || !strings.Contains(stdout, "not installed") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 }
@@ -128,7 +130,7 @@ func TestServiceStart(t *testing.T) {
 	useFakeDaemonServiceManager(t, manager)
 
 	code, stdout, stderr := runArgs(t, "service", "start", root)
-	if code != 0 || stderr != "" {
+	if code != 0 || stderr != manualServiceRootHeader(t, root) {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
 	if !manager.started || !strings.Contains(stdout, "service running under launchd") {
@@ -142,7 +144,7 @@ func TestServiceStartNotInstalled(t *testing.T) {
 	useFakeDaemonServiceManager(t, manager)
 
 	code, stdout, stderr := runArgs(t, "service", "start", root)
-	if code != 1 || stderr != "" || !strings.Contains(stdout, "not installed") {
+	if code != 1 || stderr != manualServiceRootHeader(t, root) || !strings.Contains(stdout, "not installed") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 }
@@ -208,7 +210,19 @@ func serviceTestInstance(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), []byte("apiVersion: goobers.dev/v1alpha1\nkind: Instance\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := instance.EnsureRootIdentity(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
 	return root
+}
+
+func manualServiceRootHeader(t *testing.T, root string) string {
+	t.Helper()
+	id, err := instance.ReadRootIdentity(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("Instance root: %q; instance ID: %q\n", canonicalStatusRoot(root), id)
 }
 
 func useFakeDaemonServiceManager(t *testing.T, manager daemonServiceManager) {

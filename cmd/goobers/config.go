@@ -170,6 +170,10 @@ func runConfigMaterialize(args []string, stdout, stderr io.Writer) int {
 	if code := runValidate([]string{"--source-tree", cfg.WorkflowSource.Path}, stdout, stderr); code != 0 {
 		return code
 	}
+	if err := prepareManualRoot(layout, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	sourceRoot, err := instance.MaterializeWorkflowSource(root)
 	if err != nil {
 		pf(stderr, "error: materialize config source: %v\n", err)

@@ -865,6 +865,12 @@ func gateOutcomeProblems(def Definition, knownChecks map[string]bool) []string {
 		switch g.Evaluator {
 		case apiv1.EvaluatorAgentic:
 			producible = agenticOutcomes
+			// Declaring a deferral branch opts this gate into the expanded
+			// reviewer vocabulary. Existing three-outcome gates remain valid;
+			// an unexpected deferral still fails closed at evaluation time.
+			if _, declared := g.Branches[string(apiv1.VerdictDefer)]; declared {
+				producible = append(append([]string(nil), agenticOutcomes...), string(apiv1.VerdictDefer))
+			}
 		case apiv1.EvaluatorAutomated:
 			producible = automatedBuiltinOutcomes
 			if g.Automated != nil {

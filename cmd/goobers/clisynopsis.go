@@ -11,6 +11,9 @@ const gatherContextID = "gather-implement-context"
 // keyed by invocation-path id. The help renderers assemble these via the command
 // registry so command discovery cannot drift from per-command help (#1095).
 var synopsisByID = map[string]string{
+	"roots discover":         "  goobers roots discover [--json] [paths...]  find likely roots and report daemon ownership\n",
+	"roots decommission":     "  goobers roots decommission --reason=<text> [path]  mark a stopped root as historical without deleting data\n",
+	"queue-explain":          "  goobers queue-explain --gaggle=<name> --workflow=<name> --pr=<number> [--json] [path]  explain historical PR eligibility and claim evidence\n",
 	"version":                "  goobers version [--json]      print build version, commit, and date (--json for structured output)\n",
 	"versions":               "  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix\n",
 	"init":                   "  goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir=<dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--provider=github|ado] --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]\n                                scaffold an instance, open guided setup with placement choices, or create a checked-in config source\n",
@@ -80,7 +83,7 @@ var synopsisByID = map[string]string{
 	"backlog-dedupe":         "  goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)\n",
 	"backlog-assignment":     "  goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)\n",
 	"backlog-health":         "  goobers backlog-health [--feedback]    snapshot ready-pool depth and age (a workflow stage)\n",
-	"backlog-query":          "  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)\n",
+	"backlog-query":          "  goobers backlog-query [--debug] [--read-only | --claim [--resweep] | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)\n",
 	"select-source":          "  goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)\n",
 	"validate-plan":          "  goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)\n",
 	"publish-batch":          "  goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)\n",

@@ -1410,6 +1410,8 @@ func (p *GiteaProvider) SubmitPullRequestReview(ctx context.Context, req PullReq
 		event = "APPROVED"
 	case ReviewDecisionChangesRequested:
 		event = "REQUEST_CHANGES"
+	case ReviewDecisionComment:
+		event = "COMMENT"
 	default:
 		return PullRequestReviewResult{}, fmt.Errorf("unsupported review decision %q", req.Decision)
 	}

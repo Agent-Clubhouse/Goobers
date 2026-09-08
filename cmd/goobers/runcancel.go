@@ -326,6 +326,10 @@ func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) i
 		pf(stderr, "error: no daemon API endpoint configured\n")
 		return 2
 	}
+	if err := prepareRemoteRoot(context.Background(), endpoint, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	actor, err := defaultInterventionActor()
 	if err != nil {
 		actor = "cli"

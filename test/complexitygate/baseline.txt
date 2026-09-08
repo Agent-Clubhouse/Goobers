@@ -8,7 +8,6 @@
 !ratchet-budget 188
 api/validate/validate.go	(*index).checkWorkflow	59
 cmd/goobers/applyverdict.go	runApplyVerdict	83
-cmd/goobers/backlogquery.go	runBacklogQueryMode	41
 cmd/goobers/daemon.go	buildSchedulerDefinitions	53
 cmd/goobers/daemon.go	buildSchedulerSetupWithConfigPolicy	49
 cmd/goobers/dispatchexec.go	runDeclaredStage	46

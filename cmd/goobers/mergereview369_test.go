@@ -38,7 +38,7 @@ func TestPRSelectAuthorScopeAnySelectsOutsidePrefixesAsAdvisory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatal(err)
 	}
 	if selected["number"] != "369" || selected["advisoryMode"] != "true" {
@@ -114,7 +114,7 @@ func TestAuthorScopeAnyPreservesManagedSiblingSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatal(err)
 	}
 	if selected["number"] != "1" || selected["advisoryMode"] != "false" {
@@ -235,7 +235,7 @@ func TestMixedCompanyReviewPublishesAdvisoryWithoutRemediation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatal(err)
 	}
 

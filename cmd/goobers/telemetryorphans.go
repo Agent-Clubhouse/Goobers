@@ -63,6 +63,10 @@ func runTelemetryPruneOrphansAt(args []string, stdout, stderr io.Writer, now tim
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if err := prepareMaintenanceRoot(layout, !*deleteOrphans, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	results, err := retention.PruneOrphans(layout, retention.OrphanOptions{
 		Now: now, MinAge: *minAge, Delete: *deleteOrphans,
 	})

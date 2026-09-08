@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/investigation"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/prqueue"
 )
 
 type schemaFixture struct {
@@ -23,6 +24,7 @@ type schemaFixture struct {
 
 func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 	fixtures := map[string]schemaFixture{
+		"pr-queue-eligibility":    {schema: schemas.PRQueueEligibility, value: completePRQueueEligibility()},
 		"stage-artifact-manifest": {schema: schemas.StageArtifactManifest, value: artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.ManifestEntry{{Name: "reproduction.bundle", Path: "output/bundle.tar", MediaType: "application/x-tar"}}}},
 		"stage-artifact-set":      {schema: schemas.StageArtifactSet, value: artifactset.Index{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.Entry{{Name: "reproduction.bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}}},
 		"investigation-evidence":  {schema: schemas.InvestigationEvidence, value: completeInvestigationEvidence()},
@@ -80,6 +82,17 @@ func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 	}
 }
 
+func completePRQueueEligibility() prqueue.Report {
+	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
+	r := prqueue.Report{Version: 1, RepositoryKey: "github|||org|repo|", Gaggle: "team", Workflow: "review", RunID: "review-run", ObservedAt: now, CompleteSnapshot: true, Items: []prqueue.Item{}}
+	r.Add(42, prqueue.Escalated)
+	r.Add(43, "")
+	r.Items[0].Claim = prqueue.ObserveClaim(true, "review-run", "review-run", now.Add(time.Minute), now, true)
+	r.MatchingItems++
+	r.OmittedItems++
+	return r
+}
+
 func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 	return apiv1.ArtifactPointer{
 		Path:      path,
@@ -92,20 +105,22 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 	return apiv1.InvocationEnvelope{
-		TaskID:              "implement",
-		Attempt:             1,
-		WorkflowID:          "implementation",
-		RunID:               "run-123",
-		TriggerRef:          "github:issue:1704",
-		Gaggle:              "goobers",
-		BranchNamespace:     "goobers/",
-		BaseBranch:          "main",
-		Goober:              "implementer",
-		GooberDigest:        "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
-		Goal:                "implement the claimed issue",
-		OwnershipBoundary:   "task:implement",
-		InstructionAddendum: "Preserve the public contract.",
-		Workspace:           "/workspace",
+		TaskID:                              "implement",
+		Attempt:                             1,
+		WorkflowID:                          "implementation",
+		RunID:                               "run-123",
+		TriggerRef:                          "github:issue:1704",
+		Gaggle:                              "goobers",
+		BranchNamespace:                     "goobers/",
+		BaseBranch:                          "main",
+		Goober:                              "implementer",
+		GooberDigest:                        "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+		Goal:                                "implement the claimed issue",
+		OwnershipBoundary:                   "task:implement",
+		InstructionAddendum:                 "Preserve the public contract.",
+		Workspace:                           "/workspace",
+		ReviewerDeferralAllowed:             true,
+		ReviewerMechanicalEscalationAllowed: true,
 		RepoRef: apiv1.RepoRef{
 			Provider:      apiv1.ProviderADO,
 			BaseURL:       "https://gitea.example.com",
@@ -223,9 +238,10 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 
 func completeVerdict() apiv1.Verdict {
 	return apiv1.Verdict{
-		Decision:  apiv1.VerdictNeedsChanges,
-		Rationale: "One substantive finding remains.",
-		Evidence:  []apiv1.ArtifactPointer{completeArtifactPointer("artifacts/review/evidence.json")},
+		Decision:   apiv1.VerdictFail,
+		ReasonCode: apiv1.VerdictReasonImplementationRejected,
+		Rationale:  "One substantive finding remains.",
+		Evidence:   []apiv1.ArtifactPointer{completeArtifactPointer("artifacts/review/evidence.json")},
 		Findings: []apiv1.Finding{{
 			ID:                     "finding-1703",
 			LearningSignature:      "merge-review|code-defect|cross-pr-blocked",

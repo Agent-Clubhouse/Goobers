@@ -145,10 +145,10 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	if !containsString(query.PolicyActions, "close-issue") {
 		t.Errorf("query-backlog policyActions = %v, want conservative close-issue declaration", query.PolicyActions)
 	}
-	if query.Inputs["resweepMaxItems"] != "5" ||
-		query.Inputs["resweepInterval"] != "24h" ||
-		query.Inputs["resweepReadyLabel"] != "goobers:ready" {
-		t.Errorf("query-backlog re-sweep inputs = %v, want bounded daily ready-item re-sweep", query.Inputs)
+	for _, key := range []string{"resweepMaxItems", "resweepInterval", "resweepReadyLabel"} {
+		if _, present := query.Inputs[key]; present {
+			t.Errorf("ordinary query-backlog still schedules hidden re-sweep through %s", key)
+		}
 	}
 	curate, ok := m.Task("curate")
 	if !ok {
@@ -195,7 +195,8 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	// Bumped when intentional workflow contract changes alter the machine.
 	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
 	// #2386: read-only sampling and dedupe use issue-read rather than issue-write.
-	const wantDigest = "sha256:c805713413aec0c60a9f2d39b0006f8a40dab425ee95e4b459307692bde30bcc"
+	// #2399 moves re-sweep scheduling into its own workflow.
+	const wantDigest = "sha256:210d91e2273b5087ad7aac7df6bafbc376ac339ba76f12060d947b03c49ce933"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

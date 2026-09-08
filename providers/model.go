@@ -359,6 +359,8 @@ const (
 	ReviewDecisionPending          ReviewDecision = "pending"
 	ReviewDecisionApproved         ReviewDecision = "approved"
 	ReviewDecisionChangesRequested ReviewDecision = "changes_requested"
+	// ReviewDecisionComment publishes evidence without an approval or rejection vote.
+	ReviewDecisionComment ReviewDecision = "comment"
 )
 
 // PullRequestReviewRequest describes a provider-native review verdict. CommitSHA

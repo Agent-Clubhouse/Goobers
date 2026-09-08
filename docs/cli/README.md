@@ -89,8 +89,12 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension status`](#goobers-portal-extension-status) | report installed Goobers Portal extension version and drift |
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
+| [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
+| [`goobers roots`](#goobers-roots) | inspect and manage instance roots |
+| [`goobers roots decommission`](#goobers-roots-decommission) | mark a stopped instance root as historical |
+| [`goobers roots discover`](#goobers-roots-discover) | discover likely instance roots and daemon ownership |
 | [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
 | [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
 | [`goobers runs`](#goobers-runs) | list runs and report per-run disk usage |
@@ -430,7 +434,7 @@ $ goobers backlog-health
 query/claim one eligible backlog item (a workflow stage)
 
 ~~~text
-Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--debug] [--read-only | --claim [--resweep] | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -452,6 +456,9 @@ claim locks, blocked-record reconciliation, scan cursors, and read caches,
 and uses only the github:issues:read capability. When inputs.resultFile
 is declared, it also writes a read-only candidate report with scan coverage;
 candidates are for inspection, not claims or permission to re-ready work.
+
+The --resweep modifier requires --claim and selects only re-sweep work;
+its calling workflow owns cadence through schedule/readiness controls.
 
 --debug writes candidate eligibility, exclusion, and claim-loss details to
 stderr. Diagnostics contain item IDs and selection metadata only; normal
@@ -487,10 +494,12 @@ whichever appears earliest in selectionPriority. Unset (the default)
 preserves plain FIFO exactly. fieldOrder is an optional comma-separated
 field[:asc|desc] list applied within each label-priority tier before FIFO.
 
-backlog-curation may opt into a bounded ready-item re-sweep with
-resweepMaxItems. Forward candidates always consume maxItems first; a
-re-sweep uses only leftover capacity, no more often than resweepInterval
-(default 24h), and rotates within selectionPriority tiers. Ready items
+A separate scheduled workflow uses --claim --resweep with bounded
+resweepMaxItems to recheck blocked dependencies and ready items. Forward
+candidates reserve maxItems capacity first but are never claimed by this
+mode. The sweep uses leftover capacity and rotates within selectionPriority
+tiers. Cadence belongs to workflow schedule/readiness; resweepInterval and
+inline re-sweep inputs on ordinary --claim runs are retired. Ready items
 already in implementation/review are emitted as read-only context and are
 never claimed.
 
@@ -2086,7 +2095,8 @@ Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
 gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
-untouched.
+untouched. Durable root identity is stored in .instance-id;
+.instance-id.lock serializes identity creation.
 --guided opens the browser-based setup for a real repository and instance;
 use --instance-path to select its instance root.
 It prepares and validates configuration but does not run a workflow. When the
@@ -2857,6 +2867,28 @@ Exit codes: 0 = pushed (or an idempotent no-op), 1 = business error,
 $ goobers push-remediated
 ~~~
 
+## `goobers queue-explain`
+
+explain historical PR queue eligibility and claim observations
+
+~~~text
+Usage: goobers queue-explain --gaggle=<name> --workflow=<name> --pr=<number> [--json] [path]
+
+Explain one PR using the latest retained selection observation for that exact
+workflow. This is historical evidence, not permission to claim or merge.
+Reads the daemon's existing projection without rebuilding journal history or
+querying providers. An absent PR is unknown, not eligible; reports can be partial
+or truncated. Empty --gaggle selects only the legacy unscoped namespace.
+Exit codes: 0 = observation displayed, 1 = evidence unavailable/not observed,
+2 = usage or I/O error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers queue-explain --gaggle=core --workflow=merge-review --pr=42
+~~~
+
 ## `goobers rebase-pr`
 
 rebase-first, finding-driven remediation routing (a workflow stage)
@@ -3118,6 +3150,56 @@ processed, 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers respond-to-findings
+~~~
+
+## `goobers roots`
+
+inspect and manage instance roots
+
+~~~text
+Usage: goobers roots <discover | decommission> [flags] [path]
+
+Discover likely instance roots or mark a stopped root as historical without deleting data.
+~~~
+
+## `goobers roots decommission`
+
+mark a stopped instance root as historical
+
+~~~text
+Usage: goobers roots decommission --reason=<text> [path]
+
+Persist a historical-root marker bound to the instance ID. Refuses an active
+daemon or another manual lock holder. Does not delete runs or configuration.
+Repeated calls preserve the first marker. Exit codes: 0 = marked, 2 = error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers roots decommission --reason=migrated ./old-instance
+~~~
+
+## `goobers roots discover`
+
+discover likely instance roots and daemon ownership
+
+~~~text
+Usage: goobers roots discover [--json] [paths...]
+
+Search supplied directories, or the current directory and user home by default.
+Read-only: legacy roots are not adopted. Search is limited to 20,000 directory
+entries, depth 8, and 10 seconds; incomplete scans are reported explicitly.
+Child symlinks, .git, node_modules, .cache, Library, vendor, and instance interiors
+are not searched. Supply other storage locations explicitly. Read-model modification
+time is only file freshness, never proof of a running daemon. Exit codes: 0 = complete
+within the stated search scope, 1 = partial, 2 = error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers roots discover --json
 ~~~
 
 ## `goobers run`
@@ -3875,8 +3957,14 @@ Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>..
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
+Normal and daemon status identify the root path, durable instance ID, and owning PID,
+and warn when the root is marked historical or its identity cannot be verified.
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
+and next steps from the existing daemon projection, never current claim authority.
+At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle
+and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.
 It lists parked backlog items too — open issues carrying a park disposition without
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 Shared baseline failures are listed with the subjects waiting on them: runs parked

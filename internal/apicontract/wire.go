@@ -9,12 +9,14 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
 type wireFixtures struct {
+	QueueEligibility         readservice.QueueEligibilityView           `json:"queueEligibility"`
 	Health                   readservice.Health                         `json:"health"`
 	Instance                 readservice.Instance                       `json:"instance"`
 	PortalConfig             readservice.PortalConfig                   `json:"portalConfig"`
@@ -47,6 +49,7 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "queueEligibility", scriptType: "QueueEligibilityView"},
 	{name: "health", scriptType: "Health"},
 	{name: "instance", scriptType: "Instance"},
 	{name: "portalConfig", scriptType: "PortalConfig"},
@@ -105,6 +108,12 @@ func TypeScriptWireFixtures() ([]byte, error) {
 	output.Write(fixtures)
 	output.WriteString(" as const satisfies GoWireFixtures;\n")
 	return []byte(output.String()), nil
+}
+
+func queueEligibilityWireFixture(at time.Time) readservice.QueueEligibilityView {
+	report := prqueue.Report{Version: 1, RepositoryKey: "github|||org|repo|", Gaggle: "goobers", Workflow: "review", RunID: "queue-run", ObservedAt: at, CompleteSnapshot: true, Items: []prqueue.Item{}}
+	report.Add(42, prqueue.Escalated)
+	return readservice.QueueEligibilityView{Gaggle: report.Gaggle, Workflow: report.Workflow, AsOf: at, Status: "observed", SourceRunID: report.RunID, SourceStage: "select", Report: &report}
 }
 
 func newWireFixtures() wireFixtures {
@@ -281,6 +290,7 @@ func newWireFixtures() wireFixtures {
 	}
 
 	return wireFixtures{
+		QueueEligibility: queueEligibilityWireFixture(timestamp),
 		Health: readservice.Health{
 			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},
 			APIVersion:       readservice.APIVersion,

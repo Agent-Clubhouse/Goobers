@@ -427,7 +427,29 @@ func TestWorktree_Diff_PartialCloneBackfillsBaseBlobsWithCredentialEnvironment(t
 	if !strings.Contains(string(diff), "-hello") || !strings.Contains(string(diff), "+goodbye") {
 		t.Fatalf("diff does not carry the base...HEAD change:\n%s", diff)
 	}
-	if trace := readTrace(t, traceFile); !strings.Contains(trace, "diff main...HEAD") {
+	want := string(diff)
+	for key, value := range map[string]string{
+		"core.quotePath":           "true",
+		"diff.algorithm":           "histogram",
+		"diff.compactionHeuristic": "true",
+		"diff.context":             "0",
+		"diff.indentHeuristic":     "true",
+		"diff.interHunkContext":    "10",
+		"diff.mnemonicPrefix":      "true",
+		"diff.noprefix":            "true",
+		"diff.orderFile":           filepath.Join(t.TempDir(), "order"),
+		"diff.submodule":           "diff",
+	} {
+		runTestGit(t, wt.Path, "config", key, value)
+	}
+	configured, err := wt.Diff(ctx, "main")
+	if err != nil {
+		t.Fatalf("Diff with conflicting repository settings: %v", err)
+	}
+	if string(configured) != want {
+		t.Fatalf("diff changed under conflicting repository settings:\nbase:\n%s\nconfigured:\n%s", want, configured)
+	}
+	if trace := readTrace(t, traceFile); !strings.Contains(trace, "diff ") || !strings.Contains(trace, "main...HEAD") {
 		t.Fatalf("Diff did not run with the credential environment; trace:\n%s", trace)
 	}
 }

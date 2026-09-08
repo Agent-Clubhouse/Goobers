@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,10 +26,15 @@ import (
 // readiness subsystem true once startup completes.
 func TestUpServesUnauthenticatedProbesOnRealDaemon(t *testing.T) {
 	root := initDeterministicDemo(t)
+	// Exercise first startup of a legacy root, not just freshly initialized IDs.
+	if err := os.Remove(filepath.Join(root, instance.RootIdentityFileName)); err != nil {
+		t.Fatal(err)
+	}
 	address := freeLoopbackAddress(t)
 	setAPIListenAddress(t, root, address)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	started := &daemonStartedWriter{started: make(chan struct{})}
 	var stderr bytes.Buffer
 	done := make(chan int, 1)
@@ -43,6 +50,10 @@ func TestUpServesUnauthenticatedProbesOnRealDaemon(t *testing.T) {
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	rootID, err := instance.ReadRootIdentity(root)
+	if err != nil || rootID == "" {
+		t.Fatalf("daemon started without adopting legacy root identity: %q %v", rootID, err)
+	}
 
 	// No Authorization header on either request — that is the entire point
 	// of #3806: a kubelet probe cannot present one.
@@ -89,6 +100,9 @@ func TestUpServesUnauthenticatedProbesOnRealDaemon(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("daemon did not shut down")
+	}
+	if !strings.Contains(stderr.String(), rootID) || !strings.Contains(stderr.String(), canonicalStatusRoot(root)) {
+		t.Fatalf("startup omitted mutation target: %s", stderr.String())
 	}
 }
 

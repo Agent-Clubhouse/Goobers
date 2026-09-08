@@ -180,7 +180,10 @@ func TestApplyVerdictIgnoresReplayAndEscalatesOnFindingSetABARevisit(t *testing.
 		}
 		wantDecision := string(apiv1.VerdictNeedsChanges)
 		if i == len(cycles)-1 {
-			wantDecision = string(apiv1.VerdictFail)
+			wantDecision = string(apiv1.VerdictEscalate)
+			if result["reason"] != string(apiv1.VerdictReasonFindingOscillation) {
+				t.Fatalf("oscillation result lost structured reason: %+v", result)
+			}
 		}
 		if result["decision"] != wantDecision {
 			t.Fatalf("cycle %d decision=%q, want %q", i+1, result["decision"], wantDecision)
@@ -201,7 +204,7 @@ func TestApplyVerdictIgnoresReplayAndEscalatesOnFindingSetABARevisit(t *testing.
 	if !ok {
 		t.Fatalf("final status has no verdict payload: %q", comments[0])
 	}
-	if posted.Decision != apiv1.VerdictFail || !strings.Contains(posted.Rationale, "Finding-set oscillation detected") {
+	if posted.Decision != apiv1.VerdictEscalate || posted.ReasonCode != apiv1.VerdictReasonFindingOscillation || !strings.Contains(posted.Rationale, "Finding-set oscillation detected") {
 		t.Fatalf("final verdict=%+v, want a finding-set oscillation escalation", posted)
 	}
 	history, ok := parseFindingSetHistoryComment(comments[0])

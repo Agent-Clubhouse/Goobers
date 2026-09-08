@@ -159,6 +159,14 @@ func resolveGateOutcome(g apiv1.Gate, outcome string, reentry bool, budget *gate
 	}, nil
 }
 
+func applyBudgetVerdict(g apiv1.Gate, result *gateResult, verdict *apiv1.Verdict) *apiv1.Verdict {
+	if converted := gate.BudgetEscalationVerdict(g, result.Charge.Exceeded, verdict); converted != verdict {
+		verdict = converted
+		result.Outcome = string(converted.Decision)
+	}
+	return verdict
+}
+
 func wfTarget(g apiv1.Gate, outcome string) string {
 	target, _ := wf.BranchTarget(g, outcome)
 	return target
