@@ -1693,7 +1693,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					if rn != nil {
 						finalizeErr = rn.FinalizeTerminal(id.RunID, phase)
 					} else {
-						manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir())
+						manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
 						if managerErr != nil {
 							finalizeErr = managerErr
 						} else {

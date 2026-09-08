@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -28,7 +29,7 @@ func RecoverBeforeCleanup(ctx context.Context, workspace, worktreeID, ownerRunID
 	if err != nil || len(facts) == 0 {
 		return err
 	}
-	if ownerRunID == "" || worktreeID == "" {
+	if !apiv1.ValidRunID(ownerRunID) || worktreeID == "" {
 		return fmt.Errorf("mutation recovery requires durable run and worktree ownership")
 	}
 	reader, err := journal.OpenReadOnly(journalDir)
