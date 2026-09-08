@@ -1,6 +1,7 @@
 package readservice
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -342,6 +343,37 @@ func TestTelemetryStatsTrendUsesOneBatchedQueryAndPreservesWindows(t *testing.T)
 		got.TrendPrevious == nil || got.TrendPrevious.Usage[0].CostUSD == nil ||
 		*got.TrendPrevious.Usage[0].CostUSD != 4 {
 		t.Fatalf("trend projection = %+v, previous = %+v", got.Trend, got.TrendPrevious)
+	}
+}
+
+func TestTelemetryStatsTrendEmptyUsageSerializesAsArrays(t *testing.T) {
+	since := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	previousSince := since.Add(-24 * time.Hour)
+	store := &fakeTelemetryStore{
+		trendResults: []rollup.TrendResult{{}, {}, {}},
+	}
+	service := &Telemetry{store: store}
+
+	got, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
+		TrendSince:         since,
+		TrendUntil:         since.Add(2 * time.Hour),
+		TrendBuckets:       2,
+		TrendPreviousSince: previousSince,
+		TrendPreviousUntil: since,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Trend) != 2 || got.Trend[0].Usage == nil || got.Trend[1].Usage == nil ||
+		got.TrendPrevious == nil || got.TrendPrevious.Usage == nil {
+		t.Fatalf("empty trend usage must use arrays: trend=%#v previous=%#v", got.Trend, got.TrendPrevious)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"usage":null`)) {
+		t.Fatalf("empty trend usage serialized as null: %s", data)
 	}
 }
 

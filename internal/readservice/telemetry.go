@@ -667,6 +667,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			result.Trend = append(result.Trend, TelemetryTrendBucket{
 				Since: since.UTC().Format(time.RFC3339Nano),
 				Until: until.UTC().Format(time.RFC3339Nano),
+				Usage: []TelemetryUsageStats{},
 			})
 		}
 		if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
@@ -720,6 +721,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		result.TrendPrevious = &TelemetryTrendBucket{
 			Since: req.TrendPreviousSince.UTC().Format(time.RFC3339Nano),
 			Until: req.TrendPreviousUntil.UTC().Format(time.RFC3339Nano),
+			Usage: []TelemetryUsageStats{},
 		}
 		for _, stat := range trends[len(trends)-1].Usage {
 			result.TrendPrevious.Usage = append(result.TrendPrevious.Usage, projectTelemetryUsage(stat))
