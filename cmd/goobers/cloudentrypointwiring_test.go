@@ -208,10 +208,18 @@ func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T)
 func TestRunWorkerDispatchNamespaceRequiresInstance(t *testing.T) {
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 	got := captureWorkerHost(t)
+	previousKube := dispatchKubeClient
+	dispatchKubeClient = func() (kubernetes.Interface, error) {
+		t.Fatal("missing instance reached Kubernetes")
+		return nil, nil
+	}
+	t.Cleanup(func() { dispatchKubeClient = previousKube })
+	workRoot := filepath.Join(t.TempDir(), "work")
 	var stdout, stderr bytes.Buffer
 	code := runWorker([]string{
-		"--work-root", filepath.Join(t.TempDir(), "work"),
+		"--work-root", workRoot,
 		"--dispatch-namespace", "goobers-stages",
+		"--daemon-api", "https://user:do-not-print@daemon.example:8080",
 	}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (usage error)\nstderr: %s", code, stderr.String())
@@ -221,6 +229,12 @@ func TestRunWorkerDispatchNamespaceRequiresInstance(t *testing.T) {
 	}
 	if len(got.TaskQueues) != 0 {
 		t.Error("a worker host was constructed despite the refusal")
+	}
+	if _, err := os.Stat(workRoot); !os.IsNotExist(err) {
+		t.Fatalf("missing instance initialized runtime: %v", err)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "do-not-print") {
+		t.Fatal("missing-instance refusal exposed URL credentials")
 	}
 }
 

@@ -158,7 +158,11 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	// Validate mode-3 authority before starting background work or printing
 	// endpoints. Invalid URLs may contain credentials and must never be echoed.
-	if *dispatchNamespace != "" && *instanceRoot != "" {
+	if *dispatchNamespace != "" {
+		if *instanceRoot == "" {
+			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
+			return 2
+		}
 		cfg, err := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
 		if err != nil {
 			pf(stderr, "error: stage dispatch: load instance config: %v\n", err)
@@ -313,10 +317,6 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// runner-type) dispatch queues beside the workflow queue(s). Requires
 		// --instance: the runner inventory is what names the queues and the
 		// eligible runners.
-		if *instanceRoot == "" {
-			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
-			return 2
-		}
 		// The dispatcher's owner identity: this worker's hostname, which
 		// in-cluster is its pod name. It is stamped on every stage pod and is
 		// the scope the orphan sweep below sweeps within, so a sibling
