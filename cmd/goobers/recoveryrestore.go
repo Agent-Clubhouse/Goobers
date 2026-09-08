@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -98,7 +99,7 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 			return "", err
 		}
 	}
-	main, err := recovery.FetchCurrentMain(ctx, destination, remoteURL, environment)
+	main, err := recovery.FetchCurrentMain(ctx, destination, remoteURL, recoveryAuthenticationEnvironment(environment))
 	if err != nil {
 		return "", err
 	}
@@ -108,6 +109,21 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 		return "", err
 	}
 	return recovery.RestoreSnapshot(ctx, destination, record, main, branch, maxRecoveryBytes)
+}
+
+// Credential resolvers return a complete process environment. Only transport
+// authentication belongs in recovery's explicit Git overrides; ambient Git
+// repository, pager, and configuration locations must not cross that boundary.
+func recoveryAuthenticationEnvironment(environment []string) []string {
+	var result []string
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		key = strings.ToUpper(key)
+		if key == "GIT_ASKPASS" || key == "GIT_TERMINAL_PROMPT" || key == "GOOBERS_GIT_TOKEN" || key == "GOOBERS_GIT_USERNAME" || key == "GIT_CONFIG_COUNT" || strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_") {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 
 func recoveryConfiguredProject(cfg *instance.Config, key string) (apiv1.RepoRef, error) {
