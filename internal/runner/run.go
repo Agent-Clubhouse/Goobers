@@ -4924,12 +4924,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		// paths, before the deferred workspace teardown removes the sidecar.
 		var issues []string
 		mutations, issues = readMutationSidecar(env.Workspace)
-		if len(issues) > 0 {
-			_ = jr.Append(journal.Event{
-				Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
-				Error: &journal.ErrorDetail{Code: "mutation_sidecar_read_failed", Message: strings.Join(issues, "; ")},
-			})
-		}
+		err = errors.Join(err, recordMutationSidecarIssues(jr, t.Name, attempt, class, issues))
 		if err == nil {
 			if outboxErr := r.exportOutbox(jr, env.Workspace, t, attempt, class); outboxErr != nil {
 				err = outboxErr
