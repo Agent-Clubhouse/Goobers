@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -78,7 +79,19 @@ func recoveryGitWithEnv(ctx context.Context, repository string, stdout io.Writer
 }
 
 func recoveryGitIO(ctx context.Context, repository string, stdout io.Writer, stdin io.Reader, environment []string, args ...string) error {
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", repository, "--no-replace-objects", "-c", "core.hooksPath=" + os.DevNull}, args...)...)
+	trustedPath, err := filepath.Abs(repository)
+	if err != nil {
+		return fmt.Errorf("resolve recovery repository: %w", err)
+	}
+	trustedPath, err = filepath.EvalSymlinks(trustedPath)
+	if err != nil {
+		return fmt.Errorf("resolve recovery repository: %w", err)
+	}
+	// Recovery callers explicitly select this repository. Stage mounts may
+	// belong to the host UID, so replace ambient ownership exemptions with
+	// this exact resolved path, never '*' or an inherited GIT_CONFIG_* value.
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", trustedPath, "--no-replace-objects", "-c", "core.hooksPath=" + os.DevNull,
+		"-c", "safe.directory=", "-c", "safe.directory=" + trustedPath}, args...)...)
 	// These local object/ref operations need no inherited Git transport or
 	// repository overrides. In particular GIT_DIR must not defeat -C.
 	for _, entry := range os.Environ() {
