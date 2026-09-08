@@ -5906,8 +5906,10 @@ func (r *Runner) startGateSpan(ctx context.Context, in StartInput, g apiv1.Gate,
 }
 
 type stageWorkspace struct {
-	path     string
-	worktree *worktree.Worktree
+	scratchContainer string
+	scratchRunsDir   string
+	path             string
+	worktree         *worktree.Worktree
 	// additional are read-only reference-repo checkouts (MGV-11 #1286) provisioned
 	// alongside the primary worktree; torn down with it. Each carries its name for
 	// the invocation envelope's AdditionalWorkspaces.
@@ -6031,6 +6033,9 @@ func (w *stageWorkspace) Remove(ctx context.Context) error {
 		}
 		return firstErr
 	}
+	if w.scratchContainer != "" {
+		return errors.Join(firstErr, removeOwnedScratch(ctx, w.scratchContainer, w.scratchRunsDir))
+	}
 	if err := os.RemoveAll(w.path); err != nil && firstErr == nil {
 		firstErr = err
 	}
@@ -6112,11 +6117,7 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if err := os.MkdirAll(r.cfg.ScratchDir, 0o700); err != nil {
 			return nil, fmt.Errorf("create scratch workspace root: %w", err)
 		}
-		path, err := os.MkdirTemp(r.cfg.ScratchDir, scratchWorkspacePrefix+"*")
-		if err != nil {
-			return nil, fmt.Errorf("create scratch workspace: %w", err)
-		}
-		return &stageWorkspace{path: path}, nil
+		return createOwnedScratch(r.cfg.ScratchDir, r.cfg.RunsDir, in.RunID)
 	case apiv1.WorkspaceRepoReadOnly:
 		if in.pinnedWorkspace != nil {
 			if syncBase {
