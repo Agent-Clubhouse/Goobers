@@ -24,7 +24,7 @@
       "required": ["number", "eligible", "nextStep", "claim"],
       "properties": {
         "number": {"type": "integer", "minimum": 1, "description": "Repository-local PR number."},
-        "eligible": {"type": "boolean", "description": "Passed selection policy; does not imply claim availability."},
+        "eligible": {"type": "boolean", "examples": [true], "description": "Passed selection policy; does not imply claim availability."},
         "reason": {"type": "string", "minLength": 1, "maxLength": 256, "description": "Selector's first decisive exclusion reason, absent when eligible."},
         "nextStep": {"type": "string", "minLength": 1, "maxLength": 2048, "description": "Conservative operator guidance for this policy decision."},
         "claim": {"$ref": "#/$defs/claim", "description": "Independent durable-ledger and provider-label observations."}
