@@ -43,8 +43,9 @@ const (
 		"The guided flow inspects the repository, derives what it can, adapts the\n" +
 		"canonical workflows, prepares required repository metadata, and validates the\n" +
 		"resulting instance. It does not execute a workflow.\n\n" +
-		"Follow the [quickstart tutorial](docs/guides/quickstart.md) for the complete\n" +
-		"learning path. For manual or agent-assisted setup, use\n" +
+		"Follow [Learn Goobers](docs/guides/learn-goobers.md) for the complete\n" +
+		"progressive path from first success through authoring and operations. For\n" +
+		"manual or agent-assisted setup, use\n" +
 		"[Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md) or\n" +
 		"the release-matched [Getting Started skill](skills/goobers-getting-started/SKILL.md).\n"
 	quickstartSourceBuild = "## Build the binary\n\n```sh\n" +
