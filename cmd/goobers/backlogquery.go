@@ -203,6 +203,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	fs.SetOutput(stderr)
 	readOnly := fs.Bool("read-only", false, "list backlog items without mutating provider or scheduler state")
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
+	resweep := fs.Bool("resweep", false, "claim only re-sweep candidates; cadence is owned by the calling workflow")
 	reconcile := fs.Bool("reconcile", false, "repair drifted backlog metadata and report the correction count")
 	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
 	debug := fs.Bool("debug", false, "explain candidate eligibility, exclusions, and lost claim attempts on stderr")
@@ -215,6 +216,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return 2
 	}
 	mode, ok := selectBacklogQueryMode(*readOnly, *claim, *reconcile, *release)
+	if *resweep {
+		if mode != backlogQueryModePlain {
+			ok = false
+		}
+		mode = backlogQueryModeResweep
+	}
 	if !ok {
 		fs.Usage()
 		return 2
@@ -256,6 +263,7 @@ const (
 	backlogQueryModeClaim
 	backlogQueryModeReconcile
 	backlogQueryModeRelease
+	backlogQueryModeResweep
 )
 
 func selectBacklogQueryMode(readOnly, claim, reconcile, release bool) (backlogQueryMode, bool) {
@@ -328,7 +336,7 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
 	root, repo := env.root, env.repo
 	ghIssueProvider, stderr := env.ghIssueProvider, env.stderr
-	claim := mode == backlogQueryModeClaim
+	claim := mode == backlogQueryModeClaim || mode == backlogQueryModeResweep
 	reconcile := mode == backlogQueryModeReconcile
 	readOnly := mode == backlogQueryModeReadOnly
 	// ADO splits the code repository (where branches/PRs land) from the backlog
@@ -380,34 +388,14 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// a dead input everywhere (the query hardcoded a limit and --claim took
 	// exactly one), so a documented input was silently ignored — the #130 class
 	// of gap. Default 1 (the single-item implementation shape).
-	maxItems := 1
-	if s := providerInput("maxItems", ""); s != "" {
-		n, perr := strconv.Atoi(s)
-		if perr != nil || n < 1 {
-			pf(stderr, "error: invalid maxItems %q (want a positive integer)\n", s)
-			return 1
-		}
-		maxItems = n
-	}
-	curationRun := claim && providerInput("curation", "false") == "true"
-	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
-	var stalenessPolicy backlogStalenessPolicy
-	if reconcileBeforeClaim || reconcile {
-		stalenessPolicy, err = readBacklogStalenessPolicy()
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-	}
-	resweepPolicy, resweepEnabled, err := readBacklogResweepPolicy(maxItems)
+	policies, err := readBacklogQueryPolicies(mode)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if resweepEnabled && !curationRun {
-		pln(stderr, "error: re-sweep inputs are only valid for backlog-curation --claim runs")
-		return 1
-	}
+	maxItems, curationRun := policies.maxItems, policies.curation
+	stalenessPolicy := policies.staleness
+	resweepPolicy, resweepEnabled := policies.resweep, policies.resweepEnabled
 	// How many candidates to SCAN is deliberately decoupled from how many to
 	// CLAIM (#532): the old scan window was max(maxItems, 20), so once
 	// maxItems reached 20 (curation's batch size) the two were the same
@@ -465,7 +453,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	if reconcile {
 		return runReconcileBacklogQuery(ctx, env, trustLabel, stalenessPolicy, observedAt)
 	}
-	if curationRun {
+	if curationRun && mode != backlogQueryModeResweep {
 		if code := reconcileBacklogQueryMetadata(ctx, env, trustLabel, stalenessPolicy, observedAt, "claimed-items.json"); code != 0 {
 			return code
 		}
@@ -534,6 +522,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	forwardEligibleCount := len(eligible)
 
 	resweep, code := runBacklogResweep(ctx, env, backlogResweepOptions{
+		scheduled:         mode == backlogQueryModeResweep,
 		enabled:           resweepEnabled,
 		policy:            resweepPolicy,
 		eligible:          eligible,
@@ -551,6 +540,12 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		return code
 	}
 	eligible = resweep.eligible
+	if mode == backlogQueryModeResweep {
+		// Forward work reserves capacity but belongs to the ordinary curation
+		// workflow. Never turn this scheduled sweep into a second forward claimant.
+		eligible = eligible[forwardEligibleCount:]
+		forwardEligibleCount = 0
+	}
 	readOnlyResweep := resweep.readOnly
 	curationModeByID := resweep.modeByID
 	persistResweepState := resweep.persist
@@ -1397,6 +1392,9 @@ func (session *backlogClaimSession) releaseLedger(ctx context.Context, item prov
 }
 
 type backlogResweepOptions struct {
+	// scheduled delegates cadence to the workflow trigger/readiness guards.
+	// Cursor and selection-history persistence are still shared across runners.
+	scheduled  bool
 	enabled    bool
 	policy     backlogResweepPolicy
 	eligible   []providers.WorkItem
@@ -1467,7 +1465,7 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 		return result, 1
 	}
 	result.observed = result.state.Generation
-	if !backlogResweepDue(result.state, opts.observedAt, opts.policy.interval) {
+	if !opts.scheduled && !backlogResweepDue(result.state, opts.observedAt, opts.policy.interval) {
 		return result, 0
 	}
 	result.modeByID = make(map[string]string)
