@@ -218,7 +218,7 @@ func TestValidateInventory(t *testing.T) {
 	if err := validateInventory(map[string]bool{
 		"bash": true, "bwrap": true, "copilot": true, "dirname": true, "dotnet": true, "git": true,
 		"head": true, "java": true, "mkdir": true, "mvn": true, "ps": true, "python3": true, "sh": true, "sleep": true, "yes": true,
-		"xcodebuild": true, "xcrun": true,
+		"xcodebuild": true, "xcrun": true, "powershell.exe": true,
 	}); err != nil {
 		t.Fatalf("validateInventory exact match: %v", err)
 	}

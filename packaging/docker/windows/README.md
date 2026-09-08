@@ -50,11 +50,13 @@ with embedded Portal assets built, use explicit `windows/amd64` targets:
 ```powershell
 npm --prefix portal ci --no-audit --no-fund
 npm --prefix portal run build
-go run ./release -version v0.0.0-windows-verify -targets windows/amd64 -output C:\release-assets -image-contexts C:\image-contexts -first-feature-snapshot
+gh release download v0.3.3 --pattern feature-registry.json --pattern dsl-support-matrix.json --dir C:\release-baseline
+go run ./release -version v0.4.0-rc.1 -targets windows/amd64 -output C:\release-assets -image-contexts C:\image-contexts -previous-features C:\release-baseline\feature-registry.json -previous-support-matrix C:\release-baseline\dsl-support-matrix.json
 ```
 
-`-first-feature-snapshot` is appropriate for this standalone verification build;
-an official release supplies its normal previous-feature/support baselines.
+The candidate is checked against the real DSL support policy and previous
+published feature/support snapshots. A synthetic older release version or an
+empty baseline would bypass or fail the policy this verification must exercise.
 `C:\image-contexts` must not already exist. The engine produces its
 `windows-amd64` child atomically, containing:
 
@@ -89,15 +91,18 @@ builder context. ZIPs and the checksum verifier stay in the intermediate stage.
 
 ## Native CI and manual verification
 
-The existing required Windows CI lane runs `TestWindowsImage` under explicit
-Windows PowerShell 5.1. `GOOBERS_REQUIRE_WINDOWS_POWERSHELL=1` makes an unavailable
-or different runtime fail the tests; it cannot silently skip or substitute
-PowerShell 7. This covers checksum rejection, exact date/stamp comparison and
+The existing required Windows CI lane runs `TestIntegrationWindowsImage*` with
+`-tags=integration` under explicit Windows PowerShell 5.1. These Windows-only
+integration tests declare `powershell.exe` through `testdep.Require`;
+`TESTDEP_STRICT=1` makes a missing executable fail, and the runtime check refuses
+PowerShell 7. Ordinary unit tests execute no external PowerShell process. This covers checksum rejection, exact date/stamp comparison and
 script parsing. It does not execute Docker, certificate-store setup or the
 ContainerUser runtime.
 
 The opt-in [Windows image workflow](../../../.github/workflows/windows-image-verify.yml)
-uses `workflow_dispatch` and a `windows-2022` host. It prepares the release inputs,
+uses `workflow_dispatch` and a `windows-2022` host. Its candidate defaults to
+`v0.4.0-rc.1` and published baseline to `v0.3.3`, both explicit dispatch inputs.
+It downloads the baseline snapshots with a read-only GitHub token, prepares the release inputs,
 checks archive checksums and exact binary parity, builds the local Windows image,
 then verifies both image binaries and runs quickstart plus the shipped mock demo
 as ContainerUser. It uploads logs and image/container inspection evidence even

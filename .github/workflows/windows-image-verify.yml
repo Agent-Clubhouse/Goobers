@@ -3,6 +3,17 @@ name: Windows image prepublication verification
 # Opt-in evidence only. No publishing, registry credentials or support-tier change.
 on:
   workflow_dispatch:
+    inputs:
+      candidate_version:
+        description: Candidate version checked against the real DSL support policy
+        required: true
+        default: v0.4.0-rc.1
+        type: string
+      baseline_tag:
+        description: Previous published stable release providing feature and support snapshots
+        required: true
+        default: v0.3.3
+        type: string
 
 permissions:
   contents: read
@@ -58,11 +69,28 @@ jobs:
         shell: powershell
         timeout-minutes: 5
         env:
-          GOOBERS_REQUIRE_WINDOWS_POWERSHELL: '1'
+          TESTDEP_STRICT: '1'
         run: |
-          cmd.exe /d /c 'go test ./packaging -run TestWindowsImage -count=1 -timeout=3m -v 2>&1' |
+          cmd.exe /d /c 'go test -tags=integration ./packaging -run ^TestIntegrationWindowsImage -count=1 -timeout=3m -v 2>&1' |
             Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'windows-image-evidence\powershell-5.1-tests.txt')
           if ($LASTEXITCODE -ne 0) { throw 'Native PowerShell 5.1 input verification failed' }
+
+      - name: Fetch published release baselines
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_TAG: ${{ inputs.baseline_tag }}
+        run: |
+          if ($env:BASELINE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Baseline must be a stable release tag' }
+          $baselineDir = Join-Path $env:RUNNER_TEMP 'windows-image-baseline'
+          New-Item -ItemType Directory -Path $baselineDir | Out-Null
+          gh release download $env:BASELINE_TAG --repo $env:GITHUB_REPOSITORY `
+            --pattern feature-registry.json --pattern dsl-support-matrix.json --dir $baselineDir
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch published release baselines' }
+          foreach ($file in @('feature-registry.json', 'dsl-support-matrix.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $baselineDir $file))) { throw "Missing baseline $file" }
+            Copy-Item -LiteralPath (Join-Path $baselineDir $file) -Destination (Join-Path $env:RUNNER_TEMP "windows-image-evidence\baseline-$file")
+          }
 
       - name: Build embedded Portal
         timeout-minutes: 10
@@ -74,17 +102,23 @@ jobs:
 
       - name: Prepare native archive and Windows image context
         timeout-minutes: 25
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
         run: |
           $sourceCommit = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[a-f0-9]{40}$') { throw 'Cannot determine source commit' }
           $sourceDate = (git show -s --format=%cI HEAD).Trim()
           if ($LASTEXITCODE -ne 0) { throw 'Cannot determine source build date' }
-          $smokeVersion = "v0.0.0-windows-smoke.$env:GITHUB_RUN_NUMBER"
+          $smokeVersion = $env:CANDIDATE_VERSION
+          if ($smokeVersion -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') { throw 'Candidate must be a release version' }
+          $baselineDir = Join-Path $env:RUNNER_TEMP 'windows-image-baseline'
           $assetsDir = Join-Path $env:RUNNER_TEMP 'windows-image-assets'
           $contextsDir = Join-Path $env:RUNNER_TEMP 'windows-image-contexts'
           $evidenceDir = Join-Path $env:RUNNER_TEMP 'windows-image-evidence'
           go run ./release -version $smokeVersion -commit $sourceCommit -date $sourceDate `
-            -targets windows/amd64 -output $assetsDir -image-contexts $contextsDir -first-feature-snapshot `
+            -targets windows/amd64 -output $assetsDir -image-contexts $contextsDir `
+            -previous-features (Join-Path $baselineDir 'feature-registry.json') `
+            -previous-support-matrix (Join-Path $baselineDir 'dsl-support-matrix.json') `
             2>&1 | Tee-Object -FilePath (Join-Path $evidenceDir 'release-preparation.txt')
           if ($LASTEXITCODE -ne 0) { throw 'Windows release context preparation failed' }
           "WINDOWS_SMOKE_VERSION=$smokeVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

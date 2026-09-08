@@ -12,7 +12,7 @@ FROM ${WINDOWS_BASE_IMAGE}
 SHELL ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 COPY --from=inputs C:/Git/ C:/Git/
 COPY --from=inputs ["C:/inputs/goobers.exe", "C:/inputs/goobers-operator.exe", "C:/inputs/release.json", "C:/inputs/zoneinfo.zip", "C:/inputs/dependencies.json", "C:/Goobers/"]
-COPY Configure-Image.ps1 Verify-Image.ps1 Release-Metadata.ps1 Shell-Contract.sh C:/Goobers/
+COPY Configure-Image.ps1 Verify-Image.ps1 Release-Metadata.ps1 C:/Goobers/
 ENV PATH="C:\Goobers;C:\Git\cmd;C:\Git\usr\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0" `
     HOME="C:\Users\ContainerUser" `
     USERPROFILE="C:\Users\ContainerUser" `

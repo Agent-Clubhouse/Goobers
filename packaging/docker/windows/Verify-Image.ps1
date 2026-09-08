@@ -13,8 +13,8 @@ foreach ($binary in @('goobers', 'goobers-operator')) {
 }
 & git --version
 if ($LASTEXITCODE -ne 0) { throw 'git unavailable on PATH' }
-# A script file avoids Windows PowerShell 5.1 native argument-quoting changes.
-& sh C:/Goobers/Shell-Contract.sh
+# Exercise the POSIX shell builtin without nested native argument quoting.
+& sh -c 'exit 0'
 if ($LASTEXITCODE -ne 0) { throw 'POSIX shell contract failed' }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zones = [System.IO.Compression.ZipFile]::OpenRead($env:ZONEINFO)

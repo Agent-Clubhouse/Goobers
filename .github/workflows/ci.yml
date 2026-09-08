@@ -1224,8 +1224,8 @@ jobs:
         shell: powershell
         timeout-minutes: 5
         env:
-          GOOBERS_REQUIRE_WINDOWS_POWERSHELL: '1'
-        run: go test ./packaging -run TestWindowsImage -count=1 -timeout=3m -v
+          TESTDEP_STRICT: '1'
+        run: go test -tags=integration ./packaging -run ^TestIntegrationWindowsImage -count=1 -timeout=3m -v
 
       # Both packages run whole rather than by named test: each costs well
       # under a second on Windows, so a name allowlist here buys no runtime
