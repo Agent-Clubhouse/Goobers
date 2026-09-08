@@ -818,10 +818,8 @@ func TestBuildReadModelIfNeededIgnoresCanceledContext(t *testing.T) {
 // flips).
 func TestUpDisableReadModelReadsFlagStartsCleanly(t *testing.T) {
 	root := initDeterministicDemo(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	var stdout, stderr bytes.Buffer
-	if code := runUpContext(ctx, []string{"--disable-read-model-reads", root}, &stdout, &stderr); code != 0 {
+	if code := runUpThroughStartup(t, []string{"--disable-read-model-reads", root}, &stdout, &stderr); code != 0 {
 		t.Fatalf("runUpContext(--disable-read-model-reads) code = %d, stderr = %q", code, stderr.String())
 	}
 }
@@ -843,10 +841,8 @@ func TestSpansOnlyRunCleanupIsDryRunUnlessOptedIn(t *testing.T) {
 
 	runUpOnce := func(args ...string) (string, string) {
 		t.Helper()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
 		var stdout, stderr bytes.Buffer
-		if code := runUpContext(ctx, append(args, root), &stdout, &stderr); code != 0 {
+		if code := runUpThroughStartup(t, append(args, root), &stdout, &stderr); code != 0 {
 			t.Fatalf("runUpContext(%v) code = %d, stderr = %q", args, code, stderr.String())
 		}
 		return stdout.String(), stderr.String()
@@ -1107,20 +1103,9 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runUpContext did not return after ctx cancellation")
+	if code := runUpThroughStartup(t, []string{root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("daemon startup/shutdown code=%d stderr=%q", code, stderr.String())
 	}
 
 	if !strings.Contains(stdout.String(), "daemon started") {
@@ -1138,11 +1123,8 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 func TestUpScheduledWorkflowHasNoScheduleWarning(t *testing.T) {
 	root := initDeterministicDemo(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	code := runUpContext(ctx, []string{root}, &stdout, &stderr)
+	code := runUpThroughStartup(t, []string{root}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 	}
@@ -1424,19 +1406,37 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Wait for the resumed run to actually reach a terminal phase rather than
-	// guessing at a wall-clock window: a fixed sleep is long enough on an idle
-	// machine but not on a loaded CI runner under -race, which made this test
-	// flake with phase still "running".
+	stdout := newDaemonOutput()
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- runUpContext(ctx, []string{root}, stdout, &stderr) }()
+	joined := false
+	defer func() {
+		cancel()
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Error("daemon did not stop during test cleanup")
+			}
+		}
+	}()
+	select {
+	case <-stdout.started:
+	case code := <-done:
+		joined = true
+		t.Fatalf("daemon exited before startup: code=%d stderr=%q", code, stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not complete startup")
+	}
+	// A resumed run can finish before the daemon's initial count sample. Only
+	// start terminal-driven cancellation once the daemon has actually started.
 	stop := pollUntilRunTerminal(t, filepath.Join(l.RunsDir(), runID), cancel)
 	defer stop()
 
-	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
 	select {
 	case code := <-done:
+		joined = true
 		if code != 0 {
 			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 		}
