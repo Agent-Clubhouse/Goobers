@@ -16,9 +16,9 @@ type TranscriptDelta struct {
 }
 
 // InvocationTranscriptDelta identifies an independent capture stream within an
-// adapter run. Invocation is one-based (the recovery turn is 2). Source currently
-// identifies combined process output; it must not be confused with the native
-// session log. Offsets and dropped-byte counts are local to that stream.
+// adapter run. Process-output invocation is one-based (the recovery turn is 2).
+// Copilot-session invocation is zero: its native log spans both turns. Offsets
+// and dropped-byte counts are local to that stream.
 type InvocationTranscriptDelta struct {
 	Invocation int
 	Source     string

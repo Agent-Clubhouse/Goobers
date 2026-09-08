@@ -888,6 +888,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: start agent telemetry: %w", err)
 	}
 	defer agentTelemetry.finish(&out, &runErr)
+	nativeCheckpoints, err := startCopilotTranscriptCheckpoints(&req, nativeTranscriptPath, env)
+	if err != nil {
+		return Outcome{}, err
+	}
+	// Finish while the wrapper-owned log still exists, before cleanupSession.
+	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
 	runner := c.runner()
 	started := time.Now()
