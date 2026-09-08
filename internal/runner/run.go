@@ -4157,7 +4157,7 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 		if err := jr.Append(journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
 			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL},
-			Runner:      providers.MutationRunnerFields(m.Operation, m.MergeConfirmation, m.QueueAdmission, m.LandingIntent),
+			Runner:      providers.MutationReceiptRunnerFields(m.ReceiptID, m.Operation, m.MergeConfirmation, m.QueueAdmission, m.LandingIntent),
 		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID)); err != nil {
 			return fmt.Errorf("runner: journal provider mutation for %q: %w", stage, errors.Join(err, heartbeatErr, removeErr))
 		}
@@ -5269,6 +5269,7 @@ const mutationsSidecarFile = "mutations.jsonl"
 // shape) — just enough to build a journal.ExternalRef plus an operation
 // annotation.
 type mutationFact struct {
+	ReceiptID         string                       `json:"receiptId,omitempty"`
 	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
 	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
 	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`

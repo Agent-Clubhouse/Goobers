@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,6 +31,7 @@ const mutationsSidecarFile = "mutations.jsonl"
 // RunID identifies the claim owner, which can differ from the stage's run
 // during reconciliation. Provider Fields digests are not part of this handoff.
 type mutationFact struct {
+	ReceiptID         string                       `json:"receiptId,omitempty"`
 	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
 	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
 	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
@@ -100,6 +102,9 @@ func (r sidecarMutationRecorder) RecordLandingIntent(ctx context.Context, provid
 }
 
 func appendMutationFact(fact mutationFact) error {
+	// Identity belongs to this durable record, not its semantic contents:
+	// separate attempts may legitimately make identical mutations.
+	fact.ReceiptID = rand.Text()
 	data, err := json.Marshal(fact)
 	if err != nil {
 		return err

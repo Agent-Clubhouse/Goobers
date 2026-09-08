@@ -81,6 +81,7 @@ type SurrenderPlane interface {
 // projected journal records identical provenance whichever substrate ran the
 // stage.
 type SurrenderedMutation struct {
+	ReceiptID         string                       `json:"receiptId,omitempty"`
 	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
 	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
 	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`

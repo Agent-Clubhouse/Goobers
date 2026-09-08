@@ -14,7 +14,7 @@ import (
 func TestRunnerProjectsSidecarMergeConfirmation(t *testing.T) {
 	workspace := t.TempDir()
 	confirmation := providers.MergeConfirmation{RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", MergeSHA: "commit"}
-	data, err := json.Marshal(mutationFact{Provider: "github", Kind: "pr", ID: "9", Operation: "merge", MergeConfirmation: &confirmation})
+	data, err := json.Marshal(mutationFact{ReceiptID: "durable-merge-receipt", Provider: "github", Kind: "pr", ID: "9", Operation: "merge", MergeConfirmation: &confirmation})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +45,9 @@ func TestRunnerProjectsSidecarMergeConfirmation(t *testing.T) {
 		t.Fatalf("events=%+v, error=%v", events, err)
 	}
 	data, err = json.Marshal(events[1].Runner["mergeConfirmation"])
+	if events[1].Runner["mutationReceiptId"] != "durable-merge-receipt" {
+		t.Fatal("sidecar receipt identity lost during journal projection")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

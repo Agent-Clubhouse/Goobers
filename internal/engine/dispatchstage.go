@@ -878,6 +878,7 @@ func surrenderedMutationFacts(mutations []dispatcher.SurrenderedMutation) []muta
 			LandingIntent:     m.LandingIntent,
 			QueueAdmission:    m.QueueAdmission,
 			MergeConfirmation: m.MergeConfirmation,
+			ReceiptID:         m.ReceiptID,
 			Provider:          m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL, Operation: m.Operation,
 			RunID: m.RunID, Outcome: m.Outcome, ErrorCode: m.ErrorCode,
 			ProviderRunID: m.ProviderRunID,

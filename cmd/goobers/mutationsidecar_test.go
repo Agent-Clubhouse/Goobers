@@ -34,6 +34,9 @@ func TestMutationSidecarPreservesQueueAdmissionAcrossWireConsumers(t *testing.T)
 			t.Fatal(err)
 		}
 	}
+	if local.ReceiptID == "" || remote.ReceiptID != local.ReceiptID || temporal.ReceiptID != local.ReceiptID {
+		t.Fatal("durable receipt identity lost in wire transport")
+	}
 	for _, got := range []*providers.QueueAdmission{local.QueueAdmission, remote.QueueAdmission, temporal.QueueAdmission} {
 		if got == nil || *got != *admission {
 			t.Fatalf("queue receipt lost in sidecar transport: %+v", got)
@@ -41,6 +44,31 @@ func TestMutationSidecarPreservesQueueAdmissionAcrossWireConsumers(t *testing.T)
 	}
 	if local.MergeConfirmation != nil || remote.MergeConfirmation != nil || temporal.MergeConfirmation != nil || local.Operation != "enqueue" {
 		t.Fatal("queue acceptance promoted to merge confirmation")
+	}
+}
+
+func TestIdenticalMutationRecordsGetDistinctDurableIdentities(t *testing.T) {
+	t.Chdir(t.TempDir())
+	fact := mutationFact{Provider: "github", Kind: "pr", ID: "9", Operation: "merge"}
+	for i := 0; i < 2; i++ {
+		if err := appendMutationFact(fact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var first, second mutationFact
+	if err := decoder.Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoder.Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if first.ReceiptID == "" || second.ReceiptID == "" || first.ReceiptID == second.ReceiptID {
+		t.Fatal("different durable records share an identity")
 	}
 }
 

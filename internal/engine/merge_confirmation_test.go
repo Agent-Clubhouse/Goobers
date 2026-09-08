@@ -22,6 +22,7 @@ func TestEngineProjectsSurrenderedMergeConfirmation(t *testing.T) {
 		recorder := &runJournal{}
 		recorder.mutations(ctx, "land", 1, journal.AttemptPolicy, surrenderedMutationFacts([]dispatcher.SurrenderedMutation{{
 			Provider: "github", Kind: "pr", ID: "9", Operation: "merge", MergeConfirmation: &confirmation,
+			ReceiptID: "durable-merge-receipt",
 		}}))
 		return recorder.proj, nil
 	})
@@ -36,6 +37,9 @@ func TestEngineProjectsSurrenderedMergeConfirmation(t *testing.T) {
 		t.Fatalf("missing mutation projection: %+v", projection)
 	}
 	event := projection.Ops[0].Event
+	if event.Runner["mutationReceiptId"] != "durable-merge-receipt" {
+		t.Fatal("surrendered receipt identity lost during journal projection")
+	}
 	data, err := json.Marshal(event.Runner["mergeConfirmation"])
 	if err != nil {
 		t.Fatal(err)

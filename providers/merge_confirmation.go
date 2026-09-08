@@ -47,6 +47,17 @@ func newMergeConfirmation(repositoryAPIURL, pullID, mergeSHA string) *MergeConfi
 	return &MergeConfirmation{RepositoryAPIURL: u.String(), PullID: pullID, MergeSHA: mergeSHA}
 }
 
+// MutationReceiptRunnerFields retains a durable sidecar record identity across
+// local and Temporal projection. Empty identity denotes a legacy receipt; it
+// must not acquire a synthetic identity when replayed.
+func MutationReceiptRunnerFields(receiptID, operation string, confirmation *MergeConfirmation, admission *QueueAdmission, intent *LandingIntent) map[string]any {
+	fields := MutationRunnerFields(operation, confirmation, admission, intent)
+	if receiptID != "" {
+		fields["mutationReceiptId"] = receiptID
+	}
+	return fields
+}
+
 // MutationRunnerFields preserves the legacy operation while carrying
 // explicit confirmation separately. Consumers must never infer confirmation
 // from operation=merge, which can also describe an observed terminal PR.

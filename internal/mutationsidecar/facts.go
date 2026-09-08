@@ -12,6 +12,7 @@ import (
 // Fact is a provider receipt as written by a stage's mutation recorder.
 // Recovery must preserve the typed receipts, not reduce them to a URL.
 type Fact struct {
+	ReceiptID         string                       `json:"receiptId,omitempty"`
 	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
 	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
 	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
