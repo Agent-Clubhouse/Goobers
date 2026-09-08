@@ -32,6 +32,7 @@ type options struct {
 	commit                string
 	date                  string
 	outDir                string
+	imageContexts         string
 	previousFeatures      string
 	previousSupportMatrix string
 	targets               []Target
@@ -53,6 +54,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("portal asset artifact is missing at %s; run `make portal-build` before packaging: %w", portalIndexPath, err)
 		}
 	}
+	images, err := prepareImageContexts(opts)
+	if err != nil {
+		return err
+	}
+	defer images.cleanup()
 
 	if err := os.MkdirAll(opts.outDir, 0o755); err != nil {
 		return fmt.Errorf("create output dir %s: %w", opts.outDir, err)
@@ -67,27 +73,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	defer cleanupReleaseDocs()
 
-	var archives []string
-	var skipped []string
-	for _, t := range opts.targets {
-		binPath, buildOut, err := buildTarget(t, ldflags, opts.outDir)
-		if err != nil {
-			if opts.skipUnbuildable {
-				_, _ = fmt.Fprintf(stdout, "skip  %-14s (does not compile yet)\n", t)
-				skipped = append(skipped, t.String())
-				continue
-			}
-			return fmt.Errorf("build %s failed — the release matrix requires every "+
-				"target to compile (windows is gated on the #633 CI leg going green); "+
-				"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)
-		}
-		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
-		if err != nil {
-			return err
-		}
-		_ = os.Remove(binPath) // keep only the archive
-		archives = append(archives, archivePath)
-		_, _ = fmt.Fprintf(stdout, "build %-14s -> %s\n", t, filepath.Base(archivePath))
+	archives, skipped, err := buildReleaseTargets(opts, ldflags, releaseDocsDir, images, stdout)
+	if err != nil {
+		return err
 	}
 
 	checksumAssets := append([]string(nil), archives...)
@@ -165,7 +153,37 @@ func run(args []string, stdout, stderr io.Writer) error {
 			"required platform (that is the false-green trap #655's gate prevents).\n",
 			strings.Join(skipped, ", "))
 	}
-	return nil
+	return images.finalize(stdout)
+}
+
+func buildReleaseTargets(opts options, ldflags, releaseDocsDir string, images *imageContexts, stdout io.Writer) ([]string, []string, error) {
+	var archives []string
+	var skipped []string
+	for _, t := range opts.targets {
+		binPath, buildOut, err := buildTarget(t, ldflags, opts.outDir)
+		if err != nil {
+			if opts.skipUnbuildable {
+				_, _ = fmt.Fprintf(stdout, "skip  %-14s (does not compile yet)\n", t)
+				skipped = append(skipped, t.String())
+				continue
+			}
+			return nil, nil, fmt.Errorf("build %s failed — the release matrix requires every "+
+				"target to compile (windows is gated on the #633 CI leg going green); "+
+				"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)
+		}
+		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := images.stage(t, binPath, ldflags, opts); err != nil {
+			return nil, nil, err
+		}
+		_ = os.Remove(binPath) // keep only the archive
+		archives = append(archives, archivePath)
+		_, _ = fmt.Fprintf(stdout, "build %-14s -> %s\n", t, filepath.Base(archivePath))
+	}
+
+	return archives, skipped, nil
 }
 
 func parseFlags(args []string, stderr io.Writer) (options, error) {
@@ -176,6 +194,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		commit           = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
+		imageContexts    = fs.String("image-contexts", "", "prepare Linux base-image build inputs in a new directory (requires explicit Linux-only -targets; does not build or publish images)")
 		previousFeatures = fs.String("previous-features", "", "feature-registry.json from the previous release")
 		previousSupport  = fs.String("previous-support-matrix", "", "dsl-support-matrix.json from the previous release")
 		firstFeatures    = fs.Bool("first-feature-snapshot", false, "use an empty feature baseline for the first recorded snapshot")
@@ -189,6 +208,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 
 	opts := options{
 		outDir:                *outDir,
+		imageContexts:         *imageContexts,
 		previousFeatures:      strings.TrimSpace(*previousFeatures),
 		previousSupportMatrix: strings.TrimSpace(*previousSupport),
 		checksums:             *checksums,
@@ -215,6 +235,9 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		return options{}, err
 	}
 	opts.targets = targets
+	if err := validateImageContextOptions(opts, *targetCSV); err != nil {
+		return options{}, err
+	}
 	return opts, nil
 }
 
@@ -250,13 +273,22 @@ func parseTargets(csv string) ([]Target, error) {
 // missing windows internal/platform/proc impl) rather than a bare exit code.
 func buildTarget(t Target, ldflags, outDir string) (binPath string, buildOutput string, err error) {
 	binPath = filepath.Join(outDir, t.binaryName()+"."+t.OS+"-"+t.Arch)
-	cmd := exec.Command("go", "build", "-tags", "embed_portal", "-trimpath", "-ldflags", ldflags, "-o", binPath, buildPackage)
+	buildOutput, err = buildReleaseBinary(t, ldflags, binPath, buildPackage)
+	if err != nil {
+		return "", buildOutput, err
+	}
+	return binPath, "", nil
+}
+
+// Both archive and image binaries use the same platform and metadata inputs.
+func buildReleaseBinary(t Target, ldflags, binPath, pkg string) (string, error) {
+	cmd := exec.Command("go", "build", "-tags", "embed_portal", "-trimpath", "-ldflags", ldflags, "-o", binPath, pkg)
 	cmd.Env = append(os.Environ(), "GOOS="+t.OS, "GOARCH="+t.Arch, "CGO_ENABLED=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", string(out), err
+		return string(out), err
 	}
-	return binPath, "", nil
+	return "", nil
 }
 
 func gitOutput(args ...string) string {
