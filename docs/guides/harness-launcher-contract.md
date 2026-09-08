@@ -6,6 +6,14 @@ necessarily compatible merely because it forwards arguments. In particular,
 identifier rather than a local transcript correlation ID. It is not a supported
 drop-in example. Use direct Copilot unless the wrapper implements this contract.
 
+For mode 3 stage pods, the worker carries only the selected goober's configured
+argv in the content-addressed execution kit, for both task invocations and
+reviewer gates. Each target image must provide that executable and any launcher
+dependencies at the declared path. The pod performs its own normal launcher and
+authentication preflight. Omitted overrides retain the default command. Deploy
+matching updated worker and stage binaries: older stage binaries do not consume
+the kit's launcher override.
+
 The default command, and an explicit `["copilot"]`, retain the existing direct
 Copilot behavior. Every other Copilot override must respond to its complete
 configured prefix followed by `--goobers-launcher-contract`. This probe must not
