@@ -427,7 +427,7 @@ func TestWorktree_Diff_PartialCloneBackfillsBaseBlobsWithCredentialEnvironment(t
 	if !strings.Contains(string(diff), "-hello") || !strings.Contains(string(diff), "+goodbye") {
 		t.Fatalf("diff does not carry the base...HEAD change:\n%s", diff)
 	}
-	if trace := readTrace(t, traceFile); !strings.Contains(trace, "diff main...HEAD") {
+	if trace := readTrace(t, traceFile); !strings.Contains(trace, "diff ") || !strings.Contains(trace, "main...HEAD") {
 		t.Fatalf("Diff did not run with the credential environment; trace:\n%s", trace)
 	}
 }
