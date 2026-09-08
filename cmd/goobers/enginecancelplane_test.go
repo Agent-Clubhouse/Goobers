@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -37,6 +38,9 @@ type engineCancelFixture struct {
 func newEngineCancelFixture(t *testing.T, runID, workflowID string) *engineCancelFixture {
 	t.Helper()
 	f := &engineCancelFixture{layout: instance.NewLayout(t.TempDir())}
+	// Remote mutations first inspect the authenticated inventory endpoint.
+	// Give this active fixture a durable identity just like a provisioned daemon.
+	writeFileContent(t, filepath.Join(f.layout.Root, instance.RootIdentityFileName), "0123456789abcdef0123456789abcdef\n")
 	f.definitions = newInterventionDefinitionRegistry(cancelDefinitions("web"))
 	f.temporal = &fakeEngineWorkflows{workflowIDs: map[string]string{workflowID: workflowID}}
 	f.lister = &fakeOpenWorkflowLister{open: map[string]string{workflowID: "web"}}
@@ -50,12 +54,29 @@ func newEngineCancelFixture(t *testing.T, runID, workflowID string) *engineCance
 	f.service.engine = newDaemonEngineCancelService(f.layout, f.definitions, shared, shared.Guards(), instanceLog)
 	f.service.AttachRelease(func(string, string) { f.releases++ })
 	createDriverRun(t, f.layout.ForGaggle("web").RunsDir(), runID, "implementation", "web", journal.DriverEngine, time.Now(), nil)
-	f.handler, err = httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
+	f.handler, err = httpapi.NewHandler(&engineCancelInventoryReader{layout: f.layout}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
 		httpapi.WithAuthenticator(engineCancelAuthenticator{}), httpapi.WithCancelService(f.service))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return f
+}
+
+type engineCancelInventoryReader struct {
+	telemetryParityReader
+	layout instance.Layout
+}
+
+func (r *engineCancelInventoryReader) Instance(context.Context) (readservice.Instance, error) {
+	id, err := instance.ReadRootIdentity(r.layout.Root)
+	if err != nil {
+		return readservice.Instance{}, err
+	}
+	return readservice.Instance{
+		InstanceRoot: r.layout.Root,
+		RootIdentity: &readservice.RootIdentity{ID: id},
+		Ready:        true,
+	}, nil
 }
 
 func cancelDefinitions(gaggles ...string) interventionDefinitionSet {
@@ -315,6 +336,14 @@ func TestRunRemoteEngineCancelReportsOnlyRequest(t *testing.T) {
 			code, stdout, stderr := runArgs(t, "run", action, "--api", server.URL, id)
 			if code != 0 || !strings.Contains(stdout, "requested cancellation") || strings.Contains(stdout, "aborted") {
 				t.Fatalf("remote %s: code=%d stdout=%q stderr=%q", action, code, stdout, stderr)
+			}
+			identity, err := instance.ReadRootIdentity(f.layout.Root)
+			if err != nil || !strings.Contains(stderr, "Remote instance root:") || !strings.Contains(stderr, identity) {
+				t.Fatalf("remote identity was not displayed: stderr=%q identity error=%v", stderr, err)
+			}
+			_, _, cancelled := f.temporal.snapshot()
+			if len(cancelled) != 1 || cancelled[0] != id {
+				t.Fatalf("remote CLI did not reach engine cancellation: %v", cancelled)
 			}
 			if f.releases != 0 {
 				t.Fatal("remote CLI request freed slot")
