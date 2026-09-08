@@ -69,11 +69,12 @@ func TestLoadConfigDirValid(t *testing.T) {
 			inlineWorkflow = &workflow
 		}
 	}
-	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation", "java-implementation", "python-implementation"}
+	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "curate-resweep", "claude-curate-resweep", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation", "java-implementation", "python-implementation"}
 	// acme-web-claude reuses acme-web's nine workflow names verbatim (workflow
 	// identity is gaggle-scoped, unlike goober names), so the total count is
-	// twelve unique names but twenty-one total definitions.
-	const wantTotalWorkflows = 21
+	// fourteen unique names but twenty-three total definitions after adding
+	// the two distinctly named scheduled re-sweep workflows.
+	const wantTotalWorkflows = 23
 	if len(set.Workflows) != wantTotalWorkflows {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}

@@ -880,8 +880,8 @@ func connectTaskAppliedLabels(task apiv1.Task, applied *connectLabelSet) {
 	if subcommand == "issue-close-out" {
 		applied.add(connectCloseOutLabel(task.Inputs["status"]))
 	}
-	// The current re-sweep executes inside backlog-query, not a standalone
-	// command. An enabled sweep consumes its default ready label even when no
+	// The scheduled re-sweep uses backlog-query --claim --resweep. A bounded
+	// sweep consumes its default ready label even when no
 	// literal label input is present; disabled sweeps must not demand it.
 	if subcommand == "backlog-query" && strings.TrimSpace(task.Inputs["resweepMaxItems"]) != "" {
 		if _, declared := task.Inputs["resweepReadyLabel"]; !declared {

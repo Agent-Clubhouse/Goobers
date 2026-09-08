@@ -52,6 +52,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/goobers/c
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/scripts/check-todos.sh
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/workflows/backlog-assignment.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/workflows/backlog-curation.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/workflows/curate-resweep.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/workflows/default-implement.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/workflows/docs-updater.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web-claude/workflows/implementation.yaml
@@ -75,6 +76,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/reviewer
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/scripts/check-todos.sh
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/backlog-assignment.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/backlog-curation.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/curate-resweep.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/default-implement.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/docs-updater.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/workflows/implementation.yaml
