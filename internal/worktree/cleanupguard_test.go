@@ -31,9 +31,21 @@ func TestCleanupHandoffsComposeAndStopOnFailure(t *testing.T) {
 		if fail {
 			want = []int{1}
 		}
-		if !slices.Equal(calls, want) || errors.Is(err, blocked) != fail {
+		if !slices.Equal(calls, want) || errors.Is(err, blocked) != fail || errors.Is(err, ErrCleanupDeferred) != fail {
 			t.Fatalf("handoff composition: calls=%v error=%v", calls, err)
 		}
+	}
+}
+
+func TestNamedCleanupFailurePreservesCauseAndDefers(t *testing.T) {
+	manager := &Manager{}
+	cause := errors.New("journal unavailable")
+	if err := manager.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error { return cause }); err != nil {
+		t.Fatal(err)
+	}
+	err := manager.prepareCleanup(context.Background(), "path", "stage", "owner")
+	if !errors.Is(err, ErrCleanupDeferred) || !errors.Is(err, cause) {
+		t.Fatalf("cleanup lost deferred classification or original cause: %v", err)
 	}
 }
 

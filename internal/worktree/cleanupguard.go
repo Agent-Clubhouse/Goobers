@@ -2,11 +2,17 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"time"
 )
+
+// ErrCleanupDeferred means a durable handoff has not completed. The source
+// must remain intact; housekeeping may report a warning and try other targets,
+// but direct removal/replacement must still fail.
+var ErrCleanupDeferred = errors.New("worktree cleanup deferred pending durable handoff")
 
 // CleanupTarget identifies the directory about to be destroyed. OwnerRunID
 // comes from its durable marker; an empty value must not be guessed from the
@@ -59,12 +65,12 @@ func (m *Manager) prepareCleanupTarget(ctx context.Context, target CleanupTarget
 	m.cleanupGuardsMu.RUnlock()
 	if m.beforeCleanup != nil {
 		if err := m.beforeCleanup(ctx, target); err != nil {
-			return fmt.Errorf("worktree: preserve evidence before cleanup of %s: %w", target.WorktreeID, err)
+			return fmt.Errorf("%w: preserve evidence for %s: %w", ErrCleanupDeferred, target.WorktreeID, err)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(guards)) {
 		if err := guards[name](ctx, target); err != nil {
-			return fmt.Errorf("worktree: %s handoff before cleanup of %s: %w", name, target.WorktreeID, err)
+			return fmt.Errorf("%w: %s handoff for %s: %w", ErrCleanupDeferred, name, target.WorktreeID, err)
 		}
 	}
 	return nil

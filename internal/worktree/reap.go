@@ -171,11 +171,11 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 
 		path := filepath.Join(m.runsDirForKey(key), directory)
 		if err := m.reapOne(ctx, key, path, markerPath, &mk); err != nil {
-			// A cleanup git subprocess timeout (#4325) skips this one
+			// A pending durable handoff or Git subprocess timeout skips this one
 			// worktree — reported for retry on the next sweep — rather
 			// than aborting every other worktree still queued for reaping.
 			var timeoutErr *GitCleanupTimeoutError
-			if errors.As(err, &timeoutErr) {
+			if errors.As(err, &timeoutErr) || errors.Is(err, ErrCleanupDeferred) {
 				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)})
 				continue
 			}
@@ -263,7 +263,7 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 		markerPath := m.markerPath(key, worktreeID)
 		if err := m.reapOne(ctx, key, path, markerPath, ownershipMarker); err != nil {
 			var timeoutErr *GitCleanupTimeoutError
-			if errors.As(err, &timeoutErr) {
+			if errors.As(err, &timeoutErr) || errors.Is(err, ErrCleanupDeferred) {
 				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap markerless run %s: %w", worktreeID, err)})
 				continue
 			}

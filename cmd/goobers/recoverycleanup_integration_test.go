@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,12 +20,25 @@ import (
 
 func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *testing.T) {
 	testdep.Require(t, "git")
+	for _, terminal := range []bool{false, true} {
+		name := "stage"
+		if terminal {
+			name = "standalone-terminal"
+		}
+		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal) })
+	}
+}
+
+func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	source, workcopies := t.TempDir(), t.TempDir()
+	previousCloneURL := repoCloneURL
+	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
+	t.Cleanup(func() { repoCloneURL = previousCloneURL })
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	const runID = "cleanup-recovery"
@@ -54,7 +68,19 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 	if err := os.WriteFile(filepath.Join(workspace.Path, "implementation.txt"), []byte("recover me"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+	if terminal {
+		// Mimic a standalone startup/abort finalizer that did not construct
+		// the worktree and has never gone through buildRunnerConfig.
+		standalone, createErr := worktree.NewManager(workcopies)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		assertTerminalRecoveryConfigFailurePreservesWorktree(t, layout, standalone, runID, workspace.Path)
+		err = finalizeTerminalRunWithClaimRelease(layout, nil, standalone, runID, func(instance.Layout, *journal.InstanceLog, string) error { return nil })
+	} else {
+		err = workspace.Remove(ctx, worktree.RemoveOptions{})
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
@@ -88,5 +114,29 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 	}
 	if observations != 1 {
 		t.Fatalf("cleanup requires exactly one recovery publication observation, got %d", observations)
+	}
+}
+
+func assertTerminalRecoveryConfigFailurePreservesWorktree(t *testing.T, layout instance.Layout, manager *worktree.Manager, runID, path string) {
+	t.Helper()
+	config, unavailable := layout.ConfigFile(), layout.ConfigFile()+".unavailable"
+	if err := os.Rename(config, unavailable); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Rename(unavailable, config); err != nil {
+			t.Error(err)
+		}
+	}()
+	before := recoveryCLIGit(t, path, "rev-parse", "HEAD")
+	err := finalizeTerminalRunWithClaimRelease(layout, nil, manager, runID, func(instance.Layout, *journal.InstanceLog, string) error { return nil })
+	if !errors.Is(err, worktree.ErrCleanupDeferred) {
+		t.Fatalf("unavailable configuration did not defer destructive cleanup: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(path, "implementation.txt")); err != nil || string(data) != "recover me" {
+		t.Fatalf("failed terminal handoff lost implementation: %q %v", data, err)
+	}
+	if after := recoveryCLIGit(t, path, "rev-parse", "HEAD"); after != before {
+		t.Fatal("failed terminal handoff changed HEAD")
 	}
 }

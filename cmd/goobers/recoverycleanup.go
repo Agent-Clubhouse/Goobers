@@ -13,11 +13,22 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
 func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber) (worktree.ManagerOption, error) {
+	callback, err := recoveryCleanupHandler(layout, cfg, cleanupRoot, cloneURL, scrubber)
+	if err != nil {
+		return nil, err
+	}
+	return func(manager *worktree.Manager) {
+		_ = manager.SetCleanupGuard("recovery", callback)
+	}, nil
+}
+
+func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber) (func(context.Context, worktree.CleanupTarget) error, error) {
 	identities := make(map[string]string)
 	for _, repo := range cfg.Repos {
 		project := apiv1.RepoRef{Provider: apiv1.Provider(repo.Provider), BaseURL: repo.BaseURL, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
@@ -62,11 +73,28 @@ func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanup
 		}, recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber})
 		return err
 	}
-	return func(manager *worktree.Manager) {
-		// Both arguments are fixed, valid values; installing the same named
-		// guard replaces it on reload rather than stacking archive callbacks.
-		_ = manager.SetCleanupGuard("recovery", callback)
-	}, nil
+	return callback, nil
+}
+
+// Standalone abort/startup/stall finalizers may construct their own Manager.
+// Resolve configuration only when an actual owned worktree needs cleanup, so
+// already-clean runs can still release claims even with unavailable config.
+func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Manager) error {
+	return manager.SetCleanupGuard("recovery", func(ctx context.Context, target worktree.CleanupTarget) error {
+		cfg, err := instance.LoadConfig(layout.ConfigFile())
+		if err != nil {
+			return fmt.Errorf("load recovery configuration before cleanup: %w", err)
+		}
+		cloneURL := repoCloneURL
+		if cloneURL == nil {
+			cloneURL = runner.DefaultRepoCloneURL
+		}
+		callback, err := recoveryCleanupHandler(layout, cfg, manager.Root, cloneURL, journal.NewRegistryScrubber())
+		if err != nil {
+			return err
+		}
+		return callback(ctx, target)
+	})
 }
 
 func prepareRecoveryInventory(instanceRoot string) (string, error) {

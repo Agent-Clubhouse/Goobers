@@ -255,7 +255,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 	}
 	orphanKey := runID + "-local-ci" // buildEnvelope's RunID+"-"+stageName convention
 	if _, err := wtMgr.Create(context.Background(), worktree.CreateOptions{
-		RepoURL: fixtureRepo, RunID: orphanKey, BaseRef: "main",
+		RepoURL: fixtureRepo, RunID: orphanKey, OwnerRunID: runID, BaseRef: "main",
 	}); err != nil {
 		t.Fatalf("plant orphaned worktree: %v", err)
 	}

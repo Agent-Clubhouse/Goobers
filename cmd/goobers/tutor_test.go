@@ -533,7 +533,12 @@ func TestTutorNewGateWithoutFailFirstEvidenceAbortsBeforePush(t *testing.T) {
 		}
 	}
 	if !failedClosed {
-		t.Fatal("journal has no fail-first-valid fail verdict targeting @abort")
+		for _, event := range events {
+			if event.Error != nil {
+				t.Logf("journal error at %s/%s: %+v", event.Type, event.Stage, event.Error)
+			}
+		}
+		t.Fatalf("journal has no fail-first-valid fail verdict targeting @abort; command stderr: %s", stderr)
 	}
 	st, err := rd.State()
 	if err != nil {
