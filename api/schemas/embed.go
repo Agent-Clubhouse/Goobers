@@ -60,6 +60,18 @@ const RemediationBriefV1 = "remediation-brief-v1.schema.json"
 // AgentToolkitManifest inventories the portable repository-side agent toolkit.
 const AgentToolkitManifest = "agent-toolkit-manifest.schema.json"
 
+// StageArtifactManifest is the workspace-relative artifact staging contract.
+const StageArtifactManifest = "stage-artifact-manifest.schema.json"
+
+// StageArtifactSet is the runner-authored normalized artifact index contract.
+const StageArtifactSet = "stage-artifact-set.schema.json"
+
+// InvestigationEvidenceDraft is the semantic-reference evidence input contract.
+const InvestigationEvidenceDraft = "investigation-evidence-draft.schema.json"
+
+// InvestigationEvidence is the verified-pointer canonical evidence contract.
+const InvestigationEvidence = "investigation-evidence.schema.json"
+
 // Diagnostics is the validate/lint machine-readable findings envelope.
 const Diagnostics = "diagnostics.schema.json"
 

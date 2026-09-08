@@ -11,17 +11,17 @@ import (
 )
 
 var evidenceSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
-	return compileEvidenceSchema("investigation-evidence.schema.json")
+	return compileEvidenceSchema(schemas.InvestigationEvidence)
 })
 
 var draftSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
-	return compileEvidenceSchema("investigation-evidence-draft.schema.json")
+	return compileEvidenceSchema(schemas.InvestigationEvidenceDraft)
 })
 
 func compileEvidenceSchema(target string) (*jsonschema.Schema, error) {
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
-	for _, name := range []string{"artifact-pointer.schema.json", "investigation-evidence.schema.json", "investigation-evidence-draft.schema.json"} {
+	for _, name := range []string{schemas.Envelope["artifact"], schemas.InvestigationEvidence, schemas.InvestigationEvidenceDraft} {
 		data, err := schemas.FS.ReadFile(name)
 		if err != nil {
 			return nil, err

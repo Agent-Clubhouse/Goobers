@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/investigation"
 )
 
@@ -37,7 +38,7 @@ func TestInvestigationDraftSchema(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return v.ValidateJSON("investigation-evidence-draft.schema.json", data)
+		return v.ValidateJSON(schemas.InvestigationEvidenceDraft, data)
 	}
 	if err := validate(completeInvestigationDraft(t)); err != nil {
 		t.Fatal(err)
