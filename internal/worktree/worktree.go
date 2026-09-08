@@ -814,6 +814,9 @@ type RemoveOptions struct {
 // place and marks it kept, so Reap does not treat it as a crash orphan.
 func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	if wt.pinned {
+		if err := wt.manager.handoffPinnedState(ctx, wt.key, wt.RunID); err != nil {
+			return err
+		}
 		wt.assetGuard = false
 		return nil
 	}

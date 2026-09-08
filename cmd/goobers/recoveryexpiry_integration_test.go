@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,11 +24,14 @@ func TestIntegrationRecoveryExpirySweepRemovesOnlyEligibleOwnedState(t *testing.
 	testdep.Require(t, "git")
 	for _, mode := range []string{"delete", "dry-run", "running", "busy", "conflict", "renewed"} {
 		t.Run(mode, func(t *testing.T) { testRecoveryExpirySweep(t, mode) })
+		t.Run("pinned-"+mode, func(t *testing.T) { testRecoveryExpirySweep(t, "pinned-"+mode) })
 	}
 }
 
 func testRecoveryExpirySweep(t *testing.T, mode string) {
 	t.Helper()
+	pinned := strings.HasPrefix(mode, "pinned-")
+	mode = strings.TrimPrefix(mode, "pinned-")
 	ctx := context.Background()
 	layout := instance.NewLayout(t.TempDir())
 	source := t.TempDir()
@@ -41,11 +45,26 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 	recoveryCLIGit(t, source, "add", ".")
 	recoveryCLIGit(t, source, "commit", "-m", "implementation")
 	snapshot := recoveryCLIGit(t, source, "rev-parse", "HEAD")
-	manager, err := worktree.NewManager(filepath.Join(layout.Root, "workcopies"))
+	manager, err := worktree.NewManager(filepath.Join(layout.Root, "workcopies"), worktree.WithPinnedRoot(filepath.Join(layout.Root, "pinned")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	mirror, err := manager.WorkingCopy(ctx, source)
+	var mirror string
+	if pinned {
+		lease, acquireErr := manager.AcquirePinned(ctx, worktree.PinnedOptions{RepoURL: source, RunID: "expiry-integration", BaseRef: "main", Branch: "operator-branch"})
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		defer func() { _ = lease.Release() }()
+		mirror = lease.Worktree.Path
+		if mode != "busy" {
+			if err := lease.Release(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	} else {
+		mirror, err = manager.WorkingCopy(ctx, source)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +84,7 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 			t.Fatal(err)
 		}
 	}
-	if mode != "busy" {
+	if mode != "busy" || pinned {
 		if err := run.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +117,7 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 	setup := &schedulerSetup{Config: &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "team", Name: "repo"}}, Retention: instance.RetentionConfig{Enabled: true, DryRun: mode == "dry-run"}}, LegacyWorktrees: manager}
 	var stdout, stderr bytes.Buffer
 	err = pruneConfiguredRetention(ctx, layout, setup, &stdout, &stderr)
-	if (err != nil) != (mode == "conflict") {
+	if (err != nil) != (mode == "conflict" || pinned && mode == "busy") {
 		t.Fatalf("sweep: %v stderr=%s", err, stderr.String())
 	}
 	gotRef := recoveryCLIGit(t, mirror, "for-each-ref", "--format=%(objectname)", ref)
@@ -122,6 +141,9 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 		}
 	}
 	for branch, want := range map[string]string{"main": base, "operator-branch": snapshot} {
+		if pinned && branch == "main" {
+			branch = "refs/remotes/mirror/main"
+		}
 		if got := recoveryCLIGit(t, mirror, "rev-parse", branch); got != want {
 			t.Fatalf("operator branch %s changed: %s", branch, got)
 		}

@@ -53,18 +53,23 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 		if err != nil {
 			return err
 		}
-		found, err := manager.WithExistingMirror(ctx, url, func(repository string) error {
+		found, err := manager.WithRecoveryRepositories(ctx, url, func(repositories []string) error {
 			if setup.Config.Retention.DryRun {
 				pf(stdout, "retention candidate kind=recovery rule=retention-window run=%q ref=%q\n", record.RunID, record.Ref)
 				return nil
 			}
 			_, err := recovery.RetireSnapshot(ctx, root, record, func(current recovery.Record) error {
-				return recovery.DeleteSnapshotRef(ctx, repository, current)
+				for _, repository := range repositories {
+					if err := recovery.DeleteSnapshotRef(ctx, repository, current); err != nil {
+						return err
+					}
+				}
+				return nil
 			})
 			return err
 		})
 		if err == nil && !found {
-			return fmt.Errorf("recovery retention requires an existing managed mirror")
+			return fmt.Errorf("recovery retention requires an existing managed repository")
 		}
 		return err
 	})
