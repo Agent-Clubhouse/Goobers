@@ -5431,6 +5431,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	ctx, span := r.startGateSpan(ctx, in, g, gooberName)
 	defer span.End()
 
+	gateEval.RecoveryVerdict = recoveryVerdictResolver(jr)
 	if recovered, ok, recoveryErr := gateEval.RecoverInterrupted(g, ""); recoveryErr != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, recoveryErr)
 		span.Fail(err)

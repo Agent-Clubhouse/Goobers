@@ -243,8 +243,11 @@ type OperatorClaim struct {
 
 // OperatorReview summarizes the latest review verdict driving a repass.
 type OperatorReview struct {
-	Verdict   string `json:"verdict"`
-	Rationale string `json:"rationale,omitempty"`
+	Verdict             string                  `json:"verdict"`
+	Rationale           string                  `json:"rationale,omitempty"`
+	ReasonCode          apiv1.VerdictReasonCode `json:"reasonCode,omitempty"`
+	Findings            []apiv1.Finding         `json:"findings,omitempty"`
+	LegacyFailAmbiguous bool                    `json:"legacyFailAmbiguous,omitempty"`
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
@@ -1694,7 +1697,7 @@ func summarizeRunForStage(
 			if event.Gate != "review" {
 				continue
 			}
-			review := &OperatorReview{Verdict: event.Verdict}
+			review := &OperatorReview{Verdict: event.Verdict, LegacyFailAmbiguous: event.Verdict == string(apiv1.VerdictFail)}
 			if event.Ref != nil {
 				data, err := run.reader.ArtifactBytes(*event.Ref)
 				if err != nil {
@@ -1706,10 +1709,7 @@ func summarizeRunForStage(
 						operator.PotentialBlockers = append(operator.PotentialBlockers,
 							fmt.Sprintf("review rationale is invalid: %v", err))
 					} else {
-						review.Rationale = strings.TrimSpace(verdict.Rationale)
-						if review.Rationale == "" {
-							review.Rationale = strings.TrimSpace(verdict.Summary)
-						}
+						populateOperatorReview(review, verdict)
 					}
 				}
 			}

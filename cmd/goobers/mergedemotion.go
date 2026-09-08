@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -156,6 +157,14 @@ func demotedSet(ctx context.Context, provider remediationProvider, repo provider
 func electionIneligibleSet(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
 	out := map[int]bool{}
 	for _, pr := range prs {
+		deferred, err := noLanderDeferralStillHolds(ctx, provider, repo, pr)
+		if err != nil {
+			return nil, err
+		}
+		if deferred {
+			out[pr.Number] = true
+			continue
+		}
 		if hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
 			out[pr.Number] = true
 			continue
@@ -173,6 +182,36 @@ func electionIneligibleSet(ctx context.Context, provider remediationProvider, re
 		out[pr.Number] = true
 	}
 	return out, nil
+}
+
+// noLanderDeferralStillHolds excludes only the current, trusted election
+// disposition. A changed head/base permits a new election, and prose or an
+// untrusted comment cannot remove a candidate from the cluster.
+func noLanderDeferralStillHolds(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+	if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
+		return false, nil
+	}
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return false, err
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
+	if err != nil {
+		return false, err
+	}
+	for _, comment := range comments {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, author) {
+			continue
+		}
+		verdict, ok := parseVerdictComment(comment.Body)
+		if !ok {
+			return false, nil
+		}
+		return verdict.Decision == apiv1.VerdictDefer && verdict.ReasonCode == apiv1.VerdictReasonNoLander &&
+			verdict.HeadSHA != "" && verdict.HeadSHA == pr.HeadSHA &&
+			verdict.BaseSHA != "" && verdict.BaseSHA == pr.BaseSHA, nil
+	}
+	return false, nil
 }
 
 func unionPRSets(sets ...map[int]bool) map[int]bool {

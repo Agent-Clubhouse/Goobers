@@ -592,8 +592,10 @@ type parityEnvelope struct {
 	// authority for agentic stages, JSON-encoded. They are carried in the
 	// envelope exactly so an adapter cannot infer nested-agent authority from
 	// prompt text; a side that drops or widens them is a privilege divergence.
-	ParentPlatformPolicy string
-	NestedAgentPolicy    string
+	ParentPlatformPolicy                string
+	NestedAgentPolicy                   string
+	ReviewerDeferralAllowed             bool
+	ReviewerMechanicalEscalationAllowed bool
 }
 
 // parityEnvelopeExcludedFields names every apiv1.InvocationEnvelope field this
@@ -615,12 +617,12 @@ func (e parityEnvelope) String() string {
 	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
 		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
 		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
-		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s",
+		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s reviewerDeferralAllowed=%t reviewerMechanicalEscalationAllowed=%t",
 		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
 		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
 		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
 		e.RepoRef, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
-		e.ParentPlatformPolicy, e.NestedAgentPolicy)
+		e.ParentPlatformPolicy, e.NestedAgentPolicy, e.ReviewerDeferralAllowed, e.ReviewerMechanicalEscalationAllowed)
 }
 
 // stageOf extracts the stage name from an envelope TaskID ("<runID>:<stage>"),
@@ -631,30 +633,32 @@ func stageOf(taskID string) string {
 
 func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 	return parityEnvelope{
-		Stage:                stageOf(env.TaskID),
-		RunID:                env.RunID,
-		WorkflowID:           env.WorkflowID,
-		Goal:                 env.Goal,
-		Goober:               env.Goober,
-		GooberDigest:         env.GooberDigest,
-		Gaggle:               env.Gaggle,
-		BranchNamespace:      env.BranchNamespace,
-		BaseBranch:           env.BaseBranch,
-		TriggerRef:           env.TriggerRef,
-		OwnershipBoundary:    env.OwnershipBoundary,
-		MinimumIntegrity:     env.MinimumIntegrity,
-		InstructionAddendum:  env.InstructionAddendum,
-		Inputs:               encodeParityInputs(env.Inputs),
-		Capabilities:         strings.Join(env.Capabilities, ","),
-		PolicyActions:        strings.Join(env.PolicyActions, ","),
-		ContextPointers:      encodeParityPointers(env.ContextPointers),
-		Item:                 encodeParityItem(env.Item),
-		RepoRef:              encodeParityJSON(env.RepoRef),
-		AdditionalWorkspaces: encodeParityAdditionalWorkspaces(env.AdditionalWorkspaces),
-		CheckoutCones:        encodeParityJSON(env.CheckoutCones),
-		Limits:               encodeParityJSON(env.Limits),
-		ParentPlatformPolicy: encodeParityJSON(env.ParentPlatformPolicy),
-		NestedAgentPolicy:    encodeParityJSON(env.NestedAgentPolicy),
+		Stage:                               stageOf(env.TaskID),
+		RunID:                               env.RunID,
+		WorkflowID:                          env.WorkflowID,
+		Goal:                                env.Goal,
+		Goober:                              env.Goober,
+		GooberDigest:                        env.GooberDigest,
+		Gaggle:                              env.Gaggle,
+		BranchNamespace:                     env.BranchNamespace,
+		BaseBranch:                          env.BaseBranch,
+		TriggerRef:                          env.TriggerRef,
+		OwnershipBoundary:                   env.OwnershipBoundary,
+		MinimumIntegrity:                    env.MinimumIntegrity,
+		InstructionAddendum:                 env.InstructionAddendum,
+		Inputs:                              encodeParityInputs(env.Inputs),
+		Capabilities:                        strings.Join(env.Capabilities, ","),
+		PolicyActions:                       strings.Join(env.PolicyActions, ","),
+		ContextPointers:                     encodeParityPointers(env.ContextPointers),
+		Item:                                encodeParityItem(env.Item),
+		RepoRef:                             encodeParityJSON(env.RepoRef),
+		AdditionalWorkspaces:                encodeParityAdditionalWorkspaces(env.AdditionalWorkspaces),
+		CheckoutCones:                       encodeParityJSON(env.CheckoutCones),
+		Limits:                              encodeParityJSON(env.Limits),
+		ParentPlatformPolicy:                encodeParityJSON(env.ParentPlatformPolicy),
+		NestedAgentPolicy:                   encodeParityJSON(env.NestedAgentPolicy),
+		ReviewerDeferralAllowed:             env.ReviewerDeferralAllowed,
+		ReviewerMechanicalEscalationAllowed: env.ReviewerMechanicalEscalationAllowed,
 	}
 }
 
@@ -1489,6 +1493,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 		ContextPointers: "s-pointers", Item: "s-item",
 		RepoRef: "s-reporef", AdditionalWorkspaces: "s-additional", CheckoutCones: "s-cones",
 		Limits: "s-limits", ParentPlatformPolicy: "s-parentpolicy", NestedAgentPolicy: "s-nestedpolicy",
+		ReviewerDeferralAllowed: true, ReviewerMechanicalEscalationAllowed: true,
 	}
 	rendered := full.String()
 	for _, sentinel := range []string{
@@ -1496,6 +1501,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
 		"s-pointers", "s-item", "s-reporef", "s-additional", "s-cones", "s-limits",
 		"s-parentpolicy", "s-nestedpolicy",
+		"reviewerDeferralAllowed=true", "reviewerMechanicalEscalationAllowed=true",
 	} {
 		if !strings.Contains(rendered, sentinel) {
 			t.Errorf("parityEnvelope.String() omits a compared field (%s):\n%s", sentinel, rendered)
@@ -1504,7 +1510,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 24; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 26; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }

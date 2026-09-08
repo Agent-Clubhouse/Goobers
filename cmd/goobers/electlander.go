@@ -134,8 +134,7 @@ const noLanderEscalationPrefix = "Cluster has no lander under policy"
 // deterministic policy winner cannot be crowned because its own review contains
 // a real defect (severity above `info` — see findingIsRealDefect), while every
 // otherwise-green sibling will defer to that winner.
-// Escalating is safer than laundering the defect into a pass and more explicit
-// than silently parking the rest of the cluster.
+// This is an election disposition, not a terminal implementation rejection.
 func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.Finding, selectedNumber int, overlappingSiblings []int, policy electionPolicyFunc, demoted map[int]bool, policyName string) string {
 	if decision != apiv1.VerdictNeedsChanges || len(overlappingSiblings) == 0 ||
 		demoted[selectedNumber] || sequencingOnly(findings) {
@@ -150,7 +149,7 @@ func noLanderEscalationReason(decision apiv1.VerdictDecision, findings []apiv1.F
 		siblings = append(siblings, fmt.Sprintf("#%d", blocker))
 	}
 	return fmt.Sprintf(
-		noLanderEscalationPrefix+" %q: PR #%d is the deterministic winner over cluster sibling PRs %s, but its review contains non-ordering findings and it cannot be safely crowned; every other eligible sibling defers to that winner. Human intervention is required to resolve the winner's findings or choose a different landing order.",
+		noLanderEscalationPrefix+" %q: PR #%d is the deterministic winner over cluster sibling PRs %s, but its review contains non-ordering findings and it cannot be safely crowned; every other eligible sibling defers to that winner. Landing is deferred for this election; the original findings remain available for repair or a later election. This disposition does not reject the implementation or require human intervention.",
 		policyName, selectedNumber, strings.Join(siblings, ", "))
 }
 

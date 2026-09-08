@@ -72,8 +72,10 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 	switch decision {
 	case apiv1.VerdictPass:
 		return "goobers:merge-ready"
-	case apiv1.VerdictFail:
+	case apiv1.VerdictFail, apiv1.VerdictEscalate:
 		return "goobers:merge-escalated"
+	case apiv1.VerdictDefer:
+		return blockedOnSiblingLabel
 	default:
 		if sequencingOnly(findings) {
 			return blockedOnSiblingLabel
@@ -757,12 +759,13 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// A deterministic winner with a real defect cannot safely land, and every
-	// sibling will defer to it. Publish that zero-winner state as a distinct
-	// human escalation instead of silently splitting the cluster between
-	// blocked-on-sibling and needs-remediation.
+	// sibling will defer to it. Publish a typed no-lander deferral, retaining
+	// the original findings without reclassifying the implementation as rejected.
 	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, serializedCluster, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
-		posted.Decision = apiv1.VerdictFail
-		posted.Rationale = reason
+		posted.Decision = apiv1.VerdictDefer
+		posted.ReasonCode = apiv1.VerdictReasonNoLander
+		posted.Elected = false
+		posted.Rationale = preserveReviewerRationale(reason, posted.Rationale)
 	}
 
 	// Election resolves single-lander status for EVERY sibling-overlap PR —
@@ -782,6 +785,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	posted = orderingDeferralVerdict(posted)
 	verdictAuthor, err := prProvider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
@@ -806,7 +810,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			"Finding-set oscillation detected: `%s` matches an earlier merge-review state. Remediation returned to a prior unresolved finding set, so this PR is escalated instead of spending the remaining repass budget.",
 			findingHash,
 		)
-		posted.Decision = apiv1.VerdictFail
+		posted.Decision = apiv1.VerdictEscalate
+		posted.ReasonCode = apiv1.VerdictReasonFindingOscillation
+		posted.Elected = false
 		if posted.Rationale == "" {
 			posted.Rationale = reason
 		} else {
@@ -948,7 +954,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 
 	priorityDispatchRequested := false
-	if label == blockedOnSiblingLabel {
+	if shouldDispatchCrownedLander(label, posted.ReasonCode) {
 		// #952: publish the blocker record first so the re-tick's selector can
 		// rank the elected predecessor from durable state.
 		if _, err := dispatchPriorityTrigger(ctx, l, providerGaggle(), workflowName, runID); err != nil {
@@ -965,7 +971,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	} else {
 		pf(stdout, "applied %s to PR #%d (%s)\n", label, selectedNumber, posted.Decision)
 	}
-	return writeApplyVerdictResultWithPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, priorityDispatchRequested, stderr)
+	return writeApplyVerdictResultWithReasonAndPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, publishedVerdictReason(posted), priorityDispatchRequested, stderr)
 }
 
 // verdictEscalationStillBlocks reads the merge-escalation self-heal state for
@@ -1192,6 +1198,15 @@ func isMergeReviewStatusComment(body string) bool {
 // ordering asks were real observations and stay visible; only the decision they
 // rolled up to changes, and the rationale states exactly why.
 
+// preserveReviewerRationale keeps the policy explanation first for legacy
+// no-lander consumers, without dropping or truncating the underlying review.
+func preserveReviewerRationale(disposition, original string) string {
+	if original == "" {
+		return disposition
+	}
+	return disposition + "\n\nOriginal reviewer rationale:\n\n" + original
+}
+
 // resolveElectionOutcome resolves single-lander election for a sibling-
 // overlap PR (#1071/PRL-021), regardless of whether the reviewer's raw
 // decision was needs-changes (electedLanderPass's original case, an
@@ -1222,7 +1237,7 @@ func resolveElectionOutcome(selectedNumber int, decision apiv1.VerdictDecision, 
 		// A genuinely clean review still is not this cluster's lander yet —
 		// it must wait behind its live predecessor(s) rather than reach
 		// merge-pr with nothing recording that it skipped the queue.
-		return false, notElectedBlockedRationale(selectedNumber, findings, policyName)
+		return false, preserveReviewerRationale(notElectedBlockedRationale(selectedNumber, findings, policyName), rationale)
 	}
 	return false, ""
 }
@@ -1684,6 +1699,15 @@ func publishADONonPassVerdict(
 	label := verdictLabel(verdict.Decision, verdict.Findings)
 	var addLabels, removeLabels []string
 	switch label {
+	case blockedOnSiblingLabel:
+		if verdict.Decision == apiv1.VerdictDefer {
+			addLabels = []string{blockedOnSiblingLabel}
+			removeLabels = []string{needsRemediationLabel}
+		} else {
+			// Preserve legacy needs-changes handling without inventing an
+			// ADO sibling election from unstructured findings.
+			addLabels = []string{needsRemediationLabel}
+		}
 	case remediationEscalatedLabel:
 		addLabels = []string{remediationEscalatedLabel}
 		removeLabels = []string{needsRemediationLabel}
@@ -1725,7 +1749,11 @@ func publishADONonPassVerdict(
 	}
 	pf(stdout, "published %s verdict for PR #%d at %s via goobers/validation PR status, labels %v (cleared %v), and PR thread\n",
 		verdict.Decision, selectedNumber, current.HeadSHA, addLabels, removeLabels)
-	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", stderr)
+	return writeApplyVerdictResultWithReasonAndPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", publishedVerdictReason(verdict), false, stderr)
+}
+
+func shouldDispatchCrownedLander(label string, reason apiv1.VerdictReasonCode) bool {
+	return label == blockedOnSiblingLabel && reason != apiv1.VerdictReasonNoLander
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {
@@ -1734,6 +1762,8 @@ func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecis
 		return providers.ReviewDecisionApproved, nil
 	case apiv1.VerdictNeedsChanges, apiv1.VerdictFail:
 		return providers.ReviewDecisionChangesRequested, nil
+	case apiv1.VerdictDefer, apiv1.VerdictEscalate:
+		return providers.ReviewDecisionComment, nil
 	default:
 		return "", fmt.Errorf("unsupported verdict decision %q", decision)
 	}
@@ -1830,6 +1860,9 @@ func readLatestGateVerdict(root, runID, gateName string) (*apiv1.Verdict, error)
 // driftable channel.
 func renderVerdictComment(v apiv1.Verdict) string {
 	s := fmt.Sprintf("%s\n**merge-review verdict: %s**\n\n%s", mergeReviewStatusMarker, v.Decision, v.Summary)
+	if publishedVerdictReason(v) == legacyFailAmbiguous {
+		s += "\n\nDisposition: legacy-fail-ambiguous. This producer supplied no structured rejection reason; fail alone does not establish that the implementation was rejected."
+	}
 	if v.Rationale != "" {
 		s += "\n\n" + v.Rationale
 	}

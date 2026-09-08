@@ -217,6 +217,9 @@ type Evaluator struct {
 	// Journal records gate verdicts. Optional — nil disables journaling
 	// (e.g. in unit tests that only care about branch resolution).
 	Journal Journal
+	// RecoveryVerdict resolves the latest durable review in this execution
+	// scope. Called only for an opted-in interrupted-budget recovery.
+	RecoveryVerdict func(gateName string) (*apiv1.Verdict, error)
 	// MaxRepasses is the inherited run budget. Gate.MaxRepasses takes precedence.
 	MaxRepasses int
 
@@ -395,12 +398,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			// of issuing needs-changes and burning repass cycles that can only
 			// re-observe the same empty diff. Mirrors the identical-diff guard
 			// below: both spare the repass budget a degenerate reviewer call.
-			synthesized := EmptyDiffVerdict()
+			synthesized := MechanicalVerdict(EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, StructuredMechanicalEscalation(g))
 			outcome = string(synthesized.Decision)
 			verdict = &synthesized
 		} else if diffDigest != "" && e.LastDiffDigest != nil && e.LastDiffDigest[g.Name] == diffDigest {
 			duplicateDiff = true
-			synthesized := DuplicateDiffVerdict(diffDigest, e.RepassCause)
+			synthesized := MechanicalVerdict(DuplicateDiffVerdict(diffDigest, e.RepassCause), apiv1.VerdictReasonUnchangedRepass, StructuredMechanicalEscalation(g))
 			outcome = string(synthesized.Decision)
 			verdict = &synthesized
 		} else {
@@ -543,6 +546,10 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	}
 
 	charge := e.trackRepass(g, outcome, target)
+	if converted := BudgetEscalationVerdict(g, charge.Exceeded, verdict); converted != verdict {
+		verdict = converted
+		outcome = string(converted.Decision)
+	}
 	escalated := charge.Exceeded || duplicateDiff || forcedEscalation
 	if escalated {
 		target = escalationTarget(g)
@@ -593,6 +600,9 @@ func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result,
 		Interrupted: true,
 		Reason:      ReasonRepassBudgetExhausted,
 	}
+	if err := e.setInterruptedVerdict(g, &r); err != nil {
+		return Result{}, true, fmt.Errorf("gate %q: recover prior review: %w", g.Name, err)
+	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
 		return Result{}, true, fmt.Errorf("gate %q: journal interrupted escalation: %w", g.Name, err)
@@ -640,6 +650,9 @@ func (e *Evaluator) EscalateUninspectedRemediation(g apiv1.Gate, cause *apiv1.Er
 			Decision:  apiv1.VerdictNeedsChanges,
 			Rationale: rationale,
 		},
+	}
+	if err := e.setEvidenceInspectionVerdict(g, &r); err != nil {
+		return Result{}, fmt.Errorf("gate %q: recover uninspected remediation evidence: %w", g.Name, err)
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
@@ -710,6 +723,8 @@ func (e *Evaluator) invalidNeedsHumanVerdict(g apiv1.Gate, verdict apiv1.Verdict
 }
 
 func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, env *apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, g apiv1.Gate, verdict *apiv1.Verdict) (bool, error) {
+	_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
+	env.ReviewerMechanicalEscalationAllowed = StructuredMechanicalEscalation(g)
 	maxAttempts, backoff := retryBounds(policy)
 	for attempt := 1; ; attempt++ {
 		attemptCtx := ctx

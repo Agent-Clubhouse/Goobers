@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -124,6 +125,8 @@ type OperatorFacts struct {
 	LatestError           *journal.ErrorDetail
 	ReviewVerdict         string
 	ReviewRationale       string
+	ReviewReasonCode      apiv1.VerdictReasonCode
+	ReviewFindings        []apiv1.Finding
 	ReviewProblem         string
 	PROpenerStage         string
 }
@@ -474,6 +477,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			if event.Gate == "review" {
 				row.Operator.ReviewVerdict = event.Verdict
 				row.Operator.ReviewRationale = ""
+				row.Operator.ReviewReasonCode = ""
+				row.Operator.ReviewFindings = nil
 				row.Operator.ReviewProblem = ""
 			}
 			// An executed gate that selects a reserved terminal target is itself
@@ -600,15 +605,14 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 			projection.Run.Operator.ReviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
 			break
 		}
-		var verdict struct {
-			Rationale string `json:"rationale"`
-			Summary   string `json:"summary"`
-		}
+		var verdict apiv1.Verdict
 		if err := json.Unmarshal(data, &verdict); err != nil {
 			projection.Run.Operator.ReviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
 			break
 		}
-		projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Rationale)
+		projection.Run.Operator.ReviewReasonCode = verdict.ReasonCode
+		projection.Run.Operator.ReviewFindings = verdict.Findings
+		projection.Run.Operator.ReviewRationale = verdict.Rationale
 		if projection.Run.Operator.ReviewRationale == "" {
 			projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Summary)
 		}

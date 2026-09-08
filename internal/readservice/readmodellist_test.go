@@ -200,8 +200,9 @@ func TestReadModelPathProjectsOperatorSummaryWithoutOpeningJournal(t *testing.T)
 	if err := run.Append(journal.Event{Type: journal.EventStageHeartbeat, Stage: "implementation"}); err != nil {
 		t.Fatal(err)
 	}
-	verdict, err := json.Marshal(map[string]string{
-		"decision": "needs-changes", "rationale": "Project operator facts.",
+	verdict, err := json.Marshal(map[string]any{
+		"decision": "defer", "reasonCode": "no-lander", "rationale": "Project operator facts.\n\nPreserve the complete reviewer explanation.",
+		"findings": []map[string]any{{"severity": "info", "class": "cross-pr-blocked", "message": "Wait for sibling #10.", "blockingPrs": []int{10}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +212,7 @@ func TestReadModelPathProjectsOperatorSummaryWithoutOpeningJournal(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := run.Append(journal.Event{
-		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Ref: &ref,
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "defer", Ref: &ref,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -272,8 +273,11 @@ func TestReadModelPathProjectsOperatorSummaryWithoutOpeningJournal(t *testing.T)
 		operator.HeartbeatAgeMillis == nil ||
 		*operator.HeartbeatAgeMillis != time.Minute.Milliseconds() ||
 		operator.Review == nil ||
-		operator.Review.Rationale != "Project operator facts." {
+		operator.Review.Rationale != "Project operator facts.\n\nPreserve the complete reviewer explanation." {
 		t.Fatalf("operator = %+v", operator)
+	}
+	if operator.Review.ReasonCode != "no-lander" || operator.Review.LegacyFailAmbiguous || len(operator.Review.Findings) != 1 || operator.Review.Findings[0].Message != "Wait for sibling #10." {
+		t.Fatalf("projected review lost disposition or findings: %+v", operator.Review)
 	}
 }
 

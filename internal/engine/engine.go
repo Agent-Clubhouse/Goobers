@@ -657,6 +657,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				return RunResult{}, rerr
 			}
 			applyImplementationLaneOutcome(g, &gr, ev, review, findingReason, lifecycle.Arbitrate)
+			verdict = applyBudgetVerdict(g, &gr, verdict)
 			gr.ResolvedFindingIDs = lifecycle.Resolved
 			gr.SuppressedFindingIDs = lifecycle.Suppressed
 			gr.ReopenedFindingIDs = lifecycle.Reopened
@@ -1108,6 +1109,8 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
+		_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
+		env.ReviewerMechanicalEscalationAllowed = gate.StructuredMechanicalEscalation(g)
 		env.InstructionAddendum = instructionAddendum
 		// #3383: the subject already knows this gate's answer, so the gate
 		// routes on it and the reviewer is never invoked. Resolved by

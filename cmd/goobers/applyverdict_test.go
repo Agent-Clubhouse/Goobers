@@ -80,6 +80,8 @@ func TestVerdictLabel(t *testing.T) {
 		{name: "pass", decision: apiv1.VerdictPass, want: "goobers:merge-ready"},
 		{name: "pass with findings ignored", decision: apiv1.VerdictPass, findings: allBlocked, want: "goobers:merge-ready"},
 		{name: "fail", decision: apiv1.VerdictFail, want: "goobers:merge-escalated"},
+		{name: "defer without findings", decision: apiv1.VerdictDefer, want: blockedOnSiblingLabel},
+		{name: "defer retains substantive evidence without rejection", decision: apiv1.VerdictDefer, findings: substantive, want: blockedOnSiblingLabel},
 		{name: "unknown", decision: apiv1.VerdictDecision("unknown"), want: "goobers:needs-remediation"},
 		{name: "zero value", decision: apiv1.VerdictDecision(""), want: "goobers:needs-remediation"},
 		{name: "needs-changes, no findings", decision: apiv1.VerdictNeedsChanges, want: "goobers:needs-remediation"},
