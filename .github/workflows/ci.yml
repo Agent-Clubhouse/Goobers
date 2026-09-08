@@ -1332,8 +1332,10 @@ jobs:
       # TestRunDashboardContextAcceptsNonLoopbackListenWithAuth exercises the
       # non-loopback contract through the loopback-only test listener, guarding
       # against firewall prompts for the temporary test executable (#3114).
+      # Credential-plane alias tests drive actual runtime migration and Windows
+      # directory junction/SameFile behavior; cross-compilation cannot cover it.
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers
