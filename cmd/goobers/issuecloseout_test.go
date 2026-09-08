@@ -406,6 +406,7 @@ func TestIssueCloseOutNeedsRemediationParksWithoutAssignee(t *testing.T) {
 	server.addIssue(7, "Repass budget exhausted", "goobers:approved", "goobers:ready", "goobers:claimed")
 
 	const runID = "run-exhausted"
+	retained := seedCloseOutRecovery(t, root, runID)
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
 	if err != nil {
 		t.Fatalf("open claim ledger: %v", err)
@@ -430,6 +431,14 @@ func TestIssueCloseOutNeedsRemediationParksWithoutAssignee(t *testing.T) {
 	server.mu.Lock()
 	parked := server.issues[7]
 	server.mu.Unlock()
+	if len(parked.comments) != 1 {
+		t.Fatalf("expected one close-out comment: %v", parked.comments)
+	}
+	for _, want := range []string{retained.Ref, retained.PatchDigest, retained.BaseSHA, retained.RetainUntil.Format(time.RFC3339Nano)} {
+		if !strings.Contains(parked.comments[0], want) {
+			t.Fatalf("close-out omitted recovery %q: %s", want, parked.comments[0])
+		}
+	}
 	if parked.assignee != "" {
 		t.Fatalf("issue assignee = %q, want empty — needs-remediation never assigns the configured human", parked.assignee)
 	}

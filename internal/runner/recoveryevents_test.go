@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 )
 
 func TestRecoveryObservationsUseActiveWriterAndDeduplicate(t *testing.T) {
@@ -52,6 +53,45 @@ func TestRecoveryObservationsUseActiveWriterAndDeduplicate(t *testing.T) {
 	events, err = reader.Events()
 	if err != nil || countRecoveryObservations(events) != 4 {
 		t.Fatalf("branch-local deduplication lost containment: %d %v", countRecoveryObservations(events), err)
+	}
+}
+
+func TestEmittedRecoveryLookalikeCannotSuppressHostObservation(t *testing.T) {
+	const runID = "recovery-provenance"
+	log, err := journal.Create(t.TempDir(), journal.RunIdentity{RunID: runID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: time.Now().UTC()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	emitted := journal.Event{RunID: runID, Type: journal.EventRunnerAnnotation, Runner: map[string]any{
+		"operation": "recovery-retained", "recoveryRef": "refs/goobers/recovery/" + runID,
+		"recoveryRepositoryKey": "github|||team|repo|", "recoveryRetainUntil": "2026-10-08T00:00:00Z",
+		livejournal.EmitKeyRunnerField: "stage-controlled-key",
+	}}
+	if err := log.Append(emitted); err != nil {
+		t.Fatal(err)
+	}
+	delete(emitted.Runner, livejournal.EmitKeyRunnerField)
+	r := &Runner{cfg: Config{RecoveryEvents: func(context.Context, string) ([]journal.Event, error) { return []journal.Event{emitted}, nil }}}
+	if err := r.recordRecoveryEvents(context.Background(), log, runID); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenReadOnly(log.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostObservations := 0
+	for _, event := range events {
+		if recoveryObservationKey(event) != "" {
+			hostObservations++
+		}
+	}
+	if hostObservations != 1 || countRecoveryObservations(events) != 2 {
+		t.Fatalf("stage emission suppressed host acknowledgement: host=%d total=%d", hostObservations, countRecoveryObservations(events))
 	}
 }
 

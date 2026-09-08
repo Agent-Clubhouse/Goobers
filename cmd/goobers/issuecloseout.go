@@ -463,14 +463,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		// run artifacts they'd have to parse by hand. Appended after the
 		// question validation above so a needs-human park still states its
 		// question, and the evidence follows it.
-		verdict, gateName, found, err := issueCloseOutReviewVerdict(root, runID)
+		evidenceDetail, err := issueCloseOutEvidenceDetail(root, runID)
 		if err != nil {
-			pf(stderr, "error: resolve review verdict for escalation comment: %v\n", err)
+			pf(stderr, "error: resolve evidence for escalation comment: %v\n", err)
 			return 1
 		}
-		if found {
-			comment += issueCloseOutVerdictDetail(verdict, gateName, runID)
-		}
+		comment += evidenceDetail
 		// #2028: needs-remediation never gets the configured human assignee —
 		// withNeedsHumanAssignee only fires for LabelNeedsHuman — so config
 		// load is scoped to the status that actually needs it.

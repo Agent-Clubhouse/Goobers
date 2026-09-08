@@ -28,6 +28,7 @@ func RetainedEvent(record Record) (journal.Event, error) {
 			"recoveryArchiveDigest": record.ArchiveDigest,
 			"recoveryArchiveBytes":  record.ArchiveBytes,
 			"recoveryRetainUntil":   record.RetainUntil.UTC().Format(time.RFC3339Nano),
+			"recoveryCreatedAt":     record.CreatedAt.UTC().Format(time.RFC3339Nano),
 		},
 	}, nil
 }

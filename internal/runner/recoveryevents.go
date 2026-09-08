@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 )
 
 type recoveryEventJournal interface {
@@ -45,6 +46,12 @@ func (r *Runner) recordRecoveryEvents(ctx context.Context, log recoveryEventJour
 }
 
 func recoveryObservationKey(event journal.Event) string {
+	// The live journal stamps this field on stage-originated emissions. Such
+	// an annotation is not the host's acknowledgement of an archived snapshot
+	// and must never suppress the host writer's authoritative observation.
+	if _, emitted := event.Runner[livejournal.EmitKeyRunnerField]; emitted {
+		return ""
+	}
 	if event.Type != journal.EventRunnerAnnotation || event.Runner["operation"] != "recovery-retained" {
 		return ""
 	}
