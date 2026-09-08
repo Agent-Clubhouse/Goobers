@@ -26,7 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // A real SDK worker/server is required: the SDK's in-process workflow suite
@@ -34,7 +34,6 @@ import (
 // Require an explicitly provisioned CLI; this test never downloads a tool.
 func cancellationDevServer(t *testing.T) (context.Context, *testsuite.DevServer) {
 	t.Helper()
-	testdep.RequireEnv(t, temporaltest.CLIEnvVar)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{LogLevel: "error", Stdout: io.Discard, Stderr: io.Discard})
 	if err != nil {
@@ -69,6 +68,7 @@ func cancellationPods(t *testing.T) (*fake.Clientset, <-chan string, <-chan stru
 }
 
 func TestIntegrationDispatchCancellationWaitsForPodCleanup(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_TEMPORAL_CLI")
 	ctx, server := cancellationDevServer(t)
 	for _, mode := range []string{"task", "one"} {
 		t.Run(mode, func(t *testing.T) { assertDispatchCancellationCleanup(t, ctx, server, mode) })
@@ -195,6 +195,7 @@ func legacyCancellationDispatchOne(ctx workflow.Context, in DispatchStageInput) 
 }
 
 func TestIntegrationDispatchCancellationReplaysOldOptions(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_TEMPORAL_CLI")
 	ctx, server := cancellationDevServer(t)
 	const queue = "dispatch-cancellation-legacy"
 	store := surrenderStore(t)
