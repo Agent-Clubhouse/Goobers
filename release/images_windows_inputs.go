@@ -35,7 +35,7 @@ var (
 
 var windowsImageSourceFiles = []string{
 	"Dockerfile", ".dockerignore", "dependencies.json", "Verify-Inputs.ps1",
-	"Configure-Image.ps1", "Verify-Image.ps1", "Release-Metadata.ps1", "Shell-Contract.sh",
+	"Configure-Image.ps1", "Verify-Image.ps1", "Release-Metadata.ps1",
 }
 
 type imageDependency struct {
