@@ -15,6 +15,29 @@ type TranscriptDelta struct {
 	Reason       string
 }
 
+// InvocationTranscriptDelta identifies an independent capture stream within an
+// adapter run. Invocation is one-based (the recovery turn is 2). Source currently
+// identifies combined process output; it must not be confused with the native
+// session log. Offsets and dropped-byte counts are local to that stream.
+type InvocationTranscriptDelta struct {
+	Invocation int
+	Source     string
+	TranscriptDelta
+}
+
+func (r RunRequest) processTranscriptCheckpoint(invocation int) func(TranscriptDelta) error {
+	if r.TranscriptCheckpoint == nil {
+		return nil
+	}
+	return func(delta TranscriptDelta) error {
+		return r.TranscriptCheckpoint(InvocationTranscriptDelta{
+			Invocation:      invocation,
+			Source:          "process-output",
+			TranscriptDelta: delta,
+		})
+	}
+}
+
 type transcriptCheckpointState struct {
 	buffer  *syncBuffer
 	sink    func(TranscriptDelta) error

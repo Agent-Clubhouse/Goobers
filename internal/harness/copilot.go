@@ -898,12 +898,14 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		stdoutCapture = responseCapture
 	}
 	result, processErr := runner.Run(ctx, ProcessRequest{
-		Command:            argv,
-		Dir:                req.Workspace,
-		Env:                env,
-		Timeout:            req.Timeout,
-		MaxTranscriptBytes: req.MaxTranscriptBytes,
-		StdoutCapture:      stdoutCapture,
+		Command:                      argv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      req.Timeout,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                stdoutCapture,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(1),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		// #4179: the session this observes is the one that burned a whole
 		// 5400s budget on a stalled `go mod download` while its journal held
 		// a single lifecycle event.
@@ -950,12 +952,14 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 				}
 				recoveryArgv[promptArg] = recoveryPrompt
 				recovery, err := runner.Run(ctx, ProcessRequest{
-					Command:            recoveryArgv,
-					Dir:                req.Workspace,
-					Env:                env,
-					Timeout:            remaining,
-					MaxTranscriptBytes: req.MaxTranscriptBytes,
-					StdoutCapture:      recoveryStdout,
+					Command:                      recoveryArgv,
+					Dir:                          req.Workspace,
+					Env:                          env,
+					Timeout:                      remaining,
+					MaxTranscriptBytes:           req.MaxTranscriptBytes,
+					StdoutCapture:                recoveryStdout,
+					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 					// The recovery turn runs on what is LEFT of the budget,
 					// so a stall here is if anything more urgent to see than
 					// one in the main session (#4179).
