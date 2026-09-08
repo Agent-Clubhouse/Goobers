@@ -150,10 +150,11 @@ type fakeGitHubServer struct {
 	issueListPageSizes []int
 	// issueListQueries records every GET /issues query string so a test can
 	// pin the shape of a listing (state, labels, since) and not only its count.
-	issueListQueries   []string
-	pullListRequests   int
-	dependencyRequests int
-	authenticatedLogin string
+	issueListQueries        []string
+	pullListRequests        int
+	dependencyRequests      int
+	dependencyFailureStatus map[int]int
+	authenticatedLogin      string
 	// issueEventRequests counts GET /repos/o/r/issues/events pages served, so a
 	// test can price one backlog-health cycle's full-history walk against its
 	// resumed successor (#3392).
@@ -974,6 +975,10 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		writeFakeJSON(w, out)
 	case len(parts) == 3 && parts[1] == "dependencies" && parts[2] == "blocked_by" && r.Method == http.MethodGet:
 		s.dependencyRequests++
+		if status := s.dependencyFailureStatus[num]; status != 0 {
+			http.Error(w, "injected dependency lookup failure", status)
+			return
+		}
 		out := make([]map[string]interface{}, 0, len(issue.blockers))
 		for _, blockerID := range issue.blockers {
 			if blocker, ok := s.issues[blockerID]; ok {
