@@ -141,7 +141,11 @@ func startPodStageHeartbeat(ctx context.Context, stderr io.Writer) (context.Cont
 	if !ok {
 		return ctx, podStageHeartbeat{}
 	}
-	emitter := &livejournal.HTTPEmitter{BaseURL: id.daemonAPI, Token: id.token}
+	emitter := &livejournal.HTTPEmitter{
+		BaseURL:       id.daemonAPI,
+		Token:         id.token,
+		RetryDeadline: 3 * time.Second,
+	}
 	return startPodStageHeartbeatWith(ctx, stderr, id, emitter)
 }
 

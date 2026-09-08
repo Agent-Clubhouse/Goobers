@@ -80,9 +80,13 @@ func stageAnnotatorFor(l instance.Layout) (stageAnnotator, error) {
 		return nil, fmt.Errorf("%w: %s is set but %s is empty, and the writer resolves a run's directory by gaggle", ErrAnnotationPlaneIncomplete, journalclient.EnvEndpoint, journalclient.EnvGaggle)
 	}
 	return &planeAnnotator{
-		emitter: &livejournal.HTTPEmitter{BaseURL: endpoint, Token: token},
-		runID:   runID,
-		gaggle:  gaggle,
+		emitter: &livejournal.HTTPEmitter{
+			BaseURL:       endpoint,
+			Token:         token,
+			RetryDeadline: 3 * time.Second,
+		},
+		runID:  runID,
+		gaggle: gaggle,
 	}, nil
 }
 

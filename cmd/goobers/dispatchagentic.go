@@ -591,7 +591,11 @@ func (r podArtifactRecorder) Append(ev journal.Event) error {
 		// is the outcome, its telemetry is not.
 		return nil
 	}
-	emitter := &livejournal.HTTPEmitter{BaseURL: daemonAPI, Token: os.Getenv(dispatcher.EnvPodToken)}
+	emitter := &livejournal.HTTPEmitter{
+		BaseURL:       daemonAPI,
+		Token:         os.Getenv(dispatcher.EnvPodToken),
+		RetryDeadline: 3 * time.Second,
+	}
 	event := ev
 	_, err := emitter.Emit(context.Background(), livejournal.EmitRequest{
 		RunID:  runID,
