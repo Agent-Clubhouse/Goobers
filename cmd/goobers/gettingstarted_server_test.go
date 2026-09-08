@@ -734,6 +734,7 @@ func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
 	server := newTestGuidedServer(t, workdir)
 	defaultInstancePath := server.instancePath
 	selectedInstancePath := filepath.Join(t.TempDir(), "widgets-goobers")
+	server.errorLog = log.New(guidedInitIdentityTestWriter{t: t, root: selectedInstancePath}, "", 0)
 	body := `{
 		"template":"guided",
 		"guided":{
@@ -754,7 +755,7 @@ func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
 		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
 	}
 	response := decodeGuidedResponse[guidedInitBody](t, recorder)
-	wantStdout := fmt.Sprintf(
+	wantStdout := manualServiceRootHeader(t, selectedInstancePath) + fmt.Sprintf(
 		"Created 2 workflow module(s) in the Goobers Instance at %s.",
 		selectedInstancePath,
 	)

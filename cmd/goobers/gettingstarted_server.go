@@ -895,7 +895,11 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 	} else {
 		opts.CopilotTokenEnv = input.OptionalModelTokenEnv
 	}
-	result, err := instance.InitGuided(instancePath, opts)
+	var identityBanner string
+	result, err := instance.InitGuided(instancePath, opts, func(root, id string) error {
+		identityBanner = fmt.Sprintf("Instance root: %q; instance ID: %q", canonicalStatusRoot(root), id)
+		return s.errorLog.Output(2, identityBanner)
+	})
 	if err != nil {
 		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
 			Code:    "guided_init_failed",
@@ -908,7 +912,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 	s.mu.Unlock()
 	writeGuidedJSON(w, http.StatusOK, guidedInitBody{
 		ExitCode: 0,
-		Stdout: fmt.Sprintf(
+		Stdout: identityBanner + "\n" + fmt.Sprintf(
 			"Created %d workflow module(s) in the Goobers Instance at %s.",
 			len(input.Workflows),
 			result.Root,

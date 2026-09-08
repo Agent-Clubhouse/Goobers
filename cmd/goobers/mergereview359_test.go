@@ -100,7 +100,7 @@ func TestMergeReviewNamesCrossPRConflict(t *testing.T) {
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(selData, &selected); err != nil {
+	if err := decodePRSelectionTestResult(selData, &selected); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selected["number"] != "10" {

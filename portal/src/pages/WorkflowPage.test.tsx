@@ -9,8 +9,10 @@ import type {
   DaemonUpdateEvent,
   EventStreamRequest,
   RequestOptions,
+  QueueEligibilityView,
 } from "../api/types";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
+import { goWireFixtures } from "../api/wire.generated";
 
 const storedValues = new Map<string, string>();
 
@@ -87,6 +89,75 @@ beforeEach(() => {
 });
 
 describe("workflow detail page", () => {
+  it("keeps malformed queue evidence out of the workflow page", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const evidence: QueueEligibilityView = structuredClone(goWireFixtures.queueEligibility);
+    evidence.gaggle = "core";
+    evidence.workflow = "implementation";
+    evidence.report!.gaggle = "core";
+    evidence.report!.workflow = "implementation";
+    evidence.report!.items[0].claim = null as unknown as NonNullable<QueueEligibilityView["report"]>["items"][number]["claim"];
+    vi.spyOn(client, "getWorkflowQueueEligibility").mockResolvedValue(evidence);
+    render(<App client={client} />);
+    const panel = await screen.findByRole("region", { name: "PR queue eligibility" });
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("Queue observation unavailable");
+    expect(within(panel).queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Implementation" })).toBeInTheDocument();
+  });
+
+  it("renders bounded pages while retaining report-wide counts", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const evidence: QueueEligibilityView = structuredClone(goWireFixtures.queueEligibility);
+    evidence.gaggle = "core";
+    evidence.workflow = "implementation";
+    const report = evidence.report!;
+    report.gaggle = "core";
+    report.workflow = "implementation";
+    report.items = Array.from({ length: 51 }, (_, index) => ({ ...report.items[0], number: index + 1 }));
+    report.matchingItems = 51;
+    report.omittedItems = 0;
+    evidence.readState = {
+      epoch: "queue-epoch", appliedSeq: 1, observedAt: evidence.asOf, lagSeconds: 1801,
+      pendingIntake: 0, oldestPendingSourceAge: 0, intakeWriteFailures: 0,
+      minChangeSeq: 0, completeness: "complete", degraded: ["sweep_stale"],
+    };
+    vi.spyOn(client, "getWorkflowQueueEligibility").mockResolvedValue(evidence);
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    const table = await screen.findByRole("table", { name: "Per-PR eligibility" });
+    expect(screen.getByText("Projection lag: 1801 seconds.")).toBeInTheDocument();
+    expect(screen.getByText(/Projection warnings: sweep_stale/)).toHaveTextContent("Freshness may be uncertain");
+    expect(within(table).getAllByRole("row")).toHaveLength(51);
+    expect(within(table).queryByText("#51")).not.toBeInTheDocument();
+    expect(screen.getByText("51 matching PRs; 0 omitted by the report bound.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show more PRs" }));
+    expect(within(table).getAllByRole("row")).toHaveLength(52);
+    expect(within(table).getByText("#51")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show more PRs" })).not.toBeInTheDocument();
+  });
+
+  it("shows partial historical PR exclusions and claim disagreement without merge authority", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const queue = vi.spyOn(client, "getWorkflowQueueEligibility").mockResolvedValue({
+      gaggle: "core", workflow: "implementation", asOf: "2026-09-08T00:01:00Z", status: "observed", sourceRunId: "queue-run",
+      report: {
+        version: 1, repositoryKey: "github|||org|repo|", gaggle: "core", workflow: "implementation", runId: "queue-run",
+        observedAt: "2026-09-08T00:00:00Z", completeSnapshot: false, matchingItems: 3, omittedItems: 2,
+        items: [{ number: 42, eligible: false, reason: "escalated, human action required", nextStep: "Resolve the escalation and request a human retry.",
+          claim: { state: "unclaimed", providerClaimLabel: true, comparison: "provider-label-without-live-local-lease", nextStep: "Check other instances before reconciling the label." } }],
+      },
+    });
+    render(<App client={client} />);
+    const panel = await screen.findByRole("region", { name: "PR queue eligibility" });
+    expect(await within(panel).findByText("#42")).toBeInTheDocument();
+    expect(panel).toHaveTextContent("Historical selection evidence—not permission to claim or merge.");
+    expect(panel).toHaveTextContent("Partial provider snapshot");
+    expect(panel).toHaveTextContent("3 matching PRs; 2 omitted");
+    expect(panel).toHaveTextContent("Provider claimed label: present");
+    expect(panel).toHaveTextContent("Check other instances");
+    expect(queue).toHaveBeenCalledWith("core", "implementation", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
   it("renders live definition metadata, the canonical graph, stage context, and filtered runs", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listRuns = vi.spyOn(client, "listRuns");

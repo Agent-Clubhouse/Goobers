@@ -161,7 +161,7 @@ func TestMergeReviewReevaluatesScopeGateAck(t *testing.T) {
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(selectedData, &selected); err != nil {
+	if err := decodePRSelectionTestResult(selectedData, &selected); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selected["number"] != "30" || selected["headSha"] != headSHA || selected["baseSha"] != baseSHA {

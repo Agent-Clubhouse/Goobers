@@ -38,12 +38,15 @@ import (
 // is exact rather than approximate, which is the whole point: writeProjectedRun
 // replays each op as exactly ONE journal write (an artifact op becomes an
 // artifact.recorded event, a span op a span.recorded, an append op the event
-// itself), and journal's event log numbers events from 1 in write order. So op
-// i projects to the event with Seq i+1. TestProjectedEventSeqMatchesProjection
-// pins that correspondence against a really-projected run, because a learning
-// episode's artifact NAME embeds the seq: if the two ever diverged the engine
-// would name its episodes differently from the runner and the conformance
-// diff would be the first thing to notice.
+// itself), and journal's event log numbers events from 1 in write order.
+// Sequence numbers are assigned from the number of events actually rendered,
+// rather than the op index, so a future op kind that expands to zero or
+// multiple events cannot silently shift the sequence used for learning-episode
+// names. TestProjectedEventSeqMatchesProjection pins that correspondence
+// against a really-projected run, because a learning episode's artifact NAME
+// embeds the seq: if the two ever diverged the engine would name its episodes
+// differently from the runner and the conformance diff would be the first
+// thing to notice.
 //
 // Artifact bytes are inline in JournalArtifactOp.Data, so the resolver is a
 // digest lookup with no I/O — and, unlike the runner's, it cannot fail for an
@@ -54,7 +57,6 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 	byDigest := map[string][]byte{}
 	byPath := map[string][]byte{}
 	for i, op := range proj.Ops {
-		seq := uint64(i + 1)
 		switch op.Kind {
 		case opArtifact:
 			a := op.Artifact
@@ -69,7 +71,7 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 			byDigest[ref.Digest] = a.Data
 			byPath[ref.Path] = a.Data
 			events = append(events, journal.Event{
-				Seq: seq, Type: journal.EventArtifactRecorded,
+				Seq: uint64(len(events) + 1), Type: journal.EventArtifactRecorded,
 				Stage: a.Stage, Attempt: a.Attempt, AttemptClass: a.Class,
 				Name: a.Name, Ref: &ref, Integrity: a.Integrity,
 			})
@@ -80,7 +82,7 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 			}
 			ref := s.Ref
 			events = append(events, journal.Event{
-				Seq: seq, Type: journal.EventSpanRecorded,
+				Seq: uint64(len(events) + 1), Type: journal.EventSpanRecorded,
 				Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
 				Name: s.Name, Ref: &ref,
 			})
@@ -89,7 +91,7 @@ func projectedEvents(proj JournalProjection) ([]journal.Event, func(journal.Ref)
 				return nil, nil, fmt.Errorf("engine: journal op %d appends no event", i)
 			}
 			ev := *op.Event
-			ev.Seq = seq
+			ev.Seq = uint64(len(events) + 1)
 			if ev.Type == journal.EventGateEvaluated && ev.Name != "" {
 				// Exactly writeProjectedRun's wiring: the verdict artifact was
 				// recorded by the op immediately before, and the event's Ref

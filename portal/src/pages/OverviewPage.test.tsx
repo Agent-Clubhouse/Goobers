@@ -9,6 +9,19 @@ beforeEach(() => {
 });
 
 describe("overview page", () => {
+  it("shows durable root identity and warns for a historical root", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.rootIdentity = {
+      id: "0123456789abcdef0123456789abcdef",
+      decommissionedAt: "2026-09-08T08:00:00Z",
+      decommissionReason: "migrated to replacement",
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+    expect(await screen.findByText("0123456789abcdef0123456789abcdef")).toBeInTheDocument();
+    expect(screen.getByText(fixtures.instance.instanceRoot)).toBeInTheDocument();
+    expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent("migrated to replacement");
+  });
+
   it("renders fixture-driven attention, active, and recent run groups", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 

@@ -61,6 +61,9 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotMethod, gotAuth = r.URL.Path, r.Method, r.Header.Get("Authorization")
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
 			t.Errorf("decode trigger request: %v", err)
 		}
@@ -97,6 +100,9 @@ func TestRunRemoteTriggerUsesEnvironmentEndpoint(t *testing.T) {
 	unsetRunContext(t)
 	var gotRequest httpapi.TriggerRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
 			t.Errorf("decode trigger request: %v", err)
 		}
@@ -123,6 +129,9 @@ func TestRunRemoteTriggerUsesEnvironmentEndpoint(t *testing.T) {
 func TestRunRemoteTriggerReportsDaemonRefusal(t *testing.T) {
 	unsetRunContext(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(apicontract.ErrorEnvelope{
@@ -164,6 +173,9 @@ func TestRunRemoteTriggerReportsTransportFailure(t *testing.T) {
 func TestRunRemoteTriggerWithoutNoWaitReportsSubmissionOnly(t *testing.T) {
 	unsetRunContext(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		_ = json.NewEncoder(w).Encode(httpapi.TriggerResponse{RunID: "run-remote-3"})
 	}))
 	t.Cleanup(server.Close)
@@ -236,6 +248,9 @@ func TestApproveUsesRemoteDaemonAPI(t *testing.T) {
 	unsetRunContext(t)
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		gotPath = r.URL.Path
 		if r.Header.Get(httpapi.HeaderIdempotencyKey) == "" {
 			t.Errorf("missing idempotency key")

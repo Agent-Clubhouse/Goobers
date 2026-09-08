@@ -67,6 +67,13 @@ func runDown(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Stopping an abandoned daemon must remain possible even on a historical
+	// or damaged root. Report its actual identity and uncertainty without
+	// adopting a new identity or treating the marker as a reason to keep it up.
+	if err := displayRootInspection(l, stderr); err != nil {
+		pf(stderr, "error: display shutdown target: %v\n", err)
+		return 2
+	}
 	if err := selfupdate.RequestDaemonStop(root); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

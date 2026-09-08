@@ -65,6 +65,10 @@ func runSelfUpdateWith(
 		pf(stderr, "error: %s not found (not an instance root)\n", layout.ConfigFile())
 		return 2
 	}
+	if err := prepareManualRoot(layout, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
 		return failProviderStage(stderr, "load instance config", err, resultFile)

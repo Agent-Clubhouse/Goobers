@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -42,15 +43,19 @@ func standardInitOptions(template, harness, ciCommand, capabilities, provider st
 	return opts, nil
 }
 
-func seedInitTemplate(root, template, harness string, demo bool, standard *instance.GuidedOptions) (*instance.InitResult, error) {
+func seedInitTemplate(root, template, harness string, demo bool, standard *instance.GuidedOptions, diagnostic io.Writer) (*instance.InitResult, error) {
+	observe := func(root, id string) error {
+		_, err := fmt.Fprintf(diagnostic, "Instance root: %q; instance ID: %q\n", canonicalStatusRoot(root), id)
+		return err
+	}
 	switch {
 	case standard != nil:
-		return instance.InitGuided(root, *standard)
+		return instance.InitGuided(root, *standard, observe)
 	case template == instance.QuickstartTemplate:
-		return instance.InitQuickstartWithOptions(root, instance.QuickstartOptions{Harness: harness})
+		return instance.InitQuickstartWithOptions(root, instance.QuickstartOptions{Harness: harness}, observe)
 	case demo:
-		return instance.InitDemo(root)
+		return instance.InitDemo(root, observe)
 	default:
-		return instance.Init(root)
+		return instance.Init(root, observe)
 	}
 }

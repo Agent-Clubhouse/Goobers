@@ -393,8 +393,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	l := instance.NewLayout(root)
 	pf(stdout, "startup: validating instance configuration\n")
-	if _, err := os.Stat(l.ConfigFile()); err != nil {
-		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
+	if err := prepareManualRoot(l, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	if code := runStartupConfigPreflight(root, *skipPreflight, stderr); code != 0 {

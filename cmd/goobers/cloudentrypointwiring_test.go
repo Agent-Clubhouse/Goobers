@@ -103,6 +103,9 @@ func TestRunWorkerWiresResolvedRuntimeIntoTheWorkerHost(t *testing.T) {
 	if want := []string{"goobers-engine", "goobers-engine-windows"}; !slices.Equal(got.TaskQueues, want) {
 		t.Errorf("task queues = %v, want %v", got.TaskQueues, want)
 	}
+	if !strings.HasPrefix(stderr.String(), manualServiceRootHeader(t, root)) {
+		t.Fatalf("successful worker startup omitted its root identity: %s", stderr.String())
+	}
 	if got.HostPort != "temporal.goobers.svc:7233" || got.Namespace != "goobers-cloud" {
 		t.Errorf("frontend = %s (namespace %s), want the flag values", got.HostPort, got.Namespace)
 	}

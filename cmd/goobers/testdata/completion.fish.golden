@@ -20,6 +20,7 @@ complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examp
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
+complete -c goobers -n '__fish_seen_subcommand_from roots; and test (count (commandline -opc)) -eq 2' -f -a 'discover decommission'
 complete -c goobers -n '__fish_seen_subcommand_from onboarding; and test (count (commandline -opc)) -eq 2' -f -a 'stub-sample stub-agent-instructions'
 complete -c goobers -n '__fish_seen_subcommand_from examples; and test (count (commandline -opc)) -eq 2' -f -a 'list show'
 complete -c goobers -n '__fish_seen_subcommand_from examples; and __fish_seen_subcommand_from show; and test (count (commandline -opc)) -eq 3' -f -a '(__goobers_completion_examples)'
@@ -49,6 +50,8 @@ complete -c goobers -n '__fish_seen_subcommand_from telemetry; and test (count (
 complete -c goobers -n '__fish_seen_subcommand_from journal; and test (count (commandline -opc)) -eq 2' -f -a 'redact'
 complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (commandline -opc)) -eq 2' -f -a 'all stages instance gaggle goober workflow stage gate harness capability'
 
+complete -c goobers -n '__fish_seen_subcommand_from roots; and __fish_seen_subcommand_from discover' -l json -d 'Emit structured root discovery'
+complete -c goobers -n '__fish_seen_subcommand_from roots; and __fish_seen_subcommand_from decommission' -l reason -r -d 'Why this root is historical'
 complete -c goobers -n '__fish_seen_subcommand_from version' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from versions' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Open browser-based setup'
@@ -242,6 +245,10 @@ complete -c goobers -n '__fish_seen_subcommand_from features' -l dsl-version -r 
 complete -c goobers -n '__fish_seen_subcommand_from features' -l used -d 'List only features referenced by the instance'
 complete -c goobers -n '__fish_seen_subcommand_from schema' -l list -d 'List every embedded schema kind'
 complete -c goobers -n '__fish_seen_subcommand_from schema' -l human -d 'Emit a human-readable rendering'
+complete -c goobers -n '__fish_seen_subcommand_from queue-explain' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from queue-explain' -l pr -r -d 'PR number to explain'
+complete -c goobers -n '__fish_seen_subcommand_from queue-explain' -l gaggle -r -d 'Gaggle namespace'
+complete -c goobers -n '__fish_seen_subcommand_from queue-explain' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Workflow that evaluated the queue'
 complete -c goobers -n '__fish_seen_subcommand_from explain' -l human -d 'Emit a human-readable rendering'
 complete -c goobers -n '__fish_seen_subcommand_from blocked; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'

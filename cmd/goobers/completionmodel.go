@@ -79,6 +79,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"roots discover": {
+		{name: "json", desc: "Emit structured root discovery"},
+	},
+	"roots decommission": {
+		{name: "reason", takesArg: true, desc: "Why this root is historical"},
+	},
 	"version": {
 		{name: "json", desc: "Emit JSON"},
 	},
@@ -349,6 +355,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "limit", takesArg: true, desc: "Maximum runs"},
 		{name: "watch", desc: "Refresh the status board until interrupted"},
 		{name: "interval", takesArg: true, desc: "Watch refresh interval"},
+	},
+	"queue-explain": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "pr", takesArg: true, desc: "PR number to explain"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle namespace"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow that evaluated the queue"},
 	},
 	"stats": {
 		{name: "since", takesArg: true, desc: "Only include activity from the preceding duration"},

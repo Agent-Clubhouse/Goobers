@@ -63,6 +63,10 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	if err := prepareManualRoot(l, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	requestID, err := writeApplyRequest(l.SchedulerDir())
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

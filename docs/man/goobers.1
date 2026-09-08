@@ -238,11 +238,23 @@ update the managed Goobers Portal extension to this binary's bundled version
 \fBgoobers preflight\fR
 check WSL full-isolation readiness and optionally hand off a command
 .TP
+\fBgoobers queue-explain\fR
+explain historical PR queue eligibility and claim observations
+.TP
 \fBgoobers rerun-stage\fR
 rerun a stage with a recorded instruction addendum
 .TP
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
+.TP
+\fBgoobers roots\fR
+inspect and manage instance roots
+.TP
+\fBgoobers roots decommission\fR
+mark a stopped instance root as historical
+.TP
+\fBgoobers roots discover\fR
+discover likely instance roots and daemon ownership
 .TP
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
@@ -579,6 +591,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-publish-batch\fR(1),
 \fBgoobers-push-branch\fR(1),
 \fBgoobers-push-remediated\fR(1),
+\fBgoobers-queue-explain\fR(1),
 \fBgoobers-rebase-pr\fR(1),
 \fBgoobers-reconcile-branches\fR(1),
 \fBgoobers-reconcile-post-merge\fR(1),
@@ -589,6 +602,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-reset-rate-limit\fR(1),
 \fBgoobers-resolve-review-threads\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
+\fBgoobers-roots\fR(1),
+\fBgoobers-roots-decommission\fR(1),
+\fBgoobers-roots-discover\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
 \fBgoobers-run-cancel\fR(1),

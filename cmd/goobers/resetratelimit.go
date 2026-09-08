@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"io"
-	"os"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -49,8 +48,8 @@ func runResetRateLimit(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := instance.NewLayout(root)
-	if _, err := os.Stat(l.ConfigFile()); err != nil {
-		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
+	if err := prepareManualRoot(l, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	now := time.Now()

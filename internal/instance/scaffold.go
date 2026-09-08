@@ -2,6 +2,7 @@ package instance
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -70,14 +72,14 @@ type ConfigSourceSeedResult struct {
 // Init is idempotent and non-destructive: any piece that already exists is
 // left untouched and reported under Skipped, so a repeated `goobers init`
 // never clobbers user edits (INST-008).
-func Init(root string) (*InitResult, error) {
-	return initWithConfig(root, starterDir, defaultConfig())
+func Init(root string, observers ...InitIdentityObserver) (*InitResult, error) {
+	return initWithConfig(root, starterDir, defaultConfig(), observers...)
 }
 
 // InitDemo scaffolds a credential-free instance with one runnable,
 // deterministic full-loop demo workflow backed by a hermetic mock provider.
-func InitDemo(root string) (*InitResult, error) {
-	return initWithConfig(root, demoDir, demoConfig())
+func InitDemo(root string, observers ...InitIdentityObserver) (*InitResult, error) {
+	return initWithConfig(root, demoDir, demoConfig(), observers...)
 }
 
 // QuickstartOptions carries the non-interactive choices init may apply to the
@@ -98,14 +100,14 @@ func InitQuickstart(root string) (*InitResult, error) {
 
 // InitQuickstartWithOptions is InitQuickstart with the template choices in
 // opts applied to the seeded configuration.
-func InitQuickstartWithOptions(root string, opts QuickstartOptions) (*InitResult, error) {
+func InitQuickstartWithOptions(root string, opts QuickstartOptions, observers ...InitIdentityObserver) (*InitResult, error) {
 	files, err := quickstartTemplateFiles(opts)
 	if err != nil {
 		return nil, err
 	}
 	return initWithSeed(root, defaultConfig(), func(dir string) error {
 		return writeConfigFiles(dir, files)
-	})
+	}, observers...)
 }
 
 // SeedQuickstartConfigSource creates the checked-in form of the quickstart
@@ -231,15 +233,23 @@ func seedConfigSource(root string, files []configSeedFile, templateName string) 
 	return result, nil
 }
 
-func initWithConfig(root, configSource string, cfg *Config) (*InitResult, error) {
+// InitIdentityObserver receives the durable identity after target validation
+// and identity bootstrap, but before configuration or runtime scaffolding.
+// An error stops initialization, retaining the ID for a stable retry.
+type InitIdentityObserver func(root, id string) error
+
+func initWithConfig(root, configSource string, cfg *Config, observers ...InitIdentityObserver) (*InitResult, error) {
 	return initWithSeed(root, cfg, func(dir string) error {
 		return copyConfig(dir, configSource)
-	})
+	}, observers...)
 }
 
-func initWithSeed(root string, cfg *Config, seedConfig func(string) error) (*InitResult, error) {
+func initWithSeed(root string, cfg *Config, seedConfig func(string) error, observers ...InitIdentityObserver) (*InitResult, error) {
 	l := NewLayout(root)
 	res := &InitResult{Root: root}
+	if err := RequireCurrentRoot(root); err != nil {
+		return nil, err
+	}
 
 	if err := checkInitTarget(l); err != nil {
 		return nil, err
@@ -247,6 +257,9 @@ func initWithSeed(root string, cfg *Config, seedConfig func(string) error) (*Ini
 
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("create instance root %s: %w", root, err)
+	}
+	if err := observeInitIdentity(root, observers); err != nil {
+		return nil, err
 	}
 
 	if exists(l.ConfigFile()) {
@@ -293,6 +306,24 @@ func initWithSeed(root string, cfg *Config, seedConfig func(string) error) (*Ini
 	}
 
 	return res, nil
+}
+
+func observeInitIdentity(root string, observers []InitIdentityObserver) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, err := ensureRootIdentity(ctx, root, false)
+	if err != nil {
+		return fmt.Errorf("initialize instance identity: %w", err)
+	}
+	for _, observe := range observers {
+		if observe == nil {
+			return fmt.Errorf("nil initialization identity observer")
+		}
+		if err := observe(root, id); err != nil {
+			return fmt.Errorf("display initialization identity: %w", err)
+		}
+	}
+	return nil
 }
 
 // defaultConfig is the instance.yaml written by a fresh Init: a single

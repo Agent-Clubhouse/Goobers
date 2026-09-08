@@ -667,6 +667,11 @@ func TestRunAbortRejectsAmbiguousRunIDPrefix(t *testing.T) {
 		t.Fatalf("stdout = %q, want empty", stdout)
 	}
 	want := `error: ambiguous prefix "dd57a3c2" matches 2 runs: ` + first + ", " + second + "\n"
+	var banner strings.Builder
+	if err := prepareManualRoot(instance.NewLayout(root), &banner); err != nil {
+		t.Fatal(err)
+	}
+	want = banner.String() + want
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}

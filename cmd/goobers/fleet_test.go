@@ -123,6 +123,10 @@ func TestFleetJoinTokenFileAndLocalAdminGrant(t *testing.T) {
 		enrollment.ACL.Grants[0].Capabilities[0] != "instance:read" {
 		t.Fatalf("enrollment = %+v", enrollment)
 	}
+	id, err := instance.ReadRootIdentity(root)
+	if err != nil || !strings.Contains(stderr.String(), id) || !strings.Contains(stderr.String(), canonicalStatusRoot(root)) {
+		t.Fatalf("enrollment target missing: %q %v", stderr.String(), err)
+	}
 	if strings.Contains(stdout.String(), "secret-grant") || strings.Contains(stderr.String(), "secret-grant") {
 		t.Fatal("CLI output exposed enrollment grant")
 	}
@@ -229,7 +233,7 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	}
 
 	code, stdout, stderr = runArgs(t, "fleet", "leave", root)
-	if code != 0 || stderr != "" || store.saved {
+	if code != 0 || stderr != stoppedStatusRootHeader(t, root, 0) || store.saved {
 		t.Fatalf("leave code=%d stdout=%q stderr=%q saved=%v", code, stdout, stderr, store.saved)
 	}
 }

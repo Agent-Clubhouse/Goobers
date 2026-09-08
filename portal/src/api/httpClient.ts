@@ -44,6 +44,7 @@ import type {
   TelemetryStatsResult,
   TranscriptContent,
   WorkflowDetail,
+  QueueEligibilityView,
   WorkflowPage,
   ReadState,
 } from "./types";
@@ -62,6 +63,7 @@ const clientRoutes = {
   gaggleWorkflows: apiRoutes.gaggleWorkflows,
   gaggleConnections: apiRoutes.gaggleConnections,
   workflowDetail: apiRoutes.workflowDetail,
+  workflowQueueEligibility: apiRoutes.workflowQueueEligibility,
   runs: apiRoutes.runs,
   runDetail: apiRoutes.runDetail,
   runReveal: apiRoutes.runReveal,
@@ -335,6 +337,10 @@ export class HttpDaemonClient implements DaemonClient {
       options,
       { gaggle, workflow },
     );
+  }
+
+  getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView> {
+    return this.getJSON(clientRoutes.workflowQueueEligibility, undefined, options, { gaggle, workflow });
   }
 
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {

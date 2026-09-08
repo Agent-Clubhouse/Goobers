@@ -43,6 +43,12 @@ _goobers_completion()
     command="${words[2]}"
     flags=(-h --help)
     case "${command}" in
+        roots)
+            case "${words[3]:-}" in
+                discover) flags+=(--json) ;;
+                decommission) flags+=(--reason) ;;
+            esac
+            ;;
         version)
             flags+=(--json)
             ;;
@@ -188,6 +194,9 @@ _goobers_completion()
         schema)
             flags+=(--list --human)
             ;;
+        queue-explain)
+            flags+=(--json --pr --gaggle --workflow)
+            ;;
         explain)
             flags+=(--human)
             ;;
@@ -291,6 +300,13 @@ _goobers_completion()
     fi
 
     case "${command}" in
+        roots)
+            if (( CURRENT == 3 )); then
+                candidates=(discover decommission)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         onboarding)
             if (( CURRENT == 3 )); then
                 candidates=(stub-sample stub-agent-instructions)

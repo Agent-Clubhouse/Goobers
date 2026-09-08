@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -563,7 +562,7 @@ func TestRunPRSelectWebhookTargetNeverSubstitutesUnobservedGuardedPR(t *testing.
 		t.Fatal(err)
 	}
 	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := decodePRSelectionTestResult(data, &result); err != nil {
 		t.Fatal(err)
 	}
 	maxWaitSeconds, err := strconv.ParseInt(result["maxEligibleWaitSeconds"], 10, 64)
@@ -630,7 +629,7 @@ func TestPRSelectReportsStarvationMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := decodePRSelectionTestResult(data, &result); err != nil {
 		t.Fatal(err)
 	}
 	waitSeconds, err := strconv.ParseInt(result["eligibleWaitSeconds"], 10, 64)
@@ -691,7 +690,7 @@ func TestPRSelectRemediationBlockedPRLosesAccumulatedAge(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := decodePRSelectionTestResult(data, &result); err != nil {
 		t.Fatal(err)
 	}
 	if result["number"] != strconv.Itoa(prNumber) ||

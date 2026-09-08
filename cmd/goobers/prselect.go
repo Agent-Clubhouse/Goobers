@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/prqueue"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/providers"
 )
@@ -201,6 +202,8 @@ func runPRSelectCore(
 		return 1
 	}
 	exclusions := newPRSelectExclusions()
+	exclusions.report.ObservedAt = now
+	exclusions.report.CompleteSnapshot = bool(completeness)
 	for _, pr := range prs {
 		if pr.State != "open" || pr.Base != base ||
 			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
@@ -210,15 +213,15 @@ func runPRSelectCore(
 		// every exit below is an exclusion worth counting (#2969).
 		exclusions.matching++
 		if pr.Draft {
-			exclusions.record(exclusionDraft)
+			exclusions.recordPR(pr.Number, exclusionDraft)
 			continue
 		}
 		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
-			exclusions.record(exclusionChecks)
+			exclusions.recordPR(pr.Number, exclusionChecks)
 			continue
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
-			exclusions.record(exclusionLabel)
+			exclusions.recordPR(pr.Number, exclusionLabel)
 			continue
 		}
 
@@ -227,13 +230,13 @@ func runPRSelectCore(
 			advisoryAlreadyDispatched(advisedHeads, pr) {
 			pf(stdout, "skipped PR #%d: advisory verdict already published for head %s\n",
 				pr.Number, shortBaselineSHA(pr.HeadSHA))
-			exclusions.record(exclusionAdvisoryPublished)
+			exclusions.recordPR(pr.Number, exclusionAdvisoryPublished)
 			continue
 		}
 		if !eligibleByMergeReviewPolicy(pr, requiredOptInLabel, respectAssignee, selfIdentity) {
 			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
 				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
-			exclusions.record(exclusionPolicy)
+			exclusions.recordPR(pr.Number, exclusionPolicy)
 			continue
 		}
 		blocked, blockCode, blockReason, gateCode := prSelectSafetyGatesBlock(
@@ -245,17 +248,19 @@ func runPRSelectCore(
 		}
 		if blocked {
 			pf(stdout, "excluded PR #%d: %s\n", pr.Number, blockReason)
-			exclusions.record(blockCode)
+			exclusions.recordPR(pr.Number, blockCode)
 			continue
 		}
+		exclusions.report.Add(pr.Number, "")
 		eligible = append(eligible, pr)
 	}
 	if len(eligible) == 0 {
 		pf(stdout, "%s\n", exclusions.summary())
 	}
+	observePRQueueClaims(root, repo, prs, &exclusions.report)
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
-		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr)
+		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr, &exclusions.report)
 }
 
 // completePRSelection is the provider-neutral selection decision after a
@@ -281,7 +286,12 @@ func completePRSelection(
 	// a redacted diagnostics bundle cannot carry (#2968).
 	noEligibleReason string,
 	stdout, stderr io.Writer,
+	reports ...*prqueue.Report,
 ) int {
+	var report *prqueue.Report
+	if len(reports) > 0 {
+		report = reports[0]
+	}
 	observation, err := observePRSelectEligibility(root, repo, prs, eligible, completeness, now)
 	if err != nil {
 		pf(stderr, "error: update PR fairness state: %v\n", err)
@@ -291,7 +301,7 @@ func completePRSelection(
 		if strings.TrimSpace(noEligibleReason) == "" {
 			noEligibleReason = "no eligible PR to select this cycle"
 		}
-		return writeNoWorkResult(stdout, stderr, noEligibleReason)
+		return writePRQueueNoWork(stdout, stderr, noEligibleReason, report)
 	}
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
@@ -299,7 +309,7 @@ func completePRSelection(
 	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	if observation.CurrentRunHasLiveClaim {
 		if len(observation.CurrentRunClaimEligible) == 0 {
-			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
+			return writePRQueueNoWork(stdout, stderr, "current run already holds a live claim outside the eligible snapshot", report)
 		}
 		eligible, priorities, _ = rankEligiblePullRequests(
 			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
@@ -307,7 +317,7 @@ func completePRSelection(
 		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	}
 	if len(eligible) == 0 {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+		return writePRQueueNoWork(stdout, stderr, "every eligible PR is already claimed by another run", report)
 	}
 
 	claimed, err := claimEligiblePullRequestInOrder(root, repo, eligible)
@@ -316,7 +326,7 @@ func completePRSelection(
 		return 1
 	}
 	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+		return writePRQueueNoWork(stdout, stderr, "every eligible PR is already claimed by another run", report)
 	}
 	selected := *claimed
 	advisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selected.Author, selected.Head, headPrefixes, expectedAuthorLogin)
@@ -333,7 +343,7 @@ func completePRSelection(
 	priority := priorities[selected.Number]
 
 	resultFile := providerInput("resultFile", "selected-pr.json")
-	data, err := json.Marshal(map[string]string{
+	result := map[string]any{
 		"number":                 strconv.Itoa(selected.Number),
 		"head":                   selected.Head,
 		"base":                   selected.Base,
@@ -348,7 +358,12 @@ func completePRSelection(
 		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
 		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
 		"eligibilityPolicy":      mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity),
-	})
+	}
+	if report != nil {
+		result["queueEligibility"] = report
+		result["queueEligibilityVersion"] = "1"
+	}
+	data, err := json.Marshal(result)
 	if err != nil {
 		pf(stderr, "error: marshal selected PR: %v\n", err)
 		return 1
@@ -517,16 +532,16 @@ func (branchPolicyPRSelectSource) expectedAuthorLogin(context.Context, string) s
 // summary counts by, deliberately stable and few: an operator reading "7
 // escalated" must be able to act on it without reading pr-select's source.
 const (
-	exclusionDraft             = "draft"
-	exclusionChecks            = "checks not passing"
-	exclusionLabel             = "excluded by label"
-	exclusionAdvisoryPublished = "advisory verdict already published"
-	exclusionPolicy            = "merge-review eligibility policy"
-	exclusionScopeGate         = "scope gate"
-	exclusionEscalated         = "escalated, human action required"
-	exclusionDemoted           = "merge-demoted"
-	exclusionSiblingBlocked    = "blocked on a sibling"
-	exclusionTutorSignoff      = "awaiting human signoff"
+	exclusionDraft             = prqueue.Draft
+	exclusionChecks            = prqueue.Checks
+	exclusionLabel             = prqueue.Label
+	exclusionAdvisoryPublished = prqueue.AdvisoryPublished
+	exclusionPolicy            = prqueue.Policy
+	exclusionScopeGate         = prqueue.ScopeGate
+	exclusionEscalated         = prqueue.Escalated
+	exclusionDemoted           = prqueue.Demoted
+	exclusionSiblingBlocked    = prqueue.SiblingBlocked
+	exclusionTutorSignoff      = prqueue.TutorSignoff
 )
 
 // prSelectExclusions tallies why the pull requests this workflow is
@@ -545,13 +560,22 @@ const (
 // prefix, base and author scope — because that is what makes "nothing to do"
 // separable from "everything is parked".
 type prSelectExclusions struct {
+	report   prqueue.Report
 	matching int
 	counts   map[string]int
 	order    []string
 }
 
 func newPRSelectExclusions() *prSelectExclusions {
-	return &prSelectExclusions{counts: make(map[string]int)}
+	return &prSelectExclusions{counts: make(map[string]int), report: prqueue.Report{Version: 1, Items: []prqueue.Item{}}}
+}
+
+func (e *prSelectExclusions) recordPR(number int, reason string) {
+	e.record(reason)
+	if reason == "" {
+		reason = "excluded"
+	}
+	e.report.Add(number, reason)
 }
 
 func (e *prSelectExclusions) record(reason string) {

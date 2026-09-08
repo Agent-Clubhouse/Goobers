@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -44,7 +43,7 @@ func TestPRSelectSkipsUnchangedScopeGateParkedVerdict(t *testing.T) {
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selected["number"] != "11" {
@@ -80,7 +79,7 @@ func TestPRSelectReconsidersScopeGateParkedPRAfterHeadChanges(t *testing.T) {
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selected["number"] != "10" {
@@ -134,7 +133,7 @@ func TestPRSelectSkipsScopeGateParkedVerdictFromAdvisoryCycle(t *testing.T) {
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selected["number"] != "11" {

@@ -143,6 +143,10 @@ func runFleetJoinWithInput(ctx context.Context, args []string, stdin io.Reader, 
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	association, err := client.JoinDiscovered(ctx, storage, discovery, fleet.JoinOptions{
 		Grant:        grant,
 		InstanceRoot: root,
@@ -276,6 +280,10 @@ func runFleetLeave(args []string, stdout, stderr io.Writer) int {
 	storage, err := newFleetStorage()
 	if err != nil {
 		pf(stderr, "error: initialize Fleet storage: %v\n", err)
+		return 2
+	}
+	if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: display Fleet removal target: %v\n", err)
 		return 2
 	}
 	if err := storage.Delete(root); err != nil {

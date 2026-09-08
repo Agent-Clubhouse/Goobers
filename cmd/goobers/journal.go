@@ -136,6 +136,10 @@ func runJournalRedact(args []string, stdout, stderr io.Writer) int {
 	// Register the now-known secret so the scrubber catches it, then reopen the run
 	// for append and perform the sanctioned edit. Recover is the reopen-for-append
 	// path; on a clean run it replays without changing anything.
+	if err := displayRootInspection(l, stderr); err != nil {
+		pf(stderr, "error: display redaction target: %v\n", err)
+		return 2
+	}
 	reg, scrub := journal.DefaultScrubber()
 	reg.Register(secret)
 	run, _, err := journal.Recover(runDir, journal.WithScrubber(scrub))
