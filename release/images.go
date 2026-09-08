@@ -29,6 +29,7 @@ type imageContexts struct {
 	destination  string
 	dockerfile   []byte
 	windowsFiles map[string][]byte
+	built        bool
 }
 
 func validateImageContextOptions(opts options, targetCSV string) error {
@@ -210,6 +211,10 @@ func (images *imageContexts) finalize(stdout io.Writer) error {
 	if err := os.Rename(images.temporary, images.destination); err != nil {
 		return fmt.Errorf("finalize image contexts: %w", err)
 	}
-	_, _ = fmt.Fprintf(stdout, "prepared base-image build inputs -> %s (images not built or published)\n", images.destination)
+	if images.built {
+		_, _ = fmt.Fprintf(stdout, "built and verified local images -> %s (not published or signed)\n", images.destination)
+	} else {
+		_, _ = fmt.Fprintf(stdout, "prepared base-image build inputs -> %s (images not built or published)\n", images.destination)
+	}
 	return nil
 }

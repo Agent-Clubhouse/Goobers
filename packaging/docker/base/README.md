@@ -54,12 +54,44 @@ runs on any release host; building or running the image still requires a compati
 Windows Server 2022 container host. See the [Windows input and native-check
 contract](../windows/README.md).
 
-This is **build-input preparation**, a bounded part of
+## Build and verify local images with the release engine
+
+Add `-build-images -image-prefix goobers-rc-local` to the release command to build
+images from its prepared inputs. Use only the Docker engine's native target in
+that invocation, for example `-targets linux/arm64` on an ARM64 Linux engine.
+Preparation without `-build-images` still supports cross-platform and mixed
+batches. Ordinary release packaging does not contact Docker.
+
+Linux builds all three families: `goobers-base`, `goobers-harness-copilot`, and
+`goobers-harness-claude`. A native Windows engine builds `goobers-base-windows`;
+Windows harness publishing scope remains undecided. Tags take the form
+`<image-prefix>/<family>:<version>-<commit>-<os>-<arch>`. The prefix can include
+a registry/repository path, but these tags stay local: this command does not push,
+sign, or create a published multi-architecture manifest. Existing local tags are
+refused before release work begins.
+
+The engine verifies both binary stamps and SHA256 hashes inside each image,
+against the exact release inputs. Linux probes run as UID/GID 65532 with a
+read-only root, no network, no capabilities, no privilege escalation, and noexec
+temporary HOME and `/tmp`. Harness layers bind to the inspected base image ID
+through an owned temporary alias; the engine checks that binding, inherited base
+layers, binary bytes and runtime versions, then removes the alias. Windows probes
+require `ContainerUser` and omit unsupported Linux filesystem flags.
+
+`image-evidence.json` appears inside the finalized context root and records the
+expected release metadata, native Docker platform, immutable image IDs, local
+tags, context checksums, binary hashes, and CLI version output. Harness contexts
+are retained beside the platform context with their pinned inputs and tree
+checksums. Failed image builds or checks remove the entire context batch. Created
+local image tags may remain for inspection and are named in the error; the engine
+does not overwrite or delete existing user images.
+
+These are **local preparation and verification**, bounded parts of
 [#3275](../../../docs/design/goobernetes-deployment-images.md). It does not publish
 or sign images, create registry tags or multi-architecture manifests, promote
 Windows support, or establish the distributed smoke exit. Both Linux architectures
 are accepted as build inputs; official multi-architecture publishing remains a
 separate decision. The Azure Linux builder is digest-pinned, while RPM packages
 come from its configured repositories; package snapshot pinning, vulnerability
-scanning, provenance/signing, compressed-size enforcement, harness image layers,
-Windows images, and publish-time native smoke remain release work.
+scanning, provenance/signing, compressed-size enforcement, authenticated harness stages,
+published Windows images, and publish-time native smoke remain release work.

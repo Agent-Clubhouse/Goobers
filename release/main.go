@@ -33,6 +33,8 @@ type options struct {
 	date                  string
 	outDir                string
 	imageContexts         string
+	buildImages           bool
+	imagePrefix           string
 	previousFeatures      string
 	previousSupportMatrix string
 	targets               []Target
@@ -46,6 +48,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if err := checkSupportMatrixForRelease(opts.version); err != nil {
+		return err
+	}
+	imageBuild, err := prepareLocalImageBuild(opts)
+	if err != nil {
 		return err
 	}
 	if buildPackage == "./cmd/goobers" {
@@ -153,6 +159,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 			"required platform (that is the false-green trap #655's gate prevents).\n",
 			strings.Join(skipped, ", "))
 	}
+	if err := buildLocalReleaseImages(imageBuild, images, opts, stdout); err != nil {
+		return err
+	}
 	return images.finalize(stdout)
 }
 
@@ -195,6 +204,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
 		imageContexts    = fs.String("image-contexts", "", "prepare Linux or Windows base-image build inputs in a new directory (requires explicit supported -targets; does not build or publish images)")
+		buildImages      = fs.Bool("build-images", false, "build and verify local images on a matching native Docker engine; never pushes or signs")
+		imagePrefix      = fs.String("image-prefix", "", "repository prefix for local image tags; required with -build-images")
 		previousFeatures = fs.String("previous-features", "", "feature-registry.json from the previous release")
 		previousSupport  = fs.String("previous-support-matrix", "", "dsl-support-matrix.json from the previous release")
 		firstFeatures    = fs.Bool("first-feature-snapshot", false, "use an empty feature baseline for the first recorded snapshot")
@@ -209,6 +220,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	opts := options{
 		outDir:                *outDir,
 		imageContexts:         *imageContexts,
+		buildImages:           *buildImages,
+		imagePrefix:           *imagePrefix,
 		previousFeatures:      strings.TrimSpace(*previousFeatures),
 		previousSupportMatrix: strings.TrimSpace(*previousSupport),
 		checksums:             *checksums,
@@ -236,6 +249,9 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	}
 	opts.targets = targets
 	if err := validateImageContextOptions(opts, *targetCSV); err != nil {
+		return options{}, err
+	}
+	if err := validateLocalImageOptions(opts); err != nil {
 		return options{}, err
 	}
 	return opts, nil
