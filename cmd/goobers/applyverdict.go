@@ -1699,6 +1699,15 @@ func publishADONonPassVerdict(
 	label := verdictLabel(verdict.Decision, verdict.Findings)
 	var addLabels, removeLabels []string
 	switch label {
+	case blockedOnSiblingLabel:
+		if verdict.Decision == apiv1.VerdictDefer {
+			addLabels = []string{blockedOnSiblingLabel}
+			removeLabels = []string{needsRemediationLabel}
+		} else {
+			// Preserve legacy needs-changes handling without inventing an
+			// ADO sibling election from unstructured findings.
+			addLabels = []string{needsRemediationLabel}
+		}
 	case remediationEscalatedLabel:
 		addLabels = []string{remediationEscalatedLabel}
 		removeLabels = []string{needsRemediationLabel}
@@ -1740,7 +1749,7 @@ func publishADONonPassVerdict(
 	}
 	pf(stdout, "published %s verdict for PR #%d at %s via goobers/validation PR status, labels %v (cleared %v), and PR thread\n",
 		verdict.Decision, selectedNumber, current.HeadSHA, addLabels, removeLabels)
-	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", stderr)
+	return writeApplyVerdictResultWithReasonAndPriorityDispatch(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", publishedVerdictReason(verdict), false, stderr)
 }
 
 func shouldDispatchCrownedLander(label string, reason apiv1.VerdictReasonCode) bool {
