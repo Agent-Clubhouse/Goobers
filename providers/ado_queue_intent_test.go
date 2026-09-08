@@ -10,7 +10,7 @@ import (
 )
 
 func TestADOAutoCompleteIntentAndAcknowledgement(t *testing.T) {
-	for _, scenario := range []string{"armed", "storage-failure", "already-armed", "unacknowledged", "different-identity"} {
+	for _, scenario := range []string{"armed", "storage-failure", "already-armed", "unacknowledged", "different-identity", "different-pr"} {
 		t.Run(scenario, func(t *testing.T) {
 			r := &intentTestRecorder{}
 			failure := errors.New("intent unavailable")
@@ -30,6 +30,9 @@ func TestADOAutoCompleteIntentAndAcknowledgement(t *testing.T) {
 						out["autoCompleteSetBy"] = map[string]string{"id": "creator"}
 					case "different-identity":
 						out["autoCompleteSetBy"] = map[string]string{"id": "other"}
+					case "different-pr":
+						out["pullRequestId"] = 43
+						out["autoCompleteSetBy"] = map[string]string{"id": "creator"}
 					}
 				} else if scenario == "already-armed" {
 					out["autoCompleteSetBy"] = map[string]string{"id": "creator"}
@@ -43,6 +46,10 @@ func TestADOAutoCompleteIntentAndAcknowledgement(t *testing.T) {
 			if scenario == "storage-failure" {
 				if !errors.Is(err, failure) || mutations.Load() != 0 {
 					t.Fatalf("persistence failure allowed mutation: %v calls=%d", err, mutations.Load())
+				}
+			} else if scenario == "different-pr" {
+				if err == nil {
+					t.Fatal("mismatched PR response accepted")
 				}
 			} else if err != nil {
 				t.Fatal(err)

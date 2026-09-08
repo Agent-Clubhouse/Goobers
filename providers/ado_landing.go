@@ -170,6 +170,9 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
+	if strconv.Itoa(out.PullRequestID) != req.PullID {
+		return EnqueuePullRequestResult{}, fmt.Errorf("auto-complete response identifies a different pull request; acceptance is unconfirmed")
+	}
 	// ADO has no queue-entry ID. Record the acknowledged auto-complete
 	// mutation, but do not invent a GitHub-style admission or merge receipt.
 	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == detail.CreatedBy.ID {
@@ -315,6 +318,9 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	final, err := p.awaitMergeCompletion(ctx, req.Repository, req.PullID, out)
 	if err != nil {
 		return MergePullRequestResult{}, err
+	}
+	if strconv.Itoa(final.PullRequestID) != req.PullID {
+		return MergePullRequestResult{}, fmt.Errorf("merge response identifies a different pull request; completion is unconfirmed")
 	}
 	if p.mutationRecorder != nil {
 		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, final.LastMergeCommit.CommitID)
