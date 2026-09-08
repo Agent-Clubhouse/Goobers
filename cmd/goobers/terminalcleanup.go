@@ -54,6 +54,7 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 		return err
 	}
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
+	worktreeErr = errors.Join(worktreeErr, renewTerminalRecovery(l, runID))
 
 	var annotationErr error
 	annotationLog := log

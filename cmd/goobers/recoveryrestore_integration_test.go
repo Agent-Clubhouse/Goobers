@@ -57,7 +57,7 @@ func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *t
 	if err := os.WriteFile(filepath.Join(source, "implementation.txt"), []byte("retained implementation"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC().Add(-45 * 24 * time.Hour)
 	record := recovery.Record{Version: 1, RunID: "cli-recovery", RepositoryKey: identity.CanonicalKey(), BaseSHA: base, CreatedAt: now, RetainUntil: now.Add(time.Hour)}
 	record.SnapshotSHA, err = recovery.CaptureSnapshot(context.Background(), source, record.RunID, now)
 	if err != nil {
@@ -79,6 +79,14 @@ func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *t
 	main := recoveryCLIGit(t, source, "rev-parse", "HEAD")
 	args := []string{"--record", filepath.Join(retained, recovery.RecordFileName), "--repository", destination, "--branch", "operator-recovery", root}
 	var stdout, stderr bytes.Buffer
+	if code := runRecoveryRestore(args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "retention deadline has expired") {
+		t.Fatalf("unrenewed expired archive was not refused: %d %s", code, stderr.String())
+	}
+	if _, err := recovery.RenewRetention(context.Background(), filepath.Join(retained, recovery.RecordFileName), time.Now().UTC().Add(30*24*time.Hour), 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
 	if code := runRecoveryRestore(args, &stdout, &stderr); code != 0 {
 		t.Fatalf("restore command returned %d: %s", code, stderr.String())
 	}

@@ -25,11 +25,12 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 		if terminal {
 			name = "standalone-terminal"
 		}
-		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal) })
+		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false) })
 	}
+	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true) })
 }
 
-func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
+func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal bool) {
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -73,6 +74,14 @@ func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
 		t.Fatal(err)
 	}
 	if terminal {
+		if removeBeforeTerminal {
+			if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
+				t.Fatalf("fixture must renew without any worktree: %v", err)
+			}
+		}
 		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +91,9 @@ func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
-		assertTerminalRecoveryConfigFailurePreservesWorktree(t, layout, standalone, runID, workspace.Path)
+		if !removeBeforeTerminal {
+			assertTerminalRecoveryConfigFailurePreservesWorktree(t, layout, standalone, runID, workspace.Path)
+		}
 		err = finalizeTerminalRunWithClaimRelease(layout, nil, standalone, runID, func(instance.Layout, *journal.InstanceLog, string) error { return nil })
 	} else {
 		err = workspace.Remove(ctx, worktree.RemoveOptions{})
@@ -100,7 +111,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
 	var retained recovery.Record
 	for _, entry := range entries {
 		if entry.IsDir() {
-			retained, err = recovery.ReadRecord(filepath.Join(layout.Root, "recovery", entry.Name(), recovery.RecordFileName))
+			retained, err = recovery.ReadRetainedRecord(filepath.Join(layout.Root, "recovery", entry.Name(), recovery.RecordFileName))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,8 +133,12 @@ func runRecoveryCleanupFixture(t *testing.T, terminal bool) {
 			observations++
 		}
 	}
-	if observations != 1 {
-		t.Fatalf("cleanup requires exactly one recovery publication observation, got %d", observations)
+	wantObservations := 1
+	if removeBeforeTerminal {
+		wantObservations = 2 // initial capture and terminal renewal
+	}
+	if observations != wantObservations {
+		t.Fatalf("cleanup requires %d recovery observations, got %d", wantObservations, observations)
 	}
 }
 

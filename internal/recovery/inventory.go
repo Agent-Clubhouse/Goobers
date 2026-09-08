@@ -101,13 +101,13 @@ func validateReservationContents(directory string) error {
 		return err
 	}
 	defer func() { _ = file.Close() }()
-	entries, err := file.Readdirnames(6)
+	entries, err := file.Readdirnames(7)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	for _, entry := range entries {
 		switch entry {
-		case BundleFileName, RecordFileName, ".publish.lock", BundleFileName + ".lock", RecordFileName + ".lock":
+		case BundleFileName, RecordFileName, retentionFileName, ".publish.lock", BundleFileName + ".lock", RecordFileName + ".lock":
 		default:
 			return fmt.Errorf("recovery reservation requires reconciliation before retry")
 		}

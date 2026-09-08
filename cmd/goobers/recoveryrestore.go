@@ -61,7 +61,7 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 }
 
 func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, recordPath, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
-	record, err := recovery.ReadRecord(recordPath)
+	record, err := recovery.ReadRetainedRecord(recordPath)
 	if err != nil {
 		return "", err
 	}
