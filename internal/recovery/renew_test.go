@@ -3,12 +3,56 @@ package recovery
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
+
+func TestRenewRetentionRejectsOverflowingArchiveBudget(t *testing.T) {
+	root := t.TempDir()
+	record := storageTestRecord()
+	// A max-int byte budget must not overflow the reader's extra-byte probe
+	// and turn verification of a nonempty archive into a hash of zero bytes.
+	record.ArchiveDigest = fmt.Sprintf("sha256:%x", sha256.Sum256(nil))
+	directory := seedInventoryRecord(t, root, record)
+	got, err := RenewRetention(context.Background(), filepath.Join(directory, RecordFileName), record.RetainUntil.Add(time.Hour), math.MaxInt64)
+	if err == nil || got != (Record{}) {
+		t.Fatalf("overflowing budget bypassed archive verification: %+v %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(directory, retentionFileName)); !os.IsNotExist(err) {
+		t.Fatalf("invalid verification published a deadline: %v", err)
+	}
+}
+
+func TestRenewRetentionHonorsCancellationAndPublicationLock(t *testing.T) {
+	root := t.TempDir()
+	record := storageTestRecord()
+	record.ArchiveDigest = fmt.Sprintf("sha256:%x", sha256.Sum256(make([]byte, record.ArchiveBytes)))
+	directory := seedInventoryRecord(t, root, record)
+	path := filepath.Join(directory, RecordFileName)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got, err := RenewRetention(ctx, path, record.RetainUntil.Add(time.Hour), 1024); !errors.Is(err, context.Canceled) || got != (Record{}) {
+		t.Fatalf("cancelled renewal acknowledged: %+v %v", got, err)
+	}
+	handle, err := platformlock.TryAcquire(filepath.Join(directory, ".publish.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = handle.Release() }()
+	if got, err := RenewRetention(context.Background(), path, record.RetainUntil.Add(time.Hour), 1024); !errors.Is(err, platformlock.ErrHeld) || got != (Record{}) {
+		t.Fatalf("renewal bypassed publisher: %+v %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(directory, retentionFileName)); !os.IsNotExist(err) {
+		t.Fatalf("refused renewal published a deadline: %v", err)
+	}
+}
 
 func TestRenewRetentionPreservesCaptureAndNeverShortens(t *testing.T) {
 	root := t.TempDir()

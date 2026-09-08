@@ -80,6 +80,9 @@ func publishArchive(ctx context.Context, path string, maxBytes int64, stream fun
 }
 
 func archiveDigest(path string, maxBytes int64) (string, error) {
+	if maxBytes <= 0 || maxBytes == math.MaxInt64 {
+		return "", fmt.Errorf("invalid recovery archive byte budget")
+	}
 	before, err := os.Lstat(path)
 	if err != nil {
 		return "", err
