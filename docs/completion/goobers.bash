@@ -171,6 +171,9 @@ _goobers_completion()
         explain)
             flags+=" --human"
             ;;
+        recovery-restore)
+            flags+=" --record --repository --branch"
+            ;;
         blocked)
             case "${COMP_WORDS[2]:-}" in
                 list) flags+=" --json" ;;
