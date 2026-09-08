@@ -1162,7 +1162,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		var review GateReviewResult
 		if err := evaluateWithInfraRetry(ctx, g, rec, firstClass, func(ctx workflow.Context, class journal.AttemptClass) error {
 			if remote {
-				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class)
+				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
 				if err != nil {
 					return err
 				}

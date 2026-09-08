@@ -198,7 +198,7 @@ func gatePodAttempt(gateDispatches map[string]int, gate string) int {
 // #3844's instance-root refusal list is command-keyed and a gate declares
 // no command, so there is nothing of it to apply here; the pod entrypoint's
 // backstop still stands for anything a reviewer's harness might spawn.
-func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int, class journal.AttemptClass) (apiv1.Verdict, error) {
+func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int, class journal.AttemptClass, rec *runJournal) (apiv1.Verdict, error) {
 	workspace := g.EffectiveWorkspace()
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
@@ -210,7 +210,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
-	if err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
 		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
 		Placement:        placement,
@@ -219,7 +219,9 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		WorkspaceBranch:  workspaceBranch,
 		Review:           true,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-	}).Get(ctx, &result); err != nil {
+	}).Get(ctx, &result)
+	recordGatePlacement(ctx, rec, g.Name, podAttempt, class, result, err)
+	if err != nil {
 		return apiv1.Verdict{}, err
 	}
 	if result.Verdict == nil {
