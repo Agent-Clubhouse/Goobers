@@ -105,7 +105,9 @@ func TestWorkerDigestKeyAuthenticatesPollingAndDetectsRecovery(t *testing.T) {
 		}
 	}
 	watcher.Stop()
-	if mints.Load() < 3 || mints.Load() != requests.Load() {
+	// Stop may cancel the next poll after minting but before its HTTP request
+	// reaches the server. Polls are serial, so at most one such mint can remain.
+	if mints.Load() < 3 || mints.Load() < requests.Load() || mints.Load() > requests.Load()+1 {
 		t.Fatalf("credentials not minted per poll: %d mints, %d reads", mints.Load(), requests.Load())
 	}
 	// The actual same credential is refused at a human run-list route.
