@@ -27,28 +27,6 @@ type CleanupTarget struct {
 	CreatedAt        time.Time
 }
 
-// WithBeforeCleanup installs a durable-evidence handoff before destructive
-// cleanup, including reserved-branch rollback. A failure preserves the directory
-// and ownership records. The callback runs under the repository lock and must
-// not re-enter Manager. Configure at construction; different repos may call
-// concurrently. Multiple options are composed in their registration order.
-func WithBeforeCleanup(callback func(context.Context, CleanupTarget) error) ManagerOption {
-	return func(m *Manager) {
-		if callback == nil {
-			return
-		}
-		previous := m.beforeCleanup
-		m.beforeCleanup = func(ctx context.Context, target CleanupTarget) error {
-			if previous != nil {
-				if err := previous(ctx, target); err != nil {
-					return err
-				}
-			}
-			return callback(ctx, target)
-		}
-	}
-}
-
 func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRunID string) error {
 	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: ownerRunID})
 }
@@ -63,11 +41,6 @@ func (m *Manager) prepareCleanupTarget(ctx context.Context, target CleanupTarget
 	m.cleanupGuardsMu.RLock()
 	guards := maps.Clone(m.cleanupGuards)
 	m.cleanupGuardsMu.RUnlock()
-	if m.beforeCleanup != nil {
-		if err := m.beforeCleanup(ctx, target); err != nil {
-			return fmt.Errorf("%w: preserve evidence for %s: %w", ErrCleanupDeferred, target.WorktreeID, err)
-		}
-	}
 	for _, name := range slices.Sorted(maps.Keys(guards)) {
 		if err := guards[name](ctx, target); err != nil {
 			return fmt.Errorf("%w: %s handoff for %s: %w", ErrCleanupDeferred, name, target.WorktreeID, err)
@@ -77,7 +50,7 @@ func (m *Manager) prepareCleanupTarget(ctx context.Context, target CleanupTarget
 }
 
 // SetCleanupGuard atomically installs or replaces one named cleanup handoff.
-// It preserves construction-time callbacks and other named guards. A cleanup
+// It preserves other named guards. A cleanup
 // already underway completes with its captured guard set; subsequent cleanup
 // uses the new set. Guards execute in name order under the repository lock and
 // must not re-enter Manager operations requiring that lock.

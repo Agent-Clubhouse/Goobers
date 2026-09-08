@@ -22,14 +22,17 @@ func TestIntegrationCleanupHandoffPrecedesRollbackAndDeletion(t *testing.T) {
 			blocked := errors.New("archive unavailable")
 			deny := true
 			var targets []CleanupTarget
-			manager, err := NewManager(t.TempDir(), WithBeforeCleanup(func(_ context.Context, target CleanupTarget) error {
+			manager, err := NewManager(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.SetCleanupGuard("recovery", func(_ context.Context, target CleanupTarget) error {
 				targets = append(targets, target)
 				if deny {
 					return blocked
 				}
 				return nil
-			}))
-			if err != nil {
+			}); err != nil {
 				t.Fatal(err)
 			}
 			wt, err := manager.Create(ctx, CreateOptions{RepoURL: newSourceRepo(t), RunID: "owner-stage", OwnerRunID: "owner", BaseRef: "main", Branch: "goobers/impl/owner"})

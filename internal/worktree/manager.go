@@ -23,7 +23,6 @@ import (
 // distinct repo URL — and hands out per-run worktrees branched off them. The
 // zero value is not usable; construct with NewManager.
 type Manager struct {
-	beforeCleanup   func(context.Context, CleanupTarget) error
 	cleanupGuardsMu sync.RWMutex
 	cleanupGuards   map[string]func(context.Context, CleanupTarget) error
 

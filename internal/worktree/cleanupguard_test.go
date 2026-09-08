@@ -14,18 +14,21 @@ func TestCleanupHandoffsComposeAndStopOnFailure(t *testing.T) {
 		manager := &Manager{}
 		var calls []int
 		blocked := errors.New("first handoff failed")
-		WithBeforeCleanup(func(context.Context, CleanupTarget) error {
+		if err := manager.SetCleanupGuard("first", func(context.Context, CleanupTarget) error {
 			calls = append(calls, 1)
 			if fail {
 				return blocked
 			}
 			return nil
-		})(manager)
-		WithBeforeCleanup(nil)(manager)
-		WithBeforeCleanup(func(context.Context, CleanupTarget) error {
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.SetCleanupGuard("second", func(context.Context, CleanupTarget) error {
 			calls = append(calls, 2)
 			return nil
-		})(manager)
+		}); err != nil {
+			t.Fatal(err)
+		}
 		err := manager.prepareCleanup(context.Background(), "path", "stage", "owner")
 		want := []int{1, 2}
 		if fail {
@@ -52,8 +55,7 @@ func TestNamedCleanupFailurePreservesCauseAndDefers(t *testing.T) {
 func TestNamedCleanupGuardReplacementPreservesOtherHandoffs(t *testing.T) {
 	manager := &Manager{}
 	var calls []string
-	WithBeforeCleanup(func(context.Context, CleanupTarget) error { calls = append(calls, "original"); return nil })(manager)
-	for _, name := range []string{"provenance", "recovery", "recovery"} {
+	for _, name := range []string{"original", "provenance", "recovery", "recovery"} {
 		if err := manager.SetCleanupGuard(name, func(context.Context, CleanupTarget) error { calls = append(calls, name); return nil }); err != nil {
 			t.Fatal(err)
 		}
