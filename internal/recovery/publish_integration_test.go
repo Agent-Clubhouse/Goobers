@@ -1,0 +1,62 @@
+//go:build integration
+
+package recovery
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
+)
+
+func TestIntegrationRetainedPublicationMetadataFailurePreservesArchive(t *testing.T) {
+	testdep.Require(t, "git")
+	repository, directory := t.TempDir(), t.TempDir()
+	recoveryTestGit(t, repository, "init", "--initial-branch=main")
+	recoveryTestGit(t, repository, "commit", "--allow-empty", "-m", "base")
+	record := storageTestRecord()
+	record.BaseSHA = recoveryTestGit(t, repository, "rev-parse", "HEAD")
+	record.SnapshotSHA = record.BaseSHA
+	record.PatchDigest = recoveryTestPatchDigest(t, repository, record)
+	record.ArchiveDigest, record.ArchiveBytes = "", 0
+	metadata := filepath.Join(directory, RecordFileName)
+	if err := os.Mkdir(metadata, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := PublishRetainedState(context.Background(), repository, directory, []string{repository}, record, 1<<20)
+	if err == nil || got != (Record{}) {
+		t.Fatalf("metadata failure acknowledged: %+v %v", got, err)
+	}
+	archive := filepath.Join(directory, BundleFileName)
+	before, err := os.ReadFile(archive)
+	if err != nil || len(before) == 0 {
+		t.Fatalf("recoverable archive lost after metadata failure: %v", err)
+	}
+	// Remove only the empty test-created blocker, then retry the same identity.
+	if err := os.Remove(metadata); err != nil {
+		t.Fatal(err)
+	}
+	got, err = PublishRetainedState(context.Background(), repository, directory, []string{repository}, record, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(archive)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("retry changed archive evidence: %v", err)
+	}
+	if stored, err := ReadRecord(metadata); err != nil || stored != got {
+		t.Fatalf("retry did not publish bound metadata: %+v %v", stored, err)
+	}
+	limited := t.TempDir()
+	got, err = PublishRetainedState(context.Background(), repository, limited, []string{repository}, record, 10)
+	if err == nil || got != (Record{}) {
+		t.Fatalf("archive budget failure acknowledged: %+v %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(limited, RecordFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("metadata published without complete archive: %v", err)
+	}
+}

@@ -48,10 +48,15 @@ func TestIntegrationRecoveryBundleSurvivesMissingSourceRepository(t *testing.T) 
 	if digest, err := WriteSnapshotBundle(context.Background(), repository, record, failingPatchWriter{}, 1<<20); err == nil || digest != "" {
 		t.Fatalf("failed bundle writer acknowledged capture: %q %v", digest, err)
 	}
-	bundle := filepath.Join(t.TempDir(), "recovery.bundle")
+	archiveDirectory := t.TempDir()
+	bundle := filepath.Join(archiveDirectory, BundleFileName)
 	for range 2 {
-		if published, err := PublishSnapshotBundle(context.Background(), repository, bundle, record, 1<<20); err != nil || published != digest {
-			t.Fatalf("durable archive publication/retry failed: %q %v", published, err)
+		published, err := PublishRetainedState(context.Background(), repository, archiveDirectory, []string{repository}, record, 1<<20)
+		if err != nil || published != record {
+			t.Fatalf("durable retained publication/retry failed: %+v %v", published, err)
+		}
+		if stored, err := ReadRecord(filepath.Join(archiveDirectory, RecordFileName)); err != nil || stored != record {
+			t.Fatalf("published metadata missing or mismatched: %+v %v", stored, err)
 		}
 	}
 	// Move rather than delete the fixture: the verification repository has no
