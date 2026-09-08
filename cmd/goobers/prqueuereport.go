@@ -28,7 +28,7 @@ func observePRQueueClaims(root string, repo providers.RepositoryRef, prs []provi
 	}
 	for _, pr := range prs {
 		if _, included := labels[pr.Number]; included {
-			labels[pr.Number] = hasAnyLabel(pr.Labels, []string{"goobers:claimed"})
+			labels[pr.Number] = hasAnyLabel(pr.Labels, []string{providers.LabelClaimed})
 		}
 	}
 	for i := range report.Items {
@@ -52,7 +52,8 @@ func writePRQueueNoWork(stdout, stderr io.Writer, reason string, report *prqueue
 	path := providerInput("resultFile", "claimed-item.json")
 	data, err := json.Marshal(map[string]any{
 		"claimed": false, "noWork": true, "noWorkReason": reason,
-		"queueEligibility": report,
+		"queueEligibility":        report,
+		"queueEligibilityVersion": "1",
 	})
 	if err == nil {
 		err = os.WriteFile(path, data, 0o644)

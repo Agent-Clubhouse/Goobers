@@ -40,6 +40,18 @@ afterEach(async () => {
 });
 
 describe("HttpDaemonClient", () => {
+  it("reads workflow-scoped queue evidence without a mutation", async () => {
+    const evidence = { gaggle: "core", workflow: "implementation", status: "not-observed", asOf: "2026-09-08T00:00:00Z" };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(evidence));
+    const client = new HttpDaemonClient({ fetch: fetcher });
+
+    await expect(client.getWorkflowQueueEligibility("core", "implementation")).resolves.toEqual(evidence);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(
+      "/api/v1/gaggles/core/workflows/implementation/queue-eligibility",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("uses the same origin by default", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(health));
     const client = new HttpDaemonClient({ fetch: fetcher });

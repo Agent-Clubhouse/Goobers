@@ -115,6 +115,7 @@ type RunRow struct {
 // OperatorFacts are journal-derived facts needed by operator run summaries.
 // They are stored with the run row so bounded list reads never reopen journals.
 type OperatorFacts struct {
+	QueueEligibility      *QueueEligibilityEvidence
 	Activity              StageActivity
 	EngineFallback        *EngineFallback
 	IssueNumber           string
@@ -590,6 +591,7 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 // blobs to the otherwise pure event projection.
 func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
 	projection := ProjectRun(identity, Projection{}, events)
+	projection.Run.Operator.QueueEligibility = projectQueueEligibility(reader, identity, events)
 	projection.Remediation = projectRemediationExamples(identity, projection.Run, events)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]

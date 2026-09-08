@@ -361,6 +361,7 @@ func completePRSelection(
 	}
 	if report != nil {
 		result["queueEligibility"] = report
+		result["queueEligibilityVersion"] = "1"
 	}
 	data, err := json.Marshal(result)
 	if err != nil {

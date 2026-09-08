@@ -14,7 +14,7 @@ import (
 
 // Advance when changed projection semantics require replay of unchanged
 // journals, and append a migration marking the store unready for that replay.
-const currentProjectionVersion = 1
+const currentProjectionVersion = 2
 
 // UpsertRun writes a projection in ONE transaction.
 //

@@ -59,6 +59,7 @@ type Reader interface {
 	Workflows(context.Context, string, PageRequest) (WorkflowPage, error)
 	Connections(context.Context, string) (GaggleConnections, error)
 	Workflow(context.Context, string, string) (WorkflowDetail, error)
+	QueueEligibility(context.Context, string, string) (QueueEligibilityView, error)
 }
 
 // Health is the versioned daemon health response.
