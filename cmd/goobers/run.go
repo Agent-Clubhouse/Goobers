@@ -119,16 +119,12 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if *pr < 0 || (*pr == 0 && flagWasSet(args, "pr")) {
-		pf(stderr, "error: --pr requires a positive pull request number\n")
-		return 2
-	}
 	target.PR = *pr
-	if *force && target.PR > 0 {
-		pf(stderr, "error: --force cannot be combined with --pr (targeted pull-request runs are signal triggers)\n")
+	target.Force = *force
+	if err := validateRunTargetOptions(args, target); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	target.Force = *force
 	// A configured daemon API endpoint means the daemon is not on this
 	// filesystem, so the pending-triggers drop below would land where nothing
 	// sweeps it (#3279). Submit through the daemon's trigger plane instead;
@@ -195,14 +191,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if *noWait && runProcessExits {
 		release()
-		name := target.String()
-		if target.PR > 0 {
-			name += "#pr-" + strconv.Itoa(target.PR)
-		}
-		if target.Force {
-			name += "#force"
-		}
-		return runDetachedTrigger(ctx, l, name, root, stdout, stderr)
+		return runDetachedTrigger(ctx, l, detachedRunSelector(target), root, stdout, stderr)
 	}
 	return runStandaloneTrigger(ctx, l, target, root, *noWait, false, release, stdout, stderr)
 }
@@ -219,6 +208,27 @@ func (t runTarget) String() string {
 		return t.Workflow
 	}
 	return t.Gaggle + "/" + t.Workflow
+}
+
+func validateRunTargetOptions(args []string, target runTarget) error {
+	if target.PR < 0 || (target.PR == 0 && flagWasSet(args, "pr")) {
+		return errors.New("--pr requires a positive pull request number")
+	}
+	if target.Force && target.PR > 0 {
+		return errors.New("--force cannot be combined with --pr (targeted pull-request runs are signal triggers)")
+	}
+	return nil
+}
+
+func detachedRunSelector(target runTarget) string {
+	name := target.String()
+	if target.PR > 0 {
+		name += "#pr-" + strconv.Itoa(target.PR)
+	}
+	if target.Force {
+		name += "#force"
+	}
+	return name
 }
 
 func parseRunTarget(selector, gaggleFlag string) (runTarget, error) {
