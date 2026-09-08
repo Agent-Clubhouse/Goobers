@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/internal/supportmatrix"
 	"gopkg.in/yaml.v3"
+
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 // A syntactically valid smoke workflow can still fail before building an image
