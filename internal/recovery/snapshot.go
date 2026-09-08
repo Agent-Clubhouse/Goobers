@@ -39,7 +39,15 @@ func CaptureSnapshot(ctx context.Context, repository, runID string) (string, err
 	if err != nil {
 		return "", err
 	}
-	for _, args := range [][]string{{"read-tree", parent}, {"add", "--all", "--", "."}} {
+	paths, err := snapshotPaths(ctx, repository, directory)
+	if err != nil {
+		return "", err
+	}
+	for _, args := range [][]string{
+		{"read-tree", parent},
+		{"add", "--update", "--", "."},
+		{"--literal-pathspecs", "add", "--all", "--force", "--pathspec-file-nul", "--pathspec-from-file=" + paths},
+	} {
 		if err := recoveryGitWithEnv(ctx, repository, io.Discard, environment, args...); err != nil {
 			return "", fmt.Errorf("capture recovery index: %w", err)
 		}

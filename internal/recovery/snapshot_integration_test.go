@@ -16,7 +16,7 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	testdep.Require(t, "git")
 	repository := t.TempDir()
 	recoveryTestGit(t, repository, "init", "--initial-branch=main")
-	for name, content := range map[string]string{"tracked.txt": "base", ".gitignore": "ignored.out\n"} {
+	for name, content := range map[string]string{"tracked.txt": "base", "deleted.txt": "remove", ".gitignore": "ignored.out\nstaged.out\n"} {
 		if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -24,11 +24,15 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	recoveryTestGit(t, repository, "add", ".")
 	recoveryTestGit(t, repository, "commit", "-m", "base")
 	head := recoveryTestGit(t, repository, "rev-parse", "HEAD")
-	for name, content := range map[string]string{"tracked.txt": "changed\r\n", "new.bin": "\x00\xff\x01", "ignored.out": "generated"} {
+	if err := os.Remove(filepath.Join(repository, "deleted.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"tracked.txt": "changed\r\n", "new.bin": "\x00\xff\x01", "ignored.out": "generated", "local-only.out": "private", "custom-excluded.out": "private", "[literal].txt": "literal", "staged.out": "intentionally tracked"} {
 		if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
+	recoveryTestGit(t, repository, "add", "--force", "staged.out")
 	indexPath := filepath.Join(repository, ".git", "index")
 	before, err := os.ReadFile(indexPath)
 	if err != nil {
@@ -42,6 +46,14 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".git", "info", "attributes"), attributes, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(repository, ".git", "info", "exclude"), []byte("local-only.out\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	excludes := filepath.Join(t.TempDir(), "excludes")
+	if err := os.WriteFile(excludes, []byte("custom-excluded.out\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recoveryTestGit(t, repository, "config", "core.excludesFile", excludes)
 	snapshot, err := CaptureSnapshot(context.Background(), repository, "run-1")
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +65,12 @@ func TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex(t *testing.T) {
 	if got := recoveryTestGit(t, repository, "show", snapshot+":new.bin"); got != "\x00\xff\x01" {
 		t.Fatalf("untracked binary lost: %q", got)
 	}
-	if got := recoveryTestGit(t, repository, "ls-tree", "--name-only", snapshot, "ignored.out"); got != "" {
+	for name, want := range map[string]string{"[literal].txt": "literal", "staged.out": "intentionally tracked"} {
+		if got := recoveryTestGit(t, repository, "show", snapshot+":"+name); got != want {
+			t.Fatalf("selected file %q lost: %q", name, got)
+		}
+	}
+	if got := recoveryTestGit(t, repository, "ls-tree", "--name-only", snapshot, "deleted.txt", "ignored.out", "local-only.out", "custom-excluded.out"); got != "" {
 		t.Fatalf("ignored output captured: %q", got)
 	}
 	if got := recoveryTestGit(t, repository, "rev-parse", "HEAD"); got != head {
