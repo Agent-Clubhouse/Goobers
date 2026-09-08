@@ -66,7 +66,7 @@ func TestWindowsImageInputVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"valid", "binary tamper", "dependency tamper", "duplicate checksum", "wrong platform", "short commit"} {
+	for _, scenario := range []string{"valid", "binary tamper", "dependency tamper", "duplicate checksum", "wrong platform", "short commit", "missing commit"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			files := map[string][]byte{
@@ -80,7 +80,10 @@ func TestWindowsImageInputVerification(t *testing.T) {
 				metadata["platform"] = "linux/amd64"
 			}
 			if scenario == "short commit" {
-				metadata["commit"] = "abcdef"
+				metadata["commit"] = "abcdef012345"
+			}
+			if scenario == "missing commit" {
+				metadata["commit"] = ""
 			}
 			files["release.json"], err = json.Marshal(metadata)
 			if err != nil {
@@ -116,8 +119,71 @@ func TestWindowsImageInputVerification(t *testing.T) {
 			cmd := exec.Command(powerShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script)
 			cmd.Dir = dir
 			output, runErr := cmd.CombinedOutput()
-			if (runErr == nil) != (scenario == "valid") {
+			if (runErr == nil) != (scenario == "valid" || scenario == "short commit") {
 				t.Fatalf("verifier = %v, output=%s", runErr, output)
+			}
+		})
+	}
+}
+
+func TestWindowsImageReleaseStampPreservesMetadata(t *testing.T) {
+	powerShell := findImageTestPowerShell(t)
+	helper, err := filepath.Abs("docker/windows/Release-Metadata.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, date, mismatch string
+	}{
+		{name: "UTC", date: "2026-09-07T00:00:00Z"},
+		{name: "positive offset", date: "2026-09-07T05:30:00+05:30"},
+		{name: "negative offset and fraction", date: "2026-09-06T17:00:00.1234567-07:00"},
+		{name: "commit mismatch", date: "2026-09-07T00:00:00Z", mismatch: "commit"},
+		{name: "date spelling mismatch", date: "2026-09-07T00:00:00Z", mismatch: "date"},
+		{name: "version mismatch", date: "2026-09-07T00:00:00Z", mismatch: "version"},
+		{name: "platform mismatch", date: "2026-09-07T00:00:00Z", mismatch: "platform"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			metadata := map[string]any{"schemaVersion": 1, "kind": "goobers-base-build-inputs", "platform": "windows/amd64", "version": "v0.4.0-rc.1", "commit": "abcdef012345", "date": tc.date}
+			raw, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadataPath := filepath.Join(dir, "release.json")
+			if err := os.WriteFile(metadataPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			date, version, commit, platform := tc.date, "v0.4.0-rc.1", "abcdef012345", "windows/amd64"
+			switch tc.mismatch {
+			case "commit":
+				commit = "aaaaaaaaaaaa"
+			case "date":
+				date = "2026-09-07T00:00:00+00:00"
+			case "version":
+				version = "v0.4.0-beta.2"
+			case "platform":
+				platform = "linux/amd64"
+			}
+			output := fmt.Sprintf("operator %s (commit %s, built %s, go1.26.6 %s)", version, commit, date, platform)
+			script := `param([string]$Helper, [string]$Metadata, [string]$ExpectedDate, [string]$VersionOutput)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+. $Helper
+$release = Read-ImageRelease -Path $Metadata
+if ($release.date -isnot [string] -or $release.date -cne $ExpectedDate) { throw 'Build date text was changed by JSON parsing' }
+Assert-ImageReleaseStamp -Release $release -Output $VersionOutput -Binary 'operator'
+`
+			scriptPath := filepath.Join(dir, "verify-stamp.ps1")
+			if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, runErr := exec.Command(powerShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", scriptPath, helper, metadataPath, tc.date, output).CombinedOutput()
+			if (runErr == nil) != (tc.mismatch == "") {
+				t.Fatalf("stamp verification = %v: %s", runErr, result)
+			}
+			if tc.mismatch != "" && !strings.Contains(string(result), "release stamp mismatch") {
+				t.Fatalf("expected stamp mismatch, got %s", result)
 			}
 		})
 	}
@@ -127,7 +193,7 @@ func TestWindowsImagePowerShellSyntax(t *testing.T) {
 	powerShell := findImageTestPowerShell(t)
 	// Parse all scripts even where their Windows APIs cannot execute. Windows
 	// PowerShell 5.1 remains a separate native validation requirement.
-	for _, name := range []string{"Verify-Inputs.ps1", "Configure-Image.ps1", "Verify-Image.ps1"} {
+	for _, name := range []string{"Verify-Inputs.ps1", "Configure-Image.ps1", "Verify-Image.ps1", "Release-Metadata.ps1"} {
 		path, err := filepath.Abs(filepath.Join("docker/windows", name))
 		if err != nil {
 			t.Fatal(err)

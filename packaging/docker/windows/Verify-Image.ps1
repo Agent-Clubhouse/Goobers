@@ -1,15 +1,15 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'Release-Metadata.ps1')
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 if ($identity.User.Value -ne 'S-1-5-93-2-2') { throw "Expected ContainerUser, got $($identity.Name)" }
-$release = Get-Content -LiteralPath C:\Goobers\release.json -Raw | ConvertFrom-Json
+$release = Read-ImageRelease -Path C:\Goobers\release.json
 foreach ($binary in @('goobers', 'goobers-operator')) {
     # Operator writes version to stderr. Merge in cmd.exe, before Windows
     # PowerShell 5.1 can turn native stderr into a terminating ErrorRecord.
     $output = (& cmd.exe /d /c "$binary --version 2>&1" | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw "$binary --version failed: $output" }
-    $stamp = "$($release.version) (commit $($release.commit), built $($release.date), "
-    if (-not $output.Contains($stamp) -or -not $output.EndsWith('windows/amd64)')) { throw "$binary release stamp mismatch: $output" }
+    Assert-ImageReleaseStamp -Release $release -Output $output -Binary $binary
 }
 & git --version
 if ($LASTEXITCODE -ne 0) { throw 'git unavailable on PATH' }

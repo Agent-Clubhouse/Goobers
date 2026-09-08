@@ -47,8 +47,8 @@ review and native evidence before publication.
 Use an empty staging directory such as `C:\image-contexts\windows-amd64`, never a
 checkout or instance root. Stage these files from one release build:
 
-- `goobers.exe`, built with embedded Portal assets and the release version, full
-  40-character commit and build date;
+- `goobers.exe`, built with embedded Portal assets and the release version, embedded
+  commit stamp and exact build-date text;
 - `goobers-operator.exe`, built for `windows/amd64` with **the same three ldflags**;
 - `release.json`, the same metadata shape the Linux release inputs use, with
   `platform` changed to `windows/amd64`;
@@ -74,11 +74,16 @@ input generation is wired into the release engine, the operator must be prepared
 from the exact same source using its existing Go release build settings
 (`GOOS=windows`, `GOARCH=amd64`, `CGO_ENABLED=0`, `-trimpath`, `-ldflags` setting
 `internal/version.Version`, `Commit`, and `Date`). Keep the resulting checksums
-with that release's evidence. This manual bridge is preparation, not an official
+with that release's evidence. The metadata commit must equal the binary's stamp:
+existing release artifacts use abbreviated hashes, which are accepted here.
+Image SHA tags may independently use the full 40-character source revision.
+The build date also matches literally, preserving `Z`, offsets and fractional
+seconds across PowerShell versions; it is not converted to a local DateTime.
+This manual bridge is preparation, not an official
 publication path; the image's native checks reject mismatched binary stamps.
 
 Copy `Dockerfile`, `.dockerignore`, `dependencies.json`, `Verify-Inputs.ps1`, `Configure-Image.ps1`,
-`Verify-Image.ps1`, and `Shell-Contract.sh` from this directory into the context. Download the two ZIPs
+`Verify-Image.ps1`, `Release-Metadata.ps1`, and `Shell-Contract.sh` from this directory into the context. Download the two ZIPs
 using the manifest URLs, without authentication. On a trusted preparation host,
 from inside the context:
 

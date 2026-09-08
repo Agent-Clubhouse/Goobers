@@ -12,3 +12,4 @@
 !Configure-Image.ps1
 !Verify-Image.ps1
 !Shell-Contract.sh
+!Release-Metadata.ps1

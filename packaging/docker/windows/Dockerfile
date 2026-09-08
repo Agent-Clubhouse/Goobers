@@ -5,14 +5,14 @@ ARG WINDOWS_BASE_IMAGE=mcr.microsoft.com/windows/servercore:ltsc2022@sha256:6b43
 FROM ${WINDOWS_BASE_IMAGE} AS inputs
 SHELL ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 WORKDIR C:/inputs
-COPY goobers.exe goobers-operator.exe release.json SHA256SUMS mingit.zip zoneinfo.zip dependencies.json Verify-Inputs.ps1 ./
+COPY goobers.exe goobers-operator.exe release.json SHA256SUMS mingit.zip zoneinfo.zip dependencies.json Verify-Inputs.ps1 Release-Metadata.ps1 ./
 RUN .\Verify-Inputs.ps1; Expand-Archive -LiteralPath mingit.zip -DestinationPath C:\Git
 
 FROM ${WINDOWS_BASE_IMAGE}
 SHELL ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 COPY --from=inputs C:/Git/ C:/Git/
 COPY --from=inputs ["C:/inputs/goobers.exe", "C:/inputs/goobers-operator.exe", "C:/inputs/release.json", "C:/inputs/zoneinfo.zip", "C:/inputs/dependencies.json", "C:/Goobers/"]
-COPY Configure-Image.ps1 Verify-Image.ps1 Shell-Contract.sh C:/Goobers/
+COPY Configure-Image.ps1 Verify-Image.ps1 Release-Metadata.ps1 Shell-Contract.sh C:/Goobers/
 ENV PATH="C:\Goobers;C:\Git\cmd;C:\Git\usr\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0" `
     HOME="C:\Users\ContainerUser" `
     USERPROFILE="C:\Users\ContainerUser" `
