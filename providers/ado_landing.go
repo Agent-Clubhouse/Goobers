@@ -158,9 +158,24 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 			MergeStrategy: adoMergeStrategy(req.MergeMethod),
 		},
 	}
+	repositoryAPIURL, err := p.repoURL(req.Repository)
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	intent, err := prepareLandingIntent(ctx, p.mutationRecorder, ProviderADO, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "enqueue")
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
 	var out adoPullRequestDetail
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
 		return EnqueuePullRequestResult{}, err
+	}
+	// ADO has no queue-entry ID. Record the acknowledged auto-complete
+	// mutation, but do not invent a GitHub-style admission or merge receipt.
+	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == detail.CreatedBy.ID {
+		p.mutationRecorder.RecordExternalRef(ctx, ExternalRef{
+			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "enqueue", LandingIntent: intent,
+		})
 	}
 	if strings.EqualFold(out.Status, "completed") {
 		return EnqueuePullRequestResult{Number: out.PullRequestID, Merged: true, MergeSHA: out.LastMergeCommit.CommitID}, nil

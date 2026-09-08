@@ -72,6 +72,34 @@ func TestMutationSidecarPreservesLandingIntentAcrossWireConsumers(t *testing.T) 
 	}
 }
 
+func TestMutationSidecarPreservesAcknowledgedAutoCompleteIntent(t *testing.T) {
+	t.Chdir(t.TempDir())
+	intent := &providers.LandingIntent{ID: "0123456789abcdef0123456789abcdef", Operation: "enqueue", RepositoryAPIURL: "https://dev.azure.com/org/project/_apis/git/repositories/repo", PullID: "42", ExpectedHeadSHA: "head"}
+	sidecarMutationRecorder{kind: "pr"}.RecordExternalRef(context.Background(), providers.ExternalRef{
+		Provider: providers.ProviderADO, Ref: "ado#42", Operation: "enqueue", LandingIntent: intent,
+	})
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var local mutationFact
+	var remote dispatcher.SurrenderedMutation
+	var temporal engine.MutationFact
+	for _, target := range []any{&local, &remote, &temporal} {
+		if err := json.Unmarshal(data, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, got := range []*providers.LandingIntent{local.LandingIntent, remote.LandingIntent, temporal.LandingIntent} {
+		if got == nil || *got != *intent {
+			t.Fatalf("acknowledgement lost intent: %+v", got)
+		}
+	}
+	if local.Operation != "enqueue" || local.ID != "42" || local.MergeConfirmation != nil || local.QueueAdmission != nil || remote.MergeConfirmation != nil || remote.QueueAdmission != nil || temporal.MergeConfirmation != nil || temporal.QueueAdmission != nil {
+		t.Fatalf("acknowledgement promoted to merge or queue entry: %+v", local)
+	}
+}
+
 func TestLandingIntentSidecarFailureIsReturned(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if err := os.Mkdir(mutationsSidecarFile, 0700); err != nil {

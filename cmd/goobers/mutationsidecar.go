@@ -69,6 +69,7 @@ type sidecarMutationRecorder struct {
 // case and emits its own journal-level signal for that.
 func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref providers.ExternalRef) {
 	fact := mutationFact{
+		LandingIntent:     ref.LandingIntent,
 		QueueAdmission:    ref.QueueAdmission,
 		MergeConfirmation: ref.MergeConfirmation,
 		Provider:          string(ref.Provider),
