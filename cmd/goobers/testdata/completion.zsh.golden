@@ -201,7 +201,7 @@ _goobers_completion()
             flags+=(--human)
             ;;
         recovery-restore)
-            flags+=(--record --repository --branch)
+            flags+=(--record --issue --repository-key --repository --branch)
             ;;
         blocked)
             case "${words[3]:-}" in

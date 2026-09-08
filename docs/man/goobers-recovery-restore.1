@@ -8,6 +8,8 @@ goobers recovery-restore \- restore retained implementation onto current main
 .nf
 Usage: goobers recovery-restore --record <record.json> --repository <checkout> --branch <new-branch> [instance]
 
+Or select by --issue <id> --repository-key <canonical-key> instead of --record.
+
 Restore a retained implementation archive onto freshly fetched main from
 the matching configured repository. The archive must be snapshot.bundle
 beside record.json. The destination checkout and index remain unchanged;

@@ -172,7 +172,7 @@ _goobers_completion()
             flags+=" --human"
             ;;
         recovery-restore)
-            flags+=" --record --repository --branch"
+            flags+=" --record --issue --repository-key --repository --branch"
             ;;
         blocked)
             case "${COMP_WORDS[2]:-}" in

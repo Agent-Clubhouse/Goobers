@@ -251,6 +251,8 @@ complete -c goobers -n '__fish_seen_subcommand_from queue-explain' -l gaggle -r 
 complete -c goobers -n '__fish_seen_subcommand_from queue-explain' -l workflow -r -a '(__goobers_completion_workflows)' -d 'Workflow that evaluated the queue'
 complete -c goobers -n '__fish_seen_subcommand_from explain' -l human -d 'Emit a human-readable rendering'
 complete -c goobers -n '__fish_seen_subcommand_from recovery-restore' -l record -r -d 'Published recovery record'
+complete -c goobers -n '__fish_seen_subcommand_from recovery-restore' -l issue -r -d 'Issue with retained implementation'
+complete -c goobers -n '__fish_seen_subcommand_from recovery-restore' -l repository-key -r -d 'Canonical repository key'
 complete -c goobers -n '__fish_seen_subcommand_from recovery-restore' -l repository -r -d 'Destination Git repository'
 complete -c goobers -n '__fish_seen_subcommand_from recovery-restore' -l branch -r -d 'New local operator branch'
 complete -c goobers -n '__fish_seen_subcommand_from blocked; and __fish_seen_subcommand_from list' -l json -d 'Emit JSON'

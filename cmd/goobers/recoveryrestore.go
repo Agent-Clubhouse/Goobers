@@ -19,6 +19,7 @@ import (
 )
 
 const recoveryRestoreHelp = "Usage: goobers recovery-restore --record <record.json> --repository <checkout> --branch <new-branch> [instance]\n\n" +
+	"Or select by --issue <id> --repository-key <canonical-key> instead of --record.\n\n" +
 	"Restore a retained implementation archive onto freshly fetched main from\n" +
 	"the matching configured repository. The archive must be snapshot.bundle\n" +
 	"beside record.json. The destination checkout and index remain unchanged;\n" +
@@ -30,12 +31,16 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "recovery-restore")
 	recordPath := fs.String("record", "", "published recovery record")
+	issueID := fs.String("issue", "", "issue with retained implementation")
+	repositoryKey := fs.String("repository-key", "", "provider-complete canonical repository key")
 	repository := fs.String("repository", "", "destination Git repository")
 	branch := fs.String("branch", "", "new local operator branch")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *recordPath == "" || *repository == "" || *branch == "" || fs.NArg() > 1 {
+	explicitRecord := *recordPath != "" && *issueID == "" && *repositoryKey == ""
+	issueSelection := *recordPath == "" && *issueID != "" && *repositoryKey != ""
+	if (!explicitRecord && !issueSelection) || *repository == "" || *branch == "" || fs.NArg() > 1 {
 		fs.Usage()
 		return 2
 	}
@@ -51,13 +56,60 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 	registry, scrubber := journal.DefaultScrubber()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	commit, err := restoreConfiguredRecovery(ctx, layout, *recordPath, *repository, *branch, registry)
+	var commit string
+	var err error
+	if issueSelection {
+		commit, err = restoreIssueRecovery(ctx, layout, *repositoryKey, *issueID, *repository, *branch, registry)
+	} else {
+		commit, err = restoreConfiguredRecovery(ctx, layout, *recordPath, *repository, *branch, registry)
+	}
 	if err != nil {
 		pf(stderr, "error: %s\n", scrubber.Scrub([]byte(err.Error())))
 		return 1
 	}
 	pf(stdout, "restored %s at %s\n", *branch, commit)
 	return 0
+}
+
+func restoreIssueRecovery(ctx context.Context, layout instance.Layout, key, issue, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
+	selected, err := selectIssueRecovery(ctx, layout, key, issue, time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+	dir, err := runDirFor(layout, selected.Record.RunID)
+	if err != nil {
+		return "", err
+	}
+	var commit string
+	entered, err := journal.WithIdleRunReader(ctx, dir, func(reader *journal.Reader) error {
+		identity, err := reader.Identity()
+		if err != nil {
+			return err
+		}
+		if identity.RunID != selected.Record.RunID {
+			return fmt.Errorf("selected recovery run identity changed")
+		}
+		phase, err := reader.PhaseBounded(ctx)
+		if err != nil {
+			return err
+		}
+		if !terminalRunPhase(phase) {
+			return fmt.Errorf("selected recovery run is no longer terminal")
+		}
+		current, err := recovery.ReadRetainedRecord(selected.RecordPath)
+		if err != nil {
+			return err
+		}
+		if current != selected.Record {
+			return recovery.ErrRecordConflict
+		}
+		commit, err = restoreConfiguredRecovery(ctx, layout, selected.RecordPath, destination, branch, registry)
+		return err
+	})
+	if err == nil && !entered {
+		err = fmt.Errorf("selected recovery run is busy; retry when its writer is idle")
+	}
+	return commit, err
 }
 
 func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, recordPath, destination, branch string, registry *journal.RegistryScrubber) (string, error) {

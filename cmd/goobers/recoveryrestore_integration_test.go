@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/providers"
@@ -34,6 +35,16 @@ func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 
 func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *testing.T) {
 	testdep.Require(t, "git")
+	for _, byIssue := range []bool{false, true} {
+		name := "record"
+		if byIssue {
+			name = "issue"
+		}
+		t.Run(name, func(t *testing.T) { testRecoveryRestoreCommand(t, byIssue) })
+	}
+}
+
+func testRecoveryRestoreCommand(t *testing.T, byIssue bool) {
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "local-only-recovery-fixture-token")
 	root := initDemo(t)
 	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
@@ -84,6 +95,32 @@ func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *t
 	}
 	if _, err := recovery.RenewRetention(context.Background(), filepath.Join(retained, recovery.RecordFileName), time.Now().UTC().Add(30*24*time.Hour), 1<<20); err != nil {
 		t.Fatal(err)
+	}
+	if byIssue {
+		layout := instance.NewLayout(root)
+		inventory, err := prepareRecoveryInventory(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, path, err := recovery.PublishToInventory(context.Background(), source, inventory, []string{source}, record, 128, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recovery.RenewRetention(context.Background(), path, time.Now().UTC().Add(30*24*time.Hour), 1<<20); err != nil {
+			t.Fatal(err)
+		}
+		run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: record.RunID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: now}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+		seedItemRepositoryForTest(t, layout, record.RunID, "7", identity)
+		args = []string{"--issue", "7", "--repository-key", identity.CanonicalKey(), "--repository", destination, "--branch", "operator-recovery", root}
 	}
 	stdout.Reset()
 	stderr.Reset()

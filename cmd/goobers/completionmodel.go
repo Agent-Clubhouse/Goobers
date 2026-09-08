@@ -364,6 +364,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"recovery-restore": {
 		{name: "record", takesArg: true, desc: "Published recovery record"},
+		{name: "issue", takesArg: true, desc: "Issue with retained implementation"},
+		{name: "repository-key", takesArg: true, desc: "Canonical repository key"},
 		{name: "repository", takesArg: true, desc: "Destination Git repository"},
 		{name: "branch", takesArg: true, desc: "New local operator branch"},
 	},
