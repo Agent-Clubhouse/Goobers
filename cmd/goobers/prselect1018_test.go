@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,7 +39,7 @@ func TestPRSelectSupportsMultipleHeadPrefixes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatal(err)
 	}
 	if selected["number"] != "11" {

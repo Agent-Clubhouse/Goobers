@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -396,7 +395,7 @@ func TestPRSelectPrefersPRWithMostBlockedDependents(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := decodePRSelectionTestResult(data, &result); err != nil {
 		t.Fatal(err)
 	}
 	if result["number"] != "103" {
@@ -461,7 +460,7 @@ func TestPRSelectCrownedLanderOutranksAgedUnrelatedPR(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := decodePRSelectionTestResult(data, &result); err != nil {
 		t.Fatal(err)
 	}
 	if result["number"] != strconv.Itoa(landerNumber) {
@@ -490,7 +489,7 @@ func TestPRSelectWithoutBlockedDependentsPreservesNumberOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := decodePRSelectionTestResult(data, &result); err != nil {
 		t.Fatal(err)
 	}
 	if result["number"] != "111" {

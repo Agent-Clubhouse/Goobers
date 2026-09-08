@@ -66,6 +66,9 @@ const StageArtifactManifest = "stage-artifact-manifest.schema.json"
 // StageArtifactSet is the runner-authored normalized artifact index contract.
 const StageArtifactSet = "stage-artifact-set.schema.json"
 
+// PRQueueEligibility is the bounded historical PR-selection observation.
+const PRQueueEligibility = "pr-queue-eligibility-v1.schema.json"
+
 // InvestigationEvidenceDraft is the semantic-reference evidence input contract.
 const InvestigationEvidenceDraft = "investigation-evidence-draft.schema.json"
 
