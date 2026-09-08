@@ -148,6 +148,7 @@ type daemonMergedPRCostTarget struct {
 }
 
 type daemonMergedPRCostReconciler struct {
+	root      string
 	cfg       *instance.Config
 	stores    credentials.StoreResolver
 	registrar credentials.SecretRegistrar
@@ -159,6 +160,7 @@ type daemonMergedPRCostReconciler struct {
 }
 
 func newDaemonMergedPRCostReconciler(
+	root string,
 	cfg *instance.Config,
 	set *instance.ConfigSet,
 	stores credentials.StoreResolver,
@@ -166,7 +168,7 @@ func newDaemonMergedPRCostReconciler(
 	quota *localscheduler.ProviderQuotaState,
 ) *daemonMergedPRCostReconciler {
 	return &daemonMergedPRCostReconciler{
-		cfg: cfg, set: set, stores: stores, registrar: registrar, quota: quota, pages: map[string]int{},
+		root: root, cfg: cfg, set: set, stores: stores, registrar: registrar, quota: quota, pages: map[string]int{},
 	}
 }
 
@@ -371,29 +373,29 @@ func (r *daemonMergedPRCostReconciler) providers(
 		return nil, nil, repo, err
 	}
 
-	login := r.cfg.GitHubBotLogin(repo.Owner, repo.Name)
-	return newGitHubProvider(prToken, daemonGitHubProviderOptions(login, r.quota)...),
-		newGitHubProvider(issueToken, daemonGitHubProviderOptions(login, r.quota)...),
+	prProvider, err := newProviderForStageSurface[recentlyMergedCostProvider](
+		r.root,
 		repo,
-		nil
-}
-
-func daemonGitHubProviderOptions(
-	login string,
-	quota *localscheduler.ProviderQuotaState,
-) []func(*providers.GitHubProvider) {
-	var opts []func(*providers.GitHubProvider)
-	if login != "" {
-		opts = append(opts, providers.WithConfiguredLogin(login))
+		false,
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderToken(prToken),
+		withStageProviderQuota(r.quota),
+	)
+	if err != nil {
+		return nil, nil, repo, fmt.Errorf("build pull request provider: %w", err)
 	}
-	if quota != nil {
-		accounting := &providerQuotaAccounting{state: quota}
-		opts = append(opts,
-			providers.WithQuotaRequestGate(accounting),
-			providers.WithQuotaObserver(accounting),
-		)
+	issueProvider, err := newProviderForStageSurface[issueCommentCostProvider](
+		r.root,
+		repo,
+		false,
+		withStageProviderCapability(capability.GitHubIssuesWrite),
+		withStageProviderToken(issueToken),
+		withStageProviderQuota(r.quota),
+	)
+	if err != nil {
+		return nil, nil, repo, fmt.Errorf("build issue provider: %w", err)
 	}
-	return opts
+	return prProvider, issueProvider, repo, nil
 }
 
 func reconcileRecentlyMergedPRCosts(

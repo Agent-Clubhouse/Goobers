@@ -185,9 +185,20 @@ func TestDaemonGitHubProviderOptionsRespectSharedQuota(t *testing.T) {
 	quota := localscheduler.NewProviderQuotaState()
 	resetAt := time.Now().Add(time.Hour)
 	quota.Record(apiv1.ProviderGitHub, 0, resetAt)
-	provider := providers.NewGitHubProvider("token", daemonGitHubProviderOptions("", quota)...)
+	root := t.TempDir()
+	t.Setenv("GOOBERS_INSTANCE_ROOT", root)
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](
+		root,
+		providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"},
+		false,
+		withStageProviderToken("token"),
+		withStageProviderQuota(quota),
+	)
+	if err != nil {
+		t.Fatalf("newProviderForStageAs: %v", err)
+	}
 
-	_, err := provider.AuthenticatedLogin(context.Background())
+	_, err = provider.AuthenticatedLogin(context.Background())
 	var budgetErr *localscheduler.ProviderPollBudgetError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("AuthenticatedLogin error = %v, want ProviderPollBudgetError", err)
@@ -307,7 +318,7 @@ func TestDaemonMergedPRCostTargetsKeepDistinctNamespacesAndReplaceDefinitions(t 
 		{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}, Spec: apiv1.GaggleSpec{Project: project, BranchNamespace: "alpha"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{Project: project, BranchNamespace: "beta/"}},
 	}}
-	reconciler := newDaemonMergedPRCostReconciler(cfg, set, nil, nil, nil)
+	reconciler := newDaemonMergedPRCostReconciler(t.TempDir(), cfg, set, nil, nil, nil)
 
 	targets, err := reconciler.targets()
 	if err != nil {

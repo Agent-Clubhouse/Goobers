@@ -1228,6 +1228,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	openPRs := newOpenPRLoop(ctx, setup.OpenPRRefresher)
 	defer openPRs.Stop()
 	setup.MergedPRCostReconciler = newDaemonMergedPRCostReconciler(
+		setup.Root,
 		setup.Config,
 		setup.Definitions,
 		setup.SecretStores,
