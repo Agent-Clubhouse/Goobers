@@ -17,7 +17,7 @@
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
-| [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
+| [`goobers run`](#goobers-run) | trigger a run manually; --force bypasses cadence budgets |
 | [`goobers scaffold`](#goobers-scaffold) | scaffold a goober, workflow, or gaggle |
 | [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
@@ -3204,11 +3204,11 @@ $ goobers roots discover --json
 
 ## `goobers run`
 
-trigger a run manually (still honors run conditions)
+trigger a run manually; --force bypasses cadence budgets
 
 ~~~text
-Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel [--api <url>] <run-id> [path]
@@ -3218,6 +3218,9 @@ Trigger a run of a config/ workflow manually, through the same scheduler
 daemon uses, then wait for it to reach a terminal state unless
 --no-wait is set (default path "."). Use --gaggle or the qualified
 <gaggle>/<workflow> form when multiple gaggles share a workflow name.
+Use --force to bypass hourly and daily cadence budgets for an explicit
+manual run. All other run conditions remain enforced. --force cannot be
+combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
 delegates the trigger to it instead of failing (#343) — dispatched through

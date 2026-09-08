@@ -107,6 +107,7 @@ func runRemoteTrigger(
 		Gaggle:    target.Gaggle,
 		Workflow:  target.Workflow,
 		RequestID: requestID,
+		Force:     target.Force,
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

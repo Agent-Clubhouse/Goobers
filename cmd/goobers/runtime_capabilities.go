@@ -418,7 +418,7 @@ func init() {
 				withExamples("goobers run cancel <run-id>"),
 		).
 			withSynopsis(synopsisByID["run"]).
-			withHelp("trigger a run manually (still honors run conditions)", runHelp).
+			withHelp("trigger a run manually; --force bypasses cadence budgets", runHelp).
 			withExamples("goobers run default-implement", "goobers run --gaggle example default-implement", "goobers run example/default-implement --no-wait"),
 		runtimeCommand("approve", "approve", runApprove).
 			withSynopsis(synopsisByID["approve"]).

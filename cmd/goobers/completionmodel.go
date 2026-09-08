@@ -305,6 +305,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
 	"run": {
+		{name: "force", desc: "Bypass hourly and daily cadence budgets for this manual run"},
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "github-progress", desc: "Publish live progress to one GitHub Check Run"},
 		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},

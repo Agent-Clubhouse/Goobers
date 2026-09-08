@@ -75,7 +75,7 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 	t.Setenv(remoteDaemonAPIEnv, "")
 	t.Setenv("GOOBERS_API_TOKEN", "operator-token")
 	code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL,
-		"--request-id", "delivery-1", "--no-wait")
+		"--request-id", "delivery-1", "--force", "--no-wait")
 	if code != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
 	}
@@ -85,7 +85,7 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 	if gotAuth != "Bearer operator-token" {
 		t.Fatalf("authorization = %q", gotAuth)
 	}
-	want := httpapi.TriggerRequest{Gaggle: "example", Workflow: "nightly", RequestID: "delivery-1"}
+	want := httpapi.TriggerRequest{Gaggle: "example", Workflow: "nightly", RequestID: "delivery-1", Force: true}
 	if gotRequest != want {
 		t.Fatalf("trigger request = %+v, want %+v", gotRequest, want)
 	}

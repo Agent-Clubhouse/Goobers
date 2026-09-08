@@ -48,8 +48,8 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
-	"       goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
+	"       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort [--api <url>] <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
 	"       goobers run cancel [--api <url>] <run-id> [path]\n\n" +
@@ -58,6 +58,9 @@ const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr 
 	"daemon uses, then wait for it to reach a terminal state unless\n" +
 	"--no-wait is set (default path \".\"). Use --gaggle or the qualified\n" +
 	"<gaggle>/<workflow> form when multiple gaggles share a workflow name.\n" +
+	"Use --force to bypass hourly and daily cadence budgets for an explicit\n" +
+	"manual run. All other run conditions remain enforced. --force cannot be\n" +
+	"combined with --pr because targeted pull-request runs are signal triggers.\n" +
 	"If a live `goobers up` daemon already\n" +
 	"holds the instance lock,\n" +
 	"delegates the trigger to it instead of failing (#343) — dispatched through\n" +
@@ -97,6 +100,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
+	force := fs.Bool("force", false, "bypass hourly and daily cadence budgets for this manual run")
 	githubProgress := fs.Bool("github-progress", false, "publish live progress to one GitHub Check Run (requires checks: write)")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
 	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
@@ -115,11 +119,12 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if *pr < 0 || (*pr == 0 && flagWasSet(args, "pr")) {
-		pf(stderr, "error: --pr requires a positive pull request number\n")
+	target.PR = *pr
+	target.Force = *force
+	if err := validateRunTargetOptions(args, target); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	target.PR = *pr
 	// A configured daemon API endpoint means the daemon is not on this
 	// filesystem, so the pending-triggers drop below would land where nothing
 	// sweeps it (#3279). Submit through the daemon's trigger plane instead;
@@ -186,11 +191,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	if *noWait && runProcessExits {
 		release()
-		name := target.String()
-		if target.PR > 0 {
-			name += "#pr-" + strconv.Itoa(target.PR)
-		}
-		return runDetachedTrigger(ctx, l, name, root, stdout, stderr)
+		return runDetachedTrigger(ctx, l, detachedRunSelector(target), root, stdout, stderr)
 	}
 	return runStandaloneTrigger(ctx, l, target, root, *noWait, false, release, stdout, stderr)
 }
@@ -199,6 +200,7 @@ type runTarget struct {
 	Gaggle   string
 	Workflow string
 	PR       int
+	Force    bool
 }
 
 func (t runTarget) String() string {
@@ -206,6 +208,27 @@ func (t runTarget) String() string {
 		return t.Workflow
 	}
 	return t.Gaggle + "/" + t.Workflow
+}
+
+func validateRunTargetOptions(args []string, target runTarget) error {
+	if target.PR < 0 || (target.PR == 0 && flagWasSet(args, "pr")) {
+		return errors.New("--pr requires a positive pull request number")
+	}
+	if target.Force && target.PR > 0 {
+		return errors.New("--force cannot be combined with --pr (targeted pull-request runs are signal triggers)")
+	}
+	return nil
+}
+
+func detachedRunSelector(target runTarget) string {
+	name := target.String()
+	if target.PR > 0 {
+		name += "#pr-" + strconv.Itoa(target.PR)
+	}
+	if target.Force {
+		name += "#force"
+	}
+	return name
 }
 
 func parseRunTarget(selector, gaggleFlag string) (runTarget, error) {
@@ -341,11 +364,15 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
 			}
 		} else {
-			runID, err = sched.TriggerExact(triggerCtx, identity, time.Now())
+			runID, err = sched.TriggerExactWithOptions(triggerCtx, identity, time.Now(), localscheduler.ManualTriggerOptions{
+				BypassCadenceBudgets: target.Force,
+			})
 		}
 
 	} else {
-		runID, err = sched.Trigger(triggerCtx, target.Workflow, time.Now())
+		runID, err = sched.TriggerWithOptions(triggerCtx, target.Workflow, time.Now(), localscheduler.ManualTriggerOptions{
+			BypassCadenceBudgets: target.Force,
+		})
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -573,7 +600,7 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarge
 	if target.PR > 0 {
 		requestID, err = writeTargetedTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.PR)
 	} else {
-		requestID, err = writeTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow)
+		requestID, err = writeTriggerRequestContextOptions(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.Force)
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -610,6 +637,11 @@ func runFlagArgs(args []string) []string {
 		arg := args[i]
 		if arg == "--no-wait" || arg == "-no-wait" ||
 			strings.HasPrefix(arg, "--no-wait=") || strings.HasPrefix(arg, "-no-wait=") {
+			flags = append(flags, arg)
+			continue
+		}
+		if arg == "--force" || arg == "-force" ||
+			strings.HasPrefix(arg, "--force=") || strings.HasPrefix(arg, "-force=") {
 			flags = append(flags, arg)
 			continue
 		}

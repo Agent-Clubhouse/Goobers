@@ -273,14 +273,16 @@ func TestClaimsPlaneLeaseBounds(t *testing.T) {
 }
 
 type stubTriggerer struct {
-	mu    sync.Mutex
-	mints int
-	err   error
+	mu          sync.Mutex
+	mints       int
+	err         error
+	lastOptions localscheduler.ManualTriggerOptions
 }
 
-func (s *stubTriggerer) mint() (string, error) {
+func (s *stubTriggerer) mint(options localscheduler.ManualTriggerOptions) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastOptions = options
 	if s.err != nil {
 		return "", s.err
 	}
@@ -288,16 +290,16 @@ func (s *stubTriggerer) mint() (string, error) {
 	return fmt.Sprintf("run-%d", s.mints), nil
 }
 
-func (s *stubTriggerer) TriggerWithDispatchContext(_, _ context.Context, _ string, _ time.Time) (string, error) {
-	return s.mint()
+func (s *stubTriggerer) TriggerWithDispatchContextOptions(_, _ context.Context, _ string, _ time.Time, options localscheduler.ManualTriggerOptions) (string, error) {
+	return s.mint(options)
 }
 
-func (s *stubTriggerer) TriggerExactWithDispatchContext(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ time.Time) (string, error) {
-	return s.mint()
+func (s *stubTriggerer) TriggerExactWithDispatchContextOptions(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ time.Time, options localscheduler.ManualTriggerOptions) (string, error) {
+	return s.mint(options)
 }
 
 func (s *stubTriggerer) TriggerPriorityWithDispatchContext(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ string, _ time.Time) (string, error) {
-	return s.mint()
+	return s.mint(localscheduler.ManualTriggerOptions{})
 }
 
 // barrierTriggerer blocks the FIRST mint inside the dispatch seam until
@@ -320,11 +322,11 @@ func (b *barrierTriggerer) mint() (string, error) {
 	return fmt.Sprintf("run-%d", n), nil
 }
 
-func (b *barrierTriggerer) TriggerWithDispatchContext(_, _ context.Context, _ string, _ time.Time) (string, error) {
+func (b *barrierTriggerer) TriggerWithDispatchContextOptions(_, _ context.Context, _ string, _ time.Time, _ localscheduler.ManualTriggerOptions) (string, error) {
 	return b.mint()
 }
 
-func (b *barrierTriggerer) TriggerExactWithDispatchContext(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ time.Time) (string, error) {
+func (b *barrierTriggerer) TriggerExactWithDispatchContextOptions(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ time.Time, _ localscheduler.ManualTriggerOptions) (string, error) {
 	return b.mint()
 }
 
@@ -425,6 +427,36 @@ func TestTriggerPlaneDedupesRedeliveredRequests(t *testing.T) {
 	retried, err := service.Trigger(ctx, httpapi.TriggerRequest{Workflow: "implementation", RequestID: "delivery-3"})
 	if err != nil || retried.Duplicate || retried.RunID != "run-3" {
 		t.Fatalf("retry after refusal = %+v, err = %v", retried, err)
+	}
+}
+
+func TestTriggerPlanePassesForceOnlyToManualDispatch(t *testing.T) {
+	stub := &stubTriggerer{}
+	service := newDaemonTriggerService()
+	service.dispatch = stub
+
+	response, err := service.Trigger(context.Background(), httpapi.TriggerRequest{
+		Workflow: "implementation",
+		Force:    true,
+	})
+	if err != nil || response.RunID != "run-1" {
+		t.Fatalf("forced trigger = %+v, err = %v", response, err)
+	}
+	if !stub.lastOptions.BypassCadenceBudgets {
+		t.Fatal("force was not passed to manual scheduler admission")
+	}
+
+	_, err = service.Trigger(context.Background(), httpapi.TriggerRequest{
+		Gaggle:    "example",
+		Workflow:  "implementation",
+		SourceRun: "run-source",
+		Force:     true,
+	})
+	if err == nil {
+		t.Fatal("force must be rejected for priority triggers")
+	}
+	if stub.mints != 1 {
+		t.Fatalf("mints = %d, want only the manual trigger", stub.mints)
 	}
 }
 
