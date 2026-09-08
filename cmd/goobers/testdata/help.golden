@@ -207,6 +207,7 @@ Workflow-stage and connector commands:
   reconcile-branches report bounded stale goobers/* branch candidates (a workflow stage)
   reconcile-post-merge reconcile late merge-queue merges (a workflow stage)
   record-merge-refusal record a merge refusal and demote a persistently-stuck lander (a workflow stage)
+  recovery-resume   restore retained implementation into the receiving run (a workflow stage)
   remediation-checkpoint durable per-cause attempt budgets + same-diff escalation (a workflow stage)
   report-pr-status  publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
   resolve-review-threads reply to and resolve remediated native review threads (a workflow stage)
@@ -264,6 +265,7 @@ Usage:
   reconcile-branches report bounded stale goobers/* branch candidates (a workflow stage)
   reconcile-post-merge reconcile late merge-queue merges (a workflow stage)
   record-merge-refusal record a merge refusal and demote a persistently-stuck lander (a workflow stage)
+  recovery-resume   restore retained implementation into the receiving run (a workflow stage)
   remediation-checkpoint durable per-cause attempt budgets + same-diff escalation (a workflow stage)
   report-pr-status  publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
   resolve-review-threads reply to and resolve remediated native review threads (a workflow stage)
@@ -1978,11 +1980,23 @@ do), 1 = business error, 2 = usage/IO error.
 ### recovery-restore
 Usage: goobers recovery-restore --record <record.json> --repository <checkout> --branch <new-branch> [instance]
 
+Or select by --issue <id> --repository-key <canonical-key> instead of --record.
+
 Restore a retained implementation archive onto freshly fetched main from
 the matching configured repository. The archive must be snapshot.bundle
 beside record.json. The destination checkout and index remain unchanged;
 the new local branch must not exist. Expired records and runtime asset
 changes are refused. This does not push, open a PR, or abandon recovery.
+
+### recovery-resume
+Usage: goobers recovery-resume [instance]
+
+Restore the current run's single claimed issue onto freshly fetched main,
+then fast-forward its clean receiving worktree to the restored commit.
+Requires workflow run context and repository credentials. Refuses another
+branch, changed or dirty work, and expired claims. Verified retries resume
+the prepared result; completed adoption removes its preparation branch.
+Does not push, open a PR, release the claim, or remove retained state.
 
 ### remediation-checkpoint
 Usage: goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]] [path]

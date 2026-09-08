@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,14 +21,15 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/providers"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", repository}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Recovery Test", "GIT_AUTHOR_EMAIL=recovery@example.invalid", "GIT_COMMITTER_NAME=Recovery Test", "GIT_COMMITTER_EMAIL=recovery@example.invalid")
+	cmd := testgit.Command(append([]string{"-C", repository}, args...)...)
+	cmd.Env = append(cmd.Env, "GIT_AUTHOR_NAME=Recovery Test", "GIT_AUTHOR_EMAIL=recovery@example.invalid", "GIT_COMMITTER_NAME=Recovery Test", "GIT_COMMITTER_EMAIL=recovery@example.invalid")
 	data, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("fixture Git failed: %v: %s", err, data)

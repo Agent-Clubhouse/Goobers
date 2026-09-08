@@ -5,9 +5,9 @@ package recovery
 import (
 	"context"
 	"errors"
+	"github.com/goobers/goobers/internal/testgit"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,8 +17,8 @@ import (
 
 func recoveryTestGit(t *testing.T, repository string, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", repository}, args...)...)
-	command.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Recovery Test", "GIT_AUTHOR_EMAIL=recovery@example.invalid", "GIT_COMMITTER_NAME=Recovery Test", "GIT_COMMITTER_EMAIL=recovery@example.invalid")
+	command := testgit.Command(append([]string{"-C", repository}, args...)...)
+	command.Env = append(command.Env, "GIT_AUTHOR_NAME=Recovery Test", "GIT_AUTHOR_EMAIL=recovery@example.invalid", "GIT_COMMITTER_NAME=Recovery Test", "GIT_COMMITTER_EMAIL=recovery@example.invalid")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v %s", args, err, output)
