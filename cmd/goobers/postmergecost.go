@@ -32,6 +32,12 @@ type postMergeCostCommentReader interface {
 	ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error)
 }
 
+type issueCommentCostProvider interface {
+	postMergeCostCommentReader
+	AuthenticatedLogin(context.Context) (string, error)
+	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
+}
+
 // collectPostMergeCostReport treats provider comments as a replicated receipt
 // log. A run can write several cumulative snapshots as it progresses, so only
 // the highest journal sequence for each run is counted. Issue observations are
@@ -91,7 +97,7 @@ func collectPostMergeCostReport(
 
 func collectGitHubPostMergeCostReport(
 	ctx context.Context,
-	prProvider, issueProvider remediationProvider,
+	prProvider, issueProvider issueCommentCostProvider,
 	repo providers.RepositoryRef,
 	pullNumber string,
 	issueIDs []string,
@@ -108,20 +114,47 @@ func collectGitHubPostMergeCostReport(
 	if prAuthor == "" && issueAuthor == "" {
 		return postMergeCostReport{}
 	}
-	report, collectErr := collectPostMergeCostReport(ctx, prProvider, issueProvider, repo, repo, pullNumber, issueIDs, prAuthor, issueAuthor)
-	if collectErr != nil {
-		pf(stderr, "warning: %v\n", collectErr)
-	}
-	if body := renderPostMergeCostSummary(report); body != "" && body != report.SummaryBody {
-		if _, err := prProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo,
-			ID:         pullNumber,
-			Comment:    body,
-		}); err != nil {
-			pf(stderr, "warning: post pull request cost summary: %v\n", err)
-		}
+	report, _, reconcileErr := reconcileIssueCommentCostSummary(
+		ctx, prProvider, issueProvider, repo, pullNumber, issueIDs, prAuthor, issueAuthor,
+	)
+	if reconcileErr != nil {
+		pf(stderr, "warning: %v\n", reconcileErr)
 	}
 	return report
+}
+
+func reconcileIssueCommentCostSummary(
+	ctx context.Context,
+	prProvider, issueProvider issueCommentCostProvider,
+	repo providers.RepositoryRef,
+	pullNumber string,
+	issueIDs []string,
+	trustedPRAuthor, trustedIssueAuthor string,
+) (postMergeCostReport, bool, error) {
+	report, collectErr := collectPostMergeCostReport(
+		ctx,
+		prProvider,
+		issueProvider,
+		repo,
+		repo,
+		pullNumber,
+		issueIDs,
+		trustedPRAuthor,
+		trustedIssueAuthor,
+	)
+	body := renderPostMergeCostSummary(report)
+	if body == "" || body == report.SummaryBody {
+		return report, false, collectErr
+	}
+	_, updateErr := prProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         pullNumber,
+		Comment:    body,
+	})
+	if updateErr != nil {
+		updateErr = fmt.Errorf("post pull request cost summary: %w", updateErr)
+	}
+	return report, updateErr == nil, errors.Join(collectErr, updateErr)
 }
 
 type adoPRThreadCostReader struct {

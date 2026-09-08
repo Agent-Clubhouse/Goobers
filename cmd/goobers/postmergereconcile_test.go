@@ -167,56 +167,6 @@ func TestReconcilePostMergeLeavesUnmergedPullRequestPending(t *testing.T) {
 	}
 }
 
-func TestReconcilePostMergePublishesAndRefreshesOpenPRCostSummary(t *testing.T) {
-	st := newPostMergeServerState(20, "main", "", nil, []int{21})
-	st.issueComments[21] = []string{
-		costComment(t, "goobers", "implementation", "run-implementation", 10, 4_000_000_000).Body,
-	}
-	server := newPostMergeServer(t, "your-org", "your-repo", st)
-	root := postMergeReconcileEnv(t, server.URL)
-
-	code, _, stderr := runArgs(t, "reconcile-post-merge", root)
-	if code != 0 {
-		t.Fatalf("first cycle: code = %d, stderr = %q", code, stderr)
-	}
-	st.mu.Lock()
-	comments := append([]string(nil), st.issueComments[21]...)
-	st.mu.Unlock()
-	if got, want := len(comments), 2; got != want {
-		t.Fatalf("comments after first cycle = %d, want %d: %q", got, want, comments)
-	}
-	if !strings.Contains(comments[len(comments)-1], "Your cost for this PR was **4.00 AIC**") {
-		t.Fatalf("latest comment = %q, want 4.00 AIC summary", comments[len(comments)-1])
-	}
-
-	code, _, stderr = runArgs(t, "reconcile-post-merge", root)
-	if code != 0 {
-		t.Fatalf("second cycle: code = %d, stderr = %q", code, stderr)
-	}
-	st.mu.Lock()
-	comments = append([]string(nil), st.issueComments[21]...)
-	st.issueComments[21] = append(st.issueComments[21],
-		costComment(t, "goobers", "merge-review", "run-review", 20, 2_000_000_000).Body)
-	st.mu.Unlock()
-	if got, want := len(comments), 2; got != want {
-		t.Fatalf("unchanged cost duplicated summary: comments = %d, want %d", got, want)
-	}
-
-	code, _, stderr = runArgs(t, "reconcile-post-merge", root)
-	if code != 0 {
-		t.Fatalf("third cycle: code = %d, stderr = %q", code, stderr)
-	}
-	st.mu.Lock()
-	comments = append([]string(nil), st.issueComments[21]...)
-	st.mu.Unlock()
-	if got, want := len(comments), 4; got != want {
-		t.Fatalf("comments after refreshed cost = %d, want %d: %q", got, want, comments)
-	}
-	if !strings.Contains(comments[len(comments)-1], "Your cost for this PR was **6.00 AIC**") {
-		t.Fatalf("latest comment = %q, want refreshed 6.00 AIC summary", comments[len(comments)-1])
-	}
-}
-
 func TestReconcilePostMergeClearsSelfHealedEscalationWithoutMerge(t *testing.T) {
 	const (
 		pullNumber  = 631

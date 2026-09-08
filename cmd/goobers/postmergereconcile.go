@@ -74,9 +74,7 @@ const reconcilePostMergeHelp = "Usage: goobers reconcile-post-merge [--max N] [-
 	"timed out. A pull request that has since merged receives branch cleanup,\n" +
 	"issue close-out, and sibling fan-out through the normal post-merge path;\n" +
 	"an open or unmerged pull request remains pending. Completed entries are\n" +
-	"durably skipped on later runs. The bounded open-PR cleanup scan also\n" +
-	"refreshes cost summaries on Goobers-owned pull requests when new receipts\n" +
-	"arrive. Task inputs maxPullRequests and lookback\n" +
+	"durably skipped on later runs. Task inputs maxPullRequests and lookback\n" +
 	"set the same bounds (defaults: 10 and 168h; hard maximum: 100).\n" +
 	"Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.\n"
 
@@ -148,7 +146,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, issuesProvider, repo, root, providerInput("base", providerBaseBranch()), *limit, stdout, stderr)
+	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, root, providerInput("base", providerBaseBranch()), *limit, stdout, stderr)
 	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
 	if err != nil {
 		var providerErr *postMergeReconcileProviderError
@@ -251,7 +249,6 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 func reconcileOpenPullRequestParks(
 	ctx context.Context,
 	provider remediationProvider,
-	issuesProvider remediationProvider,
 	repo providers.RepositoryRef,
 	root string,
 	base string,
@@ -295,7 +292,6 @@ func reconcileOpenPullRequestParks(
 	}
 	namespace := providerBranchNamespace()
 	namespaced := filterPullRequestsByHeadPrefix(others, namespace)
-	summarizeOpenPullRequestCosts(ctx, provider, issuesProvider, repo, namespaced, stderr)
 	demotedCandidates := namespaced
 	resolved, resolvedErrs := unparkResolvedSiblingsFrom(
 		ctx, provider, repo, 0, namespaced, stderr,
@@ -311,26 +307,6 @@ func reconcileOpenPullRequestParks(
 	pf(stdout, "open-pr reconciliation: unparked %d resolved sibling(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s), re-handed %d demoted pr(s) to remediation, closed %d moot parked pr(s)\n",
 		len(resolved), len(escalated), len(demoted), len(handed), len(closedMoot))
 	return append(append(append(append(resolvedErrs, escalationErrs...), demotionErrs...), handoffErrs...), mootErrs...)
-}
-
-func summarizeOpenPullRequestCosts(
-	ctx context.Context,
-	prProvider, issueProvider remediationProvider,
-	repo providers.RepositoryRef,
-	prs []providers.PullRequestSummary,
-	stderr io.Writer,
-) {
-	for _, pr := range prs {
-		collectGitHubPostMergeCostReport(
-			ctx,
-			prProvider,
-			issueProvider,
-			repo,
-			strconv.Itoa(pr.Number),
-			closingIssueNumbers(pr.Body),
-			stderr,
-		)
-	}
 }
 
 func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix string) []providers.PullRequestSummary {

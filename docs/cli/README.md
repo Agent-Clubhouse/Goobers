@@ -2813,9 +2813,7 @@ Inspect a bounded batch of merge-queue entries whose queue-watch stage
 timed out. A pull request that has since merged receives branch cleanup,
 issue close-out, and sibling fan-out through the normal post-merge path;
 an open or unmerged pull request remains pending. Completed entries are
-durably skipped on later runs. The bounded open-PR cleanup scan also
-refreshes cost summaries on Goobers-owned pull requests when new receipts
-arrive. Task inputs maxPullRequests and lookback
+durably skipped on later runs. Task inputs maxPullRequests and lookback
 set the same bounds (defaults: 10 and 168h; hard maximum: 100).
 Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.
 ~~~
@@ -3985,6 +3983,12 @@ signal always forces shutdown without prompting. Interrupted runs resume
 from their last durable checkpoints on the next startup before
 exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
 2 = usage/IO error.
+
+After readiness and every 15 minutes, the daemon scans a bounded seven-day
+window of recently merged GitHub Goobers pull requests and publishes
+any missing or updated cost summary. This is a workflow-independent
+backstop; the normal post-merge stage still publishes synchronously when
+Goobers merges.
 
 Legacy spans-only run directories are reported as cleanup candidates
 and preserved by default. --cleanup-spans-only-runs deletes them at
