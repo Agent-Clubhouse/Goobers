@@ -66,6 +66,11 @@ func startTranscriptCheckpoints(buffer *syncBuffer, interval time.Duration, sink
 	if sink == nil {
 		return transcriptCheckpoints{}
 	}
+	state := transcriptCheckpointState{buffer: buffer, sink: sink}
+	return startTranscriptCheckpointWorker(interval, state.capture)
+}
+
+func startTranscriptCheckpointWorker(interval time.Duration, capture func(string) error) transcriptCheckpoints {
 	if interval <= 0 {
 		interval = DefaultTranscriptCheckpointInterval
 	}
@@ -74,19 +79,18 @@ func startTranscriptCheckpoints(buffer *syncBuffer, interval time.Duration, sink
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		ticks := ticker.C
-		state := transcriptCheckpointState{buffer: buffer, sink: sink}
 		var err error
 		for {
 			select {
 			case <-ticks:
-				if err = state.capture("checkpoint"); err != nil {
+				if err = capture("checkpoint"); err != nil {
 					// Do not retry an uncertain durable write or repeatedly
 					// copy the same growing transcript after storage fails.
 					ticks = nil
 				}
 			case reason := <-worker.stop:
 				if err == nil {
-					err = state.capture(reason)
+					err = capture(reason)
 				}
 				worker.done <- err
 				return
