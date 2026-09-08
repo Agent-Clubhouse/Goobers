@@ -367,24 +367,21 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// the operator to wait for a reload that is not coming. Ask the daemon
 	// which tree is in force and say so.
 	//
-	// The read needs a bearer, and this plane is NOT run-scoped while every
-	// pod bearer is. A worker holding a static GOOBERS_POD_TOKEN (the
-	// single-pod posture) can make the call. A split deployment, which mints
-	// per-run bearers instead and holds no standing token, cannot — and is
-	// told so plainly rather than left to assume it is being checked. Giving
-	// the worker an identity of its own is a change to the pod-auth model
-	// (every pod bearer today proves "I am run X's stage pod"), not something
-	// to infer here.
+	// A shared-key worker authenticates as itself with a short-lived credential
+	// confined to this GET-only plane. No synthetic run or standing pod bearer
+	// is needed; existing static-token deployments keep their explicit token.
 	if seams != nil && *daemonAPI != "" {
-		podToken := workerEnvOr("GOOBERS_POD_TOKEN", "")
-		if podToken == "" {
-			pf(stderr, "warning: goobers worker: config-divergence checking is NOT ACTIVE — this read needs a static "+
-				"GOOBERS_POD_TOKEN and none is set. This worker cannot tell whether its config tree matches the "+
-				"daemon's, so remember that a goober-content change merged to the config repo requires a DEPLOY, "+
-				"not just a merge (#4153)\n")
+		tokenSource, tokenErr := workerDigestTokenSource(*instanceRoot, workerEnvOr("GOOBERS_POD_TOKEN", ""))
+		if tokenErr != nil {
+			pf(stderr, "error: configure worker config-divergence authentication: %v\n", tokenErr)
+			return 2
+		}
+		if tokenSource == nil {
+			pf(stderr, "warning: goobers worker: config-divergence checking is NOT ACTIVE — configure api.podTokenKeyFile or GOOBERS_POD_TOKEN; "+
+				"this worker cannot compare its config tree with the daemon's (#4153)\n")
 		} else {
 			divergence := startWorkerDivergenceWatcher(ctx, seams, http.DefaultClient,
-				*daemonAPI, podToken, workerDivergenceCheckInterval)
+				*daemonAPI, tokenSource, workerDivergenceCheckInterval)
 			defer divergence.Stop()
 			pf(stdout, "goobers worker: checking config-tree divergence against %s every %s\n",
 				*daemonAPI, workerDivergenceCheckInterval)

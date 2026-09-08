@@ -72,6 +72,16 @@ pod `fsGroup: 65532`; only the daemon receives its TLS private key. This prepare
 never reads existing cluster Secret values. The worker's startup guard validates
 its mounted signing key, and daemon startup validates listener configuration.
 
+The worker also uses that key to authenticate the periodic config-digest read.
+It mints a separate worker credential for each poll, valid for two minutes and
+restricted to `GET /api/v1/config/digest`. It carries no run identity or instance
+roles, cannot access stage or human API routes, and is never passed to a stage.
+No standing `GOOBERS_POD_TOKEN` is needed in this topology. Both processes must
+run a build supporting this worker identity; an older daemon refuses it and the
+worker reports the comparison as `NOT CHECKED`. Key changes still require the
+coordinated rollout described below. This detects divergence; it does not update
+either process's configuration tree.
+
 **Every stage image must separately trust the API CA.** Worker `SSL_CERT_FILE`
 is not automatically propagated into a stage image. For a private CA, build an
 adopted stage image that installs the public CA in its system trust store, then
