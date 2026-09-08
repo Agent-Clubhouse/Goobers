@@ -41,3 +41,31 @@ func TestRecordBindsRecoveryState(t *testing.T) {
 		})
 	}
 }
+
+func TestSnapshotRefBindsOwnerAndExactSnapshot(t *testing.T) {
+	record := storageTestRecord()
+	ref, err := RefForSnapshot(record.RunID, record.SnapshotSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Ref = ref
+	if err := record.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*Record){
+		func(r *Record) { r.RunID = "different-owner" },
+		func(r *Record) { r.SnapshotSHA = strings.Repeat("e", 40) },
+		func(r *Record) { r.Ref += "/extra" },
+	} {
+		wrong := record
+		change(&wrong)
+		if err := wrong.Validate(); err == nil {
+			t.Fatal("snapshot ref accepted mismatched identity")
+		}
+	}
+	for _, owner := range []string{"", "../main", "run/other", "run.lock"} {
+		if ref, err := RefForSnapshot(owner, record.SnapshotSHA); err == nil || ref != "" {
+			t.Fatalf("invalid owner accepted: %q %v", ref, err)
+		}
+	}
+}

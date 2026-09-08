@@ -44,6 +44,16 @@ func RefForRun(runID string) (string, error) {
 	return "refs/goobers/recovery/" + runID, nil
 }
 
+// RefForSnapshot gives each prepared snapshot its own immutable retention ref.
+// A separate namespace allows older run-only refs to coexist without Git's
+// file/directory ref-name collision. The owner remains the actual run ID.
+func RefForSnapshot(runID, snapshotSHA string) (string, error) {
+	if !runIdentity.MatchString(runID) || !gitObjectID.MatchString(snapshotSHA) {
+		return "", fmt.Errorf("invalid recovery snapshot identity")
+	}
+	return "refs/goobers/recovery-snapshots/" + runID + "/" + snapshotSHA, nil
+}
+
 // Validate verifies record shape, not artifact existence or merge state.
 func (r Record) Validate() error {
 	if err := r.validateSnapshot(); err != nil {
@@ -65,7 +75,8 @@ func (r Record) validateSnapshot() error {
 	if err != nil {
 		return err
 	}
-	if r.Ref != ref {
+	snapshotRef, snapshotErr := RefForSnapshot(r.RunID, r.SnapshotSHA)
+	if r.Ref != ref && (snapshotErr != nil || r.Ref != snapshotRef) {
 		return fmt.Errorf("recovery ref does not match run identity")
 	}
 	if !validRepositoryKey(r.RepositoryKey) {

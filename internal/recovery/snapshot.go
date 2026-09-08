@@ -59,7 +59,10 @@ func CaptureSnapshot(ctx context.Context, repository, runID string, identityTime
 		return "", err
 	}
 	for _, args := range [][]string{
-		{"add", "--update", "--", "."},
+		// With an empty source index, an explicit "." pathspec is unmatched
+		// and Git fails before capturing new files. The normalized worktree
+		// root and private index already scope this update to the repository.
+		{"add", "--update", "--"},
 		{"--literal-pathspecs", "add", "--all", "--force", "--sparse", "--pathspec-file-nul", "--pathspec-from-file=" + paths},
 	} {
 		if err := recoveryGitWithEnv(ctx, repository, io.Discard, environment, args...); err != nil {
