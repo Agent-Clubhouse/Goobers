@@ -178,6 +178,11 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 			worktree.WithPinnedRoot(l.WorkcopiesBaseDir()),
 		}
+		recoveryOption, recoveryErr := recoveryCleanupOption(l, cfg, absoluteWorkcopiesRoot, cloneURLFn, sharedReg)
+		if recoveryErr != nil {
+			return runner.Config{}, nil, recoveryErr
+		}
+		managerOptions = append(managerOptions, recoveryOption)
 		for repoURL, limit := range pathLimits {
 			managerOptions = append(managerOptions, worktree.WithPathLengthLimit(repoURL, limit))
 		}

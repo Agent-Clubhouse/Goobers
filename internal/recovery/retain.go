@@ -22,6 +22,9 @@ type RetentionRequest struct {
 	CleanupRoots    []string
 	MaxSnapshots    int
 	MaxArchiveBytes int64
+	// SkipEmpty permits cleanup without publishing when no implementation
+	// differs from the cumulative base. It returns a zero record and empty path.
+	SkipEmpty bool
 }
 
 // PublicationJournal is the durable acknowledgement boundary. Production uses
@@ -42,6 +45,9 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 	prepared, err := PrepareRecord(ctx, request.Repository, request.RepositoryKey, request.RunID, request.BaseRef, request.IdentityTime, request.RetainUntil)
 	if err != nil {
 		return Record{}, "", err
+	}
+	if request.SkipEmpty && prepared.PatchDigest == "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
+		return Record{}, "", nil
 	}
 	retained, path, err := PublishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes)
 	if err != nil {

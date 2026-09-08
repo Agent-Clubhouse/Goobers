@@ -2234,6 +2234,14 @@ func TestBuildRunnerConfigReloadsPathLengthPolicyOnReusedManager(t *testing.T) {
 
 	repo.PathLength.Disabled = true
 	build(manager)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		Schema: journal.RunSchema, RunID: "disabled-after-reload", Workflow: "path-policy-test",
+		WorkflowVersion: 1, Gaggle: "example", StartedAt: time.Now().UTC(),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
 	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
 		RepoURL: origin,
 		RunID:   "disabled-after-reload",
