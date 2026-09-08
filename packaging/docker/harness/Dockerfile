@@ -2,8 +2,10 @@
 # harness package and fixed runtime launcher, with no build scripts or downloads.
 ARG GOOBERS_BASE_IMAGE
 FROM ${GOOBERS_BASE_IMAGE}
-COPY package/ /opt/goobers-harness/
-COPY bin/ /usr/local/bin/
+# Explicit modes retain runnable native code with Windows-hosted contexts too.
+# Every runtime asset remains immutable; the tar entrypoint mode was verified.
+COPY --chmod=0555 package/ /opt/goobers-harness/
+COPY --chmod=0555 bin/ /usr/local/bin/
 COPY version source /usr/share/goobers/harness/
 USER 65532:65532
 ARG HARNESS

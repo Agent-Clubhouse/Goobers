@@ -79,10 +79,10 @@ func prepareHarness(ctx context.Context, client *http.Client, pin harnessPin, di
 	}
 	defer func() { _ = os.RemoveAll(staging) }()
 	archive := filepath.Join(staging, "harness.tgz")
-	if err := downloadHarness(ctx, client, pin, archive); err != nil {
+	if err := downloadHarness(ctx, client, pin, archive, maxArchiveBytes); err != nil {
 		return err
 	}
-	if err := unpackHarness(archive, filepath.Join(staging, "package")); err != nil {
+	if err := unpackHarness(archive, filepath.Join(staging, "package"), pin.name, maxPackageBytes, maxPackageFiles); err != nil {
 		return err
 	}
 	if err := writeLauncher(staging, pin); err != nil {
@@ -95,10 +95,6 @@ func prepareHarness(ctx context.Context, client *http.Client, pin harnessPin, di
 }
 
 func writeLauncher(root string, pin harnessPin) error {
-	info, err := os.Stat(filepath.Join(root, "package", pin.name))
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return fmt.Errorf("harness package lacks executable %s", pin.name)
-	}
 	var launcher string
 	switch pin.name {
 	case "copilot":

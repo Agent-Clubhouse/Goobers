@@ -8,6 +8,9 @@ bundled native modules, remain in the image. The Go release helper in
 SHA-512 and verifies it before bounded extraction. It refuses traversal paths,
 links, devices, duplicate files, and privileged file modes, and publishes the
 prepared context only after the complete operation succeeds.
+Executable-entry validation uses the archive's Unix permission metadata. Docker
+then sets all immutable package assets and launchers to mode `0555`, so Windows
+clients do not lose executable bits when sending a context to a Linux engine.
 
 The release engine prepares the package, launcher, version, source provenance,
 and Dockerfile together. The repository directory alone is not a build context:

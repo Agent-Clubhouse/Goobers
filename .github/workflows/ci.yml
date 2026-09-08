@@ -1218,6 +1218,9 @@ jobs:
       - name: Windows service transitions
         run: go test ./internal/winsvc
 
+      - name: Windows host image preparation
+        run: go test ./release/internal/imageinputs -count=1
+
       # The image uses Server Core's Windows PowerShell 5.1. Do not silently
       # substitute the runner's default PowerShell 7 or skip the native checks.
       - name: Windows image input verifier (PowerShell 5.1)

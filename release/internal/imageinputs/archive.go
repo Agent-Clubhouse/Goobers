@@ -22,7 +22,7 @@ const (
 	maxPackageFiles = 10000
 )
 
-func downloadHarness(ctx context.Context, client *http.Client, pin harnessPin, path string) error {
+func downloadHarness(ctx context.Context, client *http.Client, pin harnessPin, path string, maxBytes int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pin.url, nil)
 	if err != nil {
 		return err
@@ -38,7 +38,7 @@ func downloadHarness(ctx context.Context, client *http.Client, pin harnessPin, p
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("harness download returned HTTP %d", response.StatusCode)
 	}
-	if response.ContentLength > maxArchiveBytes {
+	if response.ContentLength > maxBytes {
 		return fmt.Errorf("harness archive exceeds size limit")
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -47,11 +47,11 @@ func downloadHarness(ctx context.Context, client *http.Client, pin harnessPin, p
 	}
 	defer func() { _ = file.Close() }()
 	hash := sha512.New()
-	n, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, maxArchiveBytes+1))
+	n, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, maxBytes+1))
 	if err != nil {
 		return err
 	}
-	if n > maxArchiveBytes {
+	if n > maxBytes {
 		return fmt.Errorf("harness archive exceeds size limit")
 	}
 	if hex.EncodeToString(hash.Sum(nil)) != pin.digest {
@@ -60,7 +60,7 @@ func downloadHarness(ctx context.Context, client *http.Client, pin harnessPin, p
 	return file.Close()
 }
 
-func unpackHarness(archive, directory string) error {
+func unpackHarness(archive, directory, executable string, maxBytes int64, maxFiles int) error {
 	f, err := os.Open(archive)
 	if err != nil {
 		return err
@@ -73,18 +73,28 @@ func unpackHarness(archive, directory string) error {
 	defer func() { _ = gz.Close() }()
 	reader := tar.NewReader(gz)
 	var total int64
+	foundExecutable := false
 	for count := 0; ; count++ {
 		h, err := reader.Next()
 		if errors.Is(err, io.EOF) {
+			if !foundExecutable {
+				return fmt.Errorf("harness package lacks executable %s", executable)
+			}
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if count >= maxPackageFiles || h.Size < 0 || h.Size > maxPackageBytes-total {
+		if count >= maxFiles || h.Size < 0 || h.Size > maxBytes-total {
 			return fmt.Errorf("harness package exceeds extraction limits")
 		}
 		total += h.Size
+		if h.Name == "package/"+executable {
+			if h.Typeflag != tar.TypeReg || h.Mode&0o111 == 0 {
+				return fmt.Errorf("harness package lacks executable %s", executable)
+			}
+			foundExecutable = true
+		}
 		if err := unpackEntry(reader, h, directory); err != nil {
 			return err
 		}

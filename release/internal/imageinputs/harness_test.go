@@ -165,10 +165,48 @@ func TestDownloadRejectsHTTPSDowngrade(t *testing.T) {
 	defer tls.Close()
 	client := harnessClient()
 	client.Transport = tls.Client().Transport
-	if err := downloadHarness(context.Background(), client, harnessPin{url: tls.URL}, filepath.Join(t.TempDir(), "archive")); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+	if err := downloadHarness(context.Background(), client, harnessPin{url: tls.URL}, filepath.Join(t.TempDir(), "archive"), maxArchiveBytes); err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("downgrade = %v", err)
 	}
 	if contacted {
 		t.Fatal("contacted plaintext redirect destination")
+	}
+}
+
+func TestUnknownLengthDownloadLimit(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.(http.Flusher).Flush() // Force chunked transfer without Content-Length.
+		_, _ = io.WriteString(w, strings.Repeat("x", 33))
+	}))
+	defer server.Close()
+	err := downloadHarness(context.Background(), server.Client(), harnessPin{url: server.URL}, filepath.Join(t.TempDir(), "archive"), 32)
+	if err == nil || !strings.Contains(err.Error(), "size limit") {
+		t.Fatalf("unknown-length oversized download = %v", err)
+	}
+}
+
+func TestCumulativeAndFileCountExtractionLimits(t *testing.T) {
+	data := fixtureArchive(t, []*tar.Header{
+		{Name: "package/copilot", Mode: 0o755, Size: 20},
+		{Name: "package/addon.node", Mode: 0o644, Size: 20},
+	})
+	archive := filepath.Join(t.TempDir(), "harness.tgz")
+	if err := os.WriteFile(archive, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		bytes int64
+		files int
+	}{
+		{"cumulative bytes", 32, 10},
+		{"file count", 100, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := unpackHarness(archive, t.TempDir(), "copilot", tc.bytes, tc.files)
+			if err == nil || !strings.Contains(err.Error(), "extraction limits") {
+				t.Fatalf("extraction limit = %v", err)
+			}
+		})
 	}
 }
