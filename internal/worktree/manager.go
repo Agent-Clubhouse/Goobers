@@ -614,6 +614,9 @@ func (m *Manager) fetchMirror(ctx context.Context, repoURL, dir string, narrow b
 	for _, ns := range m.runBranchNamespacesSnapshot() {
 		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
 	}
+	// Recovery pins are local lifecycle state, not replicas of origin.
+	// Neither prune nor a remote ref with the same name may change them.
+	fetchArgs = append(fetchArgs, "^refs/goobers/recovery/*", "^refs/goobers/recovery-snapshots/*")
 	return m.runRemoteGit(ctx, repoURL, dir, fetchArgs...)
 }
 
