@@ -83,6 +83,38 @@ func TestTraceShowsEffectiveRecoveryDeadline(t *testing.T) {
 		t.Fatalf("incorrect status recovery text: %s", statusText.String())
 	}
 	assertStatusCommandRecovery(t, layout.Root, runID, record.Ref, deadline)
+	assertRecoveryWatchRefresh(t, layout, runID, path, deadline)
+}
+
+func assertRecoveryWatchRefresh(t *testing.T, layout instance.Layout, runID, path string, deadline time.Time) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runs := []runSummary{{RunID: runID, Workflow: "implementation", Phase: journal.PhaseEscalated}}
+	loadRuns := func() ([]runSummary, error) { return runs, nil }
+	frame := 0
+	base := func(context.Context, []runSummary, time.Time) (string, error) {
+		frame++
+		if frame == 2 {
+			if _, err := recovery.RenewRetention(context.Background(), path, deadline.Add(time.Hour), 1024); err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+		}
+		return "scheduler status\n", nil
+	}
+	var out bytes.Buffer
+	if err := watchStatus(ctx, time.Millisecond, statusOptions{}, &out, loadRuns, withRecoveryStatusText(layout, statusOptions{}, base)); err != nil {
+		t.Fatal(err)
+	}
+	frames := strings.Split(out.String(), statusClearScreen)[1:]
+	if len(frames) != 2 || !strings.Contains(frames[0], deadline.Format(time.RFC3339Nano)) || !strings.Contains(frames[1], deadline.Add(time.Hour).Format(time.RFC3339Nano)) {
+		t.Fatalf("watch did not refresh renewal without a phase change: %s", out.String())
+	}
+	filtered := withRecoveryStatusText(layout, statusOptions{workflow: "different"}, func(context.Context, []runSummary, time.Time) (string, error) { return "base", nil })
+	if text, err := filtered(context.Background(), runs, time.Now()); err != nil || text != "base" {
+		t.Fatalf("watch recovery ignored workflow filter: %q %v", text, err)
+	}
 }
 
 func assertStatusCommandRecovery(t *testing.T, root, runID, ref string, deadline time.Time) {

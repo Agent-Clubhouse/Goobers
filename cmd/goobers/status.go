@@ -1020,7 +1020,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		printValidationWarnings(stdout, warnings)
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
-		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, loadStatusText); err != nil {
+		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText)); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}

@@ -4,11 +4,28 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/recovery"
 )
+
+// Watch reloads retention metadata on each redraw, including changes that do
+// not alter the run's phase. Apply the same selection as the visible run table.
+func withRecoveryStatusText(layout instance.Layout, options statusOptions, load func(context.Context, []runSummary, time.Time) (string, error)) func(context.Context, []runSummary, time.Time) (string, error) {
+	return func(ctx context.Context, runs []runSummary, now time.Time) (string, error) {
+		base, err := load(ctx, runs, now)
+		if err != nil {
+			return "", err
+		}
+		selected, _ := selectStatusRuns(runs, options)
+		var out strings.Builder
+		out.WriteString(base)
+		printStatusRecovery(&out, layout, selected, now)
+		return out.String(), nil
+	}
+}
 
 type recoveryView struct {
 	Status    string             `json:"status"`
