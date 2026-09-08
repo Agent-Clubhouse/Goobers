@@ -40,6 +40,11 @@ func PublishRetainedState(ctx context.Context, repository, directory string, cle
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Record{}, err
 	}
+	if _, err := os.Lstat(archive); err == nil {
+		return resumeArchivePublication(ctx, repository, directory, prepared, maxBytes)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Record{}, err
+	}
 	digest, err := PublishSnapshotBundle(ctx, repository, archive, prepared, maxBytes)
 	if err != nil {
 		return Record{}, err

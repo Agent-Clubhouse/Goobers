@@ -98,6 +98,15 @@ func TestIntegrationRetainedPublicationMetadataFailurePreservesArchive(t *testin
 	if err := os.Remove(metadata); err != nil {
 		t.Fatal(err)
 	}
+	foreign := record
+	foreign.PatchDigest = "sha256:" + strings.Repeat("0", 64)
+	if got, err := PublishRetainedState(context.Background(), repository, directory, []string{repository}, foreign, 1<<20); err == nil || got != (Record{}) {
+		t.Fatalf("archive-only retry accepted a different prepared identity: %+v %v", got, err)
+	}
+	if _, err := os.Lstat(metadata); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unverified archive received metadata: %v", err)
+	}
+	recoveryTestGit(t, repository, "config", "pack.compression", "0")
 	got, err = PublishRetainedState(context.Background(), repository, directory, []string{repository}, record, 1<<20)
 	if err != nil {
 		t.Fatal(err)

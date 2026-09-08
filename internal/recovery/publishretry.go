@@ -4,8 +4,28 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 )
+
+// An archive can outlive a crash before metadata publication. The caller's
+// freshly prepared snapshot supplies the trusted commit, ref, base and patch
+// identity; the archive supplies only its transport digest and size. The retry
+// verifier must check both identities before any metadata can acknowledge it.
+func resumeArchivePublication(ctx context.Context, repository, directory string, prepared Record, maxBytes int64) (Record, error) {
+	archive := filepath.Join(directory, BundleFileName)
+	digest, err := archiveDigest(archive, maxBytes)
+	if err != nil {
+		return Record{}, err
+	}
+	info, err := os.Lstat(archive)
+	if err != nil {
+		return Record{}, err
+	}
+	bound := prepared
+	bound.ArchiveDigest, bound.ArchiveBytes = digest, info.Size()
+	return republishRetainedState(ctx, repository, directory, prepared, bound, maxBytes)
+}
 
 // A published archive is immutable evidence, not a cache to regenerate using
 // whatever packing heuristics Git currently applies. Verify and re-flush its
