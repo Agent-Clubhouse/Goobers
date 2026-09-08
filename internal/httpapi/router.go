@@ -388,7 +388,7 @@ func RequireRoles() Authorizer {
 			return nil
 		}
 		required := RoleView
-		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		if request.Method != http.MethodGet && request.Method != http.MethodHead || recoveryPlanePath(request.URL.Path) {
 			required = RoleOperate
 		}
 		if !principal.HasRole(required) {
@@ -437,6 +437,9 @@ func podRouteScope(request *http.Request) (scope string, admitted bool) {
 	// decides WHICH run.
 	if runReadPlanePath(path) && method == http.MethodGet {
 		return ScopeJournal, true
+	}
+	if recoveryPlanePath(path) && method == http.MethodGet {
+		return ScopeClaims, true
 	}
 	return "", false
 }
@@ -525,6 +528,7 @@ type handlerConfig struct {
 	runJournal          RunJournalService
 	credentials         CredentialService
 	blobs               blobstore.Store
+	recovery            RecoveryService
 	surrenders          SurrenderService
 	state               StateService
 	telemetryDefects    TelemetryDefectAggregateService
@@ -900,6 +904,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, errorLog)
+	router.Handle(apicontract.RouteRunRecovery, recoveryArchiveHandler(config.recovery, errorLog))
 	registerSurrenderPlaneRoutes(router, config, errorLog)
 	registerStatePlaneRoutes(router, config.state, errorLog)
 }

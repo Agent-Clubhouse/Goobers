@@ -17,6 +17,7 @@ export const apiRoutes = {
   "runEvents": { method: "GET", path: "/api/v1/runs/{run}/events", actionClass: "read-only-navigation" },
   "stageAttempts": { method: "GET", path: "/api/v1/runs/{run}/stages/{stage}/attempts", actionClass: "read-only-navigation" },
   "runArtifact": { method: "GET", path: "/api/v1/runs/{run}/artifacts/{digest}", actionClass: "read-only-navigation" },
+  "runRecovery": { method: "GET", path: "/api/v1/runs/{run}/recovery", actionClass: "read-only-navigation" },
   "runTranscript": { method: "GET", path: "/api/v1/runs/{run}/transcripts/{seq}", actionClass: "read-only-navigation" },
   "telemetryCosts": { method: "GET", path: "/api/v1/telemetry/costs", actionClass: "read-only-navigation" },
   "telemetryStats": { method: "GET", path: "/api/v1/telemetry/stats", actionClass: "read-only-navigation" },

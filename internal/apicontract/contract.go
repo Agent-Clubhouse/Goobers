@@ -34,6 +34,7 @@ const (
 	RunEventsPath                = V1Prefix + "/runs/{run}/events"
 	StageAttemptsPath            = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
 	RunArtifactPath              = V1Prefix + "/runs/{run}/artifacts/{digest}"
+	RunRecoveryPath              = V1Prefix + "/runs/{run}/recovery"
 	RunTranscriptPath            = V1Prefix + "/runs/{run}/transcripts/{seq}"
 	TelemetryCostsPath           = V1Prefix + "/telemetry/costs"
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
@@ -245,6 +246,7 @@ const (
 	RouteRunEvents                RouteID = "runEvents"
 	RouteStageAttempts            RouteID = "stageAttempts"
 	RouteRunArtifact              RouteID = "runArtifact"
+	RouteRunRecovery              RouteID = "runRecovery"
 	RouteRunTranscript            RouteID = "runTranscript"
 	RouteTelemetryCosts           RouteID = "telemetryCosts"
 	RouteTelemetryStats           RouteID = "telemetryStats"
@@ -400,6 +402,7 @@ var v1Routes = []Route{
 	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteRunRecovery, Method: http.MethodGet, Path: RunRecoveryPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteTelemetryCosts, Method: http.MethodGet, Path: TelemetryCostsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},

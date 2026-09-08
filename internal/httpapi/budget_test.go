@@ -84,8 +84,11 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 			// in the first place. Credential resolve additionally contains an
 			// outbound GitHub App mint (30s ceiling); blob GET's budget is the
 			// shared CostBlob transfer-bound ceiling (apicontract.BlobBudget).
+			// Recovery delivery likewise uses a dedicated bounded archive
+			// transport, not the portal's 10s JSON client.
 			if route.ID != apicontract.RouteRunArtifact && route.ID != apicontract.RouteRunTranscript &&
 				route.ID != apicontract.RouteCredentialResolve && route.ID != apicontract.RouteBlobGet &&
+				route.ID != apicontract.RouteRunRecovery &&
 				budget >= clientAbortBackstop {
 				t.Errorf("%s budget %s is not strictly below the client's %s abort; the client would "+
 					"give up first and the server would keep working",
