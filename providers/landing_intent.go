@@ -11,6 +11,7 @@ import (
 // Recovery must retain that distinction even when it later observes a merge.
 type LandingIntent struct {
 	ID               string `json:"id"`
+	Operation        string `json:"operation,omitempty"`
 	RepositoryAPIURL string `json:"repositoryApiUrl"`
 	PullID           string `json:"pullId"`
 	ExpectedHeadSHA  string `json:"expectedHeadSha,omitempty"`
@@ -22,7 +23,7 @@ type LandingIntentRecorder interface {
 	RecordLandingIntent(context.Context, ProviderKind, LandingIntent) error
 }
 
-func prepareLandingIntent(ctx context.Context, recorder MutationRecorder, provider ProviderKind, repository, pullID, head string) (*LandingIntent, error) {
+func prepareLandingIntent(ctx context.Context, recorder MutationRecorder, provider ProviderKind, repository, pullID, head, operation string) (*LandingIntent, error) {
 	durable, ok := recorder.(LandingIntentRecorder)
 	if !ok {
 		return nil, nil
@@ -38,7 +39,10 @@ func prepareLandingIntent(ctx context.Context, recorder MutationRecorder, provid
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, fmt.Errorf("landing intent identity: %w", err)
 	}
-	intent := LandingIntent{ID: hex.EncodeToString(nonce[:]), RepositoryAPIURL: canonical.RepositoryAPIURL, PullID: pullID, ExpectedHeadSHA: head}
+	if operation != "merge" && operation != "enqueue" {
+		return nil, fmt.Errorf("landing intent: invalid operation %q", operation)
+	}
+	intent := LandingIntent{ID: hex.EncodeToString(nonce[:]), Operation: operation, RepositoryAPIURL: canonical.RepositoryAPIURL, PullID: pullID, ExpectedHeadSHA: head}
 	if err := durable.RecordLandingIntent(ctx, provider, intent); err != nil {
 		return nil, fmt.Errorf("persist landing intent: %w", err)
 	}

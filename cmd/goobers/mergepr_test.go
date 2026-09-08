@@ -654,10 +654,13 @@ func TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging(t *testing.T) {
 		t.Fatalf("result = %+v, want no branchCleanup key for an enqueued pull request", result)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 1 || facts[0].Operation != "enqueue" || facts[0].QueueAdmission == nil || facts[0].MergeConfirmation != nil {
+	if len(facts) != 2 || facts[0].Operation != "merge-intent" || facts[0].LandingIntent == nil || facts[1].Operation != "enqueue" || facts[1].QueueAdmission == nil || facts[1].MergeConfirmation != nil {
 		t.Fatalf("accepted queue receipt missing/promoted: %+v", facts)
 	}
-	admission := facts[0].QueueAdmission
+	admission := facts[1].QueueAdmission
+	if facts[0].LandingIntent.Operation != "enqueue" || admission.IntentID != facts[0].LandingIntent.ID {
+		t.Fatalf("queue intent/receipt disconnected: %+v", facts)
+	}
 	if admission.EntryID != "MQE_accepted" || admission.ExpectedHeadSHA != "head123" || admission.PullID != "9" || admission.RepositoryAPIURL != server.URL+"/repos/your-org/your-repo" {
 		t.Fatalf("CLI queue receipt crossed repository or head: %+v", admission)
 	}

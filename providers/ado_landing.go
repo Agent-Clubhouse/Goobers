@@ -289,7 +289,7 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
-	intent, err := prepareLandingIntent(ctx, p.mutationRecorder, ProviderADO, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA)
+	intent, err := prepareLandingIntent(ctx, p.mutationRecorder, ProviderADO, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "merge")
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}

@@ -24,6 +24,7 @@ type MergeConfirmation struct {
 // The expected head is the PR SHA pinned in the enqueue request, not a merge
 // group's synthetic commit. EnqueuedAt is the forge-returned entry timestamp.
 type QueueAdmission struct {
+	IntentID         string    `json:"intentId,omitempty"`
 	RepositoryAPIURL string    `json:"repositoryApiUrl"`
 	PullID           string    `json:"pullId"`
 	EntryID          string    `json:"entryId"`

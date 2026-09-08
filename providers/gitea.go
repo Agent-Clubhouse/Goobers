@@ -925,7 +925,7 @@ func (p *GiteaProvider) MergePullRequest(ctx context.Context, req MergePullReque
 		body["head_commit_id"] = req.ExpectedHeadSHA
 	}
 	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
-	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitea, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA)
+	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitea, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "merge")
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}

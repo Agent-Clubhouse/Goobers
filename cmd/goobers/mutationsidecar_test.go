@@ -20,7 +20,7 @@ import (
 
 func TestMutationSidecarPreservesQueueAdmissionAcrossWireConsumers(t *testing.T) {
 	t.Chdir(t.TempDir())
-	admission := &providers.QueueAdmission{RepositoryAPIURL: "https://forge.example/team/repos/acme/app", PullID: "9", EntryID: "MQE_owned", ExpectedHeadSHA: "head", EnqueuedAt: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+	admission := &providers.QueueAdmission{IntentID: "0123456789abcdef0123456789abcdef", RepositoryAPIURL: "https://forge.example/team/repos/acme/app", PullID: "9", EntryID: "MQE_owned", ExpectedHeadSHA: "head", EnqueuedAt: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
 	sidecarMutationRecorder{kind: "pr"}.RecordExternalRef(context.Background(), providers.ExternalRef{Provider: providers.ProviderGitHub, Ref: "acme/app#9", Operation: "enqueue", QueueAdmission: admission})
 	data, err := os.ReadFile(mutationsSidecarFile)
 	if err != nil {
@@ -46,7 +46,7 @@ func TestMutationSidecarPreservesQueueAdmissionAcrossWireConsumers(t *testing.T)
 
 func TestMutationSidecarPreservesLandingIntentAcrossWireConsumers(t *testing.T) {
 	t.Chdir(t.TempDir())
-	intent := providers.LandingIntent{ID: "0123456789abcdef0123456789abcdef", RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", ExpectedHeadSHA: "expected"}
+	intent := providers.LandingIntent{ID: "0123456789abcdef0123456789abcdef", Operation: "enqueue", RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", ExpectedHeadSHA: "expected"}
 	if err := (sidecarMutationRecorder{kind: "pr"}).RecordLandingIntent(context.Background(), providers.ProviderGitHub, intent); err != nil {
 		t.Fatal(err)
 	}

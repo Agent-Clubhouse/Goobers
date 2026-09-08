@@ -398,7 +398,7 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	}
 	var out githubMergeResult
 	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
-	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitHub, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA)
+	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitHub, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "merge")
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
@@ -694,6 +694,14 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 			} `json:"mergeQueueEntry"`
 		} `json:"enqueuePullRequest"`
 	}
+	repository, err := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitHub, repository, req.PullID, req.ExpectedHeadSHA, "enqueue")
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
 	if err := p.graphql(ctx, enqueuePullRequestMutation, variables, &mutation); err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
@@ -702,15 +710,14 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 	if entry == nil || strings.TrimSpace(entry.ID) == "" || len(entry.ID) > 256 || entry.EnqueuedAt.IsZero() {
 		return EnqueuePullRequestResult{}, fmt.Errorf("enqueue response lacks a valid queue entry identity; acceptance is unconfirmed")
 	}
-	repository, err := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
-	if err != nil {
-		return EnqueuePullRequestResult{}, err
-	}
 	confirmation := newMergeConfirmation(repository, req.PullID, "")
 	if confirmation == nil {
 		return EnqueuePullRequestResult{}, fmt.Errorf("enqueue receipt has an invalid repository address")
 	}
 	admission := &QueueAdmission{RepositoryAPIURL: confirmation.RepositoryAPIURL, PullID: req.PullID, EntryID: entry.ID, ExpectedHeadSHA: req.ExpectedHeadSHA, EnqueuedAt: entry.EnqueuedAt.UTC()}
+	if intent != nil {
+		admission.IntentID = intent.ID
+	}
 	p.recordEnqueue(ctx, req.Repository, req.PullID, admission)
 	message := fmt.Sprintf("pull request enqueued (state %s, position %d)", entry.State, entry.Position)
 	return EnqueuePullRequestResult{Number: number, Message: message, QueueEntryID: entry.ID}, nil
