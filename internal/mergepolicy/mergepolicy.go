@@ -70,6 +70,9 @@ func (directLander) Land(ctx context.Context, provider *providers.Dispatcher, re
 		MergeMethod:     req.MergeMethod,
 	})
 	if err != nil {
+		if res.Merged {
+			return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, err
+		}
 		return Result{}, err
 	}
 	if !res.Merged {

@@ -416,13 +416,15 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 		if intent != nil {
 			confirmation.IntentID = intent.ID
 		}
-		p.recordExternalRef(ctx, ExternalRef{
+		if err := recordLandingReceipt(ctx, p.recorder, ExternalRef{
 			MergeConfirmation: confirmation,
 			Provider:          ProviderGitHub,
 			Ref:               issueRef(req.Repository, req.PullID),
 			Operation:         "merge",
 			Fields:            map[string]FieldDigest{"state": {After: digestString("merged")}},
-		})
+		}); err != nil {
+			return MergePullRequestResult{Number: number, Merged: true, MergeSHA: out.SHA, Message: out.Message}, err
+		}
 	}
 	return MergePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
 }

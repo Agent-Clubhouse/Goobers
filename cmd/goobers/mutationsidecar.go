@@ -68,6 +68,15 @@ type sidecarMutationRecorder struct {
 // present-but-corrupt sidecar from the overwhelmingly common no-mutations
 // case and emits its own journal-level signal for that.
 func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref providers.ExternalRef) {
+	if err := r.RecordLandingReceipt(context.Background(), ref); err != nil {
+		log.Printf("mutation sidecar: persist %s: %v", mutationsSidecarFile, err)
+	}
+}
+
+// RecordLandingReceipt reports durability failures to landing callers. Do not
+// abandon a successful forge response merely because its request context was
+// cancelled: the local receipt must still be flushed before surrender.
+func (r sidecarMutationRecorder) RecordLandingReceipt(_ context.Context, ref providers.ExternalRef) error {
 	fact := mutationFact{
 		LandingIntent:     ref.LandingIntent,
 		QueueAdmission:    ref.QueueAdmission,
@@ -80,9 +89,7 @@ func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref provid
 		RunID:             ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
 		ProviderRunID: ref.ProviderRunID,
 	}
-	if err := appendMutationFact(fact); err != nil {
-		log.Printf("mutation sidecar: persist %s: %v", mutationsSidecarFile, err)
-	}
+	return appendMutationFact(fact)
 }
 
 func (r sidecarMutationRecorder) RecordLandingIntent(ctx context.Context, provider providers.ProviderKind, intent providers.LandingIntent) error {

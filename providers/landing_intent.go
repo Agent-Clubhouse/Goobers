@@ -23,6 +23,34 @@ type LandingIntentRecorder interface {
 	RecordLandingIntent(context.Context, ProviderKind, LandingIntent) error
 }
 
+// LandingReceiptRecorder acknowledges durable storage after a successful
+// external operation. A receipt failure does not undo that operation.
+type LandingReceiptRecorder interface {
+	RecordLandingReceipt(context.Context, ExternalRef) error
+}
+
+// LandingReceiptError means the external operation succeeded but its receipt
+// is not durably acknowledged. Callers must not describe it as a forge refusal.
+type LandingReceiptError struct{ Cause error }
+
+func (e *LandingReceiptError) Error() string {
+	return "landing succeeded but durable receipt persistence failed"
+}
+func (e *LandingReceiptError) Unwrap() error { return e.Cause }
+
+func recordLandingReceipt(ctx context.Context, recorder MutationRecorder, ref ExternalRef) error {
+	if durable, ok := recorder.(LandingReceiptRecorder); ok {
+		if err := durable.RecordLandingReceipt(ctx, ref); err != nil {
+			return &LandingReceiptError{Cause: err}
+		}
+		return nil
+	}
+	if recorder != nil {
+		recorder.RecordExternalRef(ctx, ref)
+	}
+	return nil
+}
+
 func prepareLandingIntent(ctx context.Context, recorder MutationRecorder, provider ProviderKind, repository, pullID, head, operation string) (*LandingIntent, error) {
 	durable, ok := recorder.(LandingIntentRecorder)
 	if !ok {
