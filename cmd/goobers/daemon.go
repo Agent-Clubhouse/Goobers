@@ -1842,14 +1842,19 @@ func buildReadModelIfNeeded(ctx context.Context, store *readmodel.Store, state r
 	if state.Ready {
 		return nil
 	}
+	// Startup-only reconstruction must not observe the daemon's lifetime
+	// cancellation. This work is not request-scoped and is intentionally not
+	// allowed to fail a daemon that is merely shutting down while the first
+	// build is still finishing.
+	startupCtx := context.Background()
 	roots, err := l.RunDirs()
 	if err != nil {
 		return err
 	}
-	if _, err := store.BuildFromJournals(ctx, roots); err != nil {
+	if _, err := store.BuildFromJournals(startupCtx, roots); err != nil {
 		return err
 	}
-	return store.MarkReady(ctx)
+	return store.MarkReady(startupCtx)
 }
 
 // bootstrapAndDigestConfigDir seeds a first-boot config tree when one is owed
