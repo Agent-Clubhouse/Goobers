@@ -257,6 +257,7 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 }
 
 type statusJSONSummary struct {
+	Recovery       *recoveryView                  `json:"recovery,omitempty"`
 	EngineFallback *readmodel.EngineFallback      `json:"engineFallback,omitempty"`
 	RunID          string                         `json:"runId"`
 	Workflow       string                         `json:"workflow"`
@@ -1106,7 +1107,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			Summary:           fleetSummary,
 			ParkedBacklog:     parked,
 			BaselineBlockers:  baselineBlockers,
-			Runs:              statusJSONSummaries(runs),
+			Runs:              statusRecoverySummaries(l, runs, now),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)
@@ -1125,6 +1126,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	pf(stdout, "%s", statusText)
 	renderStatus(stdout, runs, now)
+	printStatusRecovery(stdout, l, runs, now)
 	renderOlderRunsHint(stdout, olderRuns)
 	return 0
 }
