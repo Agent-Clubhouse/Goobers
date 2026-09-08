@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/santhosh-tekuri/jsonschema/v5"
+
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestAgentToolkitSchemaAcceptsSupportHistoryCorrection(t *testing.T) {

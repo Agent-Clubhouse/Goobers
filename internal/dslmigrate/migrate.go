@@ -85,7 +85,7 @@ func Migrate(source []byte, to string) (*Result, error) {
 		return nil, fmt.Errorf("dslmigrate: parse workflow: %w", err)
 	}
 	var extra yaml.Node
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err != nil {
 			return nil, fmt.Errorf("dslmigrate: parse trailing document: %w", err)
 		}

@@ -8,17 +8,17 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
-
-	"github.com/goobers/goobers/internal/app"
-	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/netpolrender"
-	"github.com/goobers/goobers/internal/workerhost"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
+
+	"github.com/goobers/goobers/internal/app"
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/netpolrender"
+	"github.com/goobers/goobers/internal/workerhost"
 )
 
 type deploymentCommandContract struct {

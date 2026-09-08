@@ -86,6 +86,7 @@
         "effectiveIn": {
           "type": "string",
           "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "examples": ["v0.4.0"],
           "description": "Actual release line when the current level took effect, when correcting an already-published mismatch. The append-only history retains the original support promise; this optional field records the DSL 1.4 early removal in v0.4.0."
         },
         "unsupportedAfter": { "type": "string", "minLength": 1 },
