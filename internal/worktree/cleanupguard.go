@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // CleanupTarget identifies the directory about to be destroyed. OwnerRunID
@@ -12,6 +13,10 @@ type CleanupTarget struct {
 	Path       string
 	WorktreeID string
 	OwnerRunID string
+	// RepositoryDigest and CreatedAt are copied from the durable marker.
+	// Empty values identify legacy metadata and must not be guessed.
+	RepositoryDigest string
+	CreatedAt        time.Time
 }
 
 // WithBeforeCleanup installs a durable-evidence handoff before destructive
@@ -37,11 +42,19 @@ func WithBeforeCleanup(callback func(context.Context, CleanupTarget) error) Mana
 }
 
 func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRunID string) error {
+	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: ownerRunID})
+}
+
+func (m *Manager) prepareMarkerCleanup(ctx context.Context, path, worktreeID string, mk marker) error {
+	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+}
+
+func (m *Manager) prepareCleanupTarget(ctx context.Context, target CleanupTarget) error {
 	if m.beforeCleanup == nil {
 		return nil
 	}
-	if err := m.beforeCleanup(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: ownerRunID}); err != nil {
-		return fmt.Errorf("worktree: preserve evidence before cleanup of %s: %w", worktreeID, err)
+	if err := m.beforeCleanup(ctx, target); err != nil {
+		return fmt.Errorf("worktree: preserve evidence before cleanup of %s: %w", target.WorktreeID, err)
 	}
 	return nil
 }

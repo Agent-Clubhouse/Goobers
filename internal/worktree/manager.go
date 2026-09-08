@@ -411,8 +411,15 @@ func (m *Manager) PinnedRoot() string {
 // two managers (or two runs) referring to the same repo always land on the
 // same managed working copy.
 func repoKey(repoURL string) string {
+	return RepositoryDigest(repoURL)[:16]
+}
+
+// RepositoryDigest binds cleanup metadata to the exact configured clone URL
+// without persisting a URL that could contain credentials. It is not a provider
+// identity: callers must match it against their configured repository URLs.
+func RepositoryDigest(repoURL string) string {
 	sum := sha256.Sum256([]byte(repoURL))
-	return hex.EncodeToString(sum[:])[:16]
+	return hex.EncodeToString(sum[:])
 }
 
 const worktreeDirectoryHashBytes = 12

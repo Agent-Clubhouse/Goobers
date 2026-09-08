@@ -26,14 +26,15 @@ const (
 // enough state for Manager.Reap to tell a live run apart from one whose
 // owning process died mid-stage.
 type marker struct {
-	RunID          string `json:"run_id"`
-	OwnerRunID     string `json:"owner_run_id,omitempty"`
-	Directory      string `json:"directory,omitempty"`
-	Branch         string `json:"branch,omitempty"`
-	StartRef       string `json:"start_ref,omitempty"`
-	AssetPathGuard bool   `json:"asset_path_guard,omitempty"`
-	Writer         string `json:"writer,omitempty"`
-	PID            int    `json:"pid"`
+	RepositoryDigest string `json:"repository_digest,omitempty"`
+	RunID            string `json:"run_id"`
+	OwnerRunID       string `json:"owner_run_id,omitempty"`
+	Directory        string `json:"directory,omitempty"`
+	Branch           string `json:"branch,omitempty"`
+	StartRef         string `json:"start_ref,omitempty"`
+	AssetPathGuard   bool   `json:"asset_path_guard,omitempty"`
+	Writer           string `json:"writer,omitempty"`
+	PID              int    `json:"pid"`
 	// PIDStartedAt is PID's own OS-reported start time at marker-creation
 	// time (#2052), best-effort — empty when proc.StartTime couldn't
 	// determine it (unsupported platform/kernel, or a transient read

@@ -296,7 +296,11 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 	lock.Lock()
 	defer lock.Unlock()
 
-	if err := m.prepareCleanup(ctx, path, worktreeID, ownerRunID); err != nil {
+	cleanupMarker := marker{OwnerRunID: ownerRunID}
+	if mk != nil {
+		cleanupMarker = *mk
+	}
+	if err := m.prepareMarkerCleanup(ctx, path, worktreeID, cleanupMarker); err != nil {
 		return err
 	}
 	repoDir := m.repoDirForKey(key)

@@ -303,15 +303,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	pid := os.Getpid()
 	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
 	mk := marker{
-		RunID:        opts.RunID,
-		OwnerRunID:   opts.OwnerRunID,
-		Directory:    directory,
-		Branch:       opts.Branch,
-		Writer:       m.writerIdentity,
-		PID:          pid,
-		PIDStartedAt: startedAt,
-		CreatedAt:    time.Now(),
-		Status:       statusActive,
+		RepositoryDigest: RepositoryDigest(opts.RepoURL),
+		RunID:            opts.RunID,
+		OwnerRunID:       opts.OwnerRunID,
+		Directory:        directory,
+		Branch:           opts.Branch,
+		Writer:           m.writerIdentity,
+		PID:              pid,
+		PIDStartedAt:     startedAt,
+		CreatedAt:        time.Now(),
+		Status:           statusActive,
 	}
 	// Persist ownership before git creates the directory so a crash during
 	// worktree add never leaves an opaque hash that cleanup cannot resolve.
@@ -768,7 +769,7 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 	mk, markerErr := readMarker(markerPath)
 	switch {
 	case markerErr == nil:
-		if err := m.prepareCleanup(ctx, path, runID, mk.OwnerRunID); err != nil {
+		if err := m.prepareMarkerCleanup(ctx, path, runID, mk); err != nil {
 			return err
 		}
 		if err := m.restoreReservedBranchFromMarker(ctx, key, path, mk); err != nil {
@@ -835,7 +836,7 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		if worktreeMeasured {
 			mk.SizeBytes = &worktreeBytes
 		}
-		if err := wt.manager.prepareCleanup(ctx, wt.Path, wt.RunID, ownerRunID); err != nil {
+		if err := wt.manager.prepareMarkerCleanup(ctx, wt.Path, wt.RunID, mk); err != nil {
 			return err
 		}
 		if err := wt.manager.restoreReservedBranchFromMarker(ctx, wt.key, wt.Path, mk); err != nil {
