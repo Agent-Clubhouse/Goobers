@@ -430,7 +430,7 @@ $ goobers backlog-health
 query/claim one eligible backlog item (a workflow stage)
 
 ~~~text
-Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--debug] [--read-only | --claim [--resweep] | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -452,6 +452,9 @@ claim locks, blocked-record reconciliation, scan cursors, and read caches,
 and uses only the github:issues:read capability. When inputs.resultFile
 is declared, it also writes a read-only candidate report with scan coverage;
 candidates are for inspection, not claims or permission to re-ready work.
+
+The --resweep modifier requires --claim and selects only re-sweep work;
+its calling workflow owns cadence through schedule/readiness controls.
 
 --debug writes candidate eligibility, exclusion, and claim-loss details to
 stderr. Diagnostics contain item IDs and selection metadata only; normal
@@ -487,10 +490,12 @@ whichever appears earliest in selectionPriority. Unset (the default)
 preserves plain FIFO exactly. fieldOrder is an optional comma-separated
 field[:asc|desc] list applied within each label-priority tier before FIFO.
 
-backlog-curation may opt into a bounded ready-item re-sweep with
-resweepMaxItems. Forward candidates always consume maxItems first; a
-re-sweep uses only leftover capacity, no more often than resweepInterval
-(default 24h), and rotates within selectionPriority tiers. Ready items
+A separate scheduled workflow uses --claim --resweep with bounded
+resweepMaxItems to recheck blocked dependencies and ready items. Forward
+candidates reserve maxItems capacity first but are never claimed by this
+mode. The sweep uses leftover capacity and rotates within selectionPriority
+tiers. Cadence belongs to workflow schedule/readiness; resweepInterval and
+inline re-sweep inputs on ordinary --claim runs are retired. Ready items
 already in implementation/review are emitted as read-only context and are
 never claimed.
 

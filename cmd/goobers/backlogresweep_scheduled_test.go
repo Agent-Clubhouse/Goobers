@@ -83,3 +83,22 @@ func TestBacklogScheduledResweepRejectsConflictingModes(t *testing.T) {
 		}
 	}
 }
+
+func TestBacklogScheduledResweepLegacyCLIRefusesBeforeSelection(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Ready item", providers.LabelApproved, providers.LabelReady)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "legacy-resweep")
+	configureCurationResweep(t, "2", "1")
+	t.Chdir(t.TempDir())
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code == 0 || !strings.Contains(stderr, "inline re-sweep is retired") {
+		t.Fatalf("legacy query did not refuse: code=%d stderr=%q", code, stderr)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.issueListRequests != 0 || server.dependencyRequests != 0 || len(server.issues[7].comments) != 0 {
+		t.Fatalf("legacy configuration reached selection/mutation: issueLists=%d dependencies=%d comments=%d",
+			server.issueListRequests, server.dependencyRequests, len(server.issues[7].comments))
+	}
+}

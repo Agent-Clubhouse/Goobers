@@ -179,10 +179,12 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"whichever appears earliest in selectionPriority. Unset (the default)\n" +
 	"preserves plain FIFO exactly. fieldOrder is an optional comma-separated\n" +
 	"field[:asc|desc] list applied within each label-priority tier before FIFO.\n\n" +
-	"backlog-curation may opt into a bounded ready-item re-sweep with\n" +
-	"resweepMaxItems. Forward candidates always consume maxItems first; a\n" +
-	"re-sweep uses only leftover capacity, no more often than resweepInterval\n" +
-	"(default 24h), and rotates within selectionPriority tiers. Ready items\n" +
+	"A separate scheduled workflow uses --claim --resweep with bounded\n" +
+	"resweepMaxItems to recheck blocked dependencies and ready items. Forward\n" +
+	"candidates reserve maxItems capacity first but are never claimed by this\n" +
+	"mode. The sweep uses leftover capacity and rotates within selectionPriority\n" +
+	"tiers. Cadence belongs to workflow schedule/readiness; resweepInterval and\n" +
+	"inline re-sweep inputs on ordinary --claim runs are retired. Ready items\n" +
 	"already in implementation/review are emitted as read-only context and are\n" +
 	"never claimed.\n\n" +
 	"respectAssignee (#1820) is an opt-in claim-scoping flag, default off (the\n" +
