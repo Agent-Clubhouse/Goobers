@@ -1231,7 +1231,7 @@ func resolveElectionOutcome(selectedNumber int, decision apiv1.VerdictDecision, 
 		// A genuinely clean review still is not this cluster's lander yet —
 		// it must wait behind its live predecessor(s) rather than reach
 		// merge-pr with nothing recording that it skipped the queue.
-		return false, notElectedBlockedRationale(selectedNumber, findings, policyName)
+		return false, preserveReviewerRationale(notElectedBlockedRationale(selectedNumber, findings, policyName), rationale)
 	}
 	return false, ""
 }

@@ -154,14 +154,15 @@ func TestResolveElectionOutcomeGenuinePass(t *testing.T) {
 	})
 
 	t.Run("non-crowned genuine pass must wait its turn", func(t *testing.T) {
-		elected, rationale := resolveElectionOutcome(12, apiv1.VerdictPass, []apiv1.Finding{blockedFinding(10, 11)}, "", []int{10, 11}, nil, electedLander, "fifo")
+		original := "  Reviewed the implementation.\n\nAll safety checks passed.\n"
+		elected, rationale := resolveElectionOutcome(12, apiv1.VerdictPass, []apiv1.Finding{blockedFinding(10, 11)}, original, []int{10, 11}, nil, electedLander, "fifo")
 		if elected {
 			t.Fatalf("resolveElectionOutcome = elected=true, want false (PR #12 has live predecessors #10/#11)")
 		}
 		if rationale == "" {
 			t.Fatal("want a non-empty rationale explaining why an individually-clean PR is parked")
 		}
-		for _, want := range []string{"#10", "#11", "fifo"} {
+		for _, want := range []string{"#10", "#11", "fifo", original} {
 			if !strings.Contains(rationale, want) {
 				t.Errorf("rationale = %q, want it to mention %q", rationale, want)
 			}
