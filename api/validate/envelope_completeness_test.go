@@ -92,20 +92,22 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 	return apiv1.InvocationEnvelope{
-		TaskID:              "implement",
-		Attempt:             1,
-		WorkflowID:          "implementation",
-		RunID:               "run-123",
-		TriggerRef:          "github:issue:1704",
-		Gaggle:              "goobers",
-		BranchNamespace:     "goobers/",
-		BaseBranch:          "main",
-		Goober:              "implementer",
-		GooberDigest:        "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
-		Goal:                "implement the claimed issue",
-		OwnershipBoundary:   "task:implement",
-		InstructionAddendum: "Preserve the public contract.",
-		Workspace:           "/workspace",
+		TaskID:                              "implement",
+		Attempt:                             1,
+		WorkflowID:                          "implementation",
+		RunID:                               "run-123",
+		TriggerRef:                          "github:issue:1704",
+		Gaggle:                              "goobers",
+		BranchNamespace:                     "goobers/",
+		BaseBranch:                          "main",
+		Goober:                              "implementer",
+		GooberDigest:                        "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+		Goal:                                "implement the claimed issue",
+		OwnershipBoundary:                   "task:implement",
+		InstructionAddendum:                 "Preserve the public contract.",
+		Workspace:                           "/workspace",
+		ReviewerDeferralAllowed:             true,
+		ReviewerMechanicalEscalationAllowed: true,
 		RepoRef: apiv1.RepoRef{
 			Provider:      apiv1.ProviderADO,
 			BaseURL:       "https://gitea.example.com",
@@ -223,9 +225,10 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 
 func completeVerdict() apiv1.Verdict {
 	return apiv1.Verdict{
-		Decision:  apiv1.VerdictNeedsChanges,
-		Rationale: "One substantive finding remains.",
-		Evidence:  []apiv1.ArtifactPointer{completeArtifactPointer("artifacts/review/evidence.json")},
+		Decision:   apiv1.VerdictFail,
+		ReasonCode: apiv1.VerdictReasonImplementationRejected,
+		Rationale:  "One substantive finding remains.",
+		Evidence:   []apiv1.ArtifactPointer{completeArtifactPointer("artifacts/review/evidence.json")},
 		Findings: []apiv1.Finding{{
 			ID:                     "finding-1703",
 			LearningSignature:      "merge-review|code-defect|cross-pr-blocked",
