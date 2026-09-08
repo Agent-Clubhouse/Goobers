@@ -1,13 +1,35 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/internal/worktree"
 )
+
+func TestRecoveryRetentionOwnerRequiresRunRootMapping(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	const runID = "expiry-run"
+	if err := os.Mkdir(runID, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := &worktree.Manager{Root: filepath.Join(root, "worktrees")}
+	for _, mapping := range []map[string]string{nil, {manager.Root: ""}} {
+		owner, directory, err := recoveryRetentionOwner(runID, []*worktree.Manager{manager}, mapping)
+		if err == nil || owner != nil || directory != "" {
+			t.Fatalf("unconfigured mapping resolved relative run: owner=%v directory=%q error=%v", owner, directory, err)
+		}
+	}
+	owner, directory, err := recoveryRetentionOwner(runID, []*worktree.Manager{manager}, map[string]string{manager.Root: root})
+	if err != nil || owner != manager || directory != filepath.Join(root, runID) {
+		t.Fatalf("configured mapping: owner=%v directory=%q error=%v", owner, directory, err)
+	}
+}
 
 func TestRecoveryDeadlineExpiredProtectsTerminalWindowAndActiveRuns(t *testing.T) {
 	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)

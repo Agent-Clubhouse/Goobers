@@ -75,7 +75,11 @@ func recoveryRetentionOwner(runID string, managers []*worktree.Manager, runsByRo
 	var owner *worktree.Manager
 	var runDir string
 	for _, manager := range managers {
-		candidate := filepath.Join(runsByRoot[manager.Root], runID)
+		runsRoot, configured := runsByRoot[manager.Root]
+		if !configured || runsRoot == "" {
+			return nil, "", fmt.Errorf("recovery retention requires configured run directory mapping")
+		}
+		candidate := filepath.Join(runsRoot, runID)
 		info, err := os.Lstat(candidate)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
