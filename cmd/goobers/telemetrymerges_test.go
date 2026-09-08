@@ -39,6 +39,10 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "10"}, Runner: providers.MutationRunnerFields("enqueue", nil, admission, nil)}); err != nil {
 		t.Fatal(err)
 	}
+	autoComplete := &providers.LandingIntent{ID: strings.Repeat("c", 32), Operation: "enqueue", RepositoryAPIURL: "https://dev.azure.com/org/project/_apis/git/repositories/repo", PullID: "12", ExpectedHeadSHA: "ado-head"}
+	if err := run.Append(journal.Event{Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: "ado", Kind: "pr", ID: "12"}, Runner: providers.MutationRunnerFields("enqueue", nil, nil, autoComplete)}); err != nil {
+		t.Fatal(err)
+	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -72,9 +76,15 @@ func TestTelemetryMergesReportsRealJournalConfirmation(t *testing.T) {
 	if len(report.LandingIntents) != 1 || report.LandingIntents[0].LandingIntent != *intent || report.LandingIntents[0].InstanceID != id {
 		t.Fatalf("CLI lost persisted attempt: %+v", report.LandingIntents)
 	}
+	if len(report.AutoCompleteAcknowledgements) != 1 || report.AutoCompleteAcknowledgements[0].LandingIntent != *autoComplete || report.AutoCompleteAcknowledgements[0].InstanceID != id || report.AutoCompleteAcknowledgements[0].RunID != "merge-report" {
+		t.Fatalf("CLI lost ADO acknowledgement: %+v", report.AutoCompleteAcknowledgements)
+	}
 	code, stdout, stderr = runArgs(t, "telemetry", "merges", "--since=2026-09-01T00:00:00Z", "--until=2026-09-02T00:00:00Z", layout.Root)
 	if code != 0 || !strings.Contains(stdout, "Persisted landing attempts (not merge proof): 1") || !strings.Contains(stdout, intent.ID) || !strings.Contains(stdout, "Confirmed merges: 1;") {
 		t.Fatalf("human report conflated attempts and merges: %d %s %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Acknowledged ADO auto-complete settings (not completed merges): 1") || !strings.Contains(stdout, autoComplete.ID) {
+		t.Fatalf("human report lost ADO acknowledgement: %s", stdout)
 	}
 }
 

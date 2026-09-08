@@ -19,6 +19,15 @@ increments the daily merge count. Unknown and conflicting queue receipts have
 separate counters; display filters cannot hide an ownership conflict. The
 10,000-event bound covers merge, enqueue and intent events together, before filtering.
 
+Azure DevOps acknowledgements appear separately in
+`autoCompleteAcknowledgements`. They identify the accepted auto-complete setting
+by its persisted intent ID, repository, PR, instance, gaggle and originating run.
+ADO supplies no GitHub-style queue-entry ID, so none is invented. Repeated
+identical receipts are deduplicated; conflicting intent ownership is excluded
+before display filters and counted in `conflictingAutoCompleteIntents`. These
+acknowledgements never increment completed-merge totals. They share the same
+event budget and unattended journal/rollup retention as other enqueue receipts.
+
 `landingIntents` exposes persisted attempts, including the intended operation,
 repository, PR, expected head, intent ID, run, instance and gaggle. Direct merge
 and enqueue callers persist these before requesting the external mutation.

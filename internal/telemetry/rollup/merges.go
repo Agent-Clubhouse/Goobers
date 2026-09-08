@@ -59,20 +59,22 @@ type DailyMerges struct {
 // MergeReport is a retained-telemetry report, not a forge inventory. Unknown
 // events and conflicts are explicit; neither is silently promoted to verified.
 type MergeReport struct {
-	LandingIntents           []RecordedLandingIntent `json:"landingIntents"`
-	UnverifiedIntentEvents   int                     `json:"unverifiedIntentEvents"`
-	QueueAdmissions          []AcceptedQueueEntry    `json:"queueAdmissions"`
-	UnverifiedQueueEvents    int                     `json:"unverifiedQueueEvents"`
-	ConflictingQueueEntries  int                     `json:"conflictingQueueEntries"`
-	examinedEvents           int
-	Coverage                 string           `json:"coverage"`
-	Since                    time.Time        `json:"since"`
-	Until                    time.Time        `json:"until"`
-	Merges                   []ConfirmedMerge `json:"merges"`
-	Daily                    []DailyMerges    `json:"daily"`
-	UnverifiedMutationEvents int              `json:"unverifiedMutationEvents"`
-	ConflictingPullRequests  int              `json:"conflictingPullRequests"`
-	Comparison               *MergeComparison `json:"comparison,omitempty"`
+	AutoCompleteAcknowledgements   []RecordedLandingIntent `json:"autoCompleteAcknowledgements"`
+	ConflictingAutoCompleteIntents int                     `json:"conflictingAutoCompleteIntents"`
+	LandingIntents                 []RecordedLandingIntent `json:"landingIntents"`
+	UnverifiedIntentEvents         int                     `json:"unverifiedIntentEvents"`
+	QueueAdmissions                []AcceptedQueueEntry    `json:"queueAdmissions"`
+	UnverifiedQueueEvents          int                     `json:"unverifiedQueueEvents"`
+	ConflictingQueueEntries        int                     `json:"conflictingQueueEntries"`
+	examinedEvents                 int
+	Coverage                       string           `json:"coverage"`
+	Since                          time.Time        `json:"since"`
+	Until                          time.Time        `json:"until"`
+	Merges                         []ConfirmedMerge `json:"merges"`
+	Daily                          []DailyMerges    `json:"daily"`
+	UnverifiedMutationEvents       int              `json:"unverifiedMutationEvents"`
+	ConflictingPullRequests        int              `json:"conflictingPullRequests"`
+	Comparison                     *MergeComparison `json:"comparison,omitempty"`
 }
 
 type mergeKey struct{ provider, repository, pull string }

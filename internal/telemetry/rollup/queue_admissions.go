@@ -39,18 +39,23 @@ func (db *DB) readQueueAdmissions(ctx context.Context, query MergeReportQuery, r
 	defer func() { _ = rows.Close() }()
 	entries := map[queueEntryKey]AcceptedQueueEntry{}
 	conflicts := map[queueEntryKey]bool{}
+	autoComplete := newAutoCompleteEvidence()
 	for rows.Next() {
 		report.examinedEvents++
 		remaining--
 		if remaining < 0 {
 			return fmt.Errorf("merge report exceeds %d retained events; narrow the query scope", MaxMergeReportEvents)
 		}
-		entry, valid, err := scanQueueAdmission(rows)
+		entry, acknowledged, valid, err := scanQueueAdmission(rows)
 		if err != nil {
 			return err
 		}
 		if !valid {
 			report.UnverifiedQueueEvents++
+			continue
+		}
+		if acknowledged != nil {
+			autoComplete.observe(*acknowledged)
 			continue
 		}
 		key := queueEntryKey{entry.Provider, entry.RepositoryAPIURL, entry.EntryID}
@@ -65,6 +70,7 @@ func (db *DB) readQueueAdmissions(ctx context.Context, query MergeReportQuery, r
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	autoComplete.publish(query, report)
 	report.QueueAdmissions = []AcceptedQueueEntry{}
 	report.ConflictingQueueEntries = len(conflicts)
 	for key, entry := range entries {
@@ -83,27 +89,35 @@ func (db *DB) readQueueAdmissions(ctx context.Context, query MergeReportQuery, r
 	return nil
 }
 
-func scanQueueAdmission(rows *sql.Rows) (AcceptedQueueEntry, bool, error) {
+func scanQueueAdmission(rows *sql.Rows) (AcceptedQueueEntry, *RecordedLandingIntent, bool, error) {
 	var entry AcceptedQueueEntry
 	var pullID string
 	var timestamp, raw sql.NullString
 	if err := rows.Scan(&entry.Provider, &pullID, &entry.RunID, &timestamp, &entry.Gaggle, &entry.InstanceID, &raw); err != nil {
-		return entry, false, err
+		return entry, nil, false, err
 	}
 	var err error
 	if entry.OccurredAt, err = parseTime(timestamp); err != nil {
-		return entry, false, err
+		return entry, nil, false, err
 	}
 	var fields struct {
 		Admission *providers.QueueAdmission `json:"queueAdmission"`
+		Intent    *providers.LandingIntent  `json:"landingIntent"`
 	}
-	if !raw.Valid || json.Unmarshal([]byte(raw.String), &fields) != nil || fields.Admission == nil || !instance.ValidIdentity(entry.InstanceID) || entry.Provider != "github" {
-		return entry, false, nil
+	if !raw.Valid || json.Unmarshal([]byte(raw.String), &fields) != nil || !instance.ValidIdentity(entry.InstanceID) {
+		return entry, nil, false, nil
+	}
+	if entry.Provider == "ado" && fields.Admission == nil && validRecordedIntent(fields.Intent, pullID, entry.InstanceID, entry.Provider) && fields.Intent.Operation == "enqueue" {
+		acknowledged := &RecordedLandingIntent{LandingIntent: *fields.Intent, Provider: entry.Provider, InstanceID: entry.InstanceID, Gaggle: entry.Gaggle, RunID: entry.RunID, OccurredAt: entry.OccurredAt}
+		return entry, acknowledged, true, nil
+	}
+	if fields.Admission == nil || entry.Provider != "github" {
+		return entry, nil, false, nil
 	}
 	a := fields.Admission
 	if a.PullID != pullID || !canonicalMergePullID(a.PullID) || !canonicalMergeRepository(a.RepositoryAPIURL) || len(a.EntryID) > 256 || strings.TrimSpace(a.EntryID) == "" || len(a.ExpectedHeadSHA) > 128 || a.EnqueuedAt.IsZero() {
-		return entry, false, nil
+		return entry, nil, false, nil
 	}
 	entry.QueueAdmission = *a
-	return entry, true, nil
+	return entry, nil, true, nil
 }
