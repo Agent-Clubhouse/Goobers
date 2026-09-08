@@ -175,6 +175,11 @@ type ProcessRequest struct {
 	// MaxTranscriptBytes caps the combined stdout+stderr transcript retained
 	// in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64
+	// TranscriptCheckpoint receives raw combined-output deltas on a separate
+	// goroutine. The runner-owned sink must redact before durable storage.
+	TranscriptCheckpoint func(TranscriptDelta) error
+	// TranscriptCheckpointInterval defaults to DefaultTranscriptCheckpointInterval.
+	TranscriptCheckpointInterval time.Duration
 	// StdoutCapture receives stdout before transcript truncation. The caller
 	// must keep this sink bounded; capture errors do not affect the subprocess.
 	StdoutCapture io.Writer
@@ -295,6 +300,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	// below, so no liveness mark can land after the stage's terminal event.
 	sampler := startActivitySampler(runCtx, tracker, req.ActivityInterval, buf.observedBytes, req.Activity)
 	defer sampler.stop()
+	checkpoints := startTranscriptCheckpoints(buf, req.TranscriptCheckpointInterval, req.TranscriptCheckpoint)
 
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
@@ -331,6 +337,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	// arriving after "completed" would be worse than none at all. stop is
 	// idempotent, so the defer above remains the safety net for early returns.
 	sampler.stop()
+	checkpointErr := checkpoints.finish(transcriptEndReason(timedOut, canceled))
 
 	result := ProcessResult{
 		Transcript:             buf.Bytes(),
@@ -350,13 +357,13 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	}
 
 	if timedOut {
-		return result, fmt.Errorf("%w after %s: %s", ErrTimeout, timeout, req.Command[0])
+		return result, errors.Join(fmt.Errorf("%w after %s: %s", ErrTimeout, timeout, req.Command[0]), checkpointErr)
 	}
 	if canceled {
-		return result, fmt.Errorf("%w: %s", ErrCanceled, req.Command[0])
+		return result, errors.Join(fmt.Errorf("%w: %s", ErrCanceled, req.Command[0]), checkpointErr)
 	}
 	if err != nil {
-		return result, fmt.Errorf("harness: run %v: %w", req.Command, err)
+		return result, errors.Join(fmt.Errorf("harness: run %v: %w", req.Command, err), checkpointErr)
 	}
-	return result, nil
+	return result, checkpointErr
 }
