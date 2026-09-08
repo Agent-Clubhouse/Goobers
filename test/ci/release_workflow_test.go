@@ -4,14 +4,73 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 type signingOrderCase struct {
 	name    string
 	job     string
 	markers []string
+}
+
+// Publication must depend on execution of the final signed archives. A signing
+// success alone cannot detect an executable that never starts on its target OS.
+func TestReleasePublicationRequiresNativeArtifactSmoke(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Needs    yaml.Node `yaml:"needs"`
+			Strategy struct {
+				Matrix struct {
+					Include []struct {
+						Target string `yaml:"target"`
+					} `yaml:"include"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	publication, ok := workflow.Jobs["verify-and-publish"]
+	if !ok {
+		t.Fatal("missing publication job")
+	}
+	var dependencies []string
+	if err := publication.Needs.Decode(&dependencies); err != nil || !slices.Contains(dependencies, "native-smoke") {
+		t.Fatalf("publication must wait for native-smoke: needs=%v error=%v", dependencies, err)
+	}
+	smoke, ok := workflow.Jobs["native-smoke"]
+	if !ok || smoke.Needs.Value != "sign-windows" {
+		t.Fatal("native-smoke must consume the final signing job's artifacts")
+	}
+	var targets []string
+	for _, row := range smoke.Strategy.Matrix.Include {
+		targets = append(targets, row.Target)
+	}
+	for _, target := range []string{"darwin_arm64", "darwin_amd64", "windows_amd64", "linux_arm64"} {
+		if !slices.Contains(targets, target) {
+			t.Errorf("published platform %s has no native smoke leg", target)
+		}
+	}
+	job := workflowJob(string(data), "verify-and-publish")
+	markers := []string{
+		"- name: Verify release artifacts", "set -euo pipefail",
+		"goobers init --allow-ephemeral --demo", "goobers run demo",
+		`grep --fixed-strings "phase=completed"`,
+		"- name: Exercise installer against staged release assets",
+		"- name: Publish GitHub Release",
+	}
+	if marker, ok := firstUnorderedMarker(job, markers); !ok {
+		t.Fatalf("publication bypasses executable smoke guard %q", marker)
+	}
 }
 
 // signingOrderCases pins the order of the release workflow's signing and

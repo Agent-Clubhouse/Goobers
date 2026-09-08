@@ -361,9 +361,66 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  native-smoke:
+    name: Smoke signed ${{ matrix.target }} artifact
+    needs: sign-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin_arm64
+          - runner: macos-15-intel
+            target: darwin_amd64
+          - runner: windows-latest
+            target: windows_amd64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Download fully signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: dist-signed
+          path: dist
+      - name: Execute native release binary
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          extension=tar.gz
+          binary=goobers
+          if [[ "$TARGET" == windows_* ]]; then
+            extension=zip
+            binary=goobers.exe
+          fi
+          archive="goobers_${TAG}_${TARGET}.${extension}"
+          cd dist
+          awk -v name="$archive" '$2 == name { print; found=1 } END { if (!found) exit 1 }' SHA256SUMS > selected-checksum
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check selected-checksum
+          else
+            shasum -a 256 --check selected-checksum
+          fi
+          mkdir native-smoke
+          if [[ "$extension" == zip ]]; then
+            unzip -q "$archive" -d native-smoke
+          else
+            tar -xzf "$archive" -C native-smoke
+          fi
+          chmod +x "native-smoke/$binary"
+          "./native-smoke/$binary" --version | grep --fixed-strings "$TAG"
+          "./native-smoke/$binary" init --allow-ephemeral --template=quickstart native-smoke/instance
+          "./native-smoke/$binary" validate native-smoke/instance
+
   verify-and-publish:
     name: Verify and publish ${{ github.ref_name }}
-    needs: sign-windows
+    needs: [sign-windows, native-smoke]
     runs-on: ubuntu-latest
     steps:
       # "Generate release notes" below shells out to real git commands for
@@ -399,17 +456,13 @@ jobs:
             -feature-notes dist/RELEASE_NOTES.md \
             -output dist/RELEASE_NOTES.md
 
-      # Runs and exercises the linux/amd64 archive only — checksum-verified
-      # and executed. windows/amd64 gets its own runtime smoke on a real
-      # Windows runner (windows-smoke, ci.yml). linux/arm64 and darwin/amd64
-      # ship in DefaultTargets (release/pack.go) but are never executed
-      # anywhere, by a recorded decision, not an oversight — see
-      # docs/guides/releases.md "linux/arm64 and darwin/amd64 (shipped, never
-      # executed)" (#2039) for the rationale and promotion trigger.
+      # Native signed artifacts must pass native-smoke before this job starts.
+      # This leg exercises linux/amd64, the packaged demo, and portal payload.
       - name: Verify release artifacts
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           (cd dist && sha256sum --check SHA256SUMS)
           grep --fixed-strings "## Changelog" dist/RELEASE_NOTES.md
           grep --fixed-strings "## DSL feature-support delta" dist/RELEASE_NOTES.md
@@ -440,12 +493,57 @@ jobs:
           diff --recursive smoke/onboarding onboarding-asset
           goobers init --allow-ephemeral --template=quickstart smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
+          # The shipped, credential-free mock demo is trusted test content.
+          # Exercise the documented opt-in on CI hosts without user namespaces.
+          goobers init --allow-ephemeral --demo --insecure smoke/demo-instance
+          GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo smoke/demo-instance | tee smoke/demo-result.txt
+          grep --fixed-strings "phase=completed" smoke/demo-result.txt
+          grep --fixed-strings "  goobers_portal_${TAG}.tar.gz" dist/SHA256SUMS
+          mkdir smoke/portal
+          tar -xzf "dist/goobers_portal_${TAG}.tar.gz" -C smoke/portal
+          test -s smoke/portal/index.html
           test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
           mkdir generated-docs
           goobers __generate-docs generated-docs
           diff --recursive smoke/docs/cli generated-docs/cli
           diff --recursive smoke/docs/man generated-docs/man
           diff --recursive smoke/docs/completion generated-docs/completion
+
+      - name: Exercise installer against staged release assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" == *-* ]]; then
+            if sh dist/install.sh "$TAG" > smoke/installer.txt 2>&1; then
+              echo "Pre-release installer unexpectedly succeeded" >&2
+              exit 1
+            fi
+            grep --fixed-strings "pre-release tags are intentionally not installable" smoke/installer.txt
+            grep --fixed-strings "SHA256SUMS" smoke/installer.txt
+          else
+            # Intercept only the download transport; install.sh still verifies
+            # checksums, executes the real binary, and installs the real payload.
+            mkdir smoke/download-tools
+            cat > smoke/download-tools/curl <<'CURL'
+          #!/bin/sh
+          set -eu
+          [ "$#" -eq 4 ] && [ "$1" = -fsSL ] && [ "$3" = -o ]
+          case "$2" in
+            "https://github.com/Agent-Clubhouse/Goobers/releases/download/${TAG}/"*) ;;
+            *) exit 1 ;;
+          esac
+          cp "$GOOBERS_SMOKE_ASSETS/${2##*/}" "$4"
+          CURL
+            chmod +x smoke/download-tools/curl
+            PATH="$PWD/smoke/download-tools:$PATH" \
+              GOOBERS_SMOKE_ASSETS="$PWD/dist" \
+              GOOBERS_INSTALL_DIR="$PWD/smoke/installed/bin" \
+              GOOBERS_DOCS_DIR="$PWD/smoke/installed/docs" \
+              sh dist/install.sh "$TAG"
+            "./smoke/installed/bin/goobers-$TAG" --version | grep --fixed-strings "$TAG"
+            test -s "smoke/installed/docs/$TAG/onboarding/manifest.json"
+          fi
 
       - name: Publish GitHub Release
         env:
