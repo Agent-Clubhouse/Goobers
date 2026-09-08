@@ -49,7 +49,7 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 	if err != nil {
 		return err
 	}
-	found, err := manager.WithExistingMirror(ctx, url, func(repository string) error {
+	err = manager.WithRecoveryMirror(ctx, url, func(repository string) error {
 		_, _, err := recovery.AcceptArchive(ctx, body, recovery.RetentionRequest{
 			Repository: repository, RepositoryKey: key, RunID: runID,
 			IdentityTime: identity.StartedAt, RetainUntil: identity.StartedAt.Add(30 * 24 * time.Hour),
@@ -57,9 +57,6 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 		}, recoveryPublicationAck{ctx: ctx, service: s, runID: runID, key: key, issue: issue})
 		return err
 	})
-	if err == nil && !found {
-		return fmt.Errorf("recovery publication requires an existing managed mirror")
-	}
 	return err
 }
 

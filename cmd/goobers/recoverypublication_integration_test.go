@@ -57,11 +57,10 @@ func testRecoveryPublicationCustody(t *testing.T, release bool) {
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
-	manager, err := worktree.NewManager(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	mirror, err := manager.WorkingCopy(ctx, source)
+	manager, err := worktree.NewManager(t.TempDir(), worktree.WithRemoteGitGate(func(context.Context, string) error {
+		t.Fatal("archive publication attempted a forge operation")
+		return nil
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +110,14 @@ func testRecoveryPublicationCustody(t *testing.T, release bool) {
 	if len(captures) != 1 || !captures[0].CreatedAt.Equal(started) || !captures[0].RetainUntil.Equal(started.Add(30*24*time.Hour)) {
 		t.Fatalf("host custody policy: %+v", captures)
 	}
-	if got := recoveryCLIGit(t, mirror, "show", captures[0].Ref+":implementation.txt"); got != "remote worker changes" {
-		t.Fatalf("host ref content: %q", got)
+	found, err := manager.WithExistingMirror(ctx, source, func(mirror string) error {
+		if got := recoveryCLIGit(t, mirror, "show", captures[0].Ref+":implementation.txt"); got != "remote worker changes" {
+			t.Fatalf("host ref content: %q", got)
+		}
+		return nil
+	})
+	if err != nil || !found {
+		t.Fatalf("missing managed custody repository: found=%t err=%v", found, err)
 	}
 	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey())
 }
