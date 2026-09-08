@@ -387,15 +387,29 @@ func (s *daemonCredentialService) locateRun(defs credentialPlaneDefinitions, run
 	for _, gaggle := range gaggles {
 		candidates = append(candidates, filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID))
 	}
-	candidates = append(candidates, filepath.Join(s.layout.RunsDir(), runID))
+	legacy := filepath.Join(s.layout.RunsDir(), runID)
+	candidates = append(candidates, legacy)
 
 	found := ""
+	var foundInfo os.FileInfo
 	for _, dir := range candidates {
 		if _, err := os.Stat(filepath.Join(dir, "run.yaml")); err == nil {
+			info, err := os.Stat(dir)
+			if err != nil {
+				return "", credentialPlaneError(http.StatusInternalServerError, "run_lookup_failed", "run could not be inspected")
+			}
 			if found != "" && found != dir {
+				// Single-gaggle migration aliases legacy runs to the scoped
+				// root. Compare directories, not run.yaml: separate journals
+				// can share identical or hard-linked metadata. Only the legacy
+				// compatibility path may alias an already found gaggle run.
+				if dir == legacy && os.SameFile(foundInfo, info) {
+					continue
+				}
 				return "", credentialPlaneError(http.StatusConflict, "ambiguous_run_id", "run ID exists in more than one gaggle")
 			}
 			found = dir
+			foundInfo = info
 		} else if !os.IsNotExist(err) {
 			return "", credentialPlaneError(http.StatusInternalServerError, "run_lookup_failed", "run could not be inspected")
 		}
