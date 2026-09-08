@@ -25,7 +25,10 @@ func readBacklogQueryPolicies(mode backlogQueryMode) (backlogQueryPolicies, erro
 	}
 	p.curation = mode == backlogQueryModeResweep || (mode == backlogQueryModeClaim && providerInput("curation", "false") == "true")
 	var err error
-	if (p.curation && providerInput("reconcileMetadata", "true") != "false") || mode == backlogQueryModeReconcile {
+	// Claim output carries staleness evidence even when a separate stage
+	// already reconciled metadata. Skipping that mutation pass must not turn
+	// the configured threshold into the zero-value "everything is stale".
+	if p.curation || mode == backlogQueryModeReconcile {
 		p.staleness, err = readBacklogStalenessPolicy()
 		if err != nil {
 			return p, err

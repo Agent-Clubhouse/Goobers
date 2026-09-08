@@ -17,6 +17,7 @@ func TestBacklogScheduledResweepOwnsCadenceButNotForwardClaims(t *testing.T) {
 	server.addIssue(8, "Other in-flight context", providers.LabelApproved, providers.LabelReady, inReviewStatusLabel)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "scheduled-resweep")
 	configureCurationResweep(t, "2", "2", "24h")
+	t.Setenv("GOOBERS_INPUT_RECONCILEMETADATA", "false")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 	for turn := range 2 {
@@ -28,6 +29,9 @@ func TestBacklogScheduledResweepOwnsCadenceButNotForwardClaims(t *testing.T) {
 		items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
 		if len(items) != 1 || items[0].ID != fmt.Sprint(7+turn) || !items[0].ReadOnly {
 			t.Fatalf("scheduled sweep %d obeyed hidden cooldown or claimed forward work: %+v", turn, items)
+		}
+		if items[0].Staleness.ThresholdDays != 90 || items[0].Staleness.AutoCloseEnabled {
+			t.Fatalf("skipping metadata reconciliation discarded staleness policy: %+v", items[0].Staleness)
 		}
 	}
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
