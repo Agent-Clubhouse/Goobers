@@ -35,6 +35,7 @@ type options struct {
 	imageContexts         string
 	imageArtifacts        string
 	imageInputs           string
+	imageTargets          []Target
 	buildImages           bool
 	imagePrefix           string
 	previousFeatures      string
@@ -55,7 +56,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if opts.imageArtifacts != "" {
 		return runImageArtifactImport(opts, stdout)
 	}
-	imageBuild, err := prepareLocalImageBuild(opts)
+	imageBuild, err := prepareLocalImageBuild(imageTargetOptions(opts))
 	if err != nil {
 		return err
 	}
@@ -164,7 +165,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 			"required platform (that is the false-green trap #655's gate prevents).\n",
 			strings.Join(skipped, ", "))
 	}
-	if err := buildLocalReleaseImages(imageBuild, images, opts, stdout); err != nil {
+	if err := buildLocalReleaseImages(imageBuild, images, imageTargetOptions(opts), stdout); err != nil {
 		return err
 	}
 	return images.finalize(stdout)
@@ -208,7 +209,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		commit           = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
-		imageContexts    = fs.String("image-contexts", "", "prepare Linux or Windows base-image build inputs in a new directory (requires explicit supported -targets; does not build or publish images)")
+		imageContexts    = fs.String("image-contexts", "", "prepare Linux or Windows base-image build inputs in a new directory (requires explicit supported -targets or -image-targets; does not build or publish images)")
 		imageArtifacts   = fs.String("image-artifacts", "", "consume final checksummed release archives without rebuilding binaries or release assets")
 		imageInputs      = fs.String("image-inputs", "", "original checksummed base contexts supplying the release operator and pinned dependencies; required with -image-artifacts")
 		buildImages      = fs.Bool("build-images", false, "build and verify local images on a matching native Docker engine; never pushes or signs")
@@ -220,6 +221,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		checksums        = fs.Bool("checksums", true, "write a SHA256SUMS manifest over binary archives and support snapshots")
 		skip             = fs.Bool("skip-unbuildable", false, "package only targets that compile, skipping (not failing on) the rest")
 	)
+	fs.String("image-targets", "", "comma-separated image context subset of archive targets (default: all explicit -targets; unavailable with -image-artifacts)")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -253,10 +255,14 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		return options{}, err
 	}
 	opts.targets = targets
+	opts.imageTargets, err = parseImageTargetSelection(opts, fs)
+	if err != nil {
+		return options{}, err
+	}
 	if err := validateImageContextOptions(opts, *targetCSV); err != nil {
 		return options{}, err
 	}
-	if err := validateLocalImageOptions(opts); err != nil {
+	if err := validateLocalImageOptions(imageTargetOptions(opts)); err != nil {
 		return options{}, err
 	}
 	return opts, nil

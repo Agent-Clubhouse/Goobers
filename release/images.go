@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -32,18 +34,62 @@ type imageContexts struct {
 	built        bool
 }
 
+// Archive targets remain the full requested release matrix. Image operations
+// receive a copy restricted to the explicitly selected subset, if any.
+func imageTargetOptions(opts options) options {
+	if opts.imageTargets != nil {
+		opts.targets = opts.imageTargets
+	}
+	return opts
+}
+
+func parseImageTargetSelection(opts options, fs *flag.FlagSet) ([]Target, error) {
+	var selection *flag.Flag
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "image-targets" {
+			selection = f
+		}
+	})
+	if selection == nil {
+		return nil, nil
+	}
+	if opts.imageArtifacts != "" || opts.imageInputs != "" {
+		return nil, fmt.Errorf("-image-targets cannot be combined with final artifact import; -targets already selects image targets")
+	}
+	if opts.imageContexts == "" {
+		return nil, fmt.Errorf("-image-targets requires -image-contexts")
+	}
+	if strings.TrimSpace(selection.Value.String()) == "" {
+		return nil, fmt.Errorf("-image-targets requires a nonempty target selection")
+	}
+	targets, err := parseTargets(selection.Value.String())
+	if err != nil {
+		return nil, fmt.Errorf("parse -image-targets: %w", err)
+	}
+	archiveCounts := make(map[Target]int)
+	for _, target := range opts.targets {
+		archiveCounts[target]++
+	}
+	for _, target := range targets {
+		if archiveCounts[target] != 1 {
+			return nil, fmt.Errorf("image target %s must appear exactly once in archive targets", target)
+		}
+	}
+	return targets, nil
+}
+
 func validateImageContextOptions(opts options, targetCSV string) error {
 	if opts.imageContexts == "" {
 		return nil
 	}
-	if strings.TrimSpace(targetCSV) == "" {
+	if strings.TrimSpace(targetCSV) == "" && opts.imageTargets == nil {
 		return fmt.Errorf("-image-contexts requires explicit supported -targets")
 	}
 	if opts.skipUnbuildable {
 		return fmt.Errorf("-image-contexts cannot be combined with -skip-unbuildable: every requested image context must build")
 	}
 	seen := make(map[Target]bool)
-	for _, target := range opts.targets {
+	for _, target := range imageTargetOptions(opts).targets {
 		if !supportedImageTarget(target) {
 			return fmt.Errorf("image context target %s is unsupported; use linux/amd64, linux/arm64 or windows/amd64", target)
 		}
@@ -89,7 +135,7 @@ func prepareImageContexts(opts options) (*imageContexts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read base-image Dockerfile: %w", err)
 	}
-	windowsFiles, err := windowsImageMaterials(repoRoot, opts.targets)
+	windowsFiles, err := windowsImageMaterials(repoRoot, imageTargetOptions(opts).targets)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +168,7 @@ func (images *imageContexts) cleanup() {
 }
 
 func (images *imageContexts) stage(target Target, binary, ldflags string, opts options) error {
-	if images == nil {
+	if images == nil || (opts.imageTargets != nil && !slices.Contains(opts.imageTargets, target)) {
 		return nil
 	}
 	directory := filepath.Join(images.temporary, target.OS+"-"+target.Arch)
