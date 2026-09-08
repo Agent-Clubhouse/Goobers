@@ -114,3 +114,32 @@ func TestReleaseImagesUseNativeRunnerMatrix(t *testing.T) {
 		t.Fatal("Windows image verification requires the Server 2022 native container engine")
 	}
 }
+
+func TestReleaseSuccessfulImagesRequireRetainedEvidence(t *testing.T) {
+	workflow := loadReleaseAuthorizationWorkflow(t)
+	for _, name := range []string{"native-linux-images", "native-windows-image"} {
+		job := workflow.Jobs[name]
+		verificationID := ""
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, "go run ./release") {
+				verificationID = step.ID
+			}
+			if step.Name == "Retain native image provenance and failure evidence" {
+				if step.Env["IMAGE_VERIFICATION_OUTCOME"] != "${{ steps.image-verification.outcome }}" || step.ContinueOnError {
+					t.Errorf("%s retention must fail closed after successful verification", name)
+				}
+				for _, required := range []string{"success", "Required native image evidence missing", "verified-image-contexts/image-evidence.json", "artifact-import.json"} {
+					if !strings.Contains(step.Run, required) {
+						t.Errorf("%s omits mandatory evidence guard %q", name, required)
+					}
+				}
+			}
+			if step.Name == "Upload native image verification evidence" && (step.With["if-no-files-found"] != "error" || step.ContinueOnError) {
+				t.Errorf("%s must fail if evidence cannot be uploaded", name)
+			}
+		}
+		if verificationID != "image-verification" {
+			t.Errorf("%s must expose native verification outcome to evidence retention", name)
+		}
+	}
+}
