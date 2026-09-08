@@ -121,6 +121,7 @@ type ArtifactOp struct {
 	Class     journal.AttemptClass `json:"class,omitempty"`
 	Name      string               `json:"name"`
 	Data      []byte               `json:"data"`
+	Ref       *journal.Ref         `json:"ref,omitempty"`
 	Integrity apiv1.Integrity      `json:"integrity,omitempty"`
 }
 
@@ -287,6 +288,7 @@ func WithClock(now func() time.Time) Option {
 type Writer struct {
 	runsDir       func(gaggle string) (string, bool)
 	spans         SpanSource
+	artifacts     ArtifactSource
 	observer      func(runID string, seq uint64)
 	eventObserver func(runID string, ev journal.Event)
 	scrubber      journal.Scrubber
@@ -1088,28 +1090,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 		w.notifyEvent(runID, ev)
 		return true, nil
 	case OpArtifact:
-		a := op.Artifact
-		if a == nil {
-			return false, errors.New("artifact op carries no payload")
-		}
-		integrity := a.Integrity
-		if integrity == "" {
-			integrity = apiv1.IntegrityDerived
-		}
-		meta := map[string]any{EmitKeyRunnerField: op.Key}
-		var ref journal.Ref
-		var err error
-		if a.Stage != "" {
-			ref, err = run.jr.RecordStageArtifactAnnotated(a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity, meta)
-		} else {
-			ref, err = run.jr.RecordArtifactAnnotated(a.Name, a.Data, integrity, meta)
-		}
-		if err != nil {
-			return false, err
-		}
-		run.keys[op.Key] = run.jr.Seq()
-		run.artifactRefs[a.Name] = ref
-		return true, nil
+		return w.applyArtifact(ctx, run, op)
 	case OpSpan:
 		s := op.Span
 		if s == nil {
