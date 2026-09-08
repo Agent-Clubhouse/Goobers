@@ -291,7 +291,7 @@ func TestStatusAndDecisionValidity(t *testing.T) {
 	if ResultStatus("failed").IsValid() {
 		t.Error("expected legacy \"failed\" to be invalid under the V0 contract")
 	}
-	for _, d := range []VerdictDecision{VerdictPass, VerdictFail, VerdictNeedsChanges, VerdictDefer} {
+	for _, d := range []VerdictDecision{VerdictPass, VerdictFail, VerdictNeedsChanges, VerdictDefer, VerdictEscalate} {
 		if !d.IsValid() {
 			t.Errorf("expected %q to be valid", d)
 		}

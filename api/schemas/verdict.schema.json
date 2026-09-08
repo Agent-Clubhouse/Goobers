@@ -8,6 +8,17 @@
   "required": ["decision"],
   "allOf": [
     {
+      "if": { "properties": { "decision": { "const": "escalate" } } },
+      "then": {
+        "required": ["reasonCode", "rationale"],
+        "properties": {
+          "reasonCode": { "enum": ["empty-diff", "unchanged-repass", "repass-budget-exhausted", "finding-set-oscillation"] },
+          "rationale": { "pattern": "\\S" },
+          "elected": { "const": false }
+        }
+      }
+    },
+    {
       "if": { "properties": { "decision": { "const": "defer" } } },
       "then": {
         "required": ["reasonCode", "rationale"],
@@ -31,7 +42,7 @@
       "then": {
         "required": ["rationale"],
         "properties": {
-          "decision": { "enum": ["fail", "defer"] },
+          "decision": { "enum": ["fail", "defer", "escalate"] },
           "rationale": { "pattern": "\\S" }
         }
       }
@@ -40,12 +51,12 @@
   "properties": {
     "decision": {
       "type": "string",
-      "enum": ["pass", "fail", "needs-changes", "defer"],
+      "enum": ["pass", "fail", "needs-changes", "defer", "escalate"],
       "description": "Gate or review outcome that determines the next workflow branch."
     },
     "reasonCode": {
       "type": "string",
-      "enum": ["implementation-rejected", "policy-rejected", "ordering", "no-lander"],
+      "enum": ["implementation-rejected", "policy-rejected", "ordering", "no-lander", "empty-diff", "unchanged-repass", "repass-budget-exhausted", "finding-set-oscillation"],
       "description": "Machine-readable rejection or deferral reason. Legacy fail verdicts may omit this field and must be treated as ambiguous, not inferred substantive rejection."
     },
     "rationale": {

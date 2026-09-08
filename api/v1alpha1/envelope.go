@@ -112,6 +112,9 @@ type InvocationEnvelope struct {
 	// deferral branch, never from task inputs or reviewer output. It enables
 	// the expanded completion vocabulary for this reviewer invocation only.
 	ReviewerDeferralAllowed bool `json:"reviewerDeferralAllowed,omitempty"`
+	// ReviewerMechanicalEscalationAllowed enables typed runner-generated
+	// mechanical stops when the workflow explicitly routes expanded outcomes.
+	ReviewerMechanicalEscalationAllowed bool `json:"reviewerMechanicalEscalationAllowed,omitempty"`
 	// Workspace is the absolute path to the fresh, isolated, disposable working
 	// copy (§5) this stage runs in. The runner guarantees it exists.
 	Workspace string `json:"workspace"`
@@ -351,6 +354,8 @@ const (
 	// VerdictDefer withholds landing authority for ordering, without rejecting
 	// the implementation. Producers must use a workflow that routes deferral.
 	VerdictDefer VerdictDecision = "defer"
+	// VerdictEscalate identifies a mechanical stop, not an implementation rejection.
+	VerdictEscalate VerdictDecision = "escalate"
 )
 
 // VerdictReasonCode distinguishes terminal rejection from ordering disposition.
@@ -362,6 +367,10 @@ const (
 	VerdictReasonPolicyRejected         VerdictReasonCode = "policy-rejected"
 	VerdictReasonOrdering               VerdictReasonCode = "ordering"
 	VerdictReasonNoLander               VerdictReasonCode = "no-lander"
+	VerdictReasonEmptyDiff              VerdictReasonCode = "empty-diff"
+	VerdictReasonUnchangedRepass        VerdictReasonCode = "unchanged-repass"
+	VerdictReasonRepassBudget           VerdictReasonCode = "repass-budget-exhausted"
+	VerdictReasonFindingOscillation     VerdictReasonCode = "finding-set-oscillation"
 )
 
 // Severity ranks a finding.
@@ -620,7 +629,7 @@ func (s ResultStatus) IsValid() bool {
 // IsValid reports whether d is a known verdict decision.
 func (d VerdictDecision) IsValid() bool {
 	switch d {
-	case VerdictPass, VerdictFail, VerdictNeedsChanges, VerdictDefer:
+	case VerdictPass, VerdictFail, VerdictNeedsChanges, VerdictDefer, VerdictEscalate:
 		return true
 	}
 	return false

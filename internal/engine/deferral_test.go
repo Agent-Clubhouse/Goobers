@@ -4,9 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"go.temporal.io/sdk/testsuite"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/temporaltest"
-	"go.temporal.io/sdk/testsuite"
 )
 
 func TestTemporalReviewerDeferralCapabilityFollowsDeclaredBranch(t *testing.T) {

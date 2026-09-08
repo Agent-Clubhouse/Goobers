@@ -72,7 +72,7 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 	switch decision {
 	case apiv1.VerdictPass:
 		return "goobers:merge-ready"
-	case apiv1.VerdictFail:
+	case apiv1.VerdictFail, apiv1.VerdictEscalate:
 		return "goobers:merge-escalated"
 	case apiv1.VerdictDefer:
 		return blockedOnSiblingLabel
@@ -810,7 +810,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			"Finding-set oscillation detected: `%s` matches an earlier merge-review state. Remediation returned to a prior unresolved finding set, so this PR is escalated instead of spending the remaining repass budget.",
 			findingHash,
 		)
-		posted.Decision = apiv1.VerdictFail
+		posted.Decision = apiv1.VerdictEscalate
+		posted.ReasonCode = apiv1.VerdictReasonFindingOscillation
+		posted.Elected = false
 		if posted.Rationale == "" {
 			posted.Rationale = reason
 		} else {
@@ -1751,7 +1753,7 @@ func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecis
 		return providers.ReviewDecisionApproved, nil
 	case apiv1.VerdictNeedsChanges, apiv1.VerdictFail:
 		return providers.ReviewDecisionChangesRequested, nil
-	case apiv1.VerdictDefer:
+	case apiv1.VerdictDefer, apiv1.VerdictEscalate:
 		return providers.ReviewDecisionComment, nil
 	default:
 		return "", fmt.Errorf("unsupported verdict decision %q", decision)

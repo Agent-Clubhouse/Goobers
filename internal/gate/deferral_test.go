@@ -41,6 +41,32 @@ func TestReviewerDeferralCapabilityIsDerivedFromGate(t *testing.T) {
 	}
 }
 
+func TestReviewerMechanicalCapabilityIsDerivedFromGate(t *testing.T) {
+	for _, deferral := range []bool{false, true} {
+		for _, escalation := range []bool{false, true} {
+			g := fixtureSpec().Gates[1]
+			delete(g.Branches, "defer")
+			delete(g.Branches, "escalate")
+			if deferral {
+				g.Branches["defer"] = "park"
+			}
+			if escalation {
+				g.Branches["escalate"] = "mechanical-stop"
+			}
+			want := deferral && escalation
+			reviewer := &fakeGoober{reviewVerdict: apiv1.Verdict{Decision: apiv1.VerdictPass}}
+			ev := &Evaluator{Reviewer: &ReviewerEvaluator{Goober: reviewer}}
+			base := apiv1.InvocationEnvelope{ReviewerMechanicalEscalationAllowed: !want}
+			if _, err := ev.Evaluate(context.Background(), g, base, "implement", apiv1.ResultEnvelope{}, "sha256:aaaa", false); err != nil {
+				t.Fatal(err)
+			}
+			if got := reviewer.lastReviewEnv.ReviewerMechanicalEscalationAllowed; got != want {
+				t.Fatalf("defer=%v escalate=%v: mechanical capability=%v want=%v", deferral, escalation, got, want)
+			}
+		}
+	}
+}
+
 func TestReviewerDeferralRoutesWithoutRejectionOrRepass(t *testing.T) {
 	for _, reason := range []apiv1.VerdictReasonCode{apiv1.VerdictReasonOrdering, apiv1.VerdictReasonNoLander} {
 		t.Run(string(reason), func(t *testing.T) {

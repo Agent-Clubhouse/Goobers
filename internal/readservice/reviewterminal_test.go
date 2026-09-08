@@ -24,6 +24,10 @@ func TestTerminalReviewPreservesDispositionAndEvidence(t *testing.T) {
 			{apiv1.VerdictFail, ""},
 			{apiv1.VerdictDefer, apiv1.VerdictReasonOrdering},
 			{apiv1.VerdictDefer, apiv1.VerdictReasonNoLander},
+			{apiv1.VerdictEscalate, apiv1.VerdictReasonEmptyDiff},
+			{apiv1.VerdictEscalate, apiv1.VerdictReasonUnchangedRepass},
+			{apiv1.VerdictEscalate, apiv1.VerdictReasonRepassBudget},
+			{apiv1.VerdictEscalate, apiv1.VerdictReasonFindingOscillation},
 		} {
 			t.Run(string(phase)+"/"+string(disposition.decision)+"/"+string(disposition.reason), func(t *testing.T) {
 				service, layout, machine := fixtureService(t)

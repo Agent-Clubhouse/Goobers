@@ -395,12 +395,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			// of issuing needs-changes and burning repass cycles that can only
 			// re-observe the same empty diff. Mirrors the identical-diff guard
 			// below: both spare the repass budget a degenerate reviewer call.
-			synthesized := EmptyDiffVerdict()
+			synthesized := MechanicalVerdict(EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, StructuredMechanicalEscalation(g))
 			outcome = string(synthesized.Decision)
 			verdict = &synthesized
 		} else if diffDigest != "" && e.LastDiffDigest != nil && e.LastDiffDigest[g.Name] == diffDigest {
 			duplicateDiff = true
-			synthesized := DuplicateDiffVerdict(diffDigest, e.RepassCause)
+			synthesized := MechanicalVerdict(DuplicateDiffVerdict(diffDigest, e.RepassCause), apiv1.VerdictReasonUnchangedRepass, StructuredMechanicalEscalation(g))
 			outcome = string(synthesized.Decision)
 			verdict = &synthesized
 		} else {
@@ -543,6 +543,10 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	}
 
 	charge := e.trackRepass(g, outcome, target)
+	if converted := BudgetEscalationVerdict(g, charge.Exceeded, verdict); converted != verdict {
+		verdict = converted
+		outcome = string(converted.Decision)
+	}
 	escalated := charge.Exceeded || duplicateDiff || forcedEscalation
 	if escalated {
 		target = escalationTarget(g)
@@ -711,6 +715,7 @@ func (e *Evaluator) invalidNeedsHumanVerdict(g apiv1.Gate, verdict apiv1.Verdict
 
 func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, env *apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, g apiv1.Gate, verdict *apiv1.Verdict) (bool, error) {
 	_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
+	env.ReviewerMechanicalEscalationAllowed = StructuredMechanicalEscalation(g)
 	maxAttempts, backoff := retryBounds(policy)
 	for attempt := 1; ; attempt++ {
 		attemptCtx := ctx

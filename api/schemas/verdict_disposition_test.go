@@ -28,6 +28,11 @@ func TestVerdictDispositionContract(t *testing.T) {
 		valid     bool
 	}{
 		{"legacy fail", `{"decision":"fail"}`, true},
+		{"mechanical stop", `{"decision":"escalate","reasonCode":"empty-diff","rationale":"No diff to review."}`, true},
+		{"mechanical stop requires reason", `{"decision":"escalate","rationale":"Stopped."}`, false},
+		{"mechanical stop cannot reject", `{"decision":"escalate","reasonCode":"implementation-rejected","rationale":"Stopped."}`, false},
+		{"rejection cannot be mechanical", `{"decision":"fail","reasonCode":"empty-diff","rationale":"Stopped."}`, false},
+		{"mechanical stop cannot elect", `{"decision":"escalate","reasonCode":"empty-diff","rationale":"Stopped.","elected":true}`, false},
 		{"legacy pass", `{"decision":"pass"}`, true},
 		{"legacy needs changes", `{"decision":"needs-changes"}`, true},
 		{"ordering", `{"decision":"defer","reasonCode":"ordering","rationale":"Wait for sibling #9."}`, true},
