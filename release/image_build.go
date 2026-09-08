@@ -49,6 +49,7 @@ type builtImageEvidence struct {
 	VersionOutput  map[string]string            `json:"versionOutput"`
 	HarnessVersion string                       `json:"harnessVersion,omitempty"`
 	AdapterProbe   *copilotAdapterProbeEvidence `json:"adapterProbe,omitempty"`
+	StageSmoke     *imageStageSmokeEvidence     `json:"stageSmoke"`
 }
 
 type dockerImageDescription struct {

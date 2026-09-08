@@ -53,6 +53,10 @@ func verifyBuiltImage(description dockerImageDescription, family, reference, dir
 		}
 		evidence.BinarySHA256[binary] = expectedDigest
 	}
+	evidence.StageSmoke, err = verifyImageStageSmoke(description)
+	if err != nil {
+		return evidence, err
+	}
 	if family == "goobers-harness-copilot" {
 		proof, err := verifyCopilotAdapterInterface(description)
 		if err != nil {

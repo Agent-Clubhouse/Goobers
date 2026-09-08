@@ -23,6 +23,7 @@ type fakeImageEngine struct {
 	digests            map[string]map[string]string
 	families           map[string]string
 	commands           [][]string
+	badSmokeFamily     string
 	badHashFamily      string
 	badStamp           bool
 	wrongBase          bool
@@ -207,6 +208,12 @@ func (engine *fakeImageEngine) probe(args []string) ([]byte, error) {
 		}
 		return []byte(fmt.Sprintf("%s %s (commit %s, built %s, go1.26.6 %s)", entrypoint, metadata.Version, metadata.Commit, metadata.Date, metadata.Platform)), nil
 	case "/bin/sh", "powershell":
+		if strings.Contains(args[len(args)-1], "init --allow-ephemeral --template=quickstart") {
+			if engine.families[id] == engine.badSmokeFamily {
+				return []byte("finished: phase=failed"), nil
+			}
+			return []byte("finished: phase=completed"), nil
+		}
 		if strings.Contains(args[len(args)-1], "harness/version") {
 			return []byte("1.2.3"), nil
 		}
