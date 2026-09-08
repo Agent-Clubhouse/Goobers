@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RECOVERY RESUME" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers recovery-resume \- restore retained implementation into the receiving run
+.SH SYNOPSIS
+\fBgoobers recovery-resume\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers recovery-resume [instance]
+
+Restore the current run's single claimed issue onto freshly fetched main,
+then fast-forward its clean receiving worktree to the restored commit.
+Requires workflow run context and repository credentials. Refuses another
+branch, changed or dirty work, expired claims, and existing restore branches.
+Does not push, open a PR, release the claim, or remove retained state.
+.fi
+.SH EXAMPLES
+.nf
+goobers recovery-resume
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

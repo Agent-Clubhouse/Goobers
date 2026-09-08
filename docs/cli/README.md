@@ -173,6 +173,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers reconcile-branches`](#goobers-reconcile-branches) | report bounded stale goobers/* branch candidates (a workflow stage) |
 | [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
+| [`goobers recovery-resume`](#goobers-recovery-resume) | restore retained implementation into the receiving run |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers resolve-review-threads`](#goobers-resolve-review-threads) | reply to and resolve remediated native review threads (a workflow stage) |
@@ -3004,6 +3005,26 @@ changes are refused. This does not push, open a PR, or abandon recovery.
 
 ~~~console
 $ goobers recovery-restore --record ./retained/record.json --repository ./checkout --branch recovered-work ./instance
+~~~
+
+## `goobers recovery-resume`
+
+restore retained implementation into the receiving run
+
+~~~text
+Usage: goobers recovery-resume [instance]
+
+Restore the current run's single claimed issue onto freshly fetched main,
+then fast-forward its clean receiving worktree to the restored commit.
+Requires workflow run context and repository credentials. Refuses another
+branch, changed or dirty work, expired claims, and existing restore branches.
+Does not push, open a PR, release the claim, or remove retained state.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers recovery-resume
 ~~~
 
 ## `goobers remediation-checkpoint`

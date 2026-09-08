@@ -470,6 +470,9 @@ reconcile late merge-queue merges (a workflow stage)
 \fBgoobers record-merge-refusal\fR
 record a merge refusal and demote a persistently-stuck lander (a workflow stage)
 .TP
+\fBgoobers recovery-resume\fR
+restore retained implementation into the receiving run
+.TP
 \fBgoobers remediation-checkpoint\fR
 durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 .TP
@@ -600,6 +603,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-reconcile-post-merge\fR(1),
 \fBgoobers-record-merge-refusal\fR(1),
 \fBgoobers-recovery-restore\fR(1),
+\fBgoobers-recovery-resume\fR(1),
 \fBgoobers-remediation-checkpoint\fR(1),
 \fBgoobers-report-pr-status\fR(1),
 \fBgoobers-rerun-stage\fR(1),

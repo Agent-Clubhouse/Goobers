@@ -496,6 +496,10 @@ func init() {
 			withSynopsis(synopsisByID["recovery-restore"]).
 			withHelp("restore retained implementation onto current main", recoveryRestoreHelp).
 			withExamples("goobers recovery-restore --record ./retained/record.json --repository ./checkout --branch recovered-work ./instance"),
+		stageCommand("recovery-resume", apicontract.ActionWorkflowExecution, runRecoveryResume).
+			withSynopsis(synopsisByID["recovery-resume"]).
+			withHelp("restore retained implementation into the receiving run", recoveryResumeHelp).
+			withExamples("goobers recovery-resume"),
 		groupCommand(
 			"workspace",
 			runWorkspace,

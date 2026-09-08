@@ -39,7 +39,7 @@ func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 
 func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, mode := range []string{"record", "issue", "http-issue"} {
+	for _, mode := range []string{"record", "issue", "http-issue", "resume-issue"} {
 		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode) })
 	}
 }
@@ -127,26 +127,53 @@ func testRecoveryRestoreCommand(t *testing.T, mode string) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := runRecoveryRestore(args, &stdout, &stderr); code != 0 {
+	target := "operator-recovery"
+	invoke := func() int { return runRecoveryRestore(args, &stdout, &stderr) }
+	if mode == "resume-issue" {
+		layout := instance.NewLayout(root)
+		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, _, err := ledger.Claim("7", "receiving-run", "implementation-recovery", time.Hour); err != nil || !ok {
+			t.Fatalf("receiving claim: %t %v", ok, err)
+		}
+		seedItemRepositoryForTest(t, layout, "receiving-run", "7", identity)
+		t.Setenv("GOOBERS_RUN_ID", "receiving-run")
+		t.Setenv("GOOBERS_WORKFLOW", "implementation-recovery")
+		target = providers.BranchName("implementation-recovery", "receiving-run")
+		recoveryCLIGit(t, destination, "checkout", "-b", target)
+		t.Chdir(destination)
+		invoke = func() int { return runRecoveryResume([]string{root}, &stdout, &stderr) }
+	}
+	if code := invoke(); code != 0 {
 		t.Fatalf("restore command returned %d: %s", code, stderr.String())
 	}
-	if parent := recoveryCLIGit(t, destination, "rev-parse", "operator-recovery^"); parent != main {
+	if parent := recoveryCLIGit(t, destination, "rev-parse", target+"^"); parent != main {
 		t.Fatalf("restore used stale main: %s != %s", parent, main)
 	}
-	if data := recoveryCLIGit(t, destination, "show", "operator-recovery:implementation.txt"); data != "retained implementation" {
+	if data := recoveryCLIGit(t, destination, "show", target+":implementation.txt"); data != "retained implementation" {
 		t.Fatalf("wrong restored content: %q", data)
 	}
-	if head := recoveryCLIGit(t, destination, "rev-parse", "HEAD"); head != base {
+	wantHead := base
+	if mode == "resume-issue" {
+		wantHead = recoveryCLIGit(t, destination, "rev-parse", target)
+		data, err := os.ReadFile(filepath.Join(destination, "implementation.txt"))
+		if err != nil || string(data) != "retained implementation" {
+			t.Fatalf("receiving run did not consume restored work: %q %v", data, err)
+		}
+	}
+	if head := recoveryCLIGit(t, destination, "rev-parse", "HEAD"); head != wantHead {
 		t.Fatal("restore moved the current checkout")
 	}
 	if status := recoveryCLIGit(t, destination, "status", "--porcelain"); status != "" {
 		t.Fatalf("restore changed checkout/index: %s", status)
 	}
-	before := recoveryCLIGit(t, destination, "rev-parse", "operator-recovery")
-	if code := runRecoveryRestore(args, &stdout, &stderr); code != 1 {
+	before := recoveryCLIGit(t, destination, "rev-parse", target)
+	if code := invoke(); code != 1 {
 		t.Fatalf("existing branch was not refused: %d", code)
 	}
-	if after := recoveryCLIGit(t, destination, "rev-parse", "operator-recovery"); after != before {
+	if after := recoveryCLIGit(t, destination, "rev-parse", target); after != before {
 		t.Fatal("retry overwrote operator branch")
 	}
 }
