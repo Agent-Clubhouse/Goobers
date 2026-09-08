@@ -785,11 +785,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
 		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
 	}
-	// The run-control plane (#3807): the same live cancel the pending-cancels
-	// sweep performs, reachable by an operator who does not share this
-	// daemon's filesystem. Its scheduler slot release is attached below, once
-	// the scheduler exists and before the API starts serving.
+	// The run-control plane routes local runs through the pending-cancels
+	// sweep's live Runner path and retained engine runs through CancelWorkflow.
+	// Only the local path uses the slot release attached below; the engine
+	// releases its slot when its existing settlement path observes completion.
 	cancelPlane := newDaemonCancelService(setup.RunnerRegistry)
+	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),

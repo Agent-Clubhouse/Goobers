@@ -259,14 +259,11 @@ func executeCancelRequest(
 	}
 }
 
-// daemonCancelService is the run-control plane's daemon-side half (#3807): it
-// runs the SAME executeCancelRequest the pending-cancels sweep runs, so a
-// cancel that arrives over HTTP and one that arrives as a file drop resolve
-// the owning Runner, stop the active stage, and free the scheduler slot
-// identically. Only the way in differs — which is the point, since the file
-// drop only reaches a daemon that shares the caller's filesystem.
+// daemonCancelService preserves the local Runner/file-drop cancellation path
+// and routes retained engine runs through the engine's own cancellation guard.
 type daemonCancelService struct {
 	runners *daemonRunnerRegistry
+	engine  *daemonEngineCancelService
 
 	mu      sync.RWMutex
 	release func(runID, workflow string)
@@ -285,10 +282,16 @@ func (s *daemonCancelService) AttachRelease(release func(runID, workflow string)
 	s.release = release
 }
 
-func (s *daemonCancelService) Cancel(_ context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
+func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
 	s.mu.RLock()
 	release := s.release
 	s.mu.RUnlock()
+
+	if _, local := s.runners.Resolve(input.RunID, input.Gaggle, nil); !local && s.engine != nil {
+		if result, handled, err := s.engine.cancel(ctx, input); handled {
+			return result, err
+		}
+	}
 
 	workflow := strings.TrimSpace(input.Workflow)
 	if workflow == "" {
@@ -315,8 +318,9 @@ func (s *daemonCancelService) Cancel(_ context.Context, input httpapi.CancelRunR
 // filesystem (#3807). The local paths resolve the run's directory, journal
 // identity, and daemon lock under an instance root the caller does not have
 // here, so a remote cancel names the run by its full id and lets the daemon
-// answer from its own registry: the disposition codes, and the exit codes they
-// map to, are the file-drop path's unchanged.
+// resolve the owning runner or retained engine identity. Existing local
+// dispositions keep their exit codes; accepted engine cancellation reports a
+// request without claiming a terminal outcome.
 func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) int {
 	if strings.TrimSpace(endpoint) == "" {
 		pf(stderr, "error: no daemon API endpoint configured\n")
@@ -343,6 +347,9 @@ func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) i
 	case result.Error != "":
 		pf(stderr, "error: %s\n", result.Error)
 		return 1
+	case result.Code == httpapi.CancelCodeRequested:
+		pf(stdout, "requested cancellation of engine-driven run %s via daemon API; the engine reports the terminal outcome\n", runID)
+		return 0
 	case result.Code == httpapi.CancelCodeAborted:
 		pf(stdout, "%s run %s (aborted via daemon API)\n", action, runID)
 		return 0

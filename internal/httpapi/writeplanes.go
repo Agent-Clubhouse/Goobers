@@ -263,18 +263,19 @@ type EscalationService interface {
 }
 
 // Cancel dispositions, the wire form of the daemon's existing cancel-response
-// codes: the run was cancelled and finalized aborted, it finished on its own
-// before the cancel landed, or this daemon is not executing it.
+// codes: a local run was finalized aborted, an engine cancellation was
+// requested, the run already finished, or the daemon does not own a live run.
 const (
+	// CancelCodeRequested means the engine accepted a request, not a terminal outcome.
+	CancelCodeRequested  = "cancellation_requested"
 	CancelCodeAborted    = "aborted"
 	CancelCodeTerminal   = "already_terminal"
 	CancelCodeNotRunning = "not_running"
 )
 
-// CancelRunRequest asks the daemon to stop a run it is actively executing
-// (#3807). Workflow and Gaggle are the run's own identity, read from its
-// journal by the caller; the daemon uses them to resolve the owning Runner and
-// release the scheduler's concurrency slot, exactly as the file-drop seam does.
+// CancelRunRequest asks the daemon to stop an owned run (#3807, decision 005
+// D2). Workflow and Gaggle are optional identity constraints; an engine run is
+// routed using its retained identity and current daemon ownership.
 type CancelRunRequest struct {
 	RunID    string `json:"-"`
 	Workflow string `json:"workflow,omitempty"`
@@ -285,7 +286,9 @@ type CancelRunRequest struct {
 // CancelRunResult reports the cancel disposition. A refusal the operator can
 // act on (already terminal, not running under this daemon) is a 200 carrying a
 // Code rather than an HTTP error: the request was well-formed and the daemon
-// answered it, and the CLI maps the code to its own exit code the same way the
+// answered it. An engine cancellation returns cancellation_requested without
+// Phase; the engine reports its eventual terminal outcome. The CLI maps the
+// code to its own exit code the same way the
 // local file-drop path does.
 type CancelRunResult struct {
 	Phase string `json:"phase,omitempty"`
@@ -650,9 +653,8 @@ func registerEscalationRoute(router *Router, escalations EscalationService, life
 }
 
 // registerCancelRoute serves `run cancel`/`run abort` over the API (#3807).
-// The cancel itself stays the daemon's: the service resolves the Runner that
-// owns the run and calls the same CancelRun the pending-cancels sweep calls,
-// so a remote cancel and a local one are one code path with two ways in.
+// The service resolves the owning local runner or retained engine run; this
+// transport applies the same authentication and mutation admission to both.
 func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteCancelRun, func(w http.ResponseWriter, request *http.Request) {
 		if cancels == nil {

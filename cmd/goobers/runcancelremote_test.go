@@ -107,6 +107,7 @@ func TestRunCancelRemoteDispositionsMapToExitCodes(t *testing.T) {
 		want   int
 		stderr string
 	}{
+		{name: "engine cancellation requested", result: httpapi.CancelRunResult{Code: httpapi.CancelCodeRequested}},
 		{name: "aborted", result: httpapi.CancelRunResult{Code: httpapi.CancelCodeAborted, Phase: "aborted"}},
 		{
 			name:   "already terminal",

@@ -671,12 +671,14 @@ const runAbortHelp = "Usage: goobers run abort [--api=<url>] <run-id> [path]\n\n
 	"daemon's authenticated HTTP API instead of this filesystem, which is the\n" +
 	"only way to reach a daemon running in another pod; name the run by its\n" +
 	"full id, since no local journal is read to expand an abbreviation. That\n" +
-	"remote form is a live cancel, not a journal abort: it can only stop a run\n" +
-	"the daemon is still executing, and a wedged run no daemon owns is refused\n" +
+	"remote form is a live cancel, not a journal abort: it stops a local run or\n" +
+	"requests cancellation of an engine run the daemon retains and owns. A\n" +
+	"wedged run no daemon owns is refused\n" +
 	"with exit 1. Finalizing such a run still requires the filesystem path\n" +
 	"against its instance root — run `GOOBERS_DAEMON_API= goobers run abort\n" +
 	"<run-id> <path>` to take it when the variable is exported.\n" +
-	"Exit codes: 0 = aborted, 1 = business error (run already terminal),\n" +
+	"Exit codes: 0 = aborted or engine cancellation requested,\n" +
+	"1 = business error (run already terminal),\n" +
 	"2 = usage/IO error (unknown run).\n"
 
 func runRunAbort(args []string, stdout, stderr io.Writer) int {
@@ -920,10 +922,10 @@ const runCancelHelp = "Usage: goobers run cancel [--api=<url>] <run-id> [path]\n
 	"daemon's authenticated HTTP API instead of the local pending-cancels\n" +
 	"drop, so a caller that does not share the daemon's filesystem can stop a\n" +
 	"run at all; name the run by its full id, since no local journal is read to\n" +
-	"expand an abbreviation. The remote form reaches only runs the daemon is\n" +
-	"executing, so an ENGINE-DRIVEN run is reported as not running under that\n" +
-	"daemon; cancel it from the instance root instead. Exit codes:\n" +
-	"0 = cancelled, 1 = business error\n" +
+	"expand an abbreviation. For an ENGINE-DRIVEN run retained and owned by\n" +
+	"that daemon, the API requests engine cancellation; the engine reports its\n" +
+	"terminal outcome later. Exit codes:\n" +
+	"0 = cancelled or engine cancellation requested, 1 = business error\n" +
 	"(already terminal, not currently running, or no daemon to cancel it),\n" +
 	"2 = usage/IO error (unknown run).\n"
 

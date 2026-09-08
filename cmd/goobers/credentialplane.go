@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
 	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -382,42 +379,8 @@ func (s *daemonCredentialService) locateRun(defs credentialPlaneDefinitions, run
 	for gaggle := range defs.Scopes {
 		gaggles = append(gaggles, gaggle)
 	}
-	sort.Strings(gaggles)
-	candidates := make([]string, 0, len(gaggles)+1)
-	for _, gaggle := range gaggles {
-		candidates = append(candidates, filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID))
-	}
-	legacy := filepath.Join(s.layout.RunsDir(), runID)
-	candidates = append(candidates, legacy)
-
-	found := ""
-	var foundInfo os.FileInfo
-	for _, dir := range candidates {
-		if _, err := os.Stat(filepath.Join(dir, "run.yaml")); err == nil {
-			info, err := os.Stat(dir)
-			if err != nil {
-				return "", credentialPlaneError(http.StatusInternalServerError, "run_lookup_failed", "run could not be inspected")
-			}
-			if found != "" && found != dir {
-				// Single-gaggle migration aliases legacy runs to the scoped
-				// root. Compare directories, not run.yaml: separate journals
-				// can share identical or hard-linked metadata. Only the legacy
-				// compatibility path may alias an already found gaggle run.
-				if dir == legacy && os.SameFile(foundInfo, info) {
-					continue
-				}
-				return "", credentialPlaneError(http.StatusConflict, "ambiguous_run_id", "run ID exists in more than one gaggle")
-			}
-			found = dir
-			foundInfo = info
-		} else if !os.IsNotExist(err) {
-			return "", credentialPlaneError(http.StatusInternalServerError, "run_lookup_failed", "run could not be inspected")
-		}
-	}
-	if found == "" {
-		return "", credentialPlaneError(http.StatusNotFound, "run_not_found", "run was not found")
-	}
-	return found, nil
+	found, err := locateOwnedRun(s.layout, gaggles, runID)
+	return found.dir, err
 }
 
 // stageProfile is the credential identity of one stage of a pinned
