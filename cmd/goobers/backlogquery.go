@@ -1553,7 +1553,7 @@ func appendBlockedResweepCandidates(
 	for _, item := range items {
 		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.repo, item.ID)
 		if err != nil {
-			return nil, failProviderStage(env.stderr, fmt.Sprintf("dependency recheck item %s", item.ID), err, "claimed-items.json")
+			return nil, failProviderStage(env.stderr, "recheck blocked-item dependencies", fmt.Errorf("dependency recheck item %s: %w", item.ID, err), "claimed-items.json")
 		}
 		if len(blockers) == 0 {
 			pf(env.stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
