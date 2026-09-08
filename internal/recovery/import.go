@@ -16,6 +16,19 @@ import (
 // is copied into private staging and checked before Git reads it, so a later
 // replacement of the source path cannot change the imported bytes.
 func ImportSnapshotBundle(ctx context.Context, repository, path string, record Record, maxBytes int64) error {
+	return withVerifiedArchive(ctx, path, record, maxBytes, func(staged string) error {
+		var heads snapshotPathOutput
+		if err := recoveryGit(ctx, repository, &heads, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", staged); err != nil {
+			return fmt.Errorf("import recovery objects: %w", err)
+		}
+		if strings.TrimSpace(heads.String()) != record.SnapshotSHA+" "+record.Ref {
+			return fmt.Errorf("imported recovery identity does not match record")
+		}
+		return PinCommit(ctx, repository, record)
+	})
+}
+
+func withVerifiedArchive(ctx context.Context, path string, record Record, maxBytes int64, consume func(string) error) error {
 	if err := record.Validate(); err != nil {
 		return err
 	}
@@ -43,14 +56,7 @@ func ImportSnapshotBundle(ctx context.Context, repository, path string, record R
 	if err := verifyBundleHeader(staged, record); err != nil {
 		return err
 	}
-	var heads snapshotPathOutput
-	if err := recoveryGit(ctx, repository, &heads, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", staged); err != nil {
-		return fmt.Errorf("import recovery objects: %w", err)
-	}
-	if strings.TrimSpace(heads.String()) != record.SnapshotSHA+" "+record.Ref {
-		return fmt.Errorf("imported recovery identity does not match record")
-	}
-	return PinCommit(ctx, repository, record)
+	return consume(staged)
 }
 
 func copyRecoveryArchive(path string, destination io.Writer) error {
