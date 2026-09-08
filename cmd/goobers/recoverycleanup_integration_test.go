@@ -25,12 +25,14 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 		if terminal {
 			name = "standalone-terminal"
 		}
-		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false) })
+		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false) })
 	}
-	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true) })
+	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false) })
+	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true) })
+	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true) })
 }
 
-func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal bool) {
+func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned bool) {
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -73,6 +75,16 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal bool
 	if err := os.WriteFile(filepath.Join(workspace.Path, "implementation.txt"), []byte("recover me"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if abandoned {
+		prepared, err := recovery.PreparedRestoreBranch(runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recoveryCLIGit(t, workspace.Path, "checkout", "-b", prepared)
+		recoveryCLIGit(t, workspace.Path, "add", "implementation.txt")
+		recoveryCLIGit(t, workspace.Path, "commit", "-m", "Restore retained implementation for prior-run")
+		recoveryCLIGit(t, workspace.Path, "checkout", "goobers/implementation/"+runID)
+	}
 	if terminal {
 		if removeBeforeTerminal {
 			if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
@@ -91,7 +103,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal bool
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
-		if !removeBeforeTerminal {
+		if !removeBeforeTerminal && !abandoned {
 			assertTerminalRecoveryConfigFailurePreservesWorktree(t, layout, standalone, runID, workspace.Path)
 		}
 		err = finalizeTerminalRunWithClaimRelease(layout, nil, standalone, runID, func(instance.Layout, *journal.InstanceLog, string) error { return nil })
@@ -139,6 +151,24 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal bool
 	}
 	if observations != wantObservations {
 		t.Fatalf("cleanup requires %d recovery observations, got %d", wantObservations, observations)
+	}
+	if abandoned {
+		found, err := manager.WithExistingMirror(ctx, source, func(repository string) error {
+			prepared, err := recovery.PreparedRestoreBranch(runID)
+			if err != nil {
+				return err
+			}
+			if refs := recoveryCLIGit(t, repository, "for-each-ref", "--format=%(refname)", "refs/heads/"+prepared); refs != "" {
+				t.Fatalf("abandoned preparation survived cleanup: %s", refs)
+			}
+			if got := recoveryCLIGit(t, repository, "show", retained.Ref+":implementation.txt"); got != "recover me" {
+				t.Fatalf("prepared implementation was lost: %q", got)
+			}
+			return nil
+		})
+		if err != nil || !found {
+			t.Fatalf("verify retained preparation: %t %v", found, err)
+		}
 	}
 }
 

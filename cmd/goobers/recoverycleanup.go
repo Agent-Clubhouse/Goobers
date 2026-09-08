@@ -70,11 +70,16 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		if err != nil {
 			return err
 		}
-		_, _, err = recovery.Retain(ctx, recovery.RetentionRequest{
+		request := recovery.RetentionRequest{
 			Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID,
 			BaseRef: "main", IdentityTime: captureAt, RetainUntil: captureAt.Add(30 * 24 * time.Hour),
 			InventoryRoot: root, CleanupRoots: []string{cleanupRoot}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20, SkipEmpty: true,
-		}, recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber})
+		}
+		publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
+		if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
+			return err
+		}
+		_, _, err = recovery.Retain(ctx, request, publication)
 		return err
 	}
 	return callback, nil
