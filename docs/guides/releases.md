@@ -432,7 +432,12 @@ The release workflow now executes every `DefaultTargets` archive before
 publication: Linux AMD64/ARM64, macOS AMD64/ARM64, and Windows AMD64. The
 `native-smoke` matrix uses native hosted runners and consumes the final signed
 artifact set. Linux AMD64 runs the deeper demo and release-document checks in
-`verify-and-publish`. A failed native smoke blocks publication.
+`validate-release`, which has only read permission. A failed native smoke blocks
+publication. The separate `verify-and-publish` job independently downloads the
+final signer artifact by immutable artifact ID, checks the exact release asset
+set and every checksum, and uploads an explicit file list. It treats the
+validation job’s generated release notes as data and never executes release
+binaries, installers, or build tools with publication permission.
 
 This supersedes the earlier #2039 decision to publish Linux ARM64 and macOS
 AMD64 without execution coverage. Native smoke proves startup and packaged

@@ -83,7 +83,7 @@ func TestReleaseAuthorizationPrecedesBuildAndPublication(t *testing.T) {
 		t.Fatal("manual release-tag reruns must remain available")
 	}
 	var scripts []string
-	for _, name := range []string{"build", "verify-and-publish"} {
+	for _, name := range []string{"build", "validate-release", "verify-and-publish"} {
 		job := workflow.Jobs[name]
 		if len(job.Steps) < 2 {
 			t.Fatalf("job %s has no checkout and authorization steps", name)
@@ -103,12 +103,13 @@ func TestReleaseAuthorizationPrecedesBuildAndPublication(t *testing.T) {
 		}
 		scripts = append(scripts, guard.Run)
 	}
-	if scripts[0] != scripts[1] {
+	if scripts[0] != scripts[1] || scripts[0] != scripts[2] {
 		t.Error("build and publication must enforce the same source authorization")
 	}
 	for name, want := range map[string][]string{
 		"sign-macos": {"build"}, "sign-windows": {"sign-macos"},
-		"native-smoke": {"sign-windows"}, "verify-and-publish": {"sign-windows", "native-smoke", "native-linux-images", "native-windows-image"},
+		"native-smoke": {"sign-windows"}, "verify-and-publish": {"sign-windows", "native-smoke", "native-linux-images", "native-windows-image", "validate-release"},
+		"validate-release":    {"sign-windows", "native-smoke", "native-linux-images", "native-windows-image"},
 		"native-linux-images": {"build", "sign-windows"}, "native-windows-image": {"build", "sign-windows"},
 	} {
 		job := workflow.Jobs[name]

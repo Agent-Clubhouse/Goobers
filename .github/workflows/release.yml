@@ -301,6 +301,8 @@ jobs:
 
   sign-windows:
     name: Sign Windows binary
+    outputs:
+      signed-artifact-id: ${{ steps.final-signed-artifacts.outputs.artifact-id }}
     permissions:
       contents: read
       id-token: write
@@ -415,6 +417,7 @@ jobs:
           rm SHA256SUMS.new
 
       - name: Upload fully-signed artifacts
+        id: final-signed-artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-signed
@@ -719,10 +722,12 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  verify-and-publish:
-    name: Verify and publish ${{ github.ref_name }}
+  validate-release:
+    name: Validate signed release ${{ github.ref_name }}
+    outputs:
+      notes-artifact-id: ${{ steps.release-notes-upload.outputs.artifact-id }}
     permissions:
-      contents: write
+      contents: read
     needs: [sign-windows, native-smoke, native-linux-images, native-windows-image]
     runs-on: ubuntu-latest
     steps:
@@ -781,7 +786,8 @@ jobs:
       - name: Download signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: dist-signed
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
           path: dist
 
       - name: Restore executable bits
@@ -885,11 +891,170 @@ jobs:
             test -s "smoke/installed/docs/$TAG/onboarding/manifest.json"
           fi
 
+      - name: Upload validated release notes
+        id: release-notes-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: validated-release-notes-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/RELEASE_NOTES.md
+          retention-days: 1
+          if-no-files-found: error
+
+  verify-and-publish:
+    name: Verify and publish ${{ github.ref_name }}
+    permissions:
+      contents: write
+    needs: [sign-windows, native-smoke, native-linux-images, native-windows-image, validate-release]
+    runs-on: ubuntu-latest
+    steps:
+      # This job never executes downloaded binaries, installers, generated
+      # docs tooling, or repository build tools. Checkout is only for the
+      # canonical Git source guard; all release content remains inert data.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Manual reruns are supported on release tags, never branch refs. Peeling
+      # both identities supports annotated tags without trusting short stamps.
+      - name: Authorize release source
+        id: release-source
+        shell: bash
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT" != push && "$RELEASE_EVENT" != workflow_dispatch ]]; then
+            echo '::error::Release requires a tag push or a manual run on a release tag.'
+            exit 1
+          fi
+          core='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          release_ref="^refs/tags/v${core}\.${core}\.${core}(-${identifier}(\.${identifier})*)?$"
+          if [[ ! "$RELEASE_REF" =~ $release_ref ]]; then
+            echo '::error::Release requires a canonical vMAJOR.MINOR.PATCH tag with an optional SemVer prerelease suffix.'
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Release event source must be a full Git object identity.'
+            exit 1
+          fi
+          tag_commit="$(git rev-parse --verify "${RELEASE_REF}^{commit}")"
+          event_commit="$(git rev-parse --verify "${EXPECTED_SOURCE}^{commit}")"
+          checkout_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [[ "$tag_commit" != "$event_commit" || "$checkout_commit" != "$event_commit" ]]; then
+            echo '::error::Release tag, event source, and checked-out commit must agree.'
+            exit 1
+          fi
+          echo "commit=$event_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Download immutable final signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
+          path: dist
+      - name: Download validated release notes as data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.validate-release.outputs.notes-artifact-id }}
+          merge-multiple: true
+          path: release-notes
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          # System Python in isolated mode cannot import artifact/repository
+          # modules or PYTHONPATH hooks. No downloaded code runs with this token.
+          python3 -I - <<'PYVERIFY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import stat
+
+
+          def refuse(message):
+              raise SystemExit("Release asset verification failed: " + message)
+
+
+          def regular_file(file, limit):
+              info = file.lstat()
+              if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
+                  refuse("expected a bounded regular nonsymlink file")
+              return info.st_size
+
+
+          def bounded_read(file, limit):
+              size = regular_file(file, limit)
+              with file.open("rb") as stream:
+                  data = stream.read(limit + 1)
+              if len(data) != size:
+                  refuse("file changed or exceeded its bound")
+              return data
+
+
+          tag = os.environ["TAG"]
+          core = r"(?:0|[1-9][0-9]*)"
+          identifier = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+          if not re.fullmatch(rf"v{core}\.{core}\.{core}(?:-{identifier}(?:\.{identifier})*)?", tag):
+              refuse("noncanonical release tag")
+          expected = {
+              f"goobers_{tag}_{target}.{extension}"
+              for target, extension in (
+                  ("linux_amd64", "tar.gz"), ("linux_arm64", "tar.gz"),
+                  ("darwin_amd64", "tar.gz"), ("darwin_arm64", "tar.gz"),
+                  ("windows_amd64", "zip"),
+              )
+          }
+          expected.update((f"goobers_portal_{tag}.tar.gz", f"goobers-agent-toolkit_{tag}.zip",
+                           f"goobers-onboarding_{tag}.zip", "install.sh",
+                           "feature-registry.json", "dsl-support-matrix.json"))
+          directory, notes = Path("dist"), Path("release-notes")
+          for root in (directory, notes):
+              if not stat.S_ISDIR(root.lstat().st_mode):
+                  refuse("artifact root must be a nonsymlink directory")
+          if {file.name for file in directory.iterdir()} != expected | {"SHA256SUMS", "RELEASE_NOTES.md"}:
+              refuse("signed artifact has missing or unexpected assets")
+          if {file.name for file in notes.iterdir()} != {"RELEASE_NOTES.md"}:
+              refuse("notes artifact must contain only RELEASE_NOTES.md")
+          manifest = bounded_read(directory / "SHA256SUMS", 65536).decode("ascii")
+          entries = {}
+          for line in manifest.splitlines():
+              match = re.fullmatch(r"([0-9a-fA-F]{64})  ([A-Za-z0-9_.-]+)", line)
+              if not match or match[2] not in expected or match[2] in entries:
+                  refuse("malformed, unexpected, or duplicate checksum entry")
+              entries[match[2]] = match[1].lower()
+          if set(entries) != expected:
+              refuse("checksums do not cover the exact release asset set")
+          for name in sorted(expected):
+              file = directory / name
+              size = regular_file(file, 1 << 30)
+              digest, consumed = hashlib.sha256(), 0
+              with file.open("rb") as stream:
+                  while chunk := stream.read(1 << 20):
+                      consumed += len(chunk)
+                      if consumed > size:
+                          refuse("asset grew while verifying")
+                      digest.update(chunk)
+              if consumed != size or digest.hexdigest() != entries[name]:
+                  refuse("asset checksum mismatch")
+          # Original notes are part of the signer artifact but aren't checksummed or
+          # published. Only the separate validation job's generated notes are attached.
+          bounded_read(directory / "RELEASE_NOTES.md", 1 << 20).decode("utf-8")
+          bounded_read(notes / "RELEASE_NOTES.md", 1 << 20).decode("utf-8")
+          assets = [str(directory / name) for name in sorted(expected)]
+          assets.extend((str(directory / "SHA256SUMS"), str(notes / "RELEASE_NOTES.md")))
+          Path("publish-assets.txt").write_text("\n".join(assets) + "\n", encoding="utf-8")
+          PYVERIFY
+          mapfile -t assets < publish-assets.txt
           # Stable tags never contain a literal "-"; a SemVer pre-release
           # suffix always does (v1.2.3-beta.2), so this is enough to tell
           # them apart without re-implementing the full grammar in bash.
@@ -899,12 +1064,12 @@ jobs:
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md "${prerelease[@]}"
-            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "$TAG" --notes-file release-notes/RELEASE_NOTES.md "${prerelease[@]}"
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$TAG" dist/* \
+            gh release create "$TAG" "${assets[@]}" \
               --verify-tag \
               --title "$TAG" \
-              --notes-file dist/RELEASE_NOTES.md \
+              --notes-file release-notes/RELEASE_NOTES.md \
               "${prerelease[@]}"
           fi

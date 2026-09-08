@@ -60,13 +60,13 @@ func TestReleasePublicationRequiresNativeArtifactSmoke(t *testing.T) {
 			t.Errorf("published platform %s has no native smoke leg", target)
 		}
 	}
-	job := workflowJob(string(data), "verify-and-publish")
+	job := workflowJob(string(data), "validate-release")
 	markers := []string{
 		"- name: Verify release artifacts", "set -euo pipefail",
 		"goobers init --allow-ephemeral --demo", "goobers run demo",
 		`grep --fixed-strings "phase=completed"`,
 		"- name: Exercise installer against staged release assets",
-		"- name: Publish GitHub Release",
+		"- name: Upload validated release notes",
 	}
 	if marker, ok := firstUnorderedMarker(job, markers); !ok {
 		t.Fatalf("publication bypasses executable smoke guard %q", marker)
