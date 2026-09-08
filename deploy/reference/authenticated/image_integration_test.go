@@ -6,14 +6,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/goobers/goobers/test/testsupport/testdep"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // Optional runtime contract check against the prepared release base. It needs

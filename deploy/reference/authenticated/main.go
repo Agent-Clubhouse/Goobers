@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -69,7 +70,59 @@ func main() {
 
 var imageDigest = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$`)
 
+type apiAccess struct {
+	peers []networkingv1.NetworkPolicyPeer
+	ports []networkingv1.NetworkPolicyPort
+}
+
+type preparedBundle struct {
+	secret      *corev1.Secret
+	initCommand string
+}
+
 func prepare(o options) error {
+	if err := validateTopologyOptions(o); err != nil {
+		return err
+	}
+	access, err := parseAPIAccess(o)
+	if err != nil {
+		return err
+	}
+	cfg, set, err := loadTopologyConfig(o)
+	if err != nil {
+		return err
+	}
+	input, err := topologyNetworkInput(cfg)
+	if err != nil {
+		return err
+	}
+	rendered, err := netpolrender.Render(input)
+	if err != nil {
+		return err
+	}
+	bundle, err := prepareBundle(o.Instance, cfg)
+	if err != nil {
+		return err
+	}
+	objects, err := controlPlaneResources(o, cfg, bundle)
+	if err != nil {
+		return err
+	}
+	network, err := controlPlaneNetwork(o, input, access)
+	if err != nil {
+		return err
+	}
+	stages, err := stageResources(o, set.Gaggles[0].Name, rendered.Files)
+	if err != nil {
+		return err
+	}
+	objects = append(objects, network...)
+	objects = append(objects, stages...)
+	return publishTopology(o.Out, objects)
+}
+
+func validateTopologyOptions(o options) error {
+
 	if o.Instance == "" || o.Out == "" {
 		return fmt.Errorf("--instance and --out are required")
 	}
@@ -90,11 +143,16 @@ func prepare(o options) error {
 	if o.TLSSecret == o.TokenSecret || o.TLSSecret == o.CredentialsSecret {
 		return fmt.Errorf("daemon TLS private key must use a different Secret from worker-readable credentials")
 	}
+	return nil
+}
+
+func parseAPIAccess(o options) (apiAccess, error) {
+
 	peers := []networkingv1.NetworkPolicyPeer{}
 	for _, raw := range strings.Split(o.APIServerCIDRs, ",") {
 		p, err := netip.ParsePrefix(raw)
 		if err != nil || p.Bits() != p.Addr().BitLen() || p.Addr().IsUnspecified() || p.Addr().IsMulticast() || p.Addr().IsLoopback() {
-			return fmt.Errorf("apiserver-cidrs must contain exact /32 or /128 endpoint addresses")
+			return apiAccess{}, fmt.Errorf("apiserver-cidrs must contain exact /32 or /128 endpoint addresses")
 		}
 		peers = append(peers, networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: p.String()}})
 	}
@@ -102,43 +160,53 @@ func prepare(o options) error {
 	for _, raw := range strings.Split(o.APIServerPorts, ",") {
 		var n int
 		if _, err := fmt.Sscanf(raw, "%d", &n); err != nil || fmt.Sprint(n) != raw || n < 1 || n > 65535 {
-			return fmt.Errorf("apiserver-ports must contain TCP ports in 1..65535")
+			return apiAccess{}, fmt.Errorf("apiserver-ports must contain TCP ports in 1..65535")
 		}
 		ports = append(ports, tcp(n))
 	}
+	return apiAccess{peers: peers, ports: ports}, nil
+}
+
+func loadTopologyConfig(o options) (*instance.Config, *instance.ConfigSet, error) {
+
 	cfg, err := instance.LoadConfig(filepath.Join(o.Instance, "instance.yaml"))
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if cfg.WorkflowSource != nil {
-		return fmt.Errorf("bundle-managed topology requires local config, without workflowSource sync")
+		return nil, nil, fmt.Errorf("bundle-managed topology requires local config, without workflowSource sync")
 	}
 	if cfg.Engine == nil || cfg.Engine.HostPort != temporalHost {
-		return fmt.Errorf("engine.hostPort must be %s; configure Temporal separately before use", temporalHost)
+		return nil, nil, fmt.Errorf("engine.hostPort must be %s; configure Temporal separately before use", temporalHost)
 	}
 	engine, _, err := cfg.ResolveEngineConfig(func(string) (string, bool) { return "", false })
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	cfg.Engine.HostPort, cfg.Engine.Namespace, cfg.Engine.TaskQueue = engine.HostPort, engine.Namespace, engine.TaskQueue
 	set, report, err := instance.LoadConfigDir(filepath.Join(o.Instance, "config"))
 	if err != nil {
-		return fmt.Errorf("load config: %w (%v)", err, report)
+		return nil, nil, fmt.Errorf("load config: %w (%v)", err, report)
 	}
 	if len(set.Gaggles) != 1 {
-		return fmt.Errorf("this topology requires exactly one manifest-listed gaggle")
+		return nil, nil, fmt.Errorf("this topology requires exactly one manifest-listed gaggle")
 	}
+	return cfg, set, nil
+}
+
+func topologyNetworkInput(cfg *instance.Config) (netpolrender.Input, error) {
+
 	input := netpolrender.Input{}
 	for _, entry := range cfg.ResolvedRunners() {
 		kind, err := instance.ClassifyRunnerHost(entry.Host)
 		if err != nil {
-			return err
+			return netpolrender.Input{}, err
 		}
 		if kind == instance.RunnerHostSelf {
-			return fmt.Errorf("runner %s selects self; this topology requires every declared runner to execute in a stage image", entry.Name)
+			return netpolrender.Input{}, fmt.Errorf("runner %s selects self; this topology requires every declared runner to execute in a stage image", entry.Name)
 		}
 		if kind != instance.RunnerHostImage || !imageDigest.MatchString(entry.Host) {
-			return fmt.Errorf("runner %s must use a digest-pinned image; deployment templates are outside this topology", entry.Name)
+			return netpolrender.Input{}, fmt.Errorf("runner %s must use a digest-pinned image; deployment templates are outside this topology", entry.Name)
 		}
 		rs := []string{}
 		for _, r := range entry.Restrictions {
@@ -147,42 +215,50 @@ func prepare(o options) error {
 		input.Runners = append(input.Runners, netpolrender.Runner{Name: entry.Name, Restrictions: rs})
 	}
 	if len(input.Runners) == 0 {
-		return fmt.Errorf("at least one non-self image runner is required")
+		return netpolrender.Input{}, fmt.Errorf("at least one non-self image runner is required")
 	}
 	if cfg.Egress != nil {
 		for _, g := range cfg.Egress.Allowlist {
 			input.Allowlist = append(input.Allowlist, netpolrender.AllowlistGroup{Name: g.Name, Kind: g.Kind, Source: g.Source, SourceSHA256: g.SourceSHA256, CIDRs: g.CIDRs, Ports: g.Ports})
 		}
 	}
-	rendered, err := netpolrender.Render(input)
-	if err != nil {
-		return err
-	}
+	return input, nil
+}
+
+func prepareBundle(root string, cfg *instance.Config) (preparedBundle, error) {
+
 	cfg.API.Listen = "0.0.0.0:8080"
 	cfg.API.TLS = &instance.APITLSConfig{CertFile: "/run/goobers/tls/tls.crt", KeyFile: "/run/goobers/tls/tls.key"}
 	cfg.API.PodTokenKeyFile = "/run/goobers/pod-auth/pod-token.key"
 	configBytes, err := yaml.Marshal(cfg)
 	if err != nil {
-		return err
+		return preparedBundle{}, err
 	}
-	data, initCommand, err := configBundle(o.Instance, configBytes)
+	data, initCommand, err := configBundle(root, configBytes)
 	if err != nil {
-		return err
+		return preparedBundle{}, err
 	}
 	identity, err := json.Marshal(data)
 	if err != nil {
-		return err
+		return preparedBundle{}, err
 	}
 	sum := sha256.Sum256(identity)
 	bundleName := "goobers-config-" + hex.EncodeToString(sum[:])[:24]
 	immutable := true
-	objects := []any{&corev1.Secret{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}, ObjectMeta: metav1.ObjectMeta{Name: bundleName, Namespace: systemNS}, Immutable: &immutable, Type: corev1.SecretTypeOpaque, Data: data}}
+	secret := &corev1.Secret{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}, ObjectMeta: metav1.ObjectMeta{Name: bundleName, Namespace: systemNS}, Immutable: &immutable, Type: corev1.SecretTypeOpaque, Data: data}
+
+	return preparedBundle{secret: secret, initCommand: initCommand}, nil
+}
+
+func controlPlaneResources(o options, cfg *instance.Config, bundle preparedBundle) ([]any, error) {
+	objects := []any{bundle.secret}
+
 	// Keep the base's selectors/probes/security posture, but omit its disabled
 	// operator, Windows deployment, example ingress, and unrelated CRD RBAC.
 	for _, name := range []string{"namespace.yaml", "api-rbac.yaml", "api-service.yaml"} {
 		docs, err := readDocs(filepath.Join(o.Reference, "goobers-system", name))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, d := range docs {
 			objects = append(objects, d)
@@ -192,7 +268,7 @@ func prepare(o options) error {
 	for _, name := range []string{"journal-pvc.yaml", "blobs-pvc.yaml"} {
 		var pvc corev1.PersistentVolumeClaim
 		if err := readObject(filepath.Join(o.Reference, "goobers-system", name), &pvc); err != nil {
-			return err
+			return nil, err
 		}
 		class := o.JournalClass
 		if name == "blobs-pvc.yaml" {
@@ -202,15 +278,21 @@ func prepare(o options) error {
 		objects = append(objects, &pvc)
 	}
 	for _, daemon := range []bool{true, false} {
-		dep, err := deployment(o, bundleName, initCommand, data, daemon, cfg)
+		dep, err := deployment(o, bundle.secret.Name, bundle.initCommand, bundle.secret.Data, daemon, cfg)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		objects = append(objects, dep)
 	}
+	return objects, nil
+}
+
+func controlPlaneNetwork(o options, input netpolrender.Input, access apiAccess) ([]any, error) {
+	var objects []any
+
 	floor, err := readDocs(filepath.Join(o.Reference, "goobers-system", "networkpolicies.yaml"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, d := range floor {
 		name := d["metadata"].(map[string]any)["name"]
@@ -218,7 +300,7 @@ func prepare(o options) error {
 			objects = append(objects, d)
 		}
 	}
-	objects = append(objects, policy("allow-worker-apiserver", systemNS, labels("goobers-worker"), nil, []networkingv1.NetworkPolicyEgressRule{{To: peers, Ports: ports}}))
+	objects = append(objects, policy("allow-worker-apiserver", systemNS, labels("goobers-worker"), nil, []networkingv1.NetworkPolicyEgressRule{{To: access.peers, Ports: access.ports}}))
 	apiPeer := networkingv1.NetworkPolicyPeer{PodSelector: selector(labels("goobers-api"))}
 	objects = append(objects, policy("allow-worker-api", systemNS, labels("goobers-worker"), nil, []networkingv1.NetworkPolicyEgressRule{{To: []networkingv1.NetworkPolicyPeer{apiPeer}, Ports: []networkingv1.NetworkPolicyPort{tcp(8080)}}}))
 	// Both selector halves occupy ONE peer; a sibling namespace cannot use it.
@@ -248,29 +330,40 @@ func prepare(o options) error {
 			objects = append(objects, policy(name+"-configured-egress", systemNS, labels(name), nil, direct))
 		}
 	}
-	objects = append(objects, &corev1.Namespace{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: o.StageNamespace, Labels: map[string]string{"goobers.dev/gaggle": set.Gaggles[0].Name, "pod-security.kubernetes.io/enforce": "restricted"}}})
+	return objects, nil
+}
+
+func stageResources(o options, gaggle string, files []netpolrender.File) ([]any, error) {
+	var objects []any
+
+	objects = append(objects, &corev1.Namespace{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: o.StageNamespace, Labels: map[string]string{"goobers.dev/gaggle": gaggle, "pod-security.kubernetes.io/enforce": "restricted"}}})
 	no := false
 	objects = append(objects, &corev1.ServiceAccount{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"}, ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: o.StageNamespace}, AutomountServiceAccountToken: &no})
 	for _, name := range []string{"networkpolicies.yaml", "dispatcher-rbac.yaml"} {
 		docs, err := readDocs(filepath.Join(o.Reference, "gaggle-namespace", "base", name))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, d := range docs {
 			d["metadata"].(map[string]any)["namespace"] = o.StageNamespace
 			objects = append(objects, d)
 		}
 	}
-	for _, file := range rendered.Files {
+	for _, file := range files {
 		var d map[string]any
 		if err := yaml.Unmarshal(file.Content, &d); err != nil {
-			return err
+			return nil, err
 		}
 		if d["kind"] == "NetworkPolicy" {
 			d["metadata"].(map[string]any)["namespace"] = o.StageNamespace
 			objects = append(objects, d)
 		}
 	}
+	return objects, nil
+}
+
+func publishTopology(out string, objects []any) (err error) {
+
 	var output bytes.Buffer
 	for _, object := range objects {
 		raw, err := yaml.Marshal(object)
@@ -280,10 +373,10 @@ func prepare(o options) error {
 		output.WriteString("---\n")
 		output.Write(raw)
 	}
-	if _, err := os.Lstat(o.Out); !os.IsNotExist(err) {
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
 		return fmt.Errorf("output must be a new directory")
 	}
-	parent := filepath.Dir(o.Out)
+	parent := filepath.Dir(out)
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return err
 	}
@@ -291,14 +384,14 @@ func prepare(o options) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(temp)
+	defer func() { err = errors.Join(err, os.RemoveAll(temp)) }()
 	if err := os.WriteFile(filepath.Join(temp, "resources.yaml"), output.Bytes(), 0600); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(temp, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - resources.yaml\n"), 0600); err != nil {
 		return err
 	}
-	return os.Rename(temp, o.Out)
+	return os.Rename(temp, out)
 }
 
 // The prepared release base has sh/cp/mkdir but deliberately no tar/gzip.
