@@ -25,9 +25,10 @@ type imageContextMetadata struct {
 // container engine, assign an image tag, publish, sign, or alter support tiers.
 // The destination appears only after all release outputs have succeeded.
 type imageContexts struct {
-	temporary   string
-	destination string
-	dockerfile  []byte
+	temporary    string
+	destination  string
+	dockerfile   []byte
+	windowsFiles map[string][]byte
 }
 
 func validateImageContextOptions(opts options, targetCSV string) error {
@@ -35,15 +36,18 @@ func validateImageContextOptions(opts options, targetCSV string) error {
 		return nil
 	}
 	if strings.TrimSpace(targetCSV) == "" {
-		return fmt.Errorf("-image-contexts requires explicit Linux-only -targets")
+		return fmt.Errorf("-image-contexts requires explicit supported -targets")
 	}
 	if opts.skipUnbuildable {
 		return fmt.Errorf("-image-contexts cannot be combined with -skip-unbuildable: every requested image context must build")
 	}
 	seen := make(map[Target]bool)
 	for _, target := range opts.targets {
-		if target.OS != "linux" || (target.Arch != "amd64" && target.Arch != "arm64") {
-			return fmt.Errorf("image context target %s is unsupported; use linux/amd64 or linux/arm64", target)
+		if !supportedImageTarget(target) {
+			return fmt.Errorf("image context target %s is unsupported; use linux/amd64, linux/arm64 or windows/amd64", target)
+		}
+		if target.OS == "windows" && (opts.commit == "" || strings.Trim(opts.commit, "0123456789abcdef") != "") {
+			return fmt.Errorf("image inputs for Windows require a hexadecimal embedded commit stamp")
 		}
 		if seen[target] {
 			return fmt.Errorf("duplicate image context target %s", target)
@@ -51,6 +55,11 @@ func validateImageContextOptions(opts options, targetCSV string) error {
 		seen[target] = true
 	}
 	return nil
+}
+
+func supportedImageTarget(target Target) bool {
+	return (target.OS == "linux" && (target.Arch == "amd64" || target.Arch == "arm64")) ||
+		(target.OS == "windows" && target.Arch == "amd64")
 }
 
 func prepareImageContexts(opts options) (*imageContexts, error) {
@@ -79,6 +88,10 @@ func prepareImageContexts(opts options) (*imageContexts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read base-image Dockerfile: %w", err)
 	}
+	windowsFiles, err := windowsImageMaterials(repoRoot, opts.targets)
+	if err != nil {
+		return nil, err
+	}
 	parent := filepath.Dir(destination)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return nil, fmt.Errorf("create image context parent: %w", err)
@@ -87,7 +100,7 @@ func prepareImageContexts(opts options) (*imageContexts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stage image contexts: %w", err)
 	}
-	return &imageContexts{temporary: temporary, destination: destination, dockerfile: dockerfile}, nil
+	return &imageContexts{temporary: temporary, destination: destination, dockerfile: dockerfile, windowsFiles: windowsFiles}, nil
 }
 
 func requireAbsentImageDestination(destination string) error {
@@ -121,10 +134,10 @@ func (images *imageContexts) stage(target Target, binary, ldflags string, opts o
 	if err != nil {
 		return fmt.Errorf("read image binary for %s: %w", target, err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "goobers"), data, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, target.binaryName()), data, 0o755); err != nil {
 		return fmt.Errorf("copy image binary for %s: %w", target, err)
 	}
-	output, err := buildReleaseBinary(target, ldflags, filepath.Join(directory, "goobers-operator"), operatorBuildPackage)
+	output, err := buildReleaseBinary(target, ldflags, filepath.Join(directory, imageOperatorName(target)), operatorBuildPackage)
 	if err != nil {
 		return fmt.Errorf("build image operator %s: %w\n%s", target, err, output)
 	}
@@ -132,22 +145,47 @@ func (images *imageContexts) stage(target Target, binary, ldflags string, opts o
 		SchemaVersion: 1, Kind: "goobers-base-build-inputs", Version: opts.version,
 		Commit: opts.commit, Date: opts.date, Platform: target.String(),
 	}
-	return writeImageContextFiles(directory, images.dockerfile, metadata)
+	files := map[string][]byte{"Dockerfile": images.dockerfile}
+	if target.OS == "windows" {
+		files = images.windowsFiles
+		if err := prepareWindowsImageDependencies(directory, files["dependencies.json"]); err != nil {
+			return err
+		}
+	}
+	return writeImageContextFiles(directory, files, metadata)
 }
 
-func writeImageContextFiles(directory string, dockerfile []byte, metadata imageContextMetadata) error {
+func imageOperatorName(target Target) string {
+	if target.OS == "windows" {
+		return "goobers-operator.exe"
+	}
+	return "goobers-operator"
+}
+
+func writeImageContextFiles(directory string, files map[string][]byte, metadata imageContextMetadata) error {
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode image context metadata: %w", err)
 	}
-	for name, contents := range map[string][]byte{"Dockerfile": dockerfile, "release.json": append(data, '\n')} {
+	if err := os.WriteFile(filepath.Join(directory, "release.json"), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write image context metadata: %w", err)
+	}
+	for name, contents := range files {
 		if err := os.WriteFile(filepath.Join(directory, name), contents, 0o644); err != nil {
 			return fmt.Errorf("write image context %s: %w", name, err)
 		}
 	}
+	return writeImageContextChecksums(directory)
+}
+
+func writeImageContextChecksums(directory string) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("read image context: %w", err)
+	}
 	var paths []string
-	for _, name := range []string{"Dockerfile", "release.json", "goobers", "goobers-operator"} {
-		paths = append(paths, filepath.Join(directory, name))
+	for _, entry := range entries {
+		paths = append(paths, filepath.Join(directory, entry.Name()))
 	}
 	manifest, err := checksumsManifest(paths)
 	if err != nil {

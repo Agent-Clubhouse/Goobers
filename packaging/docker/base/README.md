@@ -1,6 +1,6 @@
 # Azure Linux base-image build inputs
 
-The release engine can prepare Linux base-image contexts from the same binary
+The release engine can prepare base-image contexts from the same binary
 bytes, platform, version, commit, and date used for release archives:
 
 ```sh
@@ -13,8 +13,9 @@ go run ./release -version v0.4.0-rc.1 -commit "$(git rev-parse HEAD)" \
   -image-contexts dist/rc-image-contexts
 ```
 
-The image-context destination must not already exist. Explicit Linux targets are
-required, and `-skip-unbuildable` is rejected. Every requested context appears
+The image-context destination must not already exist. Explicit targets are
+required: `linux/amd64`, `linux/arm64`, and `windows/amd64` are accepted, including
+mixed batches. `-skip-unbuildable` is rejected. Every requested context appears
 together only after the release run succeeds. A failure removes the staging
 directory; ordinary release assets follow the existing release behavior.
 
@@ -40,6 +41,18 @@ The final filesystem contains Azure Linux runtime packages, both Goobers binarie
 and release metadata. It omits harness runtimes and package caches and removes
 setuid/setgid helpers. `/dev/null` exists only temporarily during package setup;
 the container runtime supplies the final `/dev` devices.
+
+For Windows, use `-targets windows/amd64` (or include it in a mixed batch). The
+`windows-amd64` context contains archive-matched `.exe` binaries and the same
+metadata, plus the committed Windows Dockerfile, verification scripts, and pinned
+dependency manifest. Preparation downloads the two public ZIPs over HTTPS,
+verifies their SHA256 pins, and covers all context files in `SHA256SUMS`. It requires
+a hexadecimal embedded commit stamp; both abbreviated and full stamps are accepted.
+Downloads have a two-minute limit each, a 128 MiB MinGit limit and a 4 MiB timezone
+archive limit. A failed download discards the entire batch. Windows preparation
+runs on any release host; building or running the image still requires a compatible
+Windows Server 2022 container host. See the [Windows input and native-check
+contract](../windows/README.md).
 
 This is **build-input preparation**, a bounded part of
 [#3275](../../../docs/design/goobernetes-deployment-images.md). It does not publish

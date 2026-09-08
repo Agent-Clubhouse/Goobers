@@ -20,9 +20,10 @@ func TestImageContextFlagsRefuseUnsupportedRequests(t *testing.T) {
 		args []string
 	}{
 		{"implicit full matrix", nil},
-		{"windows", []string{"-targets", "windows/amd64"}},
+		{"unsupported Windows architecture", []string{"-targets", "windows/arm64"}},
+		{"nonhex Windows stamp", []string{"-targets", "windows/amd64", "-commit", "not-a-commit"}},
 		{"darwin", []string{"-targets", "darwin/arm64"}},
-		{"mixed platforms", []string{"-targets", "linux/amd64,windows/amd64"}},
+		{"mixed unsupported platforms", []string{"-targets", "linux/amd64,windows/arm64"}},
 		{"unsupported architecture", []string{"-targets", "linux/386"}},
 		{"duplicate target", []string{"-targets", "linux/amd64,linux/amd64"}},
 		{"skip builds", []string{"-targets", "linux/amd64", "-skip-unbuildable"}},
@@ -39,7 +40,7 @@ func TestImageContextFlagsRefuseUnsupportedRequests(t *testing.T) {
 			}
 		})
 	}
-	if _, err := parseFlags([]string{"-first-feature-snapshot", "-image-contexts", "images", "-targets", "linux/amd64,linux/arm64"}, io.Discard); err != nil {
+	if _, err := parseFlags([]string{"-first-feature-snapshot", "-image-contexts", "images", "-targets", "linux/amd64,linux/arm64,windows/amd64"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 }

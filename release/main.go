@@ -194,7 +194,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		commit           = fs.String("commit", "", "build commit (default: git rev-parse --short HEAD)")
 		date             = fs.String("date", "", "build date RFC3339 (default: the commit's committer date, for reproducibility)")
 		outDir           = fs.String("output", "dist", "output directory for release assets")
-		imageContexts    = fs.String("image-contexts", "", "prepare Linux base-image build inputs in a new directory (requires explicit Linux-only -targets; does not build or publish images)")
+		imageContexts    = fs.String("image-contexts", "", "prepare Linux or Windows base-image build inputs in a new directory (requires explicit supported -targets; does not build or publish images)")
 		previousFeatures = fs.String("previous-features", "", "feature-registry.json from the previous release")
 		previousSupport  = fs.String("previous-support-matrix", "", "dsl-support-matrix.json from the previous release")
 		firstFeatures    = fs.Bool("first-feature-snapshot", false, "use an empty feature baseline for the first recorded snapshot")
