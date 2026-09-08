@@ -598,7 +598,7 @@ func (r podArtifactRecorder) Append(ev journal.Event) error {
 		Gaggle: os.Getenv(dispatcher.EnvGaggle),
 		Ops: []livejournal.Op{{
 			Kind: livejournal.OpAppend,
-			Key:  fmt.Sprintf("%s/%s/%d", os.Getenv(dispatcher.EnvStage), ev.Type, ev.Seq),
+			Key:  podAgentEventOpKey(ev),
 			// The daemon's replayClock adopts THIS field as the event's own
 			// Time (livejournal.applyOp: run.clock.set(op.Time)) — a pod has
 			// no journal-plane clock of its own to inherit one from, so an

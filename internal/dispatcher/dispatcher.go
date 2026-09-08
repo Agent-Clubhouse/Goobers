@@ -281,6 +281,9 @@ type Attempt struct {
 	Workflow string
 	Stage    string
 	Number   int
+	// PodAttempt separates physical dispatch identity from the journal ordinal.
+	// Zero uses Number for legacy callers.
+	PodAttempt int
 	// Class is the driver-supplied retry lineage; empty identifies an initial
 	// or legacy attempt. The pod ordinal cannot determine this class.
 	Class journal.AttemptClass

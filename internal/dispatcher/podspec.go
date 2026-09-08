@@ -35,6 +35,8 @@ const (
 	LabelStage = "goobers.dev/stage"
 	// LabelAttempt carries the attempt ordinal.
 	LabelAttempt = "goobers.dev/attempt"
+	// LabelPodAttempt is the optional physical dispatch ordinal across visits.
+	LabelPodAttempt = "goobers.dev/pod-attempt"
 	// LabelOwner names the dispatcher process that created the pod
 	// (Config.Owner, sanitized to label grammar). Decision 003 wires
 	// SweepOrphans on the WORKER, and a cluster legitimately runs more than
@@ -92,6 +94,8 @@ const (
 	EnvAttempt  = "GOOBERS_ATTEMPT"
 	// EnvAttemptClass preserves the driver-supplied lineage for pod artifacts.
 	EnvAttemptClass = "GOOBERS_ATTEMPT_CLASS"
+	// EnvPodAttempt scopes surrender and pod journal idempotency, not lineage.
+	EnvPodAttempt = "GOOBERS_POD_ATTEMPT"
 	// ProviderBotLoginEnv carries the login the stage's forge credential
 	// authenticates AS for the routed repository — the instance config's
 	// declared GitHub App bot login, resolved DAEMON-SIDE at dispatch, where
@@ -350,7 +354,7 @@ var DispatcherPrivilegedEnv = []string{
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
 var DispatcherRunIdentityEnv = append([]string{
-	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, ProviderBotLoginEnv,
+	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, EnvPodAttempt, ProviderBotLoginEnv,
 }, runContextEnv...)
 
 // DispatcherPlaneEnv is the THIRD category, and it exists because neither of
@@ -574,7 +578,7 @@ func (e *WindowsIdentityError) Error() string {
 func PodName(attempt Attempt) string {
 	stage := sanitizeNameSegment(attempt.Stage, 20)
 	run := sanitizeNameSegment(attempt.RunID, 24)
-	return fmt.Sprintf("gbn-%s-%s-a%d", stage, run, attempt.Number)
+	return fmt.Sprintf("gbn-%s-%s-a%d", stage, run, attempt.IdentityAttempt())
 }
 
 // sanitizeNameSegment lowercases s, maps every character outside the DNS
@@ -728,6 +732,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	class := restrictionSet(runner.Restrictions)
 
 	labels := copyStringMap(template.Labels)
+	delete(labels, LabelPodAttempt)
 	for key, value := range attempt.ExtraLabels {
 		labels[key] = value
 	}
@@ -780,6 +785,9 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	for _, e := range stage.Env {
 		templateDeclared = append(templateDeclared, e.Name)
 	}
+	// This dispatcher-owned identity cannot come from a consumer template,
+	// including a legacy dispatch that explicitly stamps it empty.
+	stage.Env = slices.DeleteFunc(stage.Env, func(env corev1.EnvVar) bool { return env.Name == EnvPodAttempt })
 	stage.Env = append(stage.Env, stageEnv(cfg, attempt, class, templateDeclared)...)
 	stampResources(cfg, attempt, runner, stage, class, windows)
 	stampVolumes(cfg, attempt, spec, stage, class, windows)
@@ -1000,6 +1008,9 @@ func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]st
 		LabelStage:                 sanitizeNameSegment(attempt.Stage, 63),
 		LabelAttempt:               fmt.Sprintf("%d", attempt.Number),
 	}
+	if attempt.PodAttempt > 0 {
+		labels[LabelPodAttempt] = fmt.Sprint(attempt.PodAttempt)
+	}
 	// Absent owner stamps nothing rather than an "unknown" placeholder: a
 	// placeholder is a value a second ownerless dispatcher would also match,
 	// which is the cross-worker disposal this label exists to prevent. An
@@ -1102,7 +1113,10 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		{Name: EnvStage, Value: literalPodEnv(attempt.Stage)},
 		{Name: EnvAttempt, Value: fmt.Sprintf("%d", attempt.Number)},
 		{Name: EnvAttemptClass, Value: literalPodEnv(string(attempt.Class))},
+		// Explicit empty shadows template EnvFrom for legacy dispatches.
+		{Name: EnvPodAttempt, Value: attempt.podAttemptEnv()},
 	}
+
 	if cfg.BlobEndpoint != "" {
 		env = append(env, corev1.EnvVar{Name: EnvBlobEndpoint, Value: literalPodEnv(cfg.BlobEndpoint)})
 	}

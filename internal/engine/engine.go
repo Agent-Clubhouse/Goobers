@@ -393,6 +393,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 }
 
 func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hitl *hitlSession) (RunResult, error) {
+	ctx = workflow.WithValue(ctx, podDispatchActivationKey{}, &podDispatchActivation{})
 	logger := workflow.GetLogger(ctx)
 	upstream := map[string]apiv1.ResultEnvelope{}
 	// pointers accumulates every completed stage's artifacts as read-only
@@ -418,6 +419,8 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
 	gateDispatches := map[string]int{}
+	// Physical task dispatches never reset when the graph revisits a task.
+	taskDispatches := map[string]int{}
 	// evaluatedGates names every gate that has recorded a verdict on this
 	// walk. A gate named in a downstream stage's contextFrom delivers that
 	// verdict as context, so the #2736 no-work check must count it as
@@ -514,7 +517,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			var published deltaPublication
 			addendum := addenda[t.Name]
 			delete(addenda, t.Name)
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult, completed, workspaceBranch, selected.Digest, addendum, &published, rec)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, completed, workspaceBranch, selected.Digest, addendum, &published, taskDispatches, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -902,7 +905,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, rec *runJournal) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, taskDispatches map[string]int, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -990,7 +993,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// claimed PR's head — must have every later stage checked out THERE.
 		// Without it the pod derived the run branch from workflow+runID and
 		// remediated a branch nobody was reviewing.
-		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut)
+		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut, taskDispatches)
 	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, inputGrades)

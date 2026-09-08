@@ -79,6 +79,10 @@ func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
 // written, and an existing history must replay identically
 // (dispatchone_test.go's recorded-history fixture is the guard).
 type DispatchStageInput struct {
+	// PodAttempt is the physical dispatch ordinal across task graph visits.
+	// Zero retains the legacy Envelope.Attempt identity. Journal lineage stays
+	// in Envelope.Attempt/Class and is independent of this surrender/pod key.
+	PodAttempt int `json:"podAttempt,omitempty"`
 	// Class is supplied by the retry driver, independently of the pod ordinal.
 	// Omitted in legacy histories, which retain the initial-attempt default.
 	Class     journal.AttemptClass     `json:"class,omitempty"`
@@ -211,6 +215,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
 	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+		PodAttempt:       dispatchPodAttempt(ctx, g.Name, podAttempt),
 		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
 		Placement:        placement,
@@ -261,7 +266,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 //
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
-func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
 	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
 	// declared command or script (dispatchexec), and invoking a goober through
 	// its harness has no pod-side path at all — the local arm reaches it via
@@ -321,6 +326,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 	}
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
+		taskDispatches[t.Name]++
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
 		// OwningWorkflowID is read here, inside the workflow, because this
@@ -328,6 +334,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		// is claimID+"-run", which no id composed from the pod's labels or
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
 		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+			PodAttempt:       dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
 			Class:            dispatchAttemptClass(ctx, class),
 			Envelope:         attemptEnv,
 			Placement:        placement,
@@ -453,6 +460,9 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
 func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
+	if err := validatePodAttempt(input.PodAttempt); err != nil {
+		return stageActivityResult{}, err
+	}
 	if a.Dispatcher == nil || a.Surrenders == nil {
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
 	}
@@ -500,6 +510,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		Workflow:       input.Envelope.WorkflowID,
 		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
 		Number:         int(input.Envelope.Attempt),
+		PodAttempt:     input.PodAttempt,
 		Class:          input.Class,
 		LedgerTouching: input.Placement.LedgerTouching,
 		CPU:            input.Placement.CPU,
@@ -683,7 +694,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// stage's ResultFailure is a business outcome the definition routes, with
 	// exact parity to the local executor returning a failure envelope rather
 	// than an error.
-	surrendered, rerr := dispatcher.ReadSurrenderedResult(ctx, a.Surrenders, attempt.RunID, attempt.Stage, attempt.Number)
+	surrendered, rerr := dispatcher.ReadSurrenderedResult(ctx, a.Surrenders, attempt.RunID, attempt.Stage, attempt.IdentityAttempt())
 	if rerr != nil {
 		// The gate confirmed surrender yet the result is unreadable: the
 		// substrate lost or garbled the outputs after the stage did its work.
