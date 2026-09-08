@@ -403,7 +403,7 @@ var DispatcherPlaneEnv = []string{
 // still cannot see the live run (#322). Without listing them here they would
 // have leaked to exactly those stages the moment checkout began stamping them.
 var runContextEnv = []string{
-	executorRepoProviderEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
+	executorRepoProviderEnv, executorRepoBaseURLEnv, executorRepoOwnerEnv, executorRepoProjectEnv,
 	executorRepoNameEnv, executorBranchNamespaceEnv, executorBaseBranchEnv,
 	executorTriggerRefEnv, executorNeedsHumanAssigneeEnv,
 }
@@ -414,6 +414,7 @@ var runContextEnv = []string{
 // TestRunContextEnvMatchesExecutor so the restatement cannot drift.
 const (
 	executorRepoProviderEnv       = "GOOBERS_REPO_PROVIDER"
+	executorRepoBaseURLEnv        = "GOOBERS_REPO_BASE_URL"
 	executorRepoOwnerEnv          = "GOOBERS_REPO_OWNER"
 	executorRepoProjectEnv        = "GOOBERS_REPO_PROJECT"
 	executorRepoNameEnv           = "GOOBERS_REPO_NAME"

@@ -632,6 +632,8 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		attempt.RunContext = map[string]string{}
 		if repo := input.Envelope.RepoRef; repo.Provider != "" {
 			attempt.RunContext[executor.RepoProviderEnvVar] = string(repo.Provider)
+			// Explicit empty also shadows template EnvFrom for fixed-host repos.
+			attempt.RunContext[executor.RepoBaseURLEnvVar] = repo.BaseURL
 			attempt.RunContext[executor.RepoOwnerEnvVar] = repo.Owner
 			attempt.RunContext[executor.RepoNameEnvVar] = repo.Name
 			if repo.Project != "" {
