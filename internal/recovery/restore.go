@@ -29,6 +29,9 @@ func RestoreSnapshot(ctx context.Context, repository string, record Record, curr
 	if err := PinCommit(ctx, repository, record); err != nil {
 		return "", err
 	}
+	if err := validateRestorePaths(ctx, repository, record); err != nil {
+		return "", err
+	}
 	if err := recoveryGit(ctx, repository, io.Discard, "cat-file", "-e", currentMain+"^{commit}"); err != nil {
 		return "", fmt.Errorf("current main commit is unavailable: %w", err)
 	}
