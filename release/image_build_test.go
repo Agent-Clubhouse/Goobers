@@ -15,18 +15,25 @@ import (
 )
 
 type fakeImageEngine struct {
-	t             *testing.T
-	platform      Target
-	tags          map[string]string
-	images        map[string]dockerImageDescription
-	metadata      map[string]imageContextMetadata
-	digests       map[string]map[string]string
-	families      map[string]string
-	commands      [][]string
-	badHashFamily string
-	badStamp      bool
-	wrongBase     bool
+	t                  *testing.T
+	platform           Target
+	tags               map[string]string
+	images             map[string]dockerImageDescription
+	metadata           map[string]imageContextMetadata
+	digests            map[string]map[string]string
+	families           map[string]string
+	commands           [][]string
+	badHashFamily      string
+	badStamp           bool
+	wrongBase          bool
+	copilotProbeOutput string
+	copilotProbeCode   int
 }
+
+type imageProbeExitError struct{ code int }
+
+func (e imageProbeExitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+func (e imageProbeExitError) ExitCode() int { return e.code }
 
 func useFakeImageEngine(t *testing.T, target Target) *fakeImageEngine {
 	t.Helper()
@@ -212,6 +219,24 @@ func (engine *fakeImageEngine) probe(args []string) ([]byte, error) {
 		}
 		return []byte("65532\n65532\n" + goobersHash + "  /usr/local/bin/goobers\n" + digests["goobers-operator"] + "  /usr/local/bin/goobers-operator"), nil
 	case "copilot":
+		if imageArgument(args, "--usage-output-file") != "" {
+			if imageArgument(args, "--network") != "none" || imageArgument(args, "--workdir") != "/tmp" {
+				engine.t.Fatal("Copilot parser probe lacks offline writable scratch isolation")
+			}
+			for _, arg := range args {
+				if arg == "--help" || arg == "--version" {
+					engine.t.Fatal("Copilot parser probe bypasses real option parsing")
+				}
+			}
+			output, code := engine.copilotProbeOutput, engine.copilotProbeCode
+			if output == "" {
+				output, code = "Error: No authentication information found.\n", 1
+			}
+			if code == 0 {
+				return []byte(output), nil
+			}
+			return []byte(output), imageProbeExitError{code}
+		}
 		return []byte("GitHub Copilot CLI 1.2.3."), nil
 	case "claude":
 		return []byte("1.2.3 (Claude Code)"), nil
@@ -252,6 +277,9 @@ func TestReleaseBuildImagesRecordsAllLinuxFamilies(t *testing.T) {
 		}
 		if index > 0 && (image.BaseImageID != evidence.Images[0].ImageID || image.HarnessVersion == "") {
 			t.Fatalf("unbound harness base: %+v", image)
+		}
+		if image.Family == "goobers-harness-copilot" && (image.AdapterProbe == nil || image.AdapterProbe.ExitCode != 1) {
+			t.Fatalf("Copilot image lacks real parser evidence: %+v", image)
 		}
 	}
 	assertNoImageStaging(t, root)
@@ -386,4 +414,59 @@ func TestImageAliasCleanupPreservesReplacement(t *testing.T) {
 	if engine.tags[alias] != replacement {
 		t.Fatal("cleanup deleted another process's replacement image tag")
 	}
+}
+
+func TestCopilotImageProbeRequiresRealParserAuthenticationRefusal(t *testing.T) {
+	for _, scenario := range []struct {
+		name, output string
+		code         int
+		accepted     bool
+	}{
+		{"supported parser", "Error: No authentication information found.\nAuthenticate before running Copilot.\n", 1, true},
+		{"old parser", "error: unknown option '--usage-output-file'", 1, false},
+		{"help bypass", "Usage: copilot [options]\n--usage-output-file <path>", 0, false},
+		{"unexpected success", "ok", 0, false},
+		{"engine failure", "Error: No authentication information found.", 125, false},
+		{"unrelated failure", "Error: failed to create config directory", 1, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			engine := useFakeImageEngine(t, Target{"linux", "arm64"})
+			engine.copilotProbeOutput, engine.copilotProbeCode = scenario.output, scenario.code
+			description := dockerImageDescription{ID: "sha256:" + strings.Repeat("a", 64), OS: "linux", Architecture: "arm64"}
+			proof, err := verifyCopilotAdapterInterface(description)
+			if (err == nil) != scenario.accepted {
+				t.Fatalf("probe result=%+v error=%v", proof, err)
+			}
+			if proof != nil && (proof.ExitCode != 1 || proof.Output != strings.TrimSpace(scenario.output) || !strings.Contains(proof.Scope, "not verified")) {
+				t.Fatalf("probe overstates its evidence: %+v", proof)
+			}
+			joined := strings.Join(engine.commands[len(engine.commands)-1], " ")
+			for _, want := range []string{"COPILOT_GITHUB_TOKEN=", "GH_TOKEN=", "GITHUB_TOKEN=", "--available-tools=", "--usage-output-file /tmp/goobers-usage-probe.json"} {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("missing probe contract %s: %s", want, joined)
+				}
+			}
+		})
+	}
+}
+
+func TestReleaseBuildImagesRejectsUnsupportedCopilotAdapterOption(t *testing.T) {
+	useImageTestBinaries(t)
+	engine := useFakeImageEngine(t, Target{"linux", "arm64"})
+	engine.copilotProbeOutput = "error: unknown option '--usage-output-file'"
+	engine.copilotProbeCode = 1
+	root := t.TempDir()
+	err := run(append(imageTestArgs(root), "-targets", "linux/arm64", "-build-images", "-image-prefix", "local-test"), io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "unknown option '--usage-output-file'") {
+		t.Fatalf("unsupported adapter interface passed release image verification: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "images")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("incompatible image exposed completed contexts: %v", err)
+	}
+	for tag := range engine.tags {
+		if strings.HasPrefix(tag, "goobers-release-input:") {
+			t.Fatalf("failed parser gate left base alias %s", tag)
+		}
+	}
+	assertNoImageStaging(t, root)
 }

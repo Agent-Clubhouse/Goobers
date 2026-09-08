@@ -39,15 +39,16 @@ type localImageEvidence struct {
 }
 
 type builtImageEvidence struct {
-	Family         string            `json:"family"`
-	Reference      string            `json:"reference"`
-	ImageID        string            `json:"imageID"`
-	BaseImageID    string            `json:"baseImageID,omitempty"`
-	Platform       string            `json:"platform"`
-	User           string            `json:"user"`
-	BinarySHA256   map[string]string `json:"binarySHA256"`
-	VersionOutput  map[string]string `json:"versionOutput"`
-	HarnessVersion string            `json:"harnessVersion,omitempty"`
+	Family         string                       `json:"family"`
+	Reference      string                       `json:"reference"`
+	ImageID        string                       `json:"imageID"`
+	BaseImageID    string                       `json:"baseImageID,omitempty"`
+	Platform       string                       `json:"platform"`
+	User           string                       `json:"user"`
+	BinarySHA256   map[string]string            `json:"binarySHA256"`
+	VersionOutput  map[string]string            `json:"versionOutput"`
+	HarnessVersion string                       `json:"harnessVersion,omitempty"`
+	AdapterProbe   *copilotAdapterProbeEvidence `json:"adapterProbe,omitempty"`
 }
 
 type dockerImageDescription struct {

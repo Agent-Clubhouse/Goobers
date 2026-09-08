@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -52,15 +53,18 @@ func verifyBuiltImage(description dockerImageDescription, family, reference, dir
 		}
 		evidence.BinarySHA256[binary] = expectedDigest
 	}
+	if family == "goobers-harness-copilot" {
+		proof, err := verifyCopilotAdapterInterface(description)
+		if err != nil {
+			return evidence, err
+		}
+		evidence.AdapterProbe = proof
+	}
 	return evidence, nil
 }
 
 func runImageProbe(description dockerImageDescription, entrypoint string, command ...string) (string, error) {
-	args := []string{"run", "--rm", "--pull", "never", "--platform", description.OS + "/" + description.Architecture, "--network", "none"}
-	if description.OS == "linux" {
-		args = append(args, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-			"--tmpfs", "/tmp:noexec", "--tmpfs", "/home/nonroot:noexec,uid=65532,gid=65532")
-	}
+	args := imageProbeRunArgs(description)
 	args = append(args, "--entrypoint", entrypoint, description.ID)
 	args = append(args, command...)
 	output, err := dockerImageCommand(2*time.Minute, args...)
@@ -68,6 +72,46 @@ func runImageProbe(description dockerImageDescription, entrypoint string, comman
 		return "", fmt.Errorf("verify image %s with %s: %w\n%s", description.ID, entrypoint, err, output)
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+func imageProbeRunArgs(description dockerImageDescription) []string {
+	args := []string{"run", "--rm", "--pull", "never", "--platform", description.OS + "/" + description.Architecture, "--network", "none"}
+	if description.OS == "linux" {
+		args = append(args, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+			"--tmpfs", "/tmp:noexec", "--tmpfs", "/home/nonroot:noexec,uid=65532,gid=65532")
+	}
+	return args
+}
+
+type copilotAdapterProbeEvidence struct {
+	Scope     string   `json:"scope"`
+	Arguments []string `json:"arguments"`
+	ExitCode  int      `json:"exitCode"`
+	Output    string   `json:"output"`
+}
+
+// A --version check cannot detect an incompatible argument parser, and --help
+// bypasses unknown-option validation in Copilot. Exercise the real prompt path
+// without credentials or networking and require its specific auth refusal.
+func verifyCopilotAdapterInterface(description dockerImageDescription) (*copilotAdapterProbeEvidence, error) {
+	command := []string{"-p", "Reply with ok.", "--allow-all-tools", "--available-tools=", "--log-level", "all", "--usage-output-file", "/tmp/goobers-usage-probe.json"}
+	args := imageProbeRunArgs(description)
+	args = append(args, "--env", "COPILOT_GITHUB_TOKEN=", "--env", "GH_TOKEN=", "--env", "GITHUB_TOKEN=", "--workdir", "/tmp",
+		"--entrypoint", "copilot", description.ID)
+	args = append(args, command...)
+	output, err := dockerImageCommand(2*time.Minute, args...)
+	message := strings.TrimSpace(string(output))
+	if err == nil {
+		return nil, fmt.Errorf("image %s Copilot adapter parser probe unexpectedly succeeded without authentication: %s", description.ID, message)
+	}
+	var exit interface{ ExitCode() int }
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.HasPrefix(message, "Error: No authentication information found.") {
+		return nil, fmt.Errorf("image %s Copilot adapter parser probe did not reach the expected missing-auth refusal: %w\n%s", description.ID, err, message)
+	}
+	return &copilotAdapterProbeEvidence{
+		Scope:     "adapter argument parsing reached missing-auth refusal; authenticated execution and usage-file production are not verified",
+		Arguments: command, ExitCode: exit.ExitCode(), Output: message,
+	}, nil
 }
 
 func probeImageBinaryDigests(description dockerImageDescription) (map[string]string, error) {
