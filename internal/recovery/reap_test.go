@@ -70,3 +70,29 @@ func TestReapRetiredPreservesActiveAndUnknownContents(t *testing.T) {
 		t.Fatalf("reaper recreated active directory: %v", err)
 	}
 }
+
+func TestReapRetiredDryRunReportsNonRegularArchive(t *testing.T) {
+	root := t.TempDir()
+	record := storageTestRecord()
+	seedInventoryRecord(t, root, record)
+	retired, err := RetireSnapshot(context.Background(), root, record, func(Record) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(retired, BundleFileName)
+	if err := os.Remove(archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(archive, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, deleteFiles := range []bool{false, true} {
+		results, err := ReapRetired(context.Background(), root, 1, deleteFiles)
+		if err == nil || len(results) != 1 || results[0].Err == nil || results[0].Deleted {
+			t.Fatalf("non-regular candidate accepted: %+v %v", results, err)
+		}
+		if _, err := ReadRecord(filepath.Join(retired, RecordFileName)); err != nil {
+			t.Fatalf("preflight failure removed metadata: %v", err)
+		}
+	}
+}

@@ -57,6 +57,9 @@ func ReapRetired(ctx context.Context, root string, maxEntries int, deleteFiles b
 		}
 		result := ReapResult{Path: filepath.Join(root, name), DryRun: !deleteFiles}
 		result.Err = validateRetiredDirectory(root, name)
+		if result.Err == nil {
+			result.Err = validateRetiredFiles(result.Path)
+		}
 		if result.Err == nil && deleteFiles {
 			result.Err = removeRetiredFiles(ctx, root, name)
 			result.Deleted = result.Err == nil
@@ -73,20 +76,13 @@ func ReapRetired(ctx context.Context, root string, maxEntries int, deleteFiles b
 // recurse or follow links. Preflight every file before removing any of them.
 func removeRetiredFiles(ctx context.Context, root, name string) error {
 	directory := filepath.Join(root, name)
-	files := []string{BundleFileName, retentionFileName, RecordFileName, BundleFileName + ".lock", RecordFileName + ".lock", ".publish.lock"}
-	for _, file := range files {
-		info, err := os.Lstat(filepath.Join(directory, file))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("retired recovery contains non-regular file %s", file)
-		}
+	// Retirement's rename may have succeeded while its directory flush failed.
+	// Make that transition durable before removing any archive bytes; otherwise
+	// a crash could resurrect an active reservation with its archive deleted.
+	if err := durability.SyncDir(root); err != nil {
+		return err
 	}
-	for _, file := range files {
+	for _, file := range retiredFileNames() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -98,4 +94,24 @@ func removeRetiredFiles(ctx context.Context, root, name string) error {
 		return err
 	}
 	return durability.SyncDir(root)
+}
+
+func retiredFileNames() []string {
+	return []string{BundleFileName, retentionFileName, RecordFileName, BundleFileName + ".lock", RecordFileName + ".lock", ".publish.lock"}
+}
+
+func validateRetiredFiles(directory string) error {
+	for _, file := range retiredFileNames() {
+		info, err := os.Lstat(filepath.Join(directory, file))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("retired recovery contains non-regular file %s", file)
+		}
+	}
+	return nil
 }
