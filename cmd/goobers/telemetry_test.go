@@ -454,6 +454,10 @@ func (r *telemetryParityReader) Connections(context.Context, string) (readservic
 	return readservice.GaggleConnections{}, nil
 }
 
+func (r *telemetryParityReader) QueueEligibility(context.Context, string, string) (readservice.QueueEligibilityView, error) {
+	return readservice.QueueEligibilityView{}, nil
+}
+
 func (r *telemetryParityReader) Workflow(context.Context, string, string) (readservice.WorkflowDetail, error) {
 	return readservice.WorkflowDetail{}, nil
 }

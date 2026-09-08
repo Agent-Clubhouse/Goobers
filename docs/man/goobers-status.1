@@ -12,6 +12,10 @@ Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
+PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
+and next steps from the existing daemon projection, never current claim authority.
+At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle
+and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.
 It lists parked backlog items too — open issues carrying a park disposition without
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 Shared baseline failures are listed with the subjects waiting on them: runs parked

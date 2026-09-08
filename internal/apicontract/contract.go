@@ -27,6 +27,7 @@ const (
 	GaggleWorkflowsPath          = V1Prefix + "/gaggles/{gaggle}/workflows"
 	GaggleConnectionsPath        = V1Prefix + "/gaggles/{gaggle}/connections"
 	WorkflowDetailPath           = V1Prefix + "/gaggles/{gaggle}/workflows/{workflow}"
+	WorkflowQueueEligibilityPath = WorkflowDetailPath + "/queue-eligibility"
 	RunsPath                     = V1Prefix + "/runs"
 	RunDetailPath                = V1Prefix + "/runs/{run}"
 	RunRevealPath                = V1Prefix + "/runs/{run}/reveal"
@@ -237,6 +238,7 @@ const (
 	RouteGaggleWorkflows          RouteID = "gaggleWorkflows"
 	RouteGaggleConnections        RouteID = "gaggleConnections"
 	RouteWorkflowDetail           RouteID = "workflowDetail"
+	RouteWorkflowQueueEligibility RouteID = "workflowQueueEligibility"
 	RouteRuns                     RouteID = "runs"
 	RouteRunDetail                RouteID = "runDetail"
 	RouteRunReveal                RouteID = "runReveal"
@@ -391,6 +393,7 @@ var v1Routes = []Route{
 	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteWorkflowQueueEligibility, Method: http.MethodGet, Path: WorkflowQueueEligibilityPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunReveal, Method: http.MethodPost, Path: RunRevealPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},

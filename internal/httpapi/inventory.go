@@ -15,6 +15,7 @@ import (
 var identifierPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 func registerInventoryRoutes(router *Router, reader readservice.Reader, errorLog *log.Logger) {
+	registerQueueEligibilityRoute(router, reader, errorLog)
 	router.Handle(apicontract.RouteInstance, func(w http.ResponseWriter, request *http.Request) {
 		value, err := reader.Instance(request.Context())
 		if err != nil {
