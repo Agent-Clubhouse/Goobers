@@ -67,6 +67,9 @@ func CaptureSnapshot(ctx context.Context, repository, runID string) (string, err
 	if !gitObjectID.MatchString(treeID) {
 		return "", fmt.Errorf("invalid recovery snapshot tree")
 	}
+	if err := requireSelfContainedSnapshot(ctx, repository, treeID); err != nil {
+		return "", err
+	}
 	var snapshot boundedRefOutput
 	environment = append(environment,
 		"GIT_AUTHOR_NAME=Goobers Recovery", "GIT_AUTHOR_EMAIL=recovery@goobers.invalid",

@@ -46,12 +46,20 @@ func writeExistingSnapshotPaths(repository string, data []byte, destination io.W
 			return fmt.Errorf("invalid recovery snapshot path list")
 		}
 		data = rest
-		if _, err := os.Lstat(filepath.Join(repository, string(name))); errors.Is(err, os.ErrNotExist) {
+		info, err := os.Lstat(filepath.Join(repository, string(name)))
+		if errors.Is(err, os.ErrNotExist) {
 			// The preceding add --update already records tracked deletions.
 			// Re-adding a now-absent path would fail Git's pathspec check.
 			continue
 		} else if err != nil {
 			return err
+		}
+		if info.IsDir() {
+			if _, err := os.Lstat(filepath.Join(repository, string(name), ".git")); err == nil {
+				return ErrNestedRecoveryRequired
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
 		}
 		if _, err := destination.Write(append(name[:len(name):len(name)], 0)); err != nil {
 			return err
