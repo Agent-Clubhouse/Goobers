@@ -16,15 +16,41 @@ import (
 // This function neither fetches a moving remote main nor mutates the current
 // checkout/index. Conflicts leave no new branch; retained recovery is untouched.
 func RestoreSnapshot(ctx context.Context, repository string, record Record, currentMain, branch string, maxPatchBytes int64) (string, error) {
+	ref := "refs/heads/" + branch
+	if err := recoveryGit(ctx, repository, io.Discard, "check-ref-format", ref); err != nil {
+		return "", fmt.Errorf("invalid recovery branch name")
+	}
+	tree, err := restoredSnapshotTree(ctx, repository, record, currentMain, maxPatchBytes)
+	if err != nil {
+		return "", err
+	}
+	environment := []string{
+		"GIT_AUTHOR_NAME=Goobers Recovery", "GIT_AUTHOR_EMAIL=recovery@goobers.invalid",
+		"GIT_COMMITTER_NAME=Goobers Recovery", "GIT_COMMITTER_EMAIL=recovery@goobers.invalid"}
+	var commit boundedRefOutput
+	if err := recoveryGitWithEnv(ctx, repository, &commit, environment,
+		"-c", "commit.gpgsign=false", "commit-tree", tree, "-p", currentMain,
+		"-m", "Restore retained implementation for "+record.RunID); err != nil {
+		return "", fmt.Errorf("commit restored patch: %w", err)
+	}
+	id := strings.TrimSpace(commit.String())
+	if !gitObjectID.MatchString(id) {
+		return "", fmt.Errorf("invalid restored commit identity")
+	}
+	if err := recoveryGit(ctx, repository, io.Discard, "update-ref", "--no-deref", ref, id, strings.Repeat("0", len(id))); err != nil {
+		return "", fmt.Errorf("create recovery branch without overwrite: %w", err)
+	}
+	return id, nil
+}
+
+// restoredSnapshotTree uses a private index for both initial restoration and
+// replay verification. It never changes a branch or the current checkout.
+func restoredSnapshotTree(ctx context.Context, repository string, record Record, currentMain string, maxPatchBytes int64) (string, error) {
 	if err := record.Validate(); err != nil {
 		return "", err
 	}
 	if maxPatchBytes <= 0 || !gitObjectID.MatchString(currentMain) {
 		return "", fmt.Errorf("restore requires a valid main commit and positive patch budget")
-	}
-	ref := "refs/heads/" + branch
-	if err := recoveryGit(ctx, repository, io.Discard, "check-ref-format", ref); err != nil {
-		return "", fmt.Errorf("invalid recovery branch name")
 	}
 	if err := PinCommit(ctx, repository, record); err != nil {
 		return "", err
@@ -50,24 +76,13 @@ func RestoreSnapshot(ctx context.Context, repository string, record Record, curr
 	if err := applyRetainedPatch(ctx, repository, directory, environment, record, maxPatchBytes); err != nil {
 		return "", err
 	}
-	var tree, commit boundedRefOutput
+	var tree boundedRefOutput
 	if err := recoveryGitWithEnv(ctx, repository, &tree, environment, "write-tree"); err != nil {
 		return "", fmt.Errorf("write restored tree: %w", err)
 	}
-	environment = append(environment,
-		"GIT_AUTHOR_NAME=Goobers Recovery", "GIT_AUTHOR_EMAIL=recovery@goobers.invalid",
-		"GIT_COMMITTER_NAME=Goobers Recovery", "GIT_COMMITTER_EMAIL=recovery@goobers.invalid")
-	if err := recoveryGitWithEnv(ctx, repository, &commit, environment,
-		"-c", "commit.gpgsign=false", "commit-tree", strings.TrimSpace(tree.String()), "-p", currentMain,
-		"-m", "Restore retained implementation for "+record.RunID); err != nil {
-		return "", fmt.Errorf("commit restored patch: %w", err)
-	}
-	id := strings.TrimSpace(commit.String())
+	id := strings.TrimSpace(tree.String())
 	if !gitObjectID.MatchString(id) {
-		return "", fmt.Errorf("invalid restored commit identity")
-	}
-	if err := recoveryGit(ctx, repository, io.Discard, "update-ref", "--no-deref", ref, id, strings.Repeat("0", len(id))); err != nil {
-		return "", fmt.Errorf("create recovery branch without overwrite: %w", err)
+		return "", fmt.Errorf("invalid restored tree identity")
 	}
 	return id, nil
 }

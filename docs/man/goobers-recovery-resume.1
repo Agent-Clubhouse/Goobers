@@ -11,7 +11,8 @@ Usage: goobers recovery-resume [instance]
 Restore the current run's single claimed issue onto freshly fetched main,
 then fast-forward its clean receiving worktree to the restored commit.
 Requires workflow run context and repository credentials. Refuses another
-branch, changed or dirty work, expired claims, and existing restore branches.
+branch, changed or dirty work, and expired claims. Verified retries resume
+the prepared result; completed adoption removes its preparation branch.
 Does not push, open a PR, release the claim, or remove retained state.
 .fi
 .SH EXAMPLES

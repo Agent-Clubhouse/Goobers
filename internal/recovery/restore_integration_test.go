@@ -55,6 +55,7 @@ func TestIntegrationRestoreFullPatchOntoCurrentMain(t *testing.T) {
 	if got := recoveryTestGit(t, repository, "rev-parse", "recovered^"); got != main {
 		t.Fatalf("restore did not use current main: %s", got)
 	}
+	testVerifyPreparedRestoration(t, repository, record, restored, main)
 	for path, want := range map[string]string{"shared.txt": "ours", "reviewed.txt": "reviewed work", "uncommitted.bin": "\x00\xff\x01", "new-main.txt": "new upstream work"} {
 		if got := recoveryTestGit(t, repository, "show", restored+":"+path); got != want {
 			t.Fatalf("restored %s = %q, want %q", path, got, want)
@@ -82,6 +83,26 @@ func TestIntegrationRestoreFullPatchOntoCurrentMain(t *testing.T) {
 	}
 	if got := recoveryTestGit(t, repository, "for-each-ref", "--format=%(refname)", "refs/heads/conflict"); got != "" {
 		t.Fatalf("conflict created a branch: %s", got)
+	}
+}
+
+func testVerifyPreparedRestoration(t *testing.T, repository string, record Record, restored, main string) {
+	t.Helper()
+	if err := VerifyRestoredCommit(context.Background(), repository, record, restored, 1<<20); err != nil {
+		t.Fatalf("verified restoration refused on replay: %v", err)
+	}
+	if err := VerifyRestoredCommit(context.Background(), repository, record, main, 1<<20); err == nil {
+		t.Fatal("unrestored main accepted as completed restoration")
+	}
+	tree := recoveryTestGit(t, repository, "rev-parse", restored+"^{tree}")
+	merge := recoveryTestGit(t, repository, "commit-tree", tree, "-p", main, "-p", record.SnapshotSHA, "-m", "Restore retained implementation for "+record.RunID)
+	if err := VerifyRestoredCommit(context.Background(), repository, record, merge, 1<<20); err == nil {
+		t.Fatal("merge commit accepted as a single-parent restoration")
+	}
+	wrongTree := recoveryTestGit(t, repository, "rev-parse", main+"^{tree}")
+	forged := recoveryTestGit(t, repository, "commit-tree", wrongTree, "-p", main, "-m", "Restore retained implementation for "+record.RunID)
+	if err := VerifyRestoredCommit(context.Background(), repository, record, forged, 1<<20); err == nil {
+		t.Fatal("matching message substituted for verified restored content")
 	}
 }
 

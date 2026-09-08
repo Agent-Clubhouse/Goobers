@@ -39,12 +39,13 @@ func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 
 func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, mode := range []string{"record", "issue", "http-issue", "resume-issue"} {
+	for _, mode := range []string{"record", "issue", "http-issue", "resume-issue", "resume-prepared", "resume-adopted"} {
 		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode) })
 	}
 }
 
 func testRecoveryRestoreCommand(t *testing.T, mode string) {
+	resume := strings.HasPrefix(mode, "resume-")
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "local-only-recovery-fixture-token")
 	root := initDemo(t)
 	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
@@ -129,7 +130,7 @@ func testRecoveryRestoreCommand(t *testing.T, mode string) {
 	stderr.Reset()
 	target := "operator-recovery"
 	invoke := func() int { return runRecoveryRestore(args, &stdout, &stderr) }
-	if mode == "resume-issue" {
+	if resume {
 		layout := instance.NewLayout(root)
 		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
 		if err != nil {
@@ -143,6 +144,18 @@ func testRecoveryRestoreCommand(t *testing.T, mode string) {
 		t.Setenv("GOOBERS_WORKFLOW", "implementation-recovery")
 		target = providers.BranchName("implementation-recovery", "receiving-run")
 		recoveryCLIGit(t, destination, "checkout", "-b", target)
+		if mode == "resume-prepared" || mode == "resume-adopted" {
+			registry, _ := journal.DefaultScrubber()
+			prepared, err := restoreIssueRecovery(context.Background(), layout, identity.CanonicalKey(), "7", destination, "goobers/recovery-resume/receiving-run", registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "resume-adopted" {
+				if err := recovery.AdoptRestoredCommit(context.Background(), destination, target, base, prepared); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
 		t.Chdir(destination)
 		invoke = func() int { return runRecoveryResume([]string{root}, &stdout, &stderr) }
 	}
@@ -156,7 +169,7 @@ func testRecoveryRestoreCommand(t *testing.T, mode string) {
 		t.Fatalf("wrong restored content: %q", data)
 	}
 	wantHead := base
-	if mode == "resume-issue" {
+	if resume {
 		wantHead = recoveryCLIGit(t, destination, "rev-parse", target)
 		data, err := os.ReadFile(filepath.Join(destination, "implementation.txt"))
 		if err != nil || string(data) != "retained implementation" {
@@ -170,7 +183,17 @@ func testRecoveryRestoreCommand(t *testing.T, mode string) {
 		t.Fatalf("restore changed checkout/index: %s", status)
 	}
 	before := recoveryCLIGit(t, destination, "rev-parse", target)
-	if code := invoke(); code != 1 {
+	wantRetryCode := 1
+	if resume {
+		wantRetryCode = 0
+		if refs := recoveryCLIGit(t, destination, "for-each-ref", "--format=%(refname)", "refs/heads/goobers/recovery-resume/"); refs != "" {
+			t.Fatalf("completed adoption retained preparation branches: %s", refs)
+		}
+		// A replay acknowledges the verified effect, without reapplying it
+		// onto a newer main or manufacturing a second implementation commit.
+		recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "main after adoption")
+	}
+	if code := invoke(); code != wantRetryCode {
 		t.Fatalf("existing branch was not refused: %d", code)
 	}
 	if after := recoveryCLIGit(t, destination, "rev-parse", target); after != before {

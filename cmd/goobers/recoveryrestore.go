@@ -79,8 +79,14 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 }
 
 func restoreIssueRecovery(ctx context.Context, layout instance.Layout, key, issue, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
+	return withIssueRecoveryRecord(ctx, layout, key, issue, func(path string) (string, error) {
+		return restoreConfiguredRecovery(ctx, layout, path, destination, branch, registry)
+	})
+}
+
+func withIssueRecoveryRecord(ctx context.Context, layout instance.Layout, key, issue string, consume func(string) (string, error)) (string, error) {
 	if claimsPlaneSelected() {
-		return restoreDownloadedRecovery(ctx, layout, key, issue, destination, branch, registry)
+		return restoreDownloadedRecovery(ctx, key, issue, consume)
 	}
 	selected, err := selectIssueRecovery(ctx, layout, key, issue, time.Now().UTC())
 	if err != nil {
@@ -113,7 +119,7 @@ func restoreIssueRecovery(ctx context.Context, layout instance.Layout, key, issu
 		if current != selected.Record {
 			return recovery.ErrRecordConflict
 		}
-		commit, err = restoreConfiguredRecovery(ctx, layout, selected.RecordPath, destination, branch, registry)
+		commit, err = consume(selected.RecordPath)
 		return err
 	})
 	if err == nil && !entered {
@@ -122,7 +128,7 @@ func restoreIssueRecovery(ctx context.Context, layout instance.Layout, key, issu
 	return commit, err
 }
 
-func restoreDownloadedRecovery(ctx context.Context, layout instance.Layout, key, issue, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
+func restoreDownloadedRecovery(ctx context.Context, key, issue string, consume func(string) (string, error)) (string, error) {
 	source := recovery.HTTPArchiveSource{
 		BaseURL: os.Getenv(claimsclient.EnvEndpoint),
 		Token:   os.Getenv(claimsclient.EnvToken),
@@ -131,7 +137,7 @@ func restoreDownloadedRecovery(ctx context.Context, layout instance.Layout, key,
 	var commit string
 	err := source.WithArchive(ctx, key, issue, func(_ recovery.Record, archive string) error {
 		var err error
-		commit, err = restoreConfiguredRecovery(ctx, layout, filepath.Join(filepath.Dir(archive), recovery.RecordFileName), destination, branch, registry)
+		commit, err = consume(filepath.Join(filepath.Dir(archive), recovery.RecordFileName))
 		return err
 	})
 	return commit, err
