@@ -17,10 +17,10 @@ import "strings"
 //
 // The npm entries are the tool's own error prefix rather than a host, because
 // a lockfile can name any mirror — the private feed in #4141 was not, and
-// could not be, on a host list.
+// could not be, on a host list. Go also prefixes private-proxy DNS errors with
+// "go: <module>@<version>: Get ...", without naming a public proxy.
 var dependencyFetchMarkers = []string{
-	"go: downloading",
-	"go: module ",
+	"go: ",
 	"go mod download",
 	"verifying module",
 	"reading https://",
@@ -52,7 +52,8 @@ var transportDenialTokens = []string{
 }
 
 // IsDependencyTransportDenial reports whether message is a dependency or
-// artifact fetch that the network refused (#3373: an egress proxy answering
+// artifact fetch denied by authentication or blocked by DNS/network failure
+// (#3373: an egress proxy answering
 // Forbidden to a module zip fetch classified as a code failure and cost six
 // implement repasses). Both axes are required: a 403 or a refused connection
 // on its own is ordinary application output, and a package host on its own is
@@ -60,7 +61,30 @@ var transportDenialTokens = []string{
 func IsDependencyTransportDenial(message string) bool {
 	message = strings.ToLower(message)
 	return containsAny(message, dependencyFetchMarkers) &&
-		containsAny(message, transportDenialTokens)
+		(containsAny(message, transportDenialTokens) || dependencyTransportHint(message) != "")
+}
+
+// DependencyTransportHint supplies operator guidance for recognizable DNS and
+// authentication failures during dependency fetching. It returns only static
+// advice: credentials, environment values, and URLs must never enter a hint.
+// The original scrubbed diagnostic remains the evidence for the failure.
+func DependencyTransportHint(message string) string {
+	message = strings.ToLower(message)
+	if !containsAny(message, dependencyFetchMarkers) {
+		return ""
+	}
+	return dependencyTransportHint(message)
+}
+
+func dependencyTransportHint(message string) string {
+	switch {
+	case containsAny(message, []string{"no such host", "server misbehaving", "temporary failure in name resolution", "enotfound", "eai_again"}):
+		return "check runner DNS resolution and connectivity to the configured module proxy or package registry"
+	case containsAny(message, []string{"401 unauthorized", "401 authorization required", "401 authentication required"}):
+		return "check the runner's module proxy or package registry credentials and repository access"
+	default:
+		return ""
+	}
 }
 
 func containsAny(message string, tokens []string) bool {
