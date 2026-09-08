@@ -23,15 +23,16 @@ import (
 
 func TestIntegrationRecoveryPublicationTakesVerifiedHostCustody(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, release := range []bool{false, true} {
-		t.Run(map[bool]string{false: "live", true: "released-during-transfer"}[release], func(t *testing.T) {
-			testRecoveryPublicationCustody(t, release)
+	for _, mode := range []string{"live", "released-during-transfer", "finished-during-transfer"} {
+		t.Run(mode, func(t *testing.T) {
+			testRecoveryPublicationCustody(t, mode)
 		})
 	}
 }
 
-func testRecoveryPublicationCustody(t *testing.T, release bool) {
+func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	t.Helper()
+	release := mode == "released-during-transfer"
 	ctx := context.Background()
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
@@ -40,8 +41,9 @@ func testRecoveryPublicationCustody(t *testing.T, release bool) {
 	}
 	repo := providers.RepositoryRef{Provider: providers.ProviderKind(cfg.Repos[0].Provider), Owner: cfg.Repos[0].Owner, Name: cfg.Repos[0].Name}
 	const runID = "publication-worker"
-	started := time.Now().UTC().Add(-time.Hour)
-	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: runID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: started}, nil)
+	started := time.Now().UTC().Add(-60 * 24 * time.Hour)
+	finished := time.Now().UTC().Add(-time.Hour)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: runID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: started}, nil, journal.WithClock(func() time.Time { return finished }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +89,17 @@ func testRecoveryPublicationCustody(t *testing.T, release bool) {
 	service := recoveryDeliveryService{layout: layout, setup: &schedulerSetup{LegacyWorktrees: manager}}
 	var body io.Reader = bytes.NewReader(wire.Bytes())
 	if release {
-		body = &recoveryPublicationReleaseReader{Reader: body, release: func() error { return ledger.Release("7", runID) }}
+		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error { return ledger.Release("7", runID) }}
+	}
+	if mode == "finished-during-transfer" {
+		body = &recoveryPublicationHookReader{Reader: body, beforeRead: func() error {
+			if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+				return err
+			}
+			// Terminal renewal scans an empty inventory while the archive is
+			// still on the wire. Intake must close this ordering gap itself.
+			return renewTerminalRecovery(layout, runID)
+		}}
 	}
 	err = service.PublishRecovery(ctx, runID, repo.CanonicalKey(), "7", body)
 	if (err != nil) != release {
@@ -107,7 +119,11 @@ func testRecoveryPublicationCustody(t *testing.T, release bool) {
 		}
 		return
 	}
-	if len(captures) != 1 || !captures[0].CreatedAt.Equal(started) || !captures[0].RetainUntil.Equal(started.Add(30*24*time.Hour)) {
+	deadline := started.Add(30 * 24 * time.Hour)
+	if mode == "finished-during-transfer" {
+		deadline = finished.Add(30 * 24 * time.Hour)
+	}
+	if len(captures) != 1 || !captures[0].CreatedAt.Equal(started) || !captures[0].RetainUntil.Equal(deadline) {
 		t.Fatalf("host custody policy: %+v", captures)
 	}
 	found, err := manager.WithExistingMirror(ctx, source, func(mirror string) error {
@@ -119,10 +135,10 @@ func testRecoveryPublicationCustody(t *testing.T, release bool) {
 	if err != nil || !found {
 		t.Fatalf("missing managed custody repository: found=%t err=%v", found, err)
 	}
-	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey())
+	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey(), deadline)
 }
 
-func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryService, wire []byte, runID, key string) {
+func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryService, wire []byte, runID, key string, deadline time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if err := service.PublishRecovery(ctx, runID, key, "7", bytes.NewReader(wire)); err != nil {
@@ -133,6 +149,13 @@ func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryServ
 		t.Fatalf("retry inventory: %+v %v", entries, err)
 	}
 	entry := entries[0]
+	entry.Record, err = recovery.ReadRetainedRecord(entry.RecordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entry.Record.RetainUntil.Equal(deadline) {
+		t.Fatalf("retry changed durable retention deadline: got=%s want=%s", entry.Record.RetainUntil, deadline)
+	}
 	destination := t.TempDir()
 	recoveryCLIGit(t, destination, "init", "--bare")
 	if err := recovery.ImportSnapshotBundle(ctx, destination, filepath.Join(filepath.Dir(entry.RecordPath), recovery.BundleFileName), entry.Record, 1<<20); err != nil {
@@ -143,16 +166,16 @@ func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryServ
 	}
 }
 
-type recoveryPublicationReleaseReader struct {
+type recoveryPublicationHookReader struct {
 	io.Reader
-	release func() error
+	beforeRead func() error
 }
 
-func (r *recoveryPublicationReleaseReader) Read(p []byte) (int, error) {
-	if r.release != nil {
-		release := r.release
-		r.release = nil
-		if err := release(); err != nil {
+func (r *recoveryPublicationHookReader) Read(p []byte) (int, error) {
+	if r.beforeRead != nil {
+		beforeRead := r.beforeRead
+		r.beforeRead = nil
+		if err := beforeRead(); err != nil {
 			return 0, err
 		}
 	}
