@@ -330,18 +330,24 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	nowMu.Lock()
-	// Past the CLIENT's wait, which since #2974 outlives the request's own
-	// deadline on purpose: the subject here is that a request past its
-	// deadline is not dispatched late, and that is unchanged.
-	now = now.Add(triggerResponseWait() + time.Millisecond)
-	nowMu.Unlock()
 
 	var code int
-	select {
-	case code = <-codeDone:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+	finished := false
+	advanceClock := time.NewTicker(time.Millisecond)
+	defer advanceClock.Stop()
+	for !finished {
+		select {
+		case code = <-codeDone:
+			finished = true
+		case <-advanceClock.C:
+			nowMu.Lock()
+			// Advance past every newly observed client deadline. The polling
+			// goroutine may be descheduled before capturing its first one.
+			now = now.Add(triggerResponseWait() + time.Millisecond)
+			nowMu.Unlock()
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
 	}
 	if code != 1 || !strings.Contains(stderr.String(), "timed out") {
 		t.Fatalf("delegated CLI result: code = %d, stdout = %q, stderr = %q; want bounded timeout", code, stdout.String(), stderr.String())
