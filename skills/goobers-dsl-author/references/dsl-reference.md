@@ -88,12 +88,6 @@ generated tasks; never invent a credential value.
 
 ### Gaggle
 
-Optional `spec.cost.enabled` controls external cost publication. A boolean
-overrides `instance.yaml`'s `cost.enabled`; null or omission inherits the
-instance value, which defaults to true. This binary-level policy needs no
-workflow YAML change and does not disable local usage accounting. Do not add a
-reporting stage to implement this switch.
-
 Required semantic content:
 
 - `spec.project`: `provider` (`github` or `ado`), `owner`, `name`, and normally
