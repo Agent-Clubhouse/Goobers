@@ -99,6 +99,16 @@ var cliCommands []cliCommand
 
 func init() {
 	cliCommands = []cliCommand{
+		groupCommand("roots", runRoots,
+			subcommand("roots discover", "discover", apicontract.ActionReadOnlyNavigation, runRootsDiscover).
+				withSynopsis(synopsisByID["roots discover"]).
+				withHelp("discover likely instance roots and daemon ownership", rootsDiscoverHelp).
+				withExamples("goobers roots discover --json"),
+			subcommand("roots decommission", "decommission", apicontract.ActionMaintenance, runRootsDecommission).
+				withSynopsis(synopsisByID["roots decommission"]).
+				withHelp("mark a stopped instance root as historical", rootsDecommissionHelp).
+				withExamples("goobers roots decommission --reason=migrated ./old-instance"),
+		).withHelp("inspect and manage instance roots", rootsHelp),
 		coreAliasCommand(
 			"version",
 			[]string{"--version", "version"},

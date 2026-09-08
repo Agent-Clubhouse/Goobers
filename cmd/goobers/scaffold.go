@@ -131,6 +131,10 @@ func runScaffoldKind(kind string, args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if err := prepareManualRoot(instance.NewLayout(target.instanceRoot), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	if err := writeScaffoldFiles(target.instanceRoot, target.gaggleDir, files, rendered, *force); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

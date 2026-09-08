@@ -275,6 +275,13 @@ export interface Instance extends ContractVersion {
   name: string;
   environment: Environment;
   instanceRoot: string;
+  rootIdentity?: {
+    id?: string;
+    identityProblem?: string;
+    decommissionedAt?: string;
+    decommissionReason?: string;
+    lifecycleProblem?: string;
+  };
   ready: boolean;
   status: InstanceStatus;
   concurrency: Concurrency;

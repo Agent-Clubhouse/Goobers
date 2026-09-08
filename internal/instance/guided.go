@@ -109,7 +109,7 @@ func SeedGuidedConfigSource(root string, opts GuidedOptions) (*ConfigSourceSeedR
 // InitGuided creates a single instance-local guided configuration. The active
 // definitions under config/ are authoritative; no separate source tree is
 // created or recorded.
-func InitGuided(root string, opts GuidedOptions) (*InitResult, error) {
+func InitGuided(root string, opts GuidedOptions, observers ...InitIdentityObserver) (*InitResult, error) {
 	opts = normalizeGuidedOptions(opts)
 	if err := validateGuidedOptions(opts); err != nil {
 		return nil, err
@@ -124,7 +124,7 @@ func InitGuided(root string, opts GuidedOptions) (*InitResult, error) {
 	}
 	return initWithSeed(root, cfg, func(dir string) error {
 		return writeConfigFiles(dir, definitions)
-	})
+	}, observers...)
 }
 
 // CheckGuidedSourceTarget rejects any populated path so guided setup never

@@ -71,7 +71,8 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
 	"gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left\n" +
-	"untouched.\n" +
+	"untouched. Durable root identity is stored in .instance-id;\n" +
+	".instance-id.lock serializes identity creation.\n" +
 	"--guided opens the browser-based setup for a real repository and instance;\n" +
 	"use --instance-path to select its instance root.\n" +
 	"It prepares and validates configuration but does not run a workflow. When the\n" +
@@ -248,7 +249,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	var res *instance.InitResult
 	var err error
 	errCode := 2
-	res, err = seedInitTemplate(root, *template, *harness, *demo, standard)
+	res, err = seedInitTemplate(root, *template, *harness, *demo, standard, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		printDefaultedTargetNote(stderr, err, fs.NArg())

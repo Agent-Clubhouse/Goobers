@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/selfupdate"
 )
 
 // TestDownDrivesLiveDaemonThroughGracefulShutdown is #2072's end-to-end
@@ -112,5 +115,39 @@ func TestDownRejectsExtraArg(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "goobers down") {
 		t.Fatalf("stderr = %q, want usage mentioning goobers down", stderr)
+	}
+}
+
+func TestDownDisplaysHistoricalTargetAndRefusesBrokenDisplay(t *testing.T) {
+	root := initDeterministicDemo(t)
+	owner := daemonIdentity{PID: os.Getpid(), StartedAt: time.Now(), InstanceRoot: root, Version: "test"}
+	release, err := acquireInstanceLockWithIdentity(filepath.Join(instance.NewLayout(root).SchedulerDir(), "up.lock"), &owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	// Simulate a marker appearing behind an already-running daemon. The CLI
+	// decommission path correctly forbids this; shutdown must still recover it.
+	if _, err := instance.DecommissionRoot(context.Background(), root, "migrated", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr strings.Builder
+	if code := runDown([]string{root}, &stdout, brokenRootBannerWriter{}); code != 2 {
+		t.Fatalf("broken display accepted: %d", code)
+	}
+	if found, err := selfupdate.ConsumeStopRequest(root); err != nil || found {
+		t.Fatalf("shutdown requested without display: %t %v", found, err)
+	}
+	if code := runDown([]string{root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("historical shutdown refused: %d %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Historical root; do not use") {
+		t.Fatalf("historical target hidden: %s", stderr.String())
+	}
+	if found, err := selfupdate.ConsumeStopRequest(root); err != nil || !found {
+		t.Fatalf("shutdown not requested: %t %v", found, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, instance.RootDecommissionFileName)); err != nil {
+		t.Fatalf("shutdown removed historical marker: %v", err)
 	}
 }

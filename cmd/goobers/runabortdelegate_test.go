@@ -153,7 +153,7 @@ func TestRunAbortFallsBackToJournalErrorWithoutLiveDaemon(t *testing.T) {
 	restoreLock := journal.SetLockTimeoutForTest(300*time.Millisecond, 20*time.Millisecond)
 	t.Cleanup(restoreLock)
 
-	layout := instance.NewLayout(t.TempDir())
+	layout := instance.NewLayout(initScheduledDemo(t))
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
 	if err != nil {
 		t.Fatal(err)

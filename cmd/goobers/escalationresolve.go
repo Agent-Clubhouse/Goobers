@@ -80,6 +80,10 @@ func runEscalationResolve(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var result httpapi.InterventionResult
+	if err := prepareLocalManualRoot(instance.NewLayout(root), endpoint, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	apiErr, err := callDaemonMutationAPI(
 		instance.NewLayout(root), endpoint, apicontract.RouteResolveEscalation,
 		map[string]string{"{run}": input.RunID}, input, &result,

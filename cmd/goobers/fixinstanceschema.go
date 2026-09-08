@@ -39,6 +39,10 @@ func runFixInstanceSchema(root string, write bool, stdout, stderr io.Writer) int
 		return 0
 	}
 	if write {
+		if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
 		// Preserve the file's existing mode: instance.yaml names credential
 		// SOURCES rather than values, but an operator may still have narrowed
 		// its permissions, and a remedy must not widen them.
