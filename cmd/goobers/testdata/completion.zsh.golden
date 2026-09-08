@@ -237,7 +237,7 @@ _goobers_completion()
             flags+=(--feedback)
             ;;
         backlog-query)
-            flags+=(--claim --debug --release --read-only --reconcile)
+            flags+=(--claim --resweep --debug --release --read-only --reconcile)
             ;;
         file-issues)
             flags+=(--check)

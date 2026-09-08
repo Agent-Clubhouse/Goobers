@@ -80,10 +80,10 @@ func TestBacklogQueryDebugReportsReadyResweepBeforeFinalEligibility(t *testing.T
 	server.addIssue(7, "Ready re-sweep item", "goobers:approved", providers.LabelReady)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "debug-resweep-run")
-	configureCurationResweep(t, "1", "1", "24h")
+	configureCurationResweep(t, "1", "1")
 	t.Chdir(t.TempDir())
 
-	code, _, stderr := runArgs(t, "backlog-query", "--debug", "--claim", root)
+	code, _, stderr := runArgs(t, "backlog-query", "--debug", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("backlog-query --debug: code = %d, stderr = %q", code, stderr)
 	}
@@ -108,10 +108,10 @@ func TestBacklogQueryDebugExplainsBlockedResweepExclusion(t *testing.T) {
 	server.setIssueBlockers(7, 8)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "debug-blocked-resweep-run")
-	configureCurationResweep(t, "1", "1", "24h")
+	configureCurationResweep(t, "1", "1")
 	t.Chdir(t.TempDir())
 
-	code, _, stderr := runArgs(t, "backlog-query", "--debug", "--claim", root)
+	code, _, stderr := runArgs(t, "backlog-query", "--debug", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("backlog-query --debug: code = %d, stderr = %q", code, stderr)
 	}

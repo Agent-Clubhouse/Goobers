@@ -253,11 +253,11 @@ func TestBacklogQueryFatalProviderPathsKeepGenericEnvelope(t *testing.T) {
 		{
 			name:       "blocked dependency recheck listing",
 			operation:  "list blocked items for dependency recheck",
-			args:       []string{"--claim"},
+			args:       []string{"--claim", "--resweep"},
 			resultFile: "claimed-items.json",
 			setup: func(t *testing.T, _ string, server *fakeGitHubServer) {
 				server.addIssue(7, "Blocked item", "goobers:approved", blockedOnSiblingLabel)
-				configureCurationResweep(t, "2", "1", "24h")
+				configureCurationResweep(t, "2", "1")
 			},
 			match: func(r *http.Request) bool {
 				return r.Method == http.MethodGet &&
@@ -268,11 +268,11 @@ func TestBacklogQueryFatalProviderPathsKeepGenericEnvelope(t *testing.T) {
 		{
 			name:       "ready item re-sweep listing",
 			operation:  "list ready items for re-sweep",
-			args:       []string{"--claim"},
+			args:       []string{"--claim", "--resweep"},
 			resultFile: "claimed-items.json",
 			setup: func(t *testing.T, _ string, server *fakeGitHubServer) {
 				server.addIssue(7, "Ready item", "goobers:approved", providers.LabelReady)
-				configureCurationResweep(t, "2", "2", "24h")
+				configureCurationResweep(t, "2", "2")
 			},
 			match: func(r *http.Request) bool {
 				return r.Method == http.MethodGet &&
@@ -316,11 +316,11 @@ func TestBacklogQueryFatalProviderPathsKeepGenericEnvelope(t *testing.T) {
 		{
 			name:       "read-only re-sweep staleness",
 			operation:  "compute read-only re-sweep staleness",
-			args:       []string{"--claim"},
+			args:       []string{"--claim", "--resweep"},
 			resultFile: "claimed-items.json",
 			setup: func(t *testing.T, _ string, server *fakeGitHubServer) {
 				server.addIssue(7, "In-flight item", "goobers:approved", providers.LabelReady, inReviewStatusLabel)
-				configureCurationResweep(t, "2", "2", "24h")
+				configureCurationResweep(t, "2", "2")
 			},
 			match: func() func(*http.Request) bool {
 				var calls atomic.Int32

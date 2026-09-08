@@ -112,6 +112,14 @@ drift the forward pass can't see: a gate that has since merged/closed, a goal ma
 obsolete by landed main, a now-obvious duplicate, or scope that grew. Forward
 curation stays first-priority; re-curation consumes leftover budget.
 
+The scheduled extraction (#2399) uses the separate `curate-resweep` workflow
+and `backlog-query --claim --resweep`. Its cron/readiness controls own cadence;
+the query no longer tests a hidden timestamp cooldown. Blocked-dependency
+lookup failures fail its query stage with a typed provider error recorded in
+the run journal. Shared scheduler-state cursors and selection history remain
+for rotation, not scheduling. See the
+[migration guide](../guides/scheduled-backlog-resweep.md).
+
 ### B. Label & state reconciliation
 A deterministic reconciliation sweep that makes the visible backlog match ground
 truth: clear `goobers:claimed` with no backing ledger lease (subsumes #1003 as its
