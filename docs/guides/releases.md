@@ -65,6 +65,25 @@ This is unrelated to the DSL feature/support-matrix registry's own
 intentionally does not accept pre-release identifiers. A pre-release tag
 never appears in that lineage.
 
+Prerelease packaging validates the matrix against the corresponding stable
+release line (for example, `v0.4.0-rc.1` is checked against `v0.4.0`). It cannot
+bypass the final release's support checks. The optional `effectiveIn` field in
+schema-version-1 support snapshots records the actual enforcement release for
+the already-shipped DSL 1.4 early removal: `v0.4.0`, while the unchanged history
+retains the previously promised `v0.5.0`. This is a narrowly validated correction
+of a historical breach, not a general exemption from lifecycle windows. Readers
+should use `level` for what the binary accepts and retain both dates for audit.
+
+Before publication, signed archives execute natively on Linux AMD64/ARM64,
+macOS AMD64/ARM64, and Windows AMD64. Each native leg checks its checksum,
+reported version, and quickstart init/validate. Linux AMD64 also runs the
+credential-free demo through a completed terminal state and checks the portal
+payload. Stable installer smoke uses the actual staged archives with only the
+download transport redirected locally; this verifies the installer before any
+public release exists. Prerelease smoke verifies the intentional refusal and
+manual checksum-verification guidance. The trusted mock demo explicitly opts
+into unisolated execution on CI hosts that cannot enforce user namespaces.
+
 ## Install the latest stable release
 
 On Linux or macOS, resolve GitHub's latest stable release and run the installer
@@ -407,40 +426,25 @@ a live arm64 Windows machine or a CI leg that executes (not just compiles) the
 arm64 binary. Until then the decision is *deferred, with evidence required to
 ship*.
 
-## linux/arm64 and darwin/amd64 (shipped, never executed)
+## Native execution coverage for shipped targets
 
-Unlike `windows/arm64` above, `linux/arm64` and `darwin/amd64` **are** published
-`DefaultTargets` — but no CI leg or release step ever *runs* either binary. CI
-executes tests only on `linux/amd64` (ubuntu runners), `darwin/arm64`
-(macos-latest, now Apple Silicon), and `windows/amd64` (windows-latest); the
-release workflow's own smoke test (`.github/workflows/release.yml`, "Verify
-release artifacts") extracts and exercises only the `linux_amd64` archive.
-That leaves two shipped arches with zero recorded runtime evidence, ever.
+The release workflow now executes every `DefaultTargets` archive before
+publication: Linux AMD64/ARM64, macOS AMD64/ARM64, and Windows AMD64. The
+`native-smoke` matrix uses native hosted runners and consumes the final signed
+artifact set. Linux AMD64 runs the deeper demo and release-document checks in
+`validate-release`, which has only read permission. A failed native smoke blocks
+publication. The separate `verify-and-publish` job independently downloads the
+final signer artifact by immutable artifact ID, checks the exact release asset
+set and every checksum, and uploads an explicit file list. It treats the
+validation job’s generated release notes as data and never executes release
+binaries, installers, or build tools with publication permission. Every
+post-signing gate uses that same immutable artifact ID; missing, malformed, or
+multiple IDs fail before download rather than selecting all run artifacts.
 
-**Recorded decision (2026-08-01, filed from the state-of-repo review,
-[#2039](https://github.com/Agent-Clubhouse/Goobers/issues/2039)): ship without
-adding execution coverage, for now.** Rationale:
-
-- The codebase is pure Go with no `cgo`, no architecture-conditional assembly,
-  and no OS/arch-specific syscalls outside the already-covered
-  `internal/platform/*` seam (which is exercised per-OS, not per-arch — the
-  Windows/amd64 and darwin/arm64 gates already prove the *OS* seams; nothing
-  in this repo branches on *arch* the way it branches on OS).
-- Adding real execution requires either GitHub-hosted arm64 Linux runners and
-  an Intel macOS runner (both available, at added job-minute cost) or
-  QEMU/Rosetta emulation (slower, and emulates rather than proves native
-  behavior) — a real cost for a risk this analysis judges low.
-- This is the honest counterpart to the `windows/arm64` decision above, not a
-  silent gap: unlike that deferred-and-unpublished target, these two **are**
-  shipped today: a real, if judged-low-probability, risk exists that a user
-  on one of these arches runs a binary this project has never once executed.
-
-**Promotion trigger:** add a real smoke execution (a CI leg or a release-workflow
-step, per-arch) if evidence emerges that arch-specific behavior actually matters
-here (an arch-dependent bug report, a new `cgo` dependency, inline assembly, or
-architecture-conditional code), or if the job-minute cost becomes justified
-regardless. Until then, this decision stands as reviewed and deliberate, not an
-accident of the release workflow's history.
+This supersedes the earlier #2039 decision to publish Linux ARM64 and macOS
+AMD64 without execution coverage. Native smoke proves startup and packaged
+quickstart behavior; it does not replace the complete OS-specific unit suites
+or establish Windows ARM64 support.
 
 ## The Windows gate
 

@@ -104,4 +104,14 @@ func TestCheckSupportMatrixForRelease(t *testing.T) {
 			t.Errorf("checkSupportMatrixForRelease(%q) = %v, want nil for a non-final version", version, err)
 		}
 	}
+	for _, version := range []string{"v0.1.0-rc.1", "v0.1.0-beta.2"} {
+		if err := checkSupportMatrixForRelease(version); err == nil {
+			t.Errorf("checkSupportMatrixForRelease(%q) bypassed the release-level refusal", version)
+		}
+	}
+	for _, version := range []string{"v0.4.0", "v0.4.0-rc.1"} {
+		if err := checkSupportMatrixForRelease(version); err != nil {
+			t.Errorf("current release line %s cannot ship: %v", version, err)
+		}
+	}
 }

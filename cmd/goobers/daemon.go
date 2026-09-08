@@ -1017,8 +1017,9 @@ func buildSchedulerDefinitions(
 				wg:                   wg,
 			}),
 			RepoRef: repoRefs[identity],
-			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
-			RequiredCapabilities: requiredCaps,
+			// Only runner-driven entries execute on the scheduler's self host.
+			// Engine-selected entries enforce capabilities per pinned stage.
+			RequiredCapabilities: selections[identity].schedulerSelfCapabilities(requiredCaps),
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
 			// above found this workflow unplaceable on the declared inventory
 			// AND the entry is runner-driven — an engine-selected entry's

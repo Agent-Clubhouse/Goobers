@@ -311,20 +311,9 @@ func TestUpSkipsUnresolvableWorkflowWithWarningNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Fatalf("code = %d (the daemon must still start despite the stale run), stderr = %q", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runUpContext did not return after ctx cancellation")
+	if code := runUpThroughStartup(t, []string{root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("daemon startup/shutdown code=%d stderr=%q", code, stderr.String())
 	}
 
 	if !strings.Contains(stdout.String(), "warning: run stale-1") {
@@ -368,20 +357,9 @@ func TestUpSkipsRunFromRemovedGaggleWithWarningNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Fatalf("code = %d (the daemon must still start after gaggle removal), stderr = %q", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runUpContext did not return after ctx cancellation")
+	if code := runUpThroughStartup(t, []string{root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("daemon startup/shutdown code=%d stderr=%q", code, stderr.String())
 	}
 
 	if !strings.Contains(stdout.String(), "warning: run removed-gaggle-run") {

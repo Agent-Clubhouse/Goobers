@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -71,20 +72,31 @@ type Result struct {
 }
 
 // Migrate parses source as a single YAML workflow document, resolves its
-// current dslVersion (an absent field means supportmatrix.CurrentDSLVersion,
-// mirroring internal/workflow.Compile's own default), and applies the single
+// current dslVersion (an absent field means the historical 1.4 transitional
+// default, retaining a recovery path for legacy files), and applies the single
 // registered Edge from that version to to. It returns ErrAlreadyAtTarget when
 // the workflow is already pinned to to, and a plain error naming the missing
 // hop when no direct one-step Edge is registered — multi-version upgrades are
 // chained by invoking fix repeatedly, never silently skipped.
 func Migrate(source []byte, to string) (*Result, error) {
 	var doc yaml.Node
-	if err := yaml.Unmarshal(source, &doc); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(source))
+	if err := decoder.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("dslmigrate: parse workflow: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, fmt.Errorf("dslmigrate: parse trailing document: %w", err)
+		}
+		return nil, errors.New("dslmigrate: multiple YAML documents are not supported; split resources into separate files before migrating")
 	}
 	root := documentRoot(&doc)
 	if root == nil || root.Kind != yaml.MappingNode {
 		return nil, errors.New("dslmigrate: workflow document has no top-level mapping")
+	}
+	if err := validateMigrationNodes(root); err != nil {
+		return nil, fmt.Errorf("dslmigrate: %w", err)
 	}
 
 	from := supportmatrix.CurrentDSLVersion
@@ -121,6 +133,38 @@ func Migrate(source []byte, to string) (*Result, error) {
 		after = string(pinned)
 	}
 	return &Result{Before: before, After: after, Changed: before != after, Notes: notes}, nil
+}
+
+// The transforms edit explicit mapping entries. Aliases and merge keys can
+// hide inherited fields or change another object's meaning when an anchor is
+// rewritten; duplicate keys make the chosen value parser-dependent. Refuse
+// these shapes before producing any output that --write could persist.
+func validateMigrationNodes(node *yaml.Node) error {
+	if node.Kind == yaml.AliasNode {
+		return fmt.Errorf("YAML aliases are not supported for migration (line %d); expand aliases before migrating", node.Line)
+	}
+	if node.Kind == yaml.MappingNode {
+		seen := map[string]bool{}
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind != yaml.ScalarNode {
+				return fmt.Errorf("mapping keys must be scalars (line %d)", key.Line)
+			}
+			if key.Tag == "!!merge" {
+				return fmt.Errorf("YAML merge keys are not supported for migration (line %d); expand merged mappings before migrating", key.Line)
+			}
+			if seen[key.Value] {
+				return fmt.Errorf("duplicate mapping key %q (line %d)", key.Value, key.Line)
+			}
+			seen[key.Value] = true
+		}
+	}
+	for _, child := range node.Content {
+		if err := validateMigrationNodes(child); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func pinVersion(source []byte, versionNode, root *yaml.Node, to string) ([]byte, error) {

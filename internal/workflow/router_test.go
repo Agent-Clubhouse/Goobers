@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	v20 "github.com/goobers/goobers/internal/workflow/v_2_0"
 )
 
@@ -210,5 +211,32 @@ func TestRuntimeFacadesRejectUnknownMachineVersion(t *testing.T) {
 	}
 	if _, err := GateLimits(machine, gate); err == nil {
 		t.Fatal("GateLimits succeeded for an unknown interpreter")
+	}
+}
+
+func TestCompileV30RefusesLegacyGagglePlacementFloor(t *testing.T) {
+	def := Definition{Name: "placement-floor", DSLVersion: "3.0", Spec: linearSpec()}
+	for _, caps := range [][]string{{}, {"os=linux", "dotnet@8"}} {
+		_, err := Compile(def, WithPreviewFeatures(true), WithGaggleRequiredCapabilities(caps))
+		if err == nil || !strings.Contains(err.Error(), "gaggle spec.requiredCapabilities does not exist in DSL 3.0") {
+			t.Fatalf("Compile with legacy gaggle floor %v = %v, want migration error", caps, err)
+		}
+	}
+	if _, err := Compile(def, WithPreviewFeatures(true), WithGaggleRequiredCapabilities(nil),
+		WithGaggleRunsOn(&apiv1.GaggleRunsOn{OS: "linux", Capabilities: []string{"dotnet@8"}})); err != nil {
+		t.Fatalf("Compile with migrated gaggle floor: %v", err)
+	}
+}
+
+func TestSupportMatrixAgreesWithAvailableInterpreters(t *testing.T) {
+	for _, version := range supportmatrix.GetDSL().Versions() {
+		_, err := interpreterForVersion(version.Version)
+		if version.Level == supportmatrix.LevelUnsupported {
+			if err == nil {
+				t.Errorf("unsupported DSL %s still has a routable interpreter", version.Version)
+			}
+		} else if err != nil {
+			t.Errorf("DSL %s declares %s but has no interpreter: %v", version.Version, version.Level, err)
+		}
 	}
 }

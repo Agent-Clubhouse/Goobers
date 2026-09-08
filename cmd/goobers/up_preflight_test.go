@@ -93,11 +93,9 @@ func TestUpSkipPreflightStartsWithNamedValidationWarning(t *testing.T) {
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "up-preflight-fixture-token")
 	root := initDeterministicDemo(t)
 	installInvalidElectLanderWorkflow(t, root)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 
 	var stdout, stderr bytes.Buffer
-	if code := runUpContext(ctx, []string{"--quiet", "--skip-preflight", root}, &stdout, &stderr); code != 0 {
+	if code := runUpThroughStartup(t, []string{"--quiet", "--skip-preflight", root}, &stdout, &stderr); code != 0 {
 		t.Fatalf("up code = %d, want 0; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 	for _, want := range []string{

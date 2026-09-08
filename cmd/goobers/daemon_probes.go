@@ -65,7 +65,9 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 	return httpapi.ReadinessStatus{
 		// The single Ready gate every authenticated caller already sees on
 		// /api/v1/health.Ready — never recomputed from Checks below, so the
-		// two surfaces cannot drift out of lockstep.
+		// two surfaces cannot drift out of lockstep. Startup also waits for
+		// the first active-count sample before opening this gate; the four
+		// subsystem checks below remain diagnostic, not an exhaustive gate.
 		Ready: d.ready.Load(),
 		Checks: map[string]bool{
 			// configLoaded and stateOpen both flip before the HTTP listener

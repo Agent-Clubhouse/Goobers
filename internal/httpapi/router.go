@@ -132,6 +132,10 @@ func (p Principal) HasRole(required Role) bool {
 // them is plane-scoped, not role-ranked.
 const PodPrincipalIssuer = "goobers/pod"
 
+// WorkerPrincipalIssuer identifies a resident worker's short-lived, read-only
+// config-digest credential. It carries neither instance roles nor a run identity.
+const WorkerPrincipalIssuer = "goobers/worker"
+
 // IsPodPrincipal reports whether principal was authenticated as a stage pod.
 func IsPodPrincipal(principal Principal) bool {
 	return principal.Issuer == PodPrincipalIssuer
@@ -371,11 +375,20 @@ func telemetryPlanePath(path string) bool {
 // a stage subprocess unable to surrender its own result even though it holds
 // a bearer for the same run — route confinement, checked here, not a naming
 // convention.
+//
+// Resident worker principals use a separate identity and may only GET the
+// config-digest route. Neither pod scopes nor instance roles broaden that grant.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
 		if !ok {
 			return errors.New("no authenticated principal")
+		}
+		if principal.Issuer == WorkerPrincipalIssuer {
+			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
+				return nil
+			}
+			return errors.New("worker principal may only read the config-digest plane")
 		}
 		if IsPodPrincipal(principal) {
 			scope, admitted := podRouteScope(request)
@@ -849,7 +862,11 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err := apicontract.ValidateRoutes(expected, router.routes); err != nil {
 		return nil, fmt.Errorf("register HTTP API routes: %w", err)
 	}
-	_, isNull := config.authenticator.(NullAuthenticator)
+	isNull := false
+	switch config.authenticator.(type) {
+	case NullAuthenticator, *NullAuthenticator:
+		isNull = true
+	}
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 

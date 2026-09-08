@@ -77,18 +77,29 @@ func requireStarted(t *testing.T, control *fakeServiceControl) {
 }
 
 func TestHandlerExecuteStartAndNaturalExit(t *testing.T) {
-	control := newFakeServiceControl()
-	h := &handler{fn: func(context.Context) int { return 17 }}
+	for _, tc := range []struct {
+		name string
+		code int
+	}{
+		{name: "clean stop", code: 0},
+		{name: "startup failure", code: 1},
+		{name: "application failure", code: 17},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			control := newFakeServiceControl()
+			h := &handler{fn: func(context.Context) int { return tc.code }}
+			result := control.run(h)
 
-	result := control.run(h)
-
-	requireStarted(t, control)
-	requireStatus(t, control.receiveStatus(t), svc.Status{State: svc.StopPending})
-	if got := receiveExecuteResult(t, result); got != (executeResult{exitCode: 17}) {
-		t.Fatalf("Execute() = %+v, want exit code 17", got)
-	}
-	if h.code != 17 {
-		t.Fatalf("handler code = %d, want 17", h.code)
+			requireStarted(t, control)
+			requireStatus(t, control.receiveStatus(t), svc.Status{State: svc.StopPending})
+			want := executeResult{serviceSpecific: tc.code != 0, exitCode: uint32(tc.code)}
+			if got := receiveExecuteResult(t, result); got != want {
+				t.Fatalf("Execute() = %+v, want %+v", got, want)
+			}
+			if h.code != tc.code {
+				t.Fatalf("handler code = %d, want %d", h.code, tc.code)
+			}
+		})
 	}
 }
 
@@ -117,7 +128,7 @@ func TestHandlerExecuteStopRequests(t *testing.T) {
 			case <-time.After(serviceTestTimeout):
 				t.Fatal("service function context was not cancelled")
 			}
-			if got := receiveExecuteResult(t, result); got != (executeResult{exitCode: 23}) {
+			if got := receiveExecuteResult(t, result); got != (executeResult{serviceSpecific: true, exitCode: 23}) {
 				t.Fatalf("Execute() = %+v, want exit code 23", got)
 			}
 		})

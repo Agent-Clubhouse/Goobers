@@ -68,7 +68,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	stage := os.Getenv(dispatcher.EnvStage)
 	daemonAPI := os.Getenv(dispatcher.EnvDaemonAPI)
 	podToken := os.Getenv(dispatcher.EnvPodToken)
-	attempt, attemptErr := strconv.Atoi(os.Getenv(dispatcher.EnvAttempt))
+	attempt, attemptErr := podSurrenderAttempt()
 
 	// Nothing to surrender to: fail loud immediately rather than run the
 	// stage for nothing. The disposal gate already treats "pod terminated,
@@ -880,6 +880,8 @@ func recordStageArtifactsTyped(
 	if err != nil || attempt < 1 {
 		attempt = 1
 	}
+	// Absent on legacy pods means initial; never infer lineage from the ordinal.
+	class := journal.AttemptClass(os.Getenv(dispatcher.EnvAttemptClass))
 	names := make([]string, 0, len(streams))
 	for name := range streams {
 		names = append(names, name)
@@ -917,7 +919,7 @@ func recordStageArtifactsTyped(
 		}
 		ops = append(ops, livejournal.Op{
 			Kind: livejournal.OpArtifact,
-			Key:  stage + "/" + name,
+			Key:  podJournalOpKey(stage + "/" + name),
 			// See podArtifactRecorder.Append (dispatchagentic.go): the daemon's
 			// replayClock adopts this field verbatim, so an unstamped op here
 			// durably persists the artifact's op at 0001-01-01T00:00:00Z (#3774).
@@ -925,6 +927,7 @@ func recordStageArtifactsTyped(
 			Artifact: &livejournal.ArtifactOp{
 				Stage:   stage,
 				Attempt: attempt,
+				Class:   class,
 				Name:    stage + "/" + name,
 				Data:    data,
 			},
@@ -955,10 +958,11 @@ func recordStageArtifactsTyped(
 			strings.Join(putFailures, "\n") + "\n"
 		ops = append(ops, livejournal.Op{
 			Kind: livejournal.OpArtifact,
-			Key:  stage + "/" + blobWriteThroughFailureArtifact,
+			Key:  podJournalOpKey(stage + "/" + blobWriteThroughFailureArtifact),
 			Artifact: &livejournal.ArtifactOp{
 				Stage:   stage,
 				Attempt: attempt,
+				Class:   class,
 				Name:    stage + "/" + blobWriteThroughFailureArtifact,
 				Data:    []byte(body),
 			},

@@ -96,12 +96,13 @@ func (h podStageHeartbeat) Stop() {
 // podStageIdentity is the pod's own answer to "which attempt of which stage of
 // which run am I?", read from the environment podspec.go stamps.
 type podStageIdentity struct {
-	daemonAPI string
-	token     string
-	runID     string
-	gaggle    string
-	stage     string
-	attempt   int
+	daemonAPI  string
+	token      string
+	runID      string
+	gaggle     string
+	stage      string
+	attempt    int
+	podAttempt string
 }
 
 // podStageIdentityFromEnv reads the identity, reporting false when this pod has
@@ -109,12 +110,13 @@ type podStageIdentity struct {
 // recordStageArtifacts already treats as a silent no-op.
 func podStageIdentityFromEnv() (podStageIdentity, bool) {
 	id := podStageIdentity{
-		daemonAPI: strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI)),
-		token:     os.Getenv(dispatcher.EnvPodToken),
-		runID:     os.Getenv(dispatcher.EnvRunID),
-		gaggle:    os.Getenv(dispatcher.EnvGaggle),
-		stage:     os.Getenv(dispatcher.EnvStage),
-		attempt:   1,
+		daemonAPI:  strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI)),
+		token:      os.Getenv(dispatcher.EnvPodToken),
+		runID:      os.Getenv(dispatcher.EnvRunID),
+		gaggle:     os.Getenv(dispatcher.EnvGaggle),
+		stage:      os.Getenv(dispatcher.EnvStage),
+		attempt:    1,
+		podAttempt: os.Getenv(dispatcher.EnvPodAttempt),
 	}
 	if attempt, err := strconv.Atoi(os.Getenv(dispatcher.EnvAttempt)); err == nil && attempt >= 1 {
 		id.attempt = attempt
@@ -203,7 +205,7 @@ func emitPodStageHeartbeat(ctx context.Context, stderr io.Writer, id podStageIde
 		Gaggle: id.gaggle,
 		Ops: []livejournal.Op{{
 			Kind: livejournal.OpAppend,
-			Key:  fmt.Sprintf("%s/%d/heartbeat/%d", id.stage, id.attempt, tick),
+			Key:  podJournalKey(id.podAttempt, fmt.Sprintf("%s/%d/heartbeat/%d", id.stage, id.attempt, tick)),
 			// The daemon's replayClock adopts this verbatim; an unstamped op
 			// persists at 0001-01-01T00:00:00Z (#3774), which for a LIVENESS
 			// event would drag the run's LastActivity to the zero instant and

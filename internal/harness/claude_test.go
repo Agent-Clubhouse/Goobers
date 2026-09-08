@@ -258,6 +258,32 @@ func TestBuildClaudeArgvPromptsLeadingWithDashesStayPositional(t *testing.T) {
 	}
 }
 
+// Claude 2.1.263 treats --model auto as an unrecognized literal model. The
+// adapter admits auto as "let the harness pick", so its command must match
+// the empty-model invocation while preserving explicit model selections.
+func TestBuildClaudeArgvResolvesAutomaticModel(t *testing.T) {
+	for _, model := range []string{"", "auto", "claude-sonnet-5"} {
+		t.Run(model, func(t *testing.T) {
+			adapter := &ClaudeAdapter{}
+			if err := adapter.ValidateConfig(model, nil); err != nil {
+				t.Fatal(err)
+			}
+			argv, promptArg, sessionArg := buildClaudeArgv([]string{"claude"}, defaultClaudeExtraArgs, model, "high", "session-1", "--- prompt")
+			want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"}
+			if model == "claude-sonnet-5" {
+				want = append(want, "--model", model)
+			}
+			want = append(want, "--effort", "high", "--session-id", "session-1", "--", "--- prompt")
+			if !slices.Equal(argv, want) {
+				t.Fatalf("command = %v, want %v", argv, want)
+			}
+			if argv[promptArg] != "--- prompt" || argv[sessionArg] != "--session-id" || argv[sessionArg+1] != "session-1" {
+				t.Fatalf("model selection broke recovery argument indices: %v", argv)
+			}
+		})
+	}
+}
+
 // TestBuildClaudeArgvShiftUnderSandboxWrapping asserts promptArg and
 // sessionSelectorArg remain correct once confineArgv prepends sandbox
 // wrapper arguments ahead of the whole command, in both the sandboxed and

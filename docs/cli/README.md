@@ -1086,7 +1086,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--overlay-dir <dir>] [--image-runtime docker|podman]
                           [--image-pull-policy always|never]
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
-                          [--timeout <duration>]
+                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
 
@@ -1100,13 +1100,17 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)
   rbac-install       required  §1/§3  permissions to install goobers-system
   rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces
-  storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists
+  storage-rwx        required  §4     instance-root StorageClass topology
   mixed-os-placement required  §7     Linux workloads cannot land on Windows nodes
   oidc-issuer        required* §1/§3  issuer discovery document reachable
   egress             required* §1/§5  outbound targets reachable from this host
   temporal-namespace required* §2/§4  configured Temporal namespace is registered
   registry           optional  §1     registry reachable (host-side sanity)
 
+  apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint
+  runner-class-capacity required §7 active runner pod requests fit a compatible node
+  pod-health           required §2 every observed container is healthy
+  otlp-signal-set      optional §4 currently unconfigured by this CLI
   overlay-pin-agreement required* #4298 remote base, image, and runner pins agree
   overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks
 
@@ -1115,6 +1119,13 @@ unconfigured they report a skipped warn. Cluster checks are read-only: nothing i
 created on the cluster, and a check that cannot run reports fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
+
+--checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.
+For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.
+That check inspects only egress policies labeled goobers.dev/apiserver-egress=true.
+--apiserver-endpoint overrides the comparison endpoint when in-cluster service IPs
+differ from the actual control-plane endpoint used by the network policy. It does
+not change the authenticated Kubernetes client address.
 
 --overlay-dir additionally renders the consumer overlay with kubectl and pulls
 its pinned images using --image-runtime (default docker). Image checks run
@@ -3263,12 +3274,14 @@ With --api (or $GOOBERS_DAEMON_API) the abort is delegated to that
 daemon's authenticated HTTP API instead of this filesystem, which is the
 only way to reach a daemon running in another pod; name the run by its
 full id, since no local journal is read to expand an abbreviation. That
-remote form is a live cancel, not a journal abort: it can only stop a run
-the daemon is still executing, and a wedged run no daemon owns is refused
+remote form is a live cancel, not a journal abort: it stops a local run or
+requests cancellation of an engine run the daemon retains and owns. A
+wedged run no daemon owns is refused
 with exit 1. Finalizing such a run still requires the filesystem path
 against its instance root — run `GOOBERS_DAEMON_API= goobers run abort
 <run-id> <path>` to take it when the variable is exported.
-Exit codes: 0 = aborted, 1 = business error (run already terminal),
+Exit codes: 0 = aborted or engine cancellation requested,
+1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 ~~~
 
@@ -3297,10 +3310,10 @@ With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that
 daemon's authenticated HTTP API instead of the local pending-cancels
 drop, so a caller that does not share the daemon's filesystem can stop a
 run at all; name the run by its full id, since no local journal is read to
-expand an abbreviation. The remote form reaches only runs the daemon is
-executing, so an ENGINE-DRIVEN run is reported as not running under that
-daemon; cancel it from the instance root instead. Exit codes:
-0 = cancelled, 1 = business error
+expand an abbreviation. For an ENGINE-DRIVEN run retained and owned by
+that daemon, the API requests engine cancellation; the engine reports its
+terminal outcome later. Exit codes:
+0 = cancelled or engine cancellation requested, 1 = business error
 (already terminal, not currently running, or no daemon to cancel it),
 2 = usage/IO error (unknown run).
 ~~~

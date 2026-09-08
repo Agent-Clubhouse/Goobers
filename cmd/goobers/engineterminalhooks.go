@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -263,13 +264,13 @@ func (h *engineTerminalHooks) fireFailed(ctx context.Context, out engineTerminal
 	if out.Err != nil {
 		// A walk-level failure returns (RunResult{}, err): there is no status,
 		// no final state and no failure code, so the workflow's error IS the
-		// cause and the code falls back to the runner's own default for a
-		// failure no stage claimed.
+		// cause. Preserve a typed infrastructure failure for the work-health
+		// and failure-streak consumers; other errors keep the bare fallback.
 		if cause == "" {
 			cause = out.Err.Error()
 		}
 		if code == "" {
-			code = engineWalkFailureCode
+			code = engineTerminalFailureCode(out.Err)
 		}
 	}
 	if err := h.failed(ctx, runner.FailedOutcome{
@@ -287,6 +288,16 @@ func (h *engineTerminalHooks) fireFailed(ctx context.Context, out engineTerminal
 // through a walk-level error rather than a stage's typed failure — the
 // engine's analogue of the runner's bare "run_failed".
 const engineWalkFailureCode = "run_failed"
+
+// Error types survive the activity and workflow boundaries. Use the engine's
+// classifier so an exhausted infrastructure budget cannot become an item
+// failure merely because RunResult is absent. Unknown errors keep the fallback.
+func engineTerminalFailureCode(err error) string {
+	if class, classifyErr := engine.ClassifyDispatchFailure(err); classifyErr == nil && class == journal.AttemptInfra {
+		return telemetry.ErrCodeInfraFailure
+	}
+	return engineWalkFailureCode
+}
 
 // itemID resolves the run's single driving backlog item: the one pinned at
 // start when the trigger carried one, else the first item the claim ledger
@@ -431,7 +442,7 @@ func engineStartResult(res engine.RunResult, phase journal.RunPhase, err error) 
 		return out
 	}
 	if out.FailureCode == "" {
-		out.FailureCode = engineWalkFailureCode
+		out.FailureCode = engineTerminalFailureCode(err)
 	}
 	if out.FailureMessage == "" && err != nil {
 		out.FailureMessage = err.Error()

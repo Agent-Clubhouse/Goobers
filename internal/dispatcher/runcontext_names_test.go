@@ -18,6 +18,7 @@ import (
 func TestRunContextEnvMatchesExecutor(t *testing.T) {
 	for _, want := range []string{
 		executor.RepoProviderEnvVar,
+		executor.RepoBaseURLEnvVar,
 		executor.RepoOwnerEnvVar,
 		executor.RepoProjectEnvVar,
 		executor.RepoNameEnvVar,

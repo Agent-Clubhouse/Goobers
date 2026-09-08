@@ -354,17 +354,21 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// stampVolumes). The daemon-side binding exists precisely because runner
 	// `self` has no such pod; layering it here would carve an ephemeral
 	// directory inside an already-ephemeral one.
-	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil, false)
+	spec, ok := kit.Goobers[gooberName]
+	if !ok {
+		return nil, fmt.Errorf("kit carries no spec for goober %q", gooberName)
+	}
+	var commands map[string][]string
+	if len(kit.HarnessCommand) > 0 {
+		commands = map[string][]string{string(spec.Harness): kit.HarnessCommand}
+	}
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, commands, "", "", false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
 	// Preflight THIS goober's harness specifically, rather than walking
 	// workflows as the daemon does — a pod has no workflow set, and the only
 	// harness that matters here is the one this stage is about to use.
-	spec, ok := kit.Goobers[gooberName]
-	if !ok {
-		return nil, fmt.Errorf("kit carries no spec for goober %q", gooberName)
-	}
 	adapter, err := adapterRegistry.Get(string(spec.Harness))
 	if err != nil {
 		return nil, fmt.Errorf("harness %q is not available in this pod: %w", spec.Harness, err)
@@ -598,7 +602,7 @@ func (r podArtifactRecorder) Append(ev journal.Event) error {
 		Gaggle: os.Getenv(dispatcher.EnvGaggle),
 		Ops: []livejournal.Op{{
 			Kind: livejournal.OpAppend,
-			Key:  fmt.Sprintf("%s/%s/%d", os.Getenv(dispatcher.EnvStage), ev.Type, ev.Seq),
+			Key:  podAgentEventOpKey(ev),
 			// The daemon's replayClock adopts THIS field as the event's own
 			// Time (livejournal.applyOp: run.clock.set(op.Time)) — a pod has
 			// no journal-plane clock of its own to inherit one from, so an

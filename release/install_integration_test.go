@@ -114,12 +114,27 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	curlCalls := filepath.Join(root, "curl-calls")
 	goobersCalls := filepath.Join(root, "goobers-calls")
 	instancePath := filepath.Join(root, "instance with space")
-	for _, version := range []string{"main", "v1.2", "v1.2.3-rc1", "v01.2.3"} {
+	for _, version := range []string{"main", "v1.2", "v01.2.3", "v1.2.3-", "v1.2.3-rc..1", "v1.2.3-rc.01", "v1.2.3-rc/1"} {
 		cmd := exec.Command("sh", scriptPath, version, instancePath)
 		if output, err := cmd.CombinedOutput(); err == nil ||
 			!strings.Contains(string(output), "exact stable tag") {
 			t.Fatalf("install %q result = %v, output = %s", version, err, output)
 		}
+	}
+	for _, version := range []string{"v1.2.3-rc1", "v0.4.0-beta.2", "v0.4.0-rc.1"} {
+		output, err := exec.Command("sh", scriptPath, version).CombinedOutput()
+		if err == nil {
+			t.Fatalf("pre-release %s unexpectedly installed", version)
+		}
+		for _, want := range []string{"pre-release tags are intentionally not installable", "SHA256SUMS", "verify the checksum", "extract the archive", "/releases/tag/" + version} {
+			if !strings.Contains(string(output), want) {
+				t.Errorf("pre-release refusal missing %q: %s", want, output)
+			}
+		}
+	}
+	help, err := exec.Command("sh", scriptPath, "--help").CombinedOutput()
+	if err != nil || !strings.Contains(string(help), "Pre-release tags") || !strings.Contains(string(help), "SHA256SUMS") {
+		t.Fatalf("installer help: %v\n%s", err, help)
 	}
 
 	cmd := exec.Command("sh", scriptPath, "v1.2.3")

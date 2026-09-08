@@ -254,7 +254,9 @@ func buildClaudeArgv(baseCommand, extra []string, model, effort, sessionID, prom
 	argv = append(argv, baseCommand...)
 	argv = append(argv, "-p")
 	argv = append(argv, extra...)
-	if model != "" {
+	// "auto" is our harness-neutral default sentinel, not a Claude model ID.
+	// Omit it so Claude selects its own default, just as for an empty model.
+	if model != "" && model != "auto" {
 		argv = append(argv, "--model", model)
 	}
 	if effort != "" {

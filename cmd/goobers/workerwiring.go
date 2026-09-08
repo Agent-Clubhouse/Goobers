@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -467,17 +468,19 @@ func gaggleProjectRef(set *instance.ConfigSet, gaggle string) apiv1.RepoRef {
 	return apiv1.RepoRef{}
 }
 
-// resolveGoobersForGaggle returns the goober specs a gaggle's stages may name.
+// resolveGoobersForGaggle returns the goober specs a declared gaggle's stages
+// may name. Deterministic tasks and automated gates need no goobers; selecting
+// an absent goober remains an error at the agentic executor boundary.
 func resolveGoobersForGaggle(set *instance.ConfigSet, gaggle string) (map[string]apiv1.GooberSpec, error) {
+	if !slices.ContainsFunc(set.Gaggles, func(candidate apiv1.Gaggle) bool { return candidate.Name == gaggle }) {
+		return nil, fmt.Errorf("worker: gaggle %q not found in config", gaggle)
+	}
 	out := map[string]apiv1.GooberSpec{}
 	for i := range set.Goobers {
 		g := set.Goobers[i]
 		if g.Spec.Gaggle == "" || g.Spec.Gaggle == gaggle {
 			out[g.Name] = g.Spec
 		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("worker: no goobers configured for gaggle %q", gaggle)
 	}
 	return out, nil
 }

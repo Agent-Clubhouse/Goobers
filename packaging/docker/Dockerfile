@@ -24,7 +24,7 @@
 ARG GO_IMAGE=docker.io/library/golang:1.26.6
 ARG PORTAL_NODE_IMAGE=docker.io/library/node:24-bookworm-slim
 ARG RUNTIME_IMAGE=docker.io/library/node:22-bookworm-slim
-ARG COPILOT_VERSION=1.0.80
+ARG COPILOT_VERSION=1.0.83
 
 FROM ${PORTAL_NODE_IMAGE} AS portal-build
 WORKDIR /src

@@ -33,6 +33,7 @@ Release `v0.2.0` records the first DSL support matrix; there is no previous rele
 ## Support policy for external consumers
 
 - Pin the Goobers binary release and retain its `feature-registry.json` and `dsl-support-matrix.json`; those snapshots are the authority for the DSL features and DSL versions the binary supports.
+- In the support matrix, `level` describes this binary's behavior. Optional `effectiveIn` records actual enforcement when it differs from the retained policy history; DSL 1.4's `v0.4.0` value discloses its already-shipped early removal against the prior `v0.5.0` promise.
 - Within an `apiVersion`, adding optional fields, enum values, or stage/gate kinds, relaxing constraints, and promoting preview features to GA are non-breaking changes.
 - Removing or renaming fields, tightening constraints, changing defaults, or changing semantics is breaking. Such changes require a deprecated-to-removed cycle spanning at least one released minor version, or an `apiVersion` bump.
 - Preview features are usable but unstable and carry no compatibility guarantee. GA features are supported without an opt-in.

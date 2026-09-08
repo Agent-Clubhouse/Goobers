@@ -529,7 +529,6 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 		return fmt.Errorf("localscheduler: reconcile trigger history: %w", err)
 	}
 	var fired []TriggerFiredRecord
-	starts := map[WorkflowIdentity][]time.Time{}
 	identities := make([]WorkflowIdentity, 0, len(s.workflows))
 	for identity := range s.workflows {
 		identities = append(identities, identity)
@@ -555,13 +554,8 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 		if ev.Type == journal.EventTriggerFired && scheduledTriggerFired(ev.Reason) {
 			fired = append(fired, TriggerFiredRecord{Gaggle: ev.Gaggle, Workflow: ev.Workflow, Time: ev.Time})
 		}
-		if ev.Type == journal.EventRunStarted && ev.Time.After(startsCutoff) {
-			for _, identity := range resolveRunStartedIdentities(runsDirs, ev, identities) {
-				starts[identity] = append(starts[identity], ev.Time)
-			}
-		}
 	}
-	s.conditions.ReconcileWorkflowBudgets(starts)
+	s.conditions.ReconcileWorkflowBudgets(reconstructBudgetStarts(events, runsDirs, identities, startsCutoff))
 	last := ReconstructLastEval(fired, identities, now)
 
 	s.mu.Lock()
