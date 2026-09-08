@@ -126,7 +126,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
-const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]\n\n" +
+const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | --claim [--resweep] | --reconcile | --release] [path]\n\n" +
 	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
@@ -147,6 +147,8 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"and uses only the github:issues:read capability. When inputs.resultFile\n" +
 	"is declared, it also writes a read-only candidate report with scan coverage;\n" +
 	"candidates are for inspection, not claims or permission to re-ready work.\n\n" +
+	"The --resweep modifier requires --claim and selects only re-sweep work;\n" +
+	"its calling workflow owns cadence through schedule/readiness controls.\n\n" +
 	"--debug writes candidate eligibility, exclusion, and claim-loss details to\n" +
 	"stderr. Diagnostics contain item IDs and selection metadata only; normal\n" +
 	"output and claim behavior are unchanged.\n\n" +
@@ -217,7 +219,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	}
 	mode, ok := selectBacklogQueryMode(*readOnly, *claim, *reconcile, *release)
 	if *resweep {
-		if mode != backlogQueryModePlain {
+		if mode != backlogQueryModeClaim {
 			ok = false
 		}
 		mode = backlogQueryModeResweep

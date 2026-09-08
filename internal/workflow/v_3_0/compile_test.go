@@ -1278,6 +1278,7 @@ func TestCompileBacklogQueryBooleanPolicyActions(t *testing.T) {
 		wantAction string
 	}{
 		{name: "long claim", args: []string{"--claim"}, wantAction: "claim-backlog-items"},
+		{name: "scheduled resweep claim", args: []string{"--claim", "--resweep"}, wantAction: "claim-backlog-items"},
 		{name: "short claim", args: []string{"-claim"}, wantAction: "claim-backlog-items"},
 		{name: "long claim true", args: []string{"--claim=true"}, wantAction: "claim-backlog-items"},
 		{name: "short claim true", args: []string{"-claim=true"}, wantAction: "claim-backlog-items"},

@@ -21,7 +21,7 @@ func TestBacklogScheduledResweepOwnsCadenceButNotForwardClaims(t *testing.T) {
 	t.Chdir(workDir)
 	for turn := range 2 {
 		t.Setenv("GOOBERS_RUN_ID", fmt.Sprintf("scheduled-resweep-%d", turn))
-		code, _, stderr := runArgs(t, "backlog-query", "--resweep", root)
+		code, _, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 		if code != 0 {
 			t.Fatalf("scheduled sweep %d: code=%d stderr=%q", turn, code, stderr)
 		}
@@ -42,7 +42,10 @@ func TestBacklogScheduledResweepOwnsCadenceButNotForwardClaims(t *testing.T) {
 }
 
 func TestBacklogScheduledResweepRejectsConflictingModes(t *testing.T) {
-	for _, mode := range []string{"--claim", "--read-only", "--reconcile", "--release"} {
+	if code, _, _ := runArgs(t, "backlog-query", "--resweep"); code != 2 {
+		t.Fatalf("--resweep without --claim accepted: code=%d", code)
+	}
+	for _, mode := range []string{"--read-only", "--reconcile", "--release"} {
 		if code, _, _ := runArgs(t, "backlog-query", "--resweep", mode); code != 2 {
 			t.Fatalf("--resweep %s accepted: code=%d", mode, code)
 		}
