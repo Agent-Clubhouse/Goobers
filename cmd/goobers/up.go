@@ -638,7 +638,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 
-	reads, err := readservice.NewLocal(readservice.LocalSources{
+	reads, err := newDaemonReadService(readservice.LocalSources{
 		Layout:      l,
 		Config:      setup.Config,
 		Definitions: setup.Definitions,
@@ -1634,7 +1634,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		go func() { configDone <- reloader.Run(ctx) }()
 	}
 
-	if err := publishDaemonAPIAddress(apiAddressPath, apiServer.Address()); err != nil {
+	if err := prepareDaemonReadiness(ctx, reads, apiAddressPath, apiServer.Address(), stdout); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
