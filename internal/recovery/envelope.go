@@ -52,6 +52,12 @@ func (w *archiveEnvelopeWriter) Write(data []byte) (int, error) {
 // after exact size, digest and header verification; it is never inferred from
 // received bytes. ImportSnapshotBundle must still verify Git objects and patch.
 func ReceiveArchiveEnvelope(ctx context.Context, source io.Reader, directory string, maxBytes int64) (Record, error) {
+	return receiveArchiveEnvelope(ctx, source, directory, maxBytes, nil)
+}
+
+// admit runs on validated metadata before any archive bytes are consumed or
+// files published. It is an identity/policy check, never proof of blob integrity.
+func receiveArchiveEnvelope(ctx context.Context, source io.Reader, directory string, maxBytes int64, admit func(Record) error) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
 	}
@@ -72,6 +78,11 @@ func ReceiveArchiveEnvelope(ctx context.Context, source io.Reader, directory str
 	}
 	if record.ArchiveBytes > maxBytes {
 		return Record{}, fmt.Errorf("recovery envelope exceeds archive budget")
+	}
+	if admit != nil {
+		if err := admit(record); err != nil {
+			return Record{}, err
+		}
 	}
 	path := filepath.Join(directory, BundleFileName)
 	digest, err := publishArchive(ctx, path, record.ArchiveBytes, func(out io.Writer) error {

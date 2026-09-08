@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -64,6 +66,42 @@ func TestRecoveryEnvelopeRoundTripAndMalformedDelivery(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRecoveryEnvelopeAdmissionPrecedesArchiveReadAndPublication(t *testing.T) {
+	record := storageTestRecord()
+	metadata, err := Encode(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prefix bytes.Buffer
+	if err := binary.Write(&prefix, binary.BigEndian, uint32(len(metadata))); err != nil {
+		t.Fatal(err)
+	}
+	prefix.Write(metadata)
+	denied := errors.New("foreign run identity")
+	body := &unreadRecoveryArchive{t: t}
+	directory := t.TempDir()
+	got, err := receiveArchiveEnvelope(context.Background(), io.MultiReader(&prefix, body), directory, record.ArchiveBytes, func(got Record) error {
+		if got != record {
+			t.Fatalf("admission metadata changed: %+v", got)
+		}
+		return denied
+	})
+	if !errors.Is(err, denied) || got != (Record{}) {
+		t.Fatalf("admission refusal: %+v %v", got, err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("refused archive wrote files: %v %v", entries, err)
+	}
+}
+
+type unreadRecoveryArchive struct{ t *testing.T }
+
+func (r *unreadRecoveryArchive) Read([]byte) (int, error) {
+	r.t.Error("consumed archive bytes before identity admission")
+	return 0, io.EOF
 }
 
 func TestRecoveryEnvelopeSendsNoMetadataForCorruptArchive(t *testing.T) {
