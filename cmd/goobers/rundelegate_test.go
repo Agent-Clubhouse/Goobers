@@ -1141,7 +1141,7 @@ func TestRequeueTriggerRequestNeverTornUnderConcurrentReads(t *testing.T) {
 	}
 }
 
-func TestSweepManualTriggerBypassesSpentBudget(t *testing.T) {
+func TestSweepForcedManualTriggerBypassesSpentBudget(t *testing.T) {
 	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
 	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
 		Workflow:  "implement",
@@ -1168,12 +1168,23 @@ func TestSweepManualTriggerBypassesSpentBudget(t *testing.T) {
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, time.Now); err != nil {
 		t.Fatalf("second sweepPendingTriggers: %v", err)
 	}
-	if _, err := pollTriggerResponse(context.Background(), schedulerDir, secondID, testResponseWait); err != nil {
-		t.Fatalf("second pollTriggerResponse: %v", err)
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, secondID, testResponseWait); err == nil {
+		t.Fatal("default manual trigger bypassed maxRunsPerHour")
+	}
+
+	forcedID, err := writeTriggerRequestContextOptions(context.Background(), schedulerDir, "", "implement", true)
+	if err != nil {
+		t.Fatalf("write forced trigger request: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, time.Now); err != nil {
+		t.Fatalf("forced sweepPendingTriggers: %v", err)
+	}
+	if _, err := pollTriggerResponse(context.Background(), schedulerDir, forcedID, testResponseWait); err != nil {
+		t.Fatalf("forced pollTriggerResponse: %v", err)
 	}
 	sched.Wait()
 	if got := starter.count(); got != 2 {
-		t.Fatalf("starter calls = %d, want 2 manual runs despite maxRunsPerHour=1", got)
+		t.Fatalf("starter calls = %d, want default plus forced manual run", got)
 	}
 }
 

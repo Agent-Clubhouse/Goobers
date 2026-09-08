@@ -1028,7 +1028,9 @@ func TestCronRunHoldsSlotThenManualTriggerRejected(t *testing.T) {
 	sched.Tick(context.Background(), base.Add(time.Hour)) // cron fire holds the slot
 	waitForCount(t, func() int { return starter.count() }, 1)
 
-	_, err := sched.Trigger(context.Background(), "implement", base.Add(time.Minute))
+	_, err := sched.TriggerWithOptions(context.Background(), "implement", base.Add(time.Minute), ManualTriggerOptions{
+		BypassCadenceBudgets: true,
+	})
 	if err == nil {
 		t.Fatal("expected the manual trigger to be rejected while the cron run holds the max-parallel slot")
 	}
@@ -1068,7 +1070,7 @@ func TestManualTriggerBypassesCronButHonorsConditions(t *testing.T) {
 	}
 }
 
-func TestManualTriggerBypassesCadenceBudgetsButScheduleDoesNot(t *testing.T) {
+func TestForcedManualTriggerBypassesCadenceBudgetsButDefaultAndScheduleDoNot(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		readiness  apiv1.ReadinessConditions
@@ -1102,20 +1104,28 @@ func TestManualTriggerBypassesCadenceBudgetsButScheduleDoesNot(t *testing.T) {
 			}})
 			base := time.Now()
 
-			for i := 0; i < 2; i++ {
-				if _, err := sched.Trigger(context.Background(), "curate", base.Add(time.Duration(i)*time.Minute)); err != nil {
-					t.Fatalf("manual trigger %d: %v", i+1, err)
-				}
-				sched.Wait()
+			if _, err := sched.Trigger(context.Background(), "curate", base); err != nil {
+				t.Fatalf("first manual trigger: %v", err)
 			}
-			if got := starter.count(); got != 2 {
-				t.Fatalf("manual starts = %d, want 2", got)
+			sched.Wait()
+
+			if _, err := sched.Trigger(context.Background(), "curate", base.Add(time.Minute)); err == nil {
+				t.Fatal("default manual trigger bypassed the spent cadence budget")
+			} else if !strings.Contains(err.Error(), tc.skipReason) {
+				t.Fatalf("default manual trigger error = %v, want %q", err, tc.skipReason)
 			}
+
+			if _, err := sched.TriggerWithOptions(context.Background(), "curate", base.Add(2*time.Minute), ManualTriggerOptions{
+				BypassCadenceBudgets: true,
+			}); err != nil {
+				t.Fatalf("forced manual trigger: %v", err)
+			}
+			sched.Wait()
 
 			sched.Tick(context.Background(), base.Add(time.Hour))
 			sched.Wait()
 			if got := starter.count(); got != 2 {
-				t.Fatalf("starts after scheduled trigger = %d, want 2; automatic trigger bypassed cadence budget", got)
+				t.Fatalf("starts after scheduled trigger = %d, want 2; scheduled trigger bypassed cadence budget", got)
 			}
 
 			events, err := journal.ReadInstanceLog(dir)
@@ -1456,19 +1466,22 @@ func TestReconcileRestoresBudgetWindowFromInstanceLog(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = log.Close() })
 
-	readiness := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	sched := New([]WorkflowEntry{{
 		Workflow:  "curate",
-		Readiness: readiness,
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1},
+		Starter:   starter,
 	}}, log)
 	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
 		t.Fatal(err)
 	}
 
-	// Without the fix, Conditions.starts starts empty every restart and an
-	// automatic admission would wrongly pass despite the spent budget.
-	if ok, reason := sched.conditions.Admit("curate", readiness, now); ok || reason != ReasonBudget {
-		t.Fatalf("automatic admission after restart: ok=%v reason=%q, want %q", ok, reason, ReasonBudget)
+	// Without the fix, Conditions.starts starts empty every restart — this
+	// Trigger would wrongly be admitted despite the budget already being spent.
+	if _, err := sched.Trigger(context.Background(), "curate", now); err == nil {
+		t.Fatal("expected the trigger to be rejected: budget already spent per the reconstructed instance-journal history")
+	} else if !strings.Contains(err.Error(), ReasonBudget) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonBudget)
 	}
 }
 
@@ -1505,20 +1518,22 @@ func TestReconcileRestoresDailyBudgetAfterShortWindowCompaction(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = log.Close() })
 
-	readiness := apiv1.ReadinessConditions{
-		MaxConcurrentRuns: 100,
-		MaxRunsPerHour:    100,
-		MaxRunsPerDay:     1,
-	}
 	sched := New([]WorkflowEntry{{
-		Workflow:  "curate",
-		Readiness: readiness,
+		Workflow: "curate",
+		Readiness: apiv1.ReadinessConditions{
+			MaxConcurrentRuns: 100,
+			MaxRunsPerHour:    100,
+			MaxRunsPerDay:     1,
+		},
+		Starter: &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}},
 	}}, log)
 	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
 		t.Fatal(err)
 	}
-	if ok, reason := sched.conditions.Admit("curate", readiness, now); ok || reason != ReasonDailyBudget {
-		t.Fatalf("automatic admission after compaction: ok=%v reason=%q, want %q", ok, reason, ReasonDailyBudget)
+	if _, err := sched.Trigger(context.Background(), "curate", now); err == nil {
+		t.Fatal("expected the trigger to be rejected: daily budget history must survive compaction")
+	} else if !strings.Contains(err.Error(), ReasonDailyBudget) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonDailyBudget)
 	}
 }
 
@@ -1557,10 +1572,11 @@ func TestReconcileRateResetClearsBudgetWindow(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = log.Close() })
 
-	readiness := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	sched := New([]WorkflowEntry{{
 		Workflow:  "curate",
-		Readiness: readiness,
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1},
+		Starter:   starter,
 	}}, log)
 	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
 		t.Fatal(err)
@@ -1569,8 +1585,8 @@ func TestReconcileRateResetClearsBudgetWindow(t *testing.T) {
 	// The reset floor is newer than the 10-min-ago run.started, so that history
 	// no longer counts — the trigger is admitted despite the pre-reset budget
 	// having been spent.
-	if ok, reason := sched.conditions.Admit("curate", readiness, now); !ok {
-		t.Fatalf("expected automatic admission after a rate reset, got: %s", reason)
+	if _, err := sched.Trigger(context.Background(), "curate", now); err != nil {
+		t.Fatalf("expected the trigger to be admitted after a rate reset, got: %v", err)
 	}
 }
 
@@ -1604,17 +1620,20 @@ func TestReconcileStaleRateResetIsNoOp(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = log.Close() })
 
-	readiness := apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	sched := New([]WorkflowEntry{{
 		Workflow:  "curate",
-		Readiness: readiness,
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1},
+		Starter:   starter,
 	}}, log)
 	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
 		t.Fatal(err)
 	}
 
-	if ok, reason := sched.conditions.Admit("curate", readiness, now); ok || reason != ReasonBudget {
-		t.Fatalf("automatic admission with stale reset: ok=%v reason=%q, want %q", ok, reason, ReasonBudget)
+	if _, err := sched.Trigger(context.Background(), "curate", now); err == nil {
+		t.Fatal("expected the trigger to be rejected: a stale reset must not resurrect a spent budget")
+	} else if !strings.Contains(err.Error(), ReasonBudget) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonBudget)
 	}
 }
 

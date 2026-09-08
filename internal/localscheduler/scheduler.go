@@ -1098,7 +1098,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 				if kind == journal.TriggerSchedule {
 					scheduleIndexes = candidate.scheduleIndexes
 				}
-				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes, false)
+				_, admitted, reason := s.dispatch(ctx, candidate.entry, now, trigger, fire, scheduleIndexes, false, false)
 				if admitted {
 					if kind == journal.TriggerSchedule && candidate.scheduleDemand {
 						s.consumePendingScheduleDemand(candidate.entry)
@@ -1885,11 +1885,10 @@ func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, r
 	})
 }
 
-// Trigger manually fires workflow now, bypassing its cron schedule and cadence
-// budgets while still honoring every other run condition (SCH-002; `goobers
-// run <workflow>` CLI wiring calls this — issue #134). Returns the dispatched
-// run's id once conditions admit it — before the run itself completes, since
-// dispatch always continues
+// Trigger manually fires workflow now, bypassing its cron schedule but honoring
+// run conditions (SCH-002; `goobers run <workflow>` CLI wiring calls this —
+// issue #134). Returns the dispatched run's id once conditions admit it —
+// before the run itself completes, since dispatch always continues
 // asynchronously (see dispatch's goroutine) — so a caller that wants to
 // observe the run to completion polls that id's own journal, the same way
 // `goobers status`/`trace` do. Returns an error if the workflow is unknown or
@@ -1898,6 +1897,19 @@ func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, r
 // asked for this run and deserves to know why it didn't start).
 func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time) (runID string, err error) {
 	return s.TriggerWithDispatchContext(ctx, ctx, workflow, now)
+}
+
+// ManualTriggerOptions controls the explicit operator-only exceptions available
+// to a manual trigger.
+type ManualTriggerOptions struct {
+	// BypassCadenceBudgets ignores MaxRunsPerHour and MaxRunsPerDay for this
+	// invocation. Every other admission condition remains enforced.
+	BypassCadenceBudgets bool
+}
+
+// TriggerWithOptions is Trigger with explicit operator-selected options.
+func (s *Scheduler) TriggerWithOptions(ctx context.Context, workflow string, now time.Time, options ManualTriggerOptions) (runID string, err error) {
+	return s.TriggerWithDispatchContextOptions(ctx, ctx, workflow, now, options)
 }
 
 // TriggerWithDispatchContext validates with ctx while starting an admitted run
@@ -1916,6 +1928,12 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 // finding 002 "D1 BLOCKING SEMANTICS"). Both bugs are the same bug; this is
 // the seam that closes it for the unqualified-name path.
 func (s *Scheduler) TriggerWithDispatchContext(ctx, dispatchCtx context.Context, workflow string, now time.Time) (runID string, err error) {
+	return s.TriggerWithDispatchContextOptions(ctx, dispatchCtx, workflow, now, ManualTriggerOptions{})
+}
+
+// TriggerWithDispatchContextOptions is TriggerWithDispatchContext with explicit
+// operator-selected options.
+func (s *Scheduler) TriggerWithDispatchContextOptions(ctx, dispatchCtx context.Context, workflow string, now time.Time, options ManualTriggerOptions) (runID string, err error) {
 	s.mu.Lock()
 	var entry WorkflowEntry
 	var gaggles []string
@@ -1945,7 +1963,7 @@ func (s *Scheduler) TriggerWithDispatchContext(ctx, dispatchCtx context.Context,
 	}
 	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
-		"manual")
+		"manual", options.BypassCadenceBudgets)
 }
 
 // TriggerSignal fires one unqualified workflow with an external signal
@@ -1990,10 +2008,22 @@ func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity,
 	return s.TriggerExactWithDispatchContext(ctx, ctx, identity, now)
 }
 
+// TriggerExactWithOptions is TriggerExact with explicit operator-selected
+// options.
+func (s *Scheduler) TriggerExactWithOptions(ctx context.Context, identity WorkflowIdentity, now time.Time, options ManualTriggerOptions) (runID string, err error) {
+	return s.TriggerExactWithDispatchContextOptions(ctx, ctx, identity, now, options)
+}
+
 // TriggerExactWithDispatchContext is TriggerExact with separate validation and
 // run-lifetime contexts. See TriggerWithDispatchContext for why the trigger
 // plane and the pending-trigger sweep must use this form and not TriggerExact.
 func (s *Scheduler) TriggerExactWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
+	return s.TriggerExactWithDispatchContextOptions(ctx, dispatchCtx, identity, now, ManualTriggerOptions{})
+}
+
+// TriggerExactWithDispatchContextOptions is TriggerExactWithDispatchContext
+// with explicit operator-selected options.
+func (s *Scheduler) TriggerExactWithDispatchContextOptions(ctx, dispatchCtx context.Context, identity WorkflowIdentity, now time.Time, options ManualTriggerOptions) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[identity]
 	s.mu.Unlock()
@@ -2005,7 +2035,7 @@ func (s *Scheduler) TriggerExactWithDispatchContext(ctx, dispatchCtx context.Con
 	}
 	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
-		"manual")
+		"manual", options.BypassCadenceBudgets)
 }
 
 // TriggerSignalExact fires one exact workflow with an external signal
@@ -2050,7 +2080,7 @@ func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx conte
 	}
 	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
-		"signal")
+		"signal", false)
 }
 
 // TriggerPriority immediately re-evaluates one exact workflow after a prior run
@@ -2077,10 +2107,10 @@ func (s *Scheduler) TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.
 	}
 	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + sourceRun},
-		"priority re-tick requested by run "+sourceRun)
+		"priority re-tick requested by run "+sourceRun, false)
 }
 
-func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, reason string) (runID string, err error) {
+func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, reason string, bypassCadenceBudgets bool) (runID string, err error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -2091,7 +2121,7 @@ func (s *Scheduler) triggerWorkflow(ctx context.Context, entry WorkflowEntry, no
 	if trigger.Kind == journal.TriggerSignal {
 		s.resetIdleBackoff(entryIdentity(entry))
 	}
-	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason, nil, false)
+	runID, admitted, skipReason := s.dispatch(ctx, entry, now, trigger, reason, nil, false, bypassCadenceBudgets)
 	if !admitted {
 		return "", &TriggerRejectedError{Workflow: entry.Workflow, Reason: skipReason}
 	}
@@ -2249,7 +2279,7 @@ func (s *Scheduler) signal(ctx context.Context, name, ref, fire string, now time
 					}
 				}
 				runID, admitted, reason := s.dispatch(ctx, entry, now,
-					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire, nil, isWebhook)
+					journal.Trigger{Kind: journal.TriggerSignal, Ref: ref}, fire, nil, isWebhook, false)
 				if admitted {
 					runIDs = append(runIDs, runID)
 					break
@@ -2325,7 +2355,7 @@ func (s *Scheduler) refillRejectionReason(identity WorkflowIdentity, now time.Ti
 // goroutine below and outlives dispatch's return, so the run gets its own
 // root span (via runner.Runner.startRunSpan). The candidate run ID is minted
 // first so both spans share its trace even when admission blocks the dispatch.
-func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string, scheduleIndexes []int, trackWebhookBackoff bool) (runID string, admitted bool, skipReason string) {
+func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.Time, trigger journal.Trigger, triggerReason string, scheduleIndexes []int, trackWebhookBackoff, bypassCadenceBudgets bool) (runID string, admitted bool, skipReason string) {
 	ctx = providersnapshot.WithTick(ctx, now)
 	runID, err := newRunID()
 	if err != nil {
@@ -2420,7 +2450,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		provider,
 		entry.Readiness,
 		now,
-		trigger.Kind == journal.TriggerManual,
+		bypassCadenceBudgets,
 	)
 	if !ok {
 		s.journalEvent(journal.Event{

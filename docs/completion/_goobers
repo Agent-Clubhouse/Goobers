@@ -22,7 +22,7 @@ _goobers_completion()
             'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
             'service:install and manage the platform-supervised daemon'
             'dashboard:serve and open the local operations portal'
-            'run:trigger a run manually (bypasses cadence budgets)'
+            'run:trigger a run manually; --force bypasses cadence budgets'
             'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
             'status:validate config, show warnings, list runs, report daemon health, or list live agentic stages'
@@ -157,7 +157,7 @@ _goobers_completion()
             flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)
             ;;
         run)
-            flags+=(--gaggle --github-progress --pr --api --request-id --no-wait)
+            flags+=(--force --gaggle --github-progress --pr --api --request-id --no-wait)
             ;;
         approve)
             flags+=(--decision --actor --api)

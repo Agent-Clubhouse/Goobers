@@ -1,13 +1,13 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS RUN" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers run \- trigger a run manually (bypasses cadence budgets)
+goobers run \- trigger a run manually; --force bypasses cadence budgets
 .SH SYNOPSIS
 \fBgoobers run\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel [--api <url>] <run-id> [path]
@@ -17,8 +17,9 @@ Trigger a run of a config/ workflow manually, through the same scheduler
 daemon uses, then wait for it to reach a terminal state unless
 --no-wait is set (default path "."). Use --gaggle or the qualified
 <gaggle>/<workflow> form when multiple gaggles share a workflow name.
-Manual runs bypass hourly and daily cadence budgets, but still honor other
-run conditions such as concurrency and provider quota.
+Use --force to bypass hourly and daily cadence budgets for an explicit
+manual run. All other run conditions remain enforced. --force cannot be
+combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
 delegates the trigger to it instead of failing (#343) — dispatched through

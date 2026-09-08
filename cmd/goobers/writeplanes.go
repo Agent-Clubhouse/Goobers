@@ -449,8 +449,8 @@ type workflowTriggerer interface {
 	// TriggerPriority* is the output-driven re-tick the sweep dispatches for
 	// a priority request file (rundelegate.go) — the plane's path for a stage
 	// pod, which has no scheduler directory to drop that file into.
-	TriggerWithDispatchContext(ctx, dispatchCtx context.Context, workflow string, now time.Time) (string, error)
-	TriggerExactWithDispatchContext(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
+	TriggerWithDispatchContextOptions(ctx, dispatchCtx context.Context, workflow string, now time.Time, options localscheduler.ManualTriggerOptions) (string, error)
+	TriggerExactWithDispatchContextOptions(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, now time.Time, options localscheduler.ManualTriggerOptions) (string, error)
 	TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, sourceRun string, now time.Time) (string, error)
 }
 
@@ -556,6 +556,12 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 	// refusal, not a pass: the daemon must never admit a pod trigger it could
 	// not contain.
 	if request.PodScoped {
+		if request.Force {
+			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+				http.StatusBadRequest, httpapi.CodeInvalidRequest,
+				"force is only valid for an explicit operator manual trigger", nil,
+			)
+		}
 		if s.contains == nil {
 			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
 				http.StatusForbidden, "gaggle_mismatch",
@@ -568,6 +574,12 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 				"pod principal may only trigger a workflow in the gaggle its own run belongs to", nil,
 			)
 		}
+	}
+	if request.Force && strings.TrimSpace(request.SourceRun) != "" {
+		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+			http.StatusBadRequest, httpapi.CodeInvalidRequest,
+			"force cannot be combined with a priority trigger", nil,
+		)
 	}
 	requestID := strings.TrimSpace(request.RequestID)
 	if requestID != "" {
@@ -598,11 +610,12 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
 		}, strings.TrimSpace(request.SourceRun), s.now())
 	case request.Gaggle != "":
-		runID, err = dispatch.TriggerExactWithDispatchContext(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
+		runID, err = dispatch.TriggerExactWithDispatchContextOptions(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
-		}, s.now())
+		}, s.now(), localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force})
 	default:
-		runID, err = dispatch.TriggerWithDispatchContext(ctx, dispatchCtx, request.Workflow, s.now())
+		runID, err = dispatch.TriggerWithDispatchContextOptions(ctx, dispatchCtx, request.Workflow, s.now(),
+			localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force})
 	}
 	if err != nil {
 		if requestID != "" {

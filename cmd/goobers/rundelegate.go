@@ -152,6 +152,7 @@ type triggerRequest struct {
 	Workflow  string `json:"workflow"`
 	Gaggle    string `json:"gaggle,omitempty"`
 	PR        int    `json:"pr,omitempty"`
+	Force     bool   `json:"force,omitempty"`
 	SourceRun string `json:"sourceRun,omitempty"`
 	Priority  bool   `json:"priority,omitempty"`
 	// Key is the idempotency key (#4326). When set, the request FILE is named
@@ -190,10 +191,15 @@ const (
 // named *.request.json, so a sweep landing between create and write read empty
 // bytes and failed the delegation.
 func writeTriggerRequestContext(ctx context.Context, schedulerDir, gaggle, workflow string) (requestID string, err error) {
+	return writeTriggerRequestContextOptions(ctx, schedulerDir, gaggle, workflow, false)
+}
+
+func writeTriggerRequestContextOptions(ctx context.Context, schedulerDir, gaggle, workflow string, force bool) (requestID string, err error) {
 	createdAt, deadline := triggerRequestLifetime(ctx, triggerDelegationTimeout)
 	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
 		Workflow:  workflow,
 		Gaggle:    gaggle,
+		Force:     force,
 		CreatedAt: createdAt,
 		Deadline:  deadline,
 	})
@@ -489,6 +495,9 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal
 		case req.CreatedAt.IsZero():
 			resp.Error = fmt.Sprintf("delegate: trigger request %s has no creation time; refusing to dispatch", requestID)
 			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
+		case req.Force && (req.PR > 0 || req.Priority):
+			resp.Error = "delegate: force is only valid for an explicit manual trigger"
+			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 		case suppressed[requestID]:
 			// Deliberately skipped: no sched.Trigger* call and no
 			// RecordTriggerRefusal journal write. Both are what a runaway
@@ -524,7 +533,9 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal
 						runID, terr = sched.TriggerSignalExactWithDispatchContext(requestCtx, ctx, identity, webhookhttp.SignalName("pull_request"),
 							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
 					} else {
-						runID, terr = sched.TriggerExactWithDispatchContext(requestCtx, ctx, identity, sweepTime)
+						runID, terr = sched.TriggerExactWithDispatchContextOptions(requestCtx, ctx, identity, sweepTime, localscheduler.ManualTriggerOptions{
+							BypassCadenceBudgets: req.Force,
+						})
 					}
 				} else {
 					if req.PR > 0 {
@@ -532,7 +543,9 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal
 							webhookhttp.SignalName("pull_request"),
 							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
 					} else {
-						runID, terr = sched.TriggerWithDispatchContext(requestCtx, ctx, req.Workflow, sweepTime)
+						runID, terr = sched.TriggerWithDispatchContextOptions(requestCtx, ctx, req.Workflow, sweepTime, localscheduler.ManualTriggerOptions{
+							BypassCadenceBudgets: req.Force,
+						})
 					}
 				}
 				cancelRequest()

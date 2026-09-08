@@ -191,6 +191,9 @@ type TriggerRequest struct {
 	Gaggle    string `json:"gaggle,omitempty"`
 	Workflow  string `json:"workflow"`
 	RequestID string `json:"requestId,omitempty"`
+	// Force bypasses only hourly and daily cadence budgets for an explicit
+	// manual invocation. It is invalid for priority and pod-scoped triggers.
+	Force bool `json:"force,omitempty"`
 	// SourceRun names the run whose newly-published durable state is the
 	// reason for this trigger. Non-empty makes it a PRIORITY re-tick
 	// (Scheduler.TriggerPriority) rather than an ordinary mint — the plane's
