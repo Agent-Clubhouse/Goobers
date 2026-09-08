@@ -1533,9 +1533,8 @@ func runShutdownSteps(ctx context.Context, steps []shutdownStep) error {
 // construction, so the scheduler holds a map of workflow name -> Starter").
 // It also tracks every dispatched run in wg so the daemon's shutdown drain
 // (runUpContext) waits for scheduler-dispatched runs, not just the startup
-// resume scan's. wg.Add happens inside Start, on the scheduler's dispatch
-// goroutine, so shutdown must join Scheduler.Wait before waiting on wg.
-// This orders even a late Start registration before the run-counter wait.
+// resume scan's. The scheduler calls RegisterDispatch before launching its
+// dispatch goroutine, so shutdown can wait on wg without a registration race.
 // Every dispatch through this Starter — both
 // `goobers up`'s scheduled/manual-via-Trigger fires and `goobers run`'s own
 // sched.Trigger call, now that #134 routes it through the same scheduler —
