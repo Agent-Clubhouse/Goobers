@@ -26,6 +26,7 @@ import (
 	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/netpolrender"
 )
@@ -35,6 +36,7 @@ const apiURL = "https://goobers-api.goobers-system.svc:8080"
 const temporalHost = "temporal-frontend.goobers-temporal:7233"
 
 type options struct {
+	DispatcherCommit, DispatcherVersion                                             string
 	Reference, Instance, Out, Image, StageNamespace                                 string
 	JournalClass, BlobClass, TLSSecret, TokenSecret, CAConfigMap, CredentialsSecret string
 	APIServerCIDRs                                                                  string
@@ -44,9 +46,11 @@ type options struct {
 func main() {
 	var o options
 	flag.StringVar(&o.Reference, "reference", "deploy/reference", "reference source directory")
-	flag.StringVar(&o.Instance, "instance", "", "prepared local instance; one gaggle, digest-pinned image runners")
+	flag.StringVar(&o.Instance, "instance", "", "prepared local instance; one gaggle, matching tag@digest image runners")
 	flag.StringVar(&o.Out, "out", "", "new output directory (must not exist)")
 	flag.StringVar(&o.Image, "image", "", "control-plane and init image, pinned with @sha256:")
+	flag.StringVar(&o.DispatcherCommit, "dispatcher-commit", "", "exact embedded commit from the pinned control-plane image (7-40 hex characters)")
+	flag.StringVar(&o.DispatcherVersion, "dispatcher-version", "", "exact embedded version from the pinned control-plane image (release version or dev)")
 	flag.StringVar(&o.StageNamespace, "stage-namespace", "", "dedicated namespace for the single gaggle")
 	flag.StringVar(&o.JournalClass, "journal-storage-class", "", "RWO block storage class")
 	flag.StringVar(&o.BlobClass, "blob-storage-class", "", "RWX artifact storage class")
@@ -67,6 +71,9 @@ func main() {
 	}
 	fmt.Println("Prepared local manifests in", o.Out, "; no cluster changes made")
 }
+
+var dispatcherCommit = regexp.MustCompile(`^[a-fA-F0-9]{7,40}$`)
+var dispatcherVersion = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
 
 var imageDigest = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$`)
 
@@ -92,7 +99,7 @@ func prepare(o options) error {
 	if err != nil {
 		return err
 	}
-	input, err := topologyNetworkInput(cfg)
+	input, err := topologyNetworkInput(cfg, o.DispatcherCommit, o.DispatcherVersion)
 	if err != nil {
 		return err
 	}
@@ -128,6 +135,9 @@ func validateTopologyOptions(o options) error {
 	}
 	if !imageDigest.MatchString(o.Image) {
 		return fmt.Errorf("--image must be an immutable sha256 image reference")
+	}
+	if !dispatcherCommit.MatchString(o.DispatcherCommit) || !dispatcherVersion.MatchString(o.DispatcherVersion) {
+		return fmt.Errorf("--dispatcher-commit (7-40 hex characters) and --dispatcher-version are required: supply the exact embedded stamps from the pinned control-plane binary or its verified release.json, never infer them from an image tag")
 	}
 	for name, value := range map[string]string{"stage-namespace": o.StageNamespace, "journal-storage-class": o.JournalClass, "blob-storage-class": o.BlobClass, "tls-secret": o.TLSSecret, "pod-token-secret": o.TokenSecret, "ca-configmap": o.CAConfigMap} {
 		if len(kvalidation.IsDNS1123Subdomain(value)) != 0 || strings.Contains(strings.ToLower(value), "change-me") {
@@ -194,7 +204,7 @@ func loadTopologyConfig(o options) (*instance.Config, *instance.ConfigSet, error
 	return cfg, set, nil
 }
 
-func topologyNetworkInput(cfg *instance.Config) (netpolrender.Input, error) {
+func topologyNetworkInput(cfg *instance.Config, embeddedCommit, embeddedVersion string) (netpolrender.Input, error) {
 
 	input := netpolrender.Input{}
 	for _, entry := range cfg.ResolvedRunners() {
@@ -207,6 +217,9 @@ func topologyNetworkInput(cfg *instance.Config) (netpolrender.Input, error) {
 		}
 		if kind != instance.RunnerHostImage || !imageDigest.MatchString(entry.Host) {
 			return netpolrender.Input{}, fmt.Errorf("runner %s must use a digest-pinned image; deployment templates are outside this topology", entry.Name)
+		}
+		if err := dispatcher.VerifySkew(embeddedCommit, embeddedVersion, entry.Host); err != nil {
+			return netpolrender.Input{}, fmt.Errorf("runner %s cannot be dispatched with the supplied control-plane stamps: %w; use a matching commit or release tag before @sha256 (tag@digest), and verify the image binary separately", entry.Name, err)
 		}
 		rs := []string{}
 		for _, r := range entry.Restrictions {

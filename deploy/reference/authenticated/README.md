@@ -17,7 +17,8 @@ the identity a stage actually receives.
 
 Use an isolated namespace/instance when evaluating this reference. It is scoped
 to Linux image-host runners in one manifest-listed gaggle. It rejects `self`
-runners, deployment-host runners, floating images, and `workflowSource` sync.
+runners, deployment-host runners, floating images, digest-only stage references,
+and `workflowSource` sync.
 An image runner must actually supply the capabilities it advertises. A base
 image containing only Goobers is sufficient for deterministic Goobers stages;
 agentic workflows need the appropriate harness image and credentials.
@@ -41,10 +42,16 @@ Before preparing:
    credential, and workflow diagnostics. **The preparer checks config loading
    and topology contracts; it does not replace workflow admission.** Having an
    image runner declared does not establish that every workflow can use it.
-4. Supply immutable `registry/repository@sha256:<64 lowercase hex>` image refs:
-   one control-plane image and each `runners[].host`. The control-plane image
+4. Pin the control-plane image with `@sha256:<64 lowercase hex>`. Each
+   `runners[].host` also needs a **tag before the digest**:
+   `registry/repository:<matching-tag>@sha256:<64 lowercase hex>`. Supply
+   `--dispatcher-commit` and `--dispatcher-version` from that exact pinned
+   control-plane binary's `goobers --version`, or from `commit` and `version`
+   in the release engine's `release.json` for its verified image inputs. A
+   commit stamp contains 7–40 hex characters; retain the actual version,
+   including `dev` for a development build. The control-plane image
    needs `goobers`, `sh`, `mkdir`, and `cp`. No archive tools are needed. Verify
-   that every stage image includes the expected Goobers release and tools.
+   that each stage image carries that Goobers build and the required tools.
 5. Provision RWO block storage with reliable flock/SQLite semantics and RWX blob
    storage. Identify the corresponding StorageClass names. The reference claims
    retain their base sizes; adjust the prepared PVCs deliberately if needed.
@@ -68,8 +75,45 @@ its mounted signing key, and daemon startup validates listener configuration.
 **Every stage image must separately trust the API CA.** Worker `SSL_CERT_FILE`
 is not automatically propagated into a stage image. For a private CA, build an
 adopted stage image that installs the public CA in its system trust store, then
-pin that image by digest. Do not put the daemon's private key into an image.
+retain its matching tag and pin that image by digest. Do not put the daemon's private key into an image.
 Kubelet HTTPS probe success does not prove worker or stage TLS trust.
+
+
+## Stage image admission
+
+Preparation calls the dispatcher's actual `VerifySkew` function before writing
+output, using the supplied embedded commit/version. The current dispatcher
+compares a stage image's tag with those stamps; it does not read a registry or
+inspect the image binary. A full 40-character SHA tag may match the supplied
+commit's abbreviation (at least seven characters), or a release tag may equal
+the supplied version. `latest`, digest-only references, abbreviated SHA tags,
+and mismatched builds are refused before a topology is finalized.
+
+For example, with dispatcher commit
+`0123456789abcdef0123456789abcdef01234567` (or its embedded `0123456789ab`
+abbreviation) and version `v0.4.0-rc.1`, both forms pass this admission check:
+
+```text
+registry.example.test/stage:0123456789abcdef0123456789abcdef01234567@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+registry.example.test/agent-stage:v0.4.0-rc.1@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+```
+
+These are illustrative references; substitute the repositories and digests of
+verified images. SHA-tagged and release-tagged stages can coexist for the same
+build. The control-plane image can remain digest-only or carry either tag;
+its tag string is not compared to stage tags. The explicit metadata must come
+from the control-plane binary actually selected by its digest, not from the
+preparer checkout or an inferred image tag.
+
+A digest pins image content. A matching tag and user-supplied stamps **do not
+attest to that content's embedded build**. The preparer neither pulls nor runs
+images. The operative DI-6 reading and the current decision-009 tag proxy are
+documented in [the dispatcher design](../../../docs/design/goobernetes-dispatcher.md#6-the-version-skew-check-decision-009--tag-comparison-publish-verified);
+the D8/DI-6 amendment remains tracked by #4240. The continuous-main publish-side
+stamp gate is still a separate prerequisite. Local/native release-engine image
+verification does not establish that gate for independently published SHA tags.
+Adopters must verify the binaries inside their pinned control-plane and stage
+images; this preparer does not change the design or the runtime skew guard.
 
 ## Prepare and inspect
 
@@ -80,6 +124,8 @@ go run ./deploy/reference/authenticated \
   --instance /path/to/validated-instance \
   --out /path/to/new-prepared-overlay \
   --image "${GOOBERS_IMAGE_DIGEST}" \
+  --dispatcher-commit "${GOOBERS_EMBEDDED_COMMIT}" \
+  --dispatcher-version "${GOOBERS_EMBEDDED_VERSION}" \
   --stage-namespace gaggle-example \
   --journal-storage-class "${RWO_STORAGE_CLASS}" \
   --blob-storage-class "${RWX_STORAGE_CLASS}" \

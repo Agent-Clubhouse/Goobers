@@ -18,6 +18,8 @@ import (
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
+const topologyTestCommit = "0123456789abcdef0123456789abcdef01234567"
+
 func fixture(t *testing.T) options {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "instance")
@@ -30,11 +32,11 @@ func fixture(t *testing.T) options {
 	}
 	cfg.Engine = &instance.EngineConfig{HostPort: temporalHost, Namespace: "default", TaskQueue: "goobers-engine"}
 	image := "registry.example.test/goobers@sha256:" + strings.Repeat("a", 64)
-	cfg.Runners = append(cfg.Runners, instance.RunnerEntry{Name: "linux-pod", Host: image, Provides: instance.RunnerProvides{OS: "linux", CPU: "2000m", Memory: "4Gi", Disk: "20Gi", Shell: true}, Restrictions: []instance.RunnerRestriction{instance.RunnerRestriction(runnercap.RestrictionNetworkNone)}})
+	cfg.Runners = append(cfg.Runners, instance.RunnerEntry{Name: "linux-pod", Host: "registry.example.test/goobers:" + topologyTestCommit + "@sha256:" + strings.Repeat("a", 64), Provides: instance.RunnerProvides{OS: "linux", CPU: "2000m", Memory: "4Gi", Disk: "20Gi", Shell: true}, Restrictions: []instance.RunnerRestriction{instance.RunnerRestriction(runnercap.RestrictionNetworkNone)}})
 	if err := instance.WriteConfig(filepath.Join(root, "instance.yaml"), cfg); err != nil {
 		t.Fatal(err)
 	}
-	return options{Reference: "..", Instance: root, Out: filepath.Join(t.TempDir(), "prepared"), Image: image, StageNamespace: "gaggle-demo", JournalClass: "block", BlobClass: "shared", TLSSecret: "api-tls", TokenSecret: "pod-key", CAConfigMap: "api-ca", APIServerCIDRs: "10.0.0.1/32,192.0.2.11/32", APIServerPorts: "443,6443"}
+	return options{DispatcherCommit: topologyTestCommit[:12], DispatcherVersion: "v0.4.0-rc.1", Reference: "..", Instance: root, Out: filepath.Join(t.TempDir(), "prepared"), Image: image, StageNamespace: "gaggle-demo", JournalClass: "block", BlobClass: "shared", TLSSecret: "api-tls", TokenSecret: "pod-key", CAConfigMap: "api-ca", APIServerCIDRs: "10.0.0.1/32,192.0.2.11/32", APIServerPorts: "443,6443"}
 }
 
 func generated(t *testing.T, o options) []map[string]any {
