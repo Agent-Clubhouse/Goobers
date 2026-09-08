@@ -88,11 +88,12 @@ func releaseRunLock(held *journalLock) {
 
 // config holds constructor options.
 type config struct {
-	scrubber       Scrubber
-	now            func() time.Time
-	inputIntegrity map[string]apiv1.Integrity
-	inputSource    map[string]string
-	appendObserver func(runID string, seq uint64)
+	tryRecoveryLocks bool
+	scrubber         Scrubber
+	now              func() time.Time
+	inputIntegrity   map[string]apiv1.Integrity
+	inputSource      map[string]string
+	appendObserver   func(runID string, seq uint64)
 }
 
 // Option configures a Run at creation/open.
