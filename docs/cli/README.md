@@ -2813,7 +2813,9 @@ Inspect a bounded batch of merge-queue entries whose queue-watch stage
 timed out. A pull request that has since merged receives branch cleanup,
 issue close-out, and sibling fan-out through the normal post-merge path;
 an open or unmerged pull request remains pending. Completed entries are
-durably skipped on later runs. Task inputs maxPullRequests and lookback
+durably skipped on later runs. The bounded open-PR cleanup scan also
+refreshes cost summaries on Goobers-owned pull requests when new receipts
+arrive. Task inputs maxPullRequests and lookback
 set the same bounds (defaults: 10 and 168h; hard maximum: 100).
 Exit codes: 0 = sweep completed, 1 = business/provider error, 2 = usage error.
 ~~~

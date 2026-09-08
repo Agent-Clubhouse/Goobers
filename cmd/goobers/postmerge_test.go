@@ -207,6 +207,8 @@ func newPostMergeServer(t *testing.T, owner, repo string, st *postMergeServerSta
 		for _, n := range st.otherOpenPRs {
 			out = append(out, map[string]interface{}{
 				"number": n, "html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, n),
+				"body":   "",
+				"user":   map[string]string{"login": "goobers"},
 				"head":   map[string]interface{}{"ref": fmt.Sprintf("goobers/impl/run-%d", n), "sha": st.headSHA[n]},
 				"base":   map[string]interface{}{"ref": st.baseBranch},
 				"labels": labelsJSON(st.issueLabels[n]),

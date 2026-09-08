@@ -21,11 +21,11 @@ type postMergeCostReceipt struct {
 }
 
 type postMergeCostReport struct {
-	Receipts       map[string]postMergeCostReceipt
-	Total          providers.CostReceipt
-	ByWorkflow     map[string]providers.CostReceipt
-	IssueNanoAIU   map[string]int64
-	SummaryPresent bool
+	Receipts     map[string]postMergeCostReceipt
+	Total        providers.CostReceipt
+	ByWorkflow   map[string]providers.CostReceipt
+	IssueNanoAIU map[string]int64
+	SummaryBody  string
 }
 
 type postMergeCostCommentReader interface {
@@ -58,7 +58,7 @@ func collectPostMergeCostReport(
 	} else {
 		for _, comment := range prComments {
 			if isTrustedCostComment(comment, trustedPRAuthor) && strings.Contains(comment.Body, postMergeCostSummaryMarker) {
-				report.SummaryPresent = true
+				report.SummaryBody = comment.Body
 			}
 			addCostReceiptObservation(report.Receipts, comment, "", trustedPRAuthor)
 		}
@@ -112,7 +112,7 @@ func collectGitHubPostMergeCostReport(
 	if collectErr != nil {
 		pf(stderr, "warning: %v\n", collectErr)
 	}
-	if body := renderPostMergeCostSummary(report); body != "" && !report.SummaryPresent {
+	if body := renderPostMergeCostSummary(report); body != "" && body != report.SummaryBody {
 		if _, err := prProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repo,
 			ID:         pullNumber,
@@ -160,7 +160,7 @@ func collectADOPostMergeCostReport(
 	if collectErr != nil {
 		pf(stderr, "warning: %v\n", collectErr)
 	}
-	if body := renderPostMergeCostSummary(report); body != "" && !report.SummaryPresent {
+	if body := renderPostMergeCostSummary(report); body != "" && body != report.SummaryBody {
 		if _, err := prProvider.PostPullRequestThreadComment(ctx, repo, pullNumber, body); err != nil {
 			pf(stderr, "warning: post pull request cost summary: %v\n", err)
 		}

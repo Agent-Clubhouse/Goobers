@@ -21,7 +21,7 @@ spec:
   tasks:
     - name: reconcile-post-merge
       type: deterministic
-      goal: Reconcile merge-queue pull requests that merged after queue-watch timed out.
+      goal: Reconcile late merges and refresh cost summaries on open Goobers pull requests.
       run:
         command: ["goobers", "reconcile-post-merge"]
       inputs:

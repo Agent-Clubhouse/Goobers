@@ -49,10 +49,12 @@ spec:
     # A bounded next-run sweep closes the residual queue-watch timeout gap:
     # queue-watch records a pending entry before reporting timeout, and this
     # stage runs the normal cleanup/close-out/fan-out path if GitHub merged it
-    # after that run stopped watching. Completed entries are durably skipped.
+    # after that run stopped watching. The same bounded open-PR scan refreshes
+    # cost summaries for Goobers-owned PRs that remain unmerged. Completed
+    # entries are durably skipped.
     - name: reconcile-post-merge
       type: deterministic
-      goal: Reconcile merge-queue pull requests that merged after queue-watch timed out.
+      goal: Reconcile late merges and refresh cost summaries on open Goobers pull requests.
       run:
         command: ["goobers", "reconcile-post-merge"]
       inputs:
