@@ -85,6 +85,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.cost.enabled",
+      "stability": "ga",
+      "sinceVersion": "v0.4.0"
+    },
+    {
       "name": "gaggle.spec.displayName",
       "stability": "ga",
       "sinceVersion": "dev"
