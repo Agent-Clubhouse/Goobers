@@ -34,7 +34,9 @@ func TestKillMatrixHasSixCells(t *testing.T) {
 
 func infraAttempt(pod, node string, errCode string) readservice.StageAttempt {
 	return readservice.StageAttempt{
-		Class: string(journal.AttemptInfra),
+		Class: "initial", Number: 1, Status: "failure",
+		RetryFailureClass: string(journal.AttemptInfra),
+		ErrorCode:         errCode, ErrorClass: string(telemetry.ClassifyError(errCode)),
 		Placement: &journal.Placement{
 			Runner: "r", Pod: pod, Node: node, OS: "linux",
 		},
@@ -64,7 +66,7 @@ func TestClassifyCellResultPass(t *testing.T) {
 func TestClassifyCellResultCatchesThe3361RegressionClass(t *testing.T) {
 	successor := placedAttempt(2, string(journal.AttemptPolicy), "pod-2", "node-b", "linux")
 	interrupted := infraAttempt("pod-1", "node-a", telemetry.ErrCodeInfraNet)
-	interrupted.Class = string(journal.AttemptPolicy) // the regression: infra kill journaled as policy
+	interrupted.RetryFailureClass = string(journal.AttemptPolicy) // a work-budget charge is an outcome, not the start class
 	record := CellInjectionRecord{
 		Cell:                     KillMatrixCell{Stage: StageClassAgentic, Failure: FailureKindNodeKill},
 		InjectedAt:               time.Now(),
@@ -162,5 +164,30 @@ func TestRunKillMatrixStopsOnFirstInjectFailure(t *testing.T) {
 func TestRunKillMatrixRequiresDriver(t *testing.T) {
 	if _, err := RunKillMatrix(context.Background(), nil, "run-1"); err == nil {
 		t.Fatal("RunKillMatrix(nil driver) should fail — topology-pending, no implementation exists yet")
+	}
+}
+
+func TestKillMatrixRejectsMissingTypedCauseAndPolicySuccessor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*CellInjectionRecord)
+	}{
+		{"message-only", func(r *CellInjectionRecord) {
+			r.InterruptedAttempt.ErrorCode = "executor_error"
+			r.InterruptedAttempt.ErrorClass = "executor"
+			r.InterruptedAttempt.Error.Message = "GoobersInfrastructureFailure"
+		}},
+		{"missing-class", func(r *CellInjectionRecord) { r.InterruptedAttempt.ErrorClass = "" }},
+		{"policy-successor", func(r *CellInjectionRecord) { r.SuccessorAttempt.Class = "policy" }},
+		{"no-successor", func(r *CellInjectionRecord) { r.SuccessorAttempt = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			successor := placedAttempt(2, "infra", "pod-2", "node-b", "linux")
+			record := CellInjectionRecord{Cell: KillMatrix()[0], InjectedAt: time.Now(), InjectedTarget: "pod-1", InterruptedAttempt: infraAttempt("pod-1", "node-a", telemetry.ErrCodeInfraFailure), SuccessorAttempt: &successor, RunCompletedSuccessfully: true}
+			tc.mutate(&record)
+			if got := ClassifyCellResult(record); got.Verdict != VerdictFail {
+				t.Fatalf("verdict = %s, want fail: %s", got.Verdict, got.Detail)
+			}
+		})
 	}
 }

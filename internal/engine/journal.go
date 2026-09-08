@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
@@ -426,10 +427,14 @@ type contextManifest struct {
 
 // executorError mirrors runTask's per-attempt dispatch-failure event.
 func (r *runJournal) executorError(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error) {
+	code := telemetry.ErrCodeExecutor
+	if failureClass == journal.AttemptInfra {
+		code = telemetry.ErrCodeInfraFailure
+	}
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
 		Error:  &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
-		Runner: map[string]any{"retryFailureClass": string(failureClass)},
+		Runner: map[string]any{"retryFailureClass": string(failureClass), "errorCode": code, "errorClass": string(telemetry.ClassifyError(code))},
 	})
 }
 
@@ -681,14 +686,31 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 // runFailedCause mirrors failTerminal/finishStageFailure's run_failed cause
 // event (#305/#710): stage-attributed when the failure has one, bare for a
 // walk-level error.
-func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message string) {
+func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message string, cause ...error) {
 	journaled := message
 	if stage != "" && code != "" {
 		journaled = code + ": " + message
 	}
+	// Preserve the normative run_failed code: health queries select that row.
+	// Classify the terminal's own cause, never an earlier recovered failure.
+	detail := map[string]any{}
+	if code != "" {
+		detail["errorClass"] = string(telemetry.ClassifyError(code))
+	}
+	if len(cause) > 0 {
+		if class, err := ClassifyDispatchFailure(cause[0]); err == nil {
+			detail["retryFailureClass"] = string(class)
+			errorCode := telemetry.ErrCodeExecutor
+			if class == journal.AttemptInfra {
+				errorCode = telemetry.ErrCodeInfraFailure
+			}
+			detail["errorClass"] = string(telemetry.ClassifyError(errorCode))
+		}
+	}
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: "run_failed", Message: journaled},
+		Error:  &journal.ErrorDetail{Code: "run_failed", Message: journaled},
+		Runner: detail,
 	})
 }
 

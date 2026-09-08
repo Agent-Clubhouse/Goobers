@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readprobe"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -440,6 +441,10 @@ type StageAttempt struct {
 	Number int    `json:"number"`
 	Class  string `json:"class"`
 	Status string `json:"status"`
+	// Failure metadata describes the outcome; Class describes why the attempt started.
+	RetryFailureClass string `json:"retryFailureClass,omitempty"`
+	ErrorCode         string `json:"errorCode,omitempty"`
+	ErrorClass        string `json:"errorClass,omitempty"`
 	// Model is the requested/selected model (e.g. "auto") indexed from the
 	// attempt's agent-invocation span, when the telemetry rollup has ingested
 	// it. Empty when telemetry is unavailable or the attempt has no matching
@@ -2917,6 +2922,17 @@ func finishAttempt(
 	attempt.FinishedAt = &finished
 	attempt.Outputs = scalarOutputs(outputs)
 	attempt.Error = detail
+	if detail != nil {
+		attempt.ErrorCode = detail.Code
+		if code, ok := event.Runner["errorCode"].(string); ok && code != "" {
+			attempt.ErrorCode = code
+		}
+		attempt.ErrorClass = string(telemetry.ClassifyError(attempt.ErrorCode))
+		if class, ok := event.Runner["errorClass"].(string); ok && class != "" {
+			attempt.ErrorClass = class
+		}
+		attempt.RetryFailureClass, _ = event.Runner["retryFailureClass"].(string)
+	}
 	if attempt.StartedAt != nil && !finished.Before(*attempt.StartedAt) {
 		attempt.DurationMillis = finished.Sub(*attempt.StartedAt).Milliseconds()
 	}

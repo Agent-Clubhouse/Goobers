@@ -334,11 +334,11 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		// cause and the failed terminal in the projection, then fail the
 		// workflow.
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
-			rec.runFailedCause(ctx, "", "", err.Error())
+			rec.runFailedCause(ctx, "", "", err.Error(), err)
 			rec.runFinished(ctx, journal.PhaseFailed)
 			hitl.noteTerminal()
 			rec.emitTerminal(ctx)
-			return RunResult{}, err
+			return RunResult{}, terminalWorkflowFailure(err)
 		}
 		// Cancellation is a terminal OUTCOME, not an absence of one. It used
 		// to be the single exception that wrote no terminal, and that left the
