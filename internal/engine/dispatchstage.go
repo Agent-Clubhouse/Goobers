@@ -460,6 +460,8 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
 func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
+	stopHeartbeat := heartbeatDispatch(ctx)
+	defer stopHeartbeat()
 	if err := validatePodAttempt(input.PodAttempt); err != nil {
 		return stageActivityResult{}, err
 	}
@@ -670,6 +672,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	}
 
 	report, err := a.Dispatcher.Dispatch(ctx, attempt, input.Placement.Eligible)
+	a.logDispatchCleanup(ctx, attempt, report)
 	// Defense-in-depth for the settled-outcome invariant (#3588): once the
 	// dispatcher has confirmed surrender, the pod's surrendered envelope is the
 	// authoritative outcome — so ANY dispatcher error that arrives with
@@ -681,7 +684,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// dispatch fault here. Keying off SurrenderConfirmed rather than the error
 	// kind alone closes the whole class of post-surrender dispatcher errors.
 	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) && !report.SurrenderConfirmed {
-		return dispatchFailureResult(classifyDispatchError(err), report)
+		return unconfirmedDispatchFailure(ctx, err, report)
 	}
 	if err == nil && report.Local {
 		// SelectRunner resolved self inside an eligible set the workflow routed
@@ -696,7 +699,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// stage's ResultFailure is a business outcome the definition routes, with
 	// exact parity to the local executor returning a failure envelope rather
 	// than an error.
-	surrendered, rerr := dispatcher.ReadSurrenderedResult(ctx, a.Surrenders, attempt.RunID, attempt.Stage, attempt.IdentityAttempt())
+	surrendered, rerr := a.readDispatchSurrender(ctx, attempt, report.SurrenderConfirmed)
 	if rerr != nil {
 		// The gate confirmed surrender yet the result is unreadable: the
 		// substrate lost or garbled the outputs after the stage did its work.

@@ -101,7 +101,7 @@ func DispatchOne(ctx workflow.Context, in DispatchStageInput) (DispatchStageResu
 	// declared duration limit plus the worker's enforcement grace, and a
 	// bounded ScheduleToStart so a queue no worker serves fails with a
 	// timeout naming it instead of hanging forever.
-	ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(in.Envelope.Limits, in.Placement.Queue))
+	ctx = dispatchActivityContext(ctx, in.Envelope.Limits, in.Placement.Queue)
 	// This execution is the attempt's driver, so it — not the caller who
 	// built the payload — states the id the orphan sweep describes. Assigned
 	// unconditionally: a caller-supplied value is overwritten rather than

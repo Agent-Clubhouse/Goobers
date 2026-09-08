@@ -723,13 +723,15 @@ type Report struct {
 	// SurrenderConfirmed reports whether the disposal gate confirmed output
 	// surrender before the pod was disposed.
 	SurrenderConfirmed bool
-	// Disposed reports whether the pod was deleted.
+	// Disposed reports whether Kubernetes accepted the deletion request.
+	// Canceled dispatch additionally observes absence; DisposeErr reports when
+	// that observation could not finish within the cleanup deadline.
 	Disposed bool
-	// DisposeErr records a DeletePod failure encountered while disposing the
+	// DisposeErr records a deletion or disappearance-observation failure for the
 	// pod. It is a leak signal only — a dispose failure NEVER masks a settled
 	// outcome (a confirmed success or a confirmed PodFailed), so Dispatch's
 	// returned error still reflects the settled result and this field carries
-	// the disposal failure alongside it. Disposed==false is the paired signal;
+	// the disposal failure alongside it. Disposed==false means DELETE failed;
 	// the leak is bounded by activeDeadlineSeconds and the restart reconcile
 	// sweep (dispatcher §5).
 	DisposeErr error
@@ -874,8 +876,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// confirmed stage-failure into an infra error, discarding the surrendered
 	// result and spending an infra retry re-dispatching an already-settled
 	// (possibly MUTATING) stage. So record the disposal failure on the report
-	// as the leak signal (report.Disposed stays false; the leak is bounded by
-	// activeDeadlineSeconds and the restart reconcile sweep, dispatcher §5) and
+	// as the leak signal (Disposed is false for a refused DELETE; accepted
+	// deletion with unconfirmed disappearance sets DisposeErr too). Leaks are
+	// bounded by activeDeadlineSeconds and restart reconcile (dispatcher §5), and
 	// let the settled path fall through: PodFailed → ErrStageFailed, success →
 	// nil. When superviseErr is already non-nil there is no settled outcome to
 	// protect; that infra error is returned unchanged and DisposeErr rides
@@ -887,6 +890,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		report.DisposeErr = fmt.Errorf("dispatcher: dispose pod %s/%s: %w", pod.Namespace, pod.Name, delErr)
 	} else {
 		report.Disposed = true
+		if ctx.Err() != nil {
+			report.DisposeErr = d.awaitDisposedPod(cleanupCtx, pod.Namespace, pod.Name)
+		}
 	}
 
 	if superviseErr != nil {

@@ -986,7 +986,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// as before this branch existed (zero-declaration invariance,
 	// architecture §11 item 1).
 	if placement, remote := remotePlacementFor(in, t.Name); remote {
-		ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
+		ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		produced := engineProducedIntegrity(t, env, inputGrades)
 		// workspaceBranch rides to the pod for the same reason it rides to the
 		// local arms (#392): a run that rebound it — pr-remediation, onto the
@@ -1133,7 +1133,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// ones it has always had.
 		placement, remote := remotePlacementFor(in, g.Name)
 		if remote {
-			ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
+			ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		} else {
 			ctx = stageActivityContext(ctx, env.Limits)
 		}

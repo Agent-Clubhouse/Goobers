@@ -321,6 +321,8 @@ func TestAttemptFailureClass(t *testing.T) {
 		{"stage-typed application error", temporal.NewApplicationError("boom", FailureTypeStage), journal.AttemptPolicy, false},
 		{"untyped application error is policy (unmarked means policy)", temporal.NewApplicationError("boom", ""), journal.AttemptPolicy, false},
 		{"schedule-to-start timeout is infrastructure", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START, nil), journal.AttemptInfra, false},
+		{"heartbeat timeout is policy", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, nil), journal.AttemptPolicy, false},
+		{"heartbeat timeout overrides nested infrastructure error", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, temporal.NewApplicationError("503", FailureTypeInfrastructure)), journal.AttemptPolicy, false},
 		{"start-to-close timeout is policy", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), journal.AttemptPolicy, false},
 		{"schedule-to-start timeout overrides nested stage error", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START, temporal.NewApplicationError("boom", FailureTypeStage)), journal.AttemptInfra, false},
 		{"start-to-close timeout overrides nested infrastructure error", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, temporal.NewApplicationError("503", FailureTypeInfrastructure)), journal.AttemptPolicy, false},
@@ -328,7 +330,14 @@ func TestAttemptFailureClass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			class, err := ClassifyDispatchFailure(tc.err)
+			// Use the SDK's persisted failure shape, as workflow replay and
+			// the daemon projection do, including a timeout's nested cause.
+			converter := temporal.GetDefaultFailureConverter()
+			wireErr := converter.FailureToError(converter.ErrorToFailure(tc.err))
+			if tc.wantErr {
+				wireErr = tc.err // Plain Go errors become policy application errors on the wire.
+			}
+			class, err := ClassifyDispatchFailure(wireErr)
 			if tc.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "unclassifiable") {
 					t.Fatalf("err = %v, want the unclassifiable fail-closed error", err)
@@ -357,6 +366,13 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 			name:        "schedule-to-start retries because activity never began",
 			timeoutType: enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START,
 			wantCalls:   2,
+		},
+		{
+			name:          "heartbeat does not retry after possible effect",
+			timeoutType:   enumspb.TIMEOUT_TYPE_HEARTBEAT,
+			wantCalls:     1,
+			wantErr:       true,
+			wantErrSubstr: "refusing to retry after worker loss",
 		},
 		{
 			name:          "start-to-close does not retry after possible effect",
