@@ -15,9 +15,10 @@ import (
 // routes through), so the test never touches a concrete *GitHubProvider and can
 // assert exactly which work-item id was mutated and against which repo.
 type fakeADOWorkItemCloser struct {
-	item       providers.WorkItem
-	comments   []providers.Comment
-	prComments []providers.Comment
+	item           providers.WorkItem
+	comments       []providers.Comment
+	prComments     []providers.Comment
+	prCommentReads int
 
 	statusReqs    []providers.UpdateWorkItemStatusRequest
 	commentReqs   []providers.UpdateWorkItemRequest
@@ -51,6 +52,7 @@ func (f *fakeADOWorkItemCloser) AuthenticatedLogin(context.Context) (string, err
 }
 
 func (f *fakeADOWorkItemCloser) ListPullRequestThreadComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error) {
+	f.prCommentReads++
 	return f.prComments, nil
 }
 
