@@ -70,6 +70,10 @@ func (b *boundedRefOutput) Write(data []byte) (int, error) {
 }
 
 func recoveryGit(ctx context.Context, repository string, stdout io.Writer, args ...string) error {
+	return recoveryGitWithEnv(ctx, repository, stdout, nil, args...)
+}
+
+func recoveryGitWithEnv(ctx context.Context, repository string, stdout io.Writer, environment []string, args ...string) error {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", repository, "--no-replace-objects", "-c", "core.hooksPath=" + os.DevNull}, args...)...)
 	// These local object/ref operations need no inherited Git transport or
 	// repository overrides. In particular GIT_DIR must not defeat -C.
@@ -78,6 +82,7 @@ func recoveryGit(ctx context.Context, repository string, stdout io.Writer, args 
 			command.Env = append(command.Env, entry)
 		}
 	}
+	command.Env = append(command.Env, environment...)
 	command.Stdout = stdout
 	// Git diagnostics can contain local paths or credential-bearing remote
 	// URLs. Return the operation's exit error without echoing those bytes.
