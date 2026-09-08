@@ -344,6 +344,20 @@ const (
 	VerdictFail VerdictDecision = "fail"
 	// VerdictNeedsChanges requests changes before approval.
 	VerdictNeedsChanges VerdictDecision = "needs-changes"
+	// VerdictDefer withholds landing authority for ordering, without rejecting
+	// the implementation. Producers must use a workflow that routes deferral.
+	VerdictDefer VerdictDecision = "defer"
+)
+
+// VerdictReasonCode distinguishes terminal rejection from ordering disposition.
+type VerdictReasonCode string
+
+// Structured reasons for rejection and non-rejecting landing deferral.
+const (
+	VerdictReasonImplementationRejected VerdictReasonCode = "implementation-rejected"
+	VerdictReasonPolicyRejected         VerdictReasonCode = "policy-rejected"
+	VerdictReasonOrdering               VerdictReasonCode = "ordering"
+	VerdictReasonNoLander               VerdictReasonCode = "no-lander"
 )
 
 // Severity ranks a finding.
@@ -478,6 +492,10 @@ func (c LearningClassification) IsValid() bool {
 type Verdict struct {
 	// Decision is the evaluator's outcome; the gate maps it to a branch.
 	Decision VerdictDecision `json:"decision"`
+	// ReasonCode is required for a new deferral. A fail without a code remains
+	// decodable for legacy producers, but is ambiguous rather than proof that
+	// the implementation was substantively rejected.
+	ReasonCode VerdictReasonCode `json:"reasonCode,omitempty"`
 	// Rationale explains the decision in prose.
 	Rationale string `json:"rationale,omitempty"`
 	// Evidence are journal artifact pointers backing the decision.
@@ -598,7 +616,7 @@ func (s ResultStatus) IsValid() bool {
 // IsValid reports whether d is a known verdict decision.
 func (d VerdictDecision) IsValid() bool {
 	switch d {
-	case VerdictPass, VerdictFail, VerdictNeedsChanges:
+	case VerdictPass, VerdictFail, VerdictNeedsChanges, VerdictDefer:
 		return true
 	}
 	return false

@@ -6,11 +6,47 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["decision"],
+  "allOf": [
+    {
+      "if": { "properties": { "decision": { "const": "defer" } } },
+      "then": {
+        "required": ["reasonCode", "rationale"],
+        "properties": {
+          "reasonCode": { "enum": ["ordering", "no-lander"] },
+          "rationale": { "pattern": "\\S" },
+          "elected": { "const": false }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "decision": { "const": "fail" } } },
+      "then": {
+        "properties": {
+          "reasonCode": { "enum": ["implementation-rejected", "policy-rejected"] }
+        }
+      }
+    },
+    {
+      "if": { "required": ["reasonCode"] },
+      "then": {
+        "required": ["rationale"],
+        "properties": {
+          "decision": { "enum": ["fail", "defer"] },
+          "rationale": { "pattern": "\\S" }
+        }
+      }
+    }
+  ],
   "properties": {
     "decision": {
       "type": "string",
-      "enum": ["pass", "fail", "needs-changes"],
+      "enum": ["pass", "fail", "needs-changes", "defer"],
       "description": "Gate or review outcome that determines the next workflow branch."
+    },
+    "reasonCode": {
+      "type": "string",
+      "enum": ["implementation-rejected", "policy-rejected", "ordering", "no-lander"],
+      "description": "Machine-readable rejection or deferral reason. Legacy fail verdicts may omit this field and must be treated as ambiguous, not inferred substantive rejection."
     },
     "rationale": {
       "type": "string",
