@@ -15,17 +15,27 @@ type releaseAuthorizationWorkflow struct {
 	On          map[string]yaml.Node `yaml:"on"`
 	Permissions map[string]string    `yaml:"permissions"`
 	Jobs        map[string]struct {
-		Needs       yaml.Node         `yaml:"needs"`
-		If          string            `yaml:"if"`
-		Permissions map[string]string `yaml:"permissions"`
-		Steps       []struct {
-			ID    string            `yaml:"id"`
-			Name  string            `yaml:"name"`
-			If    string            `yaml:"if"`
-			Run   string            `yaml:"run"`
-			Shell string            `yaml:"shell"`
-			With  map[string]string `yaml:"with"`
-			Env   map[string]string `yaml:"env"`
+		Outputs  map[string]string `yaml:"outputs"`
+		Env      map[string]string `yaml:"env"`
+		RunsOn   string            `yaml:"runs-on"`
+		Strategy struct {
+			Matrix struct {
+				Include []struct{ Runner, Target, Platform string } `yaml:"include"`
+			} `yaml:"matrix"`
+		} `yaml:"strategy"`
+		Needs           yaml.Node         `yaml:"needs"`
+		If              string            `yaml:"if"`
+		ContinueOnError bool              `yaml:"continue-on-error"`
+		Permissions     map[string]string `yaml:"permissions"`
+		Steps           []struct {
+			ID              string            `yaml:"id"`
+			Name            string            `yaml:"name"`
+			If              string            `yaml:"if"`
+			ContinueOnError bool              `yaml:"continue-on-error"`
+			Run             string            `yaml:"run"`
+			Shell           string            `yaml:"shell"`
+			With            map[string]string `yaml:"with"`
+			Env             map[string]string `yaml:"env"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
 }
@@ -98,7 +108,8 @@ func TestReleaseAuthorizationPrecedesBuildAndPublication(t *testing.T) {
 	}
 	for name, want := range map[string][]string{
 		"sign-macos": {"build"}, "sign-windows": {"sign-macos"},
-		"native-smoke": {"sign-windows"}, "verify-and-publish": {"sign-windows", "native-smoke"},
+		"native-smoke": {"sign-windows"}, "verify-and-publish": {"sign-windows", "native-smoke", "native-linux-images", "native-windows-image"},
+		"native-linux-images": {"build", "sign-windows"}, "native-windows-image": {"build", "sign-windows"},
 	} {
 		job := workflow.Jobs[name]
 		var got []string
