@@ -53,6 +53,10 @@ func runEngineProject(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 	l := instance.NewLayout(root)
+	if err := prepareManualRoot(l, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		pf(stderr, "error: load instance config: %v\n", err)

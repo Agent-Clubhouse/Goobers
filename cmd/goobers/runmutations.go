@@ -143,7 +143,12 @@ func runInterventionCLI(
 		return 2
 	}
 
-	result, apiErr, err := callInterventionAPI(instance.NewLayout(root), endpoint, routeID, input)
+	layout := instance.NewLayout(root)
+	if err := prepareLocalManualRoot(layout, endpoint, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	result, apiErr, err := callInterventionAPI(layout, endpoint, routeID, input)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -233,7 +238,11 @@ func callDaemonMutationAPI(
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	response, err := http.DefaultClient.Do(request)
+	// Do not redirect a mutation to a daemon whose identity was not displayed.
+	client := &http.Client{Timeout: remoteTriggerTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("call live daemon API: %w", err)
 	}

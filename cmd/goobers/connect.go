@@ -392,6 +392,10 @@ func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
 	// every file connect touches so a failure after the first write puts the
 	// instance back exactly as it was rather than leaving a half-connected
 	// tree (verify-then-write for the preflight above, atomic restore here).
+	if err := prepareManualRoot(layout, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	restore := &connectRestorePoint{}
 	if instanceChanged {
 		if err := restore.snapshot(configFile); err != nil {

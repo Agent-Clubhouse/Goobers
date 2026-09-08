@@ -19,6 +19,7 @@ every path and states the snapshot procedure in full:
 | Path | Move it? | Reason |
 |---|---:|---|
 | `instance.yaml` | Yes | Instance connections, credential references, and runtime settings. |
+| `.instance-id` | Yes | Durable identity of the instance being moved. Preserve it rather than minting a new identity for the same history. |
 | `config/` | Yes | The active, materialized definitions. Continue to treat a separate config repository as canonical when one is configured. |
 | `gaggles/<gaggle>/runs/` | Yes | Run inputs, journals, checkpoints, artifacts, transcripts, and spans. |
 | `scheduler/` | Yes | Scheduling history and the authoritative local claim ledger. |
@@ -247,11 +248,12 @@ After the destination has operated successfully:
    goobers service uninstall /old/instance/path
    ```
 
-2. Keep the source instance snapshot according to the organization's retention
+2. Mark the retired source copy with `goobers roots decommission --reason="migration complete" /old/instance/path`. Do this after the destination copy has been verified; do not copy the source's new historical marker into the active destination. See [instance identity](instance-identity.md).
+3. Keep the source instance snapshot according to the organization's retention
    policy.
-3. Remove abandoned source workcopies separately after confirming that no
+4. Remove abandoned source workcopies separately after confirming that no
    recovery is needed.
-4. Update operational inventories, monitoring, backup jobs, and ownership
+5. Update operational inventories, monitoring, backup jobs, and ownership
    records with the new host and path.
 
 ## Rollback

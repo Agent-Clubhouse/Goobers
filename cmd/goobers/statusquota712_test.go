@@ -100,12 +100,13 @@ func TestStatusJSONOmitsProviderQuotaPause(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
 	}
-	if len(got) != 5 ||
+	if len(got) != 6 ||
+		got["root"] == nil ||
 		got["queueEligibility"] == nil ||
 		got["warnings"] == nil ||
 		got["timeToFirstPR"] == nil ||
 		got["summary"] == nil ||
 		got["runs"] == nil {
-		t.Fatalf("stdout = %q, want exactly {queueEligibility, warnings, timeToFirstPR, summary, runs} with no paused-state field", stdout)
+		t.Fatalf("stdout = %q, want exactly {root, queueEligibility, warnings, timeToFirstPR, summary, runs} with no paused-state field", stdout)
 	}
 }

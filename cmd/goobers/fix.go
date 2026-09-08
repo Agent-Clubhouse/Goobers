@@ -98,6 +98,12 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 		pln(stdout, "FIX: no workflows found; nothing to migrate")
 		return 0
 	}
+	if *write {
+		if err := prepareManualRoot(layout, stderr); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+	}
 
 	ok := true
 	migrated := 0
