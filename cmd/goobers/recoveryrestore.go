@@ -5,11 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
@@ -44,14 +47,18 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
-	}
+	root := providerStageRoot(fs.Arg(0))
 	layout := instance.NewLayout(root)
-	if err := prepareManualRoot(layout, stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+	if claimsPlaneSelected() {
+		if !issueSelection {
+			pf(stderr, "error: recovery over the claims plane requires issue selection\n")
+			return 1
+		}
+	} else {
+		if err := prepareManualRoot(layout, stderr); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	registry, scrubber := journal.DefaultScrubber()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -72,6 +79,9 @@ func runRecoveryRestore(args []string, stdout, stderr io.Writer) int {
 }
 
 func restoreIssueRecovery(ctx context.Context, layout instance.Layout, key, issue, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
+	if claimsPlaneSelected() {
+		return restoreDownloadedRecovery(ctx, layout, key, issue, destination, branch, registry)
+	}
 	selected, err := selectIssueRecovery(ctx, layout, key, issue, time.Now().UTC())
 	if err != nil {
 		return "", err
@@ -112,6 +122,21 @@ func restoreIssueRecovery(ctx context.Context, layout instance.Layout, key, issu
 	return commit, err
 }
 
+func restoreDownloadedRecovery(ctx context.Context, layout instance.Layout, key, issue, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
+	source := recovery.HTTPArchiveSource{
+		BaseURL: os.Getenv(claimsclient.EnvEndpoint),
+		Token:   os.Getenv(claimsclient.EnvToken),
+		RunID:   os.Getenv(claimsclient.EnvRunID),
+	}
+	var commit string
+	err := source.WithArchive(ctx, key, issue, func(_ recovery.Record, archive string) error {
+		var err error
+		commit, err = restoreConfiguredRecovery(ctx, layout, filepath.Join(filepath.Dir(archive), recovery.RecordFileName), destination, branch, registry)
+		return err
+	})
+	return commit, err
+}
+
 func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, recordPath, destination, branch string, registry *journal.RegistryScrubber) (string, error) {
 	record, err := recovery.ReadRetainedRecord(recordPath)
 	if err != nil {
@@ -132,24 +157,9 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 	if err != nil {
 		return "", err
 	}
-	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	environment, err := recoveryRestoreGitEnvironment(ctx, layout, cfg, project, remoteURL, registry)
 	if err != nil {
 		return "", err
-	}
-	workcopies, err := filepath.Abs(layout.WorkcopiesDir())
-	if err != nil {
-		return "", err
-	}
-	gitEnv, err := buildWorktreeGitEnv(cfg, workcopies, project, nil, nil, nil, runner.DefaultRepoCloneURL, registry, stores)
-	if err != nil {
-		return "", err
-	}
-	var environment []string
-	if gitEnv != nil {
-		environment, err = gitEnv(ctx, remoteURL)
-		if err != nil {
-			return "", err
-		}
 	}
 	main, err := recovery.FetchCurrentMain(ctx, destination, remoteURL, recoveryAuthenticationEnvironment(environment))
 	if err != nil {
@@ -161,6 +171,37 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 		return "", err
 	}
 	return recovery.RestoreSnapshot(ctx, destination, record, main, branch, maxRecoveryBytes)
+}
+
+func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
+	// Pods receive a resolved repository capability, not the daemon's app
+	// private key/token cache. Scope that credential to the configured URL.
+	if claimsPlaneSelected() && (project.Provider == apiv1.ProviderGitHub || project.Provider == apiv1.ProviderGitea) {
+		token, err := providerToken(capability.RepoPush)
+		if err != nil {
+			return nil, err
+		}
+		if project.Provider == apiv1.ProviderGitea {
+			return providers.GiteaGitAuthEnvironment(token, remoteURL, registry), nil
+		}
+		return providers.GitHubGitAuthEnvironment(token, remoteURL, registry), nil
+	}
+	stores, err := secretstore.NewRegistry(cfg.SecretStores)
+	if err != nil {
+		return nil, err
+	}
+	workcopies, err := filepath.Abs(layout.WorkcopiesDir())
+	if err != nil {
+		return nil, err
+	}
+	gitEnv, err := buildWorktreeGitEnv(cfg, workcopies, project, nil, nil, nil, runner.DefaultRepoCloneURL, registry, stores)
+	if err != nil {
+		return nil, err
+	}
+	if gitEnv != nil {
+		return gitEnv(ctx, remoteURL)
+	}
+	return nil, nil
 }
 
 // Credential resolvers return a complete process environment. Only transport

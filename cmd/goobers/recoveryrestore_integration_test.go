@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,8 +16,10 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/providers"
@@ -35,16 +39,12 @@ func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 
 func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, byIssue := range []bool{false, true} {
-		name := "record"
-		if byIssue {
-			name = "issue"
-		}
-		t.Run(name, func(t *testing.T) { testRecoveryRestoreCommand(t, byIssue) })
+	for _, mode := range []string{"record", "issue", "http-issue"} {
+		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode) })
 	}
 }
 
-func testRecoveryRestoreCommand(t *testing.T, byIssue bool) {
+func testRecoveryRestoreCommand(t *testing.T, mode string) {
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "local-only-recovery-fixture-token")
 	root := initDemo(t)
 	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
@@ -96,7 +96,7 @@ func testRecoveryRestoreCommand(t *testing.T, byIssue bool) {
 	if _, err := recovery.RenewRetention(context.Background(), filepath.Join(retained, recovery.RecordFileName), time.Now().UTC().Add(30*24*time.Hour), 1<<20); err != nil {
 		t.Fatal(err)
 	}
-	if byIssue {
+	if mode != "record" {
 		layout := instance.NewLayout(root)
 		inventory, err := prepareRecoveryInventory(root)
 		if err != nil {
@@ -121,6 +121,9 @@ func testRecoveryRestoreCommand(t *testing.T, byIssue bool) {
 		}
 		seedItemRepositoryForTest(t, layout, record.RunID, "7", identity)
 		args = []string{"--issue", "7", "--repository-key", identity.CanonicalKey(), "--repository", destination, "--branch", "operator-recovery", root}
+		if mode == "http-issue" {
+			serveRecoveryRestoreFixture(t, layout, identity)
+		}
 	}
 	stdout.Reset()
 	stderr.Reset()
@@ -146,4 +149,36 @@ func testRecoveryRestoreCommand(t *testing.T, byIssue bool) {
 	if after := recoveryCLIGit(t, destination, "rev-parse", "operator-recovery"); after != before {
 		t.Fatal("retry overwrote operator branch")
 	}
+}
+
+// Exercise the production delivery service and download/restore command with
+// actual Git objects. The HTTP API's scoped-auth middleware is tested separately
+// in httpapi; this fixture checks the claims bearer before invoking the service.
+func serveRecoveryRestoreFixture(t *testing.T, layout instance.Layout, repo providers.RepositoryRef) {
+	t.Helper()
+	const runID = "receiving-run"
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.Claim("7", runID, "implementation-recovery", time.Hour); err != nil || !ok {
+		t.Fatalf("receiving claim: %t %v", ok, err)
+	}
+	seedItemRepositoryForTest(t, layout, runID, "7", repo)
+	service := recoveryDeliveryService{layout: layout}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/runs/"+runID+"/recovery" || r.Header.Get("Authorization") != "Bearer recovery-test-claims" {
+			t.Error("unexpected recovery request")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if err := service.StreamRecovery(r.Context(), runID, r.URL.Query().Get("repositoryKey"), r.URL.Query().Get("issue"), w); err != nil {
+			t.Errorf("delivery service failed: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(claimsclient.EnvEndpoint, server.URL)
+	t.Setenv(claimsclient.EnvToken, "recovery-test-claims")
+	t.Setenv(claimsclient.EnvRunID, runID)
+	t.Setenv("GOOBERS_CRED_REPO_PUSH", "resolved-stage-recovery-token")
 }
