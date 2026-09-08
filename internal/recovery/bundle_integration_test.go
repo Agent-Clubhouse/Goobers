@@ -47,8 +47,10 @@ func TestIntegrationRecoveryBundleSurvivesMissingSourceRepository(t *testing.T) 
 		t.Fatalf("failed bundle writer acknowledged capture: %q %v", digest, err)
 	}
 	bundle := filepath.Join(t.TempDir(), "recovery.bundle")
-	if err := os.WriteFile(bundle, archive.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if published, err := PublishSnapshotBundle(context.Background(), repository, bundle, record, 1<<20); err != nil || published != digest {
+			t.Fatalf("durable archive publication/retry failed: %q %v", published, err)
+		}
 	}
 	// Move rather than delete the fixture: the verification repository has no
 	// source location or alternates, so it must use the archive's own objects.
