@@ -59,6 +59,47 @@ func TestRecoveryDoesNotBorrowAnIdenticalReceiptFromAnotherAttempt(t *testing.T)
 	}
 }
 
+func TestRecoveryRejectsUnsafeHandoffWithoutAppendingPrefix(t *testing.T) {
+	const first = `{"receiptId":"same","provider":"github","kind":"pr","id":"9"}`
+	for _, tc := range []struct {
+		name, data, owner string
+	}{
+		{"malformed-tail", first + "\n{broken\n", "owner"},
+		{"conflicting-identity", first + "\n" + `{"receiptId":"same","provider":"github","kind":"pr","id":"10"}` + "\n", "owner"},
+		{"escaping-owner", first + "\n", "../owner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, workspace := t.TempDir(), t.TempDir()
+			writer, err := journal.Create(root, journal.RunIdentity{RunID: "owner", Workflow: "implementation", WorkflowVersion: 1, Gaggle: "test"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(workspace, "mutations.jsonl")
+			if err := os.WriteFile(path, []byte(tc.data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(root, "owner")
+			if err := RecoverBeforeCleanup(context.Background(), workspace, "owner-stage", tc.owner, dir); err == nil {
+				t.Fatal("unsafe handoff accepted")
+			}
+			reader, err := journal.OpenReadOnly(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil || len(events) != 1 {
+				t.Fatalf("unsafe handoff appended a prefix: events=%+v err=%v", events, err)
+			}
+			if got, err := os.ReadFile(path); err != nil || string(got) != tc.data {
+				t.Fatalf("handoff evidence changed: %q %v", got, err)
+			}
+		})
+	}
+}
+
 func TestRecoveryImportsMissingReceiptsOnceAndRefusesBusyOwner(t *testing.T) {
 	root, workspace := t.TempDir(), t.TempDir()
 	writer, err := journal.Create(root, journal.RunIdentity{RunID: "owner", Workflow: "implementation", WorkflowVersion: 1, Gaggle: "test"}, nil)
