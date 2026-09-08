@@ -57,6 +57,10 @@ func runWorkspaceReset(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 	layout := instance.NewLayout(root)
+	if err := prepareManualRoot(layout, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
 		pf(stderr, "error: load instance config: %v\n", err)

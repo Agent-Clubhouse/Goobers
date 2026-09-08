@@ -55,8 +55,8 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	}
 
 	l := instance.NewLayout(root)
-	if _, err := os.Stat(l.ConfigFile()); err != nil {
-		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
+	if err := prepareManualRoot(l, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 

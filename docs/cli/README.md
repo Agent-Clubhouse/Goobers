@@ -92,6 +92,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
+| [`goobers roots`](#goobers-roots) | inspect and manage instance roots |
+| [`goobers roots decommission`](#goobers-roots-decommission) | mark a stopped instance root as historical |
+| [`goobers roots discover`](#goobers-roots-discover) | discover likely instance roots and daemon ownership |
 | [`goobers run abort`](#goobers-run-abort) | mark a stuck non-terminal run aborted |
 | [`goobers run cancel`](#goobers-run-cancel) | cancel a live in-flight run via the daemon |
 | [`goobers runs`](#goobers-runs) | list runs and report per-run disk usage |
@@ -2081,7 +2084,8 @@ Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
 gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
-untouched.
+untouched. Durable root identity is stored in .instance-id;
+.instance-id.lock serializes identity creation.
 --guided opens the browser-based setup for a real repository and instance;
 use --instance-path to select its instance root.
 It prepares and validates configuration but does not run a workflow. When the
@@ -3137,6 +3141,56 @@ processed, 1 = business error, 2 = usage/IO error.
 $ goobers respond-to-findings
 ~~~
 
+## `goobers roots`
+
+inspect and manage instance roots
+
+~~~text
+Usage: goobers roots <discover | decommission> [flags] [path]
+
+Discover likely instance roots or mark a stopped root as historical without deleting data.
+~~~
+
+## `goobers roots decommission`
+
+mark a stopped instance root as historical
+
+~~~text
+Usage: goobers roots decommission --reason=<text> [path]
+
+Persist a historical-root marker bound to the instance ID. Refuses an active
+daemon or another manual lock holder. Does not delete runs or configuration.
+Repeated calls preserve the first marker. Exit codes: 0 = marked, 2 = error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers roots decommission --reason=migrated ./old-instance
+~~~
+
+## `goobers roots discover`
+
+discover likely instance roots and daemon ownership
+
+~~~text
+Usage: goobers roots discover [--json] [paths...]
+
+Search supplied directories, or the current directory and user home by default.
+Read-only: legacy roots are not adopted. Search is limited to 20,000 directory
+entries, depth 8, and 10 seconds; incomplete scans are reported explicitly.
+Child symlinks, .git, node_modules, .cache, Library, vendor, and instance interiors
+are not searched. Supply other storage locations explicitly. Read-model modification
+time is only file freshness, never proof of a running daemon. Exit codes: 0 = complete
+within the stated search scope, 1 = partial, 2 = error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers roots discover --json
+~~~
+
 ## `goobers run`
 
 trigger a run manually (still honors run conditions)
@@ -3890,6 +3944,8 @@ Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>..
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
+Normal and daemon status identify the root path, durable instance ID, and owning PID,
+and warn when the root is marked historical or its identity cannot be verified.
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,

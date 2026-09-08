@@ -75,6 +75,10 @@ func runTelemetryCompactAt(args []string, stdout, stderr io.Writer, now time.Tim
 		return 2
 	}
 
+	if err := prepareMaintenanceRoot(layout, *dryRun, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	cutoff := now.Add(-window)
 	budgetCutoff := now.Add(-24 * time.Hour)
 	verb := "compacted"

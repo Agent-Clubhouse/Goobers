@@ -268,6 +268,7 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
+	Root              *statusRootIdentity              `json:"root,omitempty"`
 	QueueEligibility  *statusQueueEvidence             `json:"queueEligibility,omitempty"`
 	EngineFallbacks   []readmodel.EngineFallback       `json:"engineFallbacks,omitempty"`
 	Warnings          []validate.CodedWarning          `json:"warnings"`
@@ -677,6 +678,8 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
+	"Normal and daemon status identify the root path, durable instance ID, and owning PID,\n" +
+	"and warn when the root is marked historical or its identity cannot be verified.\n" +
 	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,\n" +
@@ -953,6 +956,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			return "", nil
 		}
 		var text strings.Builder
+		text.WriteString(statusRootText(l, now))
 		queue := loadStatusQueueEvidence(ctx, sources, set.Workflows, *gaggleFilter, *workflowFilter)
 		text.WriteString(statusQueueText(queue))
 		timeToFirstPR, err := timeToFirstPRCache.Load(ctx)
@@ -1090,6 +1094,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			baselineBlockers = &snapshot
 		}
 		output := statusJSONOutput{
+			Root:              optionalStatusRoot(supportsWatch, l, now),
 			QueueEligibility:  optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
 			EngineFallbacks:   engineFallbacks,
 			Warnings:          warnings,
@@ -1343,6 +1348,11 @@ func statusOutputIsTerminal(stdout io.Writer) bool {
 }
 
 func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writer) int {
+	root := inspectStatusRoot(l, now)
+	writeStatusRoot(stdout, root)
+	if root.DaemonState == "ownership-unverified" {
+		return 1
+	}
 	running, identity, liveness, err := inspectDaemonLiveness(filepath.Join(l.SchedulerDir(), "up.lock"), now)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

@@ -10,6 +10,8 @@ Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>..
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
+Normal and daemon status identify the root path, durable instance ID, and owning PID,
+and warn when the root is marked historical or its identity cannot be verified.
 Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,

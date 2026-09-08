@@ -79,6 +79,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"roots discover": {
+		{name: "json", desc: "Emit structured root discovery"},
+	},
+	"roots decommission": {
+		{name: "reason", takesArg: true, desc: "Why this root is historical"},
+	},
 	"version": {
 		{name: "json", desc: "Emit JSON"},
 	},

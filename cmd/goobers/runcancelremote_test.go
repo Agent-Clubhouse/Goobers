@@ -37,6 +37,9 @@ func TestRunCancelSubmitsToDaemonAPI(t *testing.T) {
 		gotBody   httpapi.CancelRunRequest
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		gotPath, gotMethod = r.URL.Path, r.Method
 		gotKey = r.Header.Get(httpapi.HeaderIdempotencyKey)
 		gotAuth = r.Header.Get("Authorization")
@@ -77,6 +80,9 @@ func TestRunCancelSubmitsToDaemonAPI(t *testing.T) {
 func TestRunAbortSubmitsToDaemonAPI(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(httpapi.CancelRunResult{Code: httpapi.CancelCodeAborted, Phase: "aborted"})
@@ -129,7 +135,10 @@ func TestRunCancelRemoteDispositionsMapToExitCodes(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveRemoteRootFixture(w, r) {
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(tc.result)
 			}))

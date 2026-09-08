@@ -99,6 +99,10 @@ func runRemoteTrigger(
 		return 2
 	}
 
+	if err := prepareRemoteRoot(ctx, endpoint, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	response, apiErr, err := submitRemoteTrigger(ctx, endpoint, httpapi.TriggerRequest{
 		Gaggle:    target.Gaggle,
 		Workflow:  target.Workflow,
@@ -161,7 +165,10 @@ func submitRemoteTrigger(
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{Timeout: remoteTriggerTimeout}
+	// A redirect would submit to a target whose root identity was not shown.
+	client := &http.Client{Timeout: remoteTriggerTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 	response, err := client.Do(request)
 	if err != nil {
 		return httpapi.TriggerResponse{}, nil, fmt.Errorf("call daemon API %s: %w", endpoint, err)

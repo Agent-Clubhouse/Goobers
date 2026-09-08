@@ -41,6 +41,10 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 		root = args[0]
 	}
 	layout := instance.NewLayout(root)
+	if err := instance.RequireCurrentRoot(root); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	if _, err := os.Stat(layout.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root)\n", layout.ConfigFile())
 		return 2

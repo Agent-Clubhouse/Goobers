@@ -14,6 +14,12 @@ _goobers_completion()
     command="${COMP_WORDS[1]}"
     flags="-h --help"
     case "${command}" in
+        roots)
+            case "${COMP_WORDS[2]:-}" in
+                discover) flags+=" --json" ;;
+                decommission) flags+=" --reason" ;;
+            esac
+            ;;
         version)
             flags+=" --json"
             ;;
@@ -266,6 +272,11 @@ _goobers_completion()
 
     candidates=""
     case "${command}" in
+        roots)
+            if (( COMP_CWORD == 2 )); then
+                candidates="discover decommission"
+            fi
+            ;;
         onboarding)
             if (( COMP_CWORD == 2 )); then
                 candidates="stub-sample stub-agent-instructions"

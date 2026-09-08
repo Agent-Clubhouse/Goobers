@@ -247,6 +247,15 @@ rerun a stage with a recorded instruction addendum
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
 .TP
+\fBgoobers roots\fR
+inspect and manage instance roots
+.TP
+\fBgoobers roots decommission\fR
+mark a stopped instance root as historical
+.TP
+\fBgoobers roots discover\fR
+discover likely instance roots and daemon ownership
+.TP
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
 .TP
@@ -593,6 +602,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-reset-rate-limit\fR(1),
 \fBgoobers-resolve-review-threads\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
+\fBgoobers-roots\fR(1),
+\fBgoobers-roots-decommission\fR(1),
+\fBgoobers-roots-discover\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
 \fBgoobers-run-cancel\fR(1),
