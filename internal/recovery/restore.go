@@ -16,6 +16,9 @@ import (
 // This function neither fetches a moving remote main nor mutates the current
 // checkout/index. Conflicts leave no new branch; retained recovery is untouched.
 func RestoreSnapshot(ctx context.Context, repository string, record Record, currentMain, branch string, maxPatchBytes int64) (string, error) {
+	if err := record.Validate(); err != nil {
+		return "", err
+	}
 	if maxPatchBytes <= 0 || !gitObjectID.MatchString(currentMain) {
 		return "", fmt.Errorf("restore requires a valid main commit and positive patch budget")
 	}

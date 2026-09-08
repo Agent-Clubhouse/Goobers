@@ -93,7 +93,7 @@ func uniqueRecordFields(data []byte) error {
 
 func knownRecordField(key string) bool {
 	switch key {
-	case "version", "runId", "repositoryKey", "ref", "baseSha", "snapshotSha", "patchDigest", "createdAt", "retainUntil":
+	case "version", "runId", "repositoryKey", "ref", "baseSha", "snapshotSha", "patchDigest", "archiveDigest", "archiveBytes", "createdAt", "retainUntil":
 		return true
 	default:
 		return false

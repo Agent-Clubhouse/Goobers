@@ -29,6 +29,8 @@ type Record struct {
 	BaseSHA       string    `json:"baseSha"`
 	SnapshotSHA   string    `json:"snapshotSha"`
 	PatchDigest   string    `json:"patchDigest"`
+	ArchiveDigest string    `json:"archiveDigest"`
+	ArchiveBytes  int64     `json:"archiveBytes"`
 	CreatedAt     time.Time `json:"createdAt"`
 	RetainUntil   time.Time `json:"retainUntil"`
 }
@@ -44,6 +46,18 @@ func RefForRun(runID string) (string, error) {
 
 // Validate verifies record shape, not artifact existence or merge state.
 func (r Record) Validate() error {
+	if err := r.validateSnapshot(); err != nil {
+		return err
+	}
+	if !patchDigest.MatchString(r.ArchiveDigest) || r.ArchiveBytes <= 0 {
+		return fmt.Errorf("recovery record requires an archive digest and positive size")
+	}
+	return nil
+}
+
+// Snapshot preparation precedes archive creation. Only pin/bundle preparation
+// may use this partial validation; published records must pass Validate.
+func (r Record) validateSnapshot() error {
 	if r.Version != 1 {
 		return fmt.Errorf("unsupported recovery record version")
 	}

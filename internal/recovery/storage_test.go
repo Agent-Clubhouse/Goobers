@@ -13,7 +13,7 @@ import (
 
 func storageTestRecord() Record {
 	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
-	return Record{Version: 1, RunID: "run-1", RepositoryKey: "github|||team|repo|", Ref: "refs/goobers/recovery/run-1", BaseSHA: strings.Repeat("a", 40), SnapshotSHA: strings.Repeat("b", 40), PatchDigest: "sha256:" + strings.Repeat("c", 64), CreatedAt: now, RetainUntil: now.Add(time.Hour)}
+	return Record{Version: 1, RunID: "run-1", RepositoryKey: "github|||team|repo|", Ref: "refs/goobers/recovery/run-1", BaseSHA: strings.Repeat("a", 40), SnapshotSHA: strings.Repeat("b", 40), PatchDigest: "sha256:" + strings.Repeat("c", 64), ArchiveDigest: "sha256:" + strings.Repeat("d", 64), ArchiveBytes: 512, CreatedAt: now, RetainUntil: now.Add(time.Hour)}
 }
 
 func TestPublishRecordIsImmutableAndIdempotent(t *testing.T) {
@@ -76,5 +76,21 @@ func TestReadRecordRejectsNonRegularAndOversizedFiles(t *testing.T) {
 	}
 	if got, err := ReadRecord(path); err == nil || got != (Record{}) {
 		t.Fatalf("oversized record accepted: %+v %v", got, err)
+	}
+}
+
+func TestPublishRecordRefusesUnboundArchive(t *testing.T) {
+	root := t.TempDir()
+	record := storageTestRecord()
+	record.ArchiveDigest, record.ArchiveBytes = "", 0
+	if err := record.validateSnapshot(); err != nil {
+		t.Fatalf("snapshot preparation should precede archive binding: %v", err)
+	}
+	if err := PublishRecord(filepath.Join(root, "record.json"), record); err == nil {
+		t.Fatal("published a record before its archive was bound")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("incomplete record wrote publication state: %v %v", entries, err)
 	}
 }

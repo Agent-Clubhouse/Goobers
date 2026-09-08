@@ -40,6 +40,7 @@ func TestIntegrationRecoveryBundleSurvivesMissingSourceRepository(t *testing.T) 
 	if expected := fmt.Sprintf("sha256:%x", sha256.Sum256(archive.Bytes())); digest != expected {
 		t.Fatalf("bundle digest mismatch: %s != %s", digest, expected)
 	}
+	record.ArchiveDigest, record.ArchiveBytes = digest, int64(archive.Len())
 	var limited bytes.Buffer
 	if digest, err := WriteSnapshotBundle(context.Background(), repository, record, &limited, 10); err == nil || digest != "" || limited.Len() > 10 {
 		t.Fatalf("bundle byte budget was not enforced: digest=%q bytes=%d error=%v", digest, limited.Len(), err)
@@ -60,13 +61,20 @@ func TestIntegrationRecoveryBundleSurvivesMissingSourceRepository(t *testing.T) 
 	}
 	restored := t.TempDir()
 	recoveryTestGit(t, restored, "init", "--initial-branch=main")
-	if err := ImportSnapshotBundle(context.Background(), restored, bundle, "sha256:"+strings.Repeat("0", 64), record, 1<<20); err == nil {
+	wrong := record
+	wrong.ArchiveDigest = "sha256:" + strings.Repeat("0", 64)
+	if err := ImportSnapshotBundle(context.Background(), restored, bundle, wrong, 1<<20); err == nil {
 		t.Fatal("unverified archive imported")
+	}
+	wrong = record
+	wrong.ArchiveBytes++
+	if err := ImportSnapshotBundle(context.Background(), restored, bundle, wrong, 1<<20); err == nil {
+		t.Fatal("archive with incorrect recorded size imported")
 	}
 	if refs := recoveryTestGit(t, restored, "for-each-ref", "--format=%(refname)"); refs != "" {
 		t.Fatalf("bad digest created refs: %s", refs)
 	}
-	if err := ImportSnapshotBundle(context.Background(), restored, bundle, digest, record, 1<<20); err != nil {
+	if err := ImportSnapshotBundle(context.Background(), restored, bundle, record, 1<<20); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RestoreSnapshot(context.Background(), restored, record, record.BaseSHA, "recovered", 1<<20); err != nil {

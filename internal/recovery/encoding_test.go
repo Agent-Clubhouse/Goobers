@@ -11,6 +11,7 @@ import (
 func TestEncodingRejectsAmbiguousAndOversizedRecords(t *testing.T) {
 	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
 	record := Record{Version: 1, RunID: "run-1", RepositoryKey: "github|||team|repo|", Ref: "refs/goobers/recovery/run-1", BaseSHA: strings.Repeat("a", 40), SnapshotSHA: strings.Repeat("b", 40), PatchDigest: "sha256:" + strings.Repeat("c", 64), CreatedAt: now, RetainUntil: now.Add(time.Hour)}
+	record.ArchiveDigest, record.ArchiveBytes = "sha256:"+strings.Repeat("d", 64), 512
 	data, err := Encode(record)
 	if err != nil {
 		t.Fatal(err)

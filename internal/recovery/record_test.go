@@ -9,6 +9,7 @@ import (
 func TestRecordBindsRecoveryState(t *testing.T) {
 	now := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
 	good := Record{Version: 1, RunID: "run-1", RepositoryKey: "github|||team|repo|", Ref: "refs/goobers/recovery/run-1", BaseSHA: strings.Repeat("a", 40), SnapshotSHA: strings.Repeat("b", 40), PatchDigest: "sha256:" + strings.Repeat("c", 64), CreatedAt: now, RetainUntil: now.Add(24 * time.Hour)}
+	good.ArchiveDigest, good.ArchiveBytes = "sha256:"+strings.Repeat("d", 64), 512
 	if err := good.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -25,6 +26,10 @@ func TestRecordBindsRecoveryState(t *testing.T) {
 		"bad base":                func(r *Record) { r.BaseSHA = "main" },
 		"mixed object formats":    func(r *Record) { r.SnapshotSHA = strings.Repeat("b", 64) },
 		"bad digest":              func(r *Record) { r.PatchDigest = "unverified" },
+		"missing archive digest":  func(r *Record) { r.ArchiveDigest = "" },
+		"invalid archive digest":  func(r *Record) { r.ArchiveDigest = "unverified" },
+		"missing archive size":    func(r *Record) { r.ArchiveBytes = 0 },
+		"negative archive size":   func(r *Record) { r.ArchiveBytes = -1 },
 		"no recovery window":      func(r *Record) { r.RetainUntil = r.CreatedAt },
 	} {
 		t.Run(name, func(t *testing.T) {

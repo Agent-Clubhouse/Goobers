@@ -17,7 +17,7 @@ import (
 // object database; an independent durable archive is still required before
 // destructive worktree/repository cleanup may be acknowledged.
 func PinCommit(ctx context.Context, repository string, record Record) error {
-	if err := record.Validate(); err != nil {
+	if err := record.validateSnapshot(); err != nil {
 		return err
 	}
 	for _, object := range []string{record.BaseSHA, record.SnapshotSHA} {

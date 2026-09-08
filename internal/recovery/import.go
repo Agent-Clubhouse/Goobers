@@ -11,16 +11,16 @@ import (
 )
 
 // ImportSnapshotBundle imports a verified independent archive without fetching
-// any remote or overwriting a branch. expectedDigest must come from trusted
+// any remote or overwriting a branch. The record must come from trusted
 // recovery metadata, not from hashing an untrusted file on demand. The source
 // is copied into private staging and checked before Git reads it, so a later
 // replacement of the source path cannot change the imported bytes.
-func ImportSnapshotBundle(ctx context.Context, repository, path, expectedDigest string, record Record, maxBytes int64) error {
+func ImportSnapshotBundle(ctx context.Context, repository, path string, record Record, maxBytes int64) error {
 	if err := record.Validate(); err != nil {
 		return err
 	}
-	if !patchDigest.MatchString(expectedDigest) {
-		return fmt.Errorf("invalid recovery archive digest")
+	if record.ArchiveBytes > maxBytes {
+		return fmt.Errorf("recorded recovery archive exceeds byte budget")
 	}
 	directory, err := os.MkdirTemp("", "goobers-recovery-import-*")
 	if err != nil {
@@ -34,8 +34,11 @@ func ImportSnapshotBundle(ctx context.Context, repository, path, expectedDigest 
 	if err != nil {
 		return err
 	}
-	if digest != expectedDigest {
+	if digest != record.ArchiveDigest {
 		return fmt.Errorf("recovery archive digest mismatch")
+	}
+	if info, err := os.Stat(staged); err != nil || info.Size() != record.ArchiveBytes {
+		return fmt.Errorf("recovery archive size does not match record")
 	}
 	if err := verifyBundleHeader(staged, record); err != nil {
 		return err
