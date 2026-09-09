@@ -1,4 +1,3 @@
-import type { QueryState } from "./api/queryState";
 import type {
   DaemonClient,
   TelemetryCostOptions,
@@ -12,7 +11,7 @@ import type {
   UpdateModel,
 } from "./api/types";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
-import { useLiveQuery } from "./liveQuery";
+import { type LiveQuery, useLiveQuery } from "./liveQuery";
 
 const aggregateLoadTails = new WeakMap<DaemonClient, Promise<unknown>>();
 
@@ -103,10 +102,7 @@ export function useInsightStats(
   workflow?: string,
   scopeRequest = false,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightSnapshot>;
-} {
+): LiveQuery<InsightSnapshot> {
   return useLiveQuery<InsightSnapshot>({
     cacheKey: scopeRequest
       ? dataCacheKey("insight-stats", window, gaggle ?? "", workflow ?? "")
@@ -195,10 +191,7 @@ export function useInsightCostTrend(
   gaggle?: string,
   workflow?: string,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightCostTrendSnapshot>;
-} {
+): LiveQuery<InsightCostTrendSnapshot> {
   return useLiveQuery<InsightCostTrendSnapshot>({
     cacheKey: dataCacheKey("insight-cost-trend", window, gaggle ?? "", workflow ?? ""),
     enabled,
@@ -257,10 +250,7 @@ export function useInsightCostRollup(
   client: DaemonClient,
   window: InsightWindow,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightCostRollupSnapshot>;
-} {
+): LiveQuery<InsightCostRollupSnapshot> {
   return useLiveQuery<InsightCostRollupSnapshot>({
     cacheKey: dataCacheKey("insight-cost-rollup", window),
     enabled,
@@ -282,10 +272,7 @@ export function useInsightExternalCosts(
   client: DaemonClient,
   window: InsightWindow,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightExternalCostSnapshot>;
-} {
+): LiveQuery<InsightExternalCostSnapshot> {
   return useLiveQuery<InsightExternalCostSnapshot>({
     cacheKey: dataCacheKey("insight-external-costs", window),
     enabled,
@@ -337,10 +324,7 @@ export function useInsightErrorSignatures(
   workflow?: string,
   stage?: string,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightErrorSignaturesSnapshot>;
-} {
+): LiveQuery<InsightErrorSignaturesSnapshot> {
   const requestKey = JSON.stringify([window, gaggle ?? "", workflow ?? "", stage ?? ""]);
   return useLiveQuery<InsightErrorSignaturesSnapshot>({
     cacheKey: dataCacheKey("insight-error-signatures", requestKey),
