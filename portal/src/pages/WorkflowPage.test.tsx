@@ -246,14 +246,14 @@ describe("workflow detail page", () => {
     act(() => client.push(workflowEvent("session:workflow-2", "core", "implementation")));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Workflow detail may be stale");
+    expect(alert).toHaveTextContent("Workflow detail refresh failed");
     expect(alert).toHaveTextContent("Refresh failed.");
     expect(screen.getByText("v7 · sha256:core")).toBeInTheDocument();
 
-    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByText("v8 · sha256:recovered")).toBeInTheDocument();
-    expect(screen.queryByText("Workflow detail may be stale")).not.toBeInTheDocument();
+    expect(screen.queryByText("Workflow detail refresh failed")).not.toBeInTheDocument();
   });
 
   it("scopes live refreshes to the workflow and aborts an in-flight refresh on workflow change", async () => {
@@ -339,11 +339,7 @@ describe("workflow detail page", () => {
 
     await screen.findByRole("heading", { name: "Implementation" });
     const breadcrumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
-    expect(
-      within(breadcrumbs).getByRole("link", { name: "View core in Runs" }),
-    ).toHaveAttribute("href", "#/runs?gaggle=core");
-    // The gaggle breadcrumb button's own name ("core") stays unique even with
-    // the adjacent pivot links present.
+    expect(within(breadcrumbs).queryByRole("link")).not.toBeInTheDocument();
     expect(within(breadcrumbs).getByRole("button", { name: "core" })).toBeInTheDocument();
 
     await user.click(

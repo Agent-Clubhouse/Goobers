@@ -265,7 +265,12 @@ const responses = new Map([
         accentInkLight: null,
         accentInkDark: null,
       },
-      support: { docsUrl: null, issuesUrl: null, chatUrl: null, links: [] },
+      support: {
+        docsUrl: "https://example.test/docs",
+        issuesUrl: "https://example.test/support",
+        chatUrl: null,
+        links: [],
+      },
       capabilities: { revealRun: true },
     },
   ],

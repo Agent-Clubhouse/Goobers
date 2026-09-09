@@ -104,6 +104,20 @@ describe("Insight routing", () => {
     expect(parseRoute("#/insight")).toEqual({ page: "insight" });
   });
 
+  it("round-trips a shareable focused Insight section", () => {
+    const route = {
+      page: "insight" as const,
+      filters: {
+        gaggle: "core",
+        window: "7d" as const,
+        section: "failures" as const,
+      },
+    };
+
+    expect(routeHash(route)).toBe("#/insight?gaggle=core&window=7d&section=failures");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+  });
+
   it("round-trips a scoped Cost route with a time window preset", () => {
     const route = {
       page: "cost" as const,
