@@ -123,3 +123,30 @@ func TestFileTranscriptCheckpointRejectsUnsafePaths(t *testing.T) {
 		}
 	}
 }
+
+func TestFileTranscriptCheckpointPinsEmptyLogBeforeDelivery(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "native.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	state := fileTranscriptCheckpoint{root: root, path: "native.jsonl", sink: func(TranscriptDelta) error { calls++; return nil }}
+	if err := state.capture("checkpoint"); err != nil || calls != 0 {
+		t.Fatalf("empty log delivery: calls=%d err=%v", calls, err)
+	}
+	if err := os.Rename(path, path+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.capture("checkpoint"); err == nil || calls != 0 {
+		t.Fatalf("replacement accepted after empty observation: calls=%d err=%v", calls, err)
+	}
+}

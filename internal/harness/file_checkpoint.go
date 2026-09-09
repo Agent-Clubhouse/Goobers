@@ -37,6 +37,10 @@ func (s *fileTranscriptCheckpoint) capture(reason string) error {
 	if err != nil {
 		return err
 	}
+	// Pin the first successfully read file even when it is empty. Observation
+	// identity is independent of the acknowledged delivery cursor: replacing an
+	// empty log (or one whose delivery failed) must not start a different stream.
+	s.identity = info
 	if len(data) == 0 && info.Size() == s.size && reason == "checkpoint" {
 		return nil
 	}
