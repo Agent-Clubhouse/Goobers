@@ -101,6 +101,10 @@ const (
 	// on a single-host runner is the shared branch ref and journals nothing,
 	// so the same workflow must conform with or without these events.
 	EventRunnerWorkspaceDelta EventType = "runner.workspace.delta"
+	// EventRunnerMutationRecovered preserves a receipt before source cleanup.
+	// It is custody bookkeeping, not another workflow mutation outcome. The
+	// normal activity result may subsequently project the same receipt.
+	EventRunnerMutationRecovered EventType = "runner.mutation.recovered"
 	// EventNotificationRequested records exact pre-rendered content before any
 	// sink is attempted.
 	EventNotificationRequested EventType = "notification.requested"

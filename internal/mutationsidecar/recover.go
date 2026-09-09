@@ -96,6 +96,13 @@ func recoveryEvent(fact Fact) journal.Event {
 }
 
 func mutationFingerprint(event journal.Event) (string, error) {
+	// Custody copies and normal projection prove the same semantic receipt.
+	if event.Type == journal.EventRunnerMutationRecovered {
+		event.Type = journal.EventRefTouched
+		if outcome, _ := event.Runner["outcome"].(string); outcome == "failure" || outcome == "conflict" {
+			event.Type = journal.EventError
+		}
+	}
 	fields := map[string]any{}
 	for _, key := range []string{"operation", "mergeConfirmation", "queueAdmission", "landingIntent", "claimRunId", "outcome", "providerRunId"} {
 		if value, ok := event.Runner[key]; ok {
@@ -127,7 +134,7 @@ func mutationFingerprint(event journal.Event) (string, error) {
 func missingRecoveryEvents(facts []Fact, recorded []journal.Event, worktreeID string) ([]journal.Event, error) {
 	receipts := map[string]string{}
 	for _, event := range recorded {
-		if event.ExternalRef == nil || (event.Type != journal.EventRefTouched && event.Type != journal.EventError) {
+		if event.ExternalRef == nil || (event.Type != journal.EventRefTouched && event.Type != journal.EventError && event.Type != journal.EventRunnerMutationRecovered) {
 			continue
 		}
 		id, _ := event.Runner["mutationReceiptId"].(string)
@@ -165,6 +172,7 @@ func missingRecoveryEvents(facts []Fact, recorded []journal.Event, worktreeID st
 		receipts[fact.ReceiptID] = fingerprint
 		event.Runner["mutationRecoveryFingerprint"] = fingerprint
 		event.Runner["recoveredFromWorktree"] = worktreeID
+		event.Type = journal.EventRunnerMutationRecovered
 		missing = append(missing, event)
 	}
 	return missing, nil

@@ -378,7 +378,7 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 				}
 			}
 
-		case eventRefTouched:
+		case eventRefTouched, eventMutationRecovered:
 			if err := insertRefTouched(ctx, tx, runID, ev); err != nil {
 				return err
 			}
@@ -400,7 +400,7 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 }
 
 func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalEvent) error {
-	if ev.ExternalRef == nil {
+	if ev.ExternalRef == nil || recoveredMutationFailed(ev) {
 		return nil
 	}
 	relationship := operationFromRunner(ev.Runner)
@@ -444,6 +444,13 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 		return fmt.Errorf("rollup: insert provider_mutation seq %d: %w", ev.Seq, err)
 	}
 	return nil
+}
+
+// Recovered failed/conflicting operations remain journal evidence, not
+// successful external mutations for attribution or KPI purposes.
+func recoveredMutationFailed(ev journalEvent) bool {
+	outcome, _ := ev.Runner["outcome"].(string)
+	return ev.Type == eventMutationRecovered && (outcome == "failure" || outcome == "conflict")
 }
 
 type ciChecksArtifact struct {

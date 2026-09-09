@@ -58,6 +58,7 @@ const (
 	eventStageFinished      = "stage.finished"
 	eventGateEvaluated      = "gate.evaluated"
 	eventRefTouched         = "ref.touched"
+	eventMutationRecovered  = "runner.mutation.recovered"
 	eventError              = "error"
 	eventRunStarted         = "run.started"
 	eventRunResumed         = "run.resumed"

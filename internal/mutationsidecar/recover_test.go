@@ -35,6 +35,33 @@ func TestRecoveryRecognizesNormalProjectionWhileWriterIsHeld(t *testing.T) {
 	}
 }
 
+func TestRecoveredReceiptsDoNotDuplicateWorkflowConformance(t *testing.T) {
+	for _, outcome := range []string{"", "failure", "conflict"} {
+		fact := Fact{ReceiptID: "receipt", Provider: "github", Kind: "pr", ID: "9", Operation: "merge", Outcome: outcome}
+		normal := recoveryEvent(fact)
+		recovered, err := missingRecoveryEvents([]Fact{fact}, nil, "worker-stage")
+		if err != nil || len(recovered) != 1 {
+			t.Fatalf("prepare recovered receipt: %v %v", recovered, err)
+		}
+		if recovered[0].Type != journal.EventRunnerMutationRecovered || recovered[0].IsConformanceNormative() {
+			t.Fatal("custody copy appeared as a second workflow outcome")
+		}
+		if got := journal.ConformanceView(append(recovered, normal)); len(got) != 1 || got[0].Type != normal.Type {
+			t.Fatalf("normal projection changed conformance: %+v", got)
+		}
+		if pending, err := missingRecoveryEvents([]Fact{fact}, recovered, "worker-stage"); err != nil || len(pending) != 0 {
+			t.Fatalf("custody receipt was not recognized: %v %v", pending, err)
+		}
+		normalFingerprint, err := mutationFingerprint(normal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := mutationFingerprint(recovered[0]); err != nil || got != normalFingerprint {
+			t.Fatalf("custody changed receipt identity: %s %v", got, err)
+		}
+	}
+}
+
 func TestRecoveryRecomputesJournalReceiptFingerprint(t *testing.T) {
 	fact := Fact{ReceiptID: "receipt", Provider: "github", Kind: "pr", ID: "9", Operation: "merge"}
 	expected := recoveryEvent(fact)
@@ -154,7 +181,7 @@ func TestRecoveryImportsMissingReceiptsOnceAndRefusesBusyOwner(t *testing.T) {
 	}
 	count := 0
 	for _, event := range events {
-		if event.Type == journal.EventRefTouched {
+		if event.Type == journal.EventRunnerMutationRecovered {
 			count++
 			if event.Runner["claimRunId"] != "other-claim-owner" || event.Runner["recoveredFromWorktree"] != "owner-stage" {
 				t.Fatalf("lost ownership distinction: %+v", event)
