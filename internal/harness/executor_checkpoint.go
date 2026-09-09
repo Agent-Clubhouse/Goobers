@@ -7,15 +7,15 @@ import (
 )
 
 type transcriptCheckpointRecorder interface {
-	BeginTranscriptCaptureWithScrubber(stage, name string, scrubber journal.Scrubber) (*journal.TranscriptCapture, error)
+	OpenTranscriptCheckpoint(stage, name string, scrubber journal.Scrubber) (journal.TranscriptCheckpointSession, error)
 }
 
-func (e *Executor) beginTranscriptCapture(stage string, req *RunRequest) (*journal.TranscriptCapture, error) {
+func (e *Executor) beginTranscriptCapture(stage string, req *RunRequest) (journal.TranscriptCheckpointSession, error) {
 	recorder, ok := e.recorder.(transcriptCheckpointRecorder)
 	if !ok {
 		return nil, nil // Other recorder transports need their own durable path.
 	}
-	capture, err := recorder.BeginTranscriptCaptureWithScrubber(stage, e.adapter.Name()+".transcript", e.scrubber)
+	capture, err := recorder.OpenTranscriptCheckpoint(stage, e.adapter.Name()+".transcript", e.scrubber)
 	if err != nil {
 		return nil, fmt.Errorf("harness: begin transcript checkpoints: %w", err)
 	}
@@ -28,7 +28,7 @@ func (e *Executor) beginTranscriptCapture(stage string, req *RunRequest) (*journ
 	return capture, nil
 }
 
-func (e *Executor) recordFinalTranscript(capture *journal.TranscriptCapture, completed bool, stage, name, schema string, data []byte) (journal.Ref, error) {
+func (e *Executor) recordFinalTranscript(capture journal.TranscriptCheckpointSession, completed bool, stage, name, schema string, data []byte) (journal.Ref, error) {
 	if capture != nil && completed {
 		return capture.RecordFinal(schema, data)
 	}

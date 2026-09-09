@@ -15,6 +15,21 @@ import (
 // empty deltas or changes its termination reason on every call.
 const MaxTranscriptCheckpoints = 4096
 
+// TranscriptCheckpointSession is the durable lifecycle shared by local and
+// remote recorders. Append must acknowledge persisted bytes, not a queued or
+// best-effort upload. RecordFinal must commit the final transcript before
+// retiring any partials.
+type TranscriptCheckpointSession interface {
+	Append(TranscriptCheckpoint) error
+	RecordFinal(schema string, data []byte) (Ref, error)
+}
+
+// OpenTranscriptCheckpoint exposes the local implementation through the same
+// session contract used by recorder transports that do not own the run writer.
+func (r *Run) OpenTranscriptCheckpoint(stage, name string, scrubber Scrubber) (TranscriptCheckpointSession, error) {
+	return r.BeginTranscriptCaptureWithScrubber(stage, name, scrubber)
+}
+
 // TranscriptCheckpoint is raw incremental input from a single capture stream.
 // Offset counts raw bytes, not redacted bytes; streams have independent cursors.
 type TranscriptCheckpoint struct {
