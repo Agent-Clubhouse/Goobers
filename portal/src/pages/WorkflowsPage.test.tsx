@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
@@ -21,6 +22,38 @@ describe("workflows page", () => {
         }),
       ).toBeInTheDocument();
     }
+  });
+
+  it("uses compact persona summaries and collapses large gaggle inventories", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const workflow = fixtures.workflows?.core?.items[0];
+    if (!workflow || !fixtures.workflows?.core) {
+      throw new Error("Core workflow fixture is required.");
+    }
+    fixtures.workflows.core.items = Array.from({ length: 4 }, (_, index) => ({
+      ...workflow,
+      identity: { gaggle: "core", name: `workflow-${index}` },
+      displayName: `Workflow ${index}`,
+      definition: { ...workflow.definition, digest: `sha256:workflow-${index}` },
+    }));
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const toggle = await screen.findByRole("button", { name: /Core product/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Workflow 0")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const section = toggle.closest("section");
+    if (!section) {
+      throw new Error("Expected gaggle inventory section.");
+    }
+    expect(within(section).getByText("Workflow 0")).toBeInTheDocument();
+    expect(within(section).getByText(/1 configured persona/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "View Core product Goobers" }),
+    ).toHaveAttribute("href", "#/goobers?gaggle=core");
+    expect(within(section).queryByText("Workflow ownership")).not.toBeInTheDocument();
   });
 
   it("copies a manual-run command and announces success", async () => {

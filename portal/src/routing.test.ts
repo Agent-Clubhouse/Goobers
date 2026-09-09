@@ -15,6 +15,13 @@ describe("definition routing", () => {
     expect(parseRoute(routeHash(workflow))).toEqual(workflow);
     expect(activeArea(gaggle)).toBe("workflows");
   });
+
+  it("round-trips a gaggle-filtered Goobers inventory", () => {
+    const route = { page: "goobers" as const, gaggle: "core tools" };
+
+    expect(routeHash(route)).toBe("#/goobers?gaggle=core+tools");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+  });
 });
 
 describe("Insight routing", () => {
