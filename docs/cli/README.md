@@ -173,7 +173,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers reconcile-branches`](#goobers-reconcile-branches) | report bounded stale goobers/* branch candidates (a workflow stage) |
 | [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
-| [`goobers recovery-resume`](#goobers-recovery-resume) | restore retained implementation into the receiving run |
+| [`goobers recovery-resume`](#goobers-recovery-resume) | restore retained implementation into the receiving run (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers resolve-review-threads`](#goobers-resolve-review-threads) | reply to and resolve remediated native review threads (a workflow stage) |
@@ -3009,7 +3009,7 @@ $ goobers recovery-restore --record ./retained/record.json --repository ./checko
 
 ## `goobers recovery-resume`
 
-restore retained implementation into the receiving run
+restore retained implementation into the receiving run (a workflow stage)
 
 ~~~text
 Usage: goobers recovery-resume [instance]
