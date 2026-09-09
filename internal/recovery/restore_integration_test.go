@@ -56,6 +56,17 @@ func TestIntegrationRestoreFullPatchOntoCurrentMain(t *testing.T) {
 		t.Fatalf("restore did not use current main: %s", got)
 	}
 	testVerifyPreparedRestoration(t, repository, record, restored, main)
+	if found, err := FindRestoredAncestor(t.Context(), repository, record, restored, 1<<20); err != nil || found != restored {
+		t.Fatalf("verified receiving ancestry missing: %s %v", found, err)
+	}
+	if found, err := FindRestoredAncestor(t.Context(), repository, record, main, 1<<20); err != nil || found != "" {
+		t.Fatalf("unrelated main accepted as restored ancestry: %s %v", found, err)
+	}
+	mainTree := recoveryTestGit(t, repository, "rev-parse", main+"^{tree}")
+	reverted := recoveryTestGit(t, repository, "commit-tree", mainTree, "-p", restored, "-m", "revert restored implementation")
+	if found, err := FindRestoredAncestor(t.Context(), repository, record, reverted, 1<<20); err != nil || found != "" {
+		t.Fatalf("reverted restoration accepted as landed content: %s %v", found, err)
+	}
 	preparedBranch, err := PreparedRestoreBranch("receiving-run")
 	if err != nil {
 		t.Fatal(err)
@@ -115,6 +126,9 @@ func testVerifyPreparedRestoration(t *testing.T, repository string, record Recor
 		forged := recoveryTestGit(t, repository, "commit-tree", wrongTree, "-p", main, "-m", message)
 		if err := VerifyRestoredCommit(context.Background(), repository, record, forged, 1<<20); err == nil {
 			t.Fatal("matching message substituted for verified restored content")
+		}
+		if found, err := FindRestoredAncestor(t.Context(), repository, record, forged, 1<<20); err == nil && found != "" {
+			t.Fatal("forged source marker authorized receiving ancestry")
 		}
 	}
 }
