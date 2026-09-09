@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -46,7 +47,8 @@ type workerSeams struct {
 	// store is the fleet-wide content-addressed store stage artifacts travel
 	// through. Nil means node-local only: every stage of a run must then be
 	// polled by THIS worker or the first cross-node pointer fails closed.
-	store blobstore.Store
+	store           blobstore.Store
+	recoveryEmitter *livejournal.HTTPEmitter
 	// logf receives reload diagnostics. A rejected reload is loud but never
 	// fatal — the worker keeps serving from its last-known-good snapshot —
 	// so it needs somewhere to say so that is not the failed stage's error.
@@ -364,6 +366,9 @@ func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRe
 	// through: the RWX volume the daemon's blob plane serves pods from, so a
 	// bundle a pod PUT is what this provisioner GETs (#3803), and vice versa.
 	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot, Store: p.seams.store}
+	if err := p.seams.installRemoteRecoveryGuard(g.manager); err != nil {
+		return nil, err
+	}
 	return delegate.Provision(ctx, req)
 }
 
