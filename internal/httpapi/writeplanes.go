@@ -375,6 +375,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 	registerClaimVerificationRoute(router, config.claims, errorLog)
 	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
+	registerTriggerStatusRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
 	registerCancelRoute(router, config.cancels, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)

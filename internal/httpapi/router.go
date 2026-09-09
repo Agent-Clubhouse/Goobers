@@ -420,6 +420,9 @@ func RequireRoles() Authorizer {
 // does not compile.
 func podRouteScope(request *http.Request) (scope string, admitted bool) {
 	path, method := request.URL.Path, request.Method
+	if suffix, ok := strings.CutPrefix(path, apicontract.TriggerIngestPath+"/"); ok && suffix != "" && !strings.Contains(suffix, "/") && method == http.MethodGet {
+		return ScopeState, true
+	}
 	if scope, ok := podPlanePath(path); ok && method == http.MethodPost {
 		return scope, true
 	}

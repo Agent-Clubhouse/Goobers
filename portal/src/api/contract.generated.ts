@@ -37,6 +37,7 @@ export const apiRoutes = {
   "claimVerify": { method: "POST", path: "/api/v1/claims/verify", actionClass: "workflow-execution" },
   "claimRecover": { method: "POST", path: "/api/v1/claims/recover", actionClass: "workflow-execution" },
   "triggerIngest": { method: "POST", path: "/api/v1/triggers", actionClass: "workflow-execution" },
+  "triggerStatus": { method: "GET", path: "/api/v1/triggers/{acceptance}", actionClass: "read-only-navigation" },
   "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
   "cancelRun": { method: "POST", path: "/api/v1/runs/{run}/cancel", actionClass: "maintenance" },
   "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },

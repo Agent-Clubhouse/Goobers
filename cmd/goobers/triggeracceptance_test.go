@@ -126,3 +126,29 @@ func TestDurableTriggerReturnsAcceptanceWhileDispatchIsBlocked(t *testing.T) {
 		t.Fatal("retry duplicated blocked dispatch")
 	}
 }
+
+func TestDurableTriggerStatusBindsActorAndPodIdentity(t *testing.T) {
+	dispatch := newDaemonTriggerService().withGaggleContainment(func(string, string) bool { return true })
+	s := acceptedService(t, filepath.Join(t.TempDir(), "accepted.db"), dispatch)
+	request := httpapi.TriggerRequest{Workflow: "impl", Gaggle: "own", RequestID: "delivery", Actor: "pod:run-1", PodScoped: true, PodRunID: "run-1"}
+	accepted, err := s.Trigger(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := httpapi.TriggerStatusRequest{AcceptanceID: accepted.AcceptanceID, Actor: request.Actor, PodScoped: true, PodRunID: "run-1"}
+	status, err := s.TriggerStatus(t.Context(), lookup)
+	if err != nil || status.State != "accepted" || status.AcceptanceID != accepted.AcceptanceID || status.AcceptedAt.IsZero() {
+		t.Fatalf("status = %+v, %v", status, err)
+	}
+	for _, altered := range []httpapi.TriggerStatusRequest{
+		{AcceptanceID: lookup.AcceptanceID, Actor: "other", PodScoped: true, PodRunID: "run-1"},
+		{AcceptanceID: lookup.AcceptanceID, Actor: lookup.Actor, PodScoped: true, PodRunID: "run-2"},
+		{AcceptanceID: lookup.AcceptanceID, Actor: lookup.Actor},
+		{AcceptanceID: "missing", Actor: lookup.Actor, PodScoped: true, PodRunID: "run-1"},
+	} {
+		status, err := s.TriggerStatus(t.Context(), altered)
+		if err == nil || status.AcceptanceID != "" || err.Error() != "trigger acceptance not found" {
+			t.Fatalf("foreign status = %+v, %v", status, err)
+		}
+	}
+}

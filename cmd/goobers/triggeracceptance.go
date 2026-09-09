@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +70,28 @@ func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.Tri
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(http.StatusServiceUnavailable, "trigger_acceptance_unavailable", "trigger could not be acknowledged; retry with the same key", err)
 	}
 	return httpapi.TriggerResponse{AcceptanceID: record.ID, State: string(record.State), RunID: record.RunID, Duplicate: duplicate}, nil
+}
+
+func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpapi.TriggerStatusRequest) (httpapi.TriggerStatusResponse, error) {
+	missing := httpapi.NewInterventionError(http.StatusNotFound, "trigger_not_found", "trigger acceptance not found", nil)
+	if len(request.AcceptanceID) > 128 {
+		return httpapi.TriggerStatusResponse{}, missing
+	}
+	record, err := s.queue.Get(ctx, request.AcceptanceID, request.Actor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return httpapi.TriggerStatusResponse{}, missing
+	}
+	if err != nil {
+		return httpapi.TriggerStatusResponse{}, err
+	}
+	var payload acceptedTriggerPayload
+	if err := json.Unmarshal(record.Payload, &payload); err != nil {
+		return httpapi.TriggerStatusResponse{}, err
+	}
+	if payload.PodScoped != request.PodScoped || (request.PodScoped && payload.PodRunID != request.PodRunID) {
+		return httpapi.TriggerStatusResponse{}, missing
+	}
+	return httpapi.TriggerStatusResponse{AcceptanceID: record.ID, State: string(record.State), RunID: record.RunID, Reason: record.Reason, AcceptedAt: record.AcceptedAt}, nil
 }
 
 // Drain takes a bounded batch with durable per-record claims. In-flight records
