@@ -258,7 +258,7 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 // bypassed by a caller-supplied duration (e.g. a workflow's leaseDuration
 // input) reaching a live-lease branch that skips validation.
 func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
-	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration)
+	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration, time.Time{})
 }
 
 // ClaimScoped acquires a claim namespaced by gaggle, provider, and external ID.
@@ -267,7 +267,22 @@ func (l *ClaimLedger) ClaimScoped(key ClaimKey, runID, workflow string, leaseDur
 	if err != nil {
 		return false, "", err
 	}
-	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration)
+	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration, time.Time{})
+}
+
+// ClaimScopedUntil acquires a local claim bounded by an already established
+// shared admission deadline. The deadline is checked under the ledger mutex,
+// so waiting for local contention cannot restart the remote lease's lifetime.
+// Callers must still stop execution at the deadline and handle remote release.
+func (l *ClaimLedger) ClaimScopedUntil(key ClaimKey, runID, workflow string, deadline time.Time) (ok bool, holder string, err error) {
+	if deadline.IsZero() {
+		return false, "", errors.New("localscheduler: claim deadline is required")
+	}
+	storageKey, err := key.storageKey()
+	if err != nil {
+		return false, "", err
+	}
+	return l.claim(storageKey, key.ExternalID, key, runID, workflow, 0, deadline)
 }
 
 // ReclaimAll atomically reacquires a prior run's complete claim set. Either
@@ -374,8 +389,8 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	return true, runID, nil
 }
 
-func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
-	if leaseDuration <= 0 {
+func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration, deadline time.Time) (ok bool, holder string, err error) {
+	if leaseDuration <= 0 && deadline.IsZero() {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
 	}
 
@@ -383,6 +398,13 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	defer l.mu.Unlock()
 
 	now := l.now()
+	expires := deadline
+	if expires.IsZero() {
+		expires = now.Add(leaseDuration)
+	}
+	if !expires.After(now) {
+		return false, "", errors.New("localscheduler: claim admission deadline has expired")
+	}
 	// An unresolved item-only claim could belong to any namespace, so it
 	// remains exclusive against every scoped claimant until its lease expires.
 	if legacyStorageKey != "" {
@@ -403,7 +425,7 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		RunID:      runID,
 		Workflow:   workflow,
 		ClaimedAt:  now,
-		ExpiresAt:  now.Add(leaseDuration),
+		ExpiresAt:  expires,
 	}
 	// A live same-owner renewal is continuous ownership, not a new provider
 	// observation. Retain its original as-of timestamp; replacement or expired
