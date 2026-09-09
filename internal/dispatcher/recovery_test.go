@@ -48,3 +48,52 @@ func TestWritablePodDisposalRequiresRecoveryAcknowledgment(t *testing.T) {
 		}
 	}
 }
+
+func TestOrphanSweepPreservesWritablePodUntilDurableRecovery(t *testing.T) {
+	cfg := testConfig()
+	pods := &fakePodAPI{}
+	attempt := testAttempt()
+	attempt.Workspace = "repo"
+	pod, err := RenderPod(cfg, attempt, linuxRunner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pods.CreatePod(t.Context(), pod); err != nil {
+		t.Fatal(err)
+	}
+	plane := testPlane(t)
+	restarted, err := New(cfg, pods, nil, PlaneSurrenderGate{Plane: plane}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := stateTable{attempt.RunID: RunStateTerminal}
+	deleted, err := restarted.SweepOrphans(t.Context(), states)
+	if !errors.Is(err, ErrRecoveryUnconfirmed) || len(deleted) != 0 || len(pods.deleted) != 0 {
+		t.Fatalf("restart removed unacknowledged source: %v %v", deleted, err)
+	}
+	data, err := json.Marshal(SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure,
+			Error: &apiv1.ErrorInfo{Code: "failed", Message: "implementation failed"}},
+		RecoveryAcknowledged: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plane.Put(t.Context(), attempt.RunID, attempt.Stage, attempt.Number, data); err != nil {
+		t.Fatal(err)
+	}
+	// Another process can recover the acknowledgment from the durable plane;
+	// neither its original in-memory gate nor the first sweep is required.
+	reopened, err := NewSurrenderDir(plane.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err = New(cfg, pods, nil, PlaneSurrenderGate{Plane: reopened}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err = restarted.SweepOrphans(t.Context(), states)
+	if err != nil || len(deleted) != 1 || deleted[0] != pod.Name {
+		t.Fatalf("acknowledged orphan not removed: %v %v", deleted, err)
+	}
+}
