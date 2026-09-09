@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
@@ -10,6 +11,8 @@ import {
   largeJournalFixtures,
   populatedDaemonFixtures,
 } from "../test/daemonFixtures";
+
+const portalStyles = readFileSync("src/styles.css", "utf8");
 
 beforeEach(() => {
   window.location.hash = "#/runs";
@@ -133,6 +136,12 @@ describe("runs history page", () => {
 
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
     await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(28));
+    expect(portalStyles).toMatch(
+      /\.run-current-stage\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.all-runs-grid ~ \.data-row\s*\{[^}]*min-width:\s*0/s,
+    );
   });
 
   it("shows how to start the first run when no runs exist", async () => {
