@@ -113,8 +113,23 @@ func TestIntegrationRemoteWorkerCleanupWaitsForVerifiedCustody(t *testing.T) {
 		t.Fatalf("refused upload lost source: %q %v", data, err)
 	}
 	allow.Store(true)
-	if err := workspace.Remove(t.Context()); err != nil {
+	// A restarted worker has neither the original workspace handle nor the
+	// manager's in-memory state. Cleanup must recover ownership from disk.
+	restartedManager, err := worktree.NewManager(manager.Root)
+	if err != nil {
 		t.Fatal(err)
+	}
+	restartedWorker := &workerSeams{root: layout.Root, scrubber: journal.NewRegistryScrubber(),
+		recoveryEmitter: &livejournal.HTTPEmitter{BaseURL: server.URL, Token: "worker-token"}}
+	if err := restartedWorker.installRemoteRecoveryGuard(restartedManager); err != nil {
+		t.Fatal(err)
+	}
+	results, err := restartedManager.FinalizeRun(t.Context(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Kept || results[0].Path != workspace.Path() {
+		t.Fatalf("restart cleanup results: %+v", results)
 	}
 	if _, err := os.Stat(workspace.Path()); !os.IsNotExist(err) {
 		t.Fatalf("acknowledged source not cleaned: %v", err)
