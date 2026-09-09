@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // dispatchagentic.go is the pod half of the agentic claim check.
@@ -443,10 +444,28 @@ func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
 		SharedRegistry:   w.Registry,
 		RunsDir:          w.RunsDir,
 		SandboxPosture:   instance.SandboxPosture(w.Kit.SandboxPosture),
-		ArtifactRecorder: podArtifactRecorder{stderr: w.Stderr, scrubber: w.Scrubber, dir: w.RunsDir},
+		ArtifactRecorder: podCheckpointRecorder(w),
 		SecretRegistrar:  w.Registry,
 		AgenticAdapter:   newAgenticAdapter,
 	}
+}
+
+type checkpointPodArtifacts struct {
+	podArtifactRecorder
+	livejournal.TranscriptTransport
+}
+
+func podCheckpointRecorder(w podExecutorWiring) runner.ArtifactRecorder {
+	recorder := podArtifactRecorder{stderr: w.Stderr, scrubber: w.Scrubber, dir: w.RunsDir}
+	endpoint := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
+	blobs := podBlobClient()
+	if endpoint == "" || blobs == nil {
+		return recorder
+	}
+	return checkpointPodArtifacts{podArtifactRecorder: recorder, TranscriptTransport: livejournal.TranscriptTransport{
+		RunID: w.Kit.Envelope.RunID, Gaggle: w.Kit.Envelope.Gaggle, Blobs: blobs,
+		Emitter: &livejournal.HTTPEmitter{BaseURL: endpoint, Token: os.Getenv(dispatcher.EnvPodToken), RetryDeadline: 3 * time.Second},
+	}}
 }
 
 // podArtifactRecorder satisfies runner.ArtifactRecorder inside a stage pod.
