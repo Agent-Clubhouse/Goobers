@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/test/testsupport/testdep"
@@ -22,7 +23,7 @@ import (
 
 func TestIntegrationRecoveryExpirySweepRemovesOnlyEligibleOwnedState(t *testing.T) {
 	testdep.Require(t, "git")
-	for _, mode := range []string{"delete", "dry-run", "running", "busy", "conflict", "renewed"} {
+	for _, mode := range []string{"delete", "dry-run", "running", "busy", "conflict", "renewed", "abandoned", "abandoned-renewed", "abandoned-stage", "abandoned-running"} {
 		t.Run(mode, func(t *testing.T) { testRecoveryExpirySweep(t, mode) })
 		t.Run("pinned-"+mode, func(t *testing.T) { testRecoveryExpirySweep(t, "pinned-"+mode) })
 	}
@@ -73,13 +74,16 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 	t.Cleanup(func() { repoCloneURL = previous })
 	now := time.Now().UTC()
 	start, finish := now.Add(-90*24*time.Hour), now.Add(-45*24*time.Hour)
+	if strings.HasPrefix(mode, "abandoned") {
+		finish = now.Add(-time.Hour)
+	}
 	const runID = "expiry-integration"
 	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: runID, Workflow: "implementation", WorkflowVersion: 1, StartedAt: start}, nil, journal.WithClock(func() time.Time { return finish }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = run.Close() }()
-	if mode != "running" {
+	if mode != "running" && mode != "abandoned-running" {
 		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
 			t.Fatal(err)
 		}
@@ -102,9 +106,32 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, path, err := recovery.PublishToInventory(ctx, mirror, root, []string{manager.Root}, record, 128, 1<<20)
+	retained, path, err := recovery.PublishToInventory(ctx, mirror, root, []string{manager.Root}, record, 128, 1<<20)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if strings.HasPrefix(mode, "abandoned") {
+		event, err := recovery.AbandonedEvent(retained)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode == "abandoned-stage" {
+			event.Runner[livejournal.EmitKeyRunnerField] = "untrusted-stage"
+		}
+		log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendErr := log.Append(event)
+		closeErr := log.Close()
+		if appendErr != nil || closeErr != nil {
+			t.Fatalf("abandonment journal: %v %v", appendErr, closeErr)
+		}
+		if mode == "abandoned-renewed" {
+			if _, err := recovery.RenewRetention(ctx, path, retained.RetainUntil.Add(time.Hour), 1<<20); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	if mode == "renewed" {
 		if _, err := recovery.RenewRetention(ctx, path, now.Add(time.Hour), 1<<20); err != nil {
@@ -121,7 +148,7 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 		t.Fatalf("sweep: %v stderr=%s", err, stderr.String())
 	}
 	gotRef := recoveryCLIGit(t, mirror, "for-each-ref", "--format=%(objectname)", ref)
-	if mode == "delete" {
+	if mode == "delete" || mode == "abandoned" {
 		if gotRef != "" {
 			t.Fatalf("expired pin remains: %s", gotRef)
 		}

@@ -24,9 +24,16 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	if err != nil {
 		return err
 	}
+	if len(entries) == 0 {
+		return nil
+	}
+	operatorEvents, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		return err
+	}
 	var failures error
 	for _, entry := range entries {
-		err := retireExpiredRecoveryEntry(ctx, root, setup, managers, runsByRoot, entry, stdout)
+		err := retireExpiredRecoveryEntry(ctx, root, setup, managers, runsByRoot, entry, operatorEvents, stdout)
 		if err != nil {
 			pf(stderr, "warning: recovery retention failed run=%q ref=%q: %v\n", entry.Record.RunID, entry.Record.Ref, err)
 			failures = errors.Join(failures, err)
@@ -35,7 +42,7 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	return failures
 }
 
-func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, stdout io.Writer) error {
+func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, operatorEvents []journal.Event, stdout io.Writer) error {
 	manager, runDir, err := recoveryRetentionOwner(entry.Record.RunID, managers, runsByRoot)
 	if err != nil {
 		return err
@@ -45,7 +52,7 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 		if err != nil {
 			return err
 		}
-		eligible, err := recoveryDeadlineExpired(reader, record, time.Now().UTC())
+		eligible, err := recoveryRetirementEligible(reader, record, time.Now().UTC(), operatorEvents)
 		if err != nil || !eligible {
 			return err
 		}
@@ -55,7 +62,7 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 		}
 		found, err := manager.WithRecoveryRepositories(ctx, url, func(repositories []string) error {
 			if setup.Config.Retention.DryRun {
-				pf(stdout, "retention candidate kind=recovery rule=retention-window run=%q ref=%q\n", record.RunID, record.Ref)
+				pf(stdout, "retention candidate kind=recovery rule=recovery-policy run=%q ref=%q\n", record.RunID, record.Ref)
 				return nil
 			}
 			_, err := recovery.RetireSnapshot(ctx, root, record, func(current recovery.Record) error {
@@ -104,6 +111,10 @@ func recoveryRetentionOwner(runID string, managers []*worktree.Manager, runsByRo
 }
 
 func recoveryDeadlineExpired(reader *journal.Reader, record recovery.Record, now time.Time) (bool, error) {
+	return recoveryRetirementEligible(reader, record, now, nil)
+}
+
+func recoveryRetirementEligible(reader *journal.Reader, record recovery.Record, now time.Time, operatorEvents []journal.Event) (bool, error) {
 	identity, err := reader.Identity()
 	if err != nil {
 		return false, err
@@ -117,6 +128,12 @@ func recoveryDeadlineExpired(reader *journal.Reader, record recovery.Record, now
 	}
 	if !terminalRunPhase(journal.PhaseFromEvents(events)) {
 		return false, nil
+	}
+	if len(operatorEvents) > 0 {
+		abandoned, err := recovery.ExplicitlyAbandoned(operatorEvents, record)
+		if err != nil || abandoned {
+			return abandoned, err
+		}
 	}
 	finished, err := recoveryWindowTime(events, identity.StartedAt)
 	if err != nil {

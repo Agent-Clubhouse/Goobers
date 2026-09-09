@@ -48,23 +48,18 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 		if !now.Before(entry.Record.RetainUntil) {
 			continue
 		}
-		dir, err := runDirFor(layout, entry.Record.RunID)
+		abandoned, err := recovery.ExplicitlyAbandoned(events, entry.Record)
 		if err != nil {
 			return recovery.InventoryEntry{}, err
 		}
-		reader, err := journal.OpenReadOnly(dir)
+		if abandoned {
+			continue
+		}
+		terminal, err := recoveryCandidateTerminal(ctx, layout, entry.Record)
 		if err != nil {
 			return recovery.InventoryEntry{}, err
 		}
-		identity, err := reader.Identity()
-		if err != nil || identity.RunID != entry.Record.RunID {
-			return recovery.InventoryEntry{}, fmt.Errorf("recovery candidate journal identity mismatch")
-		}
-		phase, err := reader.PhaseBounded(ctx)
-		if err != nil {
-			return recovery.InventoryEntry{}, err
-		}
-		if !terminalRunPhase(phase) {
+		if !terminal {
 			continue
 		}
 		candidates = append(candidates, entry)
@@ -96,6 +91,26 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 		}
 	}
 	return selected, nil
+}
+
+func recoveryCandidateTerminal(ctx context.Context, layout instance.Layout, record recovery.Record) (bool, error) {
+	dir, err := runDirFor(layout, record.RunID)
+	if err != nil {
+		return false, err
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		return false, err
+	}
+	identity, err := reader.Identity()
+	if err != nil || identity.RunID != record.RunID {
+		return false, fmt.Errorf("recovery candidate journal identity mismatch")
+	}
+	phase, err := reader.PhaseBounded(ctx)
+	if err != nil {
+		return false, err
+	}
+	return terminalRunPhase(phase), nil
 }
 
 // Stage snapshots share the run's immutable start timestamp. Explicit capture

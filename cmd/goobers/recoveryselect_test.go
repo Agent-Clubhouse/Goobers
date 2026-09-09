@@ -38,6 +38,35 @@ func TestSelectIssueRecoveryUsesNewestUnexpiredTerminalMatch(t *testing.T) {
 	}
 }
 
+func TestSelectIssueRecoveryRefusesAbandonedSnapshotBeforeReaping(t *testing.T) {
+	layout := instance.NewLayout(initDemo(t))
+	now := time.Now().UTC()
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
+	path := seedRecoverySelection(t, layout, repo, "abandoned", "7", now.Add(-time.Hour), now.Add(time.Hour), true)
+	record, err := recovery.ReadRetainedRecord(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := recovery.AbandonedEvent(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendErr, closeErr := log.Append(event), log.Close()
+	if appendErr != nil || closeErr != nil {
+		t.Fatalf("abandonment journal: %v %v", appendErr, closeErr)
+	}
+	if _, err := selectIssueRecovery(t.Context(), layout, repo.CanonicalKey(), "7", now); err == nil {
+		t.Fatal("abandoned recovery was selected before retention removed it")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("selection deleted retained evidence: %v", err)
+	}
+}
+
 func TestRecoveryCaptureOrderIgnoresRenewalOrderAndTimezoneRepresentation(t *testing.T) {
 	layout := instance.NewLayout(initDemo(t))
 	now := time.Now().In(time.FixedZone("fixture", -7*60*60))
