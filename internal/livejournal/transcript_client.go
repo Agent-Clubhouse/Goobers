@@ -40,6 +40,8 @@ type remoteTranscriptSession struct {
 	next            int
 	err             error
 	final           *journal.Ref
+	finalProposed   *journal.Ref
+	finalSchema     string
 }
 
 type remoteTranscriptStream struct {
@@ -146,6 +148,15 @@ func (s *remoteTranscriptSession) RecordFinal(schema string, data []byte) (journ
 	ref, err := journal.SpanRef(clean)
 	if err != nil {
 		return journal.Ref{}, err
+	}
+	// The daemon may commit before an acknowledgment is lost. Never reuse
+	// that finalization key for different content or a different schema.
+	if s.finalProposed != nil {
+		if s.finalProposed.Digest != ref.Digest || s.finalSchema != schema {
+			return journal.Ref{}, errors.New("livejournal: proposed final transcript changed")
+		}
+	} else {
+		s.finalProposed, s.finalSchema = &ref, schema
 	}
 	if s.final != nil {
 		if s.final.Digest != ref.Digest {
