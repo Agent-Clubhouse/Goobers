@@ -43,7 +43,8 @@ export function PortalShell({
   // and intentionally do not carry across views.
   const scopedFilters = hasScopeIdentity(currentScope) ? currentScope : undefined;
   const { config } = useCobrand();
-  const { dataFreshness, freshness, lastSSEFailure, retryConnection } = useLiveData();
+  const { admissionState, dataFreshness, freshness, lastSSEFailure, retryConnection } =
+    useLiveData();
   const mainContent = useRef<HTMLElement>(null);
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
 
@@ -213,6 +214,13 @@ export function PortalShell({
         </header>
 
         <main className="page-content" id="main-content" ref={mainContent} tabIndex={-1}>
+          {admissionState && (
+            <div className="admission-degraded" role="alert">
+              <strong>Daemon is busy.</strong>{" "}
+              Requests are queued and retrying automatically. Wait for capacity or navigate away
+              to cancel work for this view.
+            </div>
+          )}
           {children}
         </main>
       </div>

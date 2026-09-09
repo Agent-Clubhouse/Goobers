@@ -7,6 +7,7 @@ import {
   RequestCancelledError,
   RequestTimeoutError,
   assertSupportedContractVersion,
+  isAdmissionFailure,
   isRecord,
 } from "./errors";
 import { apiRoutes, type ApiRoute } from "./contract.generated";
@@ -16,6 +17,7 @@ import type {
 } from "../portalDiagnostics";
 import type {
   ApiErrorEnvelope,
+  AdmissionDegradedState,
   ArtifactContent,
   AttemptList,
   DaemonClient,
@@ -178,6 +180,10 @@ export interface HttpDaemonClientConfig {
   timeoutMs?: number;
   fetch?: typeof fetch;
   diagnostics?: PortalDiagnostics;
+  maxConcurrentRequests?: number;
+  admissionRetryBaseMs?: number;
+  admissionRetryMaxMs?: number;
+  onAdmissionState?: (state: AdmissionDegradedState | undefined) => void;
   /**
    * Called with the readState envelope on every JSON response that carries one
    * (#1928).
@@ -197,6 +203,8 @@ export class HttpDaemonClient implements DaemonClient {
   private readonly timeoutMs: number;
   private readonly fetch: typeof fetch;
   private readonly onReadState: ((state: ReadState) => void) | undefined;
+  private readonly requests: RequestCoordinator;
+  private readonly sharedJSON = new Map<string, SharedJSONRequest>();
 
   constructor(config: HttpDaemonClientConfig = {}) {
     const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -206,6 +214,12 @@ export class HttpDaemonClient implements DaemonClient {
     this.baseUrl = normalizeBaseUrl(config.baseUrl ?? "");
     this.diagnostics = config.diagnostics;
     this.onReadState = config.onReadState;
+    this.requests = new RequestCoordinator({
+      maxConcurrent: config.maxConcurrentRequests ?? 2,
+      retryBaseMs: config.admissionRetryBaseMs ?? 1_000,
+      retryMaxMs: config.admissionRetryMaxMs ?? 30_000,
+      onAdmissionState: config.onAdmissionState,
+    });
     this.timeoutMs = timeoutMs;
     const fetcher = config.fetch ?? globalThis.fetch;
     if (typeof fetcher !== "function") {
@@ -562,16 +576,80 @@ export class HttpDaemonClient implements DaemonClient {
     options?: RequestOptions,
     pathParameters?: PathParameters,
   ): Promise<T> {
-    return this.withResponse(route, query, options, "application/json", async (response) => {
-      let value: unknown;
-      try {
-        value = JSON.parse(await response.text());
-      } catch (error) {
-        throw new MalformedResponseError(undefined, { cause: error });
-      }
-      this.observeReadState(value);
-      return value as T;
-    }, pathParameters);
+    const requestUrl = this.url(route, query, pathParameters);
+    return this.coalesceJSON<T>(requestUrl, options?.signal, (signal) =>
+      this.withResponse(
+        route,
+        query,
+        { signal },
+        "application/json",
+        async (response) => {
+          let value: unknown;
+          try {
+            value = JSON.parse(await response.text());
+          } catch (error) {
+            throw new MalformedResponseError(undefined, { cause: error });
+          }
+          this.observeReadState(value);
+          return value as T;
+        },
+        pathParameters,
+      ),
+    );
+  }
+
+  private coalesceJSON<T>(
+    key: string,
+    signal: AbortSignal | undefined,
+    load: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    if (signal?.aborted) {
+      return Promise.reject(new RequestCancelledError());
+    }
+    let shared = this.sharedJSON.get(key);
+    if (!shared) {
+      const controller = new AbortController();
+      const promise = load(controller.signal);
+      shared = { controller, promise, subscribers: new Set() };
+      this.sharedJSON.set(key, shared);
+      void promise.then(
+        () => {
+          if (this.sharedJSON.get(key) === shared) this.sharedJSON.delete(key);
+        },
+        () => {
+          if (this.sharedJSON.get(key) === shared) this.sharedJSON.delete(key);
+        },
+      );
+    }
+
+    const token = Symbol(key);
+    shared.subscribers.add(token);
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return false;
+        settled = true;
+        signal?.removeEventListener("abort", cancel);
+        shared!.subscribers.delete(token);
+        return true;
+      };
+      const cancel = () => {
+        if (!finish()) return;
+        if (shared!.subscribers.size === 0) {
+          shared!.controller.abort();
+        }
+        reject(new RequestCancelledError());
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      void (shared!.promise as Promise<T>).then(
+        (value) => {
+          if (finish()) resolve(value);
+        },
+        (error: unknown) => {
+          if (finish()) reject(error);
+        },
+      );
+    });
   }
 
   /**
@@ -629,15 +707,18 @@ export class HttpDaemonClient implements DaemonClient {
     let responseStatus: number | undefined;
 
     try {
-      const response = await this.fetch(requestUrl, {
-        method: route.method,
-        headers: { Accept: accept },
-        signal: controller.signal,
+      const response = await this.requests.run(requestUrl, controller.signal, async () => {
+        const next = await this.fetch(requestUrl, {
+          method: route.method,
+          headers: { Accept: accept },
+          signal: controller.signal,
+        });
+        responseStatus = next.status;
+        if (!next.ok) {
+          throw await apiError(next);
+        }
+        return next;
       });
-      responseStatus = response.status;
-      if (!response.ok) {
-        throw await apiError(response);
-      }
       return await read(response);
     } catch (error) {
       if (abortKind === "cancelled" || options?.signal?.aborted) {
@@ -702,7 +783,141 @@ async function apiError(
   if (!isApiErrorEnvelope(value)) {
     return new MalformedResponseError("The daemon returned a malformed error response.");
   }
-  return new DaemonApiError(response.status, value.error.code, value.error.message);
+  return new DaemonApiError(
+    response.status,
+    value.error.code,
+    value.error.message,
+    retryAfterMilliseconds(response.headers.get("Retry-After")),
+  );
+}
+
+function retryAfterMilliseconds(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1_000;
+  }
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
+}
+
+interface SharedJSONRequest {
+  controller: AbortController;
+  promise: Promise<unknown>;
+  subscribers: Set<symbol>;
+}
+
+interface CoordinatedRequest<T> {
+  endpoint: string;
+  signal: AbortSignal;
+  attempt: () => Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+  failures: number;
+  cancelled: boolean;
+  cancel: () => void;
+}
+
+interface RequestCoordinatorConfig {
+  maxConcurrent: number;
+  retryBaseMs: number;
+  retryMaxMs: number;
+  onAdmissionState?: (state: AdmissionDegradedState | undefined) => void;
+}
+
+class RequestCoordinator {
+  private active = 0;
+  private blockedUntil = 0;
+  private blockTimer: ReturnType<typeof setTimeout> | undefined;
+  private degraded = false;
+  private readonly queue: CoordinatedRequest<unknown>[] = [];
+
+  constructor(private readonly config: RequestCoordinatorConfig) {
+    if (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1) {
+      throw new RangeError("Maximum concurrent daemon requests must be a positive integer.");
+    }
+  }
+
+  run<T>(endpoint: string, signal: AbortSignal, attempt: () => Promise<T>): Promise<T> {
+    if (signal.aborted) {
+      return Promise.reject(new RequestCancelledError());
+    }
+    return new Promise<T>((resolve, reject) => {
+      const request: CoordinatedRequest<T> = {
+        endpoint,
+        signal,
+        attempt,
+        resolve,
+        reject,
+        failures: 0,
+        cancelled: false,
+        cancel: () => {
+          request.cancelled = true;
+          signal.removeEventListener("abort", request.cancel);
+          reject(new RequestCancelledError());
+        },
+      };
+      signal.addEventListener("abort", request.cancel, { once: true });
+      this.queue.push(request as CoordinatedRequest<unknown>);
+      this.drain();
+    });
+  }
+
+  private drain(): void {
+    const delay = this.blockedUntil - Date.now();
+    if (delay > 0) {
+      if (this.blockTimer === undefined) {
+        this.blockTimer = setTimeout(() => {
+          this.blockTimer = undefined;
+          this.drain();
+        }, delay);
+      }
+      return;
+    }
+    while (this.active < this.config.maxConcurrent) {
+      const request = this.queue.shift();
+      if (!request) return;
+      if (request.cancelled || request.signal.aborted) continue;
+      this.active += 1;
+      void this.start(request);
+    }
+  }
+
+  private async start(request: CoordinatedRequest<unknown>): Promise<void> {
+    try {
+      const value = await request.attempt();
+      if (!request.cancelled) {
+        request.signal.removeEventListener("abort", request.cancel);
+        request.resolve(value);
+        if (this.degraded) {
+          this.degraded = false;
+          this.config.onAdmissionState?.(undefined);
+        }
+      }
+    } catch (error) {
+      if (!request.cancelled && isAdmissionFailure(error)) {
+        request.failures += 1;
+        const exponential = Math.min(
+          this.config.retryBaseMs * 2 ** Math.max(0, request.failures - 1),
+          this.config.retryMaxMs,
+        );
+        const delay = Math.max(error.retryAfterMs ?? 0, exponential);
+        this.blockedUntil = Math.max(this.blockedUntil, Date.now() + delay);
+        this.degraded = true;
+        this.config.onAdmissionState?.({
+          endpoint: request.endpoint,
+          retryAt: new Date(this.blockedUntil).toISOString(),
+        });
+        this.queue.unshift(request);
+      } else if (!request.cancelled) {
+        request.signal.removeEventListener("abort", request.cancel);
+        request.reject(error);
+      }
+    } finally {
+      this.active -= 1;
+      this.drain();
+    }
+  }
 }
 
 function isApiErrorEnvelope(value: unknown): value is ApiErrorEnvelope {

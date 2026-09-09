@@ -26,9 +26,36 @@ export class DaemonApiError extends DaemonClientError {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly retryAfterMs?: number,
   ) {
     super(message, "api");
   }
+}
+
+export class MissingCapabilityError extends DaemonClientError {
+  constructor(readonly capability: string) {
+    super(`The daemon does not expose the ${capability} capability.`, "api");
+  }
+}
+
+export function isAdmissionFailure(error: unknown): error is DaemonApiError {
+  return (
+    error instanceof DaemonApiError &&
+    error.status === 503 &&
+    error.code === "class_saturated"
+  );
+}
+
+export function isMissingCostCapability(
+  error: unknown,
+): error is DaemonApiError | MissingCapabilityError {
+  return (
+    (error instanceof MissingCapabilityError && error.capability.startsWith("telemetry-cost")) ||
+    (error instanceof DaemonApiError &&
+      (error.status === 404 ||
+        error.code === "not_found" ||
+        error.code === "telemetry_costs_unavailable"))
+  );
 }
 
 /**
