@@ -56,6 +56,9 @@ describe("gaggle view summary (#2531)", () => {
     const active = screen.getByRole("region", { name: "Core product active runs" });
     expect(within(active).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();
 
+    const recentToggle = screen.getByRole("button", { name: /Recent outcomes/ });
+    expect(recentToggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(recentToggle);
     const recent = screen.getByRole("region", { name: "Core product recent outcomes" });
     expect(within(recent).getByText(/01JZ402DASHBOARD/)).toBeInTheDocument();
     expect(within(recent).getByText(/01JZ400FAILED/)).toBeInTheDocument();
@@ -70,8 +73,28 @@ describe("gaggle view summary (#2531)", () => {
 
     expect(await screen.findByRole("heading", { name: "Developer tools" })).toBeInTheDocument();
     expect(screen.getByText("No runs are active for Developer tools.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Recent outcomes/ }));
     const recent = screen.getByRole("region", { name: "Developer tools recent outcomes" });
     expect(within(recent).getByText(/01JZ300ABORTED/)).toBeInTheDocument();
+  });
+
+  it("keeps major secondary sections collapsed and links to gaggle-filtered personas", async () => {
+    window.location.hash = "#/gaggle/core";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recent outcomes/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: /Repository topology/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.getByRole("link", { name: "View full Goober details" })).toHaveAttribute(
+      "href",
+      "#/goobers?gaggle=core",
+    );
   });
 });
 
@@ -134,6 +157,7 @@ describe("gaggle partial run-phase failures (#3658)", () => {
 
     render(<App client={client} />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /Recent outcomes/ }));
     const recent = await screen.findByRole("region", { name: "Core product recent outcomes" });
     expect(within(recent).getByText(/01JZ455ESCALATE/)).toBeInTheDocument();
 
@@ -145,6 +169,7 @@ describe("gaggle partial run-phase failures (#3658)", () => {
     expect(await screen.findByRole("heading", { name: "Developer tools" })).toBeInTheDocument();
     const warning = await screen.findByRole("alert");
     expect(warning).toHaveTextContent(/Run activity for the completed phase could not be read/);
+    await userEvent.click(screen.getByRole("button", { name: /Recent outcomes/ }));
     const toolsRecent = screen.getByRole("region", { name: "Developer tools recent outcomes" });
     expect(within(toolsRecent).queryByText(/01JZ455ESCALATE/)).not.toBeInTheDocument();
   });

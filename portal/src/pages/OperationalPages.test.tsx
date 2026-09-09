@@ -98,6 +98,7 @@ describe("operational overview", () => {
   });
 
   it("groups canonical phases and places attention rows before aggregate counts", async () => {
+    const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
@@ -112,11 +113,12 @@ describe("operational overview", () => {
     expect(attentionSection.compareDocumentPosition(counts) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+    await expandAttentionRuns(user, attentionSection);
     expect(
-      within(attentionSection).getByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
+      within(attentionSection).getByRole("link", { name: /01JZ402DASHBOARD/ }),
     ).toBeInTheDocument();
     expect(
-      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+      within(attentionSection).getByRole("link", { name: /01JZ400FAILED/ }),
     ).toBeInTheDocument();
     expect(
       within(screen.getByRole("region", { name: "Active runs" })).getByRole("link", {
@@ -155,12 +157,13 @@ describe("operational overview", () => {
     if (!attentionSection) {
       throw new Error("Attention section was not rendered.");
     }
+    await expandAttentionRuns(user, attentionSection);
     // Sanity: the row's own "open this run" link is present alongside the
     // pivot, confirming the pivot is additive rather than replacing it.
     const failedRunLink = within(attentionSection).getByRole("link", {
-      name: "Open run 01JZ400FAILED",
+      name: /01JZ400FAILED/,
     });
-    const failedRow = failedRunLink.closest(".attention-row");
+    const failedRow = failedRunLink.closest(".attention-run-row");
     if (!failedRow) {
       throw new Error("Attention row was not rendered.");
     }
@@ -177,21 +180,28 @@ describe("operational overview", () => {
   });
 
   it("labels a failed attention row with its coded telemetry reason", async () => {
+    const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    await expandAttentionRuns(user, attentionSection);
     // The row link (#2529: now a stretched overlay, not the row's content
     // container, so the failed run's reason is a document-unique text node
     // rather than a descendant of the "Open run ..." link) still resolves
     // first, confirming the row itself rendered before checking its content.
-    await screen.findByRole("link", { name: "Open run 01JZ400FAILED" });
+    await screen.findByRole("link", { name: /01JZ400FAILED/ });
     expect(
       await screen.findByText(
         "harness.crash · Harness exited before producing a result envelope.",
       ),
     ).toBeInTheDocument();
 
-    screen.getByRole("link", { name: "Open run 01JZ402DASHBOARD" });
-    expect(screen.getByText("Run escalated and needs human review.")).toBeInTheDocument();
+    screen.getByRole("link", { name: /01JZ402DASHBOARD/ });
+    expect(screen.getByText("Escalated and needs human review.")).toBeInTheDocument();
   });
 
   it("bounds recent outcomes and sources active runs server-side on a large journal", async () => {
@@ -266,11 +276,16 @@ describe("workflow and gaggle inventory", () => {
 
     expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Developer tools" })).toBeInTheDocument();
-    expect(screen.getByText("Core implementer")).toBeInTheDocument();
-    expect(screen.getByText("Tools implementer")).toBeInTheDocument();
-    expect(screen.getAllByText("go, react")).toHaveLength(2);
-    expect(screen.getAllByText("repo:push")).toHaveLength(2);
-    expect(screen.getAllByText(/implementation \/ implement \(agentic\)/)).toHaveLength(2);
+    expect(screen.getByText(/1 configured persona · Core implementer/)).toBeInTheDocument();
+    expect(screen.getByText(/1 configured persona · Tools implementer/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View Core product Goobers" })).toHaveAttribute(
+      "href",
+      "#/goobers?gaggle=core",
+    );
+    expect(screen.getByRole("link", { name: "View Developer tools Goobers" })).toHaveAttribute(
+      "href",
+      "#/goobers?gaggle=tools",
+    );
 
     const coreLink = screen.getByRole("link", {
       name: "Open workflow Implementation for gaggle Core product",
@@ -280,11 +295,16 @@ describe("workflow and gaggle inventory", () => {
     });
     expect(coreLink).toHaveAttribute("href", "#/workflow/core/implementation");
     expect(toolsLink).toHaveAttribute("href", "#/workflow/tools/implementation");
-    expect(screen.getByRole("link", { name: "Core product" })).toHaveAttribute(
+    const coreSection = screen.getByRole("heading", { name: "Core product" }).closest("section");
+    const toolsSection = screen.getByRole("heading", { name: "Developer tools" }).closest("section");
+    if (!coreSection || !toolsSection) {
+      throw new Error("Gaggle inventory sections were not rendered.");
+    }
+    expect(within(coreSection).getByRole("link", { name: "Open gaggle details" })).toHaveAttribute(
       "href",
       "#/gaggle/core",
     );
-    expect(screen.getByRole("link", { name: "Developer tools" })).toHaveAttribute(
+    expect(within(toolsSection).getByRole("link", { name: "Open gaggle details" })).toHaveAttribute(
       "href",
       "#/gaggle/tools",
     );
@@ -306,7 +326,11 @@ describe("workflow and gaggle inventory", () => {
 
     // The gaggle-detail link keeps its bare display name as its accessible
     // name — the pivot links carry distinct names so this stays unique.
-    expect(screen.getByRole("link", { name: "Core product" })).toHaveAttribute(
+    const coreSection = screen.getByRole("heading", { name: "Core product" }).closest("section");
+    if (!coreSection) {
+      throw new Error("Core product inventory section was not rendered.");
+    }
+    expect(within(coreSection).getByRole("link", { name: "Open gaggle details" })).toHaveAttribute(
       "href",
       "#/gaggle/core",
     );
@@ -378,6 +402,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByRole("group", { name: "implementation execution graph" }),
     ).toHaveAttribute("data-preview", "true");
+    await userEvent.click(screen.getByRole("button", { name: /Repository topology/ }));
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });
@@ -444,6 +469,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       screen.queryByRole("tablist", { name: "Core product workflows" }),
     ).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Repository topology/ }));
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });
@@ -465,8 +491,9 @@ describe("workflow and gaggle inventory", () => {
     if (!attentionSection) {
       throw new Error("Attention section was not rendered.");
     }
+    await expandAttentionRuns(user, attentionSection);
     expect(
-      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+      within(attentionSection).getByRole("link", { name: /01JZ400FAILED/ }),
     ).toBeInTheDocument();
 
     await user.click(
@@ -474,10 +501,10 @@ describe("workflow and gaggle inventory", () => {
     );
 
     expect(
-      within(attentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+      within(attentionSection).queryByRole("link", { name: /01JZ400FAILED/ }),
     ).not.toBeInTheDocument();
     expect(
-      within(attentionSection).getByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
+      within(attentionSection).getByRole("link", { name: /01JZ402DASHBOARD/ }),
     ).toBeInTheDocument();
 
     rendered.unmount();
@@ -488,7 +515,7 @@ describe("workflow and gaggle inventory", () => {
       throw new Error("Attention section was not rendered.");
     }
     expect(
-      within(reattentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+      within(reattentionSection).queryByRole("link", { name: /01JZ400FAILED/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -501,6 +528,7 @@ describe("workflow and gaggle inventory", () => {
     if (!attentionSection) {
       throw new Error("Attention section was not rendered.");
     }
+    await expandAttentionRuns(user, attentionSection);
 
     await user.click(
       within(attentionSection).getByRole("checkbox", {
@@ -533,7 +561,7 @@ describe("workflow and gaggle inventory", () => {
       }),
     );
     expect(
-      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+      within(attentionSection).getByRole("link", { name: /01JZ400FAILED/ }),
     ).toBeInTheDocument();
   });
 
@@ -547,7 +575,11 @@ describe("workflow and gaggle inventory", () => {
       throw new Error("Attention section was not rendered.");
     }
 
-    await user.click(within(attentionSection).getByRole("checkbox", { name: "Select all" }));
+    await user.click(
+      within(attentionSection).getByRole("checkbox", {
+        name: "Select all visible attention runs",
+      }),
+    );
     expect(
       within(attentionSection).getByRole("button", { name: "Dismiss 2 selected" }),
     ).toBeInTheDocument();
@@ -579,20 +611,21 @@ describe("workflow and gaggle inventory", () => {
     if (!attentionSection) {
       throw new Error("Attention section was not rendered.");
     }
+    await expandAttentionRuns(user, attentionSection);
     const toggle = within(attentionSection).getByRole("button", {
       name: "Collapse needs attention",
     });
     // Defaults to expanded for a first-time visitor with no stored preference.
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(
-      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+      within(attentionSection).getByRole("link", { name: /01JZ400FAILED/ }),
     ).toBeInTheDocument();
 
     await user.click(toggle);
 
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(
-      within(attentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+      within(attentionSection).queryByRole("link", { name: /01JZ400FAILED/ }),
     ).not.toBeInTheDocument();
     expect(
       within(attentionSection).getByRole("button", { name: "Expand needs attention" }),
@@ -609,7 +642,7 @@ describe("workflow and gaggle inventory", () => {
       within(reattentionSection).getByRole("button", { name: "Expand needs attention" }),
     ).toHaveAttribute("aria-expanded", "false");
     expect(
-      within(reattentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+      within(reattentionSection).queryByRole("link", { name: /01JZ400FAILED/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -624,6 +657,17 @@ describe("workflow and gaggle inventory", () => {
     expect(screen.queryByRole("heading", { name: "Core product" })).not.toBeInTheDocument();
   });
 });
+
+async function expandAttentionRuns(
+  user: ReturnType<typeof userEvent.setup>,
+  section: HTMLElement,
+): Promise<void> {
+  let button = within(section).queryAllByRole("button", { name: "Show runs" })[0];
+  while (button) {
+    await user.click(button);
+    button = within(section).queryAllByRole("button", { name: "Show runs" })[0];
+  }
+}
 
 class RecoveringClient extends FixtureDaemonClient {
   private healthRequests = 0;

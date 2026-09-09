@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
+import { DaemonApiError } from "../api/errors";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
 
 beforeEach(() => {
@@ -57,6 +58,7 @@ describe("Insight page", () => {
     expect(screen.getByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Highest-contributing nodes" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Highest-contributing nodes/ }));
     expect(
       screen.getByRole("link", {
         name: "View runs behind core implementation review: 1 failures, 1 escalations, 2 wasted attempts",
@@ -68,6 +70,7 @@ describe("Insight page", () => {
     expect(screen.getByText("8 / 6")).toBeInTheDocument();
     expect(screen.getByText("In flight now")).toBeInTheDocument();
     expect(screen.getByText("1h 30m 0s average · 2 claimed")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Failure reasons/ }));
     expect(screen.getByText("harness.crash")).toBeInTheDocument();
     expect(screen.getAllByText("unknown").length).toBeGreaterThan(0);
     expect(
@@ -91,6 +94,7 @@ describe("Insight page", () => {
       ),
     );
     expect(screen.getAllByText("50.0%").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: /Slowest stages/ }));
     expect(screen.getAllByText("P50").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P95").length).toBeGreaterThan(0);
 
@@ -110,14 +114,6 @@ describe("Insight page", () => {
     ).toHaveAttribute(
       "href",
       expect.stringMatching(/stage=implement.*outcome=terminal.*population=attempts/),
-    );
-    expect(
-      screen.getByRole("link", {
-        name: /^View runs behind core implementation implement:/,
-      }),
-    ).toHaveAttribute(
-      "href",
-      expect.stringMatching(/stage=implement.*outcome=finished.*population=measured/),
     );
     await waitFor(() =>
       expect(getTelemetryErrorSignatures).toHaveBeenLastCalledWith(
@@ -335,6 +331,49 @@ describe("Insight page", () => {
     );
   });
 
+  it("keeps Cost usable and gives upgrade guidance when attributed costs are unsupported", async () => {
+    window.location.hash = "#/cost";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "getTelemetryCosts").mockRejectedValue(
+      new DaemonApiError(404, "not_found", "route not found"),
+    );
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Selected-scope cost" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Attributed costs are not supported by this daemon. Upgrade Goobers to enable pull request and issue cost reporting.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  it("isolates a missing trend capability without blanking Cost", async () => {
+    window.location.hash = "#/cost";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const original = client.getTelemetryStats.bind(client);
+    vi.spyOn(client, "getTelemetryStats").mockImplementation(async (request, options) => {
+      const result = await original(request, options);
+      return request?.trendBuckets ? { ...result, trend: undefined } : result;
+    });
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Selected-scope cost" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Instance spend" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Cost by pull request and issue" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows a cost trend and a same-length prior-period comparison for the selected scope", async () => {
     window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
@@ -545,6 +584,7 @@ describe("Insight page", () => {
       await screen.findByLabelText("Scope"),
       screen.getByRole("option", { name: "Stage · core / implementation / implement" }),
     );
+    await user.click(screen.getByRole("button", { name: /Failure reasons/ }));
     await user.click(
       screen.getByRole("link", { name: "View 2 matching errors for harness.crash" }),
     );
@@ -589,7 +629,10 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     await user.click(
-      await screen.findByRole("link", {
+      await screen.findByRole("button", { name: /Failure reasons/ }),
+    );
+    await user.click(
+      screen.getByRole("link", {
         name: "View 1 matching error for scheduler.storage",
       }),
     );
@@ -726,8 +769,23 @@ describe("Insight page", () => {
     );
   });
 
-  it("keeps a gaggle/workflow scope when navigating to Runs and back via the primary nav (#2528)", async () => {
-    window.location.hash = "#/insight?gaggle=core&workflow=implementation";
+  it("opens a focused detail section from a shareable URL", async () => {
+    window.location.hash = "#/insight?section=failures";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("button", { name: /Failure reasons/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("harness.crash")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Slowest stages/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
+  it("keeps identity and time scope across Runs, Insight, and Cost primary pivots", async () => {
+    window.location.hash = "#/insight?gaggle=core&workflow=implementation&window=24h";
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
@@ -736,12 +794,17 @@ describe("Insight page", () => {
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
     expect(screen.getByText("core / implementation")).toBeInTheDocument();
+    expect(window.location.hash).toContain("window=24h");
+
+    await user.click(screen.getByRole("button", { name: "Cost" }));
+    expect(await screen.findByRole("heading", { name: "Cost" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
-
     expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
       "Workflow · core / implementation",
     );
+    expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");
   });
 
   it("distinguishes a never-recorded writer from an empty window and from measured data", async () => {

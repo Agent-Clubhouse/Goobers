@@ -580,6 +580,20 @@ export function WorkflowTopologyGraph({
             >
               {fullscreenMode === "none" ? "Fullscreen" : "Exit fullscreen"}
             </button>
+            <span aria-label="Pan graph" className="graph-pan-controls" role="group">
+              <button aria-label="Pan graph left" onClick={() => pan(-PAN_DISTANCE, 0)} type="button">
+                ←
+              </button>
+              <button aria-label="Pan graph up" onClick={() => pan(0, -PAN_DISTANCE)} type="button">
+                ↑
+              </button>
+              <button aria-label="Pan graph down" onClick={() => pan(0, PAN_DISTANCE)} type="button">
+                ↓
+              </button>
+              <button aria-label="Pan graph right" onClick={() => pan(PAN_DISTANCE, 0)} type="button">
+                →
+              </button>
+            </span>
             {fullscreenError && (
               <span className="sr-only" role="status">
                 {fullscreenError}

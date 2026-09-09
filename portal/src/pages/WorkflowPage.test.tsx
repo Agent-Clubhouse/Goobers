@@ -246,14 +246,14 @@ describe("workflow detail page", () => {
     act(() => client.push(workflowEvent("session:workflow-2", "core", "implementation")));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Workflow detail may be stale");
+    expect(alert).toHaveTextContent("Workflow detail refresh failed");
     expect(alert).toHaveTextContent("Refresh failed.");
     expect(screen.getByText("v7 · sha256:core")).toBeInTheDocument();
 
-    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByText("v8 · sha256:recovered")).toBeInTheDocument();
-    expect(screen.queryByText("Workflow detail may be stale")).not.toBeInTheDocument();
+    expect(screen.queryByText("Workflow detail refresh failed")).not.toBeInTheDocument();
   });
 
   it("scopes live refreshes to the workflow and aborts an in-flight refresh on workflow change", async () => {

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { DaemonClient } from "../api/types";
 import { useCobrand } from "../cobrand";
 import {
@@ -19,7 +19,10 @@ interface PortalShellProps {
   activeGaggle?: string;
   children: React.ReactNode;
   client: DaemonClient;
-  currentScope: Pick<ScopeFilters, "gaggle" | "workflow" | "stage">;
+  currentScope: Pick<
+    ScopeFilters,
+    "gaggle" | "workflow" | "stage" | "since" | "until" | "window"
+  >;
   navigate: Navigate;
   standalone: boolean;
   theme: Theme;
@@ -37,14 +40,20 @@ export function PortalShell({
   theme,
   toggleTheme,
 }: PortalShellProps) {
-  // Navigating between Runs, Insight, and Cost while a gaggle/workflow/stage scope
-  // is active preserves it instead of resetting to "all" (#2528 acceptance
-  // criterion 4) — outcome/population/window are page-specific refinements
-  // and intentionally do not carry across views.
-  const scopedFilters = hasScopeIdentity(currentScope) ? currentScope : undefined;
+  // Runs, Insight, and Cost are peer views over the same identity and time
+  // scope. Keep those fields together while dropping page-specific refinements.
+  const scopedFilters =
+    hasScopeIdentity(currentScope) ||
+    currentScope.since ||
+    currentScope.until ||
+    currentScope.window
+      ? currentScope
+      : undefined;
   const { config } = useCobrand();
-  const { dataFreshness, freshness, lastSSEFailure, retryConnection } = useLiveData();
+  const { admissionState, dataFreshness, freshness, lastSSEFailure, retryConnection } =
+    useLiveData();
   const mainContent = useRef<HTMLElement>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {
@@ -69,6 +78,17 @@ export function PortalShell({
             <strong>{config.brand.name}</strong>
             <small>{config.brand.tagline}</small>
           </span>
+        </button>
+        <button
+          aria-controls="portal-secondary-navigation"
+          aria-expanded={mobileMenuOpen}
+          aria-label="Show gaggles, status, and support links"
+          className="mobile-navigation-button"
+          onClick={() => setMobileMenuOpen((open) => !open)}
+          type="button"
+        >
+          <Icon name="menu" />
+          <span>{mobileMenuOpen ? "Close" : "More"}</span>
         </button>
 
         <nav className="primary-nav" aria-label="Primary">
@@ -134,22 +154,30 @@ export function PortalShell({
           </button>
         </nav>
 
-        <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
+        <div
+          className={`sidebar-secondary${mobileMenuOpen ? " sidebar-secondary-open" : ""}`}
+          id="portal-secondary-navigation"
+        >
+          <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
 
-        <div className="sidebar-status">
-          <div>
-            <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
-            <span>
-              <strong>{standalone ? "Standalone read-only" : "Daemon API"}</strong>
-              <small>
-                {standalone
-                  ? "Daemon not running; reading this instance locally"
-                  : describeConnectionSummary(freshness, lastSSEFailure)}
-              </small>
-            </span>
+          <div
+            className="sidebar-status"
+            title={describeConnectionTitle(freshness, lastSSEFailure)}
+          >
+            <div>
+              <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
+              <span>
+                <strong>{standalone ? "Standalone read-only" : "Daemon API"}</strong>
+                <small>
+                  {standalone
+                    ? "Daemon not running; reading this instance locally"
+                    : describeConnectionSummary(freshness)}
+                </small>
+              </span>
+            </div>
           </div>
+          <SupportFooter />
         </div>
-        <SupportFooter />
       </aside>
 
       <div className="portal-main">
@@ -213,6 +241,13 @@ export function PortalShell({
         </header>
 
         <main className="page-content" id="main-content" ref={mainContent} tabIndex={-1}>
+          {admissionState && (
+            <div className="admission-degraded" role="alert">
+              <strong>Daemon is busy.</strong>{" "}
+              Requests are queued and retrying automatically. Wait for capacity or navigate away
+              to cancel work for this view.
+            </div>
+          )}
           {children}
         </main>
       </div>
@@ -300,14 +335,8 @@ function describeConnectionStatus(
 
 function describeConnectionSummary(
   freshness: LiveFreshness,
-  failure: LiveDataSSEFailure | undefined,
 ): string {
-  const fallback = freshnessCopy[freshness];
-  if (freshness !== "polling-fallback" || !failure) {
-    return fallback;
-  }
-  const cause = failure.result ? `${failure.cause} (${failure.result})` : failure.cause;
-  return `${fallback} — ${cause} on ${failure.endpoint}`;
+  return freshnessCopy[freshness];
 }
 
 function describeConnectionTitle(
@@ -356,7 +385,7 @@ function PollingFallbackIndicator({
   failure: LiveDataSSEFailure | undefined;
   state: DataFreshness;
 }) {
-  const dataLabel = state.kind === "unknown" ? "Data loading" : dataFreshnessLabel(state);
+  const dataLabel = state.kind === "unknown" ? "Data current" : dataFreshnessLabel(state);
   return (
     <span
       aria-live="polite"

@@ -23,6 +23,12 @@ interface ErrorHistory {
   nextCursor?: string;
 }
 
+interface ErrorGroup {
+  id: string;
+  items: TelemetryError[];
+  latest: TelemetryError;
+}
+
 export function ErrorsPage({
   client,
   filters,
@@ -45,6 +51,7 @@ export function ErrorsPage({
   }
 
   const history = query.state.data;
+  const groups = groupErrors(history.items);
   const code = filters.code === "" ? "uncoded" : (filters.code ?? "all codes");
   const errorClass =
     filters.errorClass === "" ? "unknown" : (filters.errorClass ?? "all coarse classes");
@@ -82,19 +89,9 @@ export function ErrorsPage({
           <p className="inline-empty">No errors match this signature, scope, and time window.</p>
         ) : (
           <>
-            <div aria-label="Matching error history" className="telemetry-errors" role="region">
-              <div aria-hidden="true" className="telemetry-error-header">
-                <span>Error</span>
-                <span>Coarse class</span>
-                <span>Location</span>
-                <span>Occurred</span>
-                <span />
-              </div>
-              {history.items.map((item, index) => (
-                <ErrorHistoryRow
-                  item={item}
-                  key={`${item.runId}:${item.occurredAt}:${item.code}:${index}`}
-                />
+            <div aria-label="Matching error history" className="telemetry-error-groups" role="region">
+              {groups.map((group) => (
+                <ErrorGroupCard group={group} key={group.id} />
               ))}
             </div>
             {history.nextCursor && (
@@ -116,37 +113,115 @@ export function ErrorsPage({
   );
 }
 
-function ErrorHistoryRow({ item }: { item: TelemetryError }) {
+function ErrorGroupCard({ group }: { group: ErrorGroup }) {
+  const [expanded, setExpanded] = useState(false);
+  const item = group.latest;
   const code = item.code || "uncoded";
-  const location = item.runId
-    ? [item.workflow, item.stage, item.attempt > 0 ? `attempt ${item.attempt}` : undefined]
-        .filter(Boolean)
-        .join(" / ")
-    : "Instance scheduler";
-  const content = (
-    <>
+  const location = errorLocation(item);
+  const latestContent = (
+    <div className="telemetry-error-summary">
       <span className="error-history-primary">
         <strong className="mono">{code}</strong>
         <small>{item.message || "No error message recorded."}</small>
       </span>
-      <span className="error-class-label">{item.errorClass || "unknown"}</span>
-      <span>{location}</span>
-      <time dateTime={item.occurredAt}>{formatTimestamp(item.occurredAt)}</time>
+      <span className="error-group-location">{location}</span>
+      <span className="error-group-meta">
+        <strong>{group.items.length} {group.items.length === 1 ? "occurrence" : "occurrences"} loaded</strong>
+        <span>
+          Latest <time dateTime={item.occurredAt}>{formatTimestamp(item.occurredAt)}</time>
+        </span>
+        <span className="error-class-label">{item.errorClass || "unknown"}</span>
+      </span>
       {item.runId ? <Icon name="chevron" size={15} /> : <span />}
-    </>
+    </div>
   );
 
+  return (
+    <article className="telemetry-error-group">
+      {item.runId ? (
+        <a
+          aria-label={`Open latest run ${item.runId} for error ${code}`}
+          className="telemetry-error-latest"
+          href={routeHash({ page: "run", id: item.runId })}
+        >
+          {latestContent}
+        </a>
+      ) : (
+        <div className="telemetry-error-latest telemetry-error-row-instance">
+          {latestContent}
+        </div>
+      )}
+      {group.items.length > 1 && (
+        <>
+          <button
+            aria-expanded={expanded}
+            className="telemetry-error-expand"
+            onClick={() => setExpanded((current) => !current)}
+            type="button"
+          >
+            {expanded ? "Hide" : "Show"} {group.items.length} individual occurrences
+          </button>
+          {expanded && (
+            <ol aria-label={`Individual occurrences for ${code}`} className="telemetry-error-occurrences">
+              {group.items.map((occurrence, index) => (
+                <li key={`${occurrence.runId}:${occurrence.occurredAt}:${index}`}>
+                  <ErrorOccurrence item={occurrence} />
+                </li>
+              ))}
+            </ol>
+          )}
+        </>
+      )}
+    </article>
+  );
+}
+
+function ErrorOccurrence({ item }: { item: TelemetryError }) {
+  const content = (
+    <>
+      <span>{errorLocation(item)}</span>
+      <time dateTime={item.occurredAt}>{formatTimestamp(item.occurredAt)}</time>
+    </>
+  );
   return item.runId ? (
     <a
-      aria-label={`Open run ${item.runId} for error ${code}`}
-      className="telemetry-error-row"
+      aria-label={`Open run ${item.runId} occurrence from ${item.occurredAt}`}
       href={routeHash({ page: "run", id: item.runId })}
     >
       {content}
     </a>
   ) : (
-    <div className="telemetry-error-row telemetry-error-row-instance">{content}</div>
+    <span>{content}</span>
   );
+}
+
+function errorLocation(item: TelemetryError): string {
+  return item.runId
+    ? [item.workflow, item.stage, item.attempt > 0 ? `attempt ${item.attempt}` : undefined]
+        .filter(Boolean)
+        .join(" / ")
+    : "Instance scheduler";
+}
+
+function groupErrors(items: TelemetryError[]): ErrorGroup[] {
+  const groups = new Map<string, ErrorGroup>();
+  for (const item of items) {
+    const id = JSON.stringify([
+      item.code,
+      item.errorClass,
+      item.workflow,
+      item.stage,
+      item.attempt,
+      item.message,
+    ]);
+    const existing = groups.get(id);
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      groups.set(id, { id, items: [item], latest: item });
+    }
+  }
+  return [...groups.values()];
 }
 
 function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
@@ -479,4 +554,3 @@ function errorRequest(filters: ErrorRouteFilters): TelemetryErrorsOptions {
     limit: ERRORS_PAGE_SIZE,
   };
 }
-

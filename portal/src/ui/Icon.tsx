@@ -13,6 +13,7 @@ export type IconName =
   | "gate"
   | "goober"
   | "insight"
+  | "menu"
   | "moon"
   | "next"
   | "overview"
@@ -104,6 +105,13 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="M5 19V11" />
         <path d="M12 19V5" />
         <path d="M19 19V8" />
+      </>
+    ),
+    menu: (
+      <>
+        <path d="M4 7h16" />
+        <path d="M4 12h16" />
+        <path d="M4 17h16" />
       </>
     ),
     cost: (

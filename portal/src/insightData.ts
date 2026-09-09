@@ -10,6 +10,7 @@ import type {
   TelemetryUsageStats,
   UpdateModel,
 } from "./api/types";
+import { MissingCapabilityError } from "./api/errors";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { type LiveQuery, useLiveQuery } from "./liveQuery";
 
@@ -226,8 +227,11 @@ export function useInsightCostTrend(
           { signal },
         ),
       );
+      if (stats.trend === undefined) {
+        throw new MissingCapabilityError("telemetry-cost-trend");
+      }
       const buckets = selectInsightCostTrendBuckets(
-        stats.trend ?? [],
+        stats.trend,
         bucketRanges.length,
         previousRange !== undefined,
       ).map(({ since, until, usage }) => ({ since, until, usage }));

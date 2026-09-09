@@ -402,7 +402,7 @@ describe("runs history pagination under live events", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("detail refresh failed");
     expect(within(row).getByText("query-backlog")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(within(row).getByText("review")).toBeInTheDocument());
     expect(getRun).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();

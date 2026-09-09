@@ -285,6 +285,103 @@ describe("HttpDaemonClient", () => {
     } satisfies Partial<DaemonApiError>);
   });
 
+  it("coalesces simultaneous identical reads", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = vi.fn<typeof fetch>(async () => {
+      await blocked;
+      return Response.json(health);
+    });
+    const client = new HttpDaemonClient({ fetch: fetcher });
+
+    const first = client.getHealth();
+    const second = client.getHealth();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([health, health]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds simultaneous reads across query families", async () => {
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let peak = 0;
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      const path = new URL(String(input), "http://localhost").pathname;
+      if (path === "/api/v1/health") return Response.json(health);
+      if (path === "/api/v1/instance") {
+        return Response.json({ apiVersion: API_VERSION, schemaVersion: SCHEMA_VERSION });
+      }
+      return Response.json({});
+    });
+    const client = new HttpDaemonClient({ fetch: fetcher, maxConcurrentRequests: 2 });
+
+    const requests = [client.getHealth(), client.getInstance(), client.getPortalConfig()];
+    await Promise.resolve();
+    expect(active).toBe(2);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    releases.shift()?.();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    while (releases.length > 0) releases.shift()?.();
+    await Promise.all(requests);
+
+    expect(peak).toBe(2);
+  });
+
+  it("backs off admission failures and reports one recoverable degraded state", async () => {
+    const admissionStates: Array<string | undefined> = [];
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json(
+          { error: { code: "class_saturated", message: "retry shortly" } },
+          { status: 503, headers: { "Retry-After": "0" } },
+        ),
+      )
+      .mockResolvedValueOnce(Response.json(health));
+    const client = new HttpDaemonClient({
+      fetch: fetcher,
+      admissionRetryBaseMs: 1,
+      onAdmissionState: (state) => admissionStates.push(state?.endpoint),
+    });
+
+    await expect(client.getHealth()).resolves.toEqual(health);
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(admissionStates).toEqual(["/api/v1/health", undefined]);
+  });
+
+  it("cancels obsolete queued route work before it reaches the daemon", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = vi.fn<typeof fetch>(async () => {
+      await blocked;
+      return Response.json(health);
+    });
+    const client = new HttpDaemonClient({ fetch: fetcher, maxConcurrentRequests: 1 });
+    const obsolete = new AbortController();
+
+    const current = client.getHealth();
+    const queued = client.getInstance({ signal: obsolete.signal });
+    obsolete.abort();
+
+    await expect(queued).rejects.toBeInstanceOf(RequestCancelledError);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    release();
+    await current;
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("surfaces malformed JSON responses distinctly", async () => {
     const { baseUrl } = await startServer((_request, response) => {
       response.writeHead(200, { "Content-Type": "application/json" });

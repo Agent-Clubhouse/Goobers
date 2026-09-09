@@ -3,13 +3,16 @@ import type { DaemonClient, Gaggle, Goober } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { type OperationalSnapshot, useOperationalSnapshot } from "../operationalData";
+import { routeHash } from "../routing";
 import { Icon } from "../ui/Icon";
 
 export function GoobersPage({
   client,
+  gaggleName,
   standalone,
 }: {
   client: DaemonClient;
+  gaggleName?: string;
   standalone: boolean;
 }) {
   const query = useOperationalSnapshot(client);
@@ -24,7 +27,13 @@ export function GoobersPage({
     return null;
   }
 
-  return <GooberRoster snapshot={query.state.data} standalone={standalone} />;
+  return (
+    <GooberRoster
+      gaggleName={gaggleName}
+      snapshot={query.state.data}
+      standalone={standalone}
+    />
+  );
 }
 
 interface RosterEntry {
@@ -33,25 +42,40 @@ interface RosterEntry {
 }
 
 function GooberRoster({
+  gaggleName,
   snapshot,
   standalone,
 }: {
+  gaggleName?: string;
   snapshot: OperationalSnapshot;
   standalone: boolean;
 }) {
-  const entries: RosterEntry[] = snapshot.inventories.flatMap((inventory) =>
+  const inventories = gaggleName
+    ? snapshot.inventories.filter((inventory) => inventory.gaggle.name === gaggleName)
+    : snapshot.inventories;
+  const entries: RosterEntry[] = inventories.flatMap((inventory) =>
     inventory.goobers.map((goober) => ({ gaggle: inventory.gaggle, goober })),
   );
+  const filteredGaggle = gaggleName ? inventories[0]?.gaggle : undefined;
 
   return (
     <>
       <header className="page-heading page-heading-row">
         <div>
-          <p className="page-kicker">Agents</p>
+          <p className="page-kicker">Agent personas</p>
           <h1>Goobers</h1>
           <p>
-            Configured agent personas grouped by the gaggle that owns and provisions them.
+            {filteredGaggle
+              ? `Configured personas owned by ${filteredGaggle.displayName}.`
+              : standalone
+              ? "Every configured agent persona across gaggles, read from this instance."
+              : "Every configured agent persona across gaggles, read from the daemon."}
           </p>
+          {filteredGaggle && (
+            <a className="text-link" href={routeHash({ page: "goobers" })}>
+              View all gaggles
+            </a>
+          )}
         </div>
         <div className="scope-chip">
           <span className="scope-mark">G</span>
@@ -69,35 +93,59 @@ function GooberRoster({
           </div>
         </section>
       ) : (
-        <div aria-label="Goobers grouped by gaggle" className="goober-groups">
-          {snapshot.inventories
-            .filter((inventory) => inventory.goobers.length > 0)
-            .map((inventory) => (
-              <section className="goober-group" key={inventory.gaggle.name}>
-                <div className="section-heading">
-                  <div>
-                    <p className="section-kicker">Gaggle</p>
-                    <h2>{inventory.gaggle.displayName}</h2>
-                  </div>
-                  <span className="section-count">
-                    {inventory.goobers.length}{" "}
-                    {inventory.goobers.length === 1 ? "goober" : "goobers"}
-                  </span>
-                </div>
-                <div className="goober-roster goober-roster-page">
-                  {inventory.goobers.map((goober) => (
-                    <GooberRosterCard
-                      gaggle={inventory.gaggle}
-                      goober={goober}
-                      key={`${inventory.gaggle.name}/${goober.name}`}
-                    />
-                  ))}
-                </div>
-              </section>
-            ))}
+        <div aria-label="Goobers by owning gaggle" className="goober-groups">
+          {inventories.map((inventory) => (
+            <GooberGroup inventory={inventory} key={inventory.gaggle.name} />
+          ))}
         </div>
       )}
     </>
+  );
+}
+
+function GooberGroup({
+  inventory,
+}: {
+  inventory: OperationalSnapshot["inventories"][number];
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const contentId = `goober-group-${inventory.gaggle.name}`;
+
+  return (
+    <section className="goober-group">
+      <button
+        aria-controls={contentId}
+        aria-expanded={expanded}
+        className="goober-group-summary"
+        onClick={() => setExpanded((current) => !current)}
+        type="button"
+      >
+        <span>
+          <span className="section-kicker">Owning gaggle</span>
+          <strong>{inventory.gaggle.displayName}</strong>
+          <code>{inventory.gaggle.name}</code>
+        </span>
+        <span className="section-count">
+          {inventory.goobers.length} {inventory.goobers.length === 1 ? "goober" : "goobers"}
+        </span>
+      </button>
+      {expanded && (
+        <div
+          aria-label={`${inventory.gaggle.displayName} goober personas`}
+          className="goober-roster goober-roster-page"
+          id={contentId}
+          role="region"
+        >
+          {inventory.goobers.map((goober) => (
+            <GooberRosterCard
+              gaggle={inventory.gaggle}
+              goober={goober}
+              key={`${inventory.gaggle.name}/${goober.name}`}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -118,9 +166,8 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
       >
         <span className="goober-card-toggle-label">
           <h4 id={headingId}>{goober.displayName}</h4>
-          <p>
-            {goober.role}
-          </p>
+          <p>{goober.role}</p>
+          <code className="goober-identity">{gaggle.name}/{goober.name}</code>
         </span>
         <span className="goober-card-toggle-meta">
           <span className="definition-status">{goober.status}</span>

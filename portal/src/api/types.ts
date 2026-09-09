@@ -103,6 +103,11 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
+export interface AdmissionDegradedState {
+  endpoint: string;
+  retryAt: string;
+}
+
 export interface EventStreamRequest {
   cursor?: string;
 }
