@@ -100,6 +100,9 @@ func (s *Snapshot) Extract(ctx context.Context, destination string) error {
 	if !seen["instance.yaml"] {
 		return errors.New("config mirror has no instance document")
 	}
+	if err := s.preserveAssetModes(destination); err != nil {
+		return err
+	}
 	if err := syncExtractedDirectories(destination); err != nil {
 		return err
 	}
