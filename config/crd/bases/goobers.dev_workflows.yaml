@@ -413,6 +413,16 @@ spec:
               readiness:
                 description: Readiness bounds when a run may start (WF-011).
                 properties:
+                  claimVisibility:
+                    default: local
+                    description: |-
+                      ClaimVisibility selects local-only claim authority or the additional
+                      cross-instance shared admission constraint. Omission means local; shared
+                      requires a supported provider and must never fall back to local admission.
+                    enum:
+                    - local
+                    - shared
+                    type: string
                   desiredConcurrentRuns:
                     description: |-
                       DesiredConcurrentRuns targets a minimum concurrent occupancy for queue-processing

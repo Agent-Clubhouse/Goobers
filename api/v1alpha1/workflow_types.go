@@ -114,6 +114,13 @@ type IdleBackoff struct {
 // ReadinessConditions bound when a run may start and how emergent chains are
 // kept from running away (WF-011, WF-015).
 type ReadinessConditions struct {
+	// ClaimVisibility selects local-only claim authority or the additional
+	// cross-instance shared admission constraint. Omission means local; shared
+	// requires a supported provider and must never fall back to local admission.
+	// +kubebuilder:validation:Enum=local;shared
+	// +kubebuilder:default=local
+	// +optional
+	ClaimVisibility string `json:"claimVisibility,omitempty" yaml:"claimVisibility,omitempty"`
 	// MaxConcurrentRuns caps simultaneous runs of this workflow.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=1
