@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -18,6 +20,58 @@ func acceptedService(t *testing.T, path string, dispatch *daemonTriggerService) 
 	}
 	t.Cleanup(func() { _ = s.queue.Close() })
 	return s
+}
+
+type acceptedRunIDStarter struct{ ids chan string }
+
+func (s *acceptedRunIDStarter) Start(_ context.Context, request localscheduler.StartRequest) (localscheduler.StartResult, error) {
+	s.ids <- request.RunID
+	return localscheduler.StartResult{Phase: "completed"}, nil
+}
+
+func TestDurableTriggerPinsIdentityThroughActualScheduler(t *testing.T) {
+	for _, mode := range []string{"unqualified", "exact", "priority"} {
+		t.Run(mode, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "accepted.db")
+			dispatch := newDaemonTriggerService()
+			s := acceptedService(t, path, dispatch)
+			request := httpapi.TriggerRequest{Workflow: "impl", RequestID: "delivery", Actor: "operator"}
+			if mode != "unqualified" {
+				request.Gaggle = "own"
+			}
+			if mode == "priority" {
+				request.SourceRun = "source"
+			}
+			accepted, err := s.Trigger(t.Context(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.queue.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s = acceptedService(t, path, dispatch)
+			starter := &acceptedRunIDStarter{ids: make(chan string, 1)}
+			scheduler := localscheduler.New([]localscheduler.WorkflowEntry{{Gaggle: "own", Workflow: "impl", Starter: starter}}, nil)
+			dispatch.AttachScheduler(scheduler)
+			dispatch.AttachDispatchContext(t.Context())
+			if err := s.Drain(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			scheduler.Wait()
+			status, err := s.TriggerStatus(t.Context(), httpapi.TriggerStatusRequest{AcceptanceID: accepted.AcceptanceID, Actor: request.Actor})
+			if err != nil || status.State != "dispatched" || status.RunID != strings.TrimPrefix(accepted.AcceptanceID, "trigger-") {
+				t.Fatalf("status = %+v, %v", status, err)
+			}
+			select {
+			case id := <-starter.ids:
+				if id != status.RunID {
+					t.Fatalf("starter ID=%q status ID=%q", id, status.RunID)
+				}
+			default:
+				t.Fatal("scheduler did not start accepted run")
+			}
+		})
+	}
 }
 
 func TestDurableTriggerAcceptsDuringStartupAndOutlivesRequest(t *testing.T) {

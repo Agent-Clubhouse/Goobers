@@ -188,6 +188,8 @@ type ClaimService interface {
 // second run (the webhook handler's bounded in-memory dedupe, applied to the
 // generic trigger plane — daemon-local is sound under DS1).
 type TriggerRequest struct {
+	// DispatchRunID is assigned by durable acceptance, never by a wire caller.
+	DispatchRunID string `json:"-"`
 	// Actor is the authenticated subject, never a caller-supplied body field.
 	Actor     string `json:"-"`
 	Gaggle    string `json:"gaggle,omitempty"`

@@ -43,6 +43,11 @@ it is not a promise that run admission will succeed. Retrying the same key and
 payload returns the same acceptance identity and the recorded dispatch state.
 `goobers run --no-wait` succeeds on that acceptance.
 
+The daemon derives one run ID from the durable acceptance identity and passes
+it through manual and priority dispatch. Reopening the queue does not allocate
+a different run ID. This is the identity boundary for crash reconciliation,
+not permission to blindly restart an already dispatched run.
+
 The queue retains at most 10,000 records and refuses new requests when all slots
 remain occupied. Only terminal records older than seven days can be pruned on
 insertion; pending requests and uncertain dispatches retain their slots. After

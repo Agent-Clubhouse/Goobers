@@ -131,6 +131,7 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	request.Actor, request.PodScoped, request.PodRunID = record.Actor, payload.PodScoped, payload.PodRunID
 	// Durable queue custody replaces the dispatcher's process-local dedupe.
 	request.RequestID = ""
+	request.DispatchRunID = strings.TrimPrefix(record.ID, "trigger-")
 	response, err := s.dispatch.Trigger(ctx, request)
 	if ctx.Err() != nil {
 		return ctx.Err()

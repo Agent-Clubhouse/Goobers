@@ -626,16 +626,20 @@ func (s *daemonTriggerService) dispatchTrigger(ctx context.Context, dispatch wor
 				"a priority trigger requires the workflow's gaggle", nil)
 			break
 		}
+		if request.DispatchRunID != "" {
+			runID, err = dispatchAcceptedPriority(ctx, dispatchCtx, dispatch, request, s.now())
+			break
+		}
 		runID, err = dispatch.TriggerPriorityWithDispatchContext(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
 		}, strings.TrimSpace(request.SourceRun), s.now())
 	case request.Gaggle != "":
 		runID, err = dispatch.TriggerExactWithDispatchContextOptions(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
-		}, s.now(), localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force})
+		}, s.now(), localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force, RunID: request.DispatchRunID})
 	default:
 		runID, err = dispatch.TriggerWithDispatchContextOptions(ctx, dispatchCtx, request.Workflow, s.now(),
-			localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force})
+			localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force, RunID: request.DispatchRunID})
 	}
 	if err != nil {
 		if requestID != "" {
