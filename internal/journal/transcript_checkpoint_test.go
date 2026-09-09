@@ -2,6 +2,8 @@ package journal
 
 import (
 	"bytes"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,4 +122,65 @@ func TestTranscriptCheckpointFinalRetiresOnlyPrivateBlobs(t *testing.T) {
 	if finals != 1 {
 		t.Fatalf("final span count=%d", finals)
 	}
+}
+
+func TestTranscriptCheckpointStorageIsLinearAndFinalGrowthUnchanged(t *testing.T) {
+	run, _ := newRun(t)
+	capture, err := run.BeginTranscriptCapture("implement", "transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var full []byte
+	const checkpoints = 32
+	for i := range checkpoints {
+		chunk := []byte(fmt.Sprintf("chunk %04d: %s\n", i, strings.Repeat("x", 4096)))
+		if err := capture.Append(TranscriptCheckpoint{Stream: "process-output/1", Offset: len(full), Data: chunk, Reason: "checkpoint"}); err != nil {
+			t.Fatal(err)
+		}
+		full = append(full, chunk...)
+	}
+	files, stored := transcriptStoredBytes(t, filepath.Join(run.dir, dirSpans))
+	if files != checkpoints || stored != int64(len(full)) {
+		t.Fatalf("checkpoint storage is not delta-only: files=%d bytes=%d source=%d", files, stored, len(full))
+	}
+	if _, err := capture.RecordFinal("", full); err != nil {
+		t.Fatal(err)
+	}
+	files, stored = transcriptStoredBytes(t, filepath.Join(run.dir, dirSpans))
+	if files != 1 || stored != int64(len(full)) {
+		t.Fatalf("successful capture retained extra blob storage: files=%d bytes=%d", files, stored)
+	}
+	baseline, _ := newRun(t)
+	if _, err := baseline.RecordSpan("implement", "transcript", full); err != nil {
+		t.Fatal(err)
+	}
+	baselineFiles, baselineBytes := transcriptStoredBytes(t, filepath.Join(baseline.dir, dirSpans))
+	if files != baselineFiles || stored != baselineBytes {
+		t.Fatal("successful checkpointing changed steady-state blob storage")
+	}
+}
+
+func transcriptStoredBytes(t *testing.T, root string) (int, int64) {
+	t.Helper()
+	files := 0
+	var stored int64
+	err := filepath.WalkDir(root, func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		files++
+		stored += info.Size()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files, stored
 }
