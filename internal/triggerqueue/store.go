@@ -9,13 +9,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/sqliteuri"
 
 	_ "modernc.org/sqlite" // Registers the durable ledger driver.
 )
@@ -81,7 +81,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	uri := sqliteuri.File(path)
 	db, err := sql.Open("sqlite", uri+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(DELETE)&_pragma=synchronous(FULL)&_pragma=max_page_count(65536)&_txlock=immediate")
 	if err != nil {
 		return nil, err
