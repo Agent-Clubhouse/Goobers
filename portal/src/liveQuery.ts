@@ -48,6 +48,7 @@ export interface LiveQueryOptions<T> {
 }
 
 export interface LiveQuery<T> {
+  refreshing: boolean;
   retry: () => void;
   state: QueryState<T>;
 }
@@ -64,6 +65,7 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
     const cached = cache.get<T>(cacheKey);
     return cached ? { status: "ready", data: cached } : { status: "loading" };
   });
+  const [refreshing, setRefreshing] = useState(false);
   const family = useRef<QueryFamily | undefined>(undefined);
 
   const publish = useCallback(
@@ -78,6 +80,7 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
       const { cacheKey: key, dependencies, errorMessage, isCurrent } = latest.current;
       const retains = (data: T): boolean => (isCurrent ? isCurrent(data) : true);
       const cacheRevision = cache.beginWrite(key, dependencies);
+      setRefreshing(true);
       setState((current) =>
         (current.status === "ready" || current.status === "stale") && retains(current.data)
           ? { status: "stale", data: current.data }
@@ -105,6 +108,10 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
             ? { status: "stale", data: current.data, error: queryError }
             : { status: "error", error: queryError },
         );
+      } finally {
+        if (!signal.aborted) {
+          setRefreshing(false);
+        }
       }
     },
     [cache, publish],
@@ -177,5 +184,5 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
     family.current?.request("retry");
   }, [cache, cacheKey]);
 
-  return { retry, state };
+  return { refreshing, retry, state };
 }

@@ -339,7 +339,7 @@ describe("ConfigurationWarnings", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Instance API unavailable.");
-    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByText(modelWarning.explanation)).toBeInTheDocument();
     expect(getInstance).toHaveBeenCalledTimes(2);

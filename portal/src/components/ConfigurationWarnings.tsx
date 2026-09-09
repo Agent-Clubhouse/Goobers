@@ -1,6 +1,7 @@
 import type { QueryState } from "../api/queryState";
 import { QueryStateBoundary } from "../api/queryState";
 import type { ValidationWarning } from "../api/types";
+import { SectionQueryStatus } from "./SectionQueryStatus";
 import {
   configurationWarningKey,
   sortConfigurationWarnings,
@@ -24,17 +25,11 @@ function WarningReadError({
   stale?: boolean;
 }) {
   return (
-    <div className="configuration-warning-error" role="alert">
-      <span>
-        <strong>
-          {stale ? "Configuration warnings may be stale" : "Configuration warnings unavailable"}
-        </strong>
-        <small>{error.message}</small>
-      </span>
-      <button className="text-button" onClick={onRefresh} type="button">
-        Try again
-      </button>
-    </div>
+    <SectionQueryStatus
+      error
+      message={`${stale ? "Configuration warnings may be stale" : "Configuration warnings unavailable"}: ${error.message}`}
+      retry={onRefresh}
+    />
   );
 }
 
@@ -165,13 +160,7 @@ export function ConfigurationWarnings({
         }
         error={(error) => <WarningReadError error={error} onRefresh={onRefresh} />}
         loading={
-          <div
-            aria-live="polite"
-            className="configuration-warning-loading"
-            role="status"
-          >
-            Loading configuration warnings
-          </div>
+          <SectionQueryStatus loading message="Loading configuration warnings…" />
         }
         stale={(warnings, error) => (
           <>

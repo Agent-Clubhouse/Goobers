@@ -37,7 +37,7 @@ export function PortalShell({
   theme,
   toggleTheme,
 }: PortalShellProps) {
-  // Navigating between Runs and Insight while a gaggle/workflow/stage scope
+  // Navigating between Runs, Insight, and Cost while a gaggle/workflow/stage scope
   // is active preserves it instead of resetting to "all" (#2528 acceptance
   // criterion 4) — outcome/population/window are page-specific refinements
   // and intentionally do not carry across views.
@@ -122,6 +122,16 @@ export function PortalShell({
             <Icon name="insight" />
             <span className="nav-label">Insight</span>
           </button>
+          <button
+            aria-current={activeArea === "cost" ? "page" : undefined}
+            aria-label="Cost"
+            className={activeArea === "cost" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "cost", filters: scopedFilters })}
+            type="button"
+          >
+            <Icon name="cost" />
+            <span className="nav-label">Cost</span>
+          </button>
         </nav>
 
         <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
@@ -164,17 +174,23 @@ export function PortalShell({
               dropped stream means the next change will arrive late even if what
               is on screen is current.
             */}
-            <DataFreshnessIndicator state={dataFreshness} />
-            <span
-              aria-live="polite"
-              className={`freshness-status freshness-status-${freshness}`}
-              data-state={freshness}
-              role="status"
-              title={describeConnectionTitle(freshness, lastSSEFailure)}
-            >
-              <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
-              {connectionStatus}
-            </span>
+            {freshness === "polling-fallback" ? (
+              <PollingFallbackIndicator failure={lastSSEFailure} state={dataFreshness} />
+            ) : (
+              <>
+                <DataFreshnessIndicator state={dataFreshness} />
+                <span
+                  aria-live="polite"
+                  className={`freshness-status freshness-status-${freshness}`}
+                  data-state={freshness}
+                  role="status"
+                  title={describeConnectionTitle(freshness, lastSSEFailure)}
+                >
+                  <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
+                  {connectionStatus}
+                </span>
+              </>
+            )}
             {freshness === "polling-fallback" ? (
               <button
                 aria-label="Retry live updates"
@@ -329,6 +345,28 @@ export function DataFreshnessIndicator({ state }: { state: DataFreshness }) {
     >
       <span aria-hidden="true" className={`data-mark data-mark-${state.kind}`} />
       {dataFreshnessLabel(state)}
+    </span>
+  );
+}
+
+function PollingFallbackIndicator({
+  failure,
+  state,
+}: {
+  failure: LiveDataSSEFailure | undefined;
+  state: DataFreshness;
+}) {
+  const dataLabel = state.kind === "unknown" ? "Data loading" : dataFreshnessLabel(state);
+  return (
+    <span
+      aria-live="polite"
+      className="freshness-status freshness-status-polling-fallback"
+      data-state="polling-fallback"
+      role="status"
+      title={describeConnectionTitle("polling-fallback", failure)}
+    >
+      <span aria-hidden="true" className="live-mark live-mark-polling-fallback" />
+      {dataLabel} via polling
     </span>
   );
 }
