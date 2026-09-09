@@ -97,4 +97,38 @@ func TestTranscriptTransportWithoutBlobStore(t *testing.T) {
 	if _, err := session.RecordFinal("", data); err != nil {
 		t.Fatal(err)
 	}
+	adopt := func(writer *Writer, key string) {
+		t.Helper()
+		request := EmitRequest{RunID: runID, Gaggle: "web", Ops: []Op{{Kind: OpSpan, Key: key,
+			Span: &SpanOp{Stage: "build", Name: "build.transcript", Ref: ref}}}}
+		for range 2 {
+			if _, err := writer.Emit(t.Context(), request); err != nil {
+				t.Fatalf("workflow span adoption: %v", err)
+			}
+		}
+	}
+	adopt(w, "workflow-span")
+	w.Close()
+	restarted, err := NewWriter(func(gaggle string) (string, bool) { return runs, gaggle == "web" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.Close)
+	adopt(restarted, "workflow-span")
+	adopt(restarted, "workflow-span-after-restart")
+	finals, adoptions := 0, 0
+	for _, event := range readEvents(t, runs, runID) {
+		if event.Type == journal.EventError {
+			t.Fatal("workflow reported unavailable bytes already held in the journal")
+		}
+		if event.Type == journal.EventSpanRecorded && event.Runner["partial"] != true {
+			finals++
+		}
+		if event.Runner["transcriptCaptureAdopted"] != nil {
+			adoptions++
+		}
+	}
+	if finals != 1 || adoptions != 2 {
+		t.Fatalf("workflow duplicated finalized transcript or retry: finals=%d adoptions=%d", finals, adoptions)
+	}
 }

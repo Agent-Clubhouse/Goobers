@@ -1116,6 +1116,9 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 		run.artifactRefs[a.Name] = ref
 		return true, nil
 	case OpSpan:
+		if handled, err := run.adoptCompletedTranscript(op); handled {
+			return err == nil, err
+		}
 		s := op.Span
 		if s == nil {
 			return false, errors.New("span op carries no payload")
