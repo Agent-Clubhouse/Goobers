@@ -70,7 +70,7 @@ function Overview({
   standalone: boolean;
 }) {
   const groups = overview.groups;
-  const emptyInstance = overview.gaggleCount === 0;
+  const emptyInstance = !overview.sectionErrors?.inventory && overview.gaggleCount === 0;
   const emptyWorkflows = !emptyInstance && overview.instance.counts.workflows === 0;
   const emptyRuns =
     !emptyInstance &&
@@ -92,6 +92,8 @@ function Overview({
   const visibleSelectedRunIds = [...selectedRunIds].filter((runId) =>
     activeAttentionIds.has(runId),
   );
+  const allAttentionSelected =
+    activeAttention.length > 0 && visibleSelectedRunIds.length === activeAttention.length;
 
   const toggleSelected = (runId: string) => {
     setSelectedRunIds((current) => {
@@ -110,6 +112,21 @@ function Overview({
       const next = new Set(current);
       for (const runId of runIds) {
         next.delete(runId);
+      }
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    setSelectedRunIds((current) => {
+      const next = new Set(current);
+      if (allAttentionSelected) {
+        for (const run of activeAttention) {
+          next.delete(run.id);
+        }
+      } else {
+        for (const run of activeAttention) {
+          next.add(run.id);
+        }
       }
       return next;
     });
@@ -176,6 +193,16 @@ function Overview({
               <h2>Needs attention</h2>
             </div>
             <div className="attention-actions">
+              {activeAttention.length > 0 && (
+                <label className="attention-select-all">
+                  <input
+                    checked={allAttentionSelected}
+                    onChange={toggleSelectAll}
+                    type="checkbox"
+                  />
+                  Select all
+                </label>
+              )}
               {visibleSelectedRunIds.length > 0 && (
                 <button
                   className="text-button"
@@ -368,107 +395,47 @@ function Overview({
 
 function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
   const hasLastCompletedSweep = Boolean(maintenance.lastCompletedAt || maintenance.lastResult);
-  const phase = maintenance.currentPhase ? ` · ${maintenance.currentPhase}` : "";
-  const triggerLabel = maintenance.trigger ? ` · ${maintenance.trigger} trigger` : "";
-  const lastProgressLabel = maintenance.lastProgressAt
-    ? ` · last progress ${formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago`
-    : "";
+  const details = [
+    maintenance.trigger ? `${maintenance.trigger} trigger` : undefined,
+    maintenance.lastCompletedAt
+      ? `latest at ${formatTimestamp(maintenance.lastCompletedAt)}`
+      : undefined,
+    maintenance.lastProgressAt
+      ? `last progress ${formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago`
+      : undefined,
+    maintenance.currentPhase,
+    `${maintenance.removed} removed, ${maintenance.candidates} candidates`,
+  ].filter(Boolean);
+  const render = (label: string, error = false) => (
+    <div
+      className={`maintenance-indicator${error ? " maintenance-indicator-error" : ""}`}
+      role={error ? "alert" : "status"}
+      aria-live="polite"
+    >
+      <strong>{label}</strong>
+      {details.length > 0 && <span>{details.join(" · ")}</span>}
+    </div>
+  );
 
   switch (maintenance.state) {
     case "running":
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep running</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.startedAt && (
-            <span>
-              {" "}
-              for {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.startedAt)))}
-            </span>
-          )}
-          {lastProgressLabel && <span>{lastProgressLabel}</span>}
-          {phase && <span>{phase}</span>}
-          <span>
-            {" "}
-            · {maintenance.removed} removed, {maintenance.candidates} candidates
-          </span>
-        </div>
-      );
+      return render("Retention sweep running");
     case "failed":
-      return (
-        <div className="maintenance-indicator maintenance-indicator-error" role="alert">
-          <strong>Retention sweep failed</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.errorSummary && <span> · {maintenance.errorSummary}</span>}
-          {maintenance.lastProgressAt && (
-            <span>
-              {" "}
-              · last progress {formatTimestamp(maintenance.lastProgressAt)}
-            </span>
-          )}
-        </div>
+      return render(
+        `Retention sweep failed${maintenance.errorSummary ? `: ${maintenance.errorSummary}` : ""}`,
+        true,
       );
     case "completed":
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep completed</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.lastCompletedAt && (
-            <span>
-              {" "}
-              · latest at {formatTimestamp(maintenance.lastCompletedAt)}
-            </span>
-          )}
-          {lastProgressLabel && <span>{lastProgressLabel}</span>}
-          {phase && <span>{phase}</span>}
-          <span>
-            {" "}
-            · {maintenance.removed} removed, {maintenance.candidates} candidates
-          </span>
-        </div>
-      );
+      return render("Retention sweep completed");
     case "cancelled":
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep cancelled</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.lastCompletedAt && (
-            <span>
-              {" "}
-              · latest at {formatTimestamp(maintenance.lastCompletedAt)}
-            </span>
-          )}
-        </div>
-      );
+      return render("Retention sweep cancelled");
     case "queued":
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>Retention sweep queued</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.lastCompletedAt && (
-            <span>
-              {" "}
-              · last completed at {formatTimestamp(maintenance.lastCompletedAt)}
-            </span>
-          )}
-        </div>
-      );
+      return render("Retention sweep queued");
     case "none":
       if (!hasLastCompletedSweep) {
         return null;
       }
-      return (
-        <div className="maintenance-indicator" role="status" aria-live="polite">
-          <strong>No retention sweep running</strong>
-          {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.lastCompletedAt && (
-            <span>
-              {" "}
-              · last completed at {formatTimestamp(maintenance.lastCompletedAt)}
-            </span>
-          )}
-        </div>
-      );
+      return render("No retention sweep running");
     default:
       return null;
   }
@@ -587,7 +554,9 @@ function RunSection({
                 <span className="row-subtitle">
                   {active && run.operator
                     ? operatorSubtitle(run)
-                    : `${run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}${run.id}`}
+                    : run.trigger.ref && run.trigger.ref !== run.id
+                      ? `Trigger ${run.trigger.ref}`
+                      : `${run.gaggle} / ${run.workflow}`}
                 </span>
                 {active && operatorContext(run) ? (
                   <span className="row-subtitle">{operatorContext(run)}</span>

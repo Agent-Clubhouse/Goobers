@@ -47,12 +47,10 @@ function GooberRoster({
     <>
       <header className="page-heading page-heading-row">
         <div>
-          <p className="page-kicker">Roster</p>
+          <p className="page-kicker">Agents</p>
           <h1>Goobers</h1>
           <p>
-            {standalone
-              ? "Every configured agent persona across gaggles, read from this instance."
-              : "Every configured agent persona across gaggles, read from the daemon."}
+            Configured agent personas grouped by the gaggle that owns and provisions them.
           </p>
         </div>
         <div className="scope-chip">
@@ -71,10 +69,32 @@ function GooberRoster({
           </div>
         </section>
       ) : (
-        <div aria-label="Goober roster" className="goober-roster goober-roster-page">
-          {entries.map(({ gaggle, goober }) => (
-            <GooberRosterCard gaggle={gaggle} goober={goober} key={`${gaggle.name}/${goober.name}`} />
-          ))}
+        <div aria-label="Goobers grouped by gaggle" className="goober-groups">
+          {snapshot.inventories
+            .filter((inventory) => inventory.goobers.length > 0)
+            .map((inventory) => (
+              <section className="goober-group" key={inventory.gaggle.name}>
+                <div className="section-heading">
+                  <div>
+                    <p className="section-kicker">Gaggle</p>
+                    <h2>{inventory.gaggle.displayName}</h2>
+                  </div>
+                  <span className="section-count">
+                    {inventory.goobers.length}{" "}
+                    {inventory.goobers.length === 1 ? "goober" : "goobers"}
+                  </span>
+                </div>
+                <div className="goober-roster goober-roster-page">
+                  {inventory.goobers.map((goober) => (
+                    <GooberRosterCard
+                      gaggle={inventory.gaggle}
+                      goober={goober}
+                      key={`${inventory.gaggle.name}/${goober.name}`}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
         </div>
       )}
     </>
@@ -99,7 +119,7 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
         <span className="goober-card-toggle-label">
           <h4 id={headingId}>{goober.displayName}</h4>
           <p>
-            {gaggle.displayName} · {goober.role}
+            {goober.role}
           </p>
         </span>
         <span className="goober-card-toggle-meta">
