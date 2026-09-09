@@ -83,7 +83,7 @@ func publish(ctx context.Context, destination, configDir string, instanceDocumen
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := durability.ReplaceFile(staged, filepath.Join(destination, SnapshotName)); err != nil {
+	if err := replaceSnapshot(staged, filepath.Join(destination, SnapshotName)); err != nil {
 		return err
 	}
 	return durability.SyncDir(destination)
