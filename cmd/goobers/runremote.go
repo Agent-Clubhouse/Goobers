@@ -119,6 +119,8 @@ func runRemoteTrigger(
 	}
 
 	switch {
+	case response.AcceptanceID != "":
+		pf(stdout, "accepted trigger %s (request=%s, workflow=%s, state=%s)\n", response.AcceptanceID, requestID, target.Workflow, response.State)
 	case response.Duplicate && response.RunID == "":
 		pf(stdout, "trigger request %s was already accepted (workflow=%s, dispatched via daemon API); its run is still being minted\n",
 			requestID, target.Workflow)

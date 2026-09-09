@@ -223,6 +223,10 @@ const MaxTriggerRequestIDBytes = 256
 // deduplicated a redelivery (the run id may still be empty when the
 // deduplicated delivery is concurrent with the winning delivery's mint).
 type TriggerResponse struct {
+	// AcceptanceID identifies a durably recorded request, not necessarily a run.
+	AcceptanceID string `json:"acceptanceId,omitempty"`
+	// State is the acceptance ledger's dispatch state when available.
+	State string `json:"state,omitempty"`
 	RunID string `json:"runId,omitempty"`
 	// Duplicate marks a response answered from the dedupe record rather than
 	// a fresh mint.
@@ -617,7 +621,11 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 			writePlaneError(w, errorLog, "ingest trigger", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, response)
+		status := http.StatusOK
+		if response.AcceptanceID != "" {
+			status = http.StatusAccepted
+		}
+		writeJSON(w, status, response)
 	})
 }
 

@@ -167,6 +167,20 @@ func TestTriggerRouteUsesAuthenticatedActor(t *testing.T) {
 	}
 }
 
+func TestTriggerRouteReportsDurableAcceptance(t *testing.T) {
+	triggers := &fakeTriggerService{response: TriggerResponse{AcceptanceID: "trigger-1", State: "accepted"}}
+	handler := writePlaneHandler(t, nil, AllowAll, WithTriggerService(triggers))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"impl"}`))
+	var result TriggerResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusAccepted || result.AcceptanceID != "trigger-1" || result.RunID != "" {
+		t.Fatalf("acceptance = %d %+v", response.Code, result)
+	}
+}
+
 func writePlanePaths() []string {
 	return []string{
 		apicontract.ClaimAcquirePath,

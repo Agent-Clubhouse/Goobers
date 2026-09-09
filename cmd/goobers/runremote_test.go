@@ -99,6 +99,26 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 	}
 }
 
+func TestRunRemoteTriggerNoWaitSucceedsOnDurableAcceptance(t *testing.T) {
+	unsetRunContext(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(httpapi.TriggerResponse{AcceptanceID: "trigger-durable", State: "accepted"})
+	}))
+	t.Cleanup(server.Close)
+	code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "delivery", "--no-wait")
+	if code != 0 || !strings.Contains(stdout, "accepted trigger trigger-durable") || !strings.Contains(stdout, "state=accepted") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "created run") {
+		t.Fatalf("acceptance misreported as dispatch: %q", stdout)
+	}
+}
+
 // The endpoint may come from the environment alone, which is how a CI job or a
 // stage pod is configured.
 func TestRunRemoteTriggerUsesEnvironmentEndpoint(t *testing.T) {

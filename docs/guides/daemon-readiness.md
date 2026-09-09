@@ -37,5 +37,15 @@ with no embedded control characters). Reuse the same key and payload when
 retrying a delivery. If the JSON body includes `requestId`, it must match the
 header after trimming surrounding whitespace; the header alone is sufficient.
 The remote `goobers run` and pod priority-trigger clients transmit both values.
-The current replay reservation is in memory, so a key alone does not yet prove
-acceptance survives a daemon restart.
+The daemon commits acceptance to `accepted-triggers.db` before returning HTTP
+202 with `acceptanceId` and `state`. Acceptance can precede scheduler readiness;
+it is not a promise that run admission will succeed. Retrying the same key and
+payload returns the same acceptance identity and the recorded dispatch state.
+`goobers run --no-wait` succeeds on that acceptance.
+
+The queue retains at most 10,000 records and refuses new requests when all slots
+remain occupied. Only terminal records older than seven days can be pruned on
+insertion; pending requests and uncertain dispatches retain their slots. After
+a crash, `dispatching` records are currently held for reconciliation, not
+automatically replayed. Automatic reconciliation and a dedicated status query
+are still pending in this implementation branch.

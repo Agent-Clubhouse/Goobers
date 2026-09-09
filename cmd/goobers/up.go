@@ -748,11 +748,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// blocked.json and the cursors), so a pod's compare-and-swap and a
 	// runner-driven run's in-process update contend on one lock rather than
 	// racing across two.
-	statePlane, err := newDaemonStateService(l)
+	durableTriggers, statePlane, err := newDaemonCoordinationServices(l, triggerPlane)
 	if err != nil {
-		pf(stderr, "error: initialize scheduler-state plane: %v\n", err)
+		pf(stderr, "error: initialize daemon coordination planes: %v\n", err)
 		return 1
 	}
+	defer func() { _ = durableTriggers.queue.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
 	// stage start through the same capability-gated machinery the local
@@ -806,7 +807,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)),
 		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
-		httpapi.WithTriggerService(triggerPlane),
+		httpapi.WithTriggerService(durableTriggers),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCancelService(cancelPlane),
 		httpapi.WithCredentialService(credentialPlane),
@@ -1328,7 +1329,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
 	triggerSweep := func() error {
-		err := sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now)
+		err := errors.Join(durableTriggers.Drain(ctx), sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
 		return recordTriggerSweepProgress(&lastTriggerSweepAtNanos, err, time.Now())
 	}
 	triggerSweepErrors.report(triggerSweep())

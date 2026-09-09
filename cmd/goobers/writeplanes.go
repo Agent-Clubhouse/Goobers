@@ -555,6 +555,13 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
 		)
 	}
+	if err := s.validateTriggerAuthority(request); err != nil {
+		return httpapi.TriggerResponse{}, err
+	}
+	return s.dispatchTrigger(ctx, dispatch, request)
+}
+
+func (s *daemonTriggerService) validateTriggerAuthority(request httpapi.TriggerRequest) error {
 	// Pod containment (decision 005 R3). The route has already established
 	// that the caller named a gaggle and, for a priority re-tick, its own run;
 	// this is the authority check the route cannot make — does that run
@@ -563,30 +570,34 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 	// not contain.
 	if request.PodScoped {
 		if request.Force {
-			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+			return httpapi.NewInterventionError(
 				http.StatusBadRequest, httpapi.CodeInvalidRequest,
 				"force is only valid for an explicit operator manual trigger", nil,
 			)
 		}
 		if s.contains == nil {
-			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+			return httpapi.NewInterventionError(
 				http.StatusForbidden, "gaggle_mismatch",
 				"pod-principal triggers are not available from this server", nil,
 			)
 		}
 		if !s.contains(request.Gaggle, request.PodRunID) {
-			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+			return httpapi.NewInterventionError(
 				http.StatusForbidden, "gaggle_mismatch",
 				"pod principal may only trigger a workflow in the gaggle its own run belongs to", nil,
 			)
 		}
 	}
 	if request.Force && strings.TrimSpace(request.SourceRun) != "" {
-		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+		return httpapi.NewInterventionError(
 			http.StatusBadRequest, httpapi.CodeInvalidRequest,
 			"force cannot be combined with a priority trigger", nil,
 		)
 	}
+	return nil
+}
+
+func (s *daemonTriggerService) dispatchTrigger(ctx context.Context, dispatch workflowTriggerer, request httpapi.TriggerRequest) (httpapi.TriggerResponse, error) {
 	requestID := strings.TrimSpace(request.RequestID)
 	request.RequestID = requestID
 	if requestID != "" {
