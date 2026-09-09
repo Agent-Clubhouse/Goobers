@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -18,8 +19,11 @@ import (
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
-	queue    *triggerqueue.Store
-	dispatch *daemonTriggerService
+	queue           *triggerqueue.Store
+	dispatch        *daemonTriggerService
+	sweepMu         sync.Mutex
+	reconcileCursor string
+	observe         func(context.Context, triggerqueue.Record) (bool, error)
 }
 
 // The wire request deliberately excludes authority fields. Persist them in a
@@ -39,6 +43,7 @@ func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTrigg
 	if err != nil {
 		return nil, nil, err
 	}
+	triggers.observe = acceptedTriggerObserver(layout)
 	return triggers, state, nil
 }
 
@@ -98,22 +103,25 @@ func (s *durableTriggerService) TriggerStatus(ctx context.Context, request httpa
 // are never replayed here: crash reconciliation must prove whether a run exists
 // before releasing their custody. The request's HTTP context is never used.
 func (s *durableTriggerService) Drain(ctx context.Context) error {
+	s.sweepMu.Lock()
+	defer s.sweepMu.Unlock()
 	if s.dispatch.triggerer() == nil {
 		return nil
 	}
+	reconcileErr := s.reconcileObserved(ctx)
 	records, err := s.queue.Pending(ctx, 100)
 	if err != nil {
-		return err
+		return errors.Join(reconcileErr, err)
 	}
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := s.drainOne(ctx, record); err != nil {
-			return err
+			return errors.Join(reconcileErr, err)
 		}
 	}
-	return nil
+	return reconcileErr
 }
 
 func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueue.Record) error {
@@ -136,9 +144,8 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	state, reason := triggerqueue.Dispatched, ""
 	if err != nil {
-		state, reason = triggerqueue.Rejected, "scheduler refused the accepted trigger"
+		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", "scheduler refused the accepted trigger", s.dispatch.now())
 	}
-	return s.queue.Finish(ctx, record.ID, state, response.RunID, reason, s.dispatch.now())
+	return s.queue.RecordDispatch(ctx, record.ID, response.RunID)
 }

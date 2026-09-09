@@ -269,3 +269,31 @@ func TestFailedCommitDoesNotAcknowledgeAcceptance(t *testing.T) {
 	}
 	acceptTest(t, s, "delivery", time.Now())
 }
+
+func TestRecordedAdmissionRemainsUnfinishedAndPagesPastUnresolvedRecords(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "accepted.db"))
+	now := time.Now()
+	for i := range 105 {
+		r := acceptTest(t, s, fmt.Sprintf("delivery-%d", i), now.Add(-2*ReplayRetention))
+		if err := s.BeginDispatch(t.Context(), r.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RecordDispatch(t.Context(), r.ID, "run-id"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acceptTest(t, s, "new-delivery", now)
+	first, err := s.Uncertain(t.Context(), "", 100)
+	if err != nil || len(first) != 100 {
+		t.Fatalf("first page: %d, %v", len(first), err)
+	}
+	second, err := s.Uncertain(t.Context(), first[len(first)-1].ID, 100)
+	if err != nil || len(second) != 5 {
+		t.Fatalf("second page: %d, %v", len(second), err)
+	}
+	for _, r := range append(first, second...) {
+		if r.State != Dispatching || r.RunID != "run-id" {
+			t.Fatalf("lost unfinished admission: %+v", r)
+		}
+	}
+}

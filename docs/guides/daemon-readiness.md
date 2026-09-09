@@ -51,9 +51,12 @@ not permission to blindly restart an already dispatched run.
 The queue retains at most 10,000 records and refuses new requests when all slots
 remain occupied. Only terminal records older than seven days can be pruned on
 insertion; pending requests and uncertain dispatches retain their slots. After
-a crash, `dispatching` records are currently held for reconciliation, not
-automatically replayed. Automatic reconciliation is still pending in this
-implementation branch.
+a crash, the daemon reconciles `dispatching` records against matching published
+run journals. Scheduler admission alone does not finish a record: the starter
+runs asynchronously, so `dispatching` can include an assigned `runId` before its
+journal is published. Missing or inconsistent journals remain unfinished and
+are not automatically replayed. Recovery of those absent-run cases is still
+pending in this implementation branch.
 
 Query `GET /api/v1/triggers/{acceptanceId}` with the accepting identity's bearer
 to read `state`, `acceptedAt`, and any `runId` or refusal `reason`. This lookup

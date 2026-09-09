@@ -59,7 +59,7 @@ func TestDurableTriggerPinsIdentityThroughActualScheduler(t *testing.T) {
 			}
 			scheduler.Wait()
 			status, err := s.TriggerStatus(t.Context(), httpapi.TriggerStatusRequest{AcceptanceID: accepted.AcceptanceID, Actor: request.Actor})
-			if err != nil || status.State != "dispatched" || status.RunID != strings.TrimPrefix(accepted.AcceptanceID, "trigger-") {
+			if err != nil || status.State != "dispatching" || status.RunID != strings.TrimPrefix(accepted.AcceptanceID, "trigger-") {
 				t.Fatalf("status = %+v, %v", status, err)
 			}
 			select {
@@ -106,7 +106,7 @@ func TestDurableTriggerAcceptsDuringStartupAndOutlivesRequest(t *testing.T) {
 				t.Fatal(err)
 			}
 			retry, err := s.Trigger(t.Context(), request)
-			if err != nil || !retry.Duplicate || retry.AcceptanceID != response.AcceptanceID || retry.RunID != "run-1" || retry.State != "dispatched" {
+			if err != nil || !retry.Duplicate || retry.AcceptanceID != response.AcceptanceID || retry.RunID != "run-1" || retry.State != "dispatching" {
 				t.Fatalf("retry = %+v, %v", retry, err)
 			}
 			requestCtx, runCtx, calls := recorder.snapshot()

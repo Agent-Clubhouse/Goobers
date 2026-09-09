@@ -207,6 +207,39 @@ func (s *Store) BeginDispatch(ctx context.Context, id string) error {
 	return changed(result, err)
 }
 
+// RecordDispatch records scheduler admission, not durable run creation. The
+// record stays unfinished and cannot be expired until execution is observed.
+func (s *Store) RecordDispatch(ctx context.Context, id, runID string) error {
+	if len(runID) > 256 {
+		return ErrTransition
+	}
+	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET run_id=? WHERE id=? AND state='dispatching' AND run_id=''", runID, id)
+	return changed(result, err)
+}
+
+// Uncertain pages unfinished dispatches by stable ID, including admission whose
+// asynchronous starter may not yet have created a durable run. A cursor lets a
+// periodic reconciler make progress past unresolved records without starvation.
+func (s *Store) Uncertain(ctx context.Context, after string, limit int) ([]Record, error) {
+	if limit < 1 || limit > 100 {
+		return nil, errors.New("triggerqueue: batch limit must be 1..100")
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM triggers WHERE state='dispatching' AND id>? ORDER BY id LIMIT ?", after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var records []Record
+	for rows.Next() {
+		r, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
 // Finish records a definite scheduler outcome. An ambiguous transport outcome
 // is not a rejection and must remain Dispatching for reconciliation.
 func (s *Store) Finish(ctx context.Context, id string, state State, runID, reason string, now time.Time) error {
