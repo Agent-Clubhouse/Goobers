@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -56,15 +57,16 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, cleanupRoot str
 	if err != nil {
 		return err
 	}
-	record, archive, err := recovery.Retain(ctx, recovery.RetentionRequest{
+	record, recordPath, err := recovery.Retain(ctx, recovery.RetentionRequest{
 		Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID, BaseRef: "main",
 		IdentityTime: target.CreatedAt, RetainUntil: target.CreatedAt.Add(30 * 24 * time.Hour),
 		InventoryRoot: root, CleanupRoots: []string{cleanupRoot}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20, SkipEmpty: true,
 	}, recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: w.scrubber})
-	if err != nil || archive == "" {
+	if err != nil || recordPath == "" {
 		return err
 	}
 	publisher := recovery.HTTPArchivePublisher{BaseURL: emitter.BaseURL, Token: token, RunID: target.OwnerRunID, Client: emitter.Client}
+	archive := filepath.Join(filepath.Dir(recordPath), recovery.BundleFileName)
 	return publisher.PublishArchive(ctx, claims[0].ItemID, record, archive)
 }
 
