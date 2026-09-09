@@ -967,7 +967,7 @@ describe("run detail", () => {
 
     client.holdRefresh();
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
       await client.waitForPendingRefresh();
     });
 
