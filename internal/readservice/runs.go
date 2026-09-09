@@ -1335,9 +1335,13 @@ func (s *Local) Transcript(ctx context.Context, runID string, seq uint64) (Trans
 	if err != nil {
 		return TranscriptContent{}, err
 	}
+	completed := completedTranscriptCaptures(run.records)
 	for _, record := range run.records {
 		if record.Event.Seq != seq {
 			continue
+		}
+		if supersededTranscriptCheckpoint(record.Event, completed) {
+			break
 		}
 		recordedStage, ok := transcriptStage(record.Event, runID, "")
 		if !ok {
@@ -1359,11 +1363,15 @@ func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]Tran
 		return nil, err
 	}
 	transcripts := make([]TranscriptContent, 0)
+	completed := completedTranscriptCaptures(run.records)
 	for _, record := range run.records {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		event := record.Event
+		if supersededTranscriptCheckpoint(event, completed) {
+			continue
+		}
 		recordedStage, ok := transcriptStage(event, runID, stage)
 		if !ok {
 			continue
@@ -1381,7 +1389,7 @@ func transcriptStage(event journal.Event, runID, stage string) (string, bool) {
 	recordedStage := strings.TrimPrefix(event.Stage, runID+":")
 	if !event.KnownSchema() ||
 		event.Type != journal.EventSpanRecorded ||
-		(event.Name != "transcript" && !strings.HasSuffix(event.Name, ".transcript")) ||
+		(event.Name != "transcript" && !strings.HasSuffix(event.Name, ".transcript") && !isTranscriptCheckpoint(event)) ||
 		(stage != "" && recordedStage != stage) {
 		return "", false
 	}
@@ -1396,7 +1404,13 @@ func readTranscript(run runRead, event journal.Event, recordedStage string) (Tra
 			event.Seq,
 		)
 	}
-	data, err := run.reader.SpanBytes(*event.Ref)
+	var data []byte
+	var err error
+	if isTranscriptCheckpoint(event) {
+		data, err = run.reader.ArtifactBytesBounded(*event.Ref, journal.MaxCheckpointScrubBytes)
+	} else {
+		data, err = run.reader.SpanBytes(*event.Ref)
+	}
 	if err != nil {
 		return TranscriptContent{}, fmt.Errorf(
 			"transcript for stage %q at seq %d is unavailable: %w",
@@ -1404,6 +1418,15 @@ func readTranscript(run runRead, event journal.Event, recordedStage string) (Tra
 			event.Seq,
 			err,
 		)
+	}
+	if isTranscriptCheckpoint(event) {
+		reason, _ := event.Runner["reason"].(string)
+		stream, _ := event.Runner["transcriptStream"].(string)
+		if len(data) == 0 {
+			data = []byte("[checkpoint contains no newly safe transcript bytes]\n")
+		}
+		return TranscriptContent{Seq: event.Seq, Stage: recordedStage,
+			Name: fmt.Sprintf("%s [%s; %s]", event.Name, stream, reason), Bytes: data}, nil
 	}
 	if len(data) == 0 {
 		return TranscriptContent{}, fmt.Errorf(
