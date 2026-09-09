@@ -562,7 +562,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
 		// #724 salvage: an agentic session that ran out of wall clock has not
@@ -689,7 +689,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return GateReviewResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 
 	// The subject diff (#3384), read from the workspace this reviewer was
 	// already given rather than from a second one. It is both the evidence the
@@ -864,7 +864,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 		}
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 	res, err := a.Det.Run(ctx, env, run)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
