@@ -6,15 +6,19 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -141,9 +145,7 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryService, wire []byte, runID, key string, deadline time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	if err := service.PublishRecovery(ctx, runID, key, "7", bytes.NewReader(wire)); err != nil {
-		t.Fatalf("retry publication: %v", err)
-	}
+	publishRecoveryOverAuthenticatedHTTP(t, service, wire, runID)
 	entries, err := recovery.ReadInventory(ctx, filepath.Join(service.layout.Root, "recovery"), 128)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("retry inventory: %+v %v", entries, err)
@@ -163,6 +165,45 @@ func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryServ
 	}
 	if got := recoveryCLIGit(t, destination, "show", entry.Record.Ref+":implementation.txt"); got != "remote worker changes" {
 		t.Fatalf("independent host archive content: %q", got)
+	}
+}
+
+func publishRecoveryOverAuthenticatedHTTP(t *testing.T, service recoveryDeliveryService, wire []byte, runID string) {
+	t.Helper()
+	registry := podauth.NewRegistry()
+	authenticator, err := podauth.NewAuthenticator(registry, httpapi.DenyAllAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
+		httpapi.WithAuthenticator(authenticator), httpapi.WithRecoveryService(service))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	archive := t.TempDir()
+	record, err := recovery.ReceiveArchiveEnvelope(context.Background(), bytes.NewReader(wire), archive, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{podauth.ScopeJournal, podauth.ScopeClaims, "runtime"} {
+		var token string
+		if scope == "runtime" {
+			// The dispatch parent already has this run-scoped runtime token;
+			// it is never passed through to the stage subprocess.
+			token, err = registry.Mint(runID, time.Hour)
+		} else {
+			token, err = registry.MintScoped(runID, time.Hour, scope)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		publisher := recovery.HTTPArchivePublisher{BaseURL: server.URL, Token: token, RunID: runID}
+		err = publisher.PublishArchive(context.Background(), "7", record, filepath.Join(archive, recovery.BundleFileName))
+		if (err != nil) != (scope == podauth.ScopeJournal) {
+			t.Fatalf("authenticated %s upload: %v", scope, err)
+		}
 	}
 }
 
