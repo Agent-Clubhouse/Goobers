@@ -139,7 +139,6 @@ function WorkflowDetailWorkspace({
         >
           {workflow.identity.gaggle}
         </button>
-        <ScopePivot label={workflow.identity.gaggle} scope={{ gaggle: workflow.identity.gaggle }} />
         <Icon name="chevron" size={14} />
         <span>{workflow.displayName}</span>
       </nav>
