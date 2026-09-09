@@ -780,13 +780,18 @@ func (d mutationSidecarDeterministic) Run(_ context.Context, env apiv1.Invocatio
 func TestProjectionCarriesProviderMutationProvenance(t *testing.T) {
 	spec := crSpec("mutate", []apiv1.Task{crTask("mutate", "")}, nil)
 	spec.Tasks[0].Run.Workspace = apiv1.WorkspaceRepo
-	proj := executeForProjection(t, projectionInput("mutation-provenance", spec), &Activities{
+	in := projectionInput("mutation-provenance", spec)
+	in.InstanceID = "e62c1c105fdc4273a72d199394b41cb0"
+	proj := executeForProjection(t, in, &Activities{
 		Det: mutationSidecarDeterministic{
 			line:   `{"provider":"github","kind":"issue","id":"629","url":"https://github.com/Agent-Clubhouse/Goobers/issues/629","operation":"update"}`,
 			status: apiv1.ResultNoWork,
 		},
 		Workspaces: testWorkspaces(t),
 	}, false)
+	if proj.Identity.InstanceID != in.InstanceID {
+		t.Fatalf("engine journal lost instance identity: %q", proj.Identity.InstanceID)
+	}
 
 	var branch, mutation *journal.Event
 	for _, op := range proj.Ops {

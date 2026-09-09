@@ -17,6 +17,7 @@ import (
 // stripping that variable, and it will leak to stages that must not see it.
 func TestRunContextEnvMatchesExecutor(t *testing.T) {
 	for _, want := range []string{
+		executor.InstanceIDEnvVar,
 		executor.RepoProviderEnvVar,
 		executor.RepoBaseURLEnvVar,
 		executor.RepoOwnerEnvVar,

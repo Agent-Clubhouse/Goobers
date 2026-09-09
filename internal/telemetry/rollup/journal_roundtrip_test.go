@@ -82,6 +82,7 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 	}
 
 	run, err := journal.Create(runsDir, journal.RunIdentity{
+		InstanceID:      "0123456789abcdef0123456789abcdef",
 		RunID:           runID,
 		Workflow:        "implement",
 		WorkflowVersion: 3,
@@ -126,6 +127,9 @@ func TestIngestRunAgainstRealJournalPackage(t *testing.T) {
 		t.Fatalf("Runs: %v, %#v", err, runs)
 	}
 	r := runs[0]
+	if r.InstanceID != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("rollup lost durable instance identity: %+v", r)
+	}
 	if r.RunID != runID || r.Workflow != "implement" || r.WorkflowVersion != 3 ||
 		r.GooberDigest != "sha256:resolvedgoobers" || r.Gaggle != "web" ||
 		r.TriggerKind != "item" || r.TriggerRef != "issue-42" || r.Status != "failed" {

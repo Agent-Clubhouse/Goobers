@@ -109,6 +109,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		Attempt:                             1,
 		WorkflowID:                          "implementation",
 		RunID:                               "run-123",
+		InstanceID:                          "0123456789abcdef0123456789abcdef",
 		TriggerRef:                          "github:issue:1704",
 		Gaggle:                              "goobers",
 		BranchNamespace:                     "goobers/",

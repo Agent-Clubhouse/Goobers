@@ -85,7 +85,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
+var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "landing_intents", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -118,6 +118,10 @@ func (db *DB) DeleteRun(ctx context.Context, runID string) error {
 }
 
 func insertRun(ctx context.Context, tx *sql.Tx, id runIdentity, events []journalEvent) error {
+	instanceID := ""
+	if instance.ValidIdentity(id.InstanceID) {
+		instanceID = id.InstanceID
+	}
 	var status string
 	var finishedAt time.Time
 	for _, ev := range events {
@@ -131,11 +135,11 @@ func insertRun(ctx context.Context, tx *sql.Tx, id runIdentity, events []journal
 		}
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms, instance_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id.RunID, id.Workflow, id.WorkflowVersion, nullIfEmpty(id.WorkflowDigest), id.Gaggle,
 		nullIfEmpty(id.Trigger.Kind), nullIfEmpty(id.Trigger.Ref), nullIfEmpty(status),
-		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt))
+		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt), nullIfEmpty(instanceID))
 	if err != nil {
 		return fmt.Errorf("rollup: insert run %s: %w", id.RunID, err)
 	}
@@ -374,7 +378,7 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 				}
 			}
 
-		case eventRefTouched:
+		case eventRefTouched, eventMutationRecovered:
 			if err := insertRefTouched(ctx, tx, runID, ev); err != nil {
 				return err
 			}
@@ -396,7 +400,7 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 }
 
 func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalEvent) error {
-	if ev.ExternalRef == nil {
+	if ev.ExternalRef == nil || recoveredMutationFailed(ev) {
 		return nil
 	}
 	relationship := operationFromRunner(ev.Runner)
@@ -410,6 +414,24 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 		runID, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID, relationship); err != nil {
 		return fmt.Errorf("rollup: insert cost attribution seq %d: %w", ev.Seq, err)
 	}
+	// An intent relates this run to the PR, but acknowledges only local
+	// durable storage. It must never inflate the external mutation ledger.
+	// The complete attempt remains available in the retained run journal.
+	if relationship == "merge-intent" {
+		raw, err := runnerJSON(ev.Runner)
+		if err != nil {
+			return err
+		}
+		// Keep an invalid/oversized attempt visible as an unverified row,
+		// without retaining an unbounded payload in the read model.
+		if len(raw.String) > 16384 {
+			raw = sql.NullString{}
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO landing_intents
+			(run_id, seq, provider, external_id, occurred_at, runner_json) VALUES (?, ?, ?, ?, ?, ?)`,
+			runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.ID, formatTime(ev.Time), raw)
+		return err
+	}
 	rj, err := runnerJSON(ev.Runner)
 	if err != nil {
 		return err
@@ -422,6 +444,13 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 		return fmt.Errorf("rollup: insert provider_mutation seq %d: %w", ev.Seq, err)
 	}
 	return nil
+}
+
+// Recovered failed/conflicting operations remain journal evidence, not
+// successful external mutations for attribution or KPI purposes.
+func recoveredMutationFailed(ev journalEvent) bool {
+	outcome, _ := ev.Runner["outcome"].(string)
+	return ev.Type == eventMutationRecovered && (outcome == "failure" || outcome == "conflict")
 }
 
 type ciChecksArtifact struct {

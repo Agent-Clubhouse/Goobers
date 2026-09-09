@@ -103,6 +103,13 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	stageCtx, heartbeat := startPodStageHeartbeat(ctx, stderr)
 	outcome := runStage(stageCtx, stdout, stderr)
 	heartbeat.Stop()
+	// Surrender authorizes pod disposal. Include the complete receipt set,
+	// even when the stage failed, so the engine can project it after disposal.
+	mutations, receiptErr := podMutationReceipts()
+	if receiptErr != nil {
+		pf(stderr, "dispatch-exec: preserve mutation receipts before surrender: %v\n", receiptErr)
+		return 1
+	}
 	envelope := outcome.Result
 	// Carry whatever this stage committed to the next one (#3763). This pod is
 	// about to be disposed, so a commit that does not leave here does not exist
@@ -135,7 +142,8 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 	}
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
-		Result: envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		Mutations: mutations,
+		Result:    envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
 		Verdict:                 outcome.Verdict,
 	})

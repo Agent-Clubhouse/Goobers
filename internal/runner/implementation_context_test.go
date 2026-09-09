@@ -61,6 +61,7 @@ func TestRunnerFirstPassImplementationContextIsJournalInspectable(t *testing.T) 
 	fixtureRepo := newFixtureRepo(t)
 	implementer := &capturingImplementer{}
 	r, err := New(Config{
+		InstanceID: "0123456789abcdef0123456789abcdef",
 		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
 			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
 				runID + ":gather-implement-context": {
@@ -91,6 +92,9 @@ func TestRunnerFirstPassImplementationContextIsJournalInspectable(t *testing.T) 
 	}
 	if result.Phase != journal.PhaseCompleted {
 		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if implementer.env.InstanceID != r.cfg.InstanceID {
+		t.Fatalf("invocation identity = %q, want admitted instance %q", implementer.env.InstanceID, r.cfg.InstanceID)
 	}
 
 	var contextPointer *apiv1.ContextPointer

@@ -3,6 +3,7 @@ package configmirror
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,11 +28,11 @@ func Seed(ctx context.Context, mirror, destination string, validate func(string)
 		return errors.New("config mirror seed destination must be a dedicated child directory")
 	}
 	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return err
+		return fmt.Errorf("create seed parent: %w", err)
 	}
 	held, err := lock.TryAcquire(destination + ".seed.lock")
 	if err != nil {
-		return err
+		return fmt.Errorf("lock seed destination: %w", err)
 	}
 	defer func() { _ = held.Release() }()
 	if info, err := os.Lstat(destination); err == nil {
@@ -39,23 +40,30 @@ func Seed(ctx context.Context, mirror, destination string, validate func(string)
 			return errors.New("worker seed destination is not a directory")
 		}
 		if err := checkSeedMarker(destination); err != nil {
-			return err
+			return fmt.Errorf("verify existing seed ownership: %w", err)
 		}
-		return validate(destination)
+		if err := validate(destination); err != nil {
+			return fmt.Errorf("validate existing seed: %w", err)
+		}
+		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	staging := destination + ".seed.pending"
 	if err := reclaimValidation(staging); err != nil {
-		return err
+		return fmt.Errorf("reclaim previous seed staging: %w", err)
 	}
 	if err := os.Mkdir(staging, 0o700); err != nil {
-		return err
+		return fmt.Errorf("create seed staging: %w", err)
 	}
 	if err := writeValidationOwner(filepath.Join(staging, ".owner")); err != nil {
-		return err
+		return fmt.Errorf("mark seed staging ownership: %w", err)
 	}
-	defer func() { result = errors.Join(result, reclaimValidation(staging)) }()
+	defer func() {
+		if err := reclaimValidation(staging); err != nil {
+			result = errors.Join(result, fmt.Errorf("clean seed staging: %w", err))
+		}
+	}()
 	if err := durability.SyncDir(staging); err != nil {
 		return err
 	}
@@ -67,7 +75,7 @@ func Seed(ctx context.Context, mirror, destination string, validate func(string)
 		return err
 	}
 	if err := durability.Move(payload, destination); err != nil {
-		return err
+		return fmt.Errorf("publish validated seed directory: %w", err)
 	}
 	return durability.SyncDir(parent)
 }
@@ -75,20 +83,20 @@ func Seed(ctx context.Context, mirror, destination string, validate func(string)
 func seedPayload(ctx context.Context, mirror, destination string, validate func(string) error) error {
 	snapshot, err := Open(mirror)
 	if err != nil {
-		return err
+		return fmt.Errorf("open seed mirror snapshot: %w", err)
 	}
 	defer func() { _ = snapshot.Close() }()
 	if err := os.Mkdir(destination, 0o700); err != nil {
-		return err
+		return fmt.Errorf("create seed payload: %w", err)
 	}
 	if err := snapshot.Extract(ctx, destination); err != nil {
-		return err
+		return fmt.Errorf("extract seed snapshot: %w", err)
 	}
 	if err := validate(destination); err != nil {
-		return err
+		return fmt.Errorf("validate extracted seed: %w", err)
 	}
 	if err := writeValidationOwner(filepath.Join(destination, seedMarker)); err != nil {
-		return err
+		return fmt.Errorf("mark completed seed ownership: %w", err)
 	}
 	return durability.SyncDir(destination)
 }

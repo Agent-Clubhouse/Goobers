@@ -12,9 +12,160 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestMutationSidecarPreservesQueueAdmissionAcrossWireConsumers(t *testing.T) {
+	t.Chdir(t.TempDir())
+	admission := &providers.QueueAdmission{IntentID: "0123456789abcdef0123456789abcdef", RepositoryAPIURL: "https://forge.example/team/repos/acme/app", PullID: "9", EntryID: "MQE_owned", ExpectedHeadSHA: "head", EnqueuedAt: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)}
+	sidecarMutationRecorder{kind: "pr"}.RecordExternalRef(context.Background(), providers.ExternalRef{Provider: providers.ProviderGitHub, Ref: "acme/app#9", Operation: "enqueue", QueueAdmission: admission})
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var local mutationFact
+	var remote dispatcher.SurrenderedMutation
+	var temporal engine.MutationFact
+	for _, target := range []any{&local, &remote, &temporal} {
+		if err := json.Unmarshal(data, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if local.ReceiptID == "" || remote.ReceiptID != local.ReceiptID || temporal.ReceiptID != local.ReceiptID {
+		t.Fatal("durable receipt identity lost in wire transport")
+	}
+	for _, got := range []*providers.QueueAdmission{local.QueueAdmission, remote.QueueAdmission, temporal.QueueAdmission} {
+		if got == nil || *got != *admission {
+			t.Fatalf("queue receipt lost in sidecar transport: %+v", got)
+		}
+	}
+	if local.MergeConfirmation != nil || remote.MergeConfirmation != nil || temporal.MergeConfirmation != nil || local.Operation != "enqueue" {
+		t.Fatal("queue acceptance promoted to merge confirmation")
+	}
+}
+
+func TestIdenticalMutationRecordsGetDistinctDurableIdentities(t *testing.T) {
+	t.Chdir(t.TempDir())
+	fact := mutationFact{Provider: "github", Kind: "pr", ID: "9", Operation: "merge"}
+	for i := 0; i < 2; i++ {
+		if err := appendMutationFact(fact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var first, second mutationFact
+	if err := decoder.Decode(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := decoder.Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if first.ReceiptID == "" || second.ReceiptID == "" || first.ReceiptID == second.ReceiptID {
+		t.Fatal("different durable records share an identity")
+	}
+}
+
+func TestMutationSidecarPreservesLandingIntentAcrossWireConsumers(t *testing.T) {
+	t.Chdir(t.TempDir())
+	intent := providers.LandingIntent{ID: "0123456789abcdef0123456789abcdef", Operation: "enqueue", RepositoryAPIURL: "https://forge.example/repos/acme/app", PullID: "9", ExpectedHeadSHA: "expected"}
+	if err := (sidecarMutationRecorder{kind: "pr"}).RecordLandingIntent(context.Background(), providers.ProviderGitHub, intent); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var local mutationFact
+	var remote dispatcher.SurrenderedMutation
+	var temporal engine.MutationFact
+	for _, target := range []any{&local, &remote, &temporal} {
+		if err := json.Unmarshal(data, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, got := range []*providers.LandingIntent{local.LandingIntent, remote.LandingIntent, temporal.LandingIntent} {
+		if got == nil || *got != intent {
+			t.Fatalf("lost landing intent: %+v", got)
+		}
+	}
+	if local.Operation != "merge-intent" || local.MergeConfirmation != nil {
+		t.Fatalf("attempt promoted to completed merge: %+v", local)
+	}
+}
+
+func TestMutationSidecarPreservesAcknowledgedAutoCompleteIntent(t *testing.T) {
+	t.Chdir(t.TempDir())
+	intent := &providers.LandingIntent{ID: "0123456789abcdef0123456789abcdef", Operation: "enqueue", RepositoryAPIURL: "https://dev.azure.com/org/project/_apis/git/repositories/repo", PullID: "42", ExpectedHeadSHA: "head"}
+	sidecarMutationRecorder{kind: "pr"}.RecordExternalRef(context.Background(), providers.ExternalRef{
+		Provider: providers.ProviderADO, Ref: "ado#42", Operation: "enqueue", LandingIntent: intent,
+	})
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var local mutationFact
+	var remote dispatcher.SurrenderedMutation
+	var temporal engine.MutationFact
+	for _, target := range []any{&local, &remote, &temporal} {
+		if err := json.Unmarshal(data, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, got := range []*providers.LandingIntent{local.LandingIntent, remote.LandingIntent, temporal.LandingIntent} {
+		if got == nil || *got != *intent {
+			t.Fatalf("acknowledgement lost intent: %+v", got)
+		}
+	}
+	if local.Operation != "enqueue" || local.ID != "42" || local.MergeConfirmation != nil || local.QueueAdmission != nil || remote.MergeConfirmation != nil || remote.QueueAdmission != nil || temporal.MergeConfirmation != nil || temporal.QueueAdmission != nil {
+		t.Fatalf("acknowledgement promoted to merge or queue entry: %+v", local)
+	}
+}
+
+func TestLandingIntentSidecarFailureIsReturned(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir(mutationsSidecarFile, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := (sidecarMutationRecorder{kind: "pr"}).RecordLandingIntent(context.Background(), providers.ProviderGitHub, providers.LandingIntent{}); err == nil {
+		t.Fatal("intent persistence error was swallowed")
+	}
+}
+
+func TestMutationSidecarPreservesMergeConfirmationAcrossWireConsumers(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	confirmation := &providers.MergeConfirmation{
+		RepositoryAPIURL: "https://forge.example/team/repos/acme/app", PullID: "9", MergeSHA: "commit",
+	}
+	sidecarMutationRecorder{kind: "pr"}.RecordExternalRef(context.Background(), providers.ExternalRef{
+		Provider: providers.ProviderGitHub, Ref: "acme/app#9", Operation: "merge", MergeConfirmation: confirmation,
+	})
+	facts := readMutationFacts(t, dir)
+	if len(facts) != 1 || facts[0].MergeConfirmation == nil || *facts[0].MergeConfirmation != *confirmation {
+		t.Fatalf("sidecar dropped merge evidence: %+v", facts)
+	}
+	data, err := os.ReadFile(mutationsSidecarFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activity engine.MutationFact
+	var pod dispatcher.SurrenderedMutation
+	for _, value := range []any{&activity, &pod} {
+		if err := json.Unmarshal(data, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if activity.MergeConfirmation == nil || pod.MergeConfirmation == nil || *activity.MergeConfirmation != *confirmation || *pod.MergeConfirmation != *confirmation {
+		t.Fatalf("transport dropped confirmation: activity=%+v pod=%+v", activity, pod)
+	}
+}
 
 // readMutationFacts reads and parses every line of mutations.jsonl under
 // dir, the sidecar cmd/goobers's provider-chain subcommands write for the

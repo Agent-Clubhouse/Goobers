@@ -70,6 +70,7 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		journal.EventRunnerAnnotation,
 		journal.EventRunnerPlacement,
 		journal.EventRunnerWorkspaceDelta,
+		journal.EventRunnerMutationRecovered,
 		journal.EventClaimAcquired,
 		journal.EventClaimReleased,
 		journal.EventClaimForceReleased,

@@ -53,6 +53,10 @@ func acquireJournalLock(dir, target string) (*journalLock, error) {
 }
 
 func acquireRunPublicationLock(runDir string) (*journalLock, error) {
+	return acquireRunPublicationLockWith(runDir, acquireJournalLockPath)
+}
+
+func acquireRunPublicationLockWith(runDir string, acquire func(string, string, string) (*journalLock, error)) (*journalLock, error) {
 	runsDir := filepath.Dir(runDir)
 	root := filepath.Join(filepath.Dir(runsDir), "."+filepath.Base(runsDir)+publicationLocksDirName)
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -62,7 +66,7 @@ func acquireRunPublicationLock(runDir string) (*journalLock, error) {
 	// persistent lock file for every run ever created.
 	bucket := sha256.Sum256([]byte(filepath.Base(runDir)))
 	path := filepath.Join(root, fmt.Sprintf("%02x.lock", bucket[0]))
-	return acquireJournalLockPath(path, runDir, "run publication")
+	return acquire(path, runDir, "run publication")
 }
 
 func acquireJournalLockPath(path, location, target string) (*journalLock, error) {

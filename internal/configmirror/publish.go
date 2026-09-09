@@ -67,26 +67,29 @@ func publish(ctx context.Context, destination, configDir string, instanceDocumen
 	}
 	defer func() { _ = f.Close(); _ = os.Remove(staged) }()
 	if err := writeSnapshot(ctx, f, configDir, instanceDocument); err != nil {
-		return err
+		return fmt.Errorf("capture config mirror snapshot: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		return err
+		return fmt.Errorf("flush config mirror snapshot: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return err
+		return fmt.Errorf("close config mirror snapshot: %w", err)
 	}
 	if validate != nil {
 		if err := validateStagedSnapshot(ctx, destination, staged, validate); err != nil {
-			return err
+			return fmt.Errorf("validate captured config mirror: %w", err)
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := replaceSnapshot(staged, filepath.Join(destination, SnapshotName)); err != nil {
-		return err
+		return fmt.Errorf("replace published config mirror: %w", err)
 	}
-	return durability.SyncDir(destination)
+	if err := durability.SyncDir(destination); err != nil {
+		return fmt.Errorf("flush config mirror destination: %w", err)
+	}
+	return nil
 }
 
 func removeStagingFile(path string) error {

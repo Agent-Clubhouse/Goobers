@@ -175,6 +175,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// entry leaves the default "goobers/" in place (WithRunBranchNamespaces
 		// drops empties), so a single-gaggle default instance is unchanged.
 		managerOptions := []worktree.ManagerOption{
+			mutationCleanupGuard(l.RunsDir()),
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 			worktree.WithPinnedRoot(l.WorkcopiesBaseDir()),
 		}

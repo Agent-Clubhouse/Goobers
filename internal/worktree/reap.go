@@ -296,6 +296,9 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 	lock.Lock()
 	defer lock.Unlock()
 
+	if err := m.prepareCleanup(ctx, path, worktreeID, ownerRunID); err != nil {
+		return err
+	}
 	repoDir := m.repoDirForKey(key)
 	if mk != nil {
 		if err := m.restoreReservedBranchFromMarker(ctx, key, path, *mk); err != nil {

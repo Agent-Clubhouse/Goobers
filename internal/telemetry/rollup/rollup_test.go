@@ -995,20 +995,11 @@ func TestBranchMigrationPreservesLegacyRowsAsUnknown(t *testing.T) {
 
 func TestTranscriptSchemaMigrationPreservesLegacyRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.db")
-	db, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	db := openHistoricalTestDB(t, path, 4)
 	if _, err := db.sql.Exec(`
 		INSERT INTO harness_transcripts (run_id, seq, stage, name, ref_digest, ref_size)
 		VALUES ('legacy-run', 2, 'implement', 'copilot.transcript', 'sha256:legacy', 128)`); err != nil {
 		t.Fatalf("insert legacy transcript: %v", err)
-	}
-	if _, err := db.sql.Exec(`DROP TABLE harness_transcript_schemas`); err != nil {
-		t.Fatalf("remove v5 table: %v", err)
-	}
-	if _, err := db.sql.Exec(`UPDATE schema_meta SET version = 4`); err != nil {
-		t.Fatalf("restore v4 schema marker: %v", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close v4 database: %v", err)

@@ -834,7 +834,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
-	wtMgr, err := worktree.NewManager(workcopiesRoot)
+	wtMgr, err := worktree.NewManager(workcopiesRoot, mutationCleanupGuard(runLayout.RunsDir()))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

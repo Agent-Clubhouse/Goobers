@@ -979,17 +979,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stdout, "recovered expired claim %s (was held by run %s)\n", entry.ItemID, entry.RunID)
 	}
 
-	// Scratch workspaces have no git metadata to recover. Once this daemon
-	// holds the instance lock, every stage-* entry belongs to the prior process
-	// and can be removed before interrupted runs allocate fresh workspaces.
+	// Once this daemon holds the instance lock, every stage-* entry belongs
+	// to the prior process. Recover its provider receipts before removal;
+	// scratch workspaces can contain durable effects even without git metadata.
 	for gaggle, manager := range setup.WorktreesByGaggle {
-		if err := runner.ReapScratchWorkspaces(filepath.Join(manager.Root, "scratch")); err != nil {
+		if err := runner.ReapScratchWorkspacesForRuns(filepath.Join(manager.Root, "scratch"), l.ForGaggle(gaggle).RunsDir()); err != nil {
 			pf(stderr, "error: reap scratch workspaces for gaggle %s: %v\n", gaggle, err)
 			return 1
 		}
 	}
 	if setup.LegacyWorktrees != nil {
-		if err := runner.ReapScratchWorkspaces(filepath.Join(setup.LegacyWorktrees.Root, "scratch")); err != nil {
+		if err := runner.ReapScratchWorkspacesForRuns(filepath.Join(setup.LegacyWorktrees.Root, "scratch"), l.RunsDir()); err != nil {
 			pf(stderr, "error: reap legacy scratch workspaces: %v\n", err)
 			return 1
 		}

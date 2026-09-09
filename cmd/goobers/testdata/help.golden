@@ -2570,8 +2570,9 @@ with --json for scripting, or --workflow/--gaggle to scope it; --phase, --limit 
 Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.
 
 ### telemetry
-Usage: goobers telemetry <stats|errors|export|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
 
+merges: confirmed PR landings and daily counts by originating instance
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
@@ -2605,6 +2606,21 @@ Re-emit journaled OTLP/JSON trace requests to stdout. --since is inclusive;
 Every discovered run journal is validated before output; missing, corrupt, or
 unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 1 = journal data error, 2 = usage/output error.
+
+### telemetry merges
+Usage: goobers telemetry merges [--json] [--gaggle=name] [--instance-id=id] [--repository-api-url=url] [--compare-github=owner/repository] [--shared-identities=login[,login]] [--since=RFC3339] [--until=RFC3339] [--rebuild] [path]
+
+Report confirmed PR landings and daily UTC counts from retained telemetry.
+Defaults to the last 7 days; maximum window 90 days and 10000 mutation events.
+The interval includes --since and excludes --until. Repeated receipts for
+one PR count once; conflicting instance/gaggle/commit claims are excluded.
+Legacy merge operations without explicit confirmation are not verified.
+Unverified event/conflict counts cover the whole window before filters.
+Use --compare-github=owner/repository --shared-identities=login[,login] for
+repository-wide forge residuals, independent of display filters. Requires
+GOOBERS_CRED_GITHUB_PR_READ with pull-request read permission.
+Forge pagination is not an atomic snapshot; unknown mergers stay unknown.
+Exit codes: 0 = OK; 2 = usage, query, or output error.
 
 ### telemetry prune
 Usage: goobers telemetry prune [--dry-run] [path]
