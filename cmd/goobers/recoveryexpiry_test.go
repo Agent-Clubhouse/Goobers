@@ -33,11 +33,11 @@ func TestRecoveryRetentionOwnerRequiresRunRootMapping(t *testing.T) {
 
 func TestRecoveryDeadlineExpiredProtectsTerminalWindowAndActiveRuns(t *testing.T) {
 	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
-	for _, mode := range []string{"expired", "boundary", "running", "recent-finish", "renewed", "foreign"} {
+	for _, mode := range []string{"expired", "boundary", "running", "recent-finish", "completed-without-merge-proof", "renewed", "foreign"} {
 		t.Run(mode, func(t *testing.T) {
 			start := now.Add(-90 * 24 * time.Hour)
 			finish := now.Add(-31 * 24 * time.Hour)
-			if mode == "recent-finish" {
+			if mode == "recent-finish" || mode == "completed-without-merge-proof" {
 				finish = now.Add(-time.Hour)
 			}
 			if mode == "boundary" {
@@ -50,7 +50,11 @@ func TestRecoveryDeadlineExpiredProtectsTerminalWindowAndActiveRuns(t *testing.T
 				t.Fatal(err)
 			}
 			if mode != "running" {
-				if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+				phase := journal.PhaseEscalated
+				if mode == "completed-without-merge-proof" {
+					phase = journal.PhaseCompleted
+				}
+				if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
 					t.Fatal(err)
 				}
 			}
