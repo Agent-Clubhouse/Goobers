@@ -59,9 +59,13 @@ insertion; pending requests and uncertain dispatches retain their slots. After
 a crash, the daemon reconciles `dispatching` records against matching published
 run journals. Scheduler admission alone does not finish a record: the starter
 runs asynchronously, so `dispatching` can include an assigned `runId` before its
-journal is published. Missing or inconsistent journals remain unfinished and
-are not automatically replayed. Recovery of those absent-run cases is still
-pending in this implementation branch.
+journal is published. For unfinished dispatches captured before this daemon
+started, absence from both normal and interrupted-prune journal locations
+allows retry with the same run ID. A bounded startup snapshot excludes current
+process dispatches from replay, even while their starters have not published
+journals yet. Malformed, ambiguous, or inconsistent journal locations remain
+unfinished for repair rather than authorizing a retry. Accepted engine runs
+refuse execution unless the live journal writer is available.
 
 Telemetry retention acknowledges an unfinished trigger from its matching
 journal before deleting that journal, including interrupted-prune cleanup.

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -23,6 +24,7 @@ type durableTriggerService struct {
 	dispatch        *daemonTriggerService
 	sweepMu         sync.Mutex
 	reconcileCursor string
+	bootUncertain   map[string]bool
 	observe         func(context.Context, triggerqueue.Record) (bool, error)
 }
 
@@ -52,7 +54,14 @@ func newDurableTriggerService(path string, dispatch *daemonTriggerService) (*dur
 	if err != nil {
 		return nil, err
 	}
-	return &durableTriggerService{queue: queue, dispatch: dispatch}, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	uncertain, err := queue.UncertainIDs(ctx)
+	if err != nil {
+		_ = queue.Close()
+		return nil, err
+	}
+	return &durableTriggerService{queue: queue, dispatch: dispatch, bootUncertain: uncertain}, nil
 }
 
 func (s *durableTriggerService) Trigger(ctx context.Context, request httpapi.TriggerRequest) (httpapi.TriggerResponse, error) {

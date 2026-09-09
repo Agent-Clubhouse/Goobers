@@ -30,6 +30,9 @@ func TestTriggerDispatchPreservesAssignedRunIdentity(t *testing.T) {
 			if starter.count() != 1 || starter.starts[0].RunID != assigned {
 				t.Fatalf("starter requests = %+v", starter.starts)
 			}
+			if !starter.starts[0].RequireDurableJournal {
+				t.Fatal("accepted dispatch lost its journal publication requirement")
+			}
 		})
 	}
 }

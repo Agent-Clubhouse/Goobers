@@ -153,6 +153,9 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 	if err != nil {
 		return localscheduler.StartResult{Phase: journal.PhaseFailed}, fmt.Errorf("engine dispatch for %s/%s: %w", req.Gaggle, s.def.Name, err)
 	}
+	if req.RequireDurableJournal && (!s.liveJournal || live == nil) {
+		return localscheduler.StartResult{Phase: journal.PhaseFailed}, errors.New("accepted engine dispatch requires a live journal writer before execution")
+	}
 	if err := s.hooks.validate(req.Gaggle); err != nil {
 		return localscheduler.StartResult{Phase: journal.PhaseFailed}, fmt.Errorf("engine dispatch for %s/%s: %w", req.Gaggle, s.def.Name, err)
 	}

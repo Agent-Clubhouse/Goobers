@@ -66,10 +66,31 @@ func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
 	for _, record := range records {
 		s.reconcileCursor = record.ID
 		observed, err := s.observe(ctx, record)
-		if err == nil && observed {
-			err = s.queue.Finish(ctx, record.ID, triggerqueue.Dispatched, strings.TrimPrefix(record.ID, "trigger-"), "", s.dispatch.now())
+		if err == nil {
+			err = s.reconcileObservation(ctx, record, observed)
 		}
 		failures = errors.Join(failures, err)
 	}
 	return failures
+}
+
+func (s *durableTriggerService) reconcileObservation(ctx context.Context, record triggerqueue.Record, observed bool) error {
+	var err error
+	switch {
+	case observed:
+		err = s.queue.Finish(ctx, record.ID, triggerqueue.Dispatched, strings.TrimPrefix(record.ID, "trigger-"), "", s.dispatch.now())
+	case s.bootUncertain[record.ID]:
+		// The daemon owns up.lock and captured this set before its first drain.
+		// Both starter backends publish a journal before accepted execution;
+		// retention records a receipt before removing that proof. Strong
+		// absence for this prior-process record therefore permits retry.
+		err = s.queue.RetryUnstarted(ctx, record.ID)
+	default:
+		return nil
+	}
+	if err == nil || errors.Is(err, triggerqueue.ErrTransition) {
+		delete(s.bootUncertain, record.ID)
+		return nil
+	}
+	return err
 }

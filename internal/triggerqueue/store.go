@@ -216,6 +216,38 @@ func (s *Store) BeginDispatch(ctx context.Context, id string) error {
 	return changed(result, err)
 }
 
+// UncertainIDs captures the bounded pre-startup recovery set without loading
+// request payloads. Later dispatches must not enter this set: their asynchronous
+// starter may still be publishing a journal in the current process.
+func (s *Store) UncertainIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT id FROM triggers WHERE state='dispatching' LIMIT ?", MaxRecords+1)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if len(id) != 40 || !strings.HasPrefix(id, "trigger-") || len(ids) >= MaxRecords {
+			return nil, errors.New("triggerqueue: invalid recovery snapshot")
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
+// RetryUnstarted is reserved for restart reconciliation after proving that a
+// pre-startup dispatch has no published or staged journal. The acceptance ID
+// (and therefore assigned run ID) is unchanged. A concurrent durable receipt
+// prevents the transition rather than being overwritten.
+func (s *Store) RetryUnstarted(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, "UPDATE triggers SET state='accepted',run_id='' WHERE id=? AND state='dispatching' AND finished_ns IS NULL", id)
+	return changed(result, err)
+}
+
 // RecordDispatch records scheduler admission, not durable run creation. The
 // record stays unfinished and cannot be expired until execution is observed.
 func (s *Store) RecordDispatch(ctx context.Context, id, runID string) error {

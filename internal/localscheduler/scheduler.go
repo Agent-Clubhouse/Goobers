@@ -2511,10 +2511,11 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		defer s.releaseAdmissionOwner(runID, entry.Workflow, admissionGeneration)
 		entry.Starter = gooberDigestStarter{digest: entry.GooberDigest, next: entry.Starter}
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
-			RunID:   runID,
-			Gaggle:  entry.Gaggle,
-			Trigger: trigger,
-			RepoRef: entry.RepoRef,
+			RequireDurableJournal: assignedRunID != "",
+			RunID:                 runID,
+			Gaggle:                entry.Gaggle,
+			Trigger:               trigger,
+			RepoRef:               entry.RepoRef,
 		})
 		if startErr == nil {
 			s.recordScheduledPollResult(identity, entry, backoffTokens, result.NoWork, s.now())

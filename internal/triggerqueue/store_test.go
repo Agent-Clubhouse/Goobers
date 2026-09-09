@@ -297,3 +297,35 @@ func TestRecordedAdmissionRemainsUnfinishedAndPagesPastUnresolvedRecords(t *test
 		}
 	}
 }
+
+func TestRestartSnapshotAndRetryPreserveIdentityAndRespectReceipt(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "accepted.db"))
+	first := acceptTest(t, s, "first", time.Now())
+	if err := s.BeginDispatch(t.Context(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := s.UncertainIDs(t.Context())
+	if err != nil || len(snapshot) != 1 || !snapshot[first.ID] {
+		t.Fatalf("snapshot=%v error=%v", snapshot, err)
+	}
+	second := acceptTest(t, s, "second", time.Now())
+	if err := s.BeginDispatch(t.Context(), second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot[second.ID] {
+		t.Fatal("snapshot admitted a later dispatch")
+	}
+	if err := s.RetryUnstarted(t.Context(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Get(t.Context(), first.ID, first.Actor)
+	if err != nil || r.State != Accepted || r.Key != first.Key || !r.AcceptedAt.Equal(first.AcceptedAt) {
+		t.Fatalf("retry=%+v error=%v", r, err)
+	}
+	if err := s.Finish(t.Context(), second.ID, Dispatched, "run-id", "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetryUnstarted(t.Context(), second.ID); !errors.Is(err, ErrTransition) {
+		t.Fatalf("receipt overwritten: %v", err)
+	}
+}
