@@ -125,6 +125,9 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
     await expect(status).toContainText("Gaggles1");
 
     const outcomes = page.getByRole("region", { name: "Recent outcomes" });
+    await expect(page.getByRole("region", { name: "Active runs" })).toContainText(
+      "01JZE2ESMOKERUN",
+    );
     const outcomeRow = outcomes.locator(".data-row").filter({ hasText: completedRunId });
     await expect(outcomeRow).toBeVisible();
     await expect(outcomeRow.locator(`a[aria-label="Open run ${completedRunId}"]`)).toHaveAttribute(

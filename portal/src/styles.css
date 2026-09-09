@@ -6493,7 +6493,7 @@ code,
   }
 
   .run-grid > span:nth-child(2),
-  .data-row:has(.stage-progress) > span:nth-child(2) {
+  .data-row:has(.stage-progress) > .row-workflow {
     display: none;
   }
 
