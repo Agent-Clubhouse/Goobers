@@ -15,6 +15,7 @@ import type {
   ModelInvalidation,
   UpdateModel,
   ReadState,
+  AdmissionDegradedState,
 } from "./api/types";
 import { SessionDataCache } from "./dataCache";
 import type { PortalDiagnostics } from "./portalDiagnostics";
@@ -151,6 +152,7 @@ interface LiveDataContextValue {
   lastSSEFailure?: LiveDataSSEFailure;
   /** How current the data is. Independent of `freshness`. */
   dataFreshness: DataFreshness;
+  admissionState?: AdmissionDegradedState;
   /** Called by the HTTP client for every response carrying a readState. */
   reportReadState: (state: ReadState) => void;
   isFresh: () => boolean;
@@ -201,6 +203,7 @@ export function LiveDataProvider({
     () => controller.lastSSEFailure,
   );
   const [dataFreshness, setDataFreshness] = useState<DataFreshness>({ kind: "unknown" });
+  const [admissionState, setAdmissionState] = useState<AdmissionDegradedState | undefined>();
 
   const reportReadState = useCallback((state: ReadState) => {
     setDataFreshness(deriveDataFreshness(state));
@@ -210,6 +213,7 @@ export function LiveDataProvider({
   // and torn down with the provider — a stale sink would keep a dead
   // component's setState alive across a provider swap.
   useLayoutEffect(() => setReadStateSink(reportReadState), [reportReadState]);
+  useLayoutEffect(() => setAdmissionStateSink(setAdmissionState), []);
 
   useLayoutEffect(() => {
     const unsubscribe = controller.subscribeState((nextFreshness, failure) => {
@@ -229,13 +233,14 @@ export function LiveDataProvider({
       freshness,
       lastSSEFailure,
       dataFreshness,
+      admissionState,
       reportReadState,
       isFresh: controller.isFresh,
       refresh: controller.refresh,
       retryConnection: controller.retryConnection,
       subscribe: controller.subscribe,
     }),
-    [cache, controller, dataFreshness, freshness, lastSSEFailure, reportReadState],
+    [admissionState, cache, controller, dataFreshness, freshness, lastSSEFailure, reportReadState],
   );
 
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
@@ -1161,6 +1166,7 @@ function parseCursor(cursor: string | undefined):
  * standalone build, reports are simply dropped.
  */
 let readStateSink: ((state: ReadState) => void) | undefined;
+let admissionStateSink: ((state: AdmissionDegradedState | undefined) => void) | undefined;
 
 /** Registers the provider's reporter. Returns an unregister function. */
 export function setReadStateSink(sink: (state: ReadState) => void): () => void {
@@ -1175,6 +1181,21 @@ export function setReadStateSink(sink: (state: ReadState) => void): () => void {
 /** Called by the HTTP client for every response carrying a readState. */
 export function publishReadState(state: ReadState): void {
   readStateSink?.(state);
+}
+
+function setAdmissionStateSink(
+  sink: (state: AdmissionDegradedState | undefined) => void,
+): () => void {
+  admissionStateSink = sink;
+  return () => {
+    if (admissionStateSink === sink) {
+      admissionStateSink = undefined;
+    }
+  };
+}
+
+export function publishAdmissionState(state: AdmissionDegradedState | undefined): void {
+  admissionStateSink?.(state);
 }
 
 export function deriveDataFreshness(state: ReadState): DataFreshness {

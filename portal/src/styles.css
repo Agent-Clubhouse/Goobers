@@ -2379,6 +2379,19 @@ summary:focus-visible {
   color: var(--danger);
 }
 
+.admission-degraded {
+  align-items: baseline;
+  background: color-mix(in srgb, var(--warning) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--line));
+  border-radius: 0.75rem;
+  color: var(--text);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+}
+
 .section-query-spinner {
   animation: spin 0.8s linear infinite;
   border: 2px solid var(--line);

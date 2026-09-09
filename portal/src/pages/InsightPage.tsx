@@ -9,6 +9,7 @@ import type {
   TelemetryStatsOptions,
   TelemetryUsageStats,
 } from "../api/types";
+import { isMissingCostCapability } from "../api/errors";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { ScopeStrip } from "../components/ScopeStrip";
@@ -817,8 +818,17 @@ export function CostTrend({
     );
   }
   if (costTrend.status === "error") {
+    const unavailable = isMissingCostCapability(costTrend.error);
     return (
-      <SectionQueryStatus error message="Unable to load the cost trend." retry={retry} />
+      <SectionQueryStatus
+        error
+        message={
+          unavailable
+            ? "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section."
+            : "Unable to load the cost trend."
+        }
+        retry={unavailable ? undefined : retry}
+      />
     );
   }
   if (costTrend.status !== "ready" && costTrend.status !== "stale") {
@@ -1037,13 +1047,18 @@ export function ExternalCostBreakdown({
   );
 
   if (costs.status === "error") {
+    const unavailable = isMissingCostCapability(costs.error);
     return (
       <section className="content-section cost-section-stable cost-section-attribution">
         <ExternalCostHeading />
         <SectionQueryStatus
           error
-          message="Unable to load pull request and issue costs."
-          retry={retry}
+          message={
+            unavailable
+              ? "Attributed costs are not supported by this daemon. Upgrade Goobers to enable pull request and issue cost reporting."
+              : "Unable to load pull request and issue costs."
+          }
+          retry={unavailable ? undefined : retry}
         />
       </section>
     );
