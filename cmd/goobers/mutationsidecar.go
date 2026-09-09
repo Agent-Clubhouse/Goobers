@@ -78,7 +78,7 @@ func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref provid
 // RecordLandingReceipt reports durability failures to landing callers. Do not
 // abandon a successful forge response merely because its request context was
 // cancelled: the local receipt must still be flushed before surrender.
-func (r sidecarMutationRecorder) RecordLandingReceipt(_ context.Context, ref providers.ExternalRef) error {
+func (r sidecarMutationRecorder) RecordLandingReceipt(ctx context.Context, ref providers.ExternalRef) error {
 	fact := mutationFact{
 		LandingIntent:     ref.LandingIntent,
 		QueueAdmission:    ref.QueueAdmission,
@@ -91,14 +91,23 @@ func (r sidecarMutationRecorder) RecordLandingReceipt(_ context.Context, ref pro
 		RunID:             ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
 		ProviderRunID: ref.ProviderRunID,
 	}
-	return appendMutationFact(fact)
+	if err := appendMutationFact(fact); err != nil {
+		return err
+	}
+	if ref.LandingIntent != nil || ref.QueueAdmission != nil || ref.MergeConfirmation != nil {
+		return publishStageLandingReceipts(context.WithoutCancel(ctx))
+	}
+	return nil
 }
 
 func (r sidecarMutationRecorder) RecordLandingIntent(ctx context.Context, provider providers.ProviderKind, intent providers.LandingIntent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return appendMutationFact(mutationFact{Provider: string(provider), Kind: r.kind, ID: intent.PullID, Operation: "merge-intent", LandingIntent: &intent})
+	if err := appendMutationFact(mutationFact{Provider: string(provider), Kind: r.kind, ID: intent.PullID, Operation: "merge-intent", LandingIntent: &intent}); err != nil {
+		return err
+	}
+	return publishStageLandingReceipts(ctx)
 }
 
 func appendMutationFact(fact mutationFact) error {

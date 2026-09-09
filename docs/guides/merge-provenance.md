@@ -78,7 +78,21 @@ Local and Temporal stage readers reject mutation sidecars larger than 16 MiB
 or 10,000 lines rather than decoding a partial receipt set. Sidecars must be
 regular files; symlink leaves and special files are refused. Read failures are
 reported as provenance diagnostics, not interpreted as evidence of no mutation.
-These read bounds do not close the crash-recovery gap described below.
+Remote CLI landing stages use their run-scoped journal credential to obtain a
+durable host acknowledgement for the intent before sending the forge request.
+They publish confirmations before returning, even if the request context was
+cancelled after the forge response. A refused, malformed or missing host
+acknowledgement blocks the intent; partial journal-plane configuration never
+falls back to a local-only receipt. The pod's surrender credential is not
+exposed to the subprocess.
+
+Local stages fsync their sidecars; managed-worktree cleanup recovers receipts
+before disposal. Worker cleanup publishes receipts independently of activity
+completion, and pod surrender carries the complete bounded receipt set.
+Failed or ambiguous handoffs retain source evidence for retry. These safeguards
+cannot manufacture a confirmation if execution stops between the external
+mutation and recording its response: the retained intent remains an attempt,
+and the merge remains unverified unless separate confirmation evidence exists.
 
 The interval includes `--since` and excludes `--until`. The default is seven
 days; the maximum is 90 days. More than 10,000 telemetry events or raw forge
@@ -94,9 +108,10 @@ leave genuine daemon merges in the unverified residual. Treat the coverage label
 of the report, not optional footnotes. This comparison currently supports GitHub;
 the retained telemetry view accepts GitHub, Azure DevOps and Gitea receipts.
 
-Queue-completion attribution and crash recovery remain under development in
-#3019; the presence of this report does not establish that every landing path
-emits a durable confirmation.
+Queue-completion attribution is evidence-limited: a retained enqueue record
+proves the daemon's queue mutation, not ownership of a later completed merge.
+The presence of a landing intent or queue receipt never substitutes for a
+durable merge confirmation.
 
 The GitHub [GraphQL pull-request reference](https://docs.github.com/en/graphql/reference/pulls#mergequeueentrystate)
 documents only pending/check/mergeability states for a queue entry, not a
