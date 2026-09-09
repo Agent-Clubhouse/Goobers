@@ -301,6 +301,20 @@ func TestDrainTimeoutDefaults(t *testing.T) {
 	}
 }
 
+func TestWorkerOptionsUseBuildIDVersioning(t *testing.T) {
+	h, err := New(Config{TaskQueues: []string{"q"}, BuildVersion: "v1.2.3"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := h.workerOptions()
+	if got := opts.BuildID; got != "v1.2.3" {
+		t.Fatalf("BuildID = %q, want v1.2.3", got)
+	}
+	if !opts.UseBuildIDForVersioning {
+		t.Fatal("UseBuildIDForVersioning = false, want true")
+	}
+}
+
 // fakeNextActivity asserts the tracker counts the execution window itself.
 type fakeNextActivity struct {
 	interceptor.ActivityInboundInterceptorBase
