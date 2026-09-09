@@ -131,3 +131,24 @@ func TestPinnedResolverRefusesUnverifiedIdentityBeforeProviderConstruction(t *te
 		})
 	}
 }
+
+func TestPinnedSharedClaimRecordKeyIsRepositoryRelative(t *testing.T) {
+	layout, _ := newPinnedClaimResolverRun(t, "shared")
+	resolver := pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
+		return &pinnedClaimTestStore{}, nil
+	}}
+	key := claimsclient.Key{Gaggle: "example", Provider: "github", ExternalID: "42"}
+	_, identity, _, err := resolver.claimPolicy(key, "shared-run", "claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, apiURL := range []string{"", "https://api.github.com", "https://api.github.com/"} {
+		copy := *identity.WorkspaceRepository
+		copy.BaseURL = apiURL
+		identity.WorkspaceRepository = &copy
+		binding, err := resolver.binding(t.Context(), key, identity, sharedclaim.Owner{})
+		if err != nil || binding.RemoteKey != "42" {
+			t.Fatalf("equivalent repository spelling split the claim key: %q %+v %v", apiURL, binding, err)
+		}
+	}
+}

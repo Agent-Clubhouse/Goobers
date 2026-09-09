@@ -105,5 +105,9 @@ func (r pinnedSharedClaimResolver) binding(ctx context.Context, key claimsclient
 	if store == nil {
 		return claimsclient.SharedClaimBinding{}, fmt.Errorf("shared claim provider is unavailable")
 	}
-	return claimsclient.SharedClaimBinding{Store: store, RemoteKey: string(encoded), Owner: owner}, nil
+	// The store is already repository-scoped. Including the configured API
+	// URL in its record key would split one GitHub item into two leases when
+	// one instance spells the default host explicitly and another omits it.
+	// The owner token still binds the repository as well as the item.
+	return claimsclient.SharedClaimBinding{Store: store, RemoteKey: key.ExternalID, Owner: owner}, nil
 }
