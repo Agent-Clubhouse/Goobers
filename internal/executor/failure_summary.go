@@ -207,6 +207,9 @@ func applyCommandFailureDiagnostic(result *apiv1.ResultEnvelope, exitCode int, d
 	result.Outputs[outputFailureEndByte] = float64(diagnostic.failure.end)
 
 	message := fmt.Sprintf("command exited %d; failure: %s", exitCode, diagnostic.failure.text)
+	if hint := failureclass.DependencyTransportHint(diagnostic.failure.text); hint != "" {
+		message += "; hint: " + hint
+	}
 	if diagnostic.warning.text != "" {
 		warningPath := stdoutPath
 		if diagnostic.warning.stream == "stderr" {

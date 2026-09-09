@@ -50,6 +50,41 @@ export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | 
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
+
+export interface TriggerRequest {
+  workflow: string;
+  gaggle?: string;
+  requestId?: string;
+  force?: boolean;
+  sourceRun?: string;
+}
+
+export interface TriggerResponse {
+  acceptanceId?: string;
+  state?: string;
+  runId?: string;
+  duplicate?: boolean;
+}
+
+export interface TriggerStatusResponse {
+  acceptanceId: string;
+  state: string;
+  runId?: string;
+  reason?: string;
+  acceptedAt: string;
+}
+
+export interface CancelRunRequest {
+  workflow?: string;
+  gaggle?: string;
+  actor?: string;
+}
+
+export interface CancelRunResult {
+  phase?: string;
+  code?: string;
+  error?: string;
+}
 export type AttemptClass = "initial" | "policy" | "infra" | "human";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
 export type OutcomeFilter = "finished" | "terminal" | "success" | "failure" | "other";

@@ -40,6 +40,7 @@ themselves, so no cell can drift from the YAML.
 | `stress.yml` | schedule, workflow_dispatch | active | — |
 | `tracked-gap-references.yml` | push, schedule, workflow_dispatch | active | — |
 | `vulnerability-scan.yml` | schedule, workflow_dispatch | active | — |
+| `windows-image-verify.yml` | workflow_dispatch | active | — |
 
 <!-- END GENERATED WORKFLOW INVENTORY -->
 

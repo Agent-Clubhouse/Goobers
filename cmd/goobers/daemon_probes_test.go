@@ -1,9 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/httpapi"
 )
 
 // TestDaemonProbeStateLivenessGraceBeforeFirstTick locks the pre-first-tick
@@ -22,6 +28,70 @@ func TestDaemonProbeStateLivenessGraceBeforeFirstTick(t *testing.T) {
 	if !state.liveness() {
 		t.Fatal("liveness() before the scheduler's first tick must default healthy (startup grace)")
 	}
+}
+
+func TestTriggerSweepProgressRequiresSuccessfulCompletion(t *testing.T) {
+	var heartbeat atomic.Int64
+	now := time.Now()
+	refused := errors.New("trigger storage unavailable")
+	if err := recordTriggerSweepProgress(&heartbeat, refused, now); !errors.Is(err, refused) || heartbeat.Load() != 0 {
+		t.Fatalf("failed sweep advanced readiness: %v %d", err, heartbeat.Load())
+	}
+	if err := recordTriggerSweepProgress(&heartbeat, nil, now); err != nil || heartbeat.Load() != now.UnixNano() {
+		t.Fatalf("successful sweep did not advance readiness: %v %d", err, heartbeat.Load())
+	}
+	if err := recordTriggerSweepProgress(&heartbeat, refused, now.Add(time.Minute)); !errors.Is(err, refused) || heartbeat.Load() != now.UnixNano() {
+		t.Fatal("subsequent failed sweep hid stale progress")
+	}
+}
+
+func TestDaemonProbeHTTPDistinguishesListeningFromTriggerReadiness(t *testing.T) {
+	var listening, ready, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
+	var lastTick, lastSweep atomic.Int64
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	started := now
+	state := &daemonProbeState{
+		apiListening: &listening, ready: &ready, configLoaded: &configLoaded,
+		stateOpen: &stateOpen, resumeComplete: &resumeComplete, sweepsStarted: &sweepsStarted,
+		lastTickAtNanos: &lastTick, lastTriggerSweepAtNanos: &lastSweep,
+		livenessTimeout: time.Minute, now: func() time.Time { return now },
+	}
+	handler := httpapi.WrapWithProbes(http.NotFoundHandler(), nil, state.readiness)
+	probe := func(wantStatus int, wantScheduler, wantSweep bool) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.ReadinessPath, nil))
+		var result httpapi.ReadinessStatus
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != wantStatus || !result.Checks["apiListening"] || result.Checks["schedulerReady"] != wantScheduler || result.Checks["triggerSweepReady"] != wantSweep {
+			t.Fatalf("readiness status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	listening.Store(true)
+	configLoaded.Store(true)
+	stateOpen.Store(true)
+	for _, delay := range []time.Duration{35 * time.Second, 60 * time.Second} {
+		now = started.Add(delay)
+		// The API can answer for a minute while startup still cannot accept
+		// work. No real sleeps or timing-sensitive subprocesses are needed.
+		probe(http.StatusServiceUnavailable, false, false)
+	}
+	resumeComplete.Store(true)
+	sweepsStarted.Store(true)
+	ready.Store(true)
+	probe(http.StatusOK, false, false) // no observed loop progress yet
+	lastTick.Store(now.UnixNano())
+	lastSweep.Store(now.UnixNano())
+	probe(http.StatusOK, true, true)
+	now = now.Add(2 * time.Minute)
+	lastTick.Store(now.UnixNano())
+	probe(http.StatusOK, true, false) // scheduler live, trigger sweep stalled
+	lastSweep.Store(now.UnixNano())
+	probe(http.StatusOK, true, true)
+	ready.Store(false)
+	probe(http.StatusServiceUnavailable, false, false)
 }
 
 // TestDaemonProbeStateLivenessReflectsHeartbeatStaleness is the direct,

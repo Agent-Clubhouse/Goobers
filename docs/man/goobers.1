@@ -43,7 +43,7 @@ show command or concept help
 scaffold an instance root
 .TP
 \fBgoobers run\fR
-trigger a run manually (still honors run conditions)
+trigger a run manually; --force bypasses cadence budgets
 .TP
 \fBgoobers scaffold\fR
 scaffold a goober, workflow, or gaggle
@@ -138,6 +138,9 @@ apply the recorded checked-in source to the runtime instance
 .TP
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
+.TP
+\fBgoobers config-seed\fR
+seed a private worker instance from a rendered configuration mirror
 .TP
 \fBgoobers diagnostics\fR
 collect a portable, redacted support bundle
@@ -535,6 +538,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-config-diff\fR(1),
 \fBgoobers-config-materialize\fR(1),
 \fBgoobers-config-show\fR(1),
+\fBgoobers-config-seed\fR(1),
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),
 \fBgoobers-dashboard\fR(1),

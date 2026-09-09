@@ -121,6 +121,7 @@ const (
 	// exception cannot become an information-disclosure surface.
 	ConfigDigestPath         = V1Prefix + "/config/digest"
 	TriggerIngestPath        = V1Prefix + "/triggers"
+	TriggerStatusPath        = V1Prefix + "/triggers/{acceptance}"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunCancelPath is the run-control plane (#3807): ask the daemon to stop
 	// a run it is actively executing. The daemon-local seam is the
@@ -282,6 +283,7 @@ const (
 	RouteClaimVerify       RouteID = "claimVerify"
 	RouteClaimRecover      RouteID = "claimRecover"
 	RouteTriggerIngest     RouteID = "triggerIngest"
+	RouteTriggerStatus     RouteID = "triggerStatus"
 	RouteResolveEscalation RouteID = "resolveEscalation"
 	RouteCancelRun         RouteID = "cancelRun"
 	RouteJournalEmit       RouteID = "journalEmit"
@@ -450,6 +452,7 @@ var v1Routes = []Route{
 	// with the mutations rather than the reads.
 	{ID: RouteClaimRecover, Method: http.MethodPost, Path: ClaimRecoverPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteTriggerStatus, Method: http.MethodGet, Path: TriggerStatusPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	// Cancelling a live run is operator recovery, like `run abort` and the
 	// HITL resolution above — maintenance, outside the runtime parity

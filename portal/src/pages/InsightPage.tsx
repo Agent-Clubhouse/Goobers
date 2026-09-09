@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
@@ -24,7 +24,13 @@ import {
   useInsightExternalCosts,
   useInsightStats,
 } from "../insightData";
-import { deriveExternalCostRows } from "../costView";
+import {
+  deriveExternalCostRows,
+  filterExternalCostRows,
+  sortExternalCostRows,
+  type ExternalCostSortDirection,
+  type ExternalCostSortKey,
+} from "../costView";
 import {
   deriveInsightCostTrendState,
   deriveInsightViewModel,
@@ -1048,6 +1054,22 @@ function ExternalCostBreakdown({
   costs: QueryState<InsightExternalCostSnapshot>;
   retry: () => void;
 }) {
+  const [filter, setFilter] = useState("");
+  const [kind, setKind] = useState<"all" | "pr" | "issue">("all");
+  const [sortKey, setSortKey] = useState<ExternalCostSortKey>("native");
+  const [sortDirection, setSortDirection] = useState<ExternalCostSortDirection>("desc");
+  const rows = useMemo(
+    () =>
+      costs.status === "ready" || costs.status === "stale"
+        ? deriveExternalCostRows(costs.data.result)
+        : [],
+    [costs],
+  );
+  const visibleRows = useMemo(
+    () => sortExternalCostRows(filterExternalCostRows(rows, filter, kind), sortKey, sortDirection),
+    [filter, kind, rows, sortDirection, sortKey],
+  );
+
   if (costs.status === "error") {
     return (
       <section className="content-section">
@@ -1062,13 +1084,15 @@ function ExternalCostBreakdown({
   if (costs.status !== "ready" && costs.status !== "stale") {
     return null;
   }
-  const rows = deriveExternalCostRows(costs.data.result);
   return (
     <section className="content-section">
-      <ExternalCostHeading />
+      <ExternalCostHeading loadedAt={costs.data.loadedAt} />
       {costs.status === "stale" && costs.error && (
         <div className="insight-inline-error">
-          <span>Attributed cost refresh failed. Showing the last successful read.</span>
+          <span>
+            Attributed cost refresh failed. Showing data loaded{" "}
+            {formatTimestamp(costs.data.loadedAt)}.
+          </span>
           <button onClick={retry} type="button">Retry</button>
         </div>
       )}
@@ -1080,55 +1104,120 @@ function ExternalCostBreakdown({
       {rows.length === 0 ? (
         <p className="inline-empty">No pull request or issue cost was attributed in this window.</p>
       ) : (
-        <div className="external-cost-list">
-          {rows.map((row) => (
-            <article className="external-cost-card" key={row.key}>
-              <div className="external-cost-title">
-                <strong>{row.label}</strong>
-                <span>{row.provider}</span>
-              </div>
-              <dl className="external-cost-totals">
-                <div>
-                  <dt>Provider-native</dt>
-                  <dd>{row.native}</dd>
-                </div>
-                <div>
-                  <dt>Normalized estimate</dt>
-                  <dd>{row.normalized}</dd>
-                </div>
-              </dl>
-              <p className={row.lowerBound ? "cost-coverage-warning" : "usage-description"}>
-                {row.coverage}
-              </p>
-              {row.models.length > 0 && (
-                <ul className="external-cost-models" aria-label={`${row.label} model breakdown`}>
-                  {row.models.map((model) => <li key={model}>{model}</li>)}
-                </ul>
-              )}
-              {row.runs.length > 0 && (
-                <details className="external-cost-runs">
-                  <summary>{row.runs.length} run{row.runs.length === 1 ? "" : "s"}</summary>
-                  <ul aria-label={`${row.label} run breakdown`}>
-                    {row.runs.map((run) => <li key={run}>{run}</li>)}
-                  </ul>
-                </details>
-              )}
-            </article>
-          ))}
-        </div>
+        <>
+          <div className="external-cost-controls">
+            <label>
+              <span>Filter</span>
+              <input
+                onChange={(event) => setFilter(event.target.value)}
+                placeholder="PR, issue, provider, model, or run"
+                type="search"
+                value={filter}
+              />
+            </label>
+            <label>
+              <span>Type</span>
+              <select
+                onChange={(event) => setKind(event.target.value as "all" | "pr" | "issue")}
+                value={kind}
+              >
+                <option value="all">All work items</option>
+                <option value="pr">Pull requests</option>
+                <option value="issue">Issues</option>
+              </select>
+            </label>
+            <label>
+              <span>Sort by</span>
+              <select
+                onChange={(event) => setSortKey(event.target.value as ExternalCostSortKey)}
+                value={sortKey}
+              >
+                <option value="work-item">Work item</option>
+                <option value="provider">Provider</option>
+                <option value="native">Provider-native cost</option>
+                <option value="normalized">Normalized estimate</option>
+                <option value="coverage">Coverage</option>
+                <option value="runs">Run count</option>
+              </select>
+            </label>
+            <button
+              className="secondary-button external-cost-sort-direction"
+              onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}
+              type="button"
+            >
+              {sortDirection === "asc" ? "Ascending" : "Descending"}
+            </button>
+            <span className="section-count">
+              {visibleRows.length} of {rows.length}
+            </span>
+          </div>
+          {visibleRows.length === 0 ? (
+            <p className="inline-empty">No attributed costs match the current filters.</p>
+          ) : (
+            <div className="external-cost-table-wrap">
+              <table className="external-cost-table">
+                <thead>
+                  <tr>
+                    <th>Work item</th>
+                    <th>Provider</th>
+                    <th>Provider-native</th>
+                    <th>Normalized estimate</th>
+                    <th>Coverage</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRows.map((row) => (
+                    <tr key={row.key}>
+                      <td><strong>{row.label}</strong></td>
+                      <td>{row.provider}</td>
+                      <td className="external-cost-value">{row.native}</td>
+                      <td className="external-cost-value">{row.normalized}</td>
+                      <td className={row.lowerBound ? "cost-coverage-warning" : "usage-description"}>
+                        {row.coverage}
+                      </td>
+                      <td>
+                        {row.models.length > 0 && (
+                          <ul
+                            className="external-cost-models"
+                            aria-label={`${row.label} model breakdown`}
+                          >
+                            {row.models.map((model) => <li key={model}>{model}</li>)}
+                          </ul>
+                        )}
+                        {row.runs.length > 0 && (
+                          <details className="external-cost-runs">
+                            <summary>
+                              {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
+                            </summary>
+                            <ul aria-label={`${row.label} run breakdown`}>
+                              {row.runs.map((run) => <li key={run}>{run}</li>)}
+                            </ul>
+                          </details>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
 }
 
-function ExternalCostHeading() {
+function ExternalCostHeading({ loadedAt }: { loadedAt?: string }) {
   return (
     <div className="section-heading">
       <div>
         <p className="section-kicker">Attribution</p>
         <h2>Cost by pull request and issue</h2>
       </div>
-      <span className="section-count">Exact recorded usage</span>
+      <span className="section-count">
+        Exact recorded usage{loadedAt ? ` · Loaded ${formatTimestamp(loadedAt)}` : ""}
+      </span>
     </div>
   );
 }

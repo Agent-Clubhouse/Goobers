@@ -76,7 +76,7 @@ _goobers_completion()
             flags+=" --to --instance-schema --write"
             ;;
         doctor)
-            flags+=" --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
+            flags+=" --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
             ;;
         netpol-render)
             flags+=" --out --check --baseline --write-baseline --timeout --print-blob-endpoint"
@@ -124,11 +124,14 @@ _goobers_completion()
         worker)
             flags+=" --instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
+        config-seed)
+            flags+=" --mirror --instance"
+            ;;
         dashboard)
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
             ;;
         run)
-            flags+=" --gaggle --github-progress --pr --api --request-id --no-wait"
+            flags+=" --no-api --api-timeout --force --gaggle --github-progress --pr --api --request-id --no-wait"
             ;;
         approve)
             flags+=" --decision --actor --api"

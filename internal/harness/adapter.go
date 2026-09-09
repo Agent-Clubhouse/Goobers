@@ -126,6 +126,13 @@ type RunRequest struct {
 	// Adapters call it before returning so active agents are queryable while
 	// the harness process is still running.
 	AgentEventSink func(journal.Event) error
+	// TranscriptCheckpoint receives raw incremental capture from each process
+	// invocation, including a completion-recovery turn. The trusted caller must
+	// redact across delta boundaries before persisting bytes. Callbacks are
+	// serialized and finish before Run returns; their errors fail the run.
+	TranscriptCheckpoint func(InvocationTranscriptDelta) error
+	// TranscriptCheckpointInterval defaults to DefaultTranscriptCheckpointInterval.
+	TranscriptCheckpointInterval time.Duration
 	// MaxTranscriptBytes caps the transcript a subprocess-based Adapter
 	// retains in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64

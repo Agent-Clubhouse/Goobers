@@ -66,11 +66,12 @@ const stuckAbortedRunsSubquery = `SELECT DISTINCT run_id FROM run_errors WHERE c
 // rate that counts it as such misleads in only one direction. Rows written
 // by producers older than the refinement carry no class and conservatively
 // count as work failures.
-const infraFailedRunsSubquery = `SELECT DISTINCT run_id FROM run_errors WHERE code = 'run_failed' AND error_class IN ('` +
-	string(telemetry.ErrorClassInfra) + `', '` +
-	string(telemetry.ErrorClassInfraGit) + `', '` +
-	string(telemetry.ErrorClassInfraNet) + `', '` +
-	string(telemetry.ErrorClassInfraLock) + `')`
+const infraFailureClassesSQL = "'" + string(telemetry.ErrorClassInfra) + "', '" +
+	string(telemetry.ErrorClassInfraGit) + "', '" +
+	string(telemetry.ErrorClassInfraNet) + "', '" +
+	string(telemetry.ErrorClassInfraLock) + "'"
+
+const infraFailedRunsSubquery = `SELECT DISTINCT run_id FROM run_errors WHERE code = 'run_failed' AND error_class IN (` + infraFailureClassesSQL + `)`
 
 // Stage attempt status values, mirroring api/v1alpha1.ResultStatus's wire
 // strings (a stable, long-merged contract package — safe to reference by
@@ -623,18 +624,18 @@ func (db *DB) stageStats(ctx context.Context, req StatsRequest) ([]StageStats, e
 	branchClauses, branchArgs := branchFilterClauses("sa", req)
 	clauses = append(clauses, branchClauses...)
 	args = append(args, branchArgs...)
-	// An infra-class attempt (journal.AttemptInfra) is a crash/provider-retry
-	// continuation, not a verdict about the stage's own work — the same
-	// "weather, not signal" reasoning ErrorClass.InfraFault documents for the
-	// failure-streak circuit breaker (#3364) applies here: counting it toward
-	// SuccessRate/TotalAttempts/FailedAttempts would inflate a stage's
-	// reported failure rate every time a transient provider hiccup (e.g. a
-	// rate limit) got correctly retried and resolved, even though the retry
-	// mechanism did exactly what it should. Excluded entirely (not counted as
-	// either success or failure) rather than folded into "succeeded", since a
-	// literal crash-interrupted attempt with no verdict of its own is not
-	// evidence the stage worked either.
-	clauses = append(clauses, "(sa.attempt_class IS NULL OR sa.attempt_class != 'infra')")
+	// Start class is not outcome: an initial attempt can fail of infrastructure,
+	// and its infra-started successor can succeed or encounter a policy failure.
+	// Retain the legacy exclusion only for infra-started attempts whose outcome
+	// has no structured classification. A successful recovery is a work verdict.
+	// Ingestion also stores the "unknown" fallback for legacy error codes such
+	// as interrupted; a non-NULL class alone is not evidence of a work failure.
+	clauses = append(clauses, `(sa.status = 'success' OR (
+  COALESCE(sa.error_class, '') NOT IN (`+infraFailureClassesSQL+`)
+  AND COALESCE(json_extract(sa.runner_json, '$.retryFailureClass'), '') != 'infra'
+  AND (COALESCE(sa.attempt_class, '') != 'infra' OR COALESCE(sa.error_class, '') NOT IN ('', '`+string(telemetry.ErrorClassUnknown)+`')
+       OR json_extract(sa.runner_json, '$.retryFailureClass') = 'policy')
+ ))`)
 	join := ""
 	if agentStatsActive(req) {
 		join = `JOIN agent_invocations ai

@@ -2,6 +2,8 @@ package gate_test
 
 import (
 	"context"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,94 @@ type discardRecorder struct{}
 
 func (discardRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	return journal.Ref{Path: name, Size: int64(len(data))}, nil
+}
+
+// Exercise the warm-cache path without network access: recognizable fetch
+// failures must retain their cause through command summarization and route to
+// infrastructure handling, while ordinary code/dependency errors still fail.
+func TestModuleDownloadFailureReachesInfrastructureGate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses Unix shell semantics")
+	}
+	for _, tc := range []struct {
+		name, message, hint, outcome string
+	}{
+		{
+			name:    "dns",
+			message: `go: example.com/mod@v1.2.3: Get "https://modules.example.com/mod.zip": dial tcp: lookup modules.example.com: no such host`,
+			hint:    "check runner DNS resolution", outcome: gate.OutcomeInfra,
+		},
+		{
+			name:    "authentication",
+			message: `go: example.com/mod@v1.2.3: reading https://modules.example.com/mod.zip: 401 Unauthorized`,
+			hint:    "credentials and repository access", outcome: gate.OutcomeInfra,
+		},
+		{
+			name:    "Go filename connection failure",
+			message: `--- FAIL: TestAPI: foo.go: connection refused`,
+			outcome: gate.OutcomeFail,
+		},
+		{
+			name:    "Go filename authentication failure",
+			message: `--- FAIL: TestAPI: main.go: 401 Unauthorized`,
+			outcome: gate.OutcomeFail,
+		},
+		{
+			name:    "non-download go command failure",
+			message: `go: invoking tool: connection refused`,
+			outcome: gate.OutcomeFail,
+		},
+		{
+			name:    "checksum mismatch",
+			message: `go: downloading example.com/mod v1.2.3: checksum mismatch against sum.golang.org`,
+			outcome: gate.OutcomeFail,
+		},
+		{
+			name:    "application authentication test failure",
+			message: `--- FAIL: TestAuth: want 200, got 401 Unauthorized from https://api.example.com/widgets`,
+			outcome: gate.OutcomeFail,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			injector, err := credentials.NewInjector(unusedResolver{}, nil, discardRegistrar{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec, err := executor.NewShellExecutor(injector, discardRecorder{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := exec.Run(context.Background(), apiv1.InvocationEnvelope{
+				TaskID: "run-1:warm-module-cache", Workspace: t.TempDir(),
+			}, apiv1.DeterministicRun{
+				Command: []string{"sh", "-c", `printf '%s\n' "$1"; printf 'make: *** [Makefile:12: ci] Error 1\n' >&2; exit 1`, "module-download-test", tc.message},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "nonzero_exit" {
+				t.Fatalf("result = %+v, want command failure", result)
+			}
+			if tc.hint != "" {
+				if !strings.Contains(result.Error.Message, tc.message) || !strings.Contains(result.Error.Message, tc.hint) {
+					t.Fatalf("diagnostic = %q, want original cause and %q", result.Error.Message, tc.hint)
+				}
+			} else if strings.Contains(result.Error.Message, "; hint:") {
+				t.Fatalf("ordinary failure received infrastructure guidance: %q", result.Error.Message)
+			}
+			inputs, err := gate.AutomatedInputs(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := gate.DefaultChecks()["failure-class"](inputs, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome != tc.outcome {
+				t.Fatalf("outcome = %q, want %q (diagnostic: %s)", outcome, tc.outcome, result.Error.Message)
+			}
+		})
+	}
 }
 
 // unusedResolver is never called: warm-module-cache declares no

@@ -123,6 +123,28 @@ func engineStartRequest(runID string) localscheduler.StartRequest {
 	}
 }
 
+func TestAcceptedEngineStarterRefusesWithoutDurableJournal(t *testing.T) {
+	for _, mode := range []string{"writer unavailable", "journal disabled"} {
+		t.Run(mode, func(t *testing.T) {
+			fixture := newEngineStarterFixture(t, &fakeEngineWorkflows{}, &recordingEngineStarter{})
+			if mode == "writer unavailable" {
+				fixture.starter.runtime.Attach(fixture.engine, &engineRunGuards{client: fixture.temporal}, nil, time.Now)
+			} else {
+				fixture.starter.liveJournal = false
+			}
+			request := engineStartRequest("accepted-run")
+			request.RequireDurableJournal = true
+			result, err := fixture.starter.Start(t.Context(), request)
+			if err == nil || !strings.Contains(err.Error(), "requires a live journal writer") || result.Phase != journal.PhaseFailed {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+			if len(fixture.engine.inputs()) != 0 {
+				t.Fatal("unreserved accepted run reached the engine")
+			}
+		})
+	}
+}
+
 // TestEngineStarterRefusesWhenTheRuntimeIsNotAttached is the fail-closed
 // property, and the reason engineRuntime is a late-bound holder rather than a
 // nil-tolerant field.
@@ -173,7 +195,9 @@ func TestEngineStarterReservesTheRunBeforeStartingTheWorkflow(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = fixture.starter.Start(context.Background(), engineStartRequest("run-reserve"))
+		request := engineStartRequest("run-reserve")
+		request.RequireDurableJournal = true
+		_, _ = fixture.starter.Start(context.Background(), request)
 	}()
 
 	select {

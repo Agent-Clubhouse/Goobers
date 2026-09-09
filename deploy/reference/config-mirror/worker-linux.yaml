@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-worker
+  namespace: goobers-system
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: seed-instance-root
+          command: ["goobers"]
+          args:
+            - config-seed
+            - --mirror
+            - /mnt/config-mirror
+            - --instance
+            - /var/lib/goobers/instance
+          volumeMounts:
+            - name: config-mirror
+              mountPath: /mnt/config-mirror
+              readOnly: true
+      containers:
+        - name: worker
+          args:
+            - worker
+            - --task-queue
+            - goobers-engine
+            - --work-root
+            - /var/lib/goobers-worker
+            - --instance
+            - /var/lib/goobers/instance
+            - --blob-store
+            - /var/lib/goobers-blobs
+            - --dispatch-namespace
+            - gaggle-a # CHANGE-ME, along with the matching RBAC grant.
+      volumes:
+        - name: journal
+          persistentVolumeClaim: null
+          emptyDir: {}
+        - name: config-mirror
+          persistentVolumeClaim:
+            claimName: goobers-config-mirror
+            readOnly: true

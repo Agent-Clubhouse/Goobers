@@ -28,16 +28,16 @@ type supportDelta struct {
 // checkSupportMatrixForRelease refuses to package a tagged release whose
 // compiled-in DSL support matrix declares a level the release does not actually
 // reach — a level whose lifecycle transition is dated at a release that has not
-// happened yet (#4215). Only a final vMAJOR.MINOR.PATCH version is gated: a
-// pre-release, a `git describe` build version or `dev` is still in flux, and
-// the matrix can be corrected before the tag that publishes it exists. Once a
-// stable tag ships a mislabel, the append-only history rules make it permanent.
+// happened yet (#4215). Prereleases are checked against their stable release
+// line too: an RC must not bypass the gate that its final release will face.
+// Unversioned development builds have no release line to check.
 func checkSupportMatrixForRelease(version string) error {
 	version = strings.TrimSpace(version)
-	if !isFinalReleaseVersion(version) {
+	releaseLine, _, _ := strings.Cut(version, "-")
+	if !isFinalReleaseVersion(releaseLine) {
 		return nil
 	}
-	if err := supportmatrix.ValidateSupportPolicyForRelease(supportmatrix.GetDSL(), version); err != nil {
+	if err := supportmatrix.ValidateSupportPolicyForRelease(supportmatrix.GetDSL(), releaseLine); err != nil {
 		return fmt.Errorf("DSL support matrix cannot ship in %s: %w", version, err)
 	}
 	return nil
@@ -52,7 +52,7 @@ func isFinalReleaseVersion(version string) bool {
 		return false
 	}
 	for _, part := range parts {
-		if part == "" {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
 			return false
 		}
 		for _, r := range part {

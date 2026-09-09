@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -124,10 +125,17 @@ func (h *Host) Run(ctx context.Context) error {
 	opts := h.workerOptions()
 	started := make([]managedWorker, 0, len(h.cfg.TaskQueues))
 	stopAll := func() {
-		// Stop in reverse start order; each Stop honors WorkerStopTimeout.
-		for i := len(started) - 1; i >= 0; i-- {
-			started[i].Stop()
+		// Stop polling every queue immediately. Serial Stop calls would keep
+		// later queues accepting work and multiply the process drain window.
+		var draining sync.WaitGroup
+		for _, w := range started {
+			draining.Add(1)
+			go func() {
+				defer draining.Done()
+				w.Stop()
+			}()
 		}
+		draining.Wait()
 	}
 	for _, queue := range h.cfg.TaskQueues {
 		w := h.newWorker(c, queue, opts)

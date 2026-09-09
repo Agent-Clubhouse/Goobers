@@ -69,6 +69,7 @@ export interface InsightExternalCostSnapshot {
   result: TelemetryCostResult;
   window: InsightWindow;
   boundedAllTime: boolean;
+  loadedAt: string;
 }
 
 export function useInsightStats(
@@ -265,7 +266,13 @@ export function useInsightExternalCosts(
     load: async (signal) => {
       const filters = insightCostFilters(window);
       const result = await client.getTelemetryCosts(filters, { signal });
-      return { filters, result, window, boundedAllTime: window === "all" };
+      return {
+        filters,
+        result,
+        window,
+        boundedAllTime: window === "all",
+        loadedAt: new Date().toISOString(),
+      };
     },
   });
 }

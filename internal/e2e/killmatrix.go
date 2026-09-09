@@ -3,6 +3,8 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -12,10 +14,10 @@ import (
 
 // KillMatrixObserver is S6's named observer (goobernetes-smoke.md §4 S6):
 // "per injection — the evidence bundle's injection record (what was killed,
-// when), the interrupted attempt's attemptClass: infra journal entry with a
-// typed infra* error class, the successor attempt's fresh runner.* identity,
+// when), the interrupted attempt's structured infrastructure failure outcome,
+// both attempts' placement, the successor's infra start class and fresh pod,
 // and the run's successful terminal event."
-const KillMatrixObserver = "CellInjectionRecord (D5) + StageAttempt.Class==\"infra\" + telemetry.ClassifyError(...).InfraFault() + successor Placement.Pod + run terminal phase"
+const KillMatrixObserver = "CellInjectionRecord (D5) + InjectedTarget matches interrupted Placement.Pod/Node + StageAttempt.RetryFailureClass==\"infra\" + typed infrastructure cause + successful successor Class==\"infra\" + both Placement.Pod + run terminal phase"
 
 // StageClass is the kill matrix's first axis (goobernetes-smoke.md §2/S6):
 // the three stage classes one smoke run's kill matrix covers. This is a
@@ -105,6 +107,9 @@ type CellInjectionRecord struct {
 	RunID string         `json:"runId"`
 	// InjectedAt and InjectedTarget record D5's "what was killed, when" —
 	// InjectedTarget is a pod name or node name depending on Cell.Failure.
+	// InjectedAt comes from the injection observer, while attempt timestamps
+	// come from the journal. No shared-clock or maximum-skew contract is
+	// declared, so the observer does not infer a strict interval across them.
 	InjectedAt     time.Time `json:"injectedAt"`
 	InjectedTarget string    `json:"injectedTarget"`
 	// InterruptedAttempt is the attempt that was executing when the
@@ -118,9 +123,9 @@ type CellInjectionRecord struct {
 
 // ClassifyCellResult applies S6's pass/fail rule to one recorded injection:
 //
-//   - the interrupted attempt must journal attemptClass: infra with a typed
-//     infra* error class (never a policy/work failure charging Task.Retry or
-//     the failure-streak breaker — "the #3361 regression class");
+//   - the interrupted attempt must carry retryFailureClass: infra and a typed
+//     infrastructure outcome, independently of its start class (never a policy/work
+//     failure charging Task.Retry or the failure-streak breaker — "the #3361 regression class");
 //   - the successor attempt must exist and carry a fresh pod identity (S1);
 //   - the run must complete successfully.
 //
@@ -130,34 +135,49 @@ type CellInjectionRecord struct {
 // taxonomy, consumed exactly as the failure-streak breaker and
 // success-rate denominator already do (#3364).
 func ClassifyCellResult(record CellInjectionRecord) AssertionResult {
+	// Bind the recorded injection to this attempt before judging recovery.
+	if strings.TrimSpace(record.RunID) == "" {
+		return invalid(fmt.Sprintf("cell %s: no run identity recorded", record.Cell), record)
+	}
+	if !slices.Contains(KillMatrix(), record.Cell) {
+		return invalid(fmt.Sprintf("cell %s: unknown stage class or failure kind", record.Cell), record)
+	}
 	if record.InjectedTarget == "" || record.InjectedAt.IsZero() {
 		return invalid(fmt.Sprintf("cell %s: no injection recorded (D5 requires every injection be recorded)", record.Cell), record)
 	}
+	placement := record.InterruptedAttempt.Placement
+	if placement == nil || placement.Pod == "" {
+		return invalid(fmt.Sprintf("cell %s: interrupted attempt carries no placement provenance", record.Cell), record)
+	}
+	target := placement.Pod
+	if record.Cell.Failure == FailureKindNodeKill {
+		target = placement.Node
+	}
+	if target == "" || record.InjectedTarget != target {
+		return invalid(fmt.Sprintf("cell %s: injected target %q does not match interrupted placement target %q", record.Cell, record.InjectedTarget, target), record)
+	}
 
 	interrupted := record.InterruptedAttempt
-	if interrupted.Class != string(journal.AttemptInfra) {
-		return classify("", false,
-			fmt.Sprintf("cell %s: interrupted attempt classified as %q, not %q — an infra kill journaled as a policy/work failure charges Task.Retry or the failure-streak breaker (the #3361 regression class)",
-				record.Cell, interrupted.Class, journal.AttemptInfra),
-			nil, record)
+	if interrupted.Status != "failure" || interrupted.RetryFailureClass != string(journal.AttemptInfra) {
+		return classify("", false, fmt.Sprintf("cell %s: interrupted attempt lacks an infrastructure failure outcome", record.Cell), nil, record)
 	}
-	if interrupted.Error == nil || interrupted.Error.Code == "" {
-		return classify("", false, fmt.Sprintf("cell %s: interrupted attempt carries attemptClass infra but no typed error code", record.Cell), nil, record)
+	if interrupted.ErrorCode == "" || !telemetry.ClassifyError(interrupted.ErrorCode).InfraFault() || !telemetry.ErrorClass(interrupted.ErrorClass).InfraFault() {
+		return classify("", false, fmt.Sprintf("cell %s: interrupted attempt lacks a typed infrastructure cause", record.Cell), nil, record)
 	}
-	if class := telemetry.ClassifyError(interrupted.Error.Code); !class.InfraFault() {
-		return classify("", false,
-			fmt.Sprintf("cell %s: interrupted attempt's error code %q classifies as %q, not an infra fault", record.Cell, interrupted.Error.Code, class),
-			nil, record)
-	}
-
 	if record.SuccessorAttempt == nil {
 		return classify("", false, fmt.Sprintf("cell %s: no successor attempt recorded — the retry never ran in a fresh pod (S1)", record.Cell), nil, record)
 	}
 	successor := *record.SuccessorAttempt
+	if successor.Status != "success" {
+		return classify("", false, fmt.Sprintf("cell %s: successor attempt did not succeed", record.Cell), nil, record)
+	}
+	if successor.Class != string(journal.AttemptInfra) || successor.Number != interrupted.Number+1 || successor.Visit != interrupted.Visit {
+		return classify("", false, fmt.Sprintf("cell %s: successor is not the interrupted attempt's infrastructure retry", record.Cell), nil, record)
+	}
 	if successor.Placement == nil || successor.Placement.Pod == "" {
 		return invalid(fmt.Sprintf("cell %s: successor attempt carries no placement provenance", record.Cell), record)
 	}
-	if interrupted.Placement != nil && interrupted.Placement.Pod == successor.Placement.Pod {
+	if interrupted.Placement.Pod == successor.Placement.Pod {
 		return classify("", false, fmt.Sprintf("cell %s: successor attempt reused the interrupted attempt's pod %q", record.Cell, successor.Placement.Pod), nil, record)
 	}
 

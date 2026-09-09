@@ -381,9 +381,11 @@ func compileNext(def Definition, config compileConfig) (*Machine, error) {
 }
 
 func compileV30(def Definition, config compileConfig) (*Machine, error) {
-	// The inverse surface rule: a 3.0 workflow whose gaggle still declares
-	// requiredCapabilities is refused inside the interpreter (its
-	// FeaturesForGaggle), so only the runsOn floor is routed through here.
+	// Check the legacy gaggle floor before routing: the interpreter receives
+	// only runsOn, so dropping requiredCapabilities here would lose constraints.
+	if _, err := v30.FeaturesForGaggle(apiv1.GaggleSpec{RequiredCapabilities: config.gaggleRequiredCapabilities}); err != nil {
+		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
+	}
 	var opts []v30.Option
 	if config.goobersSet {
 		opts = append(opts, v30.WithGoobers(goobersForCapabilityAdmission(config.goobers)))

@@ -918,6 +918,10 @@ func (r *Run) RecordBranchStageArtifactWithIntegrity(branch int, stage string, a
 }
 
 func (r *Run) recordArtifact(ev Event, data []byte, maxBytes int) (Ref, error) {
+	return r.recordExpectedArtifact(ev, data, maxBytes, nil)
+}
+
+func (r *Run) recordExpectedArtifact(ev Event, data []byte, maxBytes int, expected *Ref) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -940,11 +944,20 @@ func (r *Run) recordArtifact(ev Event, data []byte, maxBytes int) (Ref, error) {
 	if err != nil {
 		return Ref{}, err
 	}
+	if expected != nil && (expected.Digest != digest || expected.Size != int64(len(scrubbed)) || expected.Path != relPath) {
+		return Ref{}, fmt.Errorf("journal: artifact %q does not match expected ref after redaction", ev.Name)
+	}
 	ref, err := writeContentScrubbed(r.dir, relPath, scrubbed, digest)
 	if err != nil {
 		return Ref{}, fmt.Errorf("journal: record artifact %q: %w", ev.Name, err)
 	}
 	ref.Integrity = ev.Integrity
+	if expected != nil {
+		if _, err := (&Reader{dir: r.dir}).ArtifactBytesBounded(ref, max(expected.Size, 1)); err != nil {
+			return Ref{}, fmt.Errorf("journal: verify stored artifact %q: %w", ev.Name, err)
+		}
+		ref.MediaType = expected.MediaType
+	}
 	ev.Ref = &ref
 	if err := r.append(ev); err != nil {
 		return Ref{}, err
@@ -994,6 +1007,10 @@ func (r *Run) recordSpan(branch int, stage, name, dataSchema string, data []byte
 }
 
 func (r *Run) recordSpanEvent(ev Event, data []byte) (Ref, error) {
+	return r.recordSpanEventExpectedDigest(ev, data, "")
+}
+
+func (r *Run) recordSpanEventExpectedDigest(ev Event, data []byte, expectedDigest string) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -1001,6 +1018,9 @@ func (r *Run) recordSpanEvent(ev Event, data []byte) (Ref, error) {
 	}
 	scrubbed := r.scrubber.Scrub(data)
 	digest := Digest(scrubbed)
+	if expectedDigest != "" && digest != expectedDigest {
+		return Ref{}, errors.New("journal: final transcript changed at the daemon redaction boundary")
+	}
 	relPath, err := spanPath(digest)
 	if err != nil {
 		return Ref{}, err

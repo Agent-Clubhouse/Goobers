@@ -17,7 +17,7 @@
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
-| [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
+| [`goobers run`](#goobers-run) | trigger a run manually; --force bypasses cadence budgets |
 | [`goobers scaffold`](#goobers-scaffold) | scaffold a goober, workflow, or gaggle |
 | [`goobers service`](#goobers-service) | install and manage the platform-supervised daemon |
 | [`goobers signal`](#goobers-signal) | fire an external signal to subscribed workflows |
@@ -56,6 +56,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
+| [`goobers config-seed`](#goobers-config-seed) | seed a private worker instance from a rendered configuration mirror |
 | [`goobers diagnostics`](#goobers-diagnostics) | collect a portable, redacted support bundle |
 | [`goobers diagnostics bundle`](#goobers-diagnostics-bundle) | write a portable, redacted support bundle |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions |
@@ -875,6 +876,28 @@ $ goobers config show
 $ goobers config show --json
 ~~~
 
+## `goobers config-seed`
+
+seed a private worker instance from a rendered configuration mirror
+
+~~~text
+Usage: goobers config-seed --mirror <absolute-path> --instance <absolute-path>
+
+Seed a dedicated worker instance from the daemon's rendered-config mirror.
+The mirror is read-only; no config-repository credentials are needed.
+The instance path must be a child of a private worker volume, not a mount point.
+A complete validated tree is published at once. A repeated init-container run
+validates and retains its completed seed, even if the mirror has since changed.
+It refuses to overwrite an unrelated instance. Recreate the private worker
+volume to seed a newer generation; this command is not a live config updater.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers config-seed --mirror /mnt/config-mirror --instance /var/lib/worker/instance
+~~~
+
 ## `goobers connect`
 
 connect an instance to your own GitHub repository
@@ -1089,7 +1112,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--overlay-dir <dir>] [--image-runtime docker|podman]
                           [--image-pull-policy always|never]
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
-                          [--timeout <duration>]
+                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
 
@@ -1103,13 +1126,17 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)
   rbac-install       required  §1/§3  permissions to install goobers-system
   rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces
-  storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists
+  storage-rwx        required  §4     instance-root StorageClass topology
   mixed-os-placement required  §7     Linux workloads cannot land on Windows nodes
   oidc-issuer        required* §1/§3  issuer discovery document reachable
   egress             required* §1/§5  outbound targets reachable from this host
   temporal-namespace required* §2/§4  configured Temporal namespace is registered
   registry           optional  §1     registry reachable (host-side sanity)
 
+  apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint
+  runner-class-capacity required §7 active runner pod requests fit a compatible node
+  pod-health           required §2 every observed container is healthy
+  otlp-signal-set      optional §4 currently unconfigured by this CLI
   overlay-pin-agreement required* #4298 remote base, image, and runner pins agree
   overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks
 
@@ -1118,6 +1145,13 @@ unconfigured they report a skipped warn. Cluster checks are read-only: nothing i
 created on the cluster, and a check that cannot run reports fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
+
+--checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.
+For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.
+That check inspects only egress policies labeled goobers.dev/apiserver-egress=true.
+--apiserver-endpoint overrides the comparison endpoint when in-cluster service IPs
+differ from the actual control-plane endpoint used by the network policy. It does
+not change the authenticated Kubernetes client address.
 
 --overlay-dir additionally renders the consumer overlay with kubectl and pulls
 its pinned images using --image-runtime (default docker). Image checks run
@@ -3259,11 +3293,11 @@ $ goobers roots discover --json
 
 ## `goobers run`
 
-trigger a run manually (still honors run conditions)
+trigger a run manually; --force bypasses cadence budgets
 
 ~~~text
-Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel [--api <url>] <run-id> [path]
@@ -3273,14 +3307,22 @@ Trigger a run of a config/ workflow manually, through the same scheduler
 daemon uses, then wait for it to reach a terminal state unless
 --no-wait is set (default path "."). Use --gaggle or the qualified
 <gaggle>/<workflow> form when multiple gaggles share a workflow name.
+Use --force to bypass hourly and daily cadence budgets for an explicit
+manual run. All other run conditions remain enforced. --force cannot be
+combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
-delegates the trigger to it instead of failing (#343) — dispatched through
+submits through its API automatically — dispatched through
 the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
-escalated. A successful submission-only mode (such as --no-wait, once
-available) exits 0 because it does not observe a terminal phase.
+escalated. The submission-only --no-wait mode exits 0 on durable API
+acceptance, before dispatch.
+Without --no-wait, local API callers observe dispatch status then wait
+for the run's terminal journal phase. API failures never silently fall
+back to files. --no-api explicitly selects local execution/file delegation
+and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.
+Targeted --pr runs currently require --no-api from the instance root.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires
 checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,
@@ -3301,8 +3343,10 @@ daemon's authenticated HTTP API instead of the local pending-triggers
 drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
-retried submission return the original run instead of minting a second
-one, and the command returns once the daemon accepts the trigger because
+retry use the same acceptance identity. --api-timeout bounds remote validation
+and acceptance (default 30s; must be positive). A timed-out submission has
+unknown acceptance; retry the printed request ID with the same options.
+The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal.
 ~~~
 
@@ -3329,12 +3373,14 @@ With --api (or $GOOBERS_DAEMON_API) the abort is delegated to that
 daemon's authenticated HTTP API instead of this filesystem, which is the
 only way to reach a daemon running in another pod; name the run by its
 full id, since no local journal is read to expand an abbreviation. That
-remote form is a live cancel, not a journal abort: it can only stop a run
-the daemon is still executing, and a wedged run no daemon owns is refused
+remote form is a live cancel, not a journal abort: it stops a local run or
+requests cancellation of an engine run the daemon retains and owns. A
+wedged run no daemon owns is refused
 with exit 1. Finalizing such a run still requires the filesystem path
 against its instance root — run `GOOBERS_DAEMON_API= goobers run abort
 <run-id> <path>` to take it when the variable is exported.
-Exit codes: 0 = aborted, 1 = business error (run already terminal),
+Exit codes: 0 = aborted or engine cancellation requested,
+1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 ~~~
 
@@ -3349,7 +3395,7 @@ $ goobers run abort <run-id>
 cancel a live in-flight run via the daemon
 
 ~~~text
-Usage: goobers run cancel [--api=<url>] <run-id> [path]
+Usage: goobers run cancel [--api=<url> | --no-api] [--request-id=<id>] <run-id> [path]
 
 Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
@@ -3359,14 +3405,24 @@ journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
 (CancelWorkflow) instead, with no live daemon required. Use `run abort`
 instead when no daemon is running (that path finalizes a stuck run's
 journal directly).
+A live local daemon is contacted through its HTTP API automatically.
+API failures never silently fall back to file delegation. Use --no-api
+to explicitly select local cancellation/file delegation; this overrides
+$GOOBERS_DAEMON_API and cannot be combined with --api.
+API cancellation uses durable, actor-and-target-bound request identities.
+Reuse --request-id after an uncertain response; without it an ID is
+generated and printed on API errors. Completed receipts are retained for
+at least seven days. An unfinished receipt is never silently re-executed:
+retry the same ID to reconcile, or inspect the run before a new request.
+--request-id requires the API and is not supported with --no-api.
 With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that
 daemon's authenticated HTTP API instead of the local pending-cancels
 drop, so a caller that does not share the daemon's filesystem can stop a
 run at all; name the run by its full id, since no local journal is read to
-expand an abbreviation. The remote form reaches only runs the daemon is
-executing, so an ENGINE-DRIVEN run is reported as not running under that
-daemon; cancel it from the instance root instead. Exit codes:
-0 = cancelled, 1 = business error
+expand an abbreviation. For an ENGINE-DRIVEN run retained and owned by
+that daemon, the API requests engine cancellation; the engine reports its
+terminal outcome later. Exit codes:
+0 = cancelled or engine cancellation requested, 1 = business error
 (already terminal, not currently running, or no daemon to cancel it),
 2 = usage/IO error (unknown run).
 ~~~
@@ -4284,6 +4340,11 @@ signal always forces shutdown without prompting. Interrupted runs resume
 from their last durable checkpoints on the next startup before
 exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
 2 = usage/IO error.
+
+After readiness and every 15 minutes, the daemon scans a bounded seven-day
+window of recently merged GitHub Goobers pull requests and publishes
+any missing or updated cost summary. This is a workflow-independent backstop; the
+normal post-merge stage still publishes synchronously when Goobers merges.
 
 Legacy spans-only run directories are reported as cleanup candidates
 and preserved by default. --cleanup-spans-only-runs deletes them at

@@ -85,6 +85,9 @@ const (
 	// RepoProviderEnvVar carries the scheduler-routed repository provider to
 	// goobers CLI stages.
 	RepoProviderEnvVar = "GOOBERS_REPO_PROVIDER"
+	// RepoBaseURLEnvVar carries the declared forge root to stage-pod checkout.
+	// Gitea has no fixed host; this is repository identity, not a credential.
+	RepoBaseURLEnvVar = "GOOBERS_REPO_BASE_URL"
 	// RepoOwnerEnvVar carries the scheduler-routed repository owner to goobers
 	// CLI stages.
 	RepoOwnerEnvVar = "GOOBERS_REPO_OWNER"

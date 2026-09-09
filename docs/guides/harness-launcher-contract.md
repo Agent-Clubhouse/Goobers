@@ -6,6 +6,14 @@ necessarily compatible merely because it forwards arguments. In particular,
 identifier rather than a local transcript correlation ID. It is not a supported
 drop-in example. Use direct Copilot unless the wrapper implements this contract.
 
+For mode 3 stage pods, the worker carries only the selected goober's configured
+argv in the content-addressed execution kit, for both task invocations and
+reviewer gates. Each target image must provide that executable and any launcher
+dependencies at the declared path. The pod performs its own normal launcher and
+authentication preflight. Omitted overrides retain the default command. Deploy
+matching updated worker and stage binaries: older stage binaries do not consume
+the kit's launcher override.
+
 The default command, and an explicit `["copilot"]`, retain the existing direct
 Copilot behavior. Every other Copilot override must respond to its complete
 configured prefix followed by `--goobers-launcher-contract`. This probe must not
@@ -51,3 +59,39 @@ arbitrary wrapper implements it correctly. Validate a new wrapper end to end
 with a harmless workflow in its target OS and isolation posture. Do not declare
 `adapter-managed` just to bypass an incompatibility error: that restores the
 very session-ID assumption the gate prevents.
+
+## Durable partial transcripts
+
+Goobers checkpoints newly captured process output and the selected native
+Copilot log once per minute. The process-output capture defaults to 4 MiB;
+bytes beyond the capture limit are counted as dropped. Unchanged output does
+not create another checkpoint. Process exit, cancellation, and timeout request
+a final delta flush; an abrupt kill can only preserve checkpoints already
+acknowledged by the journal.
+
+A wrapper must append native events to its selected log while it runs, not
+export the entire log only at exit. Once Goobers observes that file, replacing,
+truncating, or removing it is a capture error. Completion-recovery turns must
+continue the same native log. Process-output invocations retain separate delta
+cursors so recovery output does not overwrite the first invocation.
+
+Use `goobers trace --transcripts <run-id> [path]` to retrieve recorded output.
+Incomplete captures appear as `.transcript.partial` spans with their stream and
+reason (`checkpoint`, `process-exit`, `canceled`, or `timeout`). Each span carries
+only a delta, in durable journal order; this is not a live follow interface.
+Streaming redaction withholds ambiguous suffixes until it can safely publish
+them, so a partial may omit an unfinished token rather than expose a credential.
+
+Successful finalization commits the canonical transcript before deleting its
+private partial blobs. Checkpoints write only new safe bytes, not repeated full
+snapshots. Partial metadata remains in the journal, but normal transcript reads
+hide superseded partials and successful stages retain no extra checkpoint blobs.
+If a final blob is missing or corrupt before cleanup, surviving partials remain
+accessible through the sequence-addressed transcript read API.
+
+Workers and pods use the existing run-scoped journal connection for durable
+acknowledgments. A configured blob store carries the final transcript; without
+one, the final bytes travel inline over the journal connection. This does not
+grant additional authentication scopes. Checkpoint and finalization calls have
+separate 10-second and 30-second deadlines. Failed or uncertain checkpoint writes
+are surfaced as capture errors rather than silently advancing the source cursor.

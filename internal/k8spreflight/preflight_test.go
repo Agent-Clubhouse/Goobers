@@ -460,7 +460,7 @@ func TestAPIServerIPBlockDriftChecksEntriesAndFailsClosedWhenEmpty(t *testing.T)
 			client := newFakeCluster(t)
 			if test.cidr != "" {
 				_, err := client.NetworkingV1().NetworkPolicies("goobers-system").Create(context.Background(), &networkingv1.NetworkPolicy{
-					ObjectMeta: metav1.ObjectMeta{Name: "api-server-egress", Namespace: "goobers-system"},
+					ObjectMeta: metav1.ObjectMeta{Name: "api-server-egress", Namespace: "goobers-system", Labels: map[string]string{APIServerEgressLabel: "true"}},
 					Spec: networkingv1.NetworkPolicySpec{Egress: []networkingv1.NetworkPolicyEgressRule{{
 						To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: test.cidr}}},
 					}}},

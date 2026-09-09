@@ -79,6 +79,7 @@ func TestDispatchOne(t *testing.T) {
 	})
 	fake := &fakeStageDispatcher{report: dispatcher.Report{
 		Runner: "win-ci", Pod: "goobers-run-dispatch-one-build-1", Image: "ghcr.io/example/win:v1",
+		Node: "windows-node-1", OS: "windows",
 		Phase: corev1.PodSucceeded, SurrenderConfirmed: true, Disposed: true,
 		QueuedAt: queuedAt, PodStartedAt: podStartedAt,
 	}}
@@ -155,10 +156,11 @@ func TestDispatchOne(t *testing.T) {
 		}
 		want := StagePlacement{
 			Runner: "win-ci", Pod: "goobers-run-dispatch-one-build-1", Image: "ghcr.io/example/win:v1",
+			Node: "windows-node-1", OS: "windows",
 			QueuedAt: queuedAt, PodStartedAt: podStartedAt,
 		}
 		got := *result.Placement
-		if got.Runner != want.Runner || got.Pod != want.Pod || got.Image != want.Image ||
+		if got.Runner != want.Runner || got.Pod != want.Pod || got.Image != want.Image || got.Node != want.Node || got.OS != want.OS ||
 			!got.QueuedAt.Equal(want.QueuedAt) || !got.PodStartedAt.Equal(want.PodStartedAt) {
 			t.Fatalf("placement = %+v, want %+v (lifted verbatim from dispatcher.Report)", got, want)
 		}
@@ -354,7 +356,12 @@ func TestDispatchOneFailuresClassifyAsTheActivitysDo(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			queue := dispatcher.QueueName("web", tc.runner)
-			fake := &fakeStageDispatcher{err: tc.dispatchErr}
+			observed := dispatcher.Report{Runner: tc.runner, QueuedAt: time.Date(2026, 9, 7, 1, 2, 3, 0, time.UTC)}
+			if tc.want == journal.AttemptInfra {
+				observed.Pod, observed.Node, observed.OS, observed.Image = "observed-pod", "observed-node", "linux", "observed-image"
+				observed.PodStartedAt = observed.QueuedAt.Add(time.Second)
+			}
+			fake := &fakeStageDispatcher{err: tc.dispatchErr, report: observed}
 			dispatchWorker := temporalworker.New(temporalClient, queue, temporalworker.Options{})
 			RegisterWith(dispatchWorker, &Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
 			if err := dispatchWorker.Start(); err != nil {
@@ -393,6 +400,9 @@ func TestDispatchOneFailuresClassifyAsTheActivitysDo(t *testing.T) {
 			if class != tc.want {
 				t.Fatalf("class = %q (application error type %q), want %q — the runner and the engine must spend the same budget on the same failure",
 					class, appErr.Type(), tc.want)
+			}
+			if got := DispatchFailurePlacement(workflowErr); !reflect.DeepEqual(got, placementProvenance(observed)) {
+				t.Fatalf("observed placement lost across activity, workflow and client: got %+v, want %+v", got, observed)
 			}
 			// stageActivityOptions pins RetryPolicy{MaximumAttempts: 1}, and
 			// it has to hold through DispatchOne: the split policy/infra

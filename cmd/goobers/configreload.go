@@ -107,7 +107,9 @@ type configReloader struct {
 	lastRejectionMessage string
 	// Kept separately from the per-apply response message, which pollOnce
 	// clears even when unchanged rejected contents remain on disk.
-	rejectedDigest string
+	rejectedDigest  string
+	mirroredDigest  string
+	lastMirrorError string
 }
 
 func (r *configReloader) Run(ctx context.Context) error {
@@ -167,6 +169,7 @@ func (r *configReloader) workflowSource(gaggle, workflow string) (string, bool) 
 // .Replace, openPRs.Replace) with no internal synchronization of its own.
 func (r *configReloader) poll(now time.Time) error {
 	defer r.publishReloadStatus(now)
+	defer r.refreshConfigMirror(context.Background())
 	digest, err := configDirectoryDigest(r.layout.ConfigDir())
 	if err != nil {
 		message := err.Error()
@@ -265,6 +268,9 @@ func (r *configReloader) poll(now time.Time) error {
 	r.setup.OpenPRRefresher = definitions.OpenPRRefresher
 	r.setup.Worktrees = definitions.Worktrees
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
+	if r.setup.MergedPRCostReconciler != nil {
+		r.setup.MergedPRCostReconciler.Replace(definitions.Set)
+	}
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
 		r.observedDigest = r.appliedDigest

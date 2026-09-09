@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -179,10 +178,8 @@ func TestUpAndStatusPrintIdenticalOrderedWarnings(t *testing.T) {
 		t.Fatalf("status code = %d, stderr = %q", statusCode, statusErr)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	var upOut, upErr strings.Builder
-	if code := runUpContext(ctx, []string{"--quiet", root}, &upOut, &upErr); code != 0 {
+	if code := runUpThroughStartup(t, []string{"--quiet", root}, &upOut, &upErr); code != 0 {
 		t.Fatalf("up code = %d, stderr = %q", code, upErr.String())
 	}
 
@@ -279,10 +276,8 @@ func TestDemoConfigValidatesCleanWithoutNotices(t *testing.T) {
 		t.Fatalf("status warnings = %#v, preview count = %d; want a clean demo config with no notices (#1196)", warnings, previewCount)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	var upOut, upErr strings.Builder
-	if code := runUpContext(ctx, []string{"--quiet", root}, &upOut, &upErr); code != 0 {
+	if code := runUpThroughStartup(t, []string{"--quiet", root}, &upOut, &upErr); code != 0 {
 		t.Fatalf("up code = %d, stderr = %q", code, upErr.String())
 	}
 	if warnings, previewCount := withoutGeneratedPreviewWarnings(upOut.String()); len(warnings) != 0 || previewCount != 0 {

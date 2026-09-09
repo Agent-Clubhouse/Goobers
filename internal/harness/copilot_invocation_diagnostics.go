@@ -32,6 +32,9 @@ type copilotInvocationDiagnostics struct {
 	// CLIVersion is the version startup preflight reported, or "" when
 	// preflight did not run or reported nothing.
 	CLIVersion string `json:"cliVersion"`
+	// UsageCapture identifies the negotiated capture path, not a claim that
+	// the CLI emitted usage. ModelUsage.CostBasis reports the actual evidence.
+	UsageCapture string `json:"usageCapture"`
 	// DeclaredTools is the goober's default-deny tool allowlist as configured.
 	DeclaredTools []string `json:"declaredTools"`
 	// AvailableTools is the tool set actually advertised to the CLI, which is
@@ -55,6 +58,7 @@ type copilotInvocationDiagnostics struct {
 func writeCopilotInvocationDiagnostics(req RunRequest, argv []string) error {
 	diagnostics := copilotInvocationDiagnostics{
 		CLIVersion:      req.HarnessVersion,
+		UsageCapture:    copilotUsageCapture(req.HarnessVersion),
 		DeclaredTools:   append([]string(nil), req.Tools...),
 		PermissionArgs:  copilotPermissionArgs(argv),
 		ToolConstrained: len(req.Tools) > 0,

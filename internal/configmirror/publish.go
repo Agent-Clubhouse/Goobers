@@ -1,0 +1,198 @@
+// Package configmirror transports a rendered worker configuration as one
+// atomically replaced archive. Readers hold one opened snapshot, never a mix
+// of files from successive daemon reloads.
+package configmirror
+
+import (
+	"archive/zip"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/lock"
+)
+
+// SnapshotName is the single public artifact. Limits bound publication and
+// extraction independently of the much smaller Kubernetes ConfigMap ceiling.
+const (
+	SnapshotName     = "worker-config.zip"
+	MaxFiles         = 10000
+	MaxFileBytes     = 64 << 20
+	MaxSnapshotBytes = 1 << 30
+)
+
+// PublishValidated validates the captured bytes in a private extracted tree
+// before replacing the public snapshot. This lets the daemon compare the exact
+// captured generation with its applied digest rather than re-reading a source
+// tree that could change during capture.
+func PublishValidated(ctx context.Context, destination, configDir string, instanceDocument []byte, validate func(string) error) error {
+	if validate == nil {
+		return errors.New("config mirror requires snapshot validation")
+	}
+	return publish(ctx, destination, configDir, instanceDocument, validate)
+}
+
+func publish(ctx context.Context, destination, configDir string, instanceDocument []byte, validate func(string) error) error {
+	if !filepath.IsAbs(destination) || !filepath.IsAbs(configDir) {
+		return errors.New("config mirror requires absolute paths")
+	}
+	if len(instanceDocument) == 0 || len(instanceDocument) > MaxFileBytes {
+		return errors.New("invalid mirrored instance document size")
+	}
+	rel, err := filepath.Rel(configDir, destination)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("config mirror cannot be inside its source tree")
+	}
+	if err := os.MkdirAll(destination, 0o750); err != nil {
+		return err
+	}
+	held, err := lock.TryAcquire(filepath.Join(destination, "publish.lock"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = held.Release() }()
+	staged := filepath.Join(destination, ".worker-config.pending")
+	if err := removeStagingFile(staged); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close(); _ = os.Remove(staged) }()
+	if err := writeSnapshot(ctx, f, configDir, instanceDocument); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if validate != nil {
+		if err := validateStagedSnapshot(ctx, destination, staged, validate); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := replaceSnapshot(staged, filepath.Join(destination, SnapshotName)); err != nil {
+		return err
+	}
+	return durability.SyncDir(destination)
+}
+
+func removeStagingFile(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("config mirror staging path is not a regular file")
+	}
+	return os.Remove(path)
+}
+
+func writeSnapshot(ctx context.Context, out io.Writer, configDir string, document []byte) error {
+	root, err := os.OpenRoot(configDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	archive := zip.NewWriter(out)
+	if err := writeEntry(archive, "instance.yaml", strings.NewReader(string(document))); err != nil {
+		return err
+	}
+	count, total := 1, int64(len(document))
+	seen := map[string]bool{"instance.yaml": true}
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		name := "config/" + path
+		if path == "." {
+			name = "config"
+		}
+		if err := reserveSnapshotName(seen, name); err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !validSnapshotMode(info.Mode()) {
+			return fmt.Errorf("config mirror refuses non-regular file %q", path)
+		}
+		count++
+		if count > MaxFiles {
+			return errors.New("config mirror snapshot exceeds safety limits")
+		}
+		if entry.IsDir() {
+			_, err := archive.CreateHeader(snapshotHeader(name+"/", info.Mode()))
+			return err
+		}
+		if info.Size() > MaxFileBytes || total+info.Size() > MaxSnapshotBytes {
+			return errors.New("config mirror snapshot exceeds safety limits")
+		}
+		file, err := root.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = file.Close() }()
+		// Check the opened object too: a tree changing during publication must
+		// not bypass the size bound using stale WalkDir metadata.
+		opened, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		if !opened.Mode().IsRegular() || !validSnapshotMode(opened.Mode()) {
+			return fmt.Errorf("config mirror opened a non-regular file %q", path)
+		}
+		writer, err := archive.CreateHeader(snapshotHeader(name, opened.Mode()))
+		if err != nil {
+			return err
+		}
+		n, err := io.Copy(writer, io.LimitReader(file, MaxFileBytes+1))
+		total += n
+		if n > MaxFileBytes || total > MaxSnapshotBytes {
+			return errors.New("config mirror snapshot exceeds safety limits")
+		}
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return archive.Close()
+}
+
+func writeEntry(archive *zip.Writer, name string, content io.Reader) error {
+	w, err := archive.CreateHeader(snapshotHeader(name, 0o640))
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(w, content)
+	return err
+}
+
+func snapshotHeader(name string, mode fs.FileMode) *zip.FileHeader {
+	header := &zip.FileHeader{Name: name, Method: zip.Store}
+	header.SetMode(mode)
+	return header
+}
+
+func validSnapshotMode(mode fs.FileMode) bool {
+	return mode & ^(fs.ModePerm|fs.ModeDir) == 0
+}

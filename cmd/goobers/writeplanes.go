@@ -449,8 +449,8 @@ type workflowTriggerer interface {
 	// TriggerPriority* is the output-driven re-tick the sweep dispatches for
 	// a priority request file (rundelegate.go) — the plane's path for a stage
 	// pod, which has no scheduler directory to drop that file into.
-	TriggerWithDispatchContext(ctx, dispatchCtx context.Context, workflow string, now time.Time) (string, error)
-	TriggerExactWithDispatchContext(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
+	TriggerWithDispatchContextOptions(ctx, dispatchCtx context.Context, workflow string, now time.Time, options localscheduler.ManualTriggerOptions) (string, error)
+	TriggerExactWithDispatchContextOptions(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, now time.Time, options localscheduler.ManualTriggerOptions) (string, error)
 	TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, sourceRun string, now time.Time) (string, error)
 }
 
@@ -482,12 +482,18 @@ type daemonTriggerService struct {
 	contains func(gaggle, runID string) bool
 
 	mu    sync.Mutex
-	seen  map[string]string // requestId -> minted run id
+	seen  map[string]triggerReservation
 	order []string
 }
 
 func newDaemonTriggerService() *daemonTriggerService {
-	return &daemonTriggerService{now: time.Now, seen: make(map[string]string)}
+	return &daemonTriggerService{now: time.Now, seen: make(map[string]triggerReservation)}
+}
+
+type triggerReservation struct {
+	request   httpapi.TriggerRequest
+	runID     string
+	completed bool
 }
 
 // withGaggleContainment attaches the pod-principal containment check. The
@@ -549,6 +555,13 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
 		)
 	}
+	if err := s.validateTriggerAuthority(request); err != nil {
+		return httpapi.TriggerResponse{}, err
+	}
+	return s.dispatchTrigger(ctx, dispatch, request)
+}
+
+func (s *daemonTriggerService) validateTriggerAuthority(request httpapi.TriggerRequest) error {
 	// Pod containment (decision 005 R3). The route has already established
 	// that the caller named a gaggle and, for a priority re-tick, its own run;
 	// this is the authority check the route cannot make — does that run
@@ -556,22 +569,41 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 	// refusal, not a pass: the daemon must never admit a pod trigger it could
 	// not contain.
 	if request.PodScoped {
+		if request.Force {
+			return httpapi.NewInterventionError(
+				http.StatusBadRequest, httpapi.CodeInvalidRequest,
+				"force is only valid for an explicit operator manual trigger", nil,
+			)
+		}
 		if s.contains == nil {
-			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+			return httpapi.NewInterventionError(
 				http.StatusForbidden, "gaggle_mismatch",
 				"pod-principal triggers are not available from this server", nil,
 			)
 		}
 		if !s.contains(request.Gaggle, request.PodRunID) {
-			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+			return httpapi.NewInterventionError(
 				http.StatusForbidden, "gaggle_mismatch",
 				"pod principal may only trigger a workflow in the gaggle its own run belongs to", nil,
 			)
 		}
 	}
+	if request.Force && strings.TrimSpace(request.SourceRun) != "" {
+		return httpapi.NewInterventionError(
+			http.StatusBadRequest, httpapi.CodeInvalidRequest,
+			"force cannot be combined with a priority trigger", nil,
+		)
+	}
+	return nil
+}
+
+func (s *daemonTriggerService) dispatchTrigger(ctx context.Context, dispatch workflowTriggerer, request httpapi.TriggerRequest) (httpapi.TriggerResponse, error) {
 	requestID := strings.TrimSpace(request.RequestID)
+	request.RequestID = requestID
 	if requestID != "" {
-		if runID, duplicate := s.reserve(requestID); duplicate {
+		if runID, duplicate, err := s.reserve(request); err != nil {
+			return httpapi.TriggerResponse{}, err
+		} else if duplicate {
 			return httpapi.TriggerResponse{RunID: runID, Duplicate: true}, nil
 		}
 	}
@@ -594,15 +626,20 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 				"a priority trigger requires the workflow's gaggle", nil)
 			break
 		}
+		if request.DispatchRunID != "" {
+			runID, err = dispatchAcceptedPriority(ctx, dispatchCtx, dispatch, request, s.now())
+			break
+		}
 		runID, err = dispatch.TriggerPriorityWithDispatchContext(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
 		}, strings.TrimSpace(request.SourceRun), s.now())
 	case request.Gaggle != "":
-		runID, err = dispatch.TriggerExactWithDispatchContext(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
+		runID, err = dispatch.TriggerExactWithDispatchContextOptions(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
-		}, s.now())
+		}, s.now(), localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force, RunID: request.DispatchRunID})
 	default:
-		runID, err = dispatch.TriggerWithDispatchContext(ctx, dispatchCtx, request.Workflow, s.now())
+		runID, err = dispatch.TriggerWithDispatchContextOptions(ctx, dispatchCtx, request.Workflow, s.now(),
+			localscheduler.ManualTriggerOptions{BypassCadenceBudgets: request.Force, RunID: request.DispatchRunID})
 	}
 	if err != nil {
 		if requestID != "" {
@@ -622,20 +659,38 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 // duplicate reports the recorded run — empty while the winning delivery is
 // still minting, which is still authoritatively "this delivery was already
 // accepted".
-func (s *daemonTriggerService) reserve(requestID string) (runID string, duplicate bool) {
+func (s *daemonTriggerService) reserve(request httpapi.TriggerRequest) (runID string, duplicate bool, err error) {
+	requestID := request.RequestID
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if runID, exists := s.seen[requestID]; exists {
-		return runID, true
+	if prior, exists := s.seen[requestID]; exists {
+		if prior.request != request {
+			return "", false, httpapi.NewInterventionError(http.StatusConflict, "trigger_request_conflict", "requestId already belongs to a different trigger or caller", nil)
+		}
+		return prior.runID, true, nil
 	}
-	s.seen[requestID] = ""
+	if !s.makeReservationSpace() {
+		return "", false, httpapi.NewInterventionError(http.StatusServiceUnavailable, "trigger_queue_full", "too many trigger requests are awaiting admission", nil)
+	}
+	s.seen[requestID] = triggerReservation{request: request}
 	s.order = append(s.order, requestID)
-	if len(s.order) > maxTriggerDedupeRecords {
-		oldest := s.order[0]
-		s.order = s.order[1:]
-		delete(s.seen, oldest)
+	return "", false, nil
+}
+
+// Caller holds mu. A bounded replay window may evict completed records, but
+// evicting an in-flight reservation would let a retry mint concurrently again.
+func (s *daemonTriggerService) makeReservationSpace() bool {
+	if len(s.seen) < maxTriggerDedupeRecords {
+		return true
 	}
-	return "", false
+	for i, id := range s.order {
+		if s.seen[id].completed {
+			delete(s.seen, id)
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // completeReservation fixes the minted run onto the reservation (unless the
@@ -643,8 +698,10 @@ func (s *daemonTriggerService) reserve(requestID string) (runID string, duplicat
 func (s *daemonTriggerService) completeReservation(requestID, runID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.seen[requestID]; exists {
-		s.seen[requestID] = runID
+	if reservation, exists := s.seen[requestID]; exists {
+		reservation.runID = runID
+		reservation.completed = true
+		s.seen[requestID] = reservation
 	}
 }
 
@@ -654,7 +711,7 @@ func (s *daemonTriggerService) completeReservation(requestID, runID string) {
 func (s *daemonTriggerService) releaseReservation(requestID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if runID, exists := s.seen[requestID]; !exists || runID != "" {
+	if reservation, exists := s.seen[requestID]; !exists || reservation.completed {
 		return
 	}
 	delete(s.seen, requestID)

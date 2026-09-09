@@ -59,6 +59,8 @@
       ".github/workflows/ci.yml#windows-smoke/Windows release packaging:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows rollup migration alias dedup:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows self-update:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows host image preparation:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows image input verifier (PowerShell 5.1):go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows service transitions:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows worktree and event stream:go-modules",
       ".github/workflows/ci.yml#windows-smoke/go build (windows/amd64):go-modules",
@@ -327,7 +329,8 @@
       "Makefile#deploy-validate::kubernetes-schemas",
       "Makefile#deploy-validate:[2]:kubernetes-schemas",
       "Makefile#deploy-validate:[3]:kubernetes-schemas",
-      "Makefile#deploy-validate:[4]:kubernetes-schemas"
+      "Makefile#deploy-validate:[4]:kubernetes-schemas",
+      "Makefile#deploy-validate:[5]:kubernetes-schemas"
     ]
   },
   {

@@ -50,7 +50,7 @@ const (
 // envelope because it is a fact about the attempt loop, not the stage's
 // result: a retried attempt's bundle describes a workspace that was thrown
 // away with its pod or worktree, and only the winner's may be carried.
-func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -96,10 +96,13 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
-			activityResult, err = dispatch(ctx, int(attempt))
+			activityResult, err = dispatch(ctx, int(attempt), class)
 			res = activityResult.ResultEnvelope
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
 				return apiv1.ResultEnvelope{}, err
+			}
+			if err != nil && activityResult.Placement == nil {
+				activityResult.Placement = DispatchFailurePlacement(err)
 			}
 			// Placement provenance for THIS attempt, before anything the
 			// attempt's outcome decides (#3875). Journaled for a failed
@@ -171,7 +174,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
 		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err)
-		if isStartToCloseTimeout(err) && len(t.PolicyActions) > 0 {
+		if isWorkerLossTimeout(err) && len(t.PolicyActions) > 0 {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
 		}
 		retryLimit, retryCount := policyMaxAttempts, policyAttempts
@@ -236,8 +239,9 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //     self-enforces the limit and surfaces it as invoke.Timeout →
 //     FailureTypeStage, the same policy class the local runner assigns (#724);
 //   - a Temporal ScheduleToStart timeout is infrastructure because the
-//     activity never began. StartToClose is policy-classed because the worker
-//     may have been lost after the stage committed an external effect; a task
+//     activity never began. StartToClose and Heartbeat are policy-classed
+//     because the worker may have been lost after the stage committed an
+//     external effect; a task
 //     declaring policyActions is therefore stopped before retry;
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
@@ -247,7 +251,7 @@ func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
 		switch timeoutErr.TimeoutType() {
 		case enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START:
 			return journal.AttemptInfra, nil
-		case enumspb.TIMEOUT_TYPE_START_TO_CLOSE:
+		case enumspb.TIMEOUT_TYPE_START_TO_CLOSE, enumspb.TIMEOUT_TYPE_HEARTBEAT:
 			return journal.AttemptPolicy, nil
 		default:
 			return "", fmt.Errorf("unclassifiable Temporal timeout type %q (refusing a silent %q default): %w", timeoutErr.TimeoutType(), journal.AttemptInfra, err)
@@ -263,9 +267,12 @@ func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
 	return "", fmt.Errorf("unclassifiable attempt failure (refusing a silent %q default): %w", journal.AttemptInfra, err)
 }
 
-func isStartToCloseTimeout(err error) bool {
+func isWorkerLossTimeout(err error) bool {
 	var timeoutErr *temporal.TimeoutError
-	return errors.As(err, &timeoutErr) && timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE
+	if !errors.As(err, &timeoutErr) {
+		return false
+	}
+	return timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE || timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_HEARTBEAT
 }
 
 // recordAttemptArtifacts commits the three attempt-scoped artifacts an

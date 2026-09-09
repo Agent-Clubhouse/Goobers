@@ -149,13 +149,12 @@ type engineStarter struct {
 
 // Start dispatches one run onto the engine and waits for it.
 func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
-	if s.wg != nil {
-		s.wg.Add(1)
-		defer s.wg.Done()
-	}
 	starter, guards, live, now, err := s.runtime.resolve()
 	if err != nil {
 		return localscheduler.StartResult{Phase: journal.PhaseFailed}, fmt.Errorf("engine dispatch for %s/%s: %w", req.Gaggle, s.def.Name, err)
+	}
+	if req.RequireDurableJournal && (!s.liveJournal || live == nil) {
+		return localscheduler.StartResult{Phase: journal.PhaseFailed}, errors.New("accepted engine dispatch requires a live journal writer before execution")
 	}
 	if err := s.hooks.validate(req.Gaggle); err != nil {
 		return localscheduler.StartResult{Phase: journal.PhaseFailed}, fmt.Errorf("engine dispatch for %s/%s: %w", req.Gaggle, s.def.Name, err)
@@ -264,6 +263,14 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 	return engineStartResult(result, phase, attachment.Err), attachment.Err
 }
 
+func (s *engineStarter) RegisterDispatch() func() {
+	if s.wg == nil {
+		return func() {}
+	}
+	s.wg.Add(1)
+	return s.wg.Done
+}
+
 // abandonReservation terminalizes a reservation whose workflow never started.
 // See engine.AbandonReservation for why an un-closed reservation is worse than
 // no reservation at all. Failures here are journaled to the instance log and
@@ -330,6 +337,13 @@ func (s *runnerFallbackStarter) Start(ctx context.Context, req localscheduler.St
 	s.annotate(req)
 	s.observeFallback(ctx, req)
 	return s.next.Start(ctx, req)
+}
+
+func (s *runnerFallbackStarter) RegisterDispatch() func() {
+	if registered, ok := s.next.(localscheduler.DispatchRegistration); ok {
+		return registered.RegisterDispatch()
+	}
+	return func() {}
 }
 
 // Unwrap returns the wrapped Starter. It is what lets a caller — the

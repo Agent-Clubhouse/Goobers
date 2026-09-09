@@ -579,11 +579,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	var out Outcome
 	var runErr error
-	if nestedAdapter != nil {
-		out, runErr = nestedAdapter.RunNested(ctx, req)
-	} else {
-		out, runErr = e.adapter.Run(ctx, req)
+	capture, err := e.beginTranscriptCapture(env.TaskID, &req)
+	if err != nil {
+		return Outcome{}, nil, nil, err
 	}
+	out, runErr = e.runAdapter(ctx, req, nestedAdapter)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
 		if !hasAppender {
 			runErr = errors.Join(runErr, fmt.Errorf(
@@ -716,7 +716,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if len(out.Transcript) > 0 {
 		scrubbed := e.scrubber.Scrub(out.Transcript)
 		name := fmt.Sprintf("%s.transcript", e.adapter.Name())
-		ref, spanErr := e.recorder.RecordSpanWithSchema(env.TaskID, name, out.TranscriptSchema, scrubbed)
+		ref, spanErr := e.recordFinalTranscript(ctx, capture, runErr, env.TaskID, name, out.TranscriptSchema, scrubbed)
 		if spanErr != nil {
 			if runErr == nil {
 				runErr = fmt.Errorf("harness: record span: %w", spanErr)

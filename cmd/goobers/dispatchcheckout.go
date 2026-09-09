@@ -66,6 +66,7 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 
 	ref := apiv1.RepoRef{
 		Provider: apiv1.Provider(os.Getenv(executor.RepoProviderEnvVar)),
+		BaseURL:  os.Getenv(executor.RepoBaseURLEnvVar),
 		Owner:    os.Getenv(executor.RepoOwnerEnvVar),
 		Project:  os.Getenv(executor.RepoProjectEnvVar),
 		Name:     os.Getenv(executor.RepoNameEnvVar),

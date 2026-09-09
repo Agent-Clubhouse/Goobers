@@ -2,7 +2,9 @@
 
 Triggers are declared under `spec.triggers`. A trigger firing is necessary but
 not sufficient to start a run: readiness limits and run budgets must also admit
-it.
+it. An operator can use `goobers run --force` to bypass hourly and daily cadence
+budgets for one manual invocation; concurrency, provider quota, open-PR, memory,
+and other readiness conditions remain enforced.
 
 ```yaml
 spec:
@@ -24,7 +26,10 @@ Trigger-specific fields must not be copied to unrelated trigger types.
 
 ## `manual`
 
-Starts only through an explicit operator action such as `goobers run`.
+Starts only through an explicit operator action such as `goobers run`. By
+default, manual invocations enforce all readiness conditions. `goobers run
+--force` bypasses `readiness.maxRunsPerHour` and `maxRunsPerDay` for that
+invocation; the start still counts when a later trigger evaluates those budgets.
 
 **Parameters:** none beyond the common fields.
 

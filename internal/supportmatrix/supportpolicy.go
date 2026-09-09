@@ -37,7 +37,8 @@ func ValidateSupportPolicy(matrix SupportMatrix) error {
 // ValidateSupportPolicyForRelease checks matrix under ValidateSupportPolicy and
 // additionally requires every declared Level to be the level the version
 // actually holds in release — the last lifecycle transition dated at or before
-// the release being built. ValidateSupportPolicy alone is release-invariant: it
+// the release being built, with an explicit effectiveIn correction for the
+// already-shipped DSL 1.4 early removal (#4271). ValidateSupportPolicy alone is release-invariant: it
 // only ties Level to the *last* transition, so a matrix can declare a level
 // whose transition is dated at a release that does not exist yet and ship it in
 // a build that behaves as if the transition already happened (#4215). Release
@@ -100,6 +101,15 @@ func levelAtRelease(version Version, release releaseVersion) (level Level, since
 		}
 		level = transition.Level
 		since = transition.SinceVersion
+	}
+	if version.EffectiveIn != "" {
+		effective, parseErr := parseSupportReleaseVersion(version.EffectiveIn, false)
+		if parseErr != nil {
+			return "", "", fmt.Errorf("invalid effectiveIn version %q: %w", version.EffectiveIn, parseErr)
+		}
+		if compareReleaseVersions(effective, release) <= 0 {
+			level, since = version.Level, version.EffectiveIn
+		}
 	}
 	return level, since, nil
 }
@@ -195,6 +205,9 @@ func validateSupportMatrixEvolution(
 		}
 		if err := validateUnsupportedAfterCarriedForward(previous, candidate); err != nil {
 			return err
+		}
+		if previous.EffectiveIn != "" && candidate.EffectiveIn != previous.EffectiveIn {
+			return fmt.Errorf("released DSL version %q effectiveIn correction must not change", previous.Version)
 		}
 	}
 
@@ -324,6 +337,9 @@ func validateVersionHistory(version Version) (versionLifecycle, error) {
 	if len(version.History) == 0 {
 		return lifecycle, fmt.Errorf("lifecycle history must not be empty")
 	}
+	if err := validateEffectiveIn(version); err != nil {
+		return lifecycle, err
+	}
 
 	var previousVersion releaseVersion
 	for i, transition := range version.History {
@@ -398,6 +414,24 @@ func validateVersionHistory(version Version) (versionLifecycle, error) {
 		lifecycle.hasUnsupportedAt = true
 	}
 	return lifecycle, nil
+}
+
+func validateEffectiveIn(version Version) error {
+	if version.EffectiveIn == "" {
+		return nil
+	}
+	if _, err := parseSupportReleaseVersion(version.EffectiveIn, false); err != nil {
+		return fmt.Errorf("invalid effectiveIn version %q: %w", version.EffectiveIn, err)
+	}
+	last := version.History[len(version.History)-1]
+	// This exception records a behavior already shipped in beta.1/beta.2.
+	// Never let an arbitrary new effectiveIn bypass the support windows or
+	// rewrite their history: new transitions must follow the normal rules.
+	if version.Version != CurrentDSLVersion || version.Level != LevelUnsupported ||
+		version.EffectiveIn != "v0.4.0" || last.Level != LevelUnsupported || last.SinceVersion != "v0.5.0" {
+		return fmt.Errorf("effectiveIn is reserved for the published DSL 1.4 early-removal correction (v0.4.0 actual, v0.5.0 promised)")
+	}
+	return nil
 }
 
 func firstSupersedingVersion(current versionLifecycle, lifecycles []versionLifecycle) (versionLifecycle, bool) {

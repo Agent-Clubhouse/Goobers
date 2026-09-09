@@ -511,6 +511,11 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 			return nil, RecoverReport{}, err
 		}
 	}
+	if err := r.recoverCompletedTranscripts(events); err != nil {
+		_ = f.Close()
+		releaseRunLock(lock)
+		return nil, RecoverReport{}, err
+	}
 	return r, report, nil
 }
 

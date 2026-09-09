@@ -104,7 +104,7 @@ func TestTemporalRunStatesAdoptsLiveScheduledRunNoComposedIDCanFind(t *testing.T
 	// Guard the fixture: if either composed id ever became findable, this test
 	// would pass without the driver being consulted at all.
 	for _, composed := range []string{
-		engine.DispatchOneWorkflowID(attempt.RunID, attempt.Stage, int32(attempt.Attempt)),
+		engine.DispatchOneWorkflowID(attempt.RunID, attempt.Stage, attempt.Attempt),
 		attempt.RunID,
 	} {
 		if _, found := describer.status[composed]; found {

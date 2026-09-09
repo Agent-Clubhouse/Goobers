@@ -194,8 +194,8 @@ func projectCostAggregate(source rollup.CostAggregate) TelemetryCostAggregate {
 		InputTokens: source.InputTokens, OutputTokens: source.OutputTokens,
 		CacheReadTokens: source.CacheReadTokens, CacheWriteTokens: source.CacheWriteTokens,
 		ReasoningTokens: source.ReasoningTokens, CopilotPremiumRequests: source.CopilotPremiumRequests,
-		BillingModels: append([]string(nil), source.BillingModels...),
-		CostBases:     append([]string(nil), source.CostBases...),
+		BillingModels: append([]string{}, source.BillingModels...),
+		CostBases:     append([]string{}, source.CostBases...),
 		Coverage:      costCoverage(source.TotalRuns, source.MeasuredRuns, source.TotalAttempts, source.MeasuredAttempts),
 		Models:        make([]TelemetryCostModelAggregate, 0, len(source.Models)),
 		Runs:          make([]TelemetryCostRunAggregate, 0, len(source.Runs)),
@@ -223,8 +223,8 @@ func projectCostModel(source rollup.CostModelAggregate) TelemetryCostModelAggreg
 		ReasoningTokens: source.ReasoningTokens, CopilotPremiumRequests: source.CopilotPremiumRequests,
 		NativeTotals:     native,
 		NormalizedTotals: normalizedCostTotals(source.NanoAIU, native),
-		BillingModels:    append([]string(nil), source.BillingModels...),
-		CostBases:        append([]string(nil), source.CostBases...),
+		BillingModels:    append([]string{}, source.BillingModels...),
+		CostBases:        append([]string{}, source.CostBases...),
 	}
 }
 
@@ -244,14 +244,14 @@ func projectCostRun(source rollup.CostRunAggregate) TelemetryCostRunAggregate {
 		CacheReadTokens: source.CacheReadTokens, CacheWriteTokens: source.CacheWriteTokens,
 		ReasoningTokens: source.ReasoningTokens, CopilotPremiumRequests: source.CopilotPremiumRequests,
 		NativeTotals: native, NormalizedTotals: normalizedCostTotals(source.NanoAIU, native),
-		BillingModels: append([]string(nil), source.BillingModels...),
-		CostBases:     append([]string(nil), source.CostBases...), Models: models,
+		BillingModels: append([]string{}, source.BillingModels...),
+		CostBases:     append([]string{}, source.CostBases...), Models: models,
 	}
 }
 
 func nativeCostTotals(nanoAIU *int64, costUSD, premium *float64, billingModels, costBases []string) []TelemetryCostAmount {
 	estimated := slices.Contains(costBases, telemetry.CostBasisUnknown)
-	var totals []TelemetryCostAmount
+	totals := make([]TelemetryCostAmount, 0, 3)
 	if nanoAIU != nil && slices.Contains(billingModels, telemetry.BillingModelAICredits) {
 		totals = append(totals, TelemetryCostAmount{
 			Unit: "aiCredits", Value: float64(*nanoAIU) / float64(telemetry.NanoAIUPerAICredit), Estimated: estimated,
@@ -275,7 +275,7 @@ func aggregateNativeCostTotals(models []TelemetryCostModelAggregate) []Telemetry
 			estimated[amount.Unit] = estimated[amount.Unit] || amount.Estimated
 		}
 	}
-	var totals []TelemetryCostAmount
+	totals := make([]TelemetryCostAmount, 0, 3)
 	for _, unit := range []string{"aiCredits", "usd", "premiumRequests"} {
 		if value, ok := values[unit]; ok {
 			totals = append(totals, TelemetryCostAmount{Unit: unit, Value: value, Estimated: estimated[unit]})
