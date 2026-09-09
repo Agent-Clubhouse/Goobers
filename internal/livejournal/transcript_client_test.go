@@ -66,3 +66,35 @@ func TestTranscriptTransportScrubsChunksAndCommitsFinal(t *testing.T) {
 		t.Fatalf("final retry: %v", err)
 	}
 }
+
+func TestTranscriptTransportWithoutBlobStore(t *testing.T) {
+	w, runs := testWriter(t)
+	const runID = "inline-final-run"
+	if _, err := w.Emit(t.Context(), openBatch(runID, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	transport := TranscriptTransport{RunID: runID, Gaggle: "web", Emitter: w}
+	session, err := transport.OpenTranscriptCheckpoint("build", "copilot-cli.transcript", journal.NewPatternScrubber())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Append(journal.TranscriptCheckpoint{Stream: "process-output/1", Data: []byte("partial\n"), Reason: "checkpoint"}); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(strings.Repeat("complete transcript\n", 250000))
+	ref, err := session.RecordFinal("", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenReadOnly(filepath.Join(runs, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reader.SpanBytes(ref)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("inline final unavailable: %v", err)
+	}
+	if _, err := session.RecordFinal("", data); err != nil {
+		t.Fatal(err)
+	}
+}

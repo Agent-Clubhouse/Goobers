@@ -34,6 +34,7 @@ type TranscriptCheckpointOp struct {
 	Reason       string       `json:"reason,omitempty"`
 	DataSchema   string       `json:"dataSchema,omitempty"`
 	FinalRef     *journal.Ref `json:"finalRef,omitempty"`
+	InlineFinal  bool         `json:"inlineFinal,omitempty"`
 }
 
 type remoteTranscriptCapture struct {
@@ -78,20 +79,24 @@ func (w *Writer) applyTranscriptCheckpoint(ctx context.Context, run *liveRun, op
 
 func (w *Writer) finalizeTranscriptCheckpoint(ctx context.Context, run *liveRun, session *remoteTranscriptCapture, op Op) (bool, error) {
 	request := op.Checkpoint
-	if op.Key != request.Capture+"/final" || request.FinalRef == nil || len(request.Data) != 0 {
+	if op.Key != request.Capture+"/final" || request.FinalRef == nil || (!request.InlineFinal && len(request.Data) != 0) {
 		return false, errors.New("livejournal: invalid transcript finalization")
 	}
 	if request.FinalRef.Size < 0 || request.FinalRef.Size > journal.MaxCheckpointScrubBytes {
 		return false, errors.New("livejournal: final transcript exceeds capture limit")
 	}
-	data, err := w.fetchSpan(ctx, request.FinalRef.Digest)
-	if err != nil {
-		return false, err // Never retire partials on unavailable final bytes.
+	data := request.Data
+	if !request.InlineFinal {
+		var err error
+		data, err = w.fetchSpan(ctx, request.FinalRef.Digest)
+		if err != nil {
+			return false, err // Never retire partials on unavailable final bytes.
+		}
 	}
-	if int64(len(data)) != request.FinalRef.Size {
-		return false, errors.New("livejournal: final transcript size mismatch")
+	if int64(len(data)) != request.FinalRef.Size || journal.Digest(data) != request.FinalRef.Digest {
+		return false, errors.New("livejournal: final transcript integrity mismatch")
 	}
-	_, err = session.capture.RecordFinalWithExpectedDigest(request.DataSchema, data, op.Key, request.FinalRef.Digest)
+	_, err := session.capture.RecordFinalWithExpectedDigest(request.DataSchema, data, op.Key, request.FinalRef.Digest)
 	if err != nil {
 		return false, err
 	}

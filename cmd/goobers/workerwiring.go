@@ -317,7 +317,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 func (w *workerSeams) recorderFor(g *gaggleSeams, runID, gaggle string) (runner.ArtifactRecorder, runner.SecretRegistrar) {
 	dir := workerhost.StagingArtifactsDir(g.runsDir, runID)
 	recorder := workerhost.NewStagingArtifacts(dir, w.scrubber, w.store)
-	if w.checkpointEmitter != nil && w.store != nil {
+	if w.checkpointEmitter != nil {
 		return &checkpointWorkerArtifacts{StagingArtifacts: recorder, TranscriptTransport: livejournal.TranscriptTransport{
 			RunID: runID, Gaggle: gaggle, Emitter: w.checkpointEmitter, Blobs: w.store,
 		}}, w.shared

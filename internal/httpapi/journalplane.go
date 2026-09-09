@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -26,6 +28,37 @@ import (
 // verdicts) — bounded values by construction, but comfortably above 1 MiB in
 // pathological verdicts.
 const maxJournalEmitBody = 4 << 20
+
+// A single final transcript may carry 16 MiB of scrubbed bytes, base64 encoded,
+// when a deployment has no shared blob plane. Ordinary batches keep their cap.
+const maxTranscriptFinalBody = 24 << 20
+
+func decodeJournalEmit(request *http.Request, input *livejournal.EmitRequest) error {
+	defer func() { _ = request.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxTranscriptFinalBody+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > maxTranscriptFinalBody {
+		return errors.New("journal emit body exceeds limit")
+	}
+	copyRequest := request.Clone(request.Context())
+	copyRequest.Body = io.NopCloser(bytes.NewReader(body))
+	if err := decodeWriteRequestBounded(copyRequest, input, maxTranscriptFinalBody); err != nil {
+		return err
+	}
+	if len(body) <= maxJournalEmitBody {
+		return nil
+	}
+	if input.Open == nil && len(input.Ops) == 1 {
+		op := input.Ops[0]
+		if op.Kind == livejournal.OpTranscriptCheckpoint && op.Checkpoint != nil &&
+			op.Checkpoint.Action == "final" && op.Checkpoint.InlineFinal {
+			return nil
+		}
+	}
+	return errors.New("journal emit batch exceeds limit; only one inline final transcript may use the larger bound")
+}
 
 // JournalService is the daemon-side journal plane. The shipped implementation
 // is *livejournal.Writer; the wire types are the livejournal package's own so
@@ -57,7 +90,7 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 			return
 		}
 		var input livejournal.EmitRequest
-		if err := decodeWriteRequestBounded(request, &input, maxJournalEmitBody); err != nil {
+		if err := decodeJournalEmit(request, &input); err != nil {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}

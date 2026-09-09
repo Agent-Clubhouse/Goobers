@@ -459,13 +459,17 @@ func podCheckpointRecorder(w podExecutorWiring) runner.ArtifactRecorder {
 	recorder := podArtifactRecorder{stderr: w.Stderr, scrubber: w.Scrubber, dir: w.RunsDir}
 	endpoint := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	blobs := podBlobClient()
-	if endpoint == "" || blobs == nil {
+	if endpoint == "" {
 		return recorder
 	}
-	return checkpointPodArtifacts{podArtifactRecorder: recorder, TranscriptTransport: livejournal.TranscriptTransport{
-		RunID: w.Kit.Envelope.RunID, Gaggle: w.Kit.Envelope.Gaggle, Blobs: blobs,
+	transport := livejournal.TranscriptTransport{
+		RunID: w.Kit.Envelope.RunID, Gaggle: w.Kit.Envelope.Gaggle,
 		Emitter: &livejournal.HTTPEmitter{BaseURL: endpoint, Token: os.Getenv(dispatcher.EnvPodToken), RetryDeadline: 3 * time.Second},
-	}}
+	}
+	if blobs != nil {
+		transport.Blobs = blobs
+	}
+	return checkpointPodArtifacts{podArtifactRecorder: recorder, TranscriptTransport: transport}
 }
 
 // podArtifactRecorder satisfies runner.ArtifactRecorder inside a stage pod.

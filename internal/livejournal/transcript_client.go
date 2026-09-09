@@ -51,7 +51,7 @@ type remoteTranscriptStream struct {
 // OpenTranscriptCheckpoint starts a fresh daemon-backed capture, scrubbing all
 // outgoing transcript bytes before they cross the transport boundary.
 func (t TranscriptTransport) OpenTranscriptCheckpoint(stage, name string, scrubber journal.Scrubber) (journal.TranscriptCheckpointSession, error) {
-	if t.Emitter == nil || t.Blobs == nil || t.RunID == "" || t.Gaggle == "" {
+	if t.Emitter == nil || t.RunID == "" || t.Gaggle == "" {
 		return nil, errors.New("livejournal: checkpoint transport is incomplete")
 	}
 	if _, err := journal.NewCheckpointScrubber(scrubber); err != nil {
@@ -155,10 +155,15 @@ func (s *remoteTranscriptSession) RecordFinal(schema string, data []byte) (journ
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := s.transport.Blobs.Put(ctx, ref.Digest, clean); err != nil {
-		return journal.Ref{}, err
+	payload := TranscriptCheckpointOp{DataSchema: schema, FinalRef: &ref}
+	if s.transport.Blobs == nil {
+		payload.InlineFinal, payload.Data = true, clean
+	} else {
+		if err := s.transport.Blobs.Put(ctx, ref.Digest, clean); err != nil {
+			return journal.Ref{}, err
+		}
 	}
-	if err := s.emit(ctx, "final", "final", TranscriptCheckpointOp{DataSchema: schema, FinalRef: &ref}); err != nil {
+	if err := s.emit(ctx, "final", "final", payload); err != nil {
 		return journal.Ref{}, err
 	}
 	s.final = &ref

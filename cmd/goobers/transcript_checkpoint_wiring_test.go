@@ -52,6 +52,12 @@ func TestWorkerTranscriptCheckpointRecorderWiring(t *testing.T) {
 			t.Fatalf("checkpoint escaped invocation scope: %+v", request)
 		}
 	}
+	seams.store = nil
+	withoutBlobs, _ := seams.recorderFor(&gaggleSeams{runsDir: t.TempDir()}, "run-b", "gaggle-b")
+	inline, ok := withoutBlobs.(*checkpointWorkerArtifacts)
+	if !ok || inline.Blobs != nil {
+		t.Fatal("worker without a blob store lost the inline checkpoint transport")
+	}
 }
 
 func TestPodTranscriptCheckpointRecorderWiring(t *testing.T) {
@@ -75,5 +81,10 @@ func TestPodTranscriptCheckpointRecorderWiring(t *testing.T) {
 	blobs, ok := wired.Blobs.(*dispatcher.BlobClient)
 	if !ok || blobs.BaseURL != "https://blobs.invalid" || blobs.Token != "run-scoped-token" {
 		t.Fatal("pod checkpoint transport did not reuse blob credentials")
+	}
+	t.Setenv(dispatcher.EnvBlobEndpoint, "")
+	inline, ok := podAgenticExecutorInput(wiring).ArtifactRecorder.(checkpointPodArtifacts)
+	if !ok || inline.Blobs != nil {
+		t.Fatal("pod without a blob endpoint lost checkpoints or retained a typed-nil blob writer")
 	}
 }
