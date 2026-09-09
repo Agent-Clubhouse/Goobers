@@ -18,6 +18,27 @@ const MaxBytes = 16 << 20
 // MaxLines bounds the number of decoded facts or per-line diagnostics.
 const MaxLines = 10000
 
+// ReadHandoff returns a complete receipt set suitable for durable custody.
+// Missing files are empty; legacy or conflicting receipt identities are errors.
+// Unlike a diagnostic reader, this must never return an accepted prefix.
+func ReadHandoff(workspace string) ([]Fact, error) {
+	data, err := Read(workspace)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	facts, err := ParseRecoveryFacts(data)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := missingRecoveryEvents(facts, nil, "handoff"); err != nil {
+		return nil, err
+	}
+	return facts, nil
+}
+
 // Read reads a complete bounded regular-file handoff, refusing symlink leaves.
 // Missing files retain os.IsNotExist compatibility for existing stage callers.
 func Read(workspace string) (data []byte, err error) {
