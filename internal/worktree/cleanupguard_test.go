@@ -15,7 +15,7 @@ func TestCleanupGuardPreservesEvidenceOnEveryDestructivePath(t *testing.T) {
 			blocked := errors.New("journal persistence failed")
 			deny := true
 			var targets []CleanupTarget
-			m, err := NewManager(t.TempDir(), WithBeforeCleanup(func(_ context.Context, target CleanupTarget) error {
+			m, err := NewManager(t.TempDir(), WithMutationReceiptCleanup(func(_ context.Context, target CleanupTarget) error {
 				targets = append(targets, target)
 				if deny {
 					return blocked
@@ -74,7 +74,7 @@ func TestCleanupGuardPreservesEvidenceOnEveryDestructivePath(t *testing.T) {
 
 func TestKeepingWorktreeDoesNotInvokeCleanupGuard(t *testing.T) {
 	ctx := context.Background()
-	m, err := NewManager(t.TempDir(), WithBeforeCleanup(func(context.Context, CleanupTarget) error {
+	m, err := NewManager(t.TempDir(), WithMutationReceiptCleanup(func(context.Context, CleanupTarget) error {
 		t.Error("guard called without deletion")
 		return errors.New("unexpected cleanup")
 	}))

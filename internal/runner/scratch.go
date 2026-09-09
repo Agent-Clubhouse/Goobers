@@ -12,13 +12,6 @@ import (
 
 const scratchWorkspacePrefix = "stage-"
 
-// ReapScratchWorkspaces removes scratch workspaces left by a prior daemon
-// process. The daemon calls it while holding the instance lock, before
-// resuming interrupted runs, so every owned entry is a crash orphan.
-func ReapScratchWorkspaces(root string) error {
-	return ReapScratchWorkspacesForRuns(root, "")
-}
-
 // ReapScratchWorkspacesForRuns recovers receipts to the host-selected run root
 // before removing crash orphans. Legacy receipts without an owner are retained.
 func ReapScratchWorkspacesForRuns(root, runsDir string) error {

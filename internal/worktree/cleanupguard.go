@@ -16,19 +16,6 @@ type CleanupTarget struct {
 	OwnerRunID string
 }
 
-// WithBeforeCleanup installs the durable-evidence handoff required before
-// teardown, orphan reaping, retention pruning, or replacement of a stale
-// attempt. A failure preserves the directory and its ownership records.
-// The callback runs under the repository lock and must not re-enter Manager.
-// Configure it at construction; callbacks may run concurrently across repos.
-func WithBeforeCleanup(callback func(context.Context, CleanupTarget) error) ManagerOption {
-	return func(m *Manager) {
-		if callback != nil {
-			_ = m.SetCleanupGuard("legacy", callback)
-		}
-	}
-}
-
 // MutationReceiptGuard identifies the handoff that authorizes retiring a
 // mutation sidecar. An unrelated recovery handoff cannot acknowledge receipts.
 const MutationReceiptGuard = "mutation-receipts"

@@ -72,7 +72,7 @@ func TestReapScratchWorkspacesRemovesOwnedEntries(t *testing.T) {
 		}
 	}
 
-	if err := ReapScratchWorkspaces(root); err != nil {
+	if err := ReapScratchWorkspacesForRuns(root, ""); err != nil {
 		t.Fatalf("ReapScratchWorkspaces: %v", err)
 	}
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
@@ -84,7 +84,7 @@ func TestReapScratchWorkspacesRemovesOwnedEntries(t *testing.T) {
 }
 
 func TestReapScratchWorkspacesAllowsMissingRoot(t *testing.T) {
-	if err := ReapScratchWorkspaces(filepath.Join(t.TempDir(), "missing")); err != nil {
+	if err := ReapScratchWorkspacesForRuns(filepath.Join(t.TempDir(), "missing"), ""); err != nil {
 		t.Fatalf("ReapScratchWorkspaces: %v", err)
 	}
 }
