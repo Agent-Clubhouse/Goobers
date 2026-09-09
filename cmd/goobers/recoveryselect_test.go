@@ -43,6 +43,10 @@ func TestSelectIssueRecoveryRefusesAbandonedSnapshotBeforeReaping(t *testing.T) 
 	now := time.Now().UTC()
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
 	path := seedRecoverySelection(t, layout, repo, "abandoned", "7", now.Add(-time.Hour), now.Add(time.Hour), true)
+	selected, err := selectIssueRecovery(t.Context(), layout, repo.CanonicalKey(), "7", now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	record, err := recovery.ReadRetainedRecord(path)
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +65,9 @@ func TestSelectIssueRecoveryRefusesAbandonedSnapshotBeforeReaping(t *testing.T) 
 	}
 	if _, err := selectIssueRecovery(t.Context(), layout, repo.CanonicalKey(), "7", now); err == nil {
 		t.Fatal("abandoned recovery was selected before retention removed it")
+	}
+	if _, err := validateRecoverySelection(layout, selected, now); err == nil {
+		t.Fatal("selection predating abandonment still authorized consumption")
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("selection deleted retained evidence: %v", err)

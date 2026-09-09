@@ -112,12 +112,8 @@ func withIssueRecoveryRecord(ctx context.Context, layout instance.Layout, key, i
 		if !terminalRunPhase(phase) {
 			return fmt.Errorf("selected recovery run is no longer terminal")
 		}
-		current, err := recovery.ReadRetainedRecord(selected.RecordPath)
-		if err != nil {
+		if _, err := validateRecoverySelection(layout, selected, time.Now().UTC()); err != nil {
 			return err
-		}
-		if current != selected.Record {
-			return recovery.ErrRecordConflict
 		}
 		commit, err = consume(selected.RecordPath)
 		return err

@@ -110,10 +110,6 @@ func recoveryRetentionOwner(runID string, managers []*worktree.Manager, runsByRo
 	return owner, runDir, nil
 }
 
-func recoveryDeadlineExpired(reader *journal.Reader, record recovery.Record, now time.Time) (bool, error) {
-	return recoveryRetirementEligible(reader, record, now, nil)
-}
-
 func recoveryRetirementEligible(reader *journal.Reader, record recovery.Record, now time.Time, operatorEvents []journal.Event) (bool, error) {
 	identity, err := reader.Identity()
 	if err != nil {

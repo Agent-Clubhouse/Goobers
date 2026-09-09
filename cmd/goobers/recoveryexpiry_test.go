@@ -68,7 +68,7 @@ func TestRecoveryDeadlineExpiredProtectsTerminalWindowAndActiveRuns(t *testing.T
 			if mode == "foreign" {
 				record.RunID = "another-run"
 			}
-			eligible, err := recoveryDeadlineExpired(reader, record, now)
+			eligible, err := recoveryRetirementEligible(reader, record, now, nil)
 			if (err != nil) != (mode == "foreign") {
 				t.Fatalf("eligibility error: %v", err)
 			}

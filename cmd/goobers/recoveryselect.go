@@ -93,6 +93,31 @@ func selectIssueRecovery(ctx context.Context, layout instance.Layout, repository
 	return selected, nil
 }
 
+// validateRecoverySelection must run under the source run's lifecycle lock,
+// shared with operator abandonment and retirement. Selection's earlier journal
+// read cannot authorize consuming a snapshot abandoned while waiting for it.
+func validateRecoverySelection(layout instance.Layout, selected recovery.InventoryEntry, now time.Time) (recovery.Record, error) {
+	current, err := recovery.ReadRetainedRecord(selected.RecordPath)
+	if err != nil {
+		return recovery.Record{}, err
+	}
+	if current != selected.Record || !now.Before(current.RetainUntil) {
+		return recovery.Record{}, recovery.ErrRecordConflict
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		return recovery.Record{}, err
+	}
+	abandoned, err := recovery.ExplicitlyAbandoned(events, current)
+	if err != nil {
+		return recovery.Record{}, err
+	}
+	if abandoned {
+		return recovery.Record{}, fmt.Errorf("selected recovery snapshot was explicitly abandoned")
+	}
+	return current, nil
+}
+
 func recoveryCandidateTerminal(ctx context.Context, layout instance.Layout, record recovery.Record) (bool, error) {
 	dir, err := runDirFor(layout, record.RunID)
 	if err != nil {

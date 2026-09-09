@@ -48,12 +48,9 @@ func (s recoveryDeliveryService) StreamRecovery(ctx context.Context, runID, repo
 		if !terminalRunPhase(phase) {
 			return fmt.Errorf("recovery source is no longer terminal")
 		}
-		current, err := recovery.ReadRetainedRecord(selected.RecordPath)
+		current, err := validateRecoverySelection(s.layout, selected, time.Now().UTC())
 		if err != nil {
 			return err
-		}
-		if current != selected.Record || !time.Now().Before(current.RetainUntil) {
-			return recovery.ErrRecordConflict
 		}
 		if _, err := authorizeRecoveryDelivery(ctx, s.layout, runID, repositoryKey, issueID, time.Now().UTC()); err != nil {
 			return err
