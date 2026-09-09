@@ -205,6 +205,22 @@ func (c *TranscriptCapture) RecordFinal(schema string, data []byte) (Ref, error)
 }
 
 func (c *TranscriptCapture) removePartialBlobs() error {
+	relativeDirectory := path.Join(dirSpans, "checkpoints", c.id)
+	resolved, err := containedExistingBlobPath(c.run.dir, relativeDirectory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	resolvedRun, err := filepath.EvalSymlinks(c.run.dir)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(resolvedRun, resolved)
+	if err != nil || filepath.ToSlash(relative) != relativeDirectory {
+		return errors.New("journal: refusing redirected transcript cleanup directory")
+	}
 	var result error
 	for relative := range c.blobs {
 		if err := os.Remove(filepath.Join(c.run.dir, relative)); err != nil && !errors.Is(err, os.ErrNotExist) {
