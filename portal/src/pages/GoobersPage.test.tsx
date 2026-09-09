@@ -35,7 +35,7 @@ describe("goobers roster page", () => {
       "true",
     );
     const panel = detail.closest(".goober-detail");
-    if (!panel) {
+    if (!(panel instanceof HTMLElement)) {
       throw new Error("Expanded Goober detail panel was not rendered.");
     }
     expect(
