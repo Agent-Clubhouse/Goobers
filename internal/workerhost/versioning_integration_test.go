@@ -130,6 +130,7 @@ func startVersionedWorker(t *testing.T, c client.Client, queue, buildID, identit
 		},
 	})
 	w.RegisterWorkflow(versioningWorkflow)
+	w.RegisterWorkflow(versioningProbeWorkflow)
 	w.RegisterActivityWithOptions(versioningActivity(recorder), activity.RegisterOptions{Name: "VersioningActivity"})
 	if err := w.Start(); err != nil {
 		t.Fatalf("start %s worker: %v", buildID, err)
