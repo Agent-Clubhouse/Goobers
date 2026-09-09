@@ -55,7 +55,7 @@ type Store interface {
 // Acquire establishes or renews one incarnation. It does not itself admit a
 // run: the caller must also establish its local ledger lease before execution.
 func Acquire(ctx context.Context, store Store, key string, owner Owner, ttl time.Duration) error {
-	if store == nil || key == "" || !validOwner(owner) || ttl <= 0 || ttl > 24*time.Hour {
+	if store == nil || !validKey(key) || !validOwner(owner) || ttl <= 0 || ttl > 24*time.Hour {
 		return fmt.Errorf("invalid shared claim acquisition")
 	}
 	observed, err := store.Read(ctx, key)
@@ -108,7 +108,7 @@ func acquireUntil(ctx context.Context, store Store, key string, owner Owner, ttl
 // Release clears only this incarnation. It retains a versioned tombstone and
 // never treats another owner's lease as successfully released.
 func Release(ctx context.Context, store Store, key string, owner Owner) error {
-	if store == nil || key == "" || !validOwner(owner) {
+	if store == nil || !validKey(key) || !validOwner(owner) {
 		return fmt.Errorf("invalid shared claim release")
 	}
 	observed, err := store.Read(ctx, key)
@@ -128,8 +128,7 @@ func Release(ctx context.Context, store Store, key string, owner Owner) error {
 }
 
 func validOwner(owner Owner) bool {
-	return owner.Instance != "" && owner.Run != "" && owner.Token != "" &&
-		len(owner.Instance) <= 256 && len(owner.Run) <= 256 && len(owner.Token) <= 256
+	return validIdentityText(owner.Instance, 256) && validIdentityText(owner.Run, 256) && validIdentityText(owner.Token, 256)
 }
 
 func validateObservation(observed Observation) error {

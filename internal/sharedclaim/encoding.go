@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -71,5 +72,11 @@ func Decode(key string, data []byte) (Record, error) {
 }
 
 func validKey(key string) bool {
-	return key != "" && len(key) <= 1024 && utf8.ValidString(key) && !strings.ContainsAny(key, "\x00\r\n")
+	return validIdentityText(key, 1024)
+}
+
+// JSON replaces invalid UTF-8 instead of reporting an encoding error. An
+// ownership identity must survive serialization exactly, never be repaired.
+func validIdentityText(value string, limit int) bool {
+	return value != "" && len(value) <= limit && utf8.ValidString(value) && strings.IndexFunc(value, unicode.IsControl) < 0
 }
