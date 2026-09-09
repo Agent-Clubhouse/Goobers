@@ -13,6 +13,10 @@ import (
 type WorkspaceRequest struct {
 	// RunID is the run this stage attempt belongs to.
 	RunID string
+	// TriggerRef retains the scheduler's bounded trigger identity so worker
+	// recovery can address the source issue. It is not an authorization grant;
+	// the custody service must still verify the run's current claim.
+	TriggerRef string
 	// Stage is the stage (task or gate) name within the run.
 	Stage string
 	// Gaggle is the gaggle the run belongs to.

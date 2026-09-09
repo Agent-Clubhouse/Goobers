@@ -403,6 +403,7 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 	}
 	ws, err := a.Workspaces.Provision(ctx, WorkspaceRequest{
 		RunID:           env.RunID,
+		TriggerRef:      env.TriggerRef,
 		Stage:           strings.TrimPrefix(env.TaskID, env.RunID+":"),
 		Gaggle:          env.Gaggle,
 		Workflow:        env.WorkflowID,
