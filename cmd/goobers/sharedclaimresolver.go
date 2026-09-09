@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
@@ -73,7 +74,12 @@ func (r pinnedSharedClaimResolver) claimPolicy(key claimsclient.Key, runID, work
 	if err != nil {
 		return nil, identity, "", err
 	}
-	if identity.RunID != policyRunID || (!reconciliation && identity.Workflow != workflow) || identity.Gaggle != key.Gaggle {
+	// Target publication leases are auxiliary reservations of this same run,
+	// not independently authored workflows. Only their reserved, nonempty key
+	// namespace may use the auxiliary label; policy still comes from the pin.
+	targetID, targetKey := strings.CutPrefix(key.ExternalID, decompositionTargetLeaseExternalID(""))
+	targetLease := workflow == decompositionTargetLeaseWorkflow && targetKey && targetID != ""
+	if identity.RunID != policyRunID || (!reconciliation && !targetLease && identity.Workflow != workflow) || identity.Gaggle != key.Gaggle {
 		return nil, identity, "", fmt.Errorf("claim request does not match the pinned run identity")
 	}
 	mode, err := pinnedClaimVisibility(reader, identity, providers.ProviderKind(key.Provider))
