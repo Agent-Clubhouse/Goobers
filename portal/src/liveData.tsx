@@ -38,6 +38,7 @@ export interface LiveDataSSEFailure {
 }
 
 export interface LiveDataConfig {
+  pollingEnabled?: boolean;
   invalidationWindowMs: number;
   reconnectBaseDelayMs: number;
   reconnectMaxDelayMs: number;
@@ -111,6 +112,7 @@ export interface LiveDataScope {
 }
 
 export interface LiveDataDependencies {
+  cursorScope?: string;
   diagnostics?: PortalDiagnostics;
   // Injected so a test (or a future caller) can observe cache behaviour; the
   // controller owns a session-scoped default when none is supplied.
@@ -172,20 +174,23 @@ export function LiveDataProvider({
   client,
   config,
   diagnostics,
+  cursorScope,
 }: {
   children: ReactNode;
   client: DaemonClient;
   config?: Partial<LiveDataConfig>;
   diagnostics?: PortalDiagnostics;
+  cursorScope?: string;
 }) {
   const cache = useMemo(() => new SessionDataCache(), [client]);
   const controller = useMemo(
     () =>
-      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics, cache }),
+      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics, cache, cursorScope }),
     [
       cache,
       client,
       config?.failuresBeforePolling,
+      config?.pollingEnabled,
       config?.invalidationWindowMs,
       config?.pollingIntervalMs,
       config?.reconnectBaseDelayMs,
@@ -196,6 +201,7 @@ export function LiveDataProvider({
       config?.refreshMaxDelayMs,
       config?.maxPendingInvalidations,
       diagnostics,
+      cursorScope,
     ],
   );
   const [freshness, setFreshness] = useState<LiveFreshness>(() => controller.freshness);
@@ -304,6 +310,7 @@ export class LiveDataController {
   private lastNotifiedSSEFailure: LiveDataSSEFailure | undefined;
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly cache: SessionDataCache;
+  private readonly cursorStorageKey: string;
   private skipNextSnapshotRefresh = false;
   private started = false;
   freshness: LiveFreshness = "reconnecting";
@@ -314,6 +321,9 @@ export class LiveDataController {
     private readonly dependencies: LiveDataDependencies = {},
   ) {
     this.cache = dependencies.cache ?? new SessionDataCache();
+    this.cursorStorageKey = dependencies.cursorScope === undefined
+      ? CURSOR_STORAGE_KEY
+      : `${CURSOR_STORAGE_KEY}:${encodeURIComponent(dependencies.cursorScope)}`;
   }
 
   readonly isFresh = (): boolean => this.freshness === "connected";
@@ -334,7 +344,7 @@ export class LiveDataController {
     this.seenEventIds.clear();
     this.seenEventOrder.length = 0;
     this.lastSSEFailure = undefined;
-    window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
+    window.sessionStorage.removeItem(this.cursorStorageKey);
     this.closeConnection("manual-retry");
     this.setFreshness("reconnecting");
     this.connect("manual-retry");
@@ -379,7 +389,7 @@ export class LiveDataController {
     this.started = true;
     this.invalidationsPaused =
       !navigator.onLine || document.visibilityState === "hidden";
-    this.cursor = window.sessionStorage.getItem(CURSOR_STORAGE_KEY) ?? undefined;
+    this.cursor = window.sessionStorage.getItem(this.cursorStorageKey) ?? undefined;
     window.addEventListener("online", this.onOnline);
     window.addEventListener("offline", this.onOffline);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -642,7 +652,7 @@ export class LiveDataController {
       this.dependencies.diagnostics?.recordSSE({ event: "reconnect", cause: "epoch-changed" });
       this.rememberEvent(event.id);
       this.cursor = event.id;
-      window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
+      window.sessionStorage.setItem(this.cursorStorageKey, event.id);
       // Everything, not just what the event names: the rebuild may have changed
       // any of it, and the event's entity list describes one transition rather
       // than the generation gap.
@@ -656,7 +666,7 @@ export class LiveDataController {
     }
     this.rememberEvent(event.id);
     this.cursor = event.id;
-    window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
+    window.sessionStorage.setItem(this.cursorStorageKey, event.id);
     if (event.type === "snapshot" && this.skipNextSnapshotRefresh) {
       this.skipNextSnapshotRefresh = false;
       return;
@@ -718,7 +728,7 @@ export class LiveDataController {
     this.cursor = undefined;
     this.seenEventIds.clear();
     this.seenEventOrder.length = 0;
-    window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
+    window.sessionStorage.removeItem(this.cursorStorageKey);
     this.failureCount = 0;
     this.setFreshness("stale");
     this.scheduleReconnect(0, "stale-cursor");
@@ -733,7 +743,7 @@ export class LiveDataController {
       return;
     }
     this.failureCount += 1;
-    if (this.failureCount >= this.config.failuresBeforePolling) {
+    if (this.config.pollingEnabled !== false && this.failureCount >= this.config.failuresBeforePolling) {
       this.startPollingFallback();
     } else {
       this.setFreshness("reconnecting");
