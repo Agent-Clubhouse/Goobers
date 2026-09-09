@@ -19,6 +19,14 @@ import (
 
 func TestIntegrationPinnedRecoveryArchivesBeforeNextRunReset(t *testing.T) {
 	testdep.Require(t, "git")
+	// A freshly initialized bare mirror may have an unborn master HEAD even
+	// though the source uses main. Its clone then has mirror/main but no local
+	// main branch. Recovery must not depend on the machine's Git defaults.
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[init]\n\tdefaultBranch = master\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -49,6 +57,10 @@ func TestIntegrationPinnedRecoveryArchivesBeforeNextRunReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = lease.Release() }()
+	if got := recoveryCLIGit(t, lease.Worktree.Path, "for-each-ref", "--format=%(refname)", "refs/heads/main"); got != "" {
+		t.Fatalf("regression fixture unexpectedly has a local main branch: %s", got)
+	}
+	recoveryCLIGit(t, lease.Worktree.Path, "rev-parse", "--verify", "refs/remotes/mirror/main^{commit}")
 	if err := os.WriteFile(filepath.Join(lease.Worktree.Path, "implementation.txt"), []byte("retained pinned implementation"), 0o600); err != nil {
 		t.Fatal(err)
 	}

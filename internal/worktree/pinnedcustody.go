@@ -49,7 +49,11 @@ func (m *Manager) handoffPinnedState(ctx context.Context, key, expectedOwner str
 	}
 	// Missing legacy ownership is passed explicitly to the guard, which may
 	// refuse cleanup. Never substitute the next run's identity for old work.
-	return m.prepareMarkerCleanup(ctx, path, "pin-"+key, owner)
+	return m.prepareCleanupTarget(ctx, CleanupTarget{
+		Path: path, WorktreeID: "pin-" + key, OwnerRunID: owner.OwnerRunID,
+		Gaggle: owner.Gaggle, RepositoryDigest: owner.RepositoryDigest,
+		CreatedAt: owner.CreatedAt, Pinned: true,
+	})
 }
 
 func readPinnedCustody(root string) (marker, error) {

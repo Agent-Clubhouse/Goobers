@@ -22,6 +22,9 @@ type CleanupTarget struct {
 	WorktreeID string
 	OwnerRunID string
 	Gaggle     string
+	// Pinned identifies a managed clone whose base branches live under the
+	// mirror remote, rather than the local branches of a linked worktree.
+	Pinned bool
 	// RepositoryDigest and CreatedAt are copied from the durable marker.
 	// Empty values identify legacy metadata and must not be guessed.
 	RepositoryDigest string

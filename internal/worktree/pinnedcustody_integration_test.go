@@ -59,7 +59,7 @@ func TestIntegrationPinnedCustodyPrecedesDestructivePreparation(t *testing.T) {
 			if !errors.Is(failure, blocked) || !errors.Is(failure, ErrCleanupDeferred) {
 				t.Fatalf("cleanup did not defer: %v", failure)
 			}
-			if target.OwnerRunID != "previous-run" || target.RepositoryDigest != RepositoryDigest(repo) || target.Path != path {
+			if !target.Pinned || target.OwnerRunID != "previous-run" || target.RepositoryDigest != RepositoryDigest(repo) || target.Path != path {
 				t.Fatalf("lost previous custody: %+v", target)
 			}
 			if got := strings.TrimSpace(runTestGit(t, path, "rev-parse", "HEAD")); got != before {

@@ -72,7 +72,7 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		}
 		request := recovery.RetentionRequest{
 			Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID,
-			BaseRef: "main", IdentityTime: captureAt, RetainUntil: captureAt.Add(30 * 24 * time.Hour),
+			BaseRef: recoveryCleanupBaseRef(target), IdentityTime: captureAt, RetainUntil: captureAt.Add(30 * 24 * time.Hour),
 			InventoryRoot: root, CleanupRoots: []string{cleanupRoot}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20, SkipEmpty: true,
 		}
 		publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
@@ -83,6 +83,13 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		return err
 	}
 	return callback, nil
+}
+
+func recoveryCleanupBaseRef(target worktree.CleanupTarget) string {
+	if target.Pinned {
+		return "refs/remotes/mirror/main"
+	}
+	return "refs/heads/main"
 }
 
 // Standalone abort/startup/stall finalizers may construct their own Manager.
