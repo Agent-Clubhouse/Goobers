@@ -99,6 +99,7 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 		return err
 	}
 	count, total := 1, int64(len(document))
+	seen := map[string]bool{"instance.yaml": true}
 	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -109,8 +110,8 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 		if entry.IsDir() {
 			return nil
 		}
-		if !validSnapshotName("config/" + path) {
-			return fmt.Errorf("config mirror refuses non-portable path %q", path)
+		if err := reserveSnapshotName(seen, "config/"+path); err != nil {
+			return err
 		}
 		info, err := entry.Info()
 		if err != nil {

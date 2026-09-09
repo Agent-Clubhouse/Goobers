@@ -33,6 +33,10 @@ func Open(directory string) (*Snapshot, error) {
 		_ = f.Close()
 		return nil, err
 	}
+	if err := admitArchive(f, info.Size()); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
 	archive, err := zip.NewReader(f, info.Size())
 	if err != nil {
 		_ = f.Close()
@@ -63,10 +67,12 @@ func (s *Snapshot) Extract(ctx context.Context, destination string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !validEntry(entry) || seen[strings.ToLower(entry.Name)] {
-			return errors.New("invalid or duplicate config mirror entry")
+		if !validEntry(entry) {
+			return errors.New("invalid config mirror entry")
 		}
-		seen[strings.ToLower(entry.Name)] = true
+		if err := reserveSnapshotName(seen, entry.Name); err != nil {
+			return err
+		}
 		n, err := extractEntry(root, entry)
 		total += n
 		if err != nil {
@@ -84,6 +90,15 @@ func (s *Snapshot) Extract(ctx context.Context, destination string) error {
 
 func validEntry(entry *zip.File) bool {
 	return validSnapshotName(entry.Name) && entry.Mode().IsRegular() && entry.UncompressedSize64 <= MaxFileBytes
+}
+
+func reserveSnapshotName(seen map[string]bool, name string) error {
+	key := strings.ToLower(name)
+	if !validSnapshotName(name) || seen[key] {
+		return errors.New("invalid or duplicate config mirror path")
+	}
+	seen[key] = true
+	return nil
 }
 
 func validSnapshotName(name string) bool {
