@@ -3,6 +3,7 @@ package configmirror
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -38,9 +39,12 @@ func validateStagedSnapshot(ctx context.Context, destination, staged string, val
 	}
 	defer func() { _ = snapshot.Close() }()
 	if err := snapshot.Extract(ctx, root); err != nil {
-		return err
+		return fmt.Errorf("extract config mirror validation tree: %w", err)
 	}
-	return validate(root)
+	if err := validate(root); err != nil {
+		return fmt.Errorf("check captured config mirror generation: %w", err)
+	}
+	return nil
 }
 
 func writeValidationOwner(marker string) error {
