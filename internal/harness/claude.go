@@ -409,12 +409,14 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	initialCapture := &claudeTerminalCapture{}
 	captures := []*claudeTerminalCapture{initialCapture}
 	result, processErr := runner.Run(ctx, ProcessRequest{
-		Command:            argv,
-		Dir:                req.Workspace,
-		Env:                env,
-		Timeout:            req.Timeout,
-		MaxTranscriptBytes: req.MaxTranscriptBytes,
-		StdoutCapture:      initialCapture,
+		Command:                      argv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      req.Timeout,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                initialCapture,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(1),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		// #4179. Wired here as well as in the copilot adapter: the stall this
 		// makes visible is a property of the WORKSPACE (a post-rebase module
 		// graph that misses the baked cache), not of any one harness, so an
@@ -446,12 +448,14 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 				recoveryCapture := &claudeTerminalCapture{}
 				captures = append(captures, recoveryCapture)
 				recovery, recoveryErr := runner.Run(ctx, ProcessRequest{
-					Command:            recoveryArgv,
-					Dir:                req.Workspace,
-					Env:                env,
-					Timeout:            remaining,
-					MaxTranscriptBytes: req.MaxTranscriptBytes,
-					StdoutCapture:      recoveryCapture,
+					Command:                      recoveryArgv,
+					Dir:                          req.Workspace,
+					Env:                          env,
+					Timeout:                      remaining,
+					MaxTranscriptBytes:           req.MaxTranscriptBytes,
+					StdoutCapture:                recoveryCapture,
+					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 					// The recovery turn runs on what is LEFT of the budget,
 					// so a stall here is if anything more urgent to see than
 					// one in the main session (#4179).
