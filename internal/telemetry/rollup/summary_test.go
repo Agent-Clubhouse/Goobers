@@ -376,10 +376,7 @@ func TestRebuildRecoversTimeToFirstPRFromJournalsWhenDatabaseIsUnreadable(t *tes
 
 func TestFirstSuccessMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.db")
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openHistoricalTestDB(t, path, 13)
 	initCompletedAt := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	firstPROpenAt := initCompletedAt.Add(7 * time.Minute)
 	if _, err := db.sql.Exec(`
@@ -407,12 +404,6 @@ func TestFirstSuccessMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert legacy provider mutation: %v", err)
 	}
-	if _, err := db.sql.Exec(`DROP TABLE first_success_milestones`); err != nil {
-		t.Fatalf("drop first-success milestone table: %v", err)
-	}
-	if _, err := db.sql.Exec(`UPDATE schema_meta SET version = 13`); err != nil {
-		t.Fatalf("restore v13 schema version: %v", err)
-	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -427,10 +418,7 @@ func TestFirstSuccessMilestoneMigrationBackfillsRetainedRows(t *testing.T) {
 
 func TestChronologyMigrationRepairsPreInitMilestone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.db")
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openHistoricalTestDB(t, path, 14)
 	initCompletedAt := time.Date(2026, time.July, 16, 12, 0, 0, 500_000_000, time.UTC)
 	firstPROpenAt := initCompletedAt.Add(250 * time.Millisecond)
 	if _, err := db.sql.Exec(`
@@ -456,9 +444,6 @@ func TestChronologyMigrationRepairsPreInitMilestone(t *testing.T) {
 		initCompletedAt.Truncate(time.Second).Format(time.RFC3339Nano),
 	); err != nil {
 		t.Fatalf("seed pre-init milestone: %v", err)
-	}
-	if _, err := db.sql.Exec(`UPDATE schema_meta SET version = 14`); err != nil {
-		t.Fatalf("restore v14 schema version: %v", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)

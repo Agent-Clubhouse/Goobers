@@ -63,6 +63,7 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 	setAPIListenAddress(t, root, address)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	started := &daemonStartedWriter{started: make(chan struct{})}
 	var stderr bytes.Buffer
 	done := make(chan int, 1)
@@ -99,6 +100,10 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 	}
 	if health.Instance.Name != "example" || health.Instance.Environment != "dev" {
 		t.Fatalf("instance = %+v", health.Instance)
+	}
+	identity, err := instance.NewLayout(root).ReadIdentity()
+	if err != nil || identity == "" {
+		t.Fatalf("real daemon startup did not persist its instance identity: %q, %v", identity, err)
 	}
 	if health.Freshness.ObservedAt.IsZero() || health.Freshness.DefinitionsLoadedAt.IsZero() {
 		t.Fatalf("freshness = %+v", health.Freshness)

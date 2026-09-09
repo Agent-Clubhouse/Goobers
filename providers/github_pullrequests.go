@@ -397,6 +397,11 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 		body["merge_method"] = string(req.MergeMethod)
 	}
 	var out githubMergeResult
+	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
+	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitHub, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "merge")
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
 	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
 		return MergePullRequestResult{}, err
 	}
@@ -404,12 +409,23 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 	if convErr != nil {
 		number = 0
 	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.PullID),
-		Operation: "merge",
-		Fields:    map[string]FieldDigest{"state": {After: digestString("merged")}},
-	})
+	// An accepted HTTP response is not evidence of a completed merge. In
+	// particular, missing/false `merged` must not inflate mutation telemetry.
+	if out.Merged {
+		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, out.SHA)
+		if intent != nil {
+			confirmation.IntentID = intent.ID
+		}
+		if err := recordLandingReceipt(ctx, p.recorder, ExternalRef{
+			MergeConfirmation: confirmation,
+			Provider:          ProviderGitHub,
+			Ref:               issueRef(req.Repository, req.PullID),
+			Operation:         "merge",
+			Fields:            map[string]FieldDigest{"state": {After: digestString("merged")}},
+		}); err != nil {
+			return MergePullRequestResult{Number: number, Merged: true, MergeSHA: out.SHA, Message: out.Message}, err
+		}
+	}
 	return MergePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
 }
 
@@ -561,7 +577,7 @@ const enqueuePullRequestLookupQuery = `query($owner:String!,$name:String!,$numbe
 // concurrency guard the REST merge endpoint spells "sha".
 const enqueuePullRequestMutation = `mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID){
   enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){
-    mergeQueueEntry{ state position }
+    mergeQueueEntry{ id enqueuedAt state position }
   }
 }`
 
@@ -657,7 +673,9 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 		}, nil
 	}
 	if pr.MergeQueueEntry != nil {
-		p.recordEnqueue(ctx, req.Repository, req.PullID)
+		// This is an observation, not an enqueue performed by this caller.
+		// Recording it as a mutation would attribute another actor's queue
+		// entry to this run (and inflate repeated-attempt provenance).
 		return EnqueuePullRequestResult{
 			Number:  number,
 			Message: fmt.Sprintf("pull request is already enqueued (state %s, position %d)", pr.MergeQueueEntry.State, pr.MergeQueueEntry.Position),
@@ -671,32 +689,52 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 	var mutation struct {
 		EnqueuePullRequest struct {
 			MergeQueueEntry *struct {
-				State    string `json:"state"`
-				Position int    `json:"position"`
+				ID         string    `json:"id"`
+				EnqueuedAt time.Time `json:"enqueuedAt"`
+				State      string    `json:"state"`
+				Position   int       `json:"position"`
 			} `json:"mergeQueueEntry"`
 		} `json:"enqueuePullRequest"`
+	}
+	repository, err := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitHub, repository, req.PullID, req.ExpectedHeadSHA, "enqueue")
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
 	}
 	if err := p.graphql(ctx, enqueuePullRequestMutation, variables, &mutation); err != nil {
 		return EnqueuePullRequestResult{}, err
 	}
 
-	p.recordEnqueue(ctx, req.Repository, req.PullID)
-	message := "pull request enqueued"
-	if entry := mutation.EnqueuePullRequest.MergeQueueEntry; entry != nil {
-		message = fmt.Sprintf("pull request enqueued (state %s, position %d)", entry.State, entry.Position)
+	entry := mutation.EnqueuePullRequest.MergeQueueEntry
+	if entry == nil || strings.TrimSpace(entry.ID) == "" || len(entry.ID) > 256 || entry.EnqueuedAt.IsZero() {
+		return EnqueuePullRequestResult{}, fmt.Errorf("enqueue response lacks a valid queue entry identity; acceptance is unconfirmed")
 	}
-	return EnqueuePullRequestResult{Number: number, Message: message}, nil
+	confirmation := newMergeConfirmation(repository, req.PullID, "")
+	if confirmation == nil {
+		return EnqueuePullRequestResult{}, fmt.Errorf("enqueue receipt has an invalid repository address")
+	}
+	admission := &QueueAdmission{RepositoryAPIURL: confirmation.RepositoryAPIURL, PullID: req.PullID, EntryID: entry.ID, ExpectedHeadSHA: req.ExpectedHeadSHA, EnqueuedAt: entry.EnqueuedAt.UTC()}
+	if intent != nil {
+		admission.IntentID = intent.ID
+	}
+	message := fmt.Sprintf("pull request enqueued (state %s, position %d)", entry.State, entry.Position)
+	result := EnqueuePullRequestResult{Number: number, Message: message, QueueEntryID: entry.ID}
+	return result, p.recordEnqueue(ctx, req.Repository, req.PullID, admission)
 }
 
 // recordEnqueue journals the enqueue as a mutation of the pull request's
 // external ref, so a queued-but-not-yet-merged pull request is as visible
 // in the run journal as a merged one.
-func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string) {
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(repo, pullID),
-		Operation: "enqueue",
-		Fields:    map[string]FieldDigest{"state": {After: digestString("enqueued")}},
+func (p *GitHubProvider) recordEnqueue(ctx context.Context, repo RepositoryRef, pullID string, admission *QueueAdmission) error {
+	return recordLandingReceipt(ctx, p.recorder, ExternalRef{
+		QueueAdmission: admission,
+		Provider:       ProviderGitHub,
+		Ref:            issueRef(repo, pullID),
+		Operation:      "enqueue",
+		Fields:         map[string]FieldDigest{"state": {After: digestString("enqueued")}},
 	})
 }
 

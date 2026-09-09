@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -194,19 +192,8 @@ func rebaseOntoRemoteBranch(dir, branch string, env []string) error {
 // journal projection.
 func appendBranchPushFact(dir, branch string) {
 	fact := mutationFact{Provider: "git", Kind: "branch", ID: branch, Operation: "push"}
-	data, err := json.Marshal(fact)
-	if err != nil {
-		log.Printf("mutation sidecar: marshal branch push fact: %v", err)
-		return
-	}
-	f, err := os.OpenFile(filepath.Join(dir, mutationsSidecarFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		log.Printf("mutation sidecar: open %s: %v", mutationsSidecarFile, err)
-		return
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		log.Printf("mutation sidecar: write %s: %v", mutationsSidecarFile, err)
+	if err := appendMutationFactAt(dir, fact); err != nil {
+		log.Printf("mutation sidecar: persist branch push fact: %v", err)
 	}
 }
 

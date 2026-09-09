@@ -39,25 +39,63 @@ func (m *Manager) prepareMarkerCleanup(ctx context.Context, path, worktreeID str
 	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
+func (m *Manager) prepareMarkerExit(ctx context.Context, path, worktreeID string, mk marker, keep bool) error {
+	if !keep {
+		return m.prepareMarkerCleanup(ctx, path, worktreeID, mk)
+	}
+	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+}
+
+// Keeping or releasing a workspace may capture recovery, but does not retire
+// its mutation sidecar. Receipt handoff waits until destructive cleanup/reuse.
+func (m *Manager) preparePreservedTarget(ctx context.Context, target CleanupTarget) error {
+	_, err := m.runCleanupGuards(ctx, target, false)
+	return err
+}
+
 func (m *Manager) prepareCleanupTarget(ctx context.Context, target CleanupTarget) error {
+	_, err := m.prepareCleanupTargetWithReceipts(ctx, target)
+	return err
+}
+
+func (m *Manager) prepareCleanupTargetWithReceipts(ctx context.Context, target CleanupTarget) (bool, error) {
+	return m.runCleanupGuards(ctx, target, true)
+}
+
+func (m *Manager) runCleanupGuards(ctx context.Context, target CleanupTarget, includeReceipts bool) (bool, error) {
 	// Snapshot reloadable guards before invoking any callback. No registry
 	// mutex is held during potentially slow archive/journal publication.
 	m.cleanupGuardsMu.RLock()
 	guards := maps.Clone(m.cleanupGuards)
 	m.cleanupGuardsMu.RUnlock()
+	receipts := false
 	for _, name := range slices.Sorted(maps.Keys(guards)) {
-		if err := guards[name](ctx, target); err != nil {
-			return fmt.Errorf("%w: %s handoff for %s: %w", ErrCleanupDeferred, name, target.WorktreeID, err)
+		if name == MutationReceiptGuard && !includeReceipts {
+			continue
 		}
+		if err := guards[name](ctx, target); err != nil {
+			return false, fmt.Errorf("%w: %s handoff for %s: %w", ErrCleanupDeferred, name, target.WorktreeID, err)
+		}
+		receipts = receipts || name == MutationReceiptGuard
 	}
-	return nil
+	return receipts, nil
 }
 
-// SetCleanupGuard atomically installs or replaces one named cleanup handoff.
-// It preserves other named guards. A cleanup
-// already underway completes with its captured guard set; subsequent cleanup
-// uses the new set. Guards execute in name order under the repository lock and
-// must not re-enter Manager operations requiring that lock.
+// MutationReceiptGuard identifies the handoff that authorizes retiring a
+// mutation sidecar. An unrelated recovery handoff cannot acknowledge receipts.
+const MutationReceiptGuard = "mutation-receipts"
+
+// WithMutationReceiptCleanup installs the receipt-specific durable handoff.
+func WithMutationReceiptCleanup(callback func(context.Context, CleanupTarget) error) ManagerOption {
+	return func(m *Manager) {
+		if callback != nil {
+			_ = m.SetCleanupGuard(MutationReceiptGuard, callback)
+		}
+	}
+}
+
+// SetCleanupGuard installs one handoff without replacing other guards. Each
+// cleanup snapshots the registry; callbacks run without its mutex held.
 func (m *Manager) SetCleanupGuard(name string, callback func(context.Context, CleanupTarget) error) error {
 	if name == "" || callback == nil {
 		return fmt.Errorf("cleanup guard requires a name and callback")

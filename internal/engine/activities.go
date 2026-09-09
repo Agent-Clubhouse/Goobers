@@ -20,8 +20,10 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // Activity names. The workflow refers to activities by these names so it is
@@ -278,15 +280,19 @@ type stageActivityResult = DispatchStageResult
 // the one field the runner must journal. mutationFact stays as an alias, so no
 // second type exists and the recorded JSON is untouched.
 type MutationFact struct {
-	Provider      string `json:"provider"`
-	Kind          string `json:"kind"`
-	ID            string `json:"id"`
-	URL           string `json:"url,omitempty"`
-	Operation     string `json:"operation,omitempty"`
-	RunID         string `json:"runId,omitempty"`
-	Outcome       string `json:"outcome,omitempty"`
-	ErrorCode     string `json:"errorCode,omitempty"`
-	ProviderRunID string `json:"providerRunId,omitempty"`
+	ReceiptID         string                       `json:"receiptId,omitempty"`
+	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
+	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
+	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
+	Provider          string                       `json:"provider"`
+	Kind              string                       `json:"kind"`
+	ID                string                       `json:"id"`
+	URL               string                       `json:"url,omitempty"`
+	Operation         string                       `json:"operation,omitempty"`
+	RunID             string                       `json:"runId,omitempty"`
+	Outcome           string                       `json:"outcome,omitempty"`
+	ErrorCode         string                       `json:"errorCode,omitempty"`
+	ProviderRunID     string                       `json:"providerRunId,omitempty"`
 }
 
 // mutationFact is the in-package spelling of MutationFact. An ALIAS, for the
@@ -544,7 +550,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
 		// #724 salvage: an agentic session that ran out of wall clock has not
@@ -671,7 +677,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return GateReviewResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 
 	// The subject diff (#3384), read from the workspace this reviewer was
 	// already given rather than from a second one. It is both the evidence the
@@ -846,7 +852,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 		}
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 	res, err := a.Det.Run(ctx, env, run)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
@@ -951,14 +957,7 @@ func (a *Activities) scrubber() journal.Scrubber {
 }
 
 func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
-	full, err := apiv1.ResolveContainedPath(workspace, mutationsSidecarFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, []string{fmt.Sprintf("resolve sidecar path: %v", err)}
-	}
-	data, err := os.ReadFile(full)
+	data, err := mutationsidecar.Read(workspace)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

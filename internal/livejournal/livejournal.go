@@ -759,6 +759,12 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 		run.mu.Lock()
 	}
 	defer run.mu.Unlock()
+	if err := run.validateReservationIdentity(req); err != nil {
+		// Rehydrating a terminal journal populates the dedup map. Refusals
+		// must release that entry just as applyOp errors do.
+		w.finishRun(req.RunID, run, &EmitResponse{})
+		return EmitResponse{}, err
+	}
 	run.lastEmit = w.now()
 
 	var resp EmitResponse

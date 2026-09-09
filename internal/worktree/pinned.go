@@ -332,6 +332,9 @@ func (m *Manager) ResetPinned(ctx context.Context, opts PinnedResetOptions) (str
 	if err := m.handoffPinnedState(ctx, key, ""); err != nil {
 		return "", err
 	}
+	if err := m.handoffPinnedReceipts(ctx, key); err != nil {
+		return "", err
+	}
 	if err := os.RemoveAll(pinDir); err != nil {
 		return "", fmt.Errorf("worktree: remove pinned workspace: %w", err)
 	}
@@ -392,6 +395,9 @@ func pinnedQueueEntryOrphaned(path, name string) (bool, error) {
 }
 
 func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOptions) (*Worktree, error) {
+	if err := m.handoffPinnedReceipts(ctx, key); err != nil {
+		return nil, err
+	}
 	root := filepath.Join(m.pinnedRoot, key)
 	repoDir := filepath.Join(root, "repo.git")
 	pinDir := filepath.Join(root, "pin")
@@ -515,13 +521,13 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 	if err := ensureScratchExcluded(ctx, pinDir); err != nil {
 		return nil, err
 	}
-	startRef, err := gitOutput(ctx, pinDir, "rev-parse", "HEAD")
+	startRef, err := finishPinnedPreparation(ctx, pinDir, opts, existing)
 	if err != nil {
 		return nil, err
 	}
-	if opts.SyncBase && existing {
-		if err := runGit(ctx, pinDir, "merge", "--ff", "--no-edit", baseRef); err != nil {
-			return nil, fmt.Errorf("worktree: sync pinned branch %q with base %q: %w", opts.Branch, opts.BaseRef, err)
+	if opts.RunID != "workspace-reset" {
+		if err := writeMarkerData(filepath.Join(root, pinnedReceiptOwnerFile), []byte(opts.RunID)); err != nil {
+			return nil, err
 		}
 	}
 	return &Worktree{
@@ -529,6 +535,20 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		manager: m, key: key, startRef: startRef, repoURL: opts.RepoURL,
 		pinned: true, repoDir: pinDir,
 	}, nil
+}
+
+func finishPinnedPreparation(ctx context.Context, pinDir string, opts PinnedOptions, existing bool) (string, error) {
+	startRef, err := gitOutput(ctx, pinDir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if opts.SyncBase && existing {
+		baseRef := pinnedBaseRef(ctx, pinDir, opts.BaseRef)
+		if err := runGit(ctx, pinDir, "merge", "--ff", "--no-edit", baseRef); err != nil {
+			return "", fmt.Errorf("worktree: sync pinned branch %q with base %q: %w", opts.Branch, opts.BaseRef, err)
+		}
+	}
+	return startRef, nil
 }
 
 // PreparePinned selects the branch and optional base synchronization requested

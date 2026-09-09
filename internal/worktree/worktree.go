@@ -821,6 +821,11 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		if err := wt.manager.handoffPinnedState(ctx, wt.key, wt.RunID); err != nil {
 			return err
 		}
+		if !opts.Keep {
+			if err := wt.manager.handoffPinnedReceipts(ctx, wt.key); err != nil {
+				return err
+			}
+		}
 		wt.assetGuard = false
 		return nil
 	}
@@ -843,7 +848,7 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		if worktreeMeasured {
 			mk.SizeBytes = &worktreeBytes
 		}
-		if err := wt.manager.prepareMarkerCleanup(ctx, wt.Path, wt.RunID, mk); err != nil {
+		if err := wt.manager.prepareMarkerExit(ctx, wt.Path, wt.RunID, mk, opts.Keep); err != nil {
 			return err
 		}
 		if err := wt.manager.restoreReservedBranchFromMarker(ctx, wt.key, wt.Path, mk); err != nil {

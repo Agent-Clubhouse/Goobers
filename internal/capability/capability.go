@@ -56,6 +56,8 @@ const (
 	// ProviderPRWrite grants pull-request operations dispatched through the
 	// configured repository provider.
 	ProviderPRWrite Capability = "provider:pr:write"
+	// GitHubPRRead grants read-only GitHub pull-request inspection.
+	GitHubPRRead Capability = "github:pr:read"
 	// GitHubPRWrite grants GitHub-specific PR operations.
 	GitHubPRWrite Capability = "github:pr:write"
 	// GitHubPRReview grants submission of provider-native approve/request-
@@ -156,7 +158,7 @@ const (
 func All() []Capability {
 	return []Capability{
 		RepoRead, RepoPush, ConfigRepoRead,
-		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
+		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRRead, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		GitHubCodeScanningRead, GitHubDependabotAlertsRead,
 		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
 		TelemetryRead, JournalRead, AgentModel,

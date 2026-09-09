@@ -623,6 +623,9 @@ func init() {
 		groupCommand(
 			"telemetry",
 			runTelemetry,
+			subcommand("telemetry merges", "merges", apicontract.ActionReadOnlyNavigation, runTelemetryMerges).
+				withHelp("confirmed PR landings and daily counts by originating instance", telemetryMergesHelp).
+				withExamples("goobers telemetry merges", "goobers telemetry merges --json"),
 			subcommand("telemetry stats", "stats", apicontract.ActionReadOnlyNavigation, runTelemetryStats).
 				withHelp("success rate and duration aggregates per workflow and stage", telemetryStatsHelp).
 				withExamples("goobers telemetry stats", "goobers telemetry stats --json"),

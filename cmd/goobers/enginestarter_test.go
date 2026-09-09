@@ -223,6 +223,10 @@ func TestEngineStarterReservesTheRunBeforeStartingTheWorkflow(t *testing.T) {
 	if id.RunID != "run-reserve" {
 		t.Errorf("reserved run id = %q, want run-reserve", id.RunID)
 	}
+	instanceID, identityErr := fixture.layout.ReadIdentity()
+	if identityErr != nil || instanceID == "" || id.InstanceID != instanceID {
+		t.Errorf("reservation identity %q differs from durable root %q (%v)", id.InstanceID, instanceID, identityErr)
+	}
 	if id.GooberDigest != "sha256:deadbeef" {
 		t.Errorf("reserved run identity GooberDigest = %q, want the scheduler's pinned digest", id.GooberDigest)
 	}

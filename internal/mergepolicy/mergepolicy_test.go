@@ -114,6 +114,32 @@ func TestDirectLanderPropagatesError(t *testing.T) {
 	}
 }
 
+func TestLanderReceiptErrorRetainsAcknowledgedOutcome(t *testing.T) {
+	for _, merged := range []bool{false, true} {
+		failure := &providers.LandingReceiptError{Cause: errors.New("storage unavailable")}
+		fake := &fakeRepoProvider{enqueueResult: providers.EnqueuePullRequestResult{Number: 9, Merged: merged, MergeSHA: "sha"}, enqueueErr: failure}
+		result, err := enqueueLander{}.Land(context.Background(), providers.NewDispatcher(fake), Request{PullID: "9"})
+		want := OutcomeEnqueued
+		if merged {
+			want = OutcomeMerged
+		}
+		if !errors.Is(err, failure) || result.Outcome != want || len(fake.enqueueCalls) != 1 {
+			t.Fatalf("lost receipt outcome: %+v %v", result, err)
+		}
+		if !merged && result.MergeSHA != "" {
+			t.Fatal("queue acceptance carried merge SHA")
+		}
+	}
+}
+
+func TestDirectLanderRefusesUnconfirmedMerge(t *testing.T) {
+	fake := &fakeRepoProvider{mergeResult: providers.MergePullRequestResult{Merged: false, Message: "not merged"}}
+	result, err := directLander{}.Land(context.Background(), providers.NewDispatcher(fake), Request{PullID: "9"})
+	if err == nil || result.Outcome == OutcomeMerged {
+		t.Fatalf("unconfirmed provider response became a successful landing: %+v, %v", result, err)
+	}
+}
+
 func TestEnqueueLanderReportsEnqueuedWhenNotMerged(t *testing.T) {
 	fake := &fakeRepoProvider{enqueueResult: providers.EnqueuePullRequestResult{Merged: false}}
 	req := Request{Repository: providers.RepositoryRef{Owner: "acme", Name: "widgets"}, PullID: "7", ExpectedHeadSHA: "cafef00d", MergeMethod: providers.MergeMethodSquash}

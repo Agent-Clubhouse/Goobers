@@ -87,11 +87,12 @@ const (
 const (
 	// EnvRunID / EnvGaggle / EnvWorkflow / EnvStage / EnvAttempt identify the
 	// attempt inside the pod.
-	EnvRunID    = "GOOBERS_RUN_ID"
-	EnvGaggle   = "GOOBERS_GAGGLE"
-	EnvWorkflow = "GOOBERS_WORKFLOW"
-	EnvStage    = "GOOBERS_STAGE"
-	EnvAttempt  = "GOOBERS_ATTEMPT"
+	EnvInstanceID = "GOOBERS_INSTANCE_ID"
+	EnvRunID      = "GOOBERS_RUN_ID"
+	EnvGaggle     = "GOOBERS_GAGGLE"
+	EnvWorkflow   = "GOOBERS_WORKFLOW"
+	EnvStage      = "GOOBERS_STAGE"
+	EnvAttempt    = "GOOBERS_ATTEMPT"
 	// EnvAttemptClass preserves the driver-supplied lineage for pod artifacts.
 	EnvAttemptClass = "GOOBERS_ATTEMPT_CLASS"
 	// EnvPodAttempt scopes surrender and pod journal idempotency, not lineage.
@@ -354,7 +355,7 @@ var DispatcherPrivilegedEnv = []string{
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
 var DispatcherRunIdentityEnv = append([]string{
-	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, EnvPodAttempt, ProviderBotLoginEnv,
+	EnvRunID, EnvInstanceID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, EnvAttemptClass, EnvPodAttempt, ProviderBotLoginEnv,
 }, runContextEnv...)
 
 // DispatcherPlaneEnv is the THIRD category, and it exists because neither of
@@ -1109,6 +1110,7 @@ func literalPodEnv(value string) string {
 func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnContainer []string) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: EnvRunID, Value: literalPodEnv(attempt.RunID)},
+		{Name: EnvInstanceID, Value: literalPodEnv(attempt.InstanceID)},
 		{Name: EnvGaggle, Value: literalPodEnv(attempt.Gaggle)},
 		{Name: EnvWorkflow, Value: literalPodEnv(attempt.Workflow)},
 		{Name: EnvStage, Value: literalPodEnv(attempt.Stage)},

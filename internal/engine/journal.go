@@ -206,6 +206,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 	rec := &runJournal{
 		proj: JournalProjection{
 			Identity: journal.RunIdentity{
+				InstanceID:      in.InstanceID,
 				RunID:           in.RunID,
 				Workflow:        in.WorkflowName,
 				WorkflowVersion: in.Version,
@@ -333,7 +334,7 @@ func (r *runJournal) mutations(ctx workflow.Context, stage string, attempt int, 
 			ExternalRef: &journal.ExternalRef{
 				Provider: mutation.Provider, Kind: mutation.Kind, ID: mutation.ID, URL: mutation.URL,
 			},
-			Runner: map[string]any{"operation": mutation.Operation},
+			Runner: providers.MutationReceiptRunnerFields(mutation.ReceiptID, mutation.Operation, mutation.MergeConfirmation, mutation.QueueAdmission, mutation.LandingIntent),
 		}, mutation.RunID, mutation.Outcome, mutation.ErrorCode, mutation.ProviderRunID))
 	}
 }

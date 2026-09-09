@@ -179,7 +179,19 @@ func stageAttribution(root string) (providers.Attribution, bool) {
 	if costPublicationAllowed(root, gaggle, providers.RepositoryRef{}, os.Stderr) {
 		attribution.Cost = stageCostReceipt(root, runID)
 	}
+	attribution.InstanceID = stageInstanceIdentity()
 	return attribution, true
+}
+
+func stageInstanceIdentity() string {
+	// Missing, empty and malformed pins all mean unknown. Reading a root
+	// here would attribute historical/remote work to whichever worker happens
+	// to execute this stage, rather than the instance that admitted the run.
+	value := os.Getenv(executor.InstanceIDEnvVar)
+	if instance.ValidIdentity(value) {
+		return value
+	}
+	return ""
 }
 
 func stageCostReceipt(root, runID string) *providers.CostReceipt {
