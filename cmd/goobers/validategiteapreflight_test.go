@@ -1,3 +1,5 @@
+//go:build integration && !windows
+
 package main
 
 import (
@@ -57,7 +59,7 @@ func readGitLog(t *testing.T, path string) string {
 // It pins the two things that make the probe meaningful: the ls-remote must
 // target the CONFIGURED forge root (never github.com), and it must carry
 // Gitea's credential shape.
-func TestGitRepositoryReachableProbesGiteaForge(t *testing.T) {
+func TestIntegrationGitRepositoryReachableProbesGiteaForge(t *testing.T) {
 	testdep.Require(t, "bash")
 	logFile := installRecordingGit(t)
 
@@ -94,7 +96,7 @@ func TestGitRepositoryReachableProbesGiteaForge(t *testing.T) {
 
 // TestGitRepositoryReachableKeepsGitHubProbe is the retained GitHub coverage:
 // the GitHub arm must still probe github.com with its own auth shape.
-func TestGitRepositoryReachableKeepsGitHubProbe(t *testing.T) {
+func TestIntegrationGitRepositoryReachableKeepsGitHubProbe(t *testing.T) {
 	testdep.Require(t, "bash")
 	logFile := installRecordingGit(t)
 
@@ -116,7 +118,7 @@ func TestGitRepositoryReachableKeepsGitHubProbe(t *testing.T) {
 // TestGitRepositoryReachableRejectsUnsupportedProvider keeps the explicit
 // refusal for kinds that genuinely have no preflight, so adding the Gitea arm
 // did not turn an unknown provider into a silent github.com probe.
-func TestGitRepositoryReachableRejectsUnsupportedProvider(t *testing.T) {
+func TestIntegrationGitRepositoryReachableRejectsUnsupportedProvider(t *testing.T) {
 	testdep.Require(t, "bash")
 	logFile := installRecordingGit(t)
 
@@ -136,7 +138,7 @@ func TestGitRepositoryReachableRejectsUnsupportedProvider(t *testing.T) {
 // TestGitRepositoryReachableRequiresGiteaBaseURL: a Gitea repo with no baseUrl
 // has no forge to probe. Fail with that diagnosis rather than building a
 // nonsense URL and blaming the network.
-func TestGitRepositoryReachableRequiresGiteaBaseURL(t *testing.T) {
+func TestIntegrationGitRepositoryReachableRequiresGiteaBaseURL(t *testing.T) {
 	testdep.Require(t, "bash")
 	installRecordingGit(t)
 
@@ -154,7 +156,7 @@ func TestGitRepositoryReachableRequiresGiteaBaseURL(t *testing.T) {
 // NewGiteaProvider's own RootURL derivation. An operator who writes the API
 // endpoint as baseUrl (a reasonable reading) would otherwise get an ls-remote
 // against <host>/api/v1/<owner>/<repo>.git and a misleading "unreachable".
-func TestGiteaPreflightRootURLNormalization(t *testing.T) {
+func TestIntegrationGiteaPreflightRootURLNormalization(t *testing.T) {
 	tests := []struct {
 		name    string
 		baseURL string
@@ -187,7 +189,7 @@ func TestGiteaPreflightRootURLNormalization(t *testing.T) {
 // constructed URL is one git can actually resolve refs from and that a
 // genuinely missing repo is reported unreachable. It uses a file:// baseUrl so
 // no network or Gitea server is required.
-func TestGitRepositoryReachableAgainstRealGiteaStyleRemote(t *testing.T) {
+func TestIntegrationGitRepositoryReachableAgainstRealGiteaStyleRemote(t *testing.T) {
 	testdep.Require(t, "git")
 
 	root := t.TempDir()
