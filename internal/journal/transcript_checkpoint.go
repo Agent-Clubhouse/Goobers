@@ -40,6 +40,7 @@ type TranscriptCapture struct {
 	err      error
 	blobs    map[string]struct{}
 	final    *Ref
+	finalErr error
 	scrubber Scrubber
 }
 
@@ -184,10 +185,16 @@ func (r *Run) recordTranscriptCheckpoint(c *TranscriptCapture, data []byte, meta
 func (c *TranscriptCapture) RecordFinal(schema string, data []byte) (Ref, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.finalErr != nil {
+		return Ref{}, c.finalErr
+	}
 	if c.final == nil {
 		ref, err := c.run.recordSpanEvent(Event{Type: EventSpanRecorded, Stage: c.stage, Name: c.name,
 			DataSchema: schema, Runner: map[string]any{"transcriptCaptureComplete": c.id}}, data)
 		if err != nil {
+			// The event may already be durable even if its state checkpoint
+			// failed. Do not emit a second final event on an uncertain retry.
+			c.finalErr = err
 			return Ref{}, err
 		}
 		c.final = &ref
