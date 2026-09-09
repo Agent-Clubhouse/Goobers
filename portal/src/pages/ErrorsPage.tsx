@@ -203,7 +203,7 @@ function errorLocation(item: TelemetryError): string {
     : "Instance scheduler";
 }
 
-export function groupErrors(items: TelemetryError[]): ErrorGroup[] {
+function groupErrors(items: TelemetryError[]): ErrorGroup[] {
   const groups = new Map<string, ErrorGroup>();
   for (const item of items) {
     const id = JSON.stringify([
