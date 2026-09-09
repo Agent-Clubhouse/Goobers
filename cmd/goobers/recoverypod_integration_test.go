@@ -24,6 +24,18 @@ import (
 
 func TestIntegrationPodRecoveryTransfersDirtyWorkspaceBeforeAcknowledgment(t *testing.T) {
 	testdep.Require(t, "git")
+	for name, repo := range map[string]providers.RepositoryRef{
+		"github":            {Provider: "github", Owner: "example", Name: "repo"},
+		"github-enterprise": {Provider: "github", URL: "https://forge.example/api/v3", Owner: "example", Name: "repo"},
+		"gitea":             {Provider: "gitea", URL: "https://forge.example/service", Owner: "example", Name: "repo"},
+		"ado":               {Provider: "ado", URL: "https://ado.example/collection", Owner: "example", Project: "project", Name: "repo"},
+	} {
+		t.Run(name, func(t *testing.T) { testPodRecoveryRepositoryTransfer(t, repo) })
+	}
+}
+
+func testPodRecoveryRepositoryTransfer(t *testing.T, repo providers.RepositoryRef) {
+	t.Helper()
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
@@ -39,7 +51,7 @@ func TestIntegrationPodRecoveryTransfersDirtyWorkspaceBeforeAcknowledgment(t *te
 	hostRepository := t.TempDir()
 	recoveryCLIGit(t, hostRepository, "init", "--bare")
 	const runID = "pod-recovery-upload"
-	key := (providers.RepositoryRef{Provider: "github", Owner: "example", Name: "repo"}).CanonicalKey()
+	key := repo.CanonicalKey()
 	var allow atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer parent-token" {
@@ -72,7 +84,8 @@ func TestIntegrationPodRecoveryTransfersDirtyWorkspaceBeforeAcknowledgment(t *te
 	for name, value := range map[string]string{
 		dispatcher.EnvStageWorkspace: "repo", dispatcher.EnvRunID: runID, dispatcher.EnvGaggle: "web",
 		dispatcher.EnvDaemonAPI: server.URL, dispatcher.EnvPodToken: "parent-token",
-		executor.RepoProviderEnvVar: "github", executor.RepoOwnerEnvVar: "example", executor.RepoNameEnvVar: "repo",
+		executor.RepoProviderEnvVar: string(repo.Provider), executor.RepoOwnerEnvVar: repo.Owner, executor.RepoNameEnvVar: repo.Name,
+		executor.RepoBaseURLEnvVar: repo.URL, executor.RepoProjectEnvVar: repo.Project,
 		executor.BaseBranchEnvVar: "main",
 	} {
 		t.Setenv(name, value)

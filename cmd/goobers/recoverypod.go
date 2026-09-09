@@ -41,6 +41,7 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	defer cancel()
 	repo := providers.RepositoryRef{
 		Provider: providers.ProviderKind(os.Getenv(executor.RepoProviderEnvVar)),
+		URL:      os.Getenv(executor.RepoBaseURLEnvVar),
 		Owner:    os.Getenv(executor.RepoOwnerEnvVar), Project: os.Getenv(executor.RepoProjectEnvVar),
 		Name: os.Getenv(executor.RepoNameEnvVar),
 	}
