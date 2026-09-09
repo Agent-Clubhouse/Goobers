@@ -250,7 +250,7 @@ func TestRunLockConflictDelegatesRatherThanFailingImmediately(t *testing.T) {
 	}
 	defer release()
 
-	code, _, stderr := runArgs(t, "run", "whatever-workflow", root)
+	code, _, stderr := runArgs(t, "run", "--no-api", "whatever-workflow", root)
 	if code != 1 {
 		t.Fatalf("code = %d, want 1", code)
 	}

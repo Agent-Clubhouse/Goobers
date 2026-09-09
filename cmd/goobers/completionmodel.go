@@ -305,13 +305,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
 	"run": {
+		{name: "no-api", desc: "Explicitly use local execution or file delegation"},
+		{name: "api-timeout", takesArg: true, desc: "Bound API validation and acceptance"},
 		{name: "force", desc: "Bypass hourly and daily cadence budgets for this manual run"},
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "github-progress", desc: "Publish live progress to one GitHub Check Run"},
 		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "request-id", takesArg: true, desc: "Retry-safe delivery identity for an API submission"},
-		{name: "no-wait", desc: "Return after the run is dispatched"},
+		{name: "no-wait", desc: "Return on durable API acceptance or local dispatch"},
 	},
 	"approve": {
 		{name: "decision", takesArg: true, desc: "Gate decision"},
@@ -322,6 +324,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"run cancel": {
+		{name: "no-api", desc: "Explicitly use local cancellation or file delegation"},
+		{name: "request-id", takesArg: true, desc: "Reuse an API cancellation identity"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"override": {

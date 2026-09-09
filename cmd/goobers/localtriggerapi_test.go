@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -13,6 +14,25 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+func runIDFromAcceptedTriggerStdout(t *testing.T, layout instance.Layout, stdout string) string {
+	t.Helper()
+	fields := strings.Fields(stdout)
+	if len(fields) < 3 || fields[0] != "accepted" || fields[1] != "trigger" {
+		t.Fatalf("missing acceptance: %q", stdout)
+	}
+	endpoint, err := localDaemonAPIBase(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	status, err := waitAcceptedTriggerDispatch(ctx, endpoint, fields[2])
+	if err != nil || status.State != "dispatched" {
+		t.Fatalf("dispatch=%+v error=%v", status, err)
+	}
+	return status.RunID
+}
 
 func TestRunAutomaticallyUsesLocalTriggerAPI(t *testing.T) {
 	for _, mode := range []string{"no-wait", "completed", "rejected", "status-unavailable"} {

@@ -27,8 +27,12 @@ func runLocalTriggerSubmission(ctx context.Context, layout instance.Layout, targ
 		return runDelegatedTrigger(ctx, layout, target, root, noWait, stdout, stderr)
 	}
 	running, _, err := inspectDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"))
-	if err != nil || !running {
-		pf(stderr, "error: instance is locked but no live daemon API was identified: %v; retry after the current owner releases the lock\n", err)
+	if err != nil {
+		pf(stderr, "error: inspect instance lock: %v\n", err)
+		return 2
+	}
+	if !running {
+		pf(stderr, "error: instance is locked but no live daemon API was identified; retry after the current owner releases the lock\n")
 		return 2
 	}
 	endpoint, err := localDaemonAPIBase(layout)

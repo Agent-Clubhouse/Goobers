@@ -3227,7 +3227,8 @@ submits through its API automatically — dispatched through
 the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
-escalated. --no-wait exits 0 on durable API acceptance, before dispatch.
+escalated. The submission-only --no-wait mode exits 0 on durable API
+acceptance, before dispatch.
 Without --no-wait, local API callers observe dispatch status then wait
 for the run's terminal journal phase. API failures never silently fall
 back to files. --no-api explicitly selects local execution/file delegation
