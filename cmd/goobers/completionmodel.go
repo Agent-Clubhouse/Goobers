@@ -282,6 +282,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "drain-timeout", takesArg: true, desc: "Graceful-drain timeout"},
 		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
 	},
+	"config-seed": {
+		{name: "mirror", takesArg: true, desc: "Read-only rendered config mirror path"},
+		{name: "instance", takesArg: true, desc: "Private worker instance path"},
+	},
 	"speech preflight": {
 		{name: "json", desc: "Emit JSON"},
 	},

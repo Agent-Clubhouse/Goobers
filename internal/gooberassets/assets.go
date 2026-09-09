@@ -78,7 +78,14 @@ func Validate(source string) error {
 
 // Load snapshots source. A missing source is the supported no-assets case.
 func Load(source string) (*Bundle, error) {
-	return scan(source, true)
+	bundle, err := scan(source, true)
+	if err != nil || bundle == nil {
+		return bundle, err
+	}
+	if err := restoreSourceModes(source, bundle); err != nil {
+		return nil, err
+	}
+	return bundle, nil
 }
 
 func scan(source string, readContents bool) (*Bundle, error) {

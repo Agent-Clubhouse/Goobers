@@ -1292,7 +1292,9 @@ jobs:
       # unreachable on Linux and macOS — which is exactly why a full green suite
       # on those platforms proved nothing about this.
       - name: Windows read model and stores
-        run: go test ./internal/readmodel/... ./internal/readservice
+        # Config mirrors must exercise native file replacement, read-only
+        # cleanup, and Unix-source asset identity on Windows, not just compile.
+        run: go test ./internal/readmodel/... ./internal/readservice ./internal/configmirror ./internal/gooberassets
 
       - name: Windows worktree and event stream
         env:
@@ -1335,7 +1337,7 @@ jobs:
       # Credential-plane alias tests drive actual runtime migration and Windows
       # directory junction/SameFile behavior; cross-compilation cannot cover it.
       - name: Windows CLI runtime
-        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity'
+        run: go test ./cmd/goobers -run 'TestListenDashboardReportsConflictAndCanIncrement|TestReadDirectoryDistinguishesMissingFromFile|TestBuildSchedulerSetupRejectsConfigChangedDuringStartup|TestBuildSchedulerSetupWiresConfiguredTimezone|TestValidatePlanDetectsLiveParentConflict|TestRunDashboardContextAcceptsNonLoopbackListenWithAuth|TestCredentialPlaneLegacyRuntimeAliasResolvesOnce|TestCredentialPlaneRunAliasesPreserveAmbiguity|TestConfigMirror|TestConfigSeed'
 
       - name: Build Windows validation binary
         run: go build -o bin/goobers.exe ./cmd/goobers

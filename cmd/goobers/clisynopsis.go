@@ -11,6 +11,7 @@ const gatherContextID = "gather-implement-context"
 // keyed by invocation-path id. The help renderers assemble these via the command
 // registry so command discovery cannot drift from per-command help (#1095).
 var synopsisByID = map[string]string{
+	"config-seed":            "  goobers config-seed --mirror <absolute-path> --instance <absolute-path>  seed a private worker instance from a rendered config mirror\n",
 	"roots discover":         "  goobers roots discover [--json] [paths...]  find likely roots and report daemon ownership\n",
 	"roots decommission":     "  goobers roots decommission --reason=<text> [path]  mark a stopped root as historical without deleting data\n",
 	"queue-explain":          "  goobers queue-explain --gaggle=<name> --workflow=<name> --pr=<number> [--json] [path]  explain historical PR eligibility and claim evidence\n",

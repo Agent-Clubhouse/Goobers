@@ -425,10 +425,16 @@ make bytes appear under a mount that never updates: a `config/` directory
 copied once into an `emptyDir` by an initContainer is frozen for the life of the
 pod, and the reloader will poll it forever finding nothing — exactly the
 `subPath` trap above, in a different costume. Give the worker a config tree that
-actually changes (a whole-ConfigMap or projected volume, a synced PVC, a sidecar
+actually changes (a projected volume, a synced PVC, a sidecar
 that writes into the mounted directory), then verify by execution: edit the
 tree, wait past the interval, and confirm the worker logged
 `worker config reload: applied config tree sha256:…`.
+
+For credential-free cross-node **boot seeding**, use the
+[rendered-config mirror overlay](config-mirror/README.md) instead of a worker
+ConfigMap bridge. It copies a complete validated snapshot without the ConfigMap
+size ceiling. It is deliberately not a live updater: drain and recreate workers
+to consume a newer seed, accounting for configuration pins of in-flight runs.
 
 ### The worker refuses a kit its run was not admitted against
 

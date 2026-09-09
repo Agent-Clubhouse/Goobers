@@ -95,10 +95,13 @@ type Config struct {
 	// target code repositories. Nil keeps the local <instance-root>/config
 	// default.
 	WorkflowSource *WorkflowSource `json:"workflowSource,omitempty" yaml:"workflowSource,omitempty"`
-	API            APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
-	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
-	Portal         PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
-	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	// ConfigMirrorPath opts the daemon into publishing worker-consumable
+	// rendered configuration to an absolute shared path. Empty disables it.
+	ConfigMirrorPath string          `json:"configMirrorPath,omitempty" yaml:"configMirrorPath,omitempty"`
+	API              APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
+	Webhook          WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
+	Portal           PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
+	Telemetry        TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
 	// projection loop disabled; standalone engine commands still use defaults.
 	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`

@@ -195,6 +195,8 @@ complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-hostport
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-namespace -r -d 'Temporal namespace'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l drain-timeout -r -d 'Graceful-drain timeout'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l work-root -r -d 'Stage workspace root'
+complete -c goobers -n '__fish_seen_subcommand_from config-seed' -l mirror -r -d 'Read-only rendered config mirror path'
+complete -c goobers -n '__fish_seen_subcommand_from config-seed' -l instance -r -d 'Private worker instance path'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l port -r -d 'Dashboard port, or auto'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l listen -r -d 'Bind address as host:port; non-loopback requires api.auth'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'

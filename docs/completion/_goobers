@@ -153,6 +153,9 @@ _goobers_completion()
         worker)
             flags+=(--instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
+        config-seed)
+            flags+=(--mirror --instance)
+            ;;
         dashboard)
             flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)
             ;;

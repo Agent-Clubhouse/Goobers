@@ -32,6 +32,7 @@ func (c *Config) validateBaseConfig() error {
 		c.Workcopies.validate,
 		func() error { return c.API.validate(c.APIListenAddress()) },
 		c.validateWorkflowSource,
+		func() error { return workcopyroot.Validate("configMirrorPath", c.ConfigMirrorPath) },
 		func() error { return c.Webhook.validate(c.WebhookListenAddress()) },
 	)
 }
