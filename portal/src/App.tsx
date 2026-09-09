@@ -254,7 +254,13 @@ function Portal({
           />
         )}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
-        {route.page === "goobers" && <GoobersPage client={client} standalone={standalone} />}
+        {route.page === "goobers" && (
+          <GoobersPage
+            client={client}
+            gaggleName={route.gaggle}
+            standalone={standalone}
+          />
+        )}
         {route.page === "gaggle" && (
           <GagglePage
             client={client}

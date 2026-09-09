@@ -4,7 +4,7 @@ import { hasScopeFilters, type ScopeFilters } from "./scope";
 export type Route =
   | { page: "overview" }
   | { page: "workflows" }
-  | { page: "goobers" }
+  | { page: "goobers"; gaggle?: string }
   | { page: "gaggle"; id: string }
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
@@ -53,7 +53,8 @@ export function parseRoute(hash = window.location.hash): Route {
     return { page: "workflows" };
   }
   if (area === "goobers") {
-    return { page: "goobers" };
+    const gaggle = optionalQuery(search, "gaggle");
+    return gaggle ? { page: "goobers", gaggle } : { page: "goobers" };
   }
   if (area === "runs") {
     const filters = parseScopeFilters(search);
@@ -92,6 +93,10 @@ export function routeHash(route: Route): string {
   }
   if (route.page === "run") {
     return `#/run/${encodeURIComponent(route.id)}`;
+  }
+  if (route.page === "goobers" && route.gaggle) {
+    const search = new URLSearchParams({ gaggle: route.gaggle });
+    return `#/goobers?${search.toString()}`;
   }
   if (route.page === "runs" && route.filters) {
     const search = new URLSearchParams();

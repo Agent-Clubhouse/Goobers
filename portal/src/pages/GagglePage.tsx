@@ -8,6 +8,7 @@ import type {
 } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { GaggleWorkflowExplorer } from "../components/GaggleWorkflowExplorer";
+import { DisclosureSection } from "../components/DisclosureSection";
 import { ScopePivot } from "../components/ScopePivot";
 import {
   incompleteRunPhasesMessage,
@@ -21,7 +22,6 @@ import {
 import type { Navigate } from "../routing";
 import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
-import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 
@@ -173,7 +173,11 @@ function GaggleTopology({
         workflows={inventory.workflows}
       />
 
-      <GoobersPanel gaggleDisplayName={gaggle.displayName} goobers={inventory.goobers} />
+      <GoobersPanel
+        gaggleDisplayName={gaggle.displayName}
+        gaggleName={gaggle.name}
+        goobers={inventory.goobers}
+      />
 
       <GaggleWorkflowExplorer
         client={client}
@@ -182,14 +186,8 @@ function GaggleTopology({
         workflows={inventory.workflows}
       />
 
-      <GraphFrame
-        action={
-          <span className="graph-legend">
-            {inventory.connections.length}{" "}
-            {inventory.connections.length === 1 ? "repository" : "repositories"}
-          </span>
-        }
-        className="gaggle-topology-panel"
+      <DisclosureSection
+        count={inventory.connections.length}
         eyebrow="Connections"
         title="Repository topology"
       >
@@ -198,7 +196,7 @@ function GaggleTopology({
           gaggleDisplayName={gaggle.displayName}
           hasWorkflows={inventory.workflows.length > 0}
         />
-      </GraphFrame>
+      </DisclosureSection>
     </>
   );
 }
@@ -281,14 +279,12 @@ function GaggleActivitySections({
           {incompleteRunPhasesMessage(activity.incomplete)}
         </p>
       )}
-      <section className="content-section">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">Live</p>
-            <h2>Active runs</h2>
-          </div>
-          {activity && <span className="section-count">{activity.active.length}</span>}
-        </div>
+      <DisclosureSection
+        count={activity?.active.length}
+        defaultOpen
+        eyebrow="Live"
+        title="Active runs"
+      >
         {!activity ? (
           <p className="inline-empty">Loading active runs…</p>
         ) : activity.active.length === 0 ? (
@@ -316,16 +312,13 @@ function GaggleActivitySections({
             ))}
           </DataList>
         )}
-      </section>
+      </DisclosureSection>
 
-      <section className="content-section">
-        <div className="section-heading">
-          <div>
-            <p className="section-kicker">History</p>
-            <h2>Recent outcomes</h2>
-          </div>
-          {activity && <span className="section-count">{activity.recent.length}</span>}
-        </div>
+      <DisclosureSection
+        count={activity?.recent.length}
+        eyebrow="History"
+        title="Recent outcomes"
+      >
         {!activity ? (
           <p className="inline-empty">Loading recent outcomes…</p>
         ) : activity.recent.length === 0 ? (
@@ -350,7 +343,7 @@ function GaggleActivitySections({
             ))}
           </DataList>
         )}
-      </section>
+      </DisclosureSection>
     </>
   );
 }
@@ -363,9 +356,11 @@ function GaggleActivitySections({
  */
 function GoobersPanel({
   gaggleDisplayName,
+  gaggleName,
   goobers,
 }: {
   gaggleDisplayName: string;
+  gaggleName: string;
   goobers: Goober[];
 }) {
   return (
@@ -376,6 +371,14 @@ function GoobersPanel({
           <h2>Goobers</h2>
         </div>
         <span className="section-count">{goobers.length}</span>
+      </div>
+      <div className="gaggle-goober-panel-action">
+        <span>
+          {goobers.length} configured {goobers.length === 1 ? "persona" : "personas"}
+        </span>
+        <a href={routeHash({ page: "goobers", gaggle: gaggleName })}>
+          View full Goober details
+        </a>
       </div>
       {goobers.length === 0 ? (
         <p className="inline-empty">No goobers are provisioned for this gaggle.</p>
