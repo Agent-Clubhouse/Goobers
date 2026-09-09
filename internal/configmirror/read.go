@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // Snapshot pins one opened archive for the entire seed operation, even if a
@@ -98,6 +100,9 @@ func (s *Snapshot) Extract(ctx context.Context, destination string) error {
 	if !seen["instance.yaml"] {
 		return errors.New("config mirror has no instance document")
 	}
+	if err := syncExtractedDirectories(destination); err != nil {
+		return err
+	}
 	// Apply deepest directories first, after writing all descendants. Source
 	// directories may be read-only, and archive order is not authoritative.
 	sort.Slice(directories, func(i, j int) bool { return len(directories[i].Name) > len(directories[j].Name) })
@@ -175,9 +180,34 @@ func extractEntry(root *os.Root, entry *zip.File) (int64, error) {
 	}
 	n, copyErr := io.Copy(f, io.LimitReader(reader, MaxFileBytes+1))
 	modeErr := f.Chmod(entry.Mode().Perm())
+	syncErr := f.Sync()
 	closeErr := f.Close()
 	if n > MaxFileBytes {
 		return n, errors.New("config mirror file exceeds extraction limit")
 	}
-	return n, errors.Join(copyErr, modeErr, closeErr)
+	return n, errors.Join(copyErr, modeErr, syncErr, closeErr)
+}
+
+// Flush descendants before their parent entries, including implicit archive
+// directories. This happens before restoring potentially read-only modes.
+func syncExtractedDirectories(destination string) error {
+	var directories []string
+	err := filepath.WalkDir(destination, func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			directories = append(directories, name)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for i := len(directories) - 1; i >= 0; i-- {
+		if err := durability.SyncDir(directories[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
