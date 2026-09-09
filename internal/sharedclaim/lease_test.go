@@ -125,3 +125,61 @@ func TestMalformedObservationCannotAdmitOrRelease(t *testing.T) {
 		}
 	}
 }
+
+func TestDelayedReleaseCannotClearSuccessor(t *testing.T) {
+	owner := Owner{"instance", "run", "old"}
+	successor := Owner{"instance", "run", "new"}
+	s := &memoryStore{observation: Observation{
+		Now: time.Now().UTC(), Revision: "original",
+		Record: Record{Version: 1, Owner: owner, ExpiresAt: time.Now().Add(time.Minute)},
+	}, read: make(chan struct{}, 1), proceed: make(chan struct{})}
+	result := make(chan error, 1)
+	go func() { result <- Release(t.Context(), s, "issue:42", owner) }()
+	<-s.read
+	if err := s.CompareAndSwap(t.Context(), "issue:42", "original", Record{
+		Version: 1, Owner: successor, ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	close(s.proceed)
+	if err := <-result; !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale release: %v", err)
+	}
+	if s.observation.Record.Owner != successor {
+		t.Fatal("stale release cleared the successor")
+	}
+}
+
+type lostAcknowledgmentStore struct {
+	*memoryStore
+	fail bool
+}
+
+func (s *lostAcknowledgmentStore) CompareAndSwap(ctx context.Context, key, revision string, record Record) error {
+	if err := s.memoryStore.CompareAndSwap(ctx, key, revision, record); err != nil {
+		return err
+	}
+	if s.fail {
+		s.fail = false
+		return errors.New("response lost after commit")
+	}
+	return nil
+}
+
+func TestLostAcknowledgmentFailsClosedAndSameOwnerCanRetry(t *testing.T) {
+	s := &lostAcknowledgmentStore{memoryStore: &memoryStore{observation: Observation{Now: time.Now().UTC()}}, fail: true}
+	owner := Owner{"instance", "run", "incarnation"}
+	if err := Acquire(t.Context(), s, "issue:42", owner, time.Minute); err == nil {
+		t.Fatal("uncertain acquisition admitted work")
+	}
+	if err := Acquire(t.Context(), s, "issue:42", owner, time.Minute); err != nil {
+		t.Fatalf("same incarnation could not reconcile acquisition: %v", err)
+	}
+	s.fail = true
+	if err := Release(t.Context(), s, "issue:42", owner); err == nil {
+		t.Fatal("uncertain release reported complete")
+	}
+	if err := Release(t.Context(), s, "issue:42", owner); err != nil {
+		t.Fatalf("same incarnation could not reconcile release: %v", err)
+	}
+}
