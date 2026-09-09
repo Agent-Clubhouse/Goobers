@@ -61,6 +61,10 @@ func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTrigg
 }
 
 func newDurableTriggerService(path string, dispatch *daemonTriggerService) (*durableTriggerService, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
 	queue, err := triggerqueue.Open(path)
 	if err != nil {
 		return nil, err

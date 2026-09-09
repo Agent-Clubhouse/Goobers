@@ -21,7 +21,10 @@ func openTriggerPruneGuard(layout instance.Layout, dryRun bool, now time.Time) (
 	if dryRun {
 		return nil, noop, nil
 	}
-	path := filepath.Join(layout.SchedulerDir(), "accepted-triggers.db")
+	path, err := filepath.Abs(filepath.Join(layout.SchedulerDir(), "accepted-triggers.db"))
+	if err != nil {
+		return nil, noop, err
+	}
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, noop, nil
 	} else if err != nil {

@@ -18,7 +18,11 @@ func newPersistentDaemonCancelService(layout instance.Layout, runners *daemonRun
 	if log == nil {
 		return nil, errors.New("cancellation requires an audit journal")
 	}
-	receipts, err := cancelreceipt.Open(filepath.Join(layout.SchedulerDir(), "cancellation-receipts.db"))
+	path, err := filepath.Abs(filepath.Join(layout.SchedulerDir(), "cancellation-receipts.db"))
+	if err != nil {
+		return nil, err
+	}
+	receipts, err := cancelreceipt.Open(path)
 	if err != nil {
 		return nil, err
 	}
