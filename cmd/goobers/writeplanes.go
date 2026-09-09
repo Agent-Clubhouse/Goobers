@@ -237,7 +237,7 @@ func (s *daemonClaimService) releaseAllForRun(ctx context.Context, request httpa
 // acquire is going to refuse. History is the retained released set for the
 // same namespace, newest first, so the failure-streak deprioritization an
 // off-daemon backlog-query runs keeps its input.
-func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
+func (s *daemonClaimService) List(ctx context.Context, request httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
 	if request.RunID == "" {
 		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "runId is required", nil)
 	}
@@ -266,6 +266,16 @@ func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRe
 		return entry.Gaggle == request.Gaggle && entry.Provider == request.Provider
 	}
 	var response httpapi.ClaimListResponse
+	if request.Execution {
+		if request.Scope != httpapi.ClaimListScopeRun || !request.IncludeHistory {
+			return response, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "execution requires own-run scope and history", nil)
+		}
+		mode, err := s.executionClaimVisibility(ctx, request.RunID)
+		if err != nil {
+			return response, err
+		}
+		response.ClaimVisibility = mode
+	}
 	err := s.withLedger(claimLockOperationAPIList, httpapi.ClaimRequest{Gaggle: request.Gaggle, RunID: request.RunID}, func(ledger *localscheduler.ClaimLedger) error {
 		var entries, history []localscheduler.ClaimEntry
 		switch request.Scope {

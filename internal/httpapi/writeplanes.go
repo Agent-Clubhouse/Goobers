@@ -129,6 +129,9 @@ type ClaimListRequest struct {
 	// Scope is ClaimListScopeRun or ClaimListScopeNamespace.
 	Scope          string `json:"scope"`
 	IncludeHistory bool   `json:"includeHistory,omitempty"`
+	// Execution requests the trusted pinned policy alongside own-run leases.
+	// It is read-only and may not be combined with a namespace listing.
+	Execution bool `json:"execution,omitempty"`
 	// PodScoped is set by the route, never decoded from the body: the caller
 	// is a pod principal, so a namespace listing must be confined to the
 	// gaggle the caller's run belongs to (the service verifies RunID lives
@@ -138,8 +141,9 @@ type ClaimListRequest struct {
 
 // ClaimListResponse is the ledger slice the list route answers with.
 type ClaimListResponse struct {
-	Entries []ClaimEntry `json:"entries"`
-	History []ClaimEntry `json:"history,omitempty"`
+	Entries         []ClaimEntry `json:"entries"`
+	History         []ClaimEntry `json:"history,omitempty"`
+	ClaimVisibility string       `json:"claimVisibility,omitempty"`
 }
 
 // ClaimRecoverRequest asks the daemon to run its own stale-claim recovery

@@ -42,9 +42,10 @@ import (
 // the SAME ones the local runner builds, from the same buildRunnerConfig, which
 // is what conformance between the two tiers rests on.
 type workerSeams struct {
-	root     string
-	scrubber journal.Scrubber
-	shared   *journal.RegistryScrubber
+	executionFence executionFenceStart
+	root           string
+	scrubber       journal.Scrubber
+	shared         *journal.RegistryScrubber
 	// store is the fleet-wide content-addressed store stage artifacts travel
 	// through. Nil means node-local only: every stage of a run must then be
 	// polled by THIS worker or the first cross-node pointer fails closed.
@@ -273,6 +274,12 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	scoped := l.ForGaggle(gaggle)
 	project := gaggleProjectRef(set, gaggle)
 	runnerCfg, credentialedMgr, err := buildRunnerConfig(runnerCompositionInput{
+		ExecutionFence: func(ctx context.Context, env apiv1.InvocationEnvelope) (context.Context, context.CancelFunc, error) {
+			if w.executionFence != nil {
+				return w.executionFence(ctx, env)
+			}
+			return localSharedExecutionFence(scoped)(ctx, env)
+		},
 		Layout:               scoped,
 		Config:               cfg,
 		Goobers:              goobers,

@@ -89,6 +89,7 @@ func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(contex
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
 type runnerCompositionInput struct {
+	ExecutionFence       executionFenceStart
 	Layout               instance.Layout
 	Config               *instance.Config
 	Goobers              map[string]apiv1.GooberSpec
@@ -109,6 +110,10 @@ var runnerLookPath = exec.LookPath
 
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
+	executionFence := input.ExecutionFence
+	if executionFence == nil {
+		executionFence = localSharedExecutionFence(l)
+	}
 	cfg := input.Config
 	goobers := input.Goobers
 	instructionsByGoober := input.InstructionsByGoober
@@ -289,7 +294,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			if err != nil {
 				return nil, err
 			}
-			return claimFencedDeterministic{Deterministic: exec, start: localSharedExecutionFence(l)}, nil
+			return claimFencedDeterministic{Deterministic: exec, start: executionFence}, nil
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			exec, err := buildAgenticExecutor(agenticExecutorInput{
@@ -301,7 +306,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			if err != nil {
 				return nil, err
 			}
-			return claimFencedGoober{Goober: exec, start: localSharedExecutionFence(l)}, nil
+			return claimFencedGoober{Goober: exec, start: executionFence}, nil
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		// Placement provenance is recorded only once this instance declares a

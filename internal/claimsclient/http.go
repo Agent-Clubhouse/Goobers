@@ -41,11 +41,13 @@ type claimListRequest struct {
 	RunID          string `json:"runId"`
 	Scope          string `json:"scope"`
 	IncludeHistory bool   `json:"includeHistory,omitempty"`
+	Execution      bool   `json:"execution,omitempty"`
 }
 
 type claimListResponse struct {
-	Entries []Entry `json:"entries"`
-	History []Entry `json:"history,omitempty"`
+	Entries         []Entry `json:"entries"`
+	History         []Entry `json:"history,omitempty"`
+	ClaimVisibility string  `json:"claimVisibility,omitempty"`
 }
 
 type claimRecoverRequest struct {
@@ -270,7 +272,21 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 	}, &response); err != nil {
 		return Listing{}, err
 	}
-	return Listing(response), nil
+	return Listing{Entries: response.Entries, History: response.History}, nil
+}
+
+// ExecutionSnapshot reads only this run's leases, history and trusted pinned
+// policy. Missing policy is refused: an older/unavailable server must never
+// silently turn shared execution into local execution.
+func (h *HTTP) ExecutionSnapshot(ctx context.Context) (string, Listing, error) {
+	var response claimListResponse
+	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: h.cfg.RunID, Scope: scopeRun, IncludeHistory: true, Execution: true}, &response); err != nil {
+		return "", Listing{}, err
+	}
+	if response.ClaimVisibility != "local" && response.ClaimVisibility != "shared" {
+		return "", Listing{}, fmt.Errorf("claims plane did not verify execution policy")
+	}
+	return response.ClaimVisibility, Listing{Entries: response.Entries, History: response.History}, nil
 }
 
 // errMergeLeaseLost is MergeLock's context.Cause when a renewal is

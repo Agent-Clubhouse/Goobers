@@ -63,6 +63,9 @@ func newPodPlanes(t *testing.T, checkoutToken string) *podPlanes {
 	t.Helper()
 	p := &podPlanes{checkoutToken: checkoutToken}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveLocalExecutionPolicy(w, r) {
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		p.mu.Lock()
 		defer p.mu.Unlock()

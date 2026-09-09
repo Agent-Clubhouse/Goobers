@@ -100,9 +100,21 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// heartbeat must cover exactly the window in which there is something alive
 	// to report on, and no longer. Stop() waits for the goroutine, so nothing
 	// is still emitting when the surrender PUT below runs.
-	stageCtx, heartbeat := startPodStageHeartbeat(ctx, stderr)
+	fence := remoteSharedExecutionFence(daemonAPI, func(string) (string, error) { return podToken, nil })
+	stageCtx, stopFence, fenceErr := fence(ctx, apiv1.InvocationEnvelope{RunID: runID})
+	defer stopFence()
+	if fenceErr != nil {
+		pf(stderr, "dispatch-exec: shared execution admission: %v\n", fenceErr)
+		return 1
+	}
+	stageCtx, heartbeat := startPodStageHeartbeat(stageCtx, stderr)
 	outcome := runStage(stageCtx, stdout, stderr)
 	heartbeat.Stop()
+	if cause := context.Cause(stageCtx); cause != nil {
+		outcome.Verdict = nil
+		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: &apiv1.ErrorInfo{Code: "execution_authority_ended", Message: cause.Error()}}
+	}
+	stopFence()
 	envelope := outcome.Result
 	// Carry whatever this stage committed to the next one (#3763). This pod is
 	// about to be disposed, so a commit that does not leave here does not exist
