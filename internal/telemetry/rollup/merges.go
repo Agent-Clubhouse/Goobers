@@ -105,6 +105,9 @@ func (db *DB) MergeProvenance(ctx context.Context, query MergeReportQuery) (Merg
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := db.checkMergeReportEventBound(ctx, query); err != nil {
+		return MergeReport{}, err
+	}
 	rows, err := db.readDB().QueryContext(ctx, `SELECT m.provider, m.external_id, m.run_id, m.occurred_at,
 		r.gaggle, COALESCE(r.instance_id, ''),
 		CASE WHEN length(m.runner_json) <= 16384 THEN m.runner_json ELSE NULL END
