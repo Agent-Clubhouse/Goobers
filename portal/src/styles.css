@@ -1292,7 +1292,7 @@ summary:focus-visible {
   align-items: center;
   display: grid;
   gap: 12px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   padding: 8px;
 }
 
@@ -6857,11 +6857,13 @@ code,
   }
 
   .attention-run-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .attention-run-row time {
-    display: none;
+  .attention-run-row .scope-pivot,
+  .attention-run-row .attention-dismiss {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .attention-meta {
@@ -7116,6 +7118,7 @@ code,
     grid-template-columns: auto minmax(0, 1fr);
   }
 
+  .attention-run-row .scope-pivot,
   .attention-run-row .attention-dismiss {
     grid-column: 2;
     justify-self: start;

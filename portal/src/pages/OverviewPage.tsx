@@ -371,6 +371,10 @@ function Overview({
                               <strong>{run.id}</strong>
                               <span>{attentionDiagnosis(run, failureReasons)}</span>
                             </a>
+                            <ScopePivot
+                              label={workflowDisplayName(overview, run)}
+                              scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                            />
                             <time dateTime={run.lastActivityAt}>
                               {formatTimestamp(run.lastActivityAt)}
                             </time>
