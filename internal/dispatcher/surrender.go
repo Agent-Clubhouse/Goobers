@@ -96,6 +96,10 @@ type SurrenderedMutation struct {
 // (ResultEnvelope + mutation facts + mutation issues), so the dispatch
 // activity can marshal it back into the identical stageActivityResult.
 type SurrenderedResult struct {
+	// RecoveryAcknowledged is set only by the pod supervisor after the host
+	// accepts recovery custody (or verifies that no unmerged patch exists).
+	// Old images omit it; omission must not authorize writable-pod deletion.
+	RecoveryAcknowledged bool `json:"recoveryAcknowledged,omitempty"`
 	// Result is the stage's ResultEnvelope — the business outcome. A pod
 	// whose stage failed surrenders a ResultFailure envelope, the same honest
 	// status the local executor returns, never a bare process exit.
@@ -219,6 +223,19 @@ func (g PlaneSurrenderGate) Confirmed(ctx context.Context, attempt Attempt) (boo
 		return false, errors.New("dispatcher: surrender gate has no plane")
 	}
 	return g.Plane.Has(ctx, attempt.RunID, attempt.Stage, attempt.Number)
+}
+
+// RecoveryConfirmed reads the supervisor's durable custody acknowledgment;
+// mere presence of a legacy surrendered result does not establish recovery.
+func (g PlaneSurrenderGate) RecoveryConfirmed(ctx context.Context, attempt Attempt) (bool, error) {
+	if g.Plane == nil {
+		return false, errors.New("dispatcher: surrender gate has no plane")
+	}
+	result, err := ReadSurrenderedResult(ctx, g.Plane, attempt.RunID, attempt.Stage, attempt.Number)
+	if err != nil {
+		return false, err
+	}
+	return result.RecoveryAcknowledged, nil
 }
 
 // SurrenderDir is a SurrenderPlane backed by a directory — the same stance as
