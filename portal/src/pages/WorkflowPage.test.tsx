@@ -339,12 +339,8 @@ describe("workflow detail page", () => {
 
     await screen.findByRole("heading", { name: "Implementation" });
     const breadcrumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
-    expect(
-      within(breadcrumbs).getByRole("link", { name: "View core in Runs" }),
-    ).toHaveAttribute("href", "#/runs?gaggle=core");
-    // The gaggle breadcrumb button's own name ("core") stays unique even with
-    // the adjacent pivot links present.
     expect(within(breadcrumbs).getByRole("button", { name: "core" })).toBeInTheDocument();
+    expect(within(breadcrumbs).queryByRole("link")).not.toBeInTheDocument();
 
     await user.click(
       screen.getByRole("link", { name: "View core / Implementation in Insight" }),
