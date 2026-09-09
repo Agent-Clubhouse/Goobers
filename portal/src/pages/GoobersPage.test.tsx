@@ -61,14 +61,16 @@ describe("goobers roster page", () => {
       "aria-selected",
       "true",
     );
-    const detailPanel = detail.parentElement;
-    if (!detailPanel) {
-      throw new Error("Expected expanded Goober detail.");
+    const panel = detail.closest(".goober-detail");
+    if (!(panel instanceof HTMLElement)) {
+      throw new Error("Expanded Goober detail panel was not rendered.");
     }
     expect(
-      within(detailPanel).getByText("Implements claimed backlog items end to end."),
+      within(panel).getByText("Implements claimed backlog items end to end."),
     ).toBeInTheDocument();
-    expect(screen.getByText("core/implementation/implement (agentic)")).toBeInTheDocument();
+    expect(
+      within(panel).getByText("core/implementation/implement (agentic)"),
+    ).toBeInTheDocument();
 
     await userEvent.click(within(detail).getByRole("tab", { name: "Raw YAML" }));
     expect(within(detail).getByRole("tab", { name: "Raw YAML" })).toHaveAttribute(

@@ -339,8 +339,8 @@ describe("workflow detail page", () => {
 
     await screen.findByRole("heading", { name: "Implementation" });
     const breadcrumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
-    expect(within(breadcrumbs).queryByRole("link")).not.toBeInTheDocument();
     expect(within(breadcrumbs).getByRole("button", { name: "core" })).toBeInTheDocument();
+    expect(within(breadcrumbs).queryByRole("link")).not.toBeInTheDocument();
 
     await user.click(
       screen.getByRole("link", { name: "View core / Implementation in Insight" }),

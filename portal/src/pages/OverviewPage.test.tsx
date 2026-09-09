@@ -240,9 +240,10 @@ describe("overview page", () => {
     };
 
     render(<App client={new FixtureDaemonClient(failed)} />);
-    expect(await screen.findByText("Retention sweep failed")).toBeInTheDocument();
-    expect(screen.getByText(/periodic trigger/i)).toBeInTheDocument();
-    expect(screen.getByText(/git remote timed out/i)).toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Retention sweep failed");
+    expect(alert).toHaveTextContent("git remote timed out");
+    expect(alert).toHaveTextContent(/periodic trigger/i);
   });
 
   it("renders a cancelled retention sweep status", async () => {

@@ -565,6 +565,43 @@ describe("workflow and gaggle inventory", () => {
     ).toBeInTheDocument();
   });
 
+  it("selects and dismisses all visible attention runs", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+
+    await user.click(
+      within(attentionSection).getByRole("checkbox", {
+        name: "Select all visible attention runs",
+      }),
+    );
+    expect(
+      within(attentionSection).getByRole("button", { name: "Dismiss 2 selected" }),
+    ).toBeInTheDocument();
+    await user.click(
+      within(attentionSection).getByRole("button", { name: "Dismiss 2 selected" }),
+    );
+
+    expect(within(attentionSection).getByText("Nothing needs attention right now.")).toBeInTheDocument();
+  });
+
+  it("does not show an empty-instance recovery while inventory loading fails", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "listGaggles").mockRejectedValue(new Error("inventory still loading"));
+
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The gaggle and workflow inventory could not be read",
+    );
+    expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
+  });
+
   it("collapses the attention section and persists that durably across remounts (#2660)", async () => {
     const user = userEvent.setup();
     const rendered = render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
