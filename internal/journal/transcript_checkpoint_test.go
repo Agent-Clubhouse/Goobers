@@ -10,6 +10,15 @@ import (
 	"testing"
 )
 
+func newTranscriptTestRun(t *testing.T) *Run {
+	t.Helper()
+	run, _ := newRun(t)
+	// Register after TempDir so the journal releases its Windows lock handle
+	// before testing removes the directory, including assertion-failure paths.
+	t.Cleanup(func() { _ = run.Close() })
+	return run
+}
+
 func TestTranscriptCheckpointDurableScrubbedDeltas(t *testing.T) {
 	registry, scrubber := DefaultScrubber()
 	registry.Register([]byte("registered-secret"))
@@ -68,7 +77,7 @@ func TestTranscriptCheckpointDurableScrubbedDeltas(t *testing.T) {
 }
 
 func TestTranscriptCheckpointRejectsDiscontinuityPermanently(t *testing.T) {
-	run, _ := newRun(t)
+	run := newTranscriptTestRun(t)
 	capture, err := run.BeginTranscriptCapture("implement", "transcript")
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +93,7 @@ func TestTranscriptCheckpointRejectsDiscontinuityPermanently(t *testing.T) {
 }
 
 func TestTranscriptCheckpointFinalRetiresOnlyPrivateBlobs(t *testing.T) {
-	run, _ := newRun(t)
+	run := newTranscriptTestRun(t)
 	capture, err := run.BeginTranscriptCapture("implement", "transcript")
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +134,7 @@ func TestTranscriptCheckpointFinalRetiresOnlyPrivateBlobs(t *testing.T) {
 }
 
 func TestTranscriptCheckpointStorageIsLinearAndFinalGrowthUnchanged(t *testing.T) {
-	run, _ := newRun(t)
+	run := newTranscriptTestRun(t)
 	capture, err := run.BeginTranscriptCapture("implement", "transcript")
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +159,7 @@ func TestTranscriptCheckpointStorageIsLinearAndFinalGrowthUnchanged(t *testing.T
 	if files != 1 || stored != int64(len(full)) {
 		t.Fatalf("successful capture retained extra blob storage: files=%d bytes=%d", files, stored)
 	}
-	baseline, _ := newRun(t)
+	baseline := newTranscriptTestRun(t)
 	if _, err := baseline.RecordSpan("implement", "transcript", full); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +195,7 @@ func transcriptStoredBytes(t *testing.T, root string) (int, int64) {
 }
 
 func TestTranscriptCheckpointCommitsTransportKeyWithContent(t *testing.T) {
-	run, _ := newRun(t)
+	run := newTranscriptTestRun(t)
 	capture, err := run.BeginTranscriptCapture("implement", "transcript")
 	if err != nil {
 		t.Fatal(err)

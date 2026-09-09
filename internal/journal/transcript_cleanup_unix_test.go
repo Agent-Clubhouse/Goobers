@@ -9,7 +9,7 @@ import (
 )
 
 func TestTranscriptCleanupRefusesRedirectedParent(t *testing.T) {
-	run, _ := newRun(t)
+	run := newTranscriptTestRun(t)
 	capture, err := run.BeginTranscriptCapture("implement", "transcript")
 	if err != nil {
 		t.Fatal(err)
