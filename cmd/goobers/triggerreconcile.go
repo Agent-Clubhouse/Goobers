@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -25,12 +24,12 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 		if record.RunID != "" && record.RunID != runID {
 			return false, fmt.Errorf("accepted trigger %s has a mismatched dispatch receipt", record.ID)
 		}
-		dir, err := layout.FindRunDir(runID)
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
+		dir, err := acceptedTriggerJournalDir(ctx, layout, runID)
 		if err != nil {
 			return false, err
+		}
+		if dir == "" {
+			return false, nil
 		}
 		reader, err := journal.OpenReadOnly(dir)
 		if err != nil {
