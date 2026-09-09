@@ -51,6 +51,8 @@ func (s engineSpanSink) StartStageSpan(ctx context.Context, id engine.StageSpanI
 		TaskID:          id.Stage,
 		Attempt:         id.Attempt,
 		Branch:          id.Branch,
+		BuildID:         id.BuildID,
+		WorkerIdentity:  id.WorkerIdentity,
 	})
 	if err != nil {
 		return ctx, nil, err
