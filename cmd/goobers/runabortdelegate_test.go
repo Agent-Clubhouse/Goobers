@@ -114,7 +114,7 @@ func TestRunAbortDelegatesToLiveDaemonOnLockContention(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run --no-wait: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	runID := runIDFromRunStdout(t, stdout)
+	runID := runIDFromAcceptedTriggerStdout(t, l, stdout)
 
 	// Wait for the run to actually be live under the daemon (holding its
 	// journal lock via acquireRunLock) before racing abort against it.

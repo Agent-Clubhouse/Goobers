@@ -27,15 +27,17 @@ import (
 // cadence, for the cross-process readers (e.g. `goobers status`) that must
 // see it there; only this in-process probe's read path is memory-only.
 type daemonProbeState struct {
-	ready           *atomic.Bool
-	configLoaded    *atomic.Bool
-	stateOpen       *atomic.Bool
-	resumeComplete  *atomic.Bool
-	sweepsStarted   *atomic.Bool
-	schedulerTicked *atomic.Bool
-	lastTickAtNanos *atomic.Int64 // unix nanoseconds; 0 = no tick recorded yet
-	livenessTimeout time.Duration
-	now             func() time.Time
+	apiListening            *atomic.Bool
+	ready                   *atomic.Bool
+	configLoaded            *atomic.Bool
+	stateOpen               *atomic.Bool
+	resumeComplete          *atomic.Bool
+	sweepsStarted           *atomic.Bool
+	schedulerTicked         *atomic.Bool
+	lastTickAtNanos         *atomic.Int64 // unix nanoseconds; 0 = no tick recorded yet
+	lastTriggerSweepAtNanos *atomic.Int64
+	livenessTimeout         time.Duration
+	now                     func() time.Time
 }
 
 // liveness implements httpapi.LivenessCheck.
@@ -70,6 +72,9 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 		// subsystem checks below remain diagnostic, not an exhaustive gate.
 		Ready: d.ready.Load(),
 		Checks: map[string]bool{
+			"apiListening":      d.apiListening != nil && d.apiListening.Load(),
+			"schedulerReady":    d.ready.Load() && d.freshHeartbeat(d.lastTickAtNanos),
+			"triggerSweepReady": d.ready.Load() && d.freshHeartbeat(d.lastTriggerSweepAtNanos),
 			// configLoaded and stateOpen both flip before the HTTP listener
 			// itself ever opens (runUpContextWithForce sets them, then calls
 			// apiServer.Start() only afterward) — so in practice neither can
@@ -82,4 +87,20 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 			"sweepsStarted":  d.sweepsStarted.Load(),
 		},
 	}
+}
+
+// A listener or startup liveness grace is not proof that a scheduler can
+// consume triggers. These diagnostic checks require observed recent progress.
+func (d *daemonProbeState) freshHeartbeat(heartbeat *atomic.Int64) bool {
+	if heartbeat == nil || heartbeat.Load() == 0 || d.now == nil {
+		return false
+	}
+	return daemonstate.Evaluate(d.now(), time.Unix(0, heartbeat.Load()), d.livenessTimeout).Healthy
+}
+
+func recordTriggerSweepProgress(heartbeat *atomic.Int64, sweepErr error, completedAt time.Time) error {
+	if sweepErr == nil {
+		heartbeat.Store(completedAt.UnixNano())
+	}
+	return sweepErr
 }

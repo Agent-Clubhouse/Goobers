@@ -727,6 +727,11 @@ func (w *daemonStartedWriter) Write(p []byte) (int, error) {
 // dispatched run shows up identically to a daemon-native dispatch, per the
 // issue's own literal test plan.
 func TestRunDelegatesToLiveDaemon(t *testing.T) {
+	t.Run("automatic API", func(t *testing.T) { testRunDelegatesToLiveDaemon(t, false) })
+	t.Run("explicit file fallback", func(t *testing.T) { testRunDelegatesToLiveDaemon(t, true) })
+}
+
+func testRunDelegatesToLiveDaemon(t *testing.T, noAPI bool) {
 	prevInterval := delegationSweepInterval
 	delegationSweepInterval = 20 * time.Millisecond
 	t.Cleanup(func() { delegationSweepInterval = prevInterval })
@@ -761,7 +766,11 @@ func TestRunDelegatesToLiveDaemon(t *testing.T) {
 		t.Fatal("timed out waiting for runUpContext to report daemon readiness")
 	}
 
-	code, stdout, stderr := runArgs(t, "run", "default-implement", root)
+	args := []string{"run", "default-implement", root}
+	if noAPI {
+		args = append(args, "--no-api")
+	}
+	code, stdout, stderr := runArgs(t, args...)
 	if code != 0 {
 		t.Fatalf("run: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -876,12 +885,9 @@ func TestRunNoWaitDelegatesToLiveDaemon(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run --no-wait: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	runID := runIDFromRunStdout(t, stdout)
-	if !strings.Contains(stdout, "dispatched via live daemon") {
-		t.Fatalf("stdout = %q, want a mention of live-daemon delegation", stdout)
-	}
-	if !strings.Contains(stdout, "inspect with: goobers trace "+runID+" "+root) {
-		t.Fatalf("stdout = %q, want the trace hint", stdout)
+	fields := strings.Fields(stdout)
+	if len(fields) < 3 || fields[0] != "accepted" || fields[1] != "trigger" {
+		t.Fatalf("stdout = %q, want durable acceptance without waiting for dispatch", stdout)
 	}
 	if strings.Contains(stdout, "finished:") {
 		t.Fatalf("stdout = %q, --no-wait must not report a terminal phase", stdout)
@@ -889,6 +895,15 @@ func TestRunNoWaitDelegatesToLiveDaemon(t *testing.T) {
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer waitCancel()
+	endpoint, err := localDaemonAPIBase(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := waitAcceptedTriggerDispatch(waitCtx, endpoint, fields[2])
+	if err != nil || accepted.State != "dispatched" {
+		t.Fatalf("dispatch=%+v err=%v", accepted, err)
+	}
+	runID := accepted.RunID
 	phase, err := waitForRunTerminal(waitCtx, l.RunsDir(), runID)
 	if err != nil {
 		t.Fatalf("wait for delegated run: %v", err)

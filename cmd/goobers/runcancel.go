@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/cancelreceipt"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -262,8 +263,10 @@ func executeCancelRequest(
 // daemonCancelService preserves the local Runner/file-drop cancellation path
 // and routes retained engine runs through the engine's own cancellation guard.
 type daemonCancelService struct {
-	runners *daemonRunnerRegistry
-	engine  *daemonEngineCancelService
+	runners  *daemonRunnerRegistry
+	engine   *daemonEngineCancelService
+	auditLog *journal.InstanceLog
+	receipts *cancelreceipt.Store
 
 	mu      sync.RWMutex
 	release func(runID, workflow string)
@@ -283,6 +286,16 @@ func (s *daemonCancelService) AttachRelease(release func(runID, workflow string)
 }
 
 func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
+	if s.receipts != nil {
+		return s.cancelWithReceipt(ctx, input)
+	}
+	return s.cancelOnce(ctx, input)
+}
+
+func (s *daemonCancelService) cancelOnce(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
+	if err := s.auditCancellation(input); err != nil {
+		return httpapi.CancelRunResult{}, err
+	}
 	s.mu.RLock()
 	release := s.release
 	s.mu.RUnlock()
@@ -314,6 +327,21 @@ func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRu
 	return httpapi.CancelRunResult{Phase: resp.Phase, Code: resp.Code, Error: resp.Error}, nil
 }
 
+// Record the attempt before either runner or engine side effects. This is an
+// attribution record, not a completion receipt: a failed or interrupted cancel
+// must never look like confirmed termination in the journal.
+func (s *daemonCancelService) auditCancellation(input httpapi.CancelRunRequest) error {
+	if s.auditLog == nil {
+		return nil // Low-level service tests may omit the production audit sink.
+	}
+	return s.auditLog.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: input.RunID, Workflow: input.Workflow, Gaggle: input.Gaggle,
+		Actor: input.Actor, Reason: "run cancellation requested",
+		Runner: map[string]any{"note": "run.cancel.requested", "idempotencyKey": input.IdempotencyKey},
+	})
+}
+
 // runRemoteCancel cancels a run on a daemon that does not share this
 // filesystem (#3807). The local paths resolve the run's directory, journal
 // identity, and daemon lock under an instance root the caller does not have
@@ -322,11 +350,19 @@ func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRu
 // dispositions keep their exit codes; accepted engine cancellation reports a
 // request without claiming a terminal outcome.
 func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) int {
+	return runRemoteCancelWithKey(endpoint, runID, action, "", stdout, stderr)
+}
+
+func runRemoteCancelWithKey(endpoint, runID, action, key string, stdout, stderr io.Writer) int {
+	return runRemoteCancelForInstance(endpoint, runID, action, key, "", stdout, stderr)
+}
+
+func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string, stdout, stderr io.Writer) int {
 	if strings.TrimSpace(endpoint) == "" {
 		pf(stderr, "error: no daemon API endpoint configured\n")
 		return 2
 	}
-	if err := prepareRemoteRoot(context.Background(), endpoint, stderr); err != nil {
+	if err := prepareRemoteRootForInstance(context.Background(), endpoint, expectedID, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -334,17 +370,25 @@ func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) i
 	if err != nil {
 		actor = "cli"
 	}
+	if key == "" {
+		key, err = newInterventionIdempotencyKey()
+		if err != nil {
+			pf(stderr, "error: generate cancellation request ID: %v\n", err)
+			return 2
+		}
+	}
 	var result httpapi.CancelRunResult
-	apiErr, err := callDaemonMutationAPI(
+	apiErr, err := callDaemonMutationAPIWithKey(
 		instance.NewLayout("."), endpoint, apicontract.RouteCancelRun,
-		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, &result,
+		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, &result, key,
 	)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: %v; cancellation outcome may be unknown; retry run cancel with --request-id=%q and the same target\n", err, key)
 		return 2
 	}
 	if apiErr != nil {
 		pf(stderr, "error: %s: %s\n", apiErr.Code, apiErr.Message)
+		pf(stderr, "cancellation request ID: %q (reuse --request-id with the same target to reconcile)\n", key)
 		return 1
 	}
 	switch {

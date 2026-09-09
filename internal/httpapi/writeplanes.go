@@ -187,28 +187,7 @@ type ClaimService interface {
 // caller's delivery identity: redelivering the same RequestID never mints a
 // second run (the webhook handler's bounded in-memory dedupe, applied to the
 // generic trigger plane — daemon-local is sound under DS1).
-type TriggerRequest struct {
-	Gaggle    string `json:"gaggle,omitempty"`
-	Workflow  string `json:"workflow"`
-	RequestID string `json:"requestId,omitempty"`
-	// Force bypasses only hourly and daily cadence budgets for an explicit
-	// manual invocation. It is invalid for priority and pod-scoped triggers.
-	Force bool `json:"force,omitempty"`
-	// SourceRun names the run whose newly-published durable state is the
-	// reason for this trigger. Non-empty makes it a PRIORITY re-tick
-	// (Scheduler.TriggerPriority) rather than an ordinary mint — the plane's
-	// form of apply-verdict's crowned-lander file drop
-	// (writePriorityTriggerRequest), which a stage pod has no scheduler
-	// directory to write. It is an output-driven signal, not a bypass: normal
-	// readiness admission still applies.
-	SourceRun string `json:"sourceRun,omitempty"`
-	// PodScoped and PodRunID are set by the route, never decoded from the
-	// body: the caller is a pod principal, so the trigger must name the
-	// gaggle the caller's run belongs to (the service verifies it) and a
-	// priority re-tick must name the caller's own run as its source.
-	PodScoped bool   `json:"-"`
-	PodRunID  string `json:"-"`
-}
+type TriggerRequest = apicontract.TriggerRequest
 
 // MaxTriggerRequestIDBytes caps the caller-supplied delivery identity — the
 // same 256-byte bound the webhook handler puts on GitHub delivery ids
@@ -220,12 +199,7 @@ const MaxTriggerRequestIDBytes = 256
 // TriggerResponse reports the minted run, or the original run when RequestID
 // deduplicated a redelivery (the run id may still be empty when the
 // deduplicated delivery is concurrent with the winning delivery's mint).
-type TriggerResponse struct {
-	RunID string `json:"runId,omitempty"`
-	// Duplicate marks a response answered from the dedupe record rather than
-	// a fresh mint.
-	Duplicate bool `json:"duplicate,omitempty"`
-}
+type TriggerResponse = apicontract.TriggerResponse
 
 // TriggerService ingests external triggers through the same
 // validate/dedupe/mint path the daemon's pending-triggers sweep uses.
@@ -279,12 +253,7 @@ const (
 // CancelRunRequest asks the daemon to stop an owned run (#3807, decision 005
 // D2). Workflow and Gaggle are optional identity constraints; an engine run is
 // routed using its retained identity and current daemon ownership.
-type CancelRunRequest struct {
-	RunID    string `json:"-"`
-	Workflow string `json:"workflow,omitempty"`
-	Gaggle   string `json:"gaggle,omitempty"`
-	Actor    string `json:"actor,omitempty"`
-}
+type CancelRunRequest = apicontract.CancelRunRequest
 
 // CancelRunResult reports the cancel disposition. A refusal the operator can
 // act on (already terminal, not running under this daemon) is a 200 carrying a
@@ -293,11 +262,7 @@ type CancelRunRequest struct {
 // Phase; the engine reports its eventual terminal outcome. The CLI maps the
 // code to its own exit code the same way the
 // local file-drop path does.
-type CancelRunResult struct {
-	Phase string `json:"phase,omitempty"`
-	Code  string `json:"code,omitempty"`
-	Error string `json:"error,omitempty"`
-}
+type CancelRunResult = apicontract.CancelRunResult
 
 // CancelService cancels one live run through the Runner that owns it.
 type CancelService interface {
@@ -369,6 +334,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 	registerClaimVerificationRoute(router, config.claims, errorLog)
 	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
+	registerTriggerStatusRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
 	registerCancelRoute(router, config.cancels, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)
@@ -569,6 +535,16 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 				fmt.Sprintf("requestId must be no longer than %d bytes", MaxTriggerRequestIDBytes))
 			return
 		}
+		key, err := idempotencyKeyWithLimit(request, MaxTriggerRequestIDBytes)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, CodeIdempotencyKeyRequired, err.Error())
+			return
+		}
+		if bodyKey := strings.TrimSpace(input.RequestID); bodyKey != "" && bodyKey != key {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "requestId must match Idempotency-Key")
+			return
+		}
+		input.RequestID = key
 		// Pod containment (decision 005 ruling R3): a pod token proves "I am
 		// run X's stage pod". That authorizes minting a run in the gaggle X
 		// belongs to — apply-verdict's crowned-lander priority dispatch — and
@@ -597,12 +573,19 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 			input.PodScoped = true
 			input.PodRunID = runID
 		}
+		if principal, ok := PrincipalFromRequest(request); ok {
+			input.Actor = principal.Subject
+		}
 		response, err := triggers.Trigger(request.Context(), input)
 		if err != nil {
 			writePlaneError(w, errorLog, "ingest trigger", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, response)
+		status := http.StatusOK
+		if response.AcceptanceID != "" {
+			status = http.StatusAccepted
+		}
+		writeJSON(w, status, response)
 	})
 }
 
@@ -668,7 +651,8 @@ func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Lo
 			writeError(w, status, code, message)
 			return
 		}
-		if _, ok := requireIdempotencyKey(w, request); !ok {
+		key, ok := requireIdempotencyKey(w, request)
+		if !ok {
 			return
 		}
 		var input CancelRunRequest
@@ -676,6 +660,7 @@ func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Lo
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
+		input.IdempotencyKey = key
 		input.RunID = request.PathValue("run")
 		if strings.TrimSpace(input.RunID) == "" {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run is required")

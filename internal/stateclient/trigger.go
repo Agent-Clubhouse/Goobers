@@ -90,6 +90,7 @@ func (h *HTTP) PriorityTrigger(ctx context.Context, workflow, sourceRun string) 
 	}
 	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", requestID)
 	request.Header.Set("Accept", "application/json")
 
 	response, err := h.cfg.Client.Do(request)

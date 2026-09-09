@@ -48,7 +48,7 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort [--api <url>] <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
@@ -63,12 +63,17 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"combined with --pr because targeted pull-request runs are signal triggers.\n" +
 	"If a live `goobers up` daemon already\n" +
 	"holds the instance lock,\n" +
-	"delegates the trigger to it instead of failing (#343) — dispatched through\n" +
+	"submits through its API automatically — dispatched through\n" +
 	"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n" +
 	"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n" +
 	"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n" +
-	"escalated. A successful submission-only mode (such as --no-wait, once\n" +
-	"available) exits 0 because it does not observe a terminal phase.\n" +
+	"escalated. The submission-only --no-wait mode exits 0 on durable API\n" +
+	"acceptance, before dispatch.\n" +
+	"Without --no-wait, local API callers observe dispatch status then wait\n" +
+	"for the run's terminal journal phase. API failures never silently fall\n" +
+	"back to files. --no-api explicitly selects local execution/file delegation\n" +
+	"and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.\n" +
+	"Targeted --pr runs currently require --no-api from the instance root.\n" +
 	"--github-progress publishes the versioned hosted-progress contract to one\n" +
 	"GitHub Check Run whenever the journal sequence advances. It requires\n" +
 	"checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,\n" +
@@ -89,8 +94,10 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"drop, so a caller that does not share the daemon's filesystem — CI, a\n" +
 	"webhook receiver, another pod — can start a run at all. Nothing local is\n" +
 	"read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a\n" +
-	"retried submission return the original run instead of minting a second\n" +
-	"one, and the command returns once the daemon accepts the trigger because\n" +
+	"retry use the same acceptance identity. --api-timeout bounds remote validation\n" +
+	"and acceptance (default 30s; must be positive). A timed-out submission has\n" +
+	"unknown acceptance; retry the printed request ID with the same options.\n" +
+	"The command returns once the daemon accepts the trigger because\n" +
 	"a remote client cannot watch the run's journal.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
@@ -99,12 +106,14 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
+	noWait := fs.Bool("no-wait", false, "return after dispatch, or durable acceptance when using the daemon API")
 	force := fs.Bool("force", false, "bypass hourly and daily cadence budgets for this manual run")
 	githubProgress := fs.Bool("github-progress", false, "publish live progress to one GitHub Check Run (requires checks: write)")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
 	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
 	api := fs.String("api", "", "submit the trigger to this daemon API base URL (default $GOOBERS_DAEMON_API)")
+	noAPI := fs.Bool("no-api", false, "explicitly use local execution/file delegation instead of the daemon API")
+	apiTimeout := fs.Duration("api-timeout", remoteTriggerTimeout, "maximum duration for remote API validation and trigger acceptance")
 	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API submission (default: random)")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
@@ -129,7 +138,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	// filesystem, so the pending-triggers drop below would land where nothing
 	// sweeps it (#3279). Submit through the daemon's trigger plane instead;
 	// no instance root is required to ask a remote daemon to act.
-	endpoint, err := remoteDaemonAPIBase(*api)
+	endpoint, err := requestedDaemonAPI(*api, *noAPI)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -147,7 +156,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	if endpoint != "" {
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
-		return runRemoteTrigger(ctx, endpoint, target, *requestID, *noWait, stdout, stderr)
+		return runRemoteTrigger(ctx, endpoint, target, *requestID, *noWait, *apiTimeout, stdout, stderr)
 	}
 	root := "."
 	if fs.NArg() == 2 {
@@ -187,7 +196,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
-		return runDelegatedTrigger(ctx, l, target, root, *noWait, stdout, stderr)
+		return runLocalTriggerSubmission(ctx, l, target, root, *requestID, *noWait, *noAPI, *apiTimeout, stdout, stderr)
 	}
 	if *noWait && runProcessExits {
 		release()
@@ -635,6 +644,10 @@ func runFlagArgs(args []string) []string {
 	positionals := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if isNoAPIFlag(arg) {
+			flags = append(flags, arg)
+			continue
+		}
 		if arg == "--no-wait" || arg == "-no-wait" ||
 			strings.HasPrefix(arg, "--no-wait=") || strings.HasPrefix(arg, "-no-wait=") {
 			flags = append(flags, arg)
@@ -660,6 +673,7 @@ func runFlagArgs(args []string) []string {
 		}
 		if arg == "--pr" || arg == "-pr" ||
 			arg == "--api" || arg == "-api" ||
+			arg == "--api-timeout" || arg == "-api-timeout" ||
 			arg == "--request-id" || arg == "-request-id" {
 			flags = append(flags, arg)
 			if i+1 < len(args) {
@@ -669,6 +683,7 @@ func runFlagArgs(args []string) []string {
 			continue
 		}
 		if strings.HasPrefix(arg, "--api=") || strings.HasPrefix(arg, "-api=") ||
+			strings.HasPrefix(arg, "--api-timeout=") || strings.HasPrefix(arg, "-api-timeout=") ||
 			strings.HasPrefix(arg, "--request-id=") || strings.HasPrefix(arg, "-request-id=") {
 			flags = append(flags, arg)
 			continue
@@ -945,7 +960,7 @@ func delegateAbortToLiveDaemon(l instance.Layout, runID string, identity journal
 	}
 }
 
-const runCancelHelp = "Usage: goobers run cancel [--api=<url>] <run-id> [path]\n\n" +
+const runCancelHelp = "Usage: goobers run cancel [--api=<url> | --no-api] [--request-id=<id>] <run-id> [path]\n\n" +
 	"Ask the live `goobers up` daemon to stop a run it is actively executing\n" +
 	"(default path \".\"): it cancels the active stage, tears down the run\n" +
 	"worktree, releases the backlog claim so the item can be re-queued, and\n" +
@@ -954,6 +969,16 @@ const runCancelHelp = "Usage: goobers run cancel [--api=<url>] <run-id> [path]\n
 	"(CancelWorkflow) instead, with no live daemon required. Use `run abort`\n" +
 	"instead when no daemon is running (that path finalizes a stuck run's\n" +
 	"journal directly).\n" +
+	"A live local daemon is contacted through its HTTP API automatically.\n" +
+	"API failures never silently fall back to file delegation. Use --no-api\n" +
+	"to explicitly select local cancellation/file delegation; this overrides\n" +
+	"$GOOBERS_DAEMON_API and cannot be combined with --api.\n" +
+	"API cancellation uses durable, actor-and-target-bound request identities.\n" +
+	"Reuse --request-id after an uncertain response; without it an ID is\n" +
+	"generated and printed on API errors. Completed receipts are retained for\n" +
+	"at least seven days. An unfinished receipt is never silently re-executed:\n" +
+	"retry the same ID to reconcile, or inspect the run before a new request.\n" +
+	"--request-id requires the API and is not supported with --no-api.\n" +
 	"With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that\n" +
 	"daemon's authenticated HTTP API instead of the local pending-cancels\n" +
 	"drop, so a caller that does not share the daemon's filesystem can stop a\n" +
@@ -970,6 +995,8 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run cancel")
 	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
+	noAPI := fs.Bool("no-api", false, "explicitly use local cancellation/file delegation instead of the daemon API")
+	requestID := fs.String("request-id", "", "reuse the same cancellation identity for an API retry")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -983,13 +1010,13 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 
-	endpoint, err := remoteDaemonAPIBase(*api)
+	endpoint, err := requestedDaemonAPI(*api, *noAPI)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	if endpoint != "" {
-		return runRemoteCancel(endpoint, runID, "cancelled", stdout, stderr)
+		return runRemoteCancelWithKey(endpoint, runID, "cancelled", *requestID, stdout, stderr)
 	}
 
 	l := instance.NewLayout(root)
@@ -1000,6 +1027,13 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	runID, err = resolveRunID(l, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if handled, code := tryLocalAPICancel(l, runID, *requestID, *noAPI, stdout, stderr); handled {
+		return code
+	}
+	if *requestID != "" {
+		pf(stderr, "error: --request-id requires daemon API cancellation; no live API selected\n")
 		return 2
 	}
 	dir, err := l.FindRunDir(runID)
@@ -1038,6 +1072,11 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	return runLocalCancelRequest(l, identity, *noAPI, stdout, stderr)
+}
+
+func runLocalCancelRequest(l instance.Layout, identity journal.RunIdentity, noAPI bool, stdout, stderr io.Writer) int {
+	runID := identity.RunID
 	// A cancel is inherently a live operation: without a running daemon there is
 	// no in-flight run to stop. Point the operator at the offline repair path
 	// rather than silently doing nothing (or racing a daemon that just exited).
@@ -1050,6 +1089,10 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: no `goobers up` daemon is running, so run %s is not executing; "+
 			"use `goobers run abort %s` to finalize a stuck run's journal\n", runID, runID)
 		return 1
+	}
+	if !noAPI {
+		pf(stderr, "error: daemon state changed while resolving the run; retry cancellation through the API, or use --no-api for explicit file delegation\n")
+		return 2
 	}
 
 	requestID, err := writeCancelRequest(l.SchedulerDir(), cancelRequest{

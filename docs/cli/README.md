@@ -3207,7 +3207,7 @@ $ goobers roots discover --json
 trigger a run manually; --force bypasses cadence budgets
 
 ~~~text
-Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
@@ -3223,12 +3223,17 @@ manual run. All other run conditions remain enforced. --force cannot be
 combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
-delegates the trigger to it instead of failing (#343) — dispatched through
+submits through its API automatically — dispatched through
 the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
-escalated. A successful submission-only mode (such as --no-wait, once
-available) exits 0 because it does not observe a terminal phase.
+escalated. The submission-only --no-wait mode exits 0 on durable API
+acceptance, before dispatch.
+Without --no-wait, local API callers observe dispatch status then wait
+for the run's terminal journal phase. API failures never silently fall
+back to files. --no-api explicitly selects local execution/file delegation
+and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.
+Targeted --pr runs currently require --no-api from the instance root.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires
 checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,
@@ -3249,8 +3254,10 @@ daemon's authenticated HTTP API instead of the local pending-triggers
 drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
-retried submission return the original run instead of minting a second
-one, and the command returns once the daemon accepts the trigger because
+retry use the same acceptance identity. --api-timeout bounds remote validation
+and acceptance (default 30s; must be positive). A timed-out submission has
+unknown acceptance; retry the printed request ID with the same options.
+The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal.
 ~~~
 
@@ -3299,7 +3306,7 @@ $ goobers run abort <run-id>
 cancel a live in-flight run via the daemon
 
 ~~~text
-Usage: goobers run cancel [--api=<url>] <run-id> [path]
+Usage: goobers run cancel [--api=<url> | --no-api] [--request-id=<id>] <run-id> [path]
 
 Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
@@ -3309,6 +3316,16 @@ journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
 (CancelWorkflow) instead, with no live daemon required. Use `run abort`
 instead when no daemon is running (that path finalizes a stuck run's
 journal directly).
+A live local daemon is contacted through its HTTP API automatically.
+API failures never silently fall back to file delegation. Use --no-api
+to explicitly select local cancellation/file delegation; this overrides
+$GOOBERS_DAEMON_API and cannot be combined with --api.
+API cancellation uses durable, actor-and-target-bound request identities.
+Reuse --request-id after an uncertain response; without it an ID is
+generated and printed on API errors. Completed receipts are retained for
+at least seven days. An unfinished receipt is never silently re-executed:
+retry the same ID to reconcile, or inspect the run before a new request.
+--request-id requires the API and is not supported with --no-api.
 With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that
 daemon's authenticated HTTP API instead of the local pending-cancels
 drop, so a caller that does not share the daemon's filesystem can stop a

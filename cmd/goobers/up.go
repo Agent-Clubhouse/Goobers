@@ -335,12 +335,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// below), every one of these four has already flipped true too, in this
 	// same, sequential, error-returns-early function body.
 	var (
-		configLoaded    atomic.Bool  // instance config + scheduler wiring validated
-		stateOpen       atomic.Bool  // scheduler's run-tracking state reconciled from disk
-		resumeComplete  atomic.Bool  // crash-resume of interrupted runs finished
-		sweepsStarted   atomic.Bool  // initial sweeps ran once and their periodic tickers are live
-		schedulerTicked atomic.Bool  // scheduler's heartbeat ticked at least once (liveness grace)
-		lastTickAtNanos atomic.Int64 // in-memory heartbeat /healthz reads (#3806); unix nanos
+		apiListening            atomic.Bool
+		lastTriggerSweepAtNanos atomic.Int64
+		configLoaded            atomic.Bool  // instance config + scheduler wiring validated
+		stateOpen               atomic.Bool  // scheduler's run-tracking state reconciled from disk
+		resumeComplete          atomic.Bool  // crash-resume of interrupted runs finished
+		sweepsStarted           atomic.Bool  // initial sweeps ran once and their periodic tickers are live
+		schedulerTicked         atomic.Bool  // scheduler's heartbeat ticked at least once (liveness grace)
+		lastTickAtNanos         atomic.Int64 // in-memory heartbeat /healthz reads (#3806); unix nanos
 	)
 	stopDaemon := func() {
 		ready.Store(false)
@@ -746,11 +748,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// blocked.json and the cursors), so a pod's compare-and-swap and a
 	// runner-driven run's in-process update contend on one lock rather than
 	// racing across two.
-	statePlane, err := newDaemonStateService(l)
+	durableTriggers, statePlane, cancelPlane, err := newDaemonCoordinationServices(l, triggerPlane, setup.RunnerRegistry, setup.InstanceLog)
 	if err != nil {
-		pf(stderr, "error: initialize scheduler-state plane: %v\n", err)
+		pf(stderr, "error: initialize daemon coordination planes: %v\n", err)
 		return 1
 	}
+	defer func() { _ = durableTriggers.queue.Close() }()
+	defer func() { _ = cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
 	// stage start through the same capability-gated machinery the local
@@ -797,14 +801,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// sweep's live Runner path and retained engine runs through CancelWorkflow.
 	// Only the local path uses the slot release attached below; the engine
 	// releases its slot when its existing settlement path observes completion.
-	cancelPlane := newDaemonCancelService(setup.RunnerRegistry)
 	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)),
 		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
-		httpapi.WithTriggerService(triggerPlane),
+		httpapi.WithTriggerService(durableTriggers),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCancelService(cancelPlane),
 		httpapi.WithCredentialService(credentialPlane),
@@ -911,15 +914,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// a named type, not two inline closures — so they are directly unit
 	// testable without a real daemon.
 	probes := &daemonProbeState{
-		ready:           &ready,
-		configLoaded:    &configLoaded,
-		stateOpen:       &stateOpen,
-		resumeComplete:  &resumeComplete,
-		sweepsStarted:   &sweepsStarted,
-		schedulerTicked: &schedulerTicked,
-		lastTickAtNanos: &lastTickAtNanos,
-		livenessTimeout: livenessTimeout,
-		now:             time.Now,
+		apiListening:            &apiListening,
+		lastTriggerSweepAtNanos: &lastTriggerSweepAtNanos,
+		ready:                   &ready,
+		configLoaded:            &configLoaded,
+		stateOpen:               &stateOpen,
+		resumeComplete:          &resumeComplete,
+		sweepsStarted:           &sweepsStarted,
+		schedulerTicked:         &schedulerTicked,
+		lastTickAtNanos:         &lastTickAtNanos,
+		livenessTimeout:         livenessTimeout,
+		now:                     time.Now,
 	}
 	handler = httpapi.WrapWithProbes(handler, probes.liveness, probes.readiness)
 	var apiServerOpts []httpapi.ServerOption
@@ -1198,6 +1203,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: start HTTP API: %v\n", err)
 		return 1
 	}
+	apiListening.Store(true)
+	defer apiListening.Store(false)
 	if webhookServer != nil {
 		if err := runStartupPhase(stdout, tracker, "webhook-listener-start", webhookServer.Address(), webhookServer.Start); err != nil {
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
@@ -1321,7 +1328,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
-	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
+	triggerSweep := func() error {
+		err := errors.Join(durableTriggers.Drain(ctx), sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
+		return recordTriggerSweepProgress(&lastTriggerSweepAtNanos, err, time.Now())
+	}
+	triggerSweepErrors.report(triggerSweep())
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 	// #831's daemon-side half: cancel one live in-flight run on operator request
@@ -1535,7 +1546,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case <-delegationTicker.C:
-				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
+				triggerSweepErrors.report(triggerSweep())
 			}
 		}
 	}()

@@ -16,6 +16,11 @@ import (
 )
 
 type wireFixtures struct {
+	TriggerRequest           TriggerRequest                             `json:"triggerRequest"`
+	TriggerResponse          TriggerResponse                            `json:"triggerResponse"`
+	TriggerStatus            TriggerStatusResponse                      `json:"triggerStatus"`
+	CancelRequest            CancelRunRequest                           `json:"cancelRequest"`
+	CancelResult             CancelRunResult                            `json:"cancelResult"`
 	QueueEligibility         readservice.QueueEligibilityView           `json:"queueEligibility"`
 	Health                   readservice.Health                         `json:"health"`
 	Instance                 readservice.Instance                       `json:"instance"`
@@ -49,6 +54,11 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "triggerRequest", scriptType: "TriggerRequest"},
+	{name: "triggerResponse", scriptType: "TriggerResponse"},
+	{name: "triggerStatus", scriptType: "TriggerStatusResponse"},
+	{name: "cancelRequest", scriptType: "CancelRunRequest"},
+	{name: "cancelResult", scriptType: "CancelRunResult"},
 	{name: "queueEligibility", scriptType: "QueueEligibilityView"},
 	{name: "health", scriptType: "Health"},
 	{name: "instance", scriptType: "Instance"},
@@ -290,6 +300,11 @@ func newWireFixtures() wireFixtures {
 	}
 
 	return wireFixtures{
+		TriggerRequest:   TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
+		TriggerResponse:  TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
+		TriggerStatus:    TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
+		CancelRequest:    CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},
+		CancelResult:     CancelRunResult{Code: "cancellation_requested"},
 		QueueEligibility: queueEligibilityWireFixture(timestamp),
 		Health: readservice.Health{
 			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},

@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -57,6 +59,7 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 		gotPath    string
 		gotMethod  string
 		gotAuth    string
+		gotKey     string
 		gotRequest httpapi.TriggerRequest
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +67,7 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 		if serveRemoteRootFixture(w, r) {
 			return
 		}
+		gotKey = r.Header.Get(httpapi.HeaderIdempotencyKey)
 		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
 			t.Errorf("decode trigger request: %v", err)
 		}
@@ -86,11 +90,67 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 		t.Fatalf("authorization = %q", gotAuth)
 	}
 	want := httpapi.TriggerRequest{Gaggle: "example", Workflow: "nightly", RequestID: "delivery-1", Force: true}
+	if gotKey != want.RequestID {
+		t.Fatalf("Idempotency-Key = %q, want %q", gotKey, want.RequestID)
+	}
 	if gotRequest != want {
 		t.Fatalf("trigger request = %+v, want %+v", gotRequest, want)
 	}
 	if !strings.Contains(stdout, "created run run-remote-1") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestRunRemoteTriggerNoWaitSucceedsOnDurableAcceptance(t *testing.T) {
+	unsetRunContext(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(httpapi.TriggerResponse{AcceptanceID: "trigger-durable", State: "accepted"})
+	}))
+	t.Cleanup(server.Close)
+	code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "delivery", "--no-wait")
+	if code != 0 || !strings.Contains(stdout, "accepted trigger trigger-durable") || !strings.Contains(stdout, "state=accepted") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "created run") {
+		t.Fatalf("acceptance misreported as dispatch: %q", stdout)
+	}
+}
+
+func TestRunRemoteTriggerHonorsConfiguredAcceptanceTimeout(t *testing.T) {
+	unsetRunContext(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-t.Context().Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	started := time.Now()
+	code, _, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "timeout-delivery", "--api-timeout", "250ms", "--no-wait")
+	if code != 2 || !strings.Contains(stderr, "acceptance is unknown") || !strings.Contains(stderr, `--request-id "timeout-delivery"`) {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	if time.Since(started) > 5*time.Second {
+		t.Fatal("configured short deadline used the old 30-second timeout")
+	}
+}
+
+func TestRunRemoteTriggerRejectsNonpositiveAPITimeout(t *testing.T) {
+	unsetRunContext(t)
+	for _, value := range []string{"0s", "-1s"} {
+		code, _, stderr := runArgs(t, "run", "example/nightly", "--api", "http://127.0.0.1:1", "--api-timeout="+value)
+		if code != 2 || !strings.Contains(stderr, "--api-timeout must be positive") {
+			t.Fatalf("exit=%d stderr=%q", code, stderr)
+		}
 	}
 }
 

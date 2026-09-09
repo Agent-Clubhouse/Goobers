@@ -1468,17 +1468,10 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 // skip the instance lock entirely, so two concurrent processes (or a manual
 // run against a live `up` daemon) could mutate scheduler/run-condition state
 // and the shared workcopies/ tree at once. Now it takes the same lock `up`
-// does — this test's lock holder isn't a real daemon sweeping delegation
-// requests, so the attempt still surfaces as a failure, just via #343's
-// delegation timeout rather than the pre-#343 immediate lock-conflict error
-// (see TestRunLockConflictDelegatesRatherThanFailingImmediately in
-// lock_test.go for that distinction, and TestRunDelegatesToLiveDaemon in
-// rundelegate_test.go for the real success path against a live daemon).
+// does. This holder is not a daemon, so automatic API routing refuses without
+// writing delegation files. lock_test.go covers the explicit --no-api fallback;
+// rundelegate_test.go covers success against a real live daemon.
 func TestRunTakesSameLockAsUp(t *testing.T) {
-	prevTimeout := triggerDelegationTimeout
-	triggerDelegationTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { triggerDelegationTimeout = prevTimeout })
-
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
 
@@ -1489,11 +1482,14 @@ func TestRunTakesSameLockAsUp(t *testing.T) {
 	defer release()
 
 	code, _, stderr := runArgs(t, "run", "default-implement", root)
-	if code != 1 {
-		t.Fatalf("code = %d, want 1, stderr = %q", code, stderr)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "timed out") {
-		t.Fatalf("stderr = %q, want a delegation timeout", stderr)
+	if !strings.Contains(stderr, "no live daemon API") {
+		t.Fatalf("stderr = %q, want non-daemon lock refusal", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(l.SchedulerDir(), pendingTriggersDir)); !os.IsNotExist(err) {
+		t.Fatalf("unexpected file delegation without --no-api: %v", err)
 	}
 }
 
