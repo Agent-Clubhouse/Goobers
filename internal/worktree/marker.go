@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/durability"
@@ -26,14 +27,16 @@ const (
 // enough state for Manager.Reap to tell a live run apart from one whose
 // owning process died mid-stage.
 type marker struct {
-	RunID          string `json:"run_id"`
-	OwnerRunID     string `json:"owner_run_id,omitempty"`
-	Directory      string `json:"directory,omitempty"`
-	Branch         string `json:"branch,omitempty"`
-	StartRef       string `json:"start_ref,omitempty"`
-	AssetPathGuard bool   `json:"asset_path_guard,omitempty"`
-	Writer         string `json:"writer,omitempty"`
-	PID            int    `json:"pid"`
+	RepositoryDigest string `json:"repository_digest,omitempty"`
+	RunID            string `json:"run_id"`
+	OwnerRunID       string `json:"owner_run_id,omitempty"`
+	Gaggle           string `json:"gaggle,omitempty"`
+	Directory        string `json:"directory,omitempty"`
+	Branch           string `json:"branch,omitempty"`
+	StartRef         string `json:"start_ref,omitempty"`
+	AssetPathGuard   bool   `json:"asset_path_guard,omitempty"`
+	Writer           string `json:"writer,omitempty"`
+	PID              int    `json:"pid"`
 	// PIDStartedAt is PID's own OS-reported start time at marker-creation
 	// time (#2052), best-effort — empty when proc.StartTime couldn't
 	// determine it (unsupported platform/kernel, or a transient read
@@ -77,6 +80,9 @@ func (m marker) retainedAt() time.Time {
 }
 
 func writeMarker(path string, m marker) error {
+	if err := validateMarkerGaggle(m.Gaggle); err != nil {
+		return err
+	}
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("worktree: encode marker: %w", err)
@@ -145,5 +151,15 @@ func readMarker(path string) (marker, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return marker{}, fmt.Errorf("worktree: decode marker %s: %w", path, err)
 	}
+	if err := validateMarkerGaggle(m.Gaggle); err != nil {
+		return marker{}, err
+	}
 	return m, nil
+}
+
+func validateMarkerGaggle(gaggle string) error {
+	if len(gaggle) > 1024 || strings.ContainsAny(gaggle, "\x00\r\n") {
+		return fmt.Errorf("worktree: invalid bounded recovery gaggle")
+	}
+	return nil
 }

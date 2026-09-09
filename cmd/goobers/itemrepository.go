@@ -76,14 +76,15 @@ func recordItemRepository(annotations stageAnnotator, runID, itemID, kind string
 		Type:  journal.EventRunnerAnnotation,
 		RunID: runID,
 		Runner: map[string]any{
-			"annotation": itemRepoAnnotation,
-			"key":        itemRepoKey(runID, itemID),
-			"itemId":     itemID,
-			"kind":       kind,
-			"provider":   string(repo.Provider),
-			"owner":      repo.Owner,
-			"project":    repo.Project,
-			"name":       repo.Name,
+			"annotation":    itemRepoAnnotation,
+			"key":           itemRepoKey(runID, itemID),
+			"itemId":        itemID,
+			"kind":          kind,
+			"provider":      string(repo.Provider),
+			"owner":         repo.Owner,
+			"project":       repo.Project,
+			"name":          repo.Name,
+			"repositoryKey": repo.CanonicalKey(),
 		},
 	})
 }

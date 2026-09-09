@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -19,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/localscheduler"
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
@@ -51,17 +53,22 @@ func TestKitModeFollowsTheAttempt(t *testing.T) {
 // plane (a scripted checkout credential), accepts journal-plane emits, and
 // captures the surrender PUT so the surrendered document can be read back.
 type podPlanes struct {
-	url            string
-	checkoutToken  string
-	mu             sync.Mutex
-	surrendered    []byte
-	surrenderPath  string
-	credentialReqs []string
+	url             string
+	checkoutToken   string
+	mu              sync.Mutex
+	surrendered     []byte
+	surrenderPath   string
+	credentialReqs  []string
+	recoveryUploads int
 }
 
 func newPodPlanes(t *testing.T, checkoutToken string) *podPlanes {
 	t.Helper()
 	p := &podPlanes{checkoutToken: checkoutToken}
+	staging := t.TempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, staging)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if serveLocalExecutionPolicy(w, r) {
 			return
@@ -70,6 +77,19 @@ func newPodPlanes(t *testing.T, checkoutToken string) *podPlanes {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		switch {
+		case r.URL.Path == "/api/v1/claims/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"entries": []localscheduler.ClaimEntry{{
+				RunID: os.Getenv(dispatcher.EnvRunID), Gaggle: os.Getenv(dispatcher.EnvGaggle),
+				ItemID: "42", ExpiresAt: time.Now().Add(time.Hour),
+			}}})
+		case strings.HasSuffix(r.URL.Path, "/recovery") && r.Method == http.MethodPost:
+			if len(body) < 4 || r.Header.Get("Authorization") != "Bearer "+os.Getenv(dispatcher.EnvPodToken) {
+				t.Error("invalid supervisor recovery upload")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			p.recoveryUploads++
+			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == apicontract.CredentialResolvePath:
 			p.credentialReqs = append(p.credentialReqs, string(body))
 			var req struct {
@@ -295,6 +315,9 @@ func TestReviewPodComputesTheReviewerDiffFromTheAppliedDelta(t *testing.T) {
 
 	planes.mu.Lock()
 	defer planes.mu.Unlock()
+	if planes.recoveryUploads != 1 {
+		t.Fatalf("review pod surrendered without recovery upload: %d", planes.recoveryUploads)
+	}
 	var surrendered dispatcher.SurrenderedResult
 	if err := json.Unmarshal(planes.surrendered, &surrendered); err != nil {
 		t.Fatalf("decode surrendered document %q: %v", planes.surrendered, err)

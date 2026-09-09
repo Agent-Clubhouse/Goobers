@@ -87,6 +87,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		"claimRecover":  true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
 		"stageSurrender": true, "gaggleStatePut": true,
+		// Uploading recovery state transfers durable custody during execution;
+		// it is not the read-only recovery archive download route.
+		"runRecoveryPublish": true,
 		// The cross-run journal read plane (#3880): POSTs because each carries
 		// a request body naming the asking run, the gaggle and the window, and
 		// machine-seam-in-flight because a stage pod calls them mid-run to

@@ -50,7 +50,11 @@ func finalizeTerminalRunWithClaimMarkers(
 }
 
 func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.InstanceLog, wtMgr *worktree.Manager, runID string, release func(instance.Layout, *journal.InstanceLog, string) error) error {
+	if err := installTerminalRecoveryGuard(l, wtMgr); err != nil {
+		return err
+	}
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
+	worktreeErr = errors.Join(worktreeErr, renewTerminalRecovery(l, runID))
 
 	var annotationErr error
 	annotationLog := log

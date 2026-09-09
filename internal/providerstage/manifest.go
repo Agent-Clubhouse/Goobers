@@ -420,6 +420,16 @@ var commands = map[string]Command{
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so branch publication fails at runtime"),
 		},
 	},
+	"recovery-resume": {
+		Capabilities: []CapabilityUse{
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so recovery cannot fetch current main for restoration"),
+		},
+	},
+	"recovery-restore": {
+		Capabilities: []CapabilityUse{
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so stage recovery cannot fetch current main for restoration"),
+		},
+	},
 	"preflight-repo-write": {
 		Capabilities: []CapabilityUse{
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so the repository-write preflight check fails at runtime"),

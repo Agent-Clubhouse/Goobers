@@ -290,6 +290,11 @@ jobs:
         timeout-minutes: 20
         shell: bash
         run: |
+          # Playwright needs Ubuntu libraries, not the runner's third-party
+          # Chrome feed. Preserve apt signature/hash checks and fail closed
+          # if the hosted image no longer provides its Ubuntu source file.
+          test -s /etc/apt/sources.list.d/ubuntu.sources
+          sudo install -m 0644 .github/apt/ubuntu-only.conf /etc/apt/apt.conf.d/99goobers-ubuntu-only
           retry_network_command() {
             local label="$1"
             shift
@@ -1473,6 +1478,8 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: |
+          test -s /etc/apt/sources.list.d/ubuntu.sources
+          sudo install -m 0644 .github/apt/ubuntu-only.conf /etc/apt/apt.conf.d/99goobers-ubuntu-only
           sudo sed -i \
             's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
             /etc/apt/sources.list.d/ubuntu.sources || true
