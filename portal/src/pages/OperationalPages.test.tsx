@@ -625,8 +625,10 @@ async function expandAttentionRuns(
   user: ReturnType<typeof userEvent.setup>,
   section: HTMLElement,
 ): Promise<void> {
-  for (const button of within(section).queryAllByRole("button", { name: "Show runs" })) {
+  let button = within(section).queryAllByRole("button", { name: "Show runs" })[0];
+  while (button) {
     await user.click(button);
+    button = within(section).queryAllByRole("button", { name: "Show runs" })[0];
   }
 }
 
