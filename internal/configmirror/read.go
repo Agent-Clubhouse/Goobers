@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -21,7 +22,11 @@ type Snapshot struct {
 
 // Open reads a bounded archive without acquiring the daemon's publication lock.
 func Open(directory string) (*Snapshot, error) {
-	f, err := os.Open(filepath.Join(directory, SnapshotName))
+	return openSnapshot(filepath.Join(directory, SnapshotName))
+}
+
+func openSnapshot(path string) (*Snapshot, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +59,7 @@ func (s *Snapshot) Close() error { return s.file.Close() }
 
 // Extract writes only new files beneath destination. Callers must extract into
 // a private staging directory and publish it only after this method succeeds.
-// No paths, links, or executable modes from the archive are trusted.
+// Links and special mode bits are rejected; ordinary source permissions survive.
 func (s *Snapshot) Extract(ctx context.Context, destination string) error {
 	root, err := os.OpenRoot(destination)
 	if err != nil {
@@ -63,6 +68,7 @@ func (s *Snapshot) Extract(ctx context.Context, destination string) error {
 	defer func() { _ = root.Close() }()
 	var total int64
 	seen := make(map[string]bool, len(s.archive.File))
+	var directories []*zip.File
 	for _, entry := range s.archive.File {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -70,8 +76,15 @@ func (s *Snapshot) Extract(ctx context.Context, destination string) error {
 		if !validEntry(entry) {
 			return errors.New("invalid config mirror entry")
 		}
-		if err := reserveSnapshotName(seen, entry.Name); err != nil {
+		if err := reserveSnapshotName(seen, strings.TrimSuffix(entry.Name, "/")); err != nil {
 			return err
+		}
+		if entry.Mode().IsDir() {
+			if err := root.MkdirAll(strings.TrimSuffix(entry.Name, "/"), 0o700); err != nil {
+				return err
+			}
+			directories = append(directories, entry)
+			continue
 		}
 		n, err := extractEntry(root, entry)
 		total += n
@@ -85,17 +98,40 @@ func (s *Snapshot) Extract(ctx context.Context, destination string) error {
 	if !seen["instance.yaml"] {
 		return errors.New("config mirror has no instance document")
 	}
+	// Apply deepest directories first, after writing all descendants. Source
+	// directories may be read-only, and archive order is not authoritative.
+	sort.Slice(directories, func(i, j int) bool { return len(directories[i].Name) > len(directories[j].Name) })
+	for _, entry := range directories {
+		if err := root.Chmod(strings.TrimSuffix(entry.Name, "/"), entry.Mode().Perm()); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func validEntry(entry *zip.File) bool {
-	return validSnapshotName(entry.Name) && entry.Mode().IsRegular() && entry.UncompressedSize64 <= MaxFileBytes
+	if !validSnapshotMode(entry.Mode()) || entry.UncompressedSize64 > MaxFileBytes {
+		return false
+	}
+	if entry.Mode().IsDir() {
+		return strings.HasSuffix(entry.Name, "/") && entry.UncompressedSize64 == 0 && strings.HasPrefix(entry.Name, "config/") && validSnapshotName(strings.TrimSuffix(entry.Name, "/"))
+	}
+	return entry.Name != "config" && validSnapshotName(entry.Name)
 }
 
 func reserveSnapshotName(seen map[string]bool, name string) error {
 	key := strings.ToLower(name)
 	if !validSnapshotName(name) || seen[key] {
 		return errors.New("invalid or duplicate config mirror path")
+	}
+	for prefix := name; prefix != "."; prefix = path.Dir(prefix) {
+		folded, exact := "fold:"+strings.ToLower(prefix), "exact:"+prefix
+		if seen[folded] && !seen[exact] {
+			return errors.New("config mirror path components differ only by case")
+		}
+	}
+	for prefix := name; prefix != "."; prefix = path.Dir(prefix) {
+		seen["fold:"+strings.ToLower(prefix)], seen["exact:"+prefix] = true, true
 	}
 	seen[key] = true
 	return nil
@@ -105,7 +141,7 @@ func validSnapshotName(name string) bool {
 	if !fs.ValidPath(name) || len(name) > 4096 || strings.ContainsAny(name, "\\:*?<>|\"") || strings.IndexFunc(name, func(r rune) bool { return r < 32 }) >= 0 {
 		return false
 	}
-	if name != "instance.yaml" && !strings.HasPrefix(name, "config/") {
+	if name != "instance.yaml" && name != "config" && !strings.HasPrefix(name, "config/") {
 		return false
 	}
 	for _, segment := range strings.Split(name, "/") {
@@ -138,9 +174,10 @@ func extractEntry(root *os.Root, entry *zip.File) (int64, error) {
 		return 0, err
 	}
 	n, copyErr := io.Copy(f, io.LimitReader(reader, MaxFileBytes+1))
+	modeErr := f.Chmod(entry.Mode().Perm())
 	closeErr := f.Close()
 	if n > MaxFileBytes {
 		return n, errors.New("config mirror file exceeds extraction limit")
 	}
-	return n, errors.Join(copyErr, closeErr)
+	return n, errors.Join(copyErr, modeErr, closeErr)
 }

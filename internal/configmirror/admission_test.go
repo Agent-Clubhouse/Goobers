@@ -56,10 +56,11 @@ func TestSnapshotNameAdmissionRejectsCaseCollisionsBeforeWriting(t *testing.T) {
 	if err := reserveSnapshotName(seen, "config/Instructions.md"); err != nil {
 		t.Fatal(err)
 	}
+	before := len(seen)
 	if err := reserveSnapshotName(seen, "config/instructions.md"); err == nil {
 		t.Fatal("accepted a case-colliding path")
 	}
-	if len(seen) != 1 {
+	if len(seen) != before {
 		t.Fatalf("invalid path changed admission index: %v", seen)
 	}
 }

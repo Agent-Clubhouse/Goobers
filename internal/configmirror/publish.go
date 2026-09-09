@@ -32,6 +32,21 @@ const (
 // A fixed staging filename, protected by a writer lock, also reclaims a prior
 // crashed publication without accumulating unbounded temporary directories.
 func Publish(ctx context.Context, destination, configDir string, instanceDocument []byte) error {
+	return publish(ctx, destination, configDir, instanceDocument, nil)
+}
+
+// PublishValidated validates the captured bytes in a private extracted tree
+// before replacing the public snapshot. This lets the daemon compare the exact
+// captured generation with its applied digest rather than re-reading a source
+// tree that could change during capture.
+func PublishValidated(ctx context.Context, destination, configDir string, instanceDocument []byte, validate func(string) error) error {
+	if validate == nil {
+		return errors.New("config mirror requires snapshot validation")
+	}
+	return publish(ctx, destination, configDir, instanceDocument, validate)
+}
+
+func publish(ctx context.Context, destination, configDir string, instanceDocument []byte, validate func(string) error) error {
 	if !filepath.IsAbs(destination) || !filepath.IsAbs(configDir) {
 		return errors.New("config mirror requires absolute paths")
 	}
@@ -67,6 +82,11 @@ func Publish(ctx context.Context, destination, configDir string, instanceDocumen
 	}
 	if err := f.Close(); err != nil {
 		return err
+	}
+	if validate != nil {
+		if err := validateStagedSnapshot(ctx, destination, staged, validate); err != nil {
+			return err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -107,21 +127,29 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.IsDir() {
-			return nil
+		name := "config/" + path
+		if path == "." {
+			name = "config"
 		}
-		if err := reserveSnapshotName(seen, "config/"+path); err != nil {
+		if err := reserveSnapshotName(seen, name); err != nil {
 			return err
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
-		if !info.Mode().IsRegular() {
+		if !validSnapshotMode(info.Mode()) {
 			return fmt.Errorf("config mirror refuses non-regular file %q", path)
 		}
 		count++
-		if count > MaxFiles || info.Size() > MaxFileBytes || total+info.Size() > MaxSnapshotBytes {
+		if count > MaxFiles {
+			return errors.New("config mirror snapshot exceeds safety limits")
+		}
+		if entry.IsDir() {
+			_, err := archive.CreateHeader(snapshotHeader(name+"/", info.Mode()))
+			return err
+		}
+		if info.Size() > MaxFileBytes || total+info.Size() > MaxSnapshotBytes {
 			return errors.New("config mirror snapshot exceeds safety limits")
 		}
 		file, err := root.Open(path)
@@ -135,10 +163,10 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 		if err != nil {
 			return err
 		}
-		if !opened.Mode().IsRegular() {
+		if !opened.Mode().IsRegular() || !validSnapshotMode(opened.Mode()) {
 			return fmt.Errorf("config mirror opened a non-regular file %q", path)
 		}
-		writer, err := archive.CreateHeader(&zip.FileHeader{Name: "config/" + path, Method: zip.Store})
+		writer, err := archive.CreateHeader(snapshotHeader(name, opened.Mode()))
 		if err != nil {
 			return err
 		}
@@ -156,10 +184,20 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 }
 
 func writeEntry(archive *zip.Writer, name string, content io.Reader) error {
-	w, err := archive.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+	w, err := archive.CreateHeader(snapshotHeader(name, 0o640))
 	if err != nil {
 		return err
 	}
 	_, err = io.Copy(w, content)
 	return err
+}
+
+func snapshotHeader(name string, mode fs.FileMode) *zip.FileHeader {
+	header := &zip.FileHeader{Name: name, Method: zip.Store}
+	header.SetMode(mode)
+	return header
+}
+
+func validSnapshotMode(mode fs.FileMode) bool {
+	return mode & ^(fs.ModePerm|fs.ModeDir) == 0
 }
