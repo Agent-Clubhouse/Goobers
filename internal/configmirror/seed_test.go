@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ func TestSeedPublishesOnlyValidatedInstanceAndRetryPreservesGeneration(t *testin
 	}
 	destination := filepath.Join(t.TempDir(), "worker")
 	want := errors.New("invalid captured config")
-	if err := Seed(t.Context(), mirror, destination, func(string) error { return want }); !errors.Is(err, want) {
+	if err := Seed(t.Context(), mirror, destination, func(string) error { return want }); !errors.Is(err, want) || !strings.Contains(err.Error(), "validate extracted seed") {
 		t.Fatalf("validation failure=%v", err)
 	}
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
@@ -33,6 +34,9 @@ func TestSeedPublishesOnlyValidatedInstanceAndRetryPreservesGeneration(t *testin
 	}
 	if err := Seed(t.Context(), mirror, destination, validate); err != nil {
 		t.Fatal(err)
+	}
+	if err := Seed(t.Context(), mirror, destination, func(string) error { return want }); !errors.Is(err, want) || !strings.Contains(err.Error(), "validate existing seed") {
+		t.Fatalf("retry validation failure lost phase or cause: %v", err)
 	}
 	writeTestFile(t, filepath.Join(config, "instructions.md"), "second")
 	if err := Publish(t.Context(), mirror, config, []byte("replacement")); err != nil {
