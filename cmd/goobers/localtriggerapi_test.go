@@ -56,6 +56,7 @@ func TestRunAutomaticallyUsesLocalTriggerAPI(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(status)
 			})
 			layout := instance.NewLayout(root)
+			writeFileContent(t, filepath.Join(root, instance.RootIdentityFileName), "0123456789abcdef0123456789abcdef\n")
 			createTelemetryRetentionRun(t, layout, "local-trigger-run", time.Now())
 			release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, time.Minute, nil)
 			if err != nil {

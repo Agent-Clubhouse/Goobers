@@ -50,7 +50,7 @@ func runLocalTriggerSubmission(ctx context.Context, layout instance.Layout, targ
 	}
 	admission, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := prepareRemoteRoot(admission, endpoint, stderr); err != nil {
+	if err := prepareLocalDaemonRoot(admission, layout, endpoint, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

@@ -354,11 +354,15 @@ func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) i
 }
 
 func runRemoteCancelWithKey(endpoint, runID, action, key string, stdout, stderr io.Writer) int {
+	return runRemoteCancelForInstance(endpoint, runID, action, key, "", stdout, stderr)
+}
+
+func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string, stdout, stderr io.Writer) int {
 	if strings.TrimSpace(endpoint) == "" {
 		pf(stderr, "error: no daemon API endpoint configured\n")
 		return 2
 	}
-	if err := prepareRemoteRoot(context.Background(), endpoint, stderr); err != nil {
+	if err := prepareRemoteRootForInstance(context.Background(), endpoint, expectedID, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

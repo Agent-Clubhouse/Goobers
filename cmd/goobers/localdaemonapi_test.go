@@ -43,6 +43,7 @@ func TestRunCancelAutomaticallyUsesLocalAPI(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(httpapi.CancelRunResult{Code: httpapi.CancelCodeRequested})
 			})
 			layout := instance.NewLayout(root)
+			writeFileContent(t, filepath.Join(root, instance.RootIdentityFileName), "0123456789abcdef0123456789abcdef\n")
 			// Local terminal state must not override the live daemon's authority.
 			createTelemetryRetentionRun(t, layout, "local-cancel-1", time.Now())
 			release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, time.Minute, nil)
@@ -74,5 +75,37 @@ func TestRequestedDaemonAPIExplicitFallback(t *testing.T) {
 	}
 	if _, err := requestedDaemonAPI("http://127.0.0.1:1234", true); err == nil {
 		t.Fatal("accepted conflicting --api and --no-api")
+	}
+}
+
+func TestLocalAPIMutationsRejectAnotherInstance(t *testing.T) {
+	for _, command := range []string{"trigger", "cancel"} {
+		t.Run(command, func(t *testing.T) {
+			t.Setenv(remoteDaemonAPIEnv, "")
+			var mutations atomic.Int32
+			root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				if serveRemoteRootFixture(w, r) {
+					return
+				}
+				mutations.Add(1)
+				http.Error(w, "unexpected mutation", http.StatusInternalServerError)
+			})
+			writeFileContent(t, filepath.Join(root, instance.RootIdentityFileName), "ffffffffffffffffffffffffffffffff\n")
+			layout := instance.NewLayout(root)
+			createTelemetryRetentionRun(t, layout, "local-cancel-1", time.Now())
+			release, err := acquireDaemonLock(filepath.Join(layout.SchedulerDir(), "up.lock"), root, time.Minute, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			args := []string{"run", "--no-wait", "default-implement", root}
+			if command == "cancel" {
+				args = []string{"run", "cancel", "local-cancel-1", root}
+			}
+			code, _, stderr := runArgs(t, args...)
+			if code != 2 || mutations.Load() != 0 || !strings.Contains(stderr, "another instance") {
+				t.Fatalf("code=%d mutations=%d stderr=%q", code, mutations.Load(), stderr)
+			}
+		})
 	}
 }
