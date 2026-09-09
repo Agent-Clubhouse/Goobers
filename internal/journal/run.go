@@ -1007,6 +1007,10 @@ func (r *Run) recordSpan(branch int, stage, name, dataSchema string, data []byte
 }
 
 func (r *Run) recordSpanEvent(ev Event, data []byte) (Ref, error) {
+	return r.recordSpanEventExpectedDigest(ev, data, "")
+}
+
+func (r *Run) recordSpanEventExpectedDigest(ev Event, data []byte, expectedDigest string) (Ref, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -1014,6 +1018,9 @@ func (r *Run) recordSpanEvent(ev Event, data []byte) (Ref, error) {
 	}
 	scrubbed := r.scrubber.Scrub(data)
 	digest := Digest(scrubbed)
+	if expectedDigest != "" && digest != expectedDigest {
+		return Ref{}, errors.New("journal: final transcript changed at the daemon redaction boundary")
+	}
 	relPath, err := spanPath(digest)
 	if err != nil {
 		return Ref{}, err

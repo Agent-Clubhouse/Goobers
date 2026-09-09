@@ -43,9 +43,10 @@ import (
 // replays them: a plain event append, a content-addressed artifact record,
 // or an executor-produced span adopted by digest.
 const (
-	OpAppend   = "append"
-	OpArtifact = "artifact"
-	OpSpan     = "span"
+	OpAppend               = "append"
+	OpArtifact             = "artifact"
+	OpSpan                 = "span"
+	OpTranscriptCheckpoint = "transcript-checkpoint"
 	// OpInstanceAnnotation records a runner annotation in the DAEMON'S
 	// INSTANCE LOG rather than the run journal (Goobers#3898).
 	//
@@ -157,12 +158,13 @@ type SpanOp struct {
 // (Adopt): Time is not replayed there at all, because the loaned handle stamps
 // every event from its owner's single clock.
 type Op struct {
-	Kind     string         `json:"kind"`
-	Key      string         `json:"key"`
-	Event    *journal.Event `json:"event,omitempty"`
-	Artifact *ArtifactOp    `json:"artifact,omitempty"`
-	Span     *SpanOp        `json:"span,omitempty"`
-	Time     time.Time      `json:"time"`
+	Kind       string                  `json:"kind"`
+	Key        string                  `json:"key"`
+	Event      *journal.Event          `json:"event,omitempty"`
+	Artifact   *ArtifactOp             `json:"artifact,omitempty"`
+	Span       *SpanOp                 `json:"span,omitempty"`
+	Checkpoint *TranscriptCheckpointOp `json:"checkpoint,omitempty"`
+	Time       time.Time               `json:"time"`
 }
 
 // OpenHeader carries what journal.Create needs the first time a run emits:
@@ -330,10 +332,11 @@ type liveRun struct {
 	// loans counts the outstanding Adopts of this same handle — a run's
 	// concurrent parallel branches each take one for their own pod attempt (see
 	// Adopt). Guarded by the WRITER's mu, not this run's.
-	loans        int
-	keys         map[string]uint64
-	artifactRefs map[string]journal.Ref
-	lastEmit     time.Time
+	loans              int
+	keys               map[string]uint64
+	artifactRefs       map[string]journal.Ref
+	transcriptCaptures map[string]*remoteTranscriptCapture
+	lastEmit           time.Time
 }
 
 // terminal reports whether the run's journal has reached its terminal event.
@@ -1055,6 +1058,8 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 	// from its own clock, so there is nothing here to replay op.Time into. See
 	// Adopt for why that is the coherent reading for a runner-driven run.
 	switch op.Kind {
+	case OpTranscriptCheckpoint:
+		return w.applyTranscriptCheckpoint(ctx, run, op)
 	case OpAppend:
 		if op.Event == nil {
 			return false, errors.New("append op carries no event")
@@ -1092,6 +1097,9 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 	case OpArtifact:
 		return w.applyArtifact(ctx, run, op)
 	case OpSpan:
+		if handled, err := run.adoptCompletedTranscript(runID, op); handled {
+			return err == nil, err
+		}
 		s := op.Span
 		if s == nil {
 			return false, errors.New("span op carries no payload")

@@ -883,6 +883,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: start agent telemetry: %w", err)
 	}
 	defer agentTelemetry.finish(&out, &runErr)
+	nativeCheckpoints, err := startCopilotTranscriptCheckpoints(&req, nativeTranscriptPath, env)
+	if err != nil {
+		return Outcome{}, err
+	}
+	// Finish while the wrapper-owned log still exists, before cleanupSession.
+	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
 	runner := c.runner()
 	started := time.Now()
@@ -893,17 +899,22 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		stdoutCapture = responseCapture
 	}
 	result, processErr := runner.Run(ctx, ProcessRequest{
-		Command:            argv,
-		Dir:                req.Workspace,
-		Env:                env,
-		Timeout:            req.Timeout,
-		MaxTranscriptBytes: req.MaxTranscriptBytes,
-		StdoutCapture:      stdoutCapture,
+		Command:                      argv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      req.Timeout,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                stdoutCapture,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(1),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		// #4179: the session this observes is the one that burned a whole
 		// 5400s budget on a stalled `go mod download` while its journal held
 		// a single lifecycle event.
 		Activity: agentTelemetry.activityObserver(),
 	})
+	// A native-log read/write failure observed during this process is not a
+	// missing completion contract. Preserve it and do not launch recovery.
+	processErr = errors.Join(processErr, nativeCheckpoints.worker.observedError())
 	runErr = processErr
 	var payload []byte
 	var completionErr error
@@ -945,12 +956,14 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 				}
 				recoveryArgv[promptArg] = recoveryPrompt
 				recovery, err := runner.Run(ctx, ProcessRequest{
-					Command:            recoveryArgv,
-					Dir:                req.Workspace,
-					Env:                env,
-					Timeout:            remaining,
-					MaxTranscriptBytes: req.MaxTranscriptBytes,
-					StdoutCapture:      recoveryStdout,
+					Command:                      recoveryArgv,
+					Dir:                          req.Workspace,
+					Env:                          env,
+					Timeout:                      remaining,
+					MaxTranscriptBytes:           req.MaxTranscriptBytes,
+					StdoutCapture:                recoveryStdout,
+					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 					// The recovery turn runs on what is LEFT of the budget,
 					// so a stall here is if anything more urgent to see than
 					// one in the main session (#4179).
