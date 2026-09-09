@@ -51,9 +51,16 @@ func TestConcurrentAcquisitionHasOneWinner(t *testing.T) {
 	<-s.read
 	<-s.read
 	close(s.proceed)
-	first, second := <-results, <-results
-	if !((first == nil && errors.Is(second, ErrConflict)) || (second == nil && errors.Is(first, ErrConflict))) {
-		t.Fatalf("concurrent admission: %v / %v", first, second)
+	winners := 0
+	for _, err := range []error{<-results, <-results} {
+		if err == nil {
+			winners++
+		} else if !errors.Is(err, ErrConflict) {
+			t.Fatalf("concurrent admission: %v", err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("concurrent admission produced %d winners", winners)
 	}
 }
 
@@ -73,6 +80,12 @@ func TestOwnerScopedRenewalExpiryAndRelease(t *testing.T) {
 	}
 	if !s.observation.Record.ExpiresAt.Equal(now.Add(2 * time.Minute)) {
 		t.Fatal("renewal did not use provider clock")
+	}
+	if err := Acquire(t.Context(), s, "issue:42", owner, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !s.observation.Record.ExpiresAt.Equal(now.Add(2 * time.Minute)) {
+		t.Fatal("late renewal shortened the acknowledged lease")
 	}
 	if err := Release(t.Context(), s, "issue:42", other); !errors.Is(err, ErrNotOwner) {
 		t.Fatalf("foreign release: %v", err)

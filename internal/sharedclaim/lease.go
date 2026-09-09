@@ -68,7 +68,14 @@ func Acquire(ctx context.Context, store Store, key string, owner Owner, ttl time
 	if observed.Record.Owner != (Owner{}) && observed.Record.Owner != owner && observed.Now.Before(observed.Record.ExpiresAt) {
 		return ErrHeld
 	}
-	return store.CompareAndSwap(ctx, key, observed.Revision, Record{Version: 1, Owner: owner, ExpiresAt: observed.Now.Add(ttl)})
+	expires := observed.Now.Add(ttl)
+	// An older renewal request may arrive after a newer, longer one. Never
+	// shorten the same incarnation's lease: its local owner may still rely on
+	// the previously acknowledged deadline.
+	if observed.Record.Owner == owner && observed.Record.ExpiresAt.After(expires) {
+		expires = observed.Record.ExpiresAt
+	}
+	return store.CompareAndSwap(ctx, key, observed.Revision, Record{Version: 1, Owner: owner, ExpiresAt: expires})
 }
 
 // Release clears only this incarnation. It retains a versioned tombstone and
