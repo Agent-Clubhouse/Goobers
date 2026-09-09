@@ -30,7 +30,7 @@ func RestoreSnapshot(ctx context.Context, repository string, record Record, curr
 	var commit boundedRefOutput
 	if err := recoveryGitWithEnv(ctx, repository, &commit, environment,
 		"-c", "commit.gpgsign=false", "commit-tree", tree, "-p", currentMain,
-		"-m", "Restore retained implementation for "+record.RunID); err != nil {
+		"-m", restorationMessage(record)); err != nil {
 		return "", fmt.Errorf("commit restored patch: %w", err)
 	}
 	id := strings.TrimSpace(commit.String())

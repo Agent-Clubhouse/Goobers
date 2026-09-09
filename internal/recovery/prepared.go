@@ -52,7 +52,7 @@ func FindPreparedRestore(ctx context.Context, repository string, record Record, 
 	if err := recoveryGit(ctx, repository, &message, "show", "--no-patch", "--format=%B", commit); err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(message.String()) != "Restore retained implementation for "+record.RunID {
+	if !matchesRestorationMessage(record, message.String()) {
 		if prepared {
 			return "", fmt.Errorf("prepared branch belongs to different recovery state")
 		}

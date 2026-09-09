@@ -56,6 +56,17 @@ func TestIntegrationRestoreFullPatchOntoCurrentMain(t *testing.T) {
 		t.Fatalf("restore did not use current main: %s", got)
 	}
 	testVerifyPreparedRestoration(t, repository, record, restored, main)
+	preparedBranch, err := PreparedRestoreBranch("receiving-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryTestGit(t, repository, "update-ref", "refs/heads/"+preparedBranch, restored)
+	if found, err := FindPreparedRestore(t.Context(), repository, record, "receiving-run", 1<<20); err != nil || found != restored {
+		t.Fatalf("source-bound preparation could not be resumed: %s %v", found, err)
+	}
+	if err := DeletePreparedRestore(t.Context(), repository, "receiving-run", restored); err != nil {
+		t.Fatal(err)
+	}
 	for path, want := range map[string]string{"shared.txt": "ours", "reviewed.txt": "reviewed work", "uncommitted.bin": "\x00\xff\x01", "new-main.txt": "new upstream work"} {
 		if got := recoveryTestGit(t, repository, "show", restored+":"+path); got != want {
 			t.Fatalf("restored %s = %q, want %q", path, got, want)
@@ -100,9 +111,11 @@ func testVerifyPreparedRestoration(t *testing.T, repository string, record Recor
 		t.Fatal("merge commit accepted as a single-parent restoration")
 	}
 	wrongTree := recoveryTestGit(t, repository, "rev-parse", main+"^{tree}")
-	forged := recoveryTestGit(t, repository, "commit-tree", wrongTree, "-p", main, "-m", "Restore retained implementation for "+record.RunID)
-	if err := VerifyRestoredCommit(context.Background(), repository, record, forged, 1<<20); err == nil {
-		t.Fatal("matching message substituted for verified restored content")
+	for _, message := range []string{"Restore retained implementation for " + record.RunID, restorationMessage(record)} {
+		forged := recoveryTestGit(t, repository, "commit-tree", wrongTree, "-p", main, "-m", message)
+		if err := VerifyRestoredCommit(context.Background(), repository, record, forged, 1<<20); err == nil {
+			t.Fatal("matching message substituted for verified restored content")
+		}
 	}
 }
 
