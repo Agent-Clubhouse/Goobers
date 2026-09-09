@@ -801,6 +801,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Only the local path uses the slot release attached below; the engine
 	// releases its slot when its existing settlement path observes completion.
 	cancelPlane := newDaemonCancelService(setup.RunnerRegistry)
+	cancelPlane.auditLog = setup.InstanceLog
 	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),

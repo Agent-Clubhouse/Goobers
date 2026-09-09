@@ -288,10 +288,11 @@ const (
 // D2). Workflow and Gaggle are optional identity constraints; an engine run is
 // routed using its retained identity and current daemon ownership.
 type CancelRunRequest struct {
-	RunID    string `json:"-"`
-	Workflow string `json:"workflow,omitempty"`
-	Gaggle   string `json:"gaggle,omitempty"`
-	Actor    string `json:"actor,omitempty"`
+	IdempotencyKey string `json:"-"`
+	RunID          string `json:"-"`
+	Workflow       string `json:"workflow,omitempty"`
+	Gaggle         string `json:"gaggle,omitempty"`
+	Actor          string `json:"actor,omitempty"`
 }
 
 // CancelRunResult reports the cancel disposition. A refusal the operator can
@@ -694,7 +695,8 @@ func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Lo
 			writeError(w, status, code, message)
 			return
 		}
-		if _, ok := requireIdempotencyKey(w, request); !ok {
+		key, ok := requireIdempotencyKey(w, request)
+		if !ok {
 			return
 		}
 		var input CancelRunRequest
@@ -702,6 +704,7 @@ func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Lo
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
+		input.IdempotencyKey = key
 		input.RunID = request.PathValue("run")
 		if strings.TrimSpace(input.RunID) == "" {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run is required")

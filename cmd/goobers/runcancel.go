@@ -262,8 +262,9 @@ func executeCancelRequest(
 // daemonCancelService preserves the local Runner/file-drop cancellation path
 // and routes retained engine runs through the engine's own cancellation guard.
 type daemonCancelService struct {
-	runners *daemonRunnerRegistry
-	engine  *daemonEngineCancelService
+	runners  *daemonRunnerRegistry
+	engine   *daemonEngineCancelService
+	auditLog *journal.InstanceLog
 
 	mu      sync.RWMutex
 	release func(runID, workflow string)
@@ -283,6 +284,9 @@ func (s *daemonCancelService) AttachRelease(release func(runID, workflow string)
 }
 
 func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
+	if err := s.auditCancellation(input); err != nil {
+		return httpapi.CancelRunResult{}, err
+	}
 	s.mu.RLock()
 	release := s.release
 	s.mu.RUnlock()
@@ -312,6 +316,21 @@ func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRu
 		Actor:    input.Actor,
 	}, time.Now())
 	return httpapi.CancelRunResult{Phase: resp.Phase, Code: resp.Code, Error: resp.Error}, nil
+}
+
+// Record the attempt before either runner or engine side effects. This is an
+// attribution record, not a completion receipt: a failed or interrupted cancel
+// must never look like confirmed termination in the journal.
+func (s *daemonCancelService) auditCancellation(input httpapi.CancelRunRequest) error {
+	if s.auditLog == nil {
+		return nil // Low-level service tests may omit the production audit sink.
+	}
+	return s.auditLog.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		RunID: input.RunID, Workflow: input.Workflow, Gaggle: input.Gaggle,
+		Actor: input.Actor, Reason: "run cancellation requested",
+		Runner: map[string]any{"note": "run.cancel.requested", "idempotencyKey": input.IdempotencyKey},
+	})
 }
 
 // runRemoteCancel cancels a run on a daemon that does not share this
