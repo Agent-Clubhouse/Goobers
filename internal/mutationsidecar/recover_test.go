@@ -35,6 +35,27 @@ func TestRecoveryRecognizesNormalProjectionWhileWriterIsHeld(t *testing.T) {
 	}
 }
 
+func TestRecoveryRecomputesJournalReceiptFingerprint(t *testing.T) {
+	fact := Fact{ReceiptID: "receipt", Provider: "github", Kind: "pr", ID: "9", Operation: "merge"}
+	expected := recoveryEvent(fact)
+	fingerprint, err := mutationFingerprint(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stamp := range []any{fingerprint, 17, map[string]any{"invalid": true}} {
+		altered := recoveryEvent(fact)
+		altered.Runner["operation"] = "comment"
+		altered.Runner["mutationRecoveryFingerprint"] = stamp
+		if _, err := missingRecoveryEvents([]Fact{fact}, []journal.Event{altered}, "worktree"); err == nil {
+			t.Fatal("a stamped fingerprint hid different receipt contents")
+		}
+	}
+	expected.Runner["mutationRecoveryFingerprint"] = fingerprint
+	if missing, err := missingRecoveryEvents([]Fact{fact}, []journal.Event{expected}, "worktree"); err != nil || len(missing) != 0 {
+		t.Fatalf("matching recovered receipt was not acknowledged: %v %v", missing, err)
+	}
+}
+
 func TestRecoveryDoesNotBorrowAnIdenticalReceiptFromAnotherAttempt(t *testing.T) {
 	fact := Fact{ReceiptID: "current", Provider: "github", Kind: "pr", ID: "9", Operation: "merge"}
 	old := fact

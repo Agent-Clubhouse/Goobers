@@ -134,13 +134,12 @@ func missingRecoveryEvents(facts []Fact, recorded []journal.Event, worktreeID st
 		if id == "" {
 			continue
 		}
-		fingerprint, _ := event.Runner["mutationRecoveryFingerprint"].(string)
-		if fingerprint == "" {
-			var err error
-			fingerprint, err = mutationFingerprint(event)
-			if err != nil {
-				return nil, err
-			}
+		fingerprint, err := mutationFingerprint(event)
+		if err != nil {
+			return nil, err
+		}
+		if stamped, present := event.Runner["mutationRecoveryFingerprint"]; present && stamped != fingerprint {
+			return nil, fmt.Errorf("journal mutation receipt fingerprint does not match its contents")
 		}
 		if prior, ok := receipts[id]; ok && prior != fingerprint {
 			return nil, fmt.Errorf("conflicting journal mutation receipt identity")
