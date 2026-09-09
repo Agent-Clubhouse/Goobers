@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/goobers/goobers/internal/httpapi"
@@ -9,6 +10,50 @@ import (
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/providers"
 )
+
+type failingReleaseClaimStore struct {
+	pinnedClaimTestStore
+	failRelease bool
+}
+
+func (s *failingReleaseClaimStore) CompareAndSwap(ctx context.Context, key, revision string, record sharedclaim.Record) error {
+	if s.failRelease && record.Owner == (sharedclaim.Owner{}) {
+		return errors.New("provider cleanup unavailable")
+	}
+	return s.pinnedClaimTestStore.CompareAndSwap(ctx, key, revision, record)
+}
+
+func TestHeldLifecycleLedgerRetainsSharedOwnershipUntilReleaseAcknowledged(t *testing.T) {
+	layout, run := newPinnedClaimResolverRun(t, "shared")
+	store := &failingReleaseClaimStore{}
+	resolver := pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
+		return store, nil
+	}}
+	service := newDaemonClaimService(layout, nil, nil)
+	service.shared = resolver
+	request := httpapi.ClaimRequest{Gaggle: "example", Provider: "github", ItemID: "42", RunID: "shared-run", Workflow: "claim", LeaseSeconds: 60}
+	if response, err := service.Acquire(t.Context(), request); err != nil || !response.Ok {
+		t.Fatalf("acquire: %+v %v", response, err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := heldClaimLedgerWithResolver(layout, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.failRelease = true
+	if released, err := ledger.ReleaseAllForRun(t.Context(), request.RunID); err == nil || len(released) != 0 {
+		t.Fatalf("unacknowledged release succeeded: %+v %v", released, err)
+	}
+	if entries, err := ledger.ForRunAll(t.Context(), request.RunID); err != nil || len(entries) != 1 || store.record.Owner.Run != request.RunID {
+		t.Fatalf("failed cleanup discarded custody: %+v %v", entries, err)
+	}
+	store.failRelease = false
+	if released, err := ledger.ReleaseAllForRun(t.Context(), request.RunID); err != nil || len(released) != 1 || store.record.Owner != (sharedclaim.Owner{}) {
+		t.Fatalf("acknowledged release: %+v %v", released, err)
+	}
+}
 
 func TestDaemonSharedClaimAcquireRenewAndTerminalRelease(t *testing.T) {
 	layout, run := newPinnedClaimResolverRun(t, "shared")

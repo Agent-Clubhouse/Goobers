@@ -9,9 +9,29 @@ import (
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/providers"
 )
+
+// Local lifecycle callers may run without a live daemon. Resolve credentials
+// lazily, only when a persisted shared claim actually needs provider cleanup;
+// ordinary local cleanup must not start depending on credential availability.
+func localLifecycleSharedClaimResolver(layout instance.Layout) claimsclient.SharedClaimResolver {
+	return pinnedSharedClaimResolver{layout: layout, store: func(ctx context.Context, repo providers.RepositoryRef) (sharedclaim.Store, error) {
+		cfg, err := instance.LoadConfig(layout.ConfigFile())
+		if err != nil {
+			return nil, err
+		}
+		stores, err := secretstore.NewRegistry(cfg.SecretStores)
+		if err != nil {
+			return nil, err
+		}
+		registry, _ := journal.DefaultScrubber()
+		return daemonSharedClaimStore(ctx, cfg, repo, registry, stores)
+	}}
+}
 
 // Daemon admission uses daemon-owned configuration and registered credentials,
 // never the environment of a stage or a token supplied in a claim request.

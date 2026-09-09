@@ -112,7 +112,12 @@ func fileClaimLedgerForRunWithResolver(l instance.Layout, gaggle, runID string, 
 // would wait on itself until the timeout), the ledger is opened fresh and
 // operated on directly.
 func heldClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
+	return heldClaimLedgerWithResolver(l, localLifecycleSharedClaimResolver(l), opts...)
+}
+
+func heldClaimLedgerWithResolver(l instance.Layout, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
 	return claimsclient.NewFile(claimsclient.FileConfig{
+		Shared:     resolver,
 		LedgerPath: filepath.Join(l.SchedulerDir(), claimLedgerFileName),
 		Options:    opts,
 	})
