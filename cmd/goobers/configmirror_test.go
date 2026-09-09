@@ -92,15 +92,21 @@ func TestConfigMirrorRetriesUnchangedAppliedDigestAfterShareFailure(t *testing.T
 		t.Fatal(err)
 	}
 	r := &configReloader{layout: layout, setup: &schedulerSetup{Config: config}, appliedDigest: digest}
-	r.refreshConfigMirror(t.Context())
-	if r.mirroredDigest != "" || r.lastMirrorError == "" {
-		t.Fatal("unavailable share was acknowledged or not surfaced")
-	}
+	// Exercise the production retry loop with config watching disabled. No
+	// edit, reload call, or Git revision change wakes this recovery.
+	stop := r.startConfigMirror(t.Context())
+	defer stop()
+	waitForConfigValue(t, "mirror failure to be surfaced", func() (bool, bool) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return true, r.mirroredDigest == "" && r.lastMirrorError != ""
+	})
 	if err := os.Remove(config.ConfigMirrorPath); err != nil {
 		t.Fatal(err)
 	}
-	r.refreshConfigMirror(t.Context())
-	if r.mirroredDigest != digest || r.lastMirrorError != "" {
-		t.Fatalf("unchanged generation did not recover: %s", r.lastMirrorError)
-	}
+	waitForConfigValue(t, "unchanged mirror generation to recover", func() (bool, bool) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return true, r.mirroredDigest == digest && r.lastMirrorError == ""
+	})
 }
