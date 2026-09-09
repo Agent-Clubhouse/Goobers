@@ -114,11 +114,15 @@ type HTTP struct {
 
 // NewHTTP constructs the plane backend.
 func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
+	return newHTTP(cfg, false)
+}
+
+func newHTTP(cfg HTTPConfig, anonymous bool) (*HTTP, error) {
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if cfg.BaseURL == "" {
 		return nil, errors.New("claimsclient: HTTP backend requires a base URL")
 	}
-	if strings.TrimSpace(cfg.Token) == "" {
+	if strings.TrimSpace(cfg.Token) == "" && !anonymous {
 		return nil, errors.New("claimsclient: HTTP backend requires a bearer token")
 	}
 	if strings.TrimSpace(cfg.RunID) == "" {
@@ -147,7 +151,9 @@ func (h *HTTP) post(ctx context.Context, path string, body, target any) error {
 		return fmt.Errorf("claimsclient: build request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
+	if h.cfg.Token != "" {
+		request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
+	}
 	response, err := h.cfg.Client.Do(request)
 	if err != nil {
 		return fmt.Errorf("claimsclient: %s: %w", endpoint, err)

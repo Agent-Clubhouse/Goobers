@@ -16,6 +16,11 @@ func workerExecutionBearer(emitter *livejournal.HTTPEmitter, runID string) (stri
 	if emitter.Token != "" {
 		return emitter.Token, nil
 	}
+	if emitter.Minter == nil {
+		// The observer validates that anonymous reads target literal loopback.
+		// Missing remote credentials never bypass the daemon policy check.
+		return "", nil
+	}
 	minter, ok := emitter.Minter.(interface {
 		MintScoped(string, time.Duration, ...string) (string, error)
 	})
@@ -65,7 +70,7 @@ func remoteSharedExecutionFence(baseURL string, tokenForRun func(string) (string
 			if err != nil {
 				return "", claimsclient.Listing{}, err
 			}
-			client, err := claimsclient.NewHTTP(claimsclient.HTTPConfig{BaseURL: baseURL, Token: token, RunID: env.RunID})
+			client, err := claimsclient.NewExecutionObserver(claimsclient.HTTPConfig{BaseURL: baseURL, Token: token, RunID: env.RunID})
 			if err != nil {
 				return "", claimsclient.Listing{}, err
 			}

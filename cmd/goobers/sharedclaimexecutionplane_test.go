@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
@@ -76,46 +77,64 @@ func TestDispatchExecSharedDeadlineStopsActualStageProcess(t *testing.T) {
 
 func TestRemoteExecutionPolicyUsesDaemonPinAndRefusesTerminalRun(t *testing.T) {
 	for _, mode := range []string{"local", "shared"} {
-		t.Run(mode, func(t *testing.T) {
-			layout, run := newPinnedClaimResolverRun(t, mode)
-			service := newDaemonClaimService(layout, nil, nil)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != apicontract.ClaimListPath || r.Header.Get("Authorization") != "Bearer parent-only" {
-					http.Error(w, "unexpected authority or route", http.StatusForbidden)
-					return
-				}
-				var request httpapi.ClaimListRequest
-				if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RunID != "shared-run" || !request.Execution || !request.IncludeHistory || request.Scope != httpapi.ClaimListScopeRun {
-					http.Error(w, "unexpected execution query", http.StatusBadRequest)
-					return
-				}
-				response, err := service.List(r.Context(), request)
+		for _, token := range []string{"parent-only", ""} {
+			t.Run(mode+"/"+token, func(t *testing.T) {
+				layout, run := newPinnedClaimResolverRun(t, mode)
+				service := newDaemonClaimService(layout, nil, nil)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					wantAuthorization := ""
+					if token != "" {
+						wantAuthorization = "Bearer " + token
+					}
+					if r.URL.Path != apicontract.ClaimListPath || r.Header.Get("Authorization") != wantAuthorization {
+						http.Error(w, "unexpected authority or route", http.StatusForbidden)
+						return
+					}
+					var request httpapi.ClaimListRequest
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.RunID != "shared-run" || !request.Execution || !request.IncludeHistory || request.Scope != httpapi.ClaimListScopeRun {
+						http.Error(w, "unexpected execution query", http.StatusBadRequest)
+						return
+					}
+					response, err := service.List(r.Context(), request)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusConflict)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(response)
+				}))
+				t.Cleanup(server.Close)
+				fence := remoteSharedExecutionFence(server.URL, func(runID string) (string, error) {
+					return workerExecutionBearer(&livejournal.HTTPEmitter{BaseURL: server.URL, Token: token}, runID)
+				})
+				ctx, stop, err := fence(t.Context(), apiv1.InvocationEnvelope{RunID: "shared-run"})
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusConflict)
-					return
+					t.Fatal(err)
 				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(response)
-			}))
-			t.Cleanup(server.Close)
-			fence := remoteSharedExecutionFence(server.URL, func(string) (string, error) { return "parent-only", nil })
-			ctx, stop, err := fence(t.Context(), apiv1.InvocationEnvelope{RunID: "shared-run"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if (ctx == t.Context()) != (mode == "local") {
-				t.Fatal("remote policy did not select the expected fence")
-			}
-			stop()
-			if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
-				t.Fatal(err)
-			}
-			_, stop, err = fence(t.Context(), apiv1.InvocationEnvelope{RunID: "shared-run"})
-			stop()
-			if (err != nil) != (mode == "shared") {
-				t.Fatalf("terminal execution policy: %v", err)
-			}
-		})
+				if (ctx == t.Context()) != (mode == "local") {
+					t.Fatal("remote policy did not select the expected fence")
+				}
+				stop()
+				if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+					t.Fatal(err)
+				}
+				_, stop, err = fence(t.Context(), apiv1.InvocationEnvelope{RunID: "shared-run"})
+				stop()
+				if (err != nil) != (mode == "shared") {
+					t.Fatalf("terminal execution policy: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestWorkerExecutionWithoutBearerRefusesRemoteDaemon(t *testing.T) {
+	emitter := &livejournal.HTTPEmitter{BaseURL: "https://daemon.example"}
+	fence := remoteSharedExecutionFence(emitter.BaseURL, func(runID string) (string, error) { return workerExecutionBearer(emitter, runID) })
+	_, stop, err := fence(t.Context(), apiv1.InvocationEnvelope{RunID: "run"})
+	stop()
+	if err == nil {
+		t.Fatal("remote execution bypassed missing credentials")
 	}
 }
 
