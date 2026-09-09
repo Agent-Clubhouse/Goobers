@@ -107,7 +107,9 @@ func TestCopilotNativeCheckpointFinishPreservesStorageError(t *testing.T) {
 	if err := worker.finish(ErrCanceled); !errors.Is(err, failure) {
 		t.Fatalf("lost storage failure: %v", err)
 	}
-	if _, err := worker.root.Stat(); !errors.Is(err, os.ErrClosed) {
+	// Stat on a closed Windows directory handle reports ERROR_INVALID_HANDLE,
+	// not os.ErrClosed. A second Close tests the descriptor lifecycle directly.
+	if err := worker.root.Close(); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("root descriptor leaked: %v", err)
 	}
 }
