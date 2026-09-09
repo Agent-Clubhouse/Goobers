@@ -62,9 +62,10 @@ export function useRunsHistory(
   client: DaemonClient,
   filter: RunsFilter,
   scope: RunHistoryScope = {},
+  pageSize = RUNS_PAGE_SIZE,
 ): RunsHistoryQuery {
   const { cache, freshness, isFresh, subscribe } = useLiveData();
-  const cacheKey = runsHistoryCacheKey(filter, scope);
+  const cacheKey = runsHistoryCacheKey(filter, scope, pageSize);
   const initialCached = useRef(cache.get<CachedRunsHistory>(cacheKey));
   const [state, setState] = useState<QueryState<RunsHistory>>(() => {
     const cached = initialCached.current;
@@ -143,7 +144,7 @@ export function useRunsHistory(
         : { status: "loading" },
     );
 
-    return advanceStreams(client, streams.current, scope, pending.signal)
+    return advanceStreams(client, streams.current, scope, pageSize, pending.signal)
       .then(async (fetched) => {
         if (pending.obsolete) {
           return true;
@@ -222,7 +223,7 @@ export function useRunsHistory(
     const affectedRunIds = [...invalidatedRunIds.current];
     invalidatedRunIds.current.clear();
 
-    return advanceStreams(client, head, scope, pending.signal)
+    return advanceStreams(client, head, scope, pageSize, pending.signal)
       .then(async (fetched) => {
         if (pending.obsolete) {
           return true;
@@ -292,7 +293,7 @@ export function useRunsHistory(
     loadingMore.current = true;
     publish(isFresh(), cacheRevision);
 
-    void advanceStreams(client, streams.current, scope, pending.signal).then(
+    void advanceStreams(client, streams.current, scope, pageSize, pending.signal).then(
       (fetched) => {
         pending.end();
         if (pending.obsolete) {
@@ -398,10 +399,15 @@ export function useRunsHistory(
   return { loadMore, retry, state };
 }
 
-function runsHistoryCacheKey(filter: RunsFilter, scope: RunHistoryScope): string {
+function runsHistoryCacheKey(
+  filter: RunsFilter,
+  scope: RunHistoryScope,
+  pageSize: number,
+): string {
   return dataCacheKey(
     "runs-history",
     filter,
+    String(pageSize),
     scope.gaggle ?? "",
     scope.workflow ?? "",
     scope.stage ?? "",
@@ -424,6 +430,7 @@ async function advanceStreams(
   client: DaemonClient,
   streams: RunsStream[],
   scope: RunHistoryScope,
+  pageSize: number,
   signal: AbortSignal,
 ): Promise<RunSummary[]> {
   const pages = await Promise.all(
@@ -432,7 +439,7 @@ async function advanceStreams(
         return [] as RunSummary[];
       }
       const page = await client.listRuns(
-        { ...scope, phase: stream.phase, cursor: stream.cursor, limit: RUNS_PAGE_SIZE },
+        { ...scope, phase: stream.phase, cursor: stream.cursor, limit: pageSize },
         { signal },
       );
       stream.cursor = page.nextCursor;

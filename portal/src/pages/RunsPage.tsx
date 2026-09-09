@@ -12,6 +12,7 @@ import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
 const FILTERS: readonly RunsFilter[] = ["all", "active", "attention", "complete"];
+const NARROW_RUNS_PAGE_SIZE = 20;
 
 export function RunsPage({
   client,
@@ -30,7 +31,11 @@ export function RunsPage({
   // underlying run, only this list's default view of it.
   const [showNoWork, setShowNoWork] = useState(false);
   const scope = { ...filters, showNoWork };
-  const query = useRunsHistory(client, filter, scope);
+  const pageSize =
+    typeof window !== "undefined" && window.innerWidth <= 480
+      ? NARROW_RUNS_PAGE_SIZE
+      : undefined;
+  const query = useRunsHistory(client, filter, scope, pageSize);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -81,6 +86,7 @@ export function RunsPage({
         ))}
         <label className="filter-toggle">
           <input
+            aria-label="Show no-work runs"
             checked={showNoWork}
             onChange={(event) => setShowNoWork(event.target.checked)}
             type="checkbox"
@@ -194,7 +200,9 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
         </span>
       </span>
       <StatusBadge stale={run.stale} status={run.phase} />
-      <span>{run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}</span>
+      <span className="run-current-stage">
+        {run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}
+      </span>
       <span>
         <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
       </span>
