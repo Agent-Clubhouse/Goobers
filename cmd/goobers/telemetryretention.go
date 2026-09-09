@@ -37,7 +37,12 @@ func pruneTelemetryRetention(
 	if ownedDB {
 		defer func() { _ = db.Close() }()
 	}
-	return retention.Prune(layout, db, policy, retention.Options{Now: now, DryRun: dryRun})
+	guard, closeGuard, err := openTriggerPruneGuard(layout, dryRun, now)
+	if err != nil {
+		return nil, err
+	}
+	defer closeGuard()
+	return retention.Prune(layout, db, policy, retention.Options{Now: now, DryRun: dryRun, BeforeDelete: guard})
 }
 
 func pruneConfiguredTelemetryRetention(

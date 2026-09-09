@@ -63,6 +63,11 @@ journal is published. Missing or inconsistent journals remain unfinished and
 are not automatically replayed. Recovery of those absent-run cases is still
 pending in this implementation branch.
 
+Telemetry retention acknowledges an unfinished trigger from its matching
+journal before deleting that journal, including interrupted-prune cleanup.
+If acknowledgment fails or the identity does not match, retention preserves
+the journal. Dry runs do not write trigger receipts.
+
 Query `GET /api/v1/triggers/{acceptanceId}` with the accepting identity's bearer
 to read `state`, `acceptedAt`, and any `runId` or refusal `reason`. This lookup
 does not submit or dispatch a trigger. Other identities receive the same 404 as

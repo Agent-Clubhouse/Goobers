@@ -178,6 +178,15 @@ func (s *Store) Get(ctx context.Context, id, actor string) (Record, error) {
 	return scanRecord(s.db.QueryRowContext(ctx, "SELECT "+columns+" FROM triggers WHERE id=? AND actor=?", id, actor))
 }
 
+// ForRun is the daemon's internal custody lookup, not an actor-authorized API.
+// Assigned run IDs are the random suffix of the durable acceptance ID.
+func (s *Store) ForRun(ctx context.Context, runID string) (Record, error) {
+	if len(runID) != 32 {
+		return Record{}, sql.ErrNoRows
+	}
+	return scanRecord(s.db.QueryRowContext(ctx, "SELECT "+columns+" FROM triggers WHERE id=?", "trigger-"+runID))
+}
+
 // Pending returns a bounded FIFO batch. Dispatching is deliberately excluded:
 // a process may have died after starting the run but before recording its ID.
 func (s *Store) Pending(ctx context.Context, limit int) ([]Record, error) {
