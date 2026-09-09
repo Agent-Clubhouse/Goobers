@@ -54,7 +54,9 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 		return err
 	}
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
-	worktreeErr = errors.Join(worktreeErr, renewTerminalRecovery(l, runID))
+	if renewErr := renewTerminalRecovery(l, runID); renewErr != nil {
+		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: renew terminal recovery for %s: %w", worktree.ErrCleanupDeferred, runID, renewErr))
+	}
 
 	var annotationErr error
 	annotationLog := log
