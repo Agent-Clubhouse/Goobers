@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,49 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
 )
+
+func TestWorkflowTranscriptAdoptionRequiresFinalBytes(t *testing.T) {
+	w, runs := testWriter(t)
+	const runID = "adoption-custody"
+	if _, err := w.Emit(t.Context(), openBatch(runID, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	session, err := (TranscriptTransport{RunID: runID, Gaggle: "web", Emitter: w}).OpenTranscriptCheckpoint(
+		"build", "copilot-cli.transcript", journal.NewPatternScrubber())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("final transcript\n")
+	ref, err := session.RecordFinal("", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(runs, runID, ref.Path)
+	if err := os.Remove(filename); err != nil {
+		t.Fatal(err)
+	}
+	request := EmitRequest{RunID: runID, Gaggle: "web", Ops: []Op{{Kind: OpSpan, Key: "workflow-final",
+		Span: &SpanOp{Stage: "build", Name: "build.transcript", Ref: ref}}}}
+	if _, err := w.Emit(t.Context(), request); err == nil {
+		t.Fatal("completion marker acknowledged missing final bytes")
+	}
+	if err := os.WriteFile(filename, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := w.Emit(t.Context(), request)
+	if err != nil || ack.Applied != 1 || ack.Deduplicated != 0 {
+		t.Fatalf("missing bytes poisoned the workflow retry key: %+v, %v", ack, err)
+	}
+	finals := 0
+	for _, event := range readEvents(t, runs, runID) {
+		if event.Type == journal.EventSpanRecorded && event.Runner["partial"] != true {
+			finals++
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("adoption duplicated final transcript: %d", finals)
+	}
+}
 
 type transcriptAcknowledgmentDropper struct {
 	writer  *Writer
