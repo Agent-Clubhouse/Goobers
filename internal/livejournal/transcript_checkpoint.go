@@ -15,6 +15,8 @@ import (
 // and requires a fresh capture rather than silently losing redaction context.
 const MaxActiveTranscriptCaptures = 32
 
+// ErrTranscriptSessionLost means the daemon no longer has the capture's
+// streaming redaction state and cannot safely accept its next delta.
 var ErrTranscriptSessionLost = errors.New("livejournal: transcript checkpoint session is unavailable; start a fresh capture")
 
 // TranscriptCheckpointOp travels on the existing authenticated run-scoped
@@ -89,12 +91,9 @@ func (w *Writer) finalizeTranscriptCheckpoint(ctx context.Context, run *liveRun,
 	if int64(len(data)) != request.FinalRef.Size {
 		return false, errors.New("livejournal: final transcript size mismatch")
 	}
-	ref, err := session.capture.RecordFinalWithCommitKey(request.DataSchema, data, op.Key)
+	_, err = session.capture.RecordFinalWithExpectedDigest(request.DataSchema, data, op.Key, request.FinalRef.Digest)
 	if err != nil {
 		return false, err
-	}
-	if ref.Digest != request.FinalRef.Digest {
-		return false, errors.New("livejournal: final transcript changed at the daemon redaction boundary")
 	}
 	run.keys[op.Key] = run.jr.Seq()
 	delete(run.transcriptCaptures, request.Capture)

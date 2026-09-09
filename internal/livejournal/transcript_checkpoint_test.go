@@ -131,3 +131,68 @@ func TestRemoteTranscriptFinalRequiresBlobAndSurvivesRetry(t *testing.T) {
 		t.Fatalf("final retry produced %d canonical spans", count)
 	}
 }
+
+func TestRemoteTranscriptFinalRedactionMismatchPreservesPartials(t *testing.T) {
+	data := []byte("final ghp_" + strings.Repeat("A", 80) + "\n")
+	ref, err := journal.SpanRef(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, runs := testWriter(t, WithSpanSource(&fakeSpans{blobs: map[string][]byte{ref.Digest: data}}),
+		WithScrubber(journal.NewPatternScrubber()))
+	const runID = "checkpoint-redaction-mismatch"
+	if _, err := w.Emit(t.Context(), openBatch(runID, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("c", 32)
+	send := func(action, key string, request TranscriptCheckpointOp) error {
+		request.Capture, request.Action, request.Stage, request.Name = id, action, "build", "copilot-cli.transcript"
+		_, err := w.Emit(t.Context(), EmitRequest{RunID: runID, Gaggle: "web", Ops: []Op{{
+			Kind: OpTranscriptCheckpoint, Key: id + "/" + key, Time: time.Now(), Checkpoint: &request,
+		}}})
+		return err
+	}
+	if err := send("open", "open", TranscriptCheckpointOp{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := send("append", "checkpoint/0", TranscriptCheckpointOp{
+		Stream: "process-output/1", Data: []byte("recoverable partial\n"), Reason: "checkpoint",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := send("final", "final", TranscriptCheckpointOp{FinalRef: &ref}); err == nil {
+			t.Fatal("redaction mismatch was acknowledged")
+		}
+	}
+	w.Close()
+	run, _, err := journal.Recover(filepath.Join(runs, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := run.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	reader, err := journal.OpenReadOnly(filepath.Join(runs, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	partials := 0
+	for _, event := range readEvents(t, runs, runID) {
+		if event.Runner["transcriptCaptureComplete"] != nil {
+			t.Fatal("rejected finalization durably superseded partials")
+		}
+		if event.Runner["partial"] == true {
+			partials++
+			got, err := reader.SpanBytes(*event.Ref)
+			if err != nil || string(got) != "recoverable partial\n" {
+				t.Fatalf("rejected finalization lost partial bytes: %q, %v", got, err)
+			}
+		}
+	}
+	if partials != 1 {
+		t.Fatalf("got %d partials, want 1", partials)
+	}
+}

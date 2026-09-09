@@ -214,6 +214,13 @@ func (c *TranscriptCapture) RecordFinal(schema string, data []byte) (Ref, error)
 // span event, before cleanup. A retry after daemon restart can therefore be
 // acknowledged from durable history without reopening a redaction session.
 func (c *TranscriptCapture) RecordFinalWithCommitKey(schema string, data []byte, key string) (Ref, error) {
+	return c.RecordFinalWithExpectedDigest(schema, data, key, "")
+}
+
+// RecordFinalWithExpectedDigest rejects a remote content-address mismatch before
+// writing a final event or removing partials, using the same redaction pass that
+// produces the persisted bytes. An empty digest disables the remote precondition.
+func (c *TranscriptCapture) RecordFinalWithExpectedDigest(schema string, data []byte, key, expectedDigest string) (Ref, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(key) > 256 {
@@ -227,8 +234,8 @@ func (c *TranscriptCapture) RecordFinalWithCommitKey(schema string, data []byte,
 		if key != "" {
 			metadata["emitKey"] = key
 		}
-		ref, err := c.run.recordSpanEvent(Event{Type: EventSpanRecorded, Stage: c.stage, Name: c.name,
-			DataSchema: schema, Runner: metadata}, data)
+		ref, err := c.run.recordSpanEventExpectedDigest(Event{Type: EventSpanRecorded, Stage: c.stage, Name: c.name,
+			DataSchema: schema, Runner: metadata}, data, expectedDigest)
 		if err != nil {
 			// The event may already be durable even if its state checkpoint
 			// failed. Do not emit a second final event on an uncertain retry.

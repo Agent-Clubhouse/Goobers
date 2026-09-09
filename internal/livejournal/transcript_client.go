@@ -12,10 +12,12 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// TranscriptEmitter acknowledges publication on the run-scoped journal plane.
 type TranscriptEmitter interface {
 	Emit(context.Context, EmitRequest) (EmitResponse, error)
 }
 
+// TranscriptBlobWriter durably publishes the final content-addressed bytes.
 type TranscriptBlobWriter interface {
 	Put(context.Context, string, []byte) error
 }
@@ -46,6 +48,8 @@ type remoteTranscriptStream struct {
 	remoteOffset int
 }
 
+// OpenTranscriptCheckpoint starts a fresh daemon-backed capture, scrubbing all
+// outgoing transcript bytes before they cross the transport boundary.
 func (t TranscriptTransport) OpenTranscriptCheckpoint(stage, name string, scrubber journal.Scrubber) (journal.TranscriptCheckpointSession, error) {
 	if t.Emitter == nil || t.Blobs == nil || t.RunID == "" || t.Gaggle == "" {
 		return nil, errors.New("livejournal: checkpoint transport is incomplete")
