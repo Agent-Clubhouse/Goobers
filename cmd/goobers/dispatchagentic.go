@@ -464,7 +464,8 @@ func podCheckpointRecorder(w podExecutorWiring) runner.ArtifactRecorder {
 	}
 	transport := livejournal.TranscriptTransport{
 		RunID: w.Kit.Envelope.RunID, Gaggle: w.Kit.Envelope.Gaggle,
-		Emitter: &livejournal.HTTPEmitter{BaseURL: endpoint, Token: os.Getenv(dispatcher.EnvPodToken), RetryDeadline: 3 * time.Second},
+		// TranscriptTransport supplies separate checkpoint/final deadlines.
+		Emitter: &livejournal.HTTPEmitter{BaseURL: endpoint, Token: os.Getenv(dispatcher.EnvPodToken)},
 	}
 	if blobs != nil {
 		transport.Blobs = blobs

@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -28,8 +29,15 @@ func (e *Executor) beginTranscriptCapture(stage string, req *RunRequest) (journa
 	return capture, nil
 }
 
-func (e *Executor) recordFinalTranscript(capture journal.TranscriptCheckpointSession, completed bool, stage, name, schema string, data []byte) (journal.Ref, error) {
-	if capture != nil && completed {
+func (e *Executor) runAdapter(ctx context.Context, req RunRequest, nested NestedPolicyCapability) (Outcome, error) {
+	if nested != nil {
+		return nested.RunNested(ctx, req)
+	}
+	return e.adapter.Run(ctx, req)
+}
+
+func (e *Executor) recordFinalTranscript(ctx context.Context, capture journal.TranscriptCheckpointSession, runErr error, stage, name, schema string, data []byte) (journal.Ref, error) {
+	if capture != nil && runErr == nil && ctx.Err() == nil {
 		return capture.RecordFinal(schema, data)
 	}
 	return e.recorder.RecordSpanWithSchema(stage, name, schema, data)
