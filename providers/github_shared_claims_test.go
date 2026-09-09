@@ -98,11 +98,13 @@ func TestGitHubSharedClaimInitialCreationRequiresExactAcknowledgment(t *testing.
 		status    int
 		confirmed string
 		success   bool
+		late      bool
 	}{
-		{"created", http.StatusCreated, sha, true},
-		{"already-exists", http.StatusUnprocessableEntity, sha, false},
-		{"merely-accepted", http.StatusAccepted, sha, false},
-		{"wrong-commit", http.StatusCreated, strings.Repeat("b", 40), false},
+		{"created", http.StatusCreated, sha, true, false},
+		{"already-exists", http.StatusUnprocessableEntity, sha, false, false},
+		{"merely-accepted", http.StatusAccepted, sha, false, false},
+		{"wrong-commit", http.StatusCreated, strings.Repeat("b", 40), false, false},
+		{"expired-before-acknowledgment", http.StatusCreated, sha, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +132,9 @@ func TestGitHubSharedClaimInitialCreationRequiresExactAcknowledgment(t *testing.
 					w.WriteHeader(http.StatusCreated)
 					_ = json.NewEncoder(w).Encode(map[string]string{"sha": sha})
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/refs"):
+					if test.late {
+						w.Header().Set("Date", time.Now().UTC().Add(2*time.Minute).Format(http.TimeFormat))
+					}
 					var body struct {
 						Ref string
 						SHA string

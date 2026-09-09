@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
@@ -150,17 +151,17 @@ func (s GitHubSharedClaimStore) CompareAndSwap(ctx context.Context, key, revisio
 	if !sharedGitSHA(created.SHA) {
 		return fmt.Errorf("invalid new shared claim commit")
 	}
-	return s.updateReference(ctx, key, revision, created.SHA)
+	return s.updateReference(ctx, key, revision, created.SHA, record.ExpiresAt)
 }
 
-func (s GitHubSharedClaimStore) updateReference(ctx context.Context, key, revision, sha string) error {
+func (s GitHubSharedClaimStore) updateReference(ctx context.Context, key, revision, sha string, expires time.Time) error {
 	var confirmed sharedGitRef
 	var err error
 	if revision == "" {
-		err = s.write(ctx, "refs", http.MethodPost, map[string]any{"ref": sharedClaimRef(key), "sha": sha}, &confirmed)
+		err = s.writeUntil(ctx, "refs", http.MethodPost, map[string]any{"ref": sharedClaimRef(key), "sha": sha}, &confirmed, expires)
 	} else {
-		err = s.write(ctx, "refs/"+strings.TrimPrefix(sharedClaimRef(key), "refs/"), http.MethodPatch,
-			map[string]any{"sha": sha, "force": false}, &confirmed)
+		err = s.writeUntil(ctx, "refs/"+strings.TrimPrefix(sharedClaimRef(key), "refs/"), http.MethodPatch,
+			map[string]any{"sha": sha, "force": false}, &confirmed, expires)
 	}
 	if err != nil {
 		return err
@@ -172,6 +173,10 @@ func (s GitHubSharedClaimStore) updateReference(ctx context.Context, key, revisi
 }
 
 func (s GitHubSharedClaimStore) write(ctx context.Context, path, method string, body, out any) error {
+	return s.writeUntil(ctx, path, method, body, out, time.Time{})
+}
+
+func (s GitHubSharedClaimStore) writeUntil(ctx context.Context, path, method string, body, out any, expires time.Time) error {
 	endpoint, err := s.endpoint(path)
 	if err != nil {
 		return err
@@ -191,6 +196,13 @@ func (s GitHubSharedClaimStore) write(ctx context.Context, path, method string, 
 	if response.StatusCode != expected {
 		_ = response.Body.Close()
 		return fmt.Errorf("shared claim write not confirmed (HTTP %d)", response.StatusCode)
+	}
+	if !expires.IsZero() {
+		now, err := http.ParseTime(response.Header.Get("Date"))
+		if err != nil || !now.Before(expires) {
+			_ = response.Body.Close()
+			return fmt.Errorf("shared claim acknowledgment has no live lease")
+		}
 	}
 	return readSharedGitResponse(response, out)
 }
