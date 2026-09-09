@@ -319,16 +319,18 @@ func plainPathElement(value string) bool {
 func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
 	verification := entry.Verification.Report()
 	return httpapi.ClaimEntry{
-		Verification: httpapi.ClaimVerification{State: verification.State, ObservedAt: verification.ObservedAt, ProviderRunID: verification.ProviderRunID},
-		ItemID:       entry.ItemID,
-		Gaggle:       entry.Gaggle,
-		Provider:     entry.Provider,
-		ExternalID:   entry.ExternalID,
-		RunID:        entry.RunID,
-		Workflow:     entry.Workflow,
-		ClaimedAt:    entry.ClaimedAt,
-		ExpiresAt:    entry.ExpiresAt,
-		ReleasedAt:   entry.ReleasedAt,
+		Verification:   httpapi.ClaimVerification{State: verification.State, ObservedAt: verification.ObservedAt, ProviderRunID: verification.ProviderRunID},
+		ItemID:         entry.ItemID,
+		Gaggle:         entry.Gaggle,
+		Provider:       entry.Provider,
+		ExternalID:     entry.ExternalID,
+		RunID:          entry.RunID,
+		Workflow:       entry.Workflow,
+		ClaimedAt:      entry.ClaimedAt,
+		ExpiresAt:      entry.ExpiresAt,
+		SharedDeadline: entry.SharedDeadline,
+		SharedOwner:    entry.SharedOwner,
+		ReleasedAt:     entry.ReleasedAt,
 	}
 }
 

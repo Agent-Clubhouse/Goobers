@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/providers"
 )
@@ -38,7 +39,8 @@ func (r stageClaimResolver) Admission(ctx context.Context, key claimsclient.Key,
 	if owner, ok := parseBacklogReconcileRunID(runID); ok && workflow == "backlog-reconcile" {
 		policyRunID = owner
 	}
-	if _, err := runDirFor(r.layout, policyRunID); errors.Is(err, os.ErrNotExist) {
+	directory, err := runDirFor(r.layout, policyRunID)
+	if errors.Is(err, os.ErrNotExist) {
 		// Historical local CLI claimers need not create a run journal. Preserve
 		// that behavior only in a validated local-only instance. Never use
 		// current configuration to override an existing run's pinned policy.
@@ -47,13 +49,46 @@ func (r stageClaimResolver) Admission(ctx context.Context, key claimsclient.Key,
 		}
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	legacy, err := legacyUnpinnedClaimRun(directory, policyRunID)
+	if err != nil {
+		return nil, err
+	}
+	if legacy {
+		return nil, requireLocalOnlyClaimConfiguration(r.layout)
+	}
 	return r.pinnedSharedClaimResolver.Admission(ctx, key, runID, workflow)
 }
 
-func requireLocalOnlyClaimConfiguration(layout instance.Layout) error {
-	set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+func legacyUnpinnedClaimRun(directory, runID string) (bool, error) {
+	reader, err := journal.OpenReadOnly(directory)
 	if err != nil {
-		return fmt.Errorf("verify local-only claim configuration: %w", err)
+		return false, err
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return false, err
+	}
+	if identity.RunID != runID {
+		return false, fmt.Errorf("claim journal identity does not match its run directory")
+	}
+	if identity.WorkflowDigest != "" {
+		return false, nil
+	}
+	for _, input := range identity.Inputs {
+		if input.Name == journal.PinnedWorkflowDefinitionInputName {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func requireLocalOnlyClaimConfiguration(layout instance.Layout) error {
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		return fmt.Errorf("verify local-only claim configuration: %w (%s)", err, validationIssueSummary(report))
 	}
 	if set == nil {
 		return fmt.Errorf("local-only claim configuration is unavailable")

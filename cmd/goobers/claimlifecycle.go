@@ -86,7 +86,7 @@ func renewLiveClaims(ctx context.Context, l instance.Layout, probe localschedule
 			return fmt.Errorf("open claim ledger: %w", openErr)
 		}
 		var renewErr error
-		renewed, renewErr = ledger.RenewRuns(live, leaseDuration)
+		renewed, renewErr = renewCoordinatedLiveClaims(ctx, l, ledger, live, leaseDuration, localLifecycleSharedClaimResolver(l))
 		return renewErr
 	})
 	return renewed, probeErr, err

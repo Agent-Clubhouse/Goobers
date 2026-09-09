@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
 // writeplanes.go implements the daemon write API's claims, trigger, and HITL
@@ -84,16 +85,18 @@ type ClaimResponse struct {
 // same reason internal/dispatcher restates MintedCredential: this package is
 // the server, and the ledger package has no business depending on it.
 type ClaimEntry struct {
-	Verification ClaimVerification `json:"verification"`
-	ItemID       string            `json:"itemId"`
-	Gaggle       string            `json:"gaggle,omitempty"`
-	Provider     string            `json:"provider,omitempty"`
-	ExternalID   string            `json:"externalId,omitempty"`
-	RunID        string            `json:"runId"`
-	Workflow     string            `json:"workflow"`
-	ClaimedAt    time.Time         `json:"claimedAt"`
-	ExpiresAt    time.Time         `json:"expiresAt"`
-	ReleasedAt   *time.Time        `json:"releasedAt,omitempty"`
+	Verification   ClaimVerification `json:"verification"`
+	ItemID         string            `json:"itemId"`
+	Gaggle         string            `json:"gaggle,omitempty"`
+	Provider       string            `json:"provider,omitempty"`
+	ExternalID     string            `json:"externalId,omitempty"`
+	RunID          string            `json:"runId"`
+	Workflow       string            `json:"workflow"`
+	ClaimedAt      time.Time         `json:"claimedAt"`
+	ExpiresAt      time.Time         `json:"expiresAt"`
+	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
+	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
 }
 
 // ClaimVerification mirrors the ledger's bounded, lease-specific provider
