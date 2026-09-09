@@ -300,6 +300,9 @@ func (s *daemonClaimService) List(ctx context.Context, request httpapi.ClaimList
 		}
 		response.Entries = claimEntriesWire(entries)
 		response.History = claimEntriesWire(history)
+		if request.Execution {
+			response.ObservedAt = time.Now()
+		}
 		return nil
 	})
 	return response, err

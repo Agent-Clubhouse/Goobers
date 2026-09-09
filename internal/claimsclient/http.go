@@ -45,9 +45,10 @@ type claimListRequest struct {
 }
 
 type claimListResponse struct {
-	Entries         []Entry `json:"entries"`
-	History         []Entry `json:"history,omitempty"`
-	ClaimVisibility string  `json:"claimVisibility,omitempty"`
+	Entries         []Entry   `json:"entries"`
+	History         []Entry   `json:"history,omitempty"`
+	ClaimVisibility string    `json:"claimVisibility,omitempty"`
+	ObservedAt      time.Time `json:"observedAt,omitzero"`
 }
 
 type claimRecoverRequest struct {
@@ -280,13 +281,43 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 // silently turn shared execution into local execution.
 func (h *HTTP) ExecutionSnapshot(ctx context.Context) (string, Listing, error) {
 	var response claimListResponse
+	started := time.Now()
 	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: h.cfg.RunID, Scope: scopeRun, IncludeHistory: true, Execution: true}, &response); err != nil {
 		return "", Listing{}, err
 	}
 	if response.ClaimVisibility != "local" && response.ClaimVisibility != "shared" {
 		return "", Listing{}, fmt.Errorf("claims plane did not verify execution policy")
 	}
+	if response.ClaimVisibility == "shared" {
+		if response.ObservedAt.IsZero() {
+			return "", Listing{}, fmt.Errorf("claims plane omitted the execution observation clock")
+		}
+		// Anchor remaining server-clock authority at the START of the local
+		// request. Network and server wait time are spent, never granted anew.
+		// This remains conservative even when daemon and worker clocks differ.
+		response.Entries = localExecutionTimes(response.Entries, started, response.ObservedAt)
+		response.History = localExecutionTimes(response.History, started, response.ObservedAt)
+	}
 	return response.ClaimVisibility, Listing{Entries: response.Entries, History: response.History}, nil
+}
+
+func localExecutionTimes(entries []Entry, started, observed time.Time) []Entry {
+	translate := func(value time.Time) time.Time {
+		if value.IsZero() {
+			return value
+		}
+		return started.Add(value.Sub(observed))
+	}
+	for i := range entries {
+		entries[i].ExpiresAt = translate(entries[i].ExpiresAt)
+		entries[i].SharedDeadline = translate(entries[i].SharedDeadline)
+		entries[i].ClaimedAt = translate(entries[i].ClaimedAt)
+		if entries[i].ReleasedAt != nil {
+			released := translate(*entries[i].ReleasedAt)
+			entries[i].ReleasedAt = &released
+		}
+	}
+	return entries
 }
 
 // errMergeLeaseLost is MergeLock's context.Cause when a renewal is

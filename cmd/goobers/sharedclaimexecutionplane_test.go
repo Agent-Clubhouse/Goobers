@@ -33,7 +33,7 @@ func TestDispatchExecSharedDeadlineStopsActualStageProcess(t *testing.T) {
 				entry.ExpiresAt = time.Now().Add(time.Second)
 				entry.SharedDeadline = entry.ExpiresAt
 			})
-			_ = json.NewEncoder(w).Encode(httpapi.ClaimListResponse{ClaimVisibility: "shared", Entries: []httpapi.ClaimEntry{entry}})
+			_ = json.NewEncoder(w).Encode(httpapi.ClaimListResponse{ClaimVisibility: "shared", ObservedAt: time.Now(), Entries: []httpapi.ClaimEntry{entry}})
 			return
 		}
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/surrender") {

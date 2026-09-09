@@ -144,6 +144,7 @@ type ClaimListResponse struct {
 	Entries         []ClaimEntry `json:"entries"`
 	History         []ClaimEntry `json:"history,omitempty"`
 	ClaimVisibility string       `json:"claimVisibility,omitempty"`
+	ObservedAt      time.Time    `json:"observedAt,omitzero"`
 }
 
 // ClaimRecoverRequest asks the daemon to run its own stale-claim recovery
