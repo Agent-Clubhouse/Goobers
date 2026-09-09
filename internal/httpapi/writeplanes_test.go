@@ -103,6 +103,21 @@ func jsonRequest(method, path, body string) *http.Request {
 	return request
 }
 
+func TestTriggerRouteUsesAuthenticatedActor(t *testing.T) {
+	triggers := &fakeTriggerService{response: TriggerResponse{RunID: "run-9"}}
+	handler := writePlaneHandler(t, &fakeAuthenticator{principal: &Principal{Subject: "operator", Roles: []Role{RoleOperate}}}, RequireRoles(), WithTriggerService(triggers))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"implementation","requestId":"delivery"}`))
+	if response.Code != http.StatusOK || len(triggers.requests) != 1 || triggers.requests[0].Actor != "operator" {
+		t.Fatalf("trigger actor not bound: status=%d requests=%+v", response.Code, triggers.requests)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"implementation","actor":"another-operator"}`))
+	if response.Code != http.StatusBadRequest || len(triggers.requests) != 1 {
+		t.Fatal("body supplied its own attribution identity")
+	}
+}
+
 func writePlanePaths() []string {
 	return []string{
 		apicontract.ClaimAcquirePath,

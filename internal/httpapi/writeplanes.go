@@ -188,6 +188,8 @@ type ClaimService interface {
 // second run (the webhook handler's bounded in-memory dedupe, applied to the
 // generic trigger plane — daemon-local is sound under DS1).
 type TriggerRequest struct {
+	// Actor is the authenticated subject, never a caller-supplied body field.
+	Actor     string `json:"-"`
 	Gaggle    string `json:"gaggle,omitempty"`
 	Workflow  string `json:"workflow"`
 	RequestID string `json:"requestId,omitempty"`
@@ -596,6 +598,9 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 			}
 			input.PodScoped = true
 			input.PodRunID = runID
+		}
+		if principal, ok := PrincipalFromRequest(request); ok {
+			input.Actor = principal.Subject
 		}
 		response, err := triggers.Trigger(request.Context(), input)
 		if err != nil {

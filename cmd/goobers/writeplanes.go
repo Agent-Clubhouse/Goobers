@@ -482,12 +482,18 @@ type daemonTriggerService struct {
 	contains func(gaggle, runID string) bool
 
 	mu    sync.Mutex
-	seen  map[string]string // requestId -> minted run id
+	seen  map[string]triggerReservation
 	order []string
 }
 
 func newDaemonTriggerService() *daemonTriggerService {
-	return &daemonTriggerService{now: time.Now, seen: make(map[string]string)}
+	return &daemonTriggerService{now: time.Now, seen: make(map[string]triggerReservation)}
+}
+
+type triggerReservation struct {
+	request   httpapi.TriggerRequest
+	runID     string
+	completed bool
 }
 
 // withGaggleContainment attaches the pod-principal containment check. The
@@ -582,8 +588,11 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 		)
 	}
 	requestID := strings.TrimSpace(request.RequestID)
+	request.RequestID = requestID
 	if requestID != "" {
-		if runID, duplicate := s.reserve(requestID); duplicate {
+		if runID, duplicate, err := s.reserve(request); err != nil {
+			return httpapi.TriggerResponse{}, err
+		} else if duplicate {
 			return httpapi.TriggerResponse{RunID: runID, Duplicate: true}, nil
 		}
 	}
@@ -635,20 +644,38 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 // duplicate reports the recorded run — empty while the winning delivery is
 // still minting, which is still authoritatively "this delivery was already
 // accepted".
-func (s *daemonTriggerService) reserve(requestID string) (runID string, duplicate bool) {
+func (s *daemonTriggerService) reserve(request httpapi.TriggerRequest) (runID string, duplicate bool, err error) {
+	requestID := request.RequestID
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if runID, exists := s.seen[requestID]; exists {
-		return runID, true
+	if prior, exists := s.seen[requestID]; exists {
+		if prior.request != request {
+			return "", false, httpapi.NewInterventionError(http.StatusConflict, "trigger_request_conflict", "requestId already belongs to a different trigger or caller", nil)
+		}
+		return prior.runID, true, nil
 	}
-	s.seen[requestID] = ""
+	if !s.makeReservationSpace() {
+		return "", false, httpapi.NewInterventionError(http.StatusServiceUnavailable, "trigger_queue_full", "too many trigger requests are awaiting admission", nil)
+	}
+	s.seen[requestID] = triggerReservation{request: request}
 	s.order = append(s.order, requestID)
-	if len(s.order) > maxTriggerDedupeRecords {
-		oldest := s.order[0]
-		s.order = s.order[1:]
-		delete(s.seen, oldest)
+	return "", false, nil
+}
+
+// Caller holds mu. A bounded replay window may evict completed records, but
+// evicting an in-flight reservation would let a retry mint concurrently again.
+func (s *daemonTriggerService) makeReservationSpace() bool {
+	if len(s.seen) < maxTriggerDedupeRecords {
+		return true
 	}
-	return "", false
+	for i, id := range s.order {
+		if s.seen[id].completed {
+			delete(s.seen, id)
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // completeReservation fixes the minted run onto the reservation (unless the
@@ -656,8 +683,10 @@ func (s *daemonTriggerService) reserve(requestID string) (runID string, duplicat
 func (s *daemonTriggerService) completeReservation(requestID, runID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.seen[requestID]; exists {
-		s.seen[requestID] = runID
+	if reservation, exists := s.seen[requestID]; exists {
+		reservation.runID = runID
+		reservation.completed = true
+		s.seen[requestID] = reservation
 	}
 }
 
@@ -667,7 +696,7 @@ func (s *daemonTriggerService) completeReservation(requestID, runID string) {
 func (s *daemonTriggerService) releaseReservation(requestID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if runID, exists := s.seen[requestID]; !exists || runID != "" {
+	if reservation, exists := s.seen[requestID]; !exists || reservation.completed {
 		return
 	}
 	delete(s.seen, requestID)

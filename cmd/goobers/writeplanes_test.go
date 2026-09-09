@@ -430,6 +430,79 @@ func TestTriggerPlaneDedupesRedeliveredRequests(t *testing.T) {
 	}
 }
 
+func TestTriggerPlaneRejectsReboundRequestIdentity(t *testing.T) {
+	for _, field := range []string{"workflow", "gaggle", "force", "source", "actor", "pod"} {
+		t.Run(field, func(t *testing.T) {
+			stub := &stubTriggerer{}
+			service := newDaemonTriggerService()
+			service.dispatch = stub
+			service.contains = func(string, string) bool { return true }
+			original := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "delivery", Actor: "operator-a"}
+			if _, err := service.Trigger(context.Background(), original); err != nil {
+				t.Fatal(err)
+			}
+			changed := original
+			switch field {
+			case "workflow":
+				changed.Workflow = "other-workflow"
+			case "gaggle":
+				changed.Gaggle = "other-gaggle"
+			case "force":
+				changed.Force = true
+			case "source":
+				changed.SourceRun = "another-run"
+			case "actor":
+				changed.Actor = "operator-b"
+			case "pod":
+				changed.PodScoped, changed.PodRunID = true, "pod-run"
+			}
+			_, err := service.Trigger(context.Background(), changed)
+			var refusal *httpapi.InterventionError
+			if !errors.As(err, &refusal) || refusal.Code != "trigger_request_conflict" || stub.mints != 1 {
+				t.Fatalf("request rebound: err=%v mints=%d", err, stub.mints)
+			}
+			got, err := service.Trigger(context.Background(), original)
+			if err != nil || !got.Duplicate || got.RunID != "run-1" {
+				t.Fatalf("conflict damaged original receipt: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestTriggerPlaneCapacityNeverEvictsInFlightReservation(t *testing.T) {
+	service := newDaemonTriggerService()
+	request := func(id string) httpapi.TriggerRequest {
+		return httpapi.TriggerRequest{Workflow: "implementation", RequestID: id}
+	}
+	for i := range maxTriggerDedupeRecords {
+		if _, duplicate, err := service.reserve(request(strconv.Itoa(i))); err != nil || duplicate {
+			t.Fatalf("reserve %d: duplicate=%t err=%v", i, duplicate, err)
+		}
+	}
+	if _, _, err := service.reserve(request("overflow")); err == nil {
+		t.Fatal("full queue accepted another in-flight request")
+	}
+	if _, duplicate, err := service.reserve(request("0")); err != nil || !duplicate {
+		t.Fatalf("oldest active reservation evicted: %t %v", duplicate, err)
+	}
+	// A successful priority dispatch can legitimately have no immediate run
+	// ID. It is completed nonetheless, unlike an in-flight reservation.
+	service.completeReservation("1", "")
+	service.releaseReservation("1")
+	if _, duplicate, err := service.reserve(request("1")); err != nil || !duplicate {
+		t.Fatal("completed empty response was confused with failed admission")
+	}
+	if _, duplicate, err := service.reserve(request("overflow")); err != nil || duplicate {
+		t.Fatalf("completed entry did not free bounded capacity: %t %v", duplicate, err)
+	}
+	if len(service.seen) != maxTriggerDedupeRecords || len(service.order) != maxTriggerDedupeRecords {
+		t.Fatal("reservation storage exceeded its bound")
+	}
+	if _, duplicate, err := service.reserve(request("0")); err != nil || !duplicate {
+		t.Fatal("capacity reclamation evicted an active request")
+	}
+}
+
 func TestTriggerPlanePassesForceOnlyToManualDispatch(t *testing.T) {
 	stub := &stubTriggerer{}
 	service := newDaemonTriggerService()
