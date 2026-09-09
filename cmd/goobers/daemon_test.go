@@ -1386,6 +1386,10 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 	}
 
 	const runID = "interrupted-run-1"
+	pinnedDefinition, err := json.Marshal(machine.Def)
+	if err != nil {
+		t.Fatal(err)
+	}
 	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
 		RunID:           runID,
 		Workflow:        wf.Name,
@@ -1393,7 +1397,7 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 		WorkflowDigest:  machine.Digest(),
 		Gaggle:          wf.Spec.Gaggle,
 		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
-	}, nil)
+	}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: pinnedDefinition}, journal.WithInputIntegrity(map[string]apiv1.Integrity{journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted}))
 	if err != nil {
 		t.Fatalf("hand-construct interrupted run journal: %v", err)
 	}

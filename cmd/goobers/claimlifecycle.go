@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -194,14 +195,11 @@ func recoverClaimsWithResolver(
 				recorded[entry.RunID] = struct{}{}
 			}
 		}
-		sharedExpired, err := recoverExpiredSharedClaims(claimContext(), ledger, coordinated, now)
+		sharedExpired, cleanupErr := recoverExpiredSharedClaims(claimContext(), ledger, coordinated, now)
 		released = append(released, sharedExpired...)
-		if err != nil {
-			return err
-		}
 		expired, err := ledger.RecoverExpired(now)
 		if err != nil {
-			return err
+			return errors.Join(cleanupErr, err)
 		}
 		released = append(released, expired...)
 		for _, entry := range terminalEntries {
@@ -221,11 +219,12 @@ func recoverClaimsWithResolver(
 				continue
 			}
 			if err := coordinated.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(current), current.RunID); err != nil {
-				return fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err)
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
+				continue
 			}
 			released = append(released, current)
 		}
-		return nil
+		return cleanupErr
 	})
 	return released, err
 }
@@ -235,16 +234,18 @@ func recoverClaimsWithResolver(
 // exact persisted owner; an expired lease is never renewal authority.
 func recoverExpiredSharedClaims(ctx context.Context, ledger *localscheduler.ClaimLedger, coordinated claimsclient.Ledger, now time.Time) ([]localscheduler.ClaimEntry, error) {
 	var released []localscheduler.ClaimEntry
+	var cleanupErr error
 	for _, entry := range ledger.Snapshot() {
 		if entry.SharedDeadline.IsZero() || entry.ExpiresAt.After(now) {
 			continue
 		}
 		if err := coordinated.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), entry.RunID); err != nil {
-			return released, fmt.Errorf("release expired shared claim %s for run %s: %w", entry.ItemID, entry.RunID, err)
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release expired shared claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
+			continue
 		}
 		released = append(released, entry)
 	}
-	return released, nil
+	return released, cleanupErr
 }
 
 func currentClaimEntry(ledger *localscheduler.ClaimLedger, entry localscheduler.ClaimEntry) (localscheduler.ClaimEntry, bool) {
