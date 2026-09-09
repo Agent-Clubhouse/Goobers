@@ -6,6 +6,7 @@ const smokeRunId = "01JZE2ESMOKERUN";
 interface RouteCase {
   path: string;
   heading: string;
+  exact?: boolean;
 }
 
 // Keyed by `Route["page"]` so the e2e typecheck fails the moment the routing
@@ -18,6 +19,7 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   runs: { path: "/#/runs", heading: "Runs" },
   errors: { path: "/#/errors", heading: "Matching errors" },
   insight: { path: "/#/insight", heading: "Insight" },
+  cost: { path: "/#/cost", heading: "Cost", exact: true },
   workflow: { path: "/#/workflow/core/implementation", heading: "Implementation" },
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
 };
@@ -32,12 +34,12 @@ function trackConsoleErrors(page: Page): string[] {
   return errors;
 }
 
-for (const [name, { path, heading }] of Object.entries(ROUTES)) {
+for (const [name, { path, heading, exact }] of Object.entries(ROUTES)) {
   test(`loads the ${name} route from fixture daemon data`, async ({ page }) => {
     const consoleErrors = trackConsoleErrors(page);
     await page.goto(path);
 
-    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    await expect(page.getByRole("heading", { name: heading, exact })).toBeVisible();
     if (name === "workflow") {
       const queue = page.getByRole("region", { name: "PR queue eligibility" });
       await expect(queue.getByRole("table", { name: "Per-PR eligibility" })).toBeVisible();

@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe("Insight page", () => {
-  it("sequences aggregate requests within the daemon admission limit", async () => {
+  it("keeps cost reporting out of operational Insight", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     const getTelemetryErrorSignatures = vi.spyOn(client, "getTelemetryErrorSignatures");
@@ -32,17 +32,14 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     await waitFor(() => {
-      expect(getTelemetryStats).toHaveBeenCalledTimes(3);
+      expect(getTelemetryStats).toHaveBeenCalledTimes(1);
       expect(getTelemetryErrorSignatures).toHaveBeenCalledTimes(1);
-      expect(getTelemetryCosts).toHaveBeenCalledTimes(1);
+      expect(getTelemetryCosts).not.toHaveBeenCalled();
     });
-
-    const statsCalls = getTelemetryStats.mock.invocationCallOrder;
-    const errorCall = getTelemetryErrorSignatures.mock.invocationCallOrder[0];
-    expect(statsCalls[0]).toBeLessThan(errorCall);
-    expect(errorCall).toBeLessThan(statsCalls[1]);
-    expect(statsCalls[1]).toBeLessThan(statsCalls[2]);
-    expect(statsCalls[2]).toBeLessThan(getTelemetryCosts.mock.invocationCallOrder[0]);
+    expect(screen.queryByRole("heading", { name: "Instance spend" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Cost by pull request and issue" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows scoped outcomes and full stage duration distributions", async () => {
@@ -180,13 +177,14 @@ describe("Insight page", () => {
   });
 
   it("shows exact cost and token rollups with contributor-specific drill-downs", async () => {
+    window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listRuns = vi.spyOn(client, "listRuns");
     const user = userEvent.setup();
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Cost and tokens" }),
+      await screen.findByRole("heading", { name: "Selected-scope cost" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("AI credits")).not.toBeInTheDocument();
     expect(
@@ -198,24 +196,18 @@ describe("Insight page", () => {
       /Instance: 8 samples, P50 \$0\.80, P95 \$2\.50/,
     );
 
-    const tokenLink = screen.getByRole("link", {
-      name: /View token usage runs behind Instance/,
-    });
-
     const costLink = screen.getByRole("link", {
       name: /View AI cost runs behind Instance/,
     });
     const wasteLink = screen.getByRole("link", {
       name: /View retry-waste runs behind Instance/,
     });
-    expect(tokenLink).toHaveAttribute("href", expect.stringContaining("population=token-measured"));
     expect(costLink).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
     expect(wasteLink).toHaveAttribute("href", expect.stringContaining("population=retry-waste"));
-    for (const link of [tokenLink, costLink, wasteLink]) {
+    for (const link of [costLink, wasteLink]) {
       expect(link).toHaveAttribute("href", expect.not.stringContaining("outcome=finished"));
       expect(link).toHaveAttribute("href", expect.stringMatching(/since=.*until=/));
     }
-    expect(screen.getAllByText("15,000 tokens").length).toBeGreaterThan(0);
     expect(screen.getByText("12,000 tokens")).toBeInTheDocument();
     expect(screen.getByText("$0.75")).toBeInTheDocument();
 
@@ -256,17 +248,12 @@ describe("Insight page", () => {
       screen.getByRole("option", { name: "Stage · tools / implementation / implement" }),
     );
 
-    const unmeasuredTokens = screen.getByRole("link", {
-      name: /View token usage runs behind tools \/ implementation \/ implement: Unmeasured/,
-    });
     const unmeasuredCost = screen.getByRole("link", {
       name: /View AI cost runs behind tools \/ implementation \/ implement: Unmeasured/,
     });
-    expect(within(unmeasuredTokens).getAllByText("Unmeasured")).toHaveLength(3);
     expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(3);
     expect(screen.getByText("No retry waste")).toBeInTheDocument();
     expect(within(unmeasuredCost).queryByText("$0.00")).not.toBeInTheDocument();
-    expect(within(unmeasuredTokens).queryByText("0 tokens")).not.toBeInTheDocument();
     expect(unmeasuredCost).toHaveAttribute(
       "href",
       expect.stringMatching(
@@ -293,6 +280,7 @@ describe("Insight page", () => {
   });
 
   it("shows provider-native attributed costs, normalized estimates, and coverage", async () => {
+    window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryCosts = vi.spyOn(client, "getTelemetryCosts");
     const user = userEvent.setup();
@@ -348,6 +336,7 @@ describe("Insight page", () => {
   });
 
   it("shows a cost trend and a same-length prior-period comparison for the selected scope", async () => {
+    window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     const user = userEvent.setup();
@@ -385,6 +374,7 @@ describe("Insight page", () => {
   });
 
   it("shows an instance-wide cost rollup broken down by gaggle, unaffected by the selected scope", async () => {
+    window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     getTelemetryStats.mockResolvedValue({
@@ -491,6 +481,7 @@ describe("Insight page", () => {
   });
 
   it("flags spend against a configured soft budget threshold", async () => {
+    window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     vi.spyOn(client, "getTelemetryStats").mockResolvedValue({
       creditAssignment: [],
