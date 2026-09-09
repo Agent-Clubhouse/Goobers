@@ -26,8 +26,9 @@ type Manager struct {
 	// Root is the workcopies directory (ARCHITECTURE.md §6:
 	// <instance-root>/workcopies), always absolute (NewManager resolves it) —
 	// see NewManager's doc comment for why.
-	Root          string
-	beforeCleanup func(context.Context, CleanupTarget) error
+	Root            string
+	cleanupGuardsMu sync.RWMutex
+	cleanupGuards   map[string]func(context.Context, CleanupTarget) error
 
 	// runBranchNamespaces are the refs/heads/ prefixes WorkingCopy's mirror
 	// prune must exclude so a run's local-only branch is never force-reset

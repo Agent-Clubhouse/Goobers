@@ -28,11 +28,17 @@ func (m *Manager) handoffPinnedReceipts(ctx context.Context, key string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := m.prepareCleanup(ctx, path, "pin-"+key, owner); err != nil {
+	acknowledged, err := m.prepareCleanupWithReceipts(ctx, path, "pin-"+key, owner)
+	if err != nil {
 		return err
 	}
-	if m.beforeCleanup == nil {
-		return nil
+	if !acknowledged {
+		if _, err := os.Lstat(filepath.Join(path, "mutations.jsonl")); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return fmt.Errorf("pinned mutation receipts require their durable handoff before reuse")
 	}
 	// Do not carry a prior run's receipts into the next run's sidecar. A
 	// failed remove/sync preserves the old owner and refuses preparation.
