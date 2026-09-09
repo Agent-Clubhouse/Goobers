@@ -21,7 +21,7 @@ func TestWorkflowTranscriptAdoptionRequiresFinalBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, err := (TranscriptTransport{RunID: runID, Gaggle: "web", Emitter: w}).OpenTranscriptCheckpoint(
-		"build", "copilot-cli.transcript", journal.NewPatternScrubber())
+		runID+":build", "copilot-cli.transcript", journal.NewPatternScrubber())
 	if err != nil {
 		t.Fatal(err)
 	}

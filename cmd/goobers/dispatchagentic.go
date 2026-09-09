@@ -463,7 +463,9 @@ func podCheckpointRecorder(w podExecutorWiring) runner.ArtifactRecorder {
 		return recorder
 	}
 	transport := livejournal.TranscriptTransport{
-		RunID: w.Kit.Envelope.RunID, Gaggle: w.Kit.Envelope.Gaggle,
+		// Placement supplies the journal scope in the pod environment, just
+		// as it does for artifact emission. Review kits may omit gaggle.
+		RunID: os.Getenv(dispatcher.EnvRunID), Gaggle: os.Getenv(dispatcher.EnvGaggle),
 		// TranscriptTransport supplies separate checkpoint/final deadlines.
 		Emitter: &livejournal.HTTPEmitter{BaseURL: endpoint, Token: os.Getenv(dispatcher.EnvPodToken)},
 	}

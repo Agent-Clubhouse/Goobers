@@ -11,7 +11,7 @@ import (
 // key without recording the same transcript twice or fetching it from an
 // optional fleet store. Reading durable history also makes this work after a
 // daemon restart and for runner-owned, adopted journals.
-func (run *liveRun) adoptCompletedTranscript(op Op) (bool, error) {
+func (run *liveRun) adoptCompletedTranscript(runID string, op Op) (bool, error) {
 	span := op.Span
 	if span == nil || (span.Name != "transcript" && !strings.HasSuffix(span.Name, ".transcript")) {
 		return false, nil
@@ -28,7 +28,8 @@ func (run *liveRun) adoptCompletedTranscript(op Op) (bool, error) {
 		event := events[i]
 		capture, _ := event.Runner["transcriptCaptureComplete"].(string)
 		if !event.KnownSchema() || event.Type != journal.EventSpanRecorded || !validRemoteCaptureID(capture) ||
-			event.Stage != span.Stage || event.Ref == nil || event.Ref.Digest != span.Ref.Digest || event.Ref.Size != span.Ref.Size {
+			strings.TrimPrefix(event.Stage, runID+":") != strings.TrimPrefix(span.Stage, runID+":") ||
+			event.Ref == nil || event.Ref.Digest != span.Ref.Digest || event.Ref.Size != span.Ref.Size {
 			continue
 		}
 		if _, err := reader.ArtifactBytesBounded(*event.Ref, journal.MaxCheckpointScrubBytes); err != nil {

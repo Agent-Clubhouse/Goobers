@@ -64,7 +64,9 @@ func TestPodTranscriptCheckpointRecorderWiring(t *testing.T) {
 	t.Setenv(dispatcher.EnvDaemonAPI, "https://journal.invalid")
 	t.Setenv(dispatcher.EnvBlobEndpoint, "https://blobs.invalid")
 	t.Setenv(dispatcher.EnvPodToken, "run-scoped-token")
-	wiring := podExecutorWiring{Kit: &agentickit.Kit{Envelope: apiv1.InvocationEnvelope{RunID: "run-pod", Gaggle: "gaggle-pod"}},
+	t.Setenv(dispatcher.EnvRunID, "run-pod")
+	t.Setenv(dispatcher.EnvGaggle, "gaggle-pod")
+	wiring := podExecutorWiring{Kit: &agentickit.Kit{Envelope: apiv1.InvocationEnvelope{RunID: "run-pod"}},
 		RunsDir: t.TempDir(), Stderr: io.Discard, Scrubber: journal.NewPatternScrubber()}
 	recorder := podAgenticExecutorInput(wiring).ArtifactRecorder
 	wired, ok := recorder.(checkpointPodArtifacts)
