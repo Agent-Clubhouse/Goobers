@@ -1,48 +1,14 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
-
-// resolveSharedClaimOwner reads authoritative ownership rather than accepting
-// a worker-supplied incarnation. It never adopts an instance during admission.
-func resolveSharedClaimOwner(ctx context.Context, layout instance.Layout, runID, workflow, gaggle, remoteKey string) (sharedclaim.Owner, error) {
-	id, err := instance.ReadRootIdentity(layout.Root)
-	if err != nil {
-		return sharedclaim.Owner{}, err
-	}
-	directory, err := runDirFor(layout, runID)
-	if err != nil {
-		return sharedclaim.Owner{}, err
-	}
-	reader, err := journal.OpenReadOnly(directory)
-	if err != nil {
-		return sharedclaim.Owner{}, err
-	}
-	identity, err := reader.Identity()
-	if err != nil {
-		return sharedclaim.Owner{}, err
-	}
-	if identity.RunID != runID || identity.Workflow != workflow || identity.Gaggle != gaggle {
-		return sharedclaim.Owner{}, fmt.Errorf("shared claim request does not match the stored run identity")
-	}
-	phase, err := reader.PhaseBounded(ctx)
-	if err != nil {
-		return sharedclaim.Owner{}, err
-	}
-	if terminalRunPhase(phase) {
-		return sharedclaim.Owner{}, fmt.Errorf("terminal run cannot acquire a shared claim")
-	}
-	return sharedClaimOwnerFromIdentity(id, identity, remoteKey)
-}
 
 func sharedClaimOwnerFromIdentity(instanceID string, identity journal.RunIdentity, remoteKey string) (sharedclaim.Owner, error) {
 	if instanceID == "" || identity.StartedAt.IsZero() || identity.WorkflowDigest == "" || identity.Gaggle == "" || identity.Workflow == "" {

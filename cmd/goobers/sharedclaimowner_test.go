@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/sharedclaim"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestSharedClaimOwnerBindsPersistedRunIncarnation(t *testing.T) {
@@ -40,31 +44,34 @@ func TestSharedClaimOwnerBindsPersistedRunIncarnation(t *testing.T) {
 }
 
 func TestSharedClaimOwnerResolvesStoredOwnership(t *testing.T) {
-	layout := instance.NewLayout(initDemo(t))
+	layout, run := newPinnedClaimResolverRun(t, "shared")
 	instanceID, err := instance.ReadRootIdentity(layout.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := journal.RunIdentity{RunID: "shared-owner", Gaggle: "gaggle", Workflow: "implement", WorkflowVersion: 1, WorkflowDigest: "sha256:definition", StartedAt: time.Now().UTC()}
-	run, err := journal.Create(layout.RunsDir(), identity, nil)
+	resolver := pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
+		return &pinnedClaimTestStore{}, nil
+	}}
+	key := claimsclient.Key{Gaggle: "example", Provider: "github", ExternalID: "42"}
+	binding, err := resolver.Admission(t.Context(), key, "shared-run", "claim")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = run.Close() }()
-	owner, err := resolveSharedClaimOwner(t.Context(), layout, identity.RunID, identity.Workflow, identity.Gaggle, "repository/42")
-	if err != nil || owner.Instance != instanceID || owner.Run != identity.RunID {
-		t.Fatalf("stored ownership: %+v %v", owner, err)
+	if binding.Owner.Instance != instanceID || binding.Owner.Run != "shared-run" {
+		t.Fatalf("stored ownership: %+v", binding.Owner)
 	}
-	if _, err := resolveSharedClaimOwner(t.Context(), layout, identity.RunID, "other-workflow", identity.Gaggle, "repository/42"); err == nil {
+	if _, err := resolver.Admission(t.Context(), key, "shared-run", "other-workflow"); err == nil {
 		t.Fatal("request replaced stored workflow identity")
 	}
-	if _, err := resolveSharedClaimOwner(t.Context(), layout, identity.RunID, identity.Workflow, "other-gaggle", "repository/42"); err == nil {
+	other := key
+	other.Gaggle = "other-gaggle"
+	if _, err := resolver.Admission(t.Context(), other, "shared-run", "claim"); err == nil {
 		t.Fatal("request replaced stored gaggle identity")
 	}
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveSharedClaimOwner(t.Context(), layout, identity.RunID, identity.Workflow, identity.Gaggle, "repository/42"); err == nil {
+	if _, err := resolver.Admission(t.Context(), key, "shared-run", "claim"); err == nil {
 		t.Fatal("terminal run acquired new shared ownership")
 	}
 }
