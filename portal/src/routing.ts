@@ -9,6 +9,7 @@ export type Route =
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
   | { page: "insight"; filters?: ScopeFilters }
+  | { page: "cost"; filters?: ScopeFilters }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
 
@@ -27,7 +28,8 @@ export type PrimaryArea =
   | "workflows"
   | "goobers"
   | "runs"
-  | "insight";
+  | "insight"
+  | "cost";
 
 export function parseRoute(hash = window.location.hash): Route {
   const fragment = hash.replace(/^#\/?/, "");
@@ -71,6 +73,10 @@ export function parseRoute(hash = window.location.hash): Route {
     const filters = parseScopeFilters(search);
     return hasScopeFilters(filters) ? { page: "insight", filters } : { page: "insight" };
   }
+  if (area === "cost") {
+    const filters = parseScopeFilters(search);
+    return hasScopeFilters(filters) ? { page: "cost", filters } : { page: "cost" };
+  }
   return { page: "overview" };
 }
 
@@ -102,11 +108,11 @@ export function routeHash(route: Route): string {
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/errors${suffix}`;
   }
-  if (route.page === "insight" && route.filters) {
+  if ((route.page === "insight" || route.page === "cost") && route.filters) {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return `#/insight${suffix}`;
+    return `#/${route.page}${suffix}`;
   }
   return `#/${route.page}`;
 }

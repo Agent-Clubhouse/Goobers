@@ -97,6 +97,22 @@ describe("Insight routing", () => {
     expect(parseRoute("#/insight")).toEqual({ page: "insight" });
   });
 
+  it("round-trips a scoped Cost route with a time window preset", () => {
+    const route = {
+      page: "cost" as const,
+      filters: {
+        gaggle: "core tools",
+        workflow: "implementation/v2",
+        stage: "review gate",
+        window: "30d" as const,
+      },
+    };
+
+    expect(parseRoute(routeHash(route))).toEqual(route);
+    expect(parseRoute("#/cost")).toEqual({ page: "cost" });
+    expect(activeArea(route)).toBe("cost");
+  });
+
   it("round-trips an exact error signature including empty values", () => {
     const route = {
       page: "errors" as const,
