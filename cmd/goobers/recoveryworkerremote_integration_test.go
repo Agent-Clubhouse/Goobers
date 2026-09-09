@@ -102,6 +102,19 @@ func TestIntegrationRemoteWorkerCleanupWaitsForVerifiedCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	preparedBranch, err := recovery.PreparedRestoreBranch(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentBranch := recoveryCLIGit(t, workspace.Path(), "branch", "--show-current")
+	recoveryCLIGit(t, workspace.Path(), "checkout", "-b", preparedBranch)
+	if err := os.WriteFile(filepath.Join(workspace.Path(), "prepared.txt"), []byte("unadopted implementation"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	recoveryCLIGit(t, workspace.Path(), "add", "prepared.txt")
+	recoveryCLIGit(t, workspace.Path(), "commit", "-m", "prepared recovery")
+	preparedSHA := recoveryCLIGit(t, workspace.Path(), "rev-parse", "HEAD")
+	recoveryCLIGit(t, workspace.Path(), "checkout", currentBranch)
 	file := filepath.Join(workspace.Path(), "implementation.txt")
 	if err := os.WriteFile(file, []byte("dirty worker implementation"), 0600); err != nil {
 		t.Fatal(err)
@@ -111,6 +124,9 @@ func TestIntegrationRemoteWorkerCleanupWaitsForVerifiedCustody(t *testing.T) {
 	}
 	if data, err := os.ReadFile(file); err != nil || string(data) != "dirty worker implementation" {
 		t.Fatalf("refused upload lost source: %q %v", data, err)
+	}
+	if got := recoveryCLIGit(t, workspace.Path(), "rev-parse", "refs/heads/"+preparedBranch); got != preparedSHA {
+		t.Fatal("refused upload lost abandoned preparation")
 	}
 	allow.Store(true)
 	// A restarted worker has neither the original workspace handle nor the
@@ -135,10 +151,16 @@ func TestIntegrationRemoteWorkerCleanupWaitsForVerifiedCustody(t *testing.T) {
 		t.Fatalf("acknowledged source not cleaned: %v", err)
 	}
 	entries, err := recovery.ReadInventory(t.Context(), inventory, 128)
-	if err != nil || len(entries) != 1 {
+	if err != nil || len(entries) != 2 {
 		t.Fatalf("host custody missing: %v %v", entries, err)
 	}
-	if got := recoveryCLIGit(t, hostRepository, "show", entries[0].Record.Ref+":implementation.txt"); got != "dirty worker implementation" {
-		t.Fatalf("host content = %q", got)
+	for _, entry := range entries {
+		name, want := "implementation.txt", "dirty worker implementation"
+		if entry.Record.SnapshotSHA == preparedSHA {
+			name, want = "prepared.txt", "unadopted implementation"
+		}
+		if got := recoveryCLIGit(t, hostRepository, "show", entry.Record.Ref+":"+name); got != want {
+			t.Fatalf("host %s content = %q", name, got)
+		}
 	}
 }

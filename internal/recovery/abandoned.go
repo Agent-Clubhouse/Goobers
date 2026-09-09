@@ -50,7 +50,7 @@ func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, l
 	record := Record{Version: 1, RunID: request.RunID, RepositoryKey: request.RepositoryKey,
 		Ref: snapshotRef, BaseSHA: parent, SnapshotSHA: commit, PatchDigest: digest,
 		CreatedAt: request.IdentityTime, RetainUntil: request.RetainUntil}
-	retained, err := publishAbandonedPreparation(ctx, request, record)
+	retained, recordPath, err := publishAbandonedPreparation(ctx, request, record)
 	if err != nil {
 		return err
 	}
@@ -62,13 +62,16 @@ func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, l
 	if err := log.Append(event); err != nil {
 		return fmt.Errorf("acknowledge abandoned preparation: %w", err)
 	}
+	if err := request.acknowledgeArchive(ctx, retained, recordPath); err != nil {
+		return err
+	}
 	return deleteExactRecoveryRef(ctx, request.Repository, ref, commit)
 }
 
-func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, prepared Record) (Record, error) {
+func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, prepared Record) (Record, string, error) {
 	entries, err := ReadInventory(ctx, request.InventoryRoot, request.MaxSnapshots)
 	if err != nil {
-		return Record{}, err
+		return Record{}, "", err
 	}
 	for _, entry := range entries {
 		prior := entry.Record
@@ -76,7 +79,7 @@ func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, 
 			continue
 		}
 		if prior.Ref != prepared.Ref || prior.BaseSHA != prepared.BaseSHA || prior.PatchDigest != prepared.PatchDigest {
-			return Record{}, ErrRecordConflict
+			return Record{}, "", ErrRecordConflict
 		}
 		// The same prepared commit can cross the stage-to-terminal boundary.
 		// Keep its immutable capture identity and bytes; renew only the sidecar.
@@ -85,7 +88,8 @@ func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, 
 	}
 	_, path, err := PublishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes)
 	if err != nil {
-		return Record{}, err
+		return Record{}, "", err
 	}
-	return RenewRetention(ctx, path, request.RetainUntil, request.MaxArchiveBytes)
+	renewed, err := RenewRetention(ctx, path, request.RetainUntil, request.MaxArchiveBytes)
+	return renewed, path, err
 }

@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -25,12 +26,23 @@ type RetentionRequest struct {
 	// SkipEmpty permits cleanup without publishing when no implementation
 	// differs from the cumulative base. It returns a zero record and empty path.
 	SkipEmpty bool
+	// AcknowledgeArchive optionally requires custody outside the local
+	// inventory before releasing source state. The path is the bundle, not
+	// its metadata sidecar. Failure preserves the source for an identical retry.
+	AcknowledgeArchive func(context.Context, Record, string) error
 }
 
 // PublicationJournal is the durable acknowledgement boundary. Production uses
 // an instance journal rather than reopening the active run's writer.
 type PublicationJournal interface {
 	Append(journal.Event) error
+}
+
+func (r RetentionRequest) acknowledgeArchive(ctx context.Context, record Record, recordPath string) error {
+	if r.AcknowledgeArchive == nil {
+		return nil
+	}
+	return r.AcknowledgeArchive(ctx, record, filepath.Join(filepath.Dir(recordPath), BundleFileName))
 }
 
 // Retain captures, publishes, and journals one snapshot before acknowledging
@@ -66,6 +78,9 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 	}
 	if err := log.Append(event); err != nil {
 		return Record{}, "", fmt.Errorf("journal recovery publication: %w", err)
+	}
+	if err := request.acknowledgeArchive(ctx, retained, path); err != nil {
+		return Record{}, "", err
 	}
 	return retained, path, nil
 }

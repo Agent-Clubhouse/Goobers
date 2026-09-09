@@ -49,8 +49,29 @@ func TestIntegrationAbandonedPreparationRequiresDurableHandoff(t *testing.T) {
 		}
 		return nil
 	})
+	remoteFailure := errors.New("remote custody unavailable")
+	request.AcknowledgeArchive = func(_ context.Context, record Record, archive string) error {
+		if record.SnapshotSHA != commit || filepath.Base(archive) != BundleFileName {
+			t.Fatalf("invalid remote handoff: %+v %s", record, archive)
+		}
+		return remoteFailure
+	}
+	if err := RetainAbandonedPreparation(context.Background(), request, log); !errors.Is(err, remoteFailure) {
+		t.Fatalf("remote custody failure ignored: %v", err)
+	}
+	if got := recoveryTestGit(t, repository, "rev-parse", "refs/heads/"+branch); got != commit {
+		t.Fatal("preparation deleted before remote acknowledgement")
+	}
+	acknowledged := false
+	request.AcknowledgeArchive = func(context.Context, Record, string) error {
+		acknowledged = true
+		return nil
+	}
 	if err := RetainAbandonedPreparation(context.Background(), request, log); err != nil {
 		t.Fatal(err)
+	}
+	if !acknowledged {
+		t.Fatal("cleanup bypassed remote acknowledgement")
 	}
 	if err := RetainAbandonedPreparation(context.Background(), request, log); err != nil {
 		t.Fatalf("cleanup retry: %v", err)
