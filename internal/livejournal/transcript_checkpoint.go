@@ -1,6 +1,7 @@
 package livejournal
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,15 +21,17 @@ var ErrTranscriptSessionLost = errors.New("livejournal: transcript checkpoint se
 // journal plane. Data is already scrubbed by the worker; the daemon additionally
 // applies its own streaming scrubber before durable publication.
 type TranscriptCheckpointOp struct {
-	Capture      string `json:"capture"`
-	Action       string `json:"action"`
-	Stage        string `json:"stage"`
-	Name         string `json:"name"`
-	Stream       string `json:"stream,omitempty"`
-	Offset       int    `json:"offset,omitempty"`
-	Data         []byte `json:"data,omitempty"`
-	DroppedBytes int64  `json:"droppedBytes,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	Capture      string       `json:"capture"`
+	Action       string       `json:"action"`
+	Stage        string       `json:"stage"`
+	Name         string       `json:"name"`
+	Stream       string       `json:"stream,omitempty"`
+	Offset       int          `json:"offset,omitempty"`
+	Data         []byte       `json:"data,omitempty"`
+	DroppedBytes int64        `json:"droppedBytes,omitempty"`
+	Reason       string       `json:"reason,omitempty"`
+	DataSchema   string       `json:"dataSchema,omitempty"`
+	FinalRef     *journal.Ref `json:"finalRef,omitempty"`
 }
 
 type remoteTranscriptCapture struct {
@@ -38,7 +41,7 @@ type remoteTranscriptCapture struct {
 	next    int
 }
 
-func (run *liveRun) applyTranscriptCheckpoint(op Op) (bool, error) {
+func (w *Writer) applyTranscriptCheckpoint(ctx context.Context, run *liveRun, op Op) (bool, error) {
 	request := op.Checkpoint
 	if request == nil || !validRemoteCaptureID(request.Capture) {
 		return false, errors.New("livejournal: invalid transcript checkpoint identity")
@@ -46,15 +49,20 @@ func (run *liveRun) applyTranscriptCheckpoint(op Op) (bool, error) {
 	if request.Action == "open" {
 		return run.openTranscriptCheckpoint(op, request)
 	}
-	if request.Action != "append" {
+	if request.Action != "append" && request.Action != "final" {
 		return false, errors.New("livejournal: unsupported transcript checkpoint action")
 	}
 	session := run.transcriptCaptures[request.Capture]
 	if session == nil {
 		return false, ErrTranscriptSessionLost
 	}
-	if session.stage != request.Stage || session.name != request.Name ||
-		op.Key != request.Capture+"/checkpoint/"+strconv.Itoa(session.next) {
+	if session.stage != request.Stage || session.name != request.Name {
+		return false, errors.New("livejournal: transcript checkpoint session identity mismatch")
+	}
+	if request.Action == "final" {
+		return w.finalizeTranscriptCheckpoint(ctx, run, session, op)
+	}
+	if op.Key != request.Capture+"/checkpoint/"+strconv.Itoa(session.next) {
 		return false, errors.New("livejournal: transcript checkpoint session or sequence mismatch")
 	}
 	if err := session.capture.Append(journal.TranscriptCheckpoint{Stream: request.Stream, Offset: request.Offset,
@@ -63,6 +71,33 @@ func (run *liveRun) applyTranscriptCheckpoint(op Op) (bool, error) {
 	}
 	session.next++
 	run.keys[op.Key] = run.jr.Seq()
+	return true, nil
+}
+
+func (w *Writer) finalizeTranscriptCheckpoint(ctx context.Context, run *liveRun, session *remoteTranscriptCapture, op Op) (bool, error) {
+	request := op.Checkpoint
+	if op.Key != request.Capture+"/final" || request.FinalRef == nil || len(request.Data) != 0 {
+		return false, errors.New("livejournal: invalid transcript finalization")
+	}
+	if request.FinalRef.Size < 0 || request.FinalRef.Size > journal.MaxCheckpointScrubBytes {
+		return false, errors.New("livejournal: final transcript exceeds capture limit")
+	}
+	data, err := w.fetchSpan(ctx, request.FinalRef.Digest)
+	if err != nil {
+		return false, err // Never retire partials on unavailable final bytes.
+	}
+	if int64(len(data)) != request.FinalRef.Size {
+		return false, errors.New("livejournal: final transcript size mismatch")
+	}
+	ref, err := session.capture.RecordFinalWithCommitKey(request.DataSchema, data, op.Key)
+	if err != nil {
+		return false, err
+	}
+	if ref.Digest != request.FinalRef.Digest {
+		return false, errors.New("livejournal: final transcript changed at the daemon redaction boundary")
+	}
+	run.keys[op.Key] = run.jr.Seq()
+	delete(run.transcriptCaptures, request.Capture)
 	return true, nil
 }
 

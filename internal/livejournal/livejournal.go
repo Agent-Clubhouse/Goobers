@@ -1057,7 +1057,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 	// Adopt for why that is the coherent reading for a runner-driven run.
 	switch op.Kind {
 	case OpTranscriptCheckpoint:
-		return run.applyTranscriptCheckpoint(op)
+		return w.applyTranscriptCheckpoint(ctx, run, op)
 	case OpAppend:
 		if op.Event == nil {
 			return false, errors.New("append op carries no event")

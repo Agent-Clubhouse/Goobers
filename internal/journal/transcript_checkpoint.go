@@ -207,14 +207,28 @@ func (r *Run) recordTranscriptCheckpoint(c *TranscriptCapture, data []byte, meta
 // artifact available and can be retried with identical content. Partial blobs
 // are private to this capture, never shared with final content addresses.
 func (c *TranscriptCapture) RecordFinal(schema string, data []byte) (Ref, error) {
+	return c.RecordFinalWithCommitKey(schema, data, "")
+}
+
+// RecordFinalWithCommitKey binds remote finalization's retry key to the final
+// span event, before cleanup. A retry after daemon restart can therefore be
+// acknowledged from durable history without reopening a redaction session.
+func (c *TranscriptCapture) RecordFinalWithCommitKey(schema string, data []byte, key string) (Ref, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(key) > 256 {
+		return Ref{}, errors.New("journal: transcript final commit key exceeds limit")
+	}
 	if c.finalErr != nil {
 		return Ref{}, c.finalErr
 	}
 	if c.final == nil {
+		metadata := map[string]any{"transcriptCaptureComplete": c.id}
+		if key != "" {
+			metadata["emitKey"] = key
+		}
 		ref, err := c.run.recordSpanEvent(Event{Type: EventSpanRecorded, Stage: c.stage, Name: c.name,
-			DataSchema: schema, Runner: map[string]any{"transcriptCaptureComplete": c.id}}, data)
+			DataSchema: schema, Runner: metadata}, data)
 		if err != nil {
 			// The event may already be durable even if its state checkpoint
 			// failed. Do not emit a second final event on an uncertain retry.
