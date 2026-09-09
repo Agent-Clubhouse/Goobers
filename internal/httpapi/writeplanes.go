@@ -96,6 +96,7 @@ type ClaimEntry struct {
 	ExpiresAt      time.Time         `json:"expiresAt"`
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
 	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
 	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
 }
 

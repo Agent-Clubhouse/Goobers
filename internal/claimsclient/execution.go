@@ -105,6 +105,9 @@ func (s *executionClaims) update(listing Listing, now time.Time) error {
 	}
 	active := make(map[Key]bool)
 	for _, entry := range listing.Entries {
+		if entry.RunID == s.runID && entry.SharedRevoked {
+			return ErrSharedExecutionExpired
+		}
 		if entry.RunID != s.runID || entry.SharedDeadline.IsZero() {
 			continue
 		}
@@ -122,6 +125,9 @@ func (s *executionClaims) update(listing Listing, now time.Time) error {
 		s.held[key] = entry
 	}
 	for _, entry := range listing.History {
+		if entry.RunID == s.runID && entry.SharedRevoked {
+			return ErrSharedExecutionExpired
+		}
 		if entry.RunID != s.runID || entry.SharedDeadline.IsZero() || entry.ReleasedAt == nil {
 			continue
 		}

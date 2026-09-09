@@ -413,7 +413,8 @@ func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req
 				resp.Error = fmt.Sprintf("claim is held by non-terminal run %s; --force is required", entry.RunID)
 				return nil
 			}
-			if err := ledger.ForceReleaseEntry(entry, req.Actor); err != nil {
+			layout := instance.NewLayout(filepath.Dir(schedulerDir))
+			if err := forceReleaseClaim(context.Background(), ledger, localLifecycleSharedClaimResolver(layout), entry, req.Actor); err != nil {
 				return err
 			}
 			resp.Released = &entry

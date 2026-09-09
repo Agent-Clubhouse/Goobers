@@ -342,6 +342,7 @@ func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
 		ClaimedAt:      entry.ClaimedAt,
 		ExpiresAt:      entry.ExpiresAt,
 		SharedDeadline: entry.SharedDeadline,
+		SharedRevoked:  entry.SharedRevoked,
 		SharedOwner:    entry.SharedOwner,
 		ReleasedAt:     entry.ReleasedAt,
 	}

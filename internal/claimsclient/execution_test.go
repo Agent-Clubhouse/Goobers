@@ -32,6 +32,24 @@ func TestExecutionClaimsMissingEntryDoesNotEraseDeadline(t *testing.T) {
 	}
 }
 
+func TestExecutionClaimsAdministrativeRevocationIsNotVoluntaryRelease(t *testing.T) {
+	for _, history := range []bool{false, true} {
+		now := time.Now()
+		entry := executionTestClaim(now)
+		entry.SharedRevoked = true
+		listing := Listing{Entries: []Entry{entry}}
+		if history {
+			released := now.Add(time.Second)
+			entry.ReleasedAt = &released
+			listing = Listing{History: []Entry{entry}}
+		}
+		state := executionClaims{runID: "run", held: make(map[Key]Entry)}
+		if err := state.update(listing, now); !errors.Is(err, ErrSharedExecutionExpired) {
+			t.Fatalf("revocation enabled further execution: history=%v err=%v", history, err)
+		}
+	}
+}
+
 func TestExecutionClaimsReleaseAndRenewalEvidence(t *testing.T) {
 	for _, kind := range []string{"early-release", "expired-release", "renewal", "different-owner", "foreign-run", "local-claim"} {
 		t.Run(kind, func(t *testing.T) {

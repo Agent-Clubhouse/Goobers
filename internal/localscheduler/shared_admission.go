@@ -13,8 +13,15 @@ import (
 // persists owner independently for lost-ACK retries, and fences execution by
 // the stored SharedDeadline. This method never falls back to local admission.
 func (l *ClaimLedger) ClaimSharedScoped(ctx context.Context, store sharedclaim.Store, remoteKey string, key ClaimKey, owner sharedclaim.Owner, workflow string, ttl time.Duration) (bool, string, error) {
-	if _, err := key.storageKey(); err != nil {
+	storageKey, err := key.storageKey()
+	if err != nil {
 		return false, "", err
+	}
+	l.mu.Lock()
+	historical, _ := l.historyEntry(owner.Run, storageKey)
+	l.mu.Unlock()
+	if historical.SharedRevoked {
+		return false, "", fmt.Errorf("shared execution was administratively revoked")
 	}
 	deadline, err := sharedclaim.AcquireUntil(ctx, store, remoteKey, owner, ttl)
 	if err != nil {

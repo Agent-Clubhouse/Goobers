@@ -55,6 +55,7 @@ type ClaimEntry struct {
 	// local-only path, including after the ledger is reopened on restart.
 	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
 	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
 	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
 }
 
@@ -404,6 +405,9 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 // holds l.mu so a checked claim cannot change before the batch is committed.
 func (l *ClaimLedger) refusePlannedClaims(planned []plannedClaim, runID string, now time.Time) (bool, string, error) {
 	for _, claim := range planned {
+		if historical, ok := l.historyEntry(runID, claim.storageKey); ok && historical.SharedRevoked {
+			return true, "", errors.New("localscheduler: shared execution was administratively revoked")
+		}
 		if existing := l.entries[claim.storageKey]; !existing.SharedDeadline.IsZero() {
 			return true, "", errors.New("localscheduler: shared claim cannot be reclaimed through local-only admission")
 		}
@@ -447,6 +451,9 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	}
 
 	prev, hadPrev := l.entries[storageKey]
+	if historical, ok := l.historyEntry(runID, storageKey); ok && historical.SharedRevoked {
+		return false, "", errors.New("localscheduler: shared execution was administratively revoked")
+	}
 	if deadline.IsZero() && !prev.SharedDeadline.IsZero() {
 		return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before renewal")
 	}
@@ -606,14 +613,14 @@ func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner)
 // reserved for operator recovery of stuck claims and journals a distinct event
 // so the override cannot be mistaken for normal run cleanup.
 func (l *ClaimLedger) ForceRelease(itemID string) error {
-	return l.forceRelease(itemID, forceReleaseActorCLI)
+	return l.forceRelease(itemID, forceReleaseActorCLI, sharedclaim.Owner{})
 }
 
 // ForceReleaseEntry force-releases entry without losing its namespace and
 // records actor in the distinct administrative journal event.
 func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if entry.Gaggle == "" || entry.Provider == "" {
-		return l.forceRelease(entry.ItemID, actor)
+		return l.forceRelease(entry.ItemID, actor, sharedclaim.Owner{})
 	}
 	storageKey, err := (ClaimKey{
 		Gaggle:     entry.Gaggle,
@@ -623,10 +630,10 @@ func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if err != nil {
 		return err
 	}
-	return l.forceRelease(storageKey, actor)
+	return l.forceRelease(storageKey, actor, sharedclaim.Owner{})
 }
 
-func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
+func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.Owner) error {
 	if actor == "" {
 		return errors.New("localscheduler: force-release actor is required")
 	}
@@ -637,7 +644,10 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
 	if !held {
 		return nil
 	}
-	if !entry.SharedDeadline.IsZero() {
+	if owner != (sharedclaim.Owner{}) && entry.SharedOwner != owner {
+		return sharedclaim.ErrNotOwner
+	}
+	if !entry.SharedDeadline.IsZero() && owner == (sharedclaim.Owner{}) {
 		return errors.New("localscheduler: shared force-release requires remote coordination")
 	}
 	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
