@@ -13,6 +13,7 @@ import {
 
 beforeEach(() => {
   window.location.hash = "#/runs";
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
 });
 
 describe("runs history page", () => {
@@ -112,6 +113,26 @@ describe("runs history page", () => {
 
     expect(await screen.findByRole("link", { name: /Open run 01JZ000NOWORK/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open run 01JZ000PRODUCED/ })).toBeInTheDocument();
+  });
+
+  it("uses a bounded narrow-screen page while retaining pagination", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+    const client = new FixtureDaemonClient(
+      largeJournalFixtures({ completed: 28, running: 0, failed: 0, escalated: 0, aborted: 0 }),
+    );
+    const listRuns = vi.spyOn(client, "listRuns");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    const history = await screen.findByRole("region", { name: "Run history" });
+    expect(history.querySelectorAll("a")).toHaveLength(20);
+    expect(listRuns).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 20 }),
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(28));
   });
 
   it("shows how to start the first run when no runs exist", async () => {
