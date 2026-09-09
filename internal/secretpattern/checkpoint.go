@@ -1,6 +1,7 @@
 package secretpattern
 
 import (
+	"bytes"
 	"regexp/syntax"
 	"strings"
 	"unicode/utf8"
@@ -28,7 +29,27 @@ func (s *Scrubber) SafePrefix(input []byte) int {
 	if err != nil {
 		return 0
 	}
-	return checkpointBoundary(program, input)
+	return checkpointBoundary(program, checkpointPatternInput(input))
+}
+
+// A completed PEM block has a fixed terminator and the ordinary scrubber uses
+// the first terminator (non-greedy matching). Unlike a token's open-ended value,
+// it cannot extend when another delta arrives. Hide completed blocks from the
+// prefix automaton so its conservative .* branch does not retain all later
+// output forever. Exclamation marks cannot begin or continue any pattern-net
+// credential; byte positions are unchanged and actual scrubbing uses input.
+func checkpointPatternInput(input []byte) []byte {
+	matches := privateKeyPattern.FindAllIndex(input, -1)
+	if len(matches) == 0 {
+		return input
+	}
+	masked := bytes.Clone(input)
+	for _, match := range matches {
+		for i := match[0]; i < match[1]; i++ {
+			masked[i] = '!'
+		}
+	}
+	return masked
 }
 
 func checkpointBoundary(program *syntax.Prog, input []byte) int {
