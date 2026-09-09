@@ -131,6 +131,14 @@ func TestNewProviderForStageWiresADOMutationRecorder(t *testing.T) {
 
 func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "MDB1")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := instance.NewLayout(root).EnsureIdentity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(executor.InstanceIDEnvVar, identity)
 	t.Setenv("GOOBERS_RUN_ID", "run-123456789")
 	t.Setenv("GOOBERS_GAGGLE", "dogfood")
 	t.Setenv("GOOBERS_WORKFLOW", "implementation")
@@ -142,12 +150,44 @@ func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 		t.Fatal("stageAttribution did not recognize complete run context")
 	}
 	if got.Instance != "MDB1" ||
+		got.InstanceID != identity ||
 		got.Gaggle != "dogfood" ||
 		got.Workflow != "implementation" ||
 		got.Task != "publish-result" ||
 		got.Goober != "implementer" ||
 		got.Run != "run-123456789" {
 		t.Fatalf("attribution = %+v", got)
+	}
+}
+
+func TestStageAttributionPreservesOriginatingInstance(t *testing.T) {
+	root := t.TempDir()
+	if _, err := instance.NewLayout(root).EnsureIdentity(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOBERS_RUN_ID", "run-origin")
+	t.Setenv("GOOBERS_GAGGLE", "web")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv(executor.TaskEnvVar, "merge")
+	t.Setenv(executor.InstanceIDEnvVar, "")
+	if err := os.Unsetenv(executor.InstanceIDEnvVar); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := stageAttribution(root); !ok || got.InstanceID != "" {
+		t.Fatalf("missing pin gained worker identity: %+v, %v", got, ok)
+	}
+	for _, value := range []string{"0123456789abcdef0123456789abcdef", "", "invalid", strings.Repeat("0", 32)} {
+		t.Run("identity-"+value, func(t *testing.T) {
+			t.Setenv(executor.InstanceIDEnvVar, value)
+			got, ok := stageAttribution(root)
+			want := ""
+			if value == "0123456789abcdef0123456789abcdef" {
+				want = value
+			}
+			if !ok || got.InstanceID != want {
+				t.Fatalf("attribution = %+v, %v; want originating identity %q, never worker root", got, ok, want)
+			}
+		})
 	}
 }
 

@@ -22,6 +22,7 @@ var optionalCapabilityInterfaces = map[Capability]reflect.Type{
 	CapPRReviewThreads:       reflect.TypeOf((*PullRequestReviewThreadProvider)(nil)).Elem(),
 	CapPRReviewResolve:       reflect.TypeOf((*PullRequestReviewThreadMutator)(nil)).Elem(),
 	CapPRMerge:               reflect.TypeOf((*PullRequestMerger)(nil)).Elem(),
+	CapPRMergeInventory:      reflect.TypeOf((*MergeInventorySource)(nil)).Elem(),
 	CapPRLandingDetectPolicy: reflect.TypeOf((*MergePolicyDetector)(nil)).Elem(),
 	CapPRLandingEnqueue:      reflect.TypeOf((*PullRequestEnqueuer)(nil)).Elem(),
 	CapPRLandingPoll:         reflect.TypeOf((*MergeQueuePoller)(nil)).Elem(),

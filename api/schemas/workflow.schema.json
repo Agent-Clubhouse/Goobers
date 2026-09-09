@@ -272,6 +272,7 @@
               "github:milestones:write",
               "github:issues:approve",
               "provider:pr:write",
+              "github:pr:read",
               "github:pr:write",
               "github:pr:review",
               "provider:ci:cancel",

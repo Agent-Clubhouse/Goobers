@@ -507,6 +507,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		}
 	}
 	attempt := dispatcher.Attempt{
+		InstanceID:     input.Envelope.InstanceID,
 		RunID:          input.Envelope.RunID,
 		Gaggle:         input.Envelope.Gaggle,
 		Workflow:       input.Envelope.WorkflowID,
@@ -903,7 +904,11 @@ func surrenderedMutationFacts(mutations []dispatcher.SurrenderedMutation) []muta
 	facts := make([]mutationFact, 0, len(mutations))
 	for _, m := range mutations {
 		facts = append(facts, mutationFact{
-			Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL, Operation: m.Operation,
+			LandingIntent:     m.LandingIntent,
+			QueueAdmission:    m.QueueAdmission,
+			MergeConfirmation: m.MergeConfirmation,
+			ReceiptID:         m.ReceiptID,
+			Provider:          m.Provider, Kind: m.Kind, ID: m.ID, URL: m.URL, Operation: m.Operation,
 			RunID: m.RunID, Outcome: m.Outcome, ErrorCode: m.ErrorCode,
 			ProviderRunID: m.ProviderRunID,
 		})

@@ -1298,6 +1298,12 @@ func buildRuntimeRunner(
 		return nil, nil, nil, err
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
+	// The daemon owns root identity creation; tier-3 workers must not create
+	// independent identities while loading a copied configuration tree.
+	runnerCfg.InstanceID, err = l.EnsureIdentity(context.Background())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("initialize daemon instance identity: %w", err)
+	}
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.JournalAdvanced = telemetryingest.RunIntakeObserver(watermarks, instanceLog)
 	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
@@ -1697,7 +1703,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					if rn != nil {
 						finalizeErr = rn.FinalizeTerminal(id.RunID, phase)
 					} else {
-						manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir())
+						manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
 						if managerErr != nil {
 							finalizeErr = managerErr
 						} else {

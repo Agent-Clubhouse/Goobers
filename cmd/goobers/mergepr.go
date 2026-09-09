@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -429,26 +430,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "detect merge policy", policyErr, "merge-result.json")
 	}
 	if mergeErr != nil {
-		// Confirmed merge conflicts and pending required checks are business
-		// refusals, not provider failures. Emit the standard refusal envelope
-		// so merge-review can record and route them; unrecognized provider
-		// errors retain the generic failure behavior.
-		reason := ""
-		switch {
-		case providers.IsMergeConflictError(mergeErr):
-			reason = mergeConflictReason
-		case providers.IsRequiredStatusCheckPendingError(mergeErr):
-			reason = requiredStatusPendingReason
-		}
-		if reason != "" {
-			if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, mergepolicy.Result{}, []string{reason}, nil); err != nil {
-				pf(stderr, "error: %v\n", err)
-				return 1
-			}
-			pf(stdout, "not merged (pr #%s): %s\n", pullNumber, reason)
-			return 0
-		}
-		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")
+		return reportLandingError(stdout, stderr, resultFile, pullNumber, expectedHeadSHA, landResult, mergeErr)
 	}
 	if !mergeAttempted {
 		// Unreachable: either pollErr, reasons, commitErr, policyErr,
@@ -770,6 +752,58 @@ func writeSkippedMergeResult(path, selectedNumber, selectedHeadSha, reason strin
 }
 
 func writeMergeResultFields(path, selectedNumber, selectedHeadSha, landOutcome, mergeSHA string, reasons []string, cleanup *mergeBranchCleanup) error {
+	out := mergeResultFields(selectedNumber, selectedHeadSha, landOutcome, mergeSHA, reasons, cleanup)
+	data, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("marshal merge result: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+// A receipt failure is not a forge refusal and must never invite another
+// mutation. Retain the acknowledged outcome while failing the stage visibly;
+// return before branch cleanup so recovery evidence is not discarded here.
+func failLandingReceipt(stderr io.Writer, path, number, head string, land mergepolicy.Result, receiptErr *providers.LandingReceiptError) int {
+	out := mergeResultFields(number, head, string(land.Outcome), land.MergeSHA, nil, nil)
+	out[executor.OutputErrorCode] = "landing_receipt_persistence_failed"
+	out[executor.OutputErrorMessage] = receiptErr.Error()
+	out[executor.OutputErrorRetryable] = false
+	pf(stderr, "error: %s\n", receiptErr.Error())
+	if err := writeProviderStageResult(path, out); err != nil {
+		pf(stderr, "error: write landing receipt failure result: %v\n", err)
+	}
+	return 1
+}
+
+func reportLandingError(stdout, stderr io.Writer, path, number, head string, land mergepolicy.Result, mergeErr error) int {
+	var receiptErr *providers.LandingReceiptError
+	if errors.As(mergeErr, &receiptErr) {
+		return failLandingReceipt(stderr, path, number, head, land, receiptErr)
+	}
+	// Confirmed conflicts and pending checks are business refusals. Receipt
+	// errors must be handled first, regardless of their wrapped storage cause.
+	reason := ""
+	switch {
+	case providers.IsMergeConflictError(mergeErr):
+		reason = mergeConflictReason
+	case providers.IsRequiredStatusCheckPendingError(mergeErr):
+		reason = requiredStatusPendingReason
+	}
+	if reason == "" {
+		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")
+	}
+	if err := writeMergeResult(path, number, head, mergepolicy.Result{}, []string{reason}, nil); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pf(stdout, "not merged (pr #%s): %s\n", number, reason)
+	return 0
+}
+
+func mergeResultFields(selectedNumber, selectedHeadSha, landOutcome, mergeSHA string, reasons []string, cleanup *mergeBranchCleanup) map[string]interface{} {
 	out := map[string]interface{}{
 		"selectedNumber": selectedNumber,
 		"merged":         landOutcome == string(mergepolicy.OutcomeMerged),
@@ -797,12 +831,5 @@ func writeMergeResultFields(path, selectedNumber, selectedHeadSha, landOutcome, 
 			out["branchCleanupError"] = cleanup.Error
 		}
 	}
-	data, err := json.Marshal(out)
-	if err != nil {
-		return fmt.Errorf("marshal merge result: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
+	return out
 }

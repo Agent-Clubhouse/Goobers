@@ -3,6 +3,7 @@ package safeopen
 import (
 	"errors"
 	"os"
+	"strings"
 )
 
 // ErrSymlink is returned when the opened component is a symlink (unix) or
@@ -24,4 +25,14 @@ func Open(path string) (*os.File, error) {
 // dir's descriptor; see the package doc for the windows resolution difference.
 func OpenAt(dir *os.File, name string) (*os.File, error) {
 	return openAt(dir, name)
+}
+
+// AppendAt opens or creates one regular, singly-linked child for append,
+// without following a symlink leaf. It never truncates an existing file.
+// Like OpenAt, the Windows implementation has path-based parent resolution.
+func AppendAt(dir *os.File, name string) (*os.File, error) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\:\x00") {
+		return nil, errors.New("safeopen: append requires a single child name")
+	}
+	return appendAt(dir, name)
 }

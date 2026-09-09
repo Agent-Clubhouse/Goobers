@@ -481,8 +481,8 @@ func (f *FileCrossRun) unpushedWorkFromRun(runDir string, itemIDs []string, sinc
 			continue
 		}
 		switch event.Type {
-		case journal.EventRefTouched:
-			if event.ExternalRef != nil &&
+		case journal.EventRefTouched, journal.EventRunnerMutationRecovered:
+			if event.IsReferenceTouch() &&
 				(event.ExternalRef.Kind == "branch" || event.ExternalRef.Kind == "pr") &&
 				meta != nil {
 				publishedAfterDiff = true

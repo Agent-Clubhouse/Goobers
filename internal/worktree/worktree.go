@@ -774,6 +774,9 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("read stale marker: %w", markerErr)
 	}
+	if err := m.prepareCleanup(ctx, path, runID, mk.OwnerRunID); err != nil {
+		return err
+	}
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", path)
 	}); err != nil {
@@ -806,6 +809,11 @@ type RemoveOptions struct {
 // place and marks it kept, so Reap does not treat it as a crash orphan.
 func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	if wt.pinned {
+		if !opts.Keep {
+			if err := wt.manager.handoffPinnedReceipts(ctx, wt.key); err != nil {
+				return err
+			}
+		}
 		wt.assetGuard = false
 		return nil
 	}
@@ -847,6 +855,9 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		return nil
 	}
 
+	if err := wt.manager.prepareCleanup(ctx, wt.Path, wt.RunID, ownerRunID); err != nil {
+		return err
+	}
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", wt.Path)
 	}); err != nil {

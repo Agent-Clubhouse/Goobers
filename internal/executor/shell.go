@@ -839,7 +839,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		if goober == "" {
 			goober = "deterministic"
 		}
-		stageEnv = append(stageEnv, TaskEnvVar+"="+task, GooberEnvVar+"="+goober)
+		stageEnv = append(stageEnv, TaskEnvVar+"="+task, GooberEnvVar+"="+goober, InstanceIDEnvVar+"="+env.InstanceID)
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)

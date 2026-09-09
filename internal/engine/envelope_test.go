@@ -106,6 +106,7 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 	}
 
 	in := runInput("complete", spec)
+	in.InstanceID = "0123456789abcdef0123456789abcdef"
 	in.TriggerRef = "item#42"
 	in.BranchNamespace = "goobers/"
 	in.Item = &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, Title: "Fix bug"}
@@ -127,6 +128,9 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 
 	if captured.TaskID != in.RunID+":implement" {
 		t.Errorf("taskId = %q, want %q", captured.TaskID, in.RunID+":implement")
+	}
+	if captured.InstanceID != in.InstanceID {
+		t.Errorf("instance identity = %q, want pinned %q", captured.InstanceID, in.InstanceID)
 	}
 	if captured.Goober != "coder" {
 		t.Errorf("goober = %q, want %q — a Temporal worker has only the envelope to route the agentic seam on (#2904)", captured.Goober, "coder")

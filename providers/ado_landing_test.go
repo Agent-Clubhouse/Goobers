@@ -51,6 +51,8 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	recorder := &recordingRecorder{}
+	provider.SetMutationRecorder(recorder)
 	result, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
 		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodSquash,
 	})
@@ -59,6 +61,10 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 	}
 	if !result.Merged || result.MergeSHA != "abc123" || result.Number != 42 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+	ref, recorded := recorder.last()
+	if !recorded || ref.MergeConfirmation == nil || ref.MergeConfirmation.RepositoryAPIURL != server.URL+"/org/project/_apis/git/repositories/repo" || ref.MergeConfirmation.PullID != "42" || ref.MergeConfirmation.MergeSHA != "abc123" {
+		t.Fatalf("ADO landing confirmation = %+v, recorded=%v", ref, recorded)
 	}
 	if getCalls != 1 {
 		t.Fatalf("GET calls = %d, want 1 (no poll needed when the PATCH response is already terminal)", getCalls)
@@ -123,6 +129,8 @@ func TestADOProviderMergePullRequestIsIdempotent(t *testing.T) {
 	defer server.Close()
 
 	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	recorder := &recordingRecorder{}
+	provider.SetMutationRecorder(recorder)
 	result, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{Repository: adoLandingRepo(), PullID: "42"})
 	if err != nil {
 		t.Fatalf("MergePullRequest returned error: %v", err)
@@ -132,6 +140,9 @@ func TestADOProviderMergePullRequestIsIdempotent(t *testing.T) {
 	}
 	if patchCalls != 0 {
 		t.Fatalf("PATCH called %d times, want 0 (idempotent observe, never re-mutate)", patchCalls)
+	}
+	if ref, recorded := recorder.last(); recorded {
+		t.Fatalf("observed existing merge gained mutation provenance: %+v", ref)
 	}
 }
 

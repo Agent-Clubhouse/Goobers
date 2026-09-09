@@ -79,7 +79,7 @@ var synopsisByID = map[string]string{
 	"escalations show":       "  goobers escalations show [--json] [--include-verdict] <run-id> [path]\n                                show escalation cause, verdict, and per-stage artifact timeline\n",
 	"escalations resolve":    "  goobers escalations resolve --resolution=approve|deny|redirect [--gate=<gate>] [--decision=<name>] [--rationale=<text>] [--actor=<identity>] [--api=<url>] <run-id> [path]\n                                resolve an escalated run through the daemon's HITL plane\n",
 	"completion":             "  goobers completion bash|zsh|fish|powershell  generate a shell completion script\n",
-	"telemetry":              "  goobers telemetry stats|errors|export|prune|prune-orphans|compact [flags] [path]\n                                query, export, prune, or compact run telemetry\n",
+	"telemetry":              "  goobers telemetry stats|merges|errors|export|prune|prune-orphans|compact [flags] [path]\n                                query, export, prune, or compact run telemetry\n",
 	"journal redact":         "  goobers journal redact --run <id> --path <blob> --reason <text> [--secret-file <f>] [path]\n                                remove a leaked secret from a stored blob (SEC-041)\n",
 	"backlog-dedupe":         "  goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)\n",
 	"backlog-assignment":     "  goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)\n",

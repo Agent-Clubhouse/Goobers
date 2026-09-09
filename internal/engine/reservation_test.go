@@ -106,12 +106,16 @@ func TestReserveRunHeaderIsByteIdenticalToTheWorkflowsOwn(t *testing.T) {
 // cannot be built on an identity that never carried it.
 func TestReserveRunPinsTheGooberDigestIntoRunIdentity(t *testing.T) {
 	in := reservationRunInput()
+	in.InstanceID = "e62c1c105fdc4273a72d199394b41cb0"
 	req, err := ReserveRun(in, time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ReserveRun: %v", err)
 	}
 	if got := req.Open.Identity.GooberDigest; got != in.GooberDigest {
 		t.Errorf("reserved run identity GooberDigest = %q, want %q", got, in.GooberDigest)
+	}
+	if req.Open.Identity.InstanceID != in.InstanceID {
+		t.Fatalf("reservation lost pinned instance identity: %q", req.Open.Identity.InstanceID)
 	}
 }
 

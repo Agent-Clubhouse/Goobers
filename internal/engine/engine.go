@@ -62,6 +62,7 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
+	InstanceID             string             `json:"instanceId,omitempty"`
 	RunID                  string             `json:"runId"`
 	Gaggle                 string             `json:"gaggle"`
 	WorkflowName           string             `json:"workflowName"`
@@ -1249,6 +1250,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 	}
 	return apiv1.InvocationEnvelope{
 		TaskID:          in.RunID + ":" + stateName,
+		InstanceID:      in.InstanceID,
 		WorkflowID:      in.WorkflowName,
 		RunID:           in.RunID,
 		TriggerRef:      in.TriggerRef,

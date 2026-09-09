@@ -62,7 +62,7 @@
     },
     {
       "name": "existing config",
-      "request": "Add a manual repository verification workflow to the initialized instance without changing its existing worker, instructions, schedules, or run-control tuning.",
+      "request": "Add a manual repository verification workflow to the initialized instance without changing its existing worker, instructions, schedules, or run-control tuning. Add only the new workflow file; preserve every existing configuration file, including instance.yaml, byte-for-byte. Declare evidenced tool prerequisites on the workflow, but report any runner-placement warnings for the operator rather than changing or asserting the existing runner's capabilities.",
       "identity": "github/acme/existing",
       "access": "local",
       "defaultBranch": "main",

@@ -39,6 +39,8 @@ func InputEnvVar(key string) string {
 const (
 	// RunIDEnvVar identifies the run executing a goobers CLI stage.
 	RunIDEnvVar = "GOOBERS_RUN_ID"
+	// InstanceIDEnvVar carries the run-pinned originating instance identity.
+	InstanceIDEnvVar = "GOOBERS_INSTANCE_ID"
 	// GaggleEnvVar identifies the gaggle executing a goobers CLI stage.
 	GaggleEnvVar = "GOOBERS_GAGGLE"
 	// WorkflowEnvVar identifies the workflow executing a goobers CLI stage.

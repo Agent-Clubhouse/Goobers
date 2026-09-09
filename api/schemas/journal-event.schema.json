@@ -73,6 +73,7 @@
         "runner.isolation.posture",
         "runner.placement",
         "runner.workspace.delta",
+        "runner.mutation.recovered",
         "notification.requested",
         "notification.delivery.receipt",
         "parallel.started",

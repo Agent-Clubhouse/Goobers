@@ -24,6 +24,34 @@ func migrationPrefixDigest(prefix []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// openHistoricalTestDB builds the actual historical schema. Relabeling a
+// current database as old silently relies on every future migration being
+// idempotent and is not an upgrade fixture (ALTER ADD COLUMN exposes it).
+func openHistoricalTestDB(t *testing.T, path string, version int) *DB {
+	t.Helper()
+	if version < 1 || version > len(migrations) {
+		t.Fatalf("invalid historical schema version %d", version)
+	}
+	sqlDB, err := sql.Open("sqlite", path+dsnParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := &DB{sql: sqlDB, path: path}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := sqlDB.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:version] {
+		if _, err := sqlDB.Exec(migration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := sqlDB.Exec(`INSERT INTO schema_meta VALUES (?)`, version); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
 // TestMigrationPrefixIsAppendOnly pins schema.go's "never edit a migration once
 // released — append a new one" rule with something other than a comment (#2049).
 // Only the newest migration is left out of the pinned prefix, so a legitimate
@@ -33,13 +61,46 @@ func migrationPrefixDigest(prefix []string) string {
 // every upgraded store silently stops applying the inserted DDL forever while
 // fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "f59b4c833e9fd466c89f4130c4bf01b178d3cabc93e2100668c31b8b61a034c4"
+	const wantDigest = "9b19fcec0f216c6dd138d3931b0e2781b628bfc4abb7f946c885c3167dfcc513"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+
 			"migration to the end of the list, update wantDigest to the value\n"+
 			"above. If it did anything else to an existing entry, that is the\n"+
 			"bug #2049 exists to catch.", got, wantDigest)
+	}
+}
+
+func TestLandingIntentMigrationPreservesHistoricalRuns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	old := openHistoricalTestDB(t, path, 25)
+	if _, err := old.sql.Exec(`INSERT INTO runs (run_id,workflow,workflow_version,gaggle,started_at,instance_id) VALUES ('old-run','landing',1,'web','2026-09-01T00:00:00Z','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var identity string
+	if err := db.sql.QueryRow(`SELECT instance_id FROM runs WHERE run_id='old-run'`).Scan(&identity); err != nil || identity != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("historical run lost: identity=%q error=%v", identity, err)
+	}
+	var count int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM landing_intents`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("migration fabricated historical attempts: count=%d err=%v", count, err)
+	}
+	if _, err := db.sql.Exec(`INSERT INTO landing_intents (run_id,seq,provider,external_id,occurred_at) VALUES ('old-run',1,'github','9','2026-09-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeleteRun(context.Background(), "old-run"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM landing_intents`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("upgraded database retention left intent rows: count=%d err=%v", count, err)
 	}
 }
 

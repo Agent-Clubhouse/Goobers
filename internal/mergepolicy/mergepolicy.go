@@ -12,6 +12,7 @@ package mergepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/goobers/goobers/providers"
@@ -70,7 +71,13 @@ func (directLander) Land(ctx context.Context, provider *providers.Dispatcher, re
 		MergeMethod:     req.MergeMethod,
 	})
 	if err != nil {
+		if res.Merged {
+			return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, err
+		}
 		return Result{}, err
+	}
+	if !res.Merged {
+		return Result{}, fmt.Errorf("mergepolicy: provider did not confirm pull request %s merged", req.PullID)
 	}
 	return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, nil
 }
@@ -90,16 +97,17 @@ func (enqueueLander) Land(ctx context.Context, provider *providers.Dispatcher, r
 		MergeMethod: req.MergeMethod,
 	})
 	if err != nil {
-		return Result{}, err
+		var receiptErr *providers.LandingReceiptError
+		if !errors.As(err, &receiptErr) {
+			return Result{}, err
+		}
 	}
 	if res.Merged {
-		// The queue's own enqueue endpoint completed the merge immediately
-		// (e.g. nothing else ahead of this pull request) — a genuine
-		// "merged" outcome, not "enqueued"; see EnqueuePullRequestResult's
-		// doc.
-		return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, nil
+		// The lookup observed an already-merged PR. This terminal outcome
+		// is not evidence that this caller enqueued or merged it.
+		return Result{Outcome: OutcomeMerged, MergeSHA: res.MergeSHA}, err
 	}
-	return Result{Outcome: OutcomeEnqueued}, nil
+	return Result{Outcome: OutcomeEnqueued}, err
 }
 
 // ForPolicy returns the Lander for policy. An empty policy is treated as

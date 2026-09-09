@@ -11,6 +11,7 @@ import (
 
 // RunSummary is a queryable row from the runs table (TEL-032).
 type RunSummary struct {
+	InstanceID      string
 	RunID           string
 	Workflow        string
 	WorkflowVersion int
@@ -137,7 +138,7 @@ type SpanEventSummary struct {
 func (db *DB) Runs(ctx context.Context) ([]RunSummary, error) {
 	rows, err := db.readDB().QueryContext(ctx, `
 		SELECT r.run_id, r.workflow, r.workflow_version, r.workflow_digest, rgd.goober_digest,
-		       r.gaggle, r.trigger_kind, r.trigger_ref, r.status, r.started_at, r.finished_at, r.duration_ms
+		       r.gaggle, r.trigger_kind, r.trigger_ref, r.status, r.started_at, r.finished_at, r.duration_ms, r.instance_id
 		FROM runs r
 		LEFT JOIN run_goober_digests rgd ON rgd.run_id = r.run_id
 		ORDER BY r.started_at, r.run_id`)
@@ -149,13 +150,14 @@ func (db *DB) Runs(ctx context.Context) ([]RunSummary, error) {
 	var out []RunSummary
 	for rows.Next() {
 		var r RunSummary
-		var digest, gooberDigest, triggerKind, triggerRef, status, startedAt, finishedAt sql.NullString
+		var digest, gooberDigest, triggerKind, triggerRef, status, startedAt, finishedAt, instanceID sql.NullString
 		var durationMs sql.NullInt64
 		if err := rows.Scan(&r.RunID, &r.Workflow, &r.WorkflowVersion, &digest, &gooberDigest, &r.Gaggle,
-			&triggerKind, &triggerRef, &status, &startedAt, &finishedAt, &durationMs); err != nil {
+			&triggerKind, &triggerRef, &status, &startedAt, &finishedAt, &durationMs, &instanceID); err != nil {
 			return nil, fmt.Errorf("rollup: scan run: %w", err)
 		}
 		r.WorkflowDigest, r.GooberDigest = digest.String, gooberDigest.String
+		r.InstanceID = instanceID.String
 		r.TriggerKind, r.TriggerRef, r.Status = triggerKind.String, triggerRef.String, status.String
 		if r.StartedAt, err = parseTime(startedAt); err != nil {
 			return nil, err
