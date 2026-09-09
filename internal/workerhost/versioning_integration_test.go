@@ -80,6 +80,19 @@ func versioningWorkflow(ctx workflow.Context) ([]versioningActivityResult, error
 	return []versioningActivityResult{first, resumed}, nil
 }
 
+func versioningProbeWorkflow(ctx workflow.Context) (versioningActivityResult, error) {
+	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout:    time.Minute,
+		ScheduleToStartTimeout: time.Second,
+		RetryPolicy:            &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	var result versioningActivityResult
+	if err := workflow.ExecuteActivity(ctx, "VersioningActivity", false).Get(ctx, &result); err != nil {
+		return versioningActivityResult{}, err
+	}
+	return result, nil
+}
+
 func versioningActivity(recorder *versioningRecorder) func(context.Context, bool) (versioningActivityResult, error) {
 	return func(ctx context.Context, failFirst bool) (versioningActivityResult, error) {
 		identity, ok := attemptidentity.FromContext(ctx)
@@ -157,6 +170,21 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 	})
 	oldWorker.Stop()
 	startVersionedWorker(t, server.Client(), queue, "build-new", "new-worker", newRecords)
+
+	probeRun, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        "versioning-probe",
+		TaskQueue: queue,
+	}, versioningProbeWorkflow)
+	if err != nil {
+		t.Fatalf("start probe workflow: %v", err)
+	}
+	var probeResult versioningActivityResult
+	if err := probeRun.Get(ctx, &probeResult); err != nil {
+		t.Fatalf("probe workflow on new worker: %v", err)
+	}
+	if probeResult.BuildID != "build-new" || probeResult.WorkerIdentity != "new-worker" {
+		t.Fatalf("probe workflow result = %+v, want build-new/new-worker", probeResult)
+	}
 
 	if err := server.Client().SignalWorkflow(ctx, run.GetID(), run.GetRunID(), "resume", nil); err != nil {
 		t.Fatalf("signal old workflow: %v", err)
