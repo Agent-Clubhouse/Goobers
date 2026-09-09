@@ -9,10 +9,13 @@ export function SectionQueryStatus({
   message?: string;
   retry?: () => void;
 }) {
+  const state = error ? "error" : loading ? "loading" : "idle";
   return (
     <div
+      aria-busy={loading || undefined}
       aria-live="polite"
       className={`section-query-status${error ? " section-query-status-error" : ""}`}
+      data-state={state}
       role={error ? "alert" : "status"}
     >
       {loading && <span aria-hidden="true" className="section-query-spinner" />}
