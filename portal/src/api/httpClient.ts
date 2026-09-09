@@ -117,6 +117,7 @@ const clientRoutes = {
   // surface yet, but the exhaustiveness check requires the full contract here
   // as it grows.
   cancelRun: apiRoutes.cancelRun,
+  triggerStatus: apiRoutes.triggerStatus,
   journalEmit: apiRoutes.journalEmit,
   credentialResolve: apiRoutes.credentialResolve,
   // The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient

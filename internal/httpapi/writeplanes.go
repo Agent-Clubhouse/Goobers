@@ -187,32 +187,7 @@ type ClaimService interface {
 // caller's delivery identity: redelivering the same RequestID never mints a
 // second run (the webhook handler's bounded in-memory dedupe, applied to the
 // generic trigger plane — daemon-local is sound under DS1).
-type TriggerRequest struct {
-	// DispatchRunID is assigned by durable acceptance, never by a wire caller.
-	DispatchRunID string `json:"-"`
-	// Actor is the authenticated subject, never a caller-supplied body field.
-	Actor     string `json:"-"`
-	Gaggle    string `json:"gaggle,omitempty"`
-	Workflow  string `json:"workflow"`
-	RequestID string `json:"requestId,omitempty"`
-	// Force bypasses only hourly and daily cadence budgets for an explicit
-	// manual invocation. It is invalid for priority and pod-scoped triggers.
-	Force bool `json:"force,omitempty"`
-	// SourceRun names the run whose newly-published durable state is the
-	// reason for this trigger. Non-empty makes it a PRIORITY re-tick
-	// (Scheduler.TriggerPriority) rather than an ordinary mint — the plane's
-	// form of apply-verdict's crowned-lander file drop
-	// (writePriorityTriggerRequest), which a stage pod has no scheduler
-	// directory to write. It is an output-driven signal, not a bypass: normal
-	// readiness admission still applies.
-	SourceRun string `json:"sourceRun,omitempty"`
-	// PodScoped and PodRunID are set by the route, never decoded from the
-	// body: the caller is a pod principal, so the trigger must name the
-	// gaggle the caller's run belongs to (the service verifies it) and a
-	// priority re-tick must name the caller's own run as its source.
-	PodScoped bool   `json:"-"`
-	PodRunID  string `json:"-"`
-}
+type TriggerRequest = apicontract.TriggerRequest
 
 // MaxTriggerRequestIDBytes caps the caller-supplied delivery identity — the
 // same 256-byte bound the webhook handler puts on GitHub delivery ids
@@ -224,16 +199,7 @@ const MaxTriggerRequestIDBytes = 256
 // TriggerResponse reports the minted run, or the original run when RequestID
 // deduplicated a redelivery (the run id may still be empty when the
 // deduplicated delivery is concurrent with the winning delivery's mint).
-type TriggerResponse struct {
-	// AcceptanceID identifies a durably recorded request, not necessarily a run.
-	AcceptanceID string `json:"acceptanceId,omitempty"`
-	// State is the acceptance ledger's dispatch state when available.
-	State string `json:"state,omitempty"`
-	RunID string `json:"runId,omitempty"`
-	// Duplicate marks a response answered from the dedupe record rather than
-	// a fresh mint.
-	Duplicate bool `json:"duplicate,omitempty"`
-}
+type TriggerResponse = apicontract.TriggerResponse
 
 // TriggerService ingests external triggers through the same
 // validate/dedupe/mint path the daemon's pending-triggers sweep uses.
@@ -287,13 +253,7 @@ const (
 // CancelRunRequest asks the daemon to stop an owned run (#3807, decision 005
 // D2). Workflow and Gaggle are optional identity constraints; an engine run is
 // routed using its retained identity and current daemon ownership.
-type CancelRunRequest struct {
-	IdempotencyKey string `json:"-"`
-	RunID          string `json:"-"`
-	Workflow       string `json:"workflow,omitempty"`
-	Gaggle         string `json:"gaggle,omitempty"`
-	Actor          string `json:"actor,omitempty"`
-}
+type CancelRunRequest = apicontract.CancelRunRequest
 
 // CancelRunResult reports the cancel disposition. A refusal the operator can
 // act on (already terminal, not running under this daemon) is a 200 carrying a
@@ -302,11 +262,7 @@ type CancelRunRequest struct {
 // Phase; the engine reports its eventual terminal outcome. The CLI maps the
 // code to its own exit code the same way the
 // local file-drop path does.
-type CancelRunResult struct {
-	Phase string `json:"phase,omitempty"`
-	Code  string `json:"code,omitempty"`
-	Error string `json:"error,omitempty"`
-}
+type CancelRunResult = apicontract.CancelRunResult
 
 // CancelService cancels one live run through the Runner that owns it.
 type CancelService interface {

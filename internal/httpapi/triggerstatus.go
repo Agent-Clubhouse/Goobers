@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 )
@@ -18,13 +17,7 @@ type TriggerStatusRequest struct {
 }
 
 // TriggerStatusResponse distinguishes acceptance from a scheduler outcome.
-type TriggerStatusResponse struct {
-	AcceptanceID string    `json:"acceptanceId"`
-	State        string    `json:"state"`
-	RunID        string    `json:"runId,omitempty"`
-	Reason       string    `json:"reason,omitempty"`
-	AcceptedAt   time.Time `json:"acceptedAt"`
-}
+type TriggerStatusResponse = apicontract.TriggerStatusResponse
 
 // TriggerStatusService is implemented by a durable trigger plane.
 type TriggerStatusService interface {
