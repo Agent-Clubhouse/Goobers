@@ -1216,15 +1216,43 @@ summary:focus-visible {
 .data-row-stretch-link {
   inset: 0;
   position: absolute;
+  z-index: 0;
 }
 
 .data-row-stretched > *:not(.data-row-stretch-link) {
   pointer-events: none;
+  position: relative;
+  z-index: 1;
 }
 
-.data-row-stretched .scope-pivot,
-.data-row-stretched .scope-pivot * {
+.data-row-stretched :is(a, button, input, select, textarea, [role="button"]),
+.data-row-stretched :is(a, button, input, select, textarea, [role="button"]) * {
   pointer-events: auto;
+}
+
+.copy-command {
+  align-items: flex-start;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 24rem;
+}
+
+.copy-command-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-height: 36px;
+}
+
+.copy-command-status {
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.copy-command-failure .copy-command-status {
+  color: var(--danger);
 }
 
 .scope-pivot {

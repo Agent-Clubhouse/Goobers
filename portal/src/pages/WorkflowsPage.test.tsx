@@ -43,6 +43,9 @@ describe("workflows page", () => {
     expect(
       screen.getByText("Manual run command copied to the clipboard."),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Manual run command copied to the clipboard." }),
+    ).toBeInTheDocument();
   });
 
   it("announces clipboard failure without navigating to the workflow", async () => {
@@ -59,10 +62,13 @@ describe("workflows page", () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          "Could not copy the manual run command. Copy the command from the workflow row.",
+          "Could not copy the manual run command. Select and copy the command from the workflow details.",
         ),
       ).toBeInTheDocument(),
     );
+    expect(
+      screen.getByRole("button", { name: "Retry copy manual run command" }),
+    ).toBeInTheDocument();
     expect(window.location.hash).toBe("#/workflows");
   });
 });

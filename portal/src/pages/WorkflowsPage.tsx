@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { DaemonClient, Goober, RunSummary, WorkflowSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
@@ -10,6 +9,7 @@ import {
   useOperationalSnapshot,
 } from "../operationalData";
 import { routeHash } from "../routing";
+import { CopyCommand } from "../ui/CopyCommand";
 import { Icon } from "../ui/Icon";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -210,12 +210,15 @@ function GaggleSection({
                     ) : (
                       <small>No recorded runs</small>
                     )}
-                    <CopyManualRunCommand
+                    <CopyCommand
                       command={manualRunCommand(
                         workflow.identity.gaggle,
                         workflow.identity.name,
                         instanceRoot,
                       )}
+                      failureLabel="Could not copy the manual run command. Select and copy the command from the workflow details."
+                      idleLabel="Copy manual run command"
+                      successLabel="Manual run command copied to the clipboard."
                     />
                   </span>
                 </DataRow>
@@ -241,43 +244,6 @@ function GaggleSection({
         )}
       </div>
     </section>
-  );
-}
-
-function CopyManualRunCommand({ command }: { command: string }) {
-  const [status, setStatus] = useState<"idle" | "success" | "failure">("idle");
-
-  async function copyCommand() {
-    try {
-      await navigator.clipboard.writeText(command);
-      setStatus("success");
-    } catch {
-      setStatus("failure");
-    }
-  }
-
-  return (
-    <span className="manual-run-copy">
-      <button
-        aria-label={status === "success" ? "Manual run command copied" : "Copy manual run command"}
-        className="secondary-button"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void copyCommand();
-        }}
-        type="button"
-      >
-        {status === "success" ? "Copied" : "Copy command"}
-      </button>
-      <span aria-live="polite" className="sr-only">
-        {status === "success"
-          ? "Manual run command copied to the clipboard."
-          : status === "failure"
-            ? "Could not copy the manual run command. Copy the command from the workflow row."
-            : ""}
-      </span>
-    </span>
   );
 }
 
