@@ -161,6 +161,9 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 		}
 		l.entries[storageKey] = entry
 	}
+	if err := l.validateSharedClaims(); err != nil {
+		return nil, fmt.Errorf("localscheduler: invalid shared claim ledger: %w", err)
+	}
 	l.history = l.retainedHistory(l.now())
 	return l, nil
 }
