@@ -78,6 +78,33 @@ func Acquire(ctx context.Context, store Store, key string, owner Owner, ttl time
 	return store.CompareAndSwap(ctx, key, observed.Revision, Record{Version: 1, Owner: owner, ExpiresAt: expires})
 }
 
+// AcquireUntil returns a conservative local admission deadline. Callers must
+// bound their local lease and execution by this deadline, not by a fresh TTL
+// starting after the provider acknowledges the write. The provider clock must
+// advance at the same rate as the local clock; its absolute offset may differ.
+// One second is reserved for the precision of GitHub's HTTP Date clock.
+// An expired acknowledgment is not admission, even if the remote write landed.
+func AcquireUntil(ctx context.Context, store Store, key string, owner Owner, ttl time.Duration) (time.Time, error) {
+	return acquireUntil(ctx, store, key, owner, ttl, time.Now)
+}
+
+func acquireUntil(ctx context.Context, store Store, key string, owner Owner, ttl time.Duration, now func() time.Time) (time.Time, error) {
+	if ttl <= time.Second {
+		return time.Time{}, fmt.Errorf("shared claim TTL must exceed provider clock precision")
+	}
+	deadline := now().Add(ttl - time.Second)
+	if err := Acquire(ctx, store, key, owner, ttl); err != nil {
+		return time.Time{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	if !now().Before(deadline) {
+		return time.Time{}, fmt.Errorf("shared claim acknowledgment arrived after local admission deadline")
+	}
+	return deadline, nil
+}
+
 // Release clears only this incarnation. It retains a versioned tombstone and
 // never treats another owner's lease as successfully released.
 func Release(ctx context.Context, store Store, key string, owner Owner) error {
