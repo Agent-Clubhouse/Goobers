@@ -184,3 +184,31 @@ func transcriptStoredBytes(t *testing.T, root string) (int, int64) {
 	}
 	return files, stored
 }
+
+func TestTranscriptCheckpointCommitsTransportKeyWithContent(t *testing.T) {
+	run, _ := newRun(t)
+	capture, err := run.BeginTranscriptCapture("implement", "transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "capture/0/checkpoint/1"
+	if err := capture.Append(TranscriptCheckpoint{Stream: "process-output/1", Data: []byte("checkpoint\n"),
+		Reason: "checkpoint", CommitKey: key}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events, _, err := readEvents(filepath.Join(run.dir, fileEvents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	if last.Type != EventSpanRecorded || last.Runner["emitKey"] != key || last.Ref == nil {
+		t.Fatal("transport key was not committed with the checkpoint span")
+	}
+	reader := &Reader{dir: run.dir}
+	if data, err := reader.SpanBytes(*last.Ref); err != nil || string(data) != "checkpoint\n" {
+		t.Fatalf("acknowledged checkpoint unavailable: %v", err)
+	}
+}

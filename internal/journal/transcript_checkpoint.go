@@ -38,6 +38,9 @@ type TranscriptCheckpoint struct {
 	Data         []byte
 	DroppedBytes int64
 	Reason       string
+	// CommitKey is an optional transport idempotency key committed in the
+	// same event as the bytes. It is not a second, separately written receipt.
+	CommitKey string
 }
 
 // TranscriptCapture owns one stage invocation's partial transcript. Successful
@@ -119,6 +122,9 @@ func (c *TranscriptCapture) append(delta TranscriptCheckpoint) error {
 	if !validTranscriptStream(delta.Stream) || !validTranscriptReason(delta.Reason) {
 		return errors.New("journal: invalid transcript checkpoint stream or reason")
 	}
+	if len(delta.CommitKey) > 256 {
+		return errors.New("journal: transcript checkpoint commit key exceeds limit")
+	}
 	stream := c.streams[delta.Stream]
 	if stream == nil {
 		scrubber, err := NewCheckpointScrubber(c.scrubber)
@@ -139,6 +145,9 @@ func (c *TranscriptCapture) append(delta TranscriptCheckpoint) error {
 		"partial": true, "transcriptCapture": c.id, "transcriptStream": delta.Stream,
 		"checkpoint": c.count, "sourceOffset": delta.Offset, "sourceBytes": len(delta.Data),
 		"droppedBytes": delta.DroppedBytes, "reason": delta.Reason, "previousDigest": stream.previous,
+	}
+	if delta.CommitKey != "" {
+		meta["emitKey"] = delta.CommitKey
 	}
 	ref, err := c.run.recordTranscriptCheckpoint(c, clean, meta)
 	if err != nil {
