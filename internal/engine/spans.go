@@ -137,9 +137,14 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 				// something to paper over with a zero-length span.
 				return fmt.Errorf("engine: stage %q attempt %d finished without a start", ev.Stage, ev.Attempt)
 			}
+			startEV := start.Event
+			branch := 0
+			if startEV != nil {
+				branch = startEV.Branch
+			}
 			identity := attemptIdentityFromRunner(ev.Runner)
 			_, span, err := sink.StartStageSpan(runCtx, StageSpanID{
-				RunSpanID: run, Stage: ev.Stage, Attempt: ev.Attempt, Branch: ev.Branch,
+				RunSpanID: run, Stage: ev.Stage, Attempt: ev.Attempt, Branch: branch,
 				BuildID:        identity.buildID,
 				WorkerIdentity: identity.workerIdentity,
 			}, start.Time)
@@ -168,8 +173,12 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 	// incomplete thing it is.
 	for key, start := range started {
 		identity := identities[key]
+		branch := 0
+		if start.Event != nil {
+			branch = start.Event.Branch
+		}
 		_, span, err := sink.StartStageSpan(runCtx, StageSpanID{
-			RunSpanID: run, Stage: key.stage, Attempt: key.attempt,
+			RunSpanID: run, Stage: key.stage, Attempt: key.attempt, Branch: branch,
 			BuildID: identity.buildID, WorkerIdentity: identity.workerIdentity,
 		}, start.Time)
 		if err != nil {

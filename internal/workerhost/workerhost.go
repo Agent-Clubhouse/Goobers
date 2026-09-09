@@ -208,6 +208,9 @@ func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interc
 	if err == nil {
 		return result, nil
 	}
+	if temporal.IsCanceledError(err) || temporal.IsTerminatedError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
 	// Keep the original error as the cause so its details and retry options
 	// remain available to the engine, while the outer error carries identity.
 	failureType := "GoobersAttemptFailure"

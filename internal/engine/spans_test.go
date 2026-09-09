@@ -13,6 +13,7 @@ type recordedSpan struct {
 	kind     string
 	name     string
 	attempt  int
+	branch   int
 	buildID  string
 	worker   string
 	start    time.Time
@@ -44,6 +45,7 @@ func (f *fakeSink) StartStageSpan(ctx context.Context, id StageSpanID, at time.T
 		return ctx, nil, context.Canceled
 	}
 	span := f.record("stage", id.Stage, id.Attempt, at)
+	span.branch = id.Branch
 	span.buildID, span.worker = id.BuildID, id.WorkerIdentity
 	return ctx, span, nil
 }
@@ -237,6 +239,26 @@ func TestSynthesizeRunSpansAttributesFailedAttemptToExecutingWorker(t *testing.T
 	}
 	if stage.outcome != "incomplete" || !stage.failure {
 		t.Fatalf("failed attempt span = %q failure=%t, want incomplete/true", stage.outcome, stage.failure)
+	}
+}
+
+func TestSynthesizeRunSpansPreservesBranchFromStartedEvent(t *testing.T) {
+	t.Parallel()
+	proj := JournalProjection{
+		Identity: journal.RunIdentity{RunID: "r", Gaggle: "g", Workflow: "w", WorkflowVersion: 1},
+		Ops: []JournalOp{
+			appendOp(journal.EventRunStarted, 0, nil),
+			appendOp(journal.EventStageStarted, 2, func(e *journal.Event) { e.Stage, e.Attempt, e.Branch = "implement", 1, 2 }),
+			appendOp(journal.EventStageFinished, 5, func(e *journal.Event) { e.Stage, e.Attempt, e.Status = "implement", 1, "success" }),
+			appendOp(journal.EventRunFinished, 6, func(e *journal.Event) { e.Status = "completed" }),
+		},
+	}
+	sink := &fakeSink{}
+	if err := SynthesizeRunSpans(context.Background(), sink, proj); err != nil {
+		t.Fatalf("SynthesizeRunSpans: %v", err)
+	}
+	if got := sink.spans[1].branch; got != 2 {
+		t.Fatalf("stage branch = %d, want 2", got)
 	}
 }
 

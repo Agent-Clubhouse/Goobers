@@ -245,8 +245,16 @@ type metadataFailingActivity struct {
 	interceptor.ActivityInboundInterceptorBase
 }
 
+type cancelingActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+}
+
 func (f *failingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
 	return nil, errors.New("attempt failed")
+}
+
+func (f *cancelingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
+	return nil, temporal.NewCanceledError("activity canceled")
 }
 
 func (f *metadataFailingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
@@ -316,6 +324,18 @@ func TestActivityTrackerAttachesIdentityToFailedAttempt(t *testing.T) {
 	}
 	if identity.BuildID != "build-8" || identity.WorkerIdentity != "worker-8" {
 		t.Fatalf("identity = %+v, want build-8/worker-8", identity)
+	}
+}
+
+func TestActivityTrackerPreservesCancellation(t *testing.T) {
+	tracker := &activityTracker{buildID: "build-cancel", worker: "worker-cancel"}
+	inbound := tracker.InterceptActivity(context.Background(), &cancelingActivity{})
+	_, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+	if err == nil {
+		t.Fatal("ExecuteActivity succeeded, want cancellation")
+	}
+	if !temporal.IsCanceledError(err) {
+		t.Fatalf("error = %T, want a canceled Temporal error", err)
 	}
 }
 
