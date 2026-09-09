@@ -90,6 +90,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
+| [`goobers recovery-abandon`](#goobers-recovery-abandon) | explicitly abandon one retained recovery snapshot |
 | [`goobers recovery-restore`](#goobers-recovery-restore) | restore retained implementation onto current main |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
@@ -2983,6 +2984,26 @@ do), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers record-merge-refusal
+~~~
+
+## `goobers recovery-abandon`
+
+explicitly abandon one retained recovery snapshot
+
+~~~text
+Usage: goobers recovery-abandon --run <run-id> --ref <recovery-ref> --confirm-digest <patch-digest> [instance]
+
+Abandon one exact retained snapshot from a terminal run. The digest must
+match its published patch digest. Records an operator decision and prevents
+automatic recovery selection. Configured retention subsequently removes
+the owned recovery ref and archive, not user branches. Active runs, stage
+execution, and ambiguous matches are refused.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers recovery-abandon --run source-run --ref refs/goobers/recovery/source-run --confirm-digest sha256:<digest> ./instance
 ~~~
 
 ## `goobers recovery-restore`

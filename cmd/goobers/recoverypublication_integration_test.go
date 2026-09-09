@@ -183,7 +183,7 @@ func publishRecoveryOverAuthenticatedHTTP(t *testing.T, service recoveryDelivery
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	archive := t.TempDir()
-	record, err := recovery.ReceiveArchiveEnvelope(context.Background(), bytes.NewReader(wire), archive, 1<<20)
+	record, err := recovery.ReceiveArchiveEnvelope(context.Background(), bytes.NewReader(wire), archive, 1<<20, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

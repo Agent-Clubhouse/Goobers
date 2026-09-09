@@ -42,7 +42,7 @@ func TestHTTPArchivePublisherRequiresCompleteCustodyAcknowledgement(t *testing.T
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				got, err := ReceiveArchiveEnvelope(r.Context(), r.Body, t.TempDir(), 4096)
+				got, err := ReceiveArchiveEnvelope(r.Context(), r.Body, t.TempDir(), 4096, nil)
 				if err != nil || got != record {
 					t.Errorf("upload changed verified envelope: %+v %v", got, err)
 				}

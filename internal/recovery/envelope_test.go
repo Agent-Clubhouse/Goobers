@@ -47,7 +47,7 @@ func TestRecoveryEnvelopeRoundTripAndMalformedDelivery(t *testing.T) {
 				limit = 1
 			}
 			directory := t.TempDir()
-			got, err := ReceiveArchiveEnvelope(context.Background(), bytes.NewReader(data), directory, limit)
+			got, err := ReceiveArchiveEnvelope(context.Background(), bytes.NewReader(data), directory, limit, nil)
 			if mode == "valid" {
 				if err != nil || got != record {
 					t.Fatalf("roundtrip: %+v %v", got, err)
@@ -82,7 +82,7 @@ func TestRecoveryEnvelopeAdmissionPrecedesArchiveReadAndPublication(t *testing.T
 	denied := errors.New("foreign run identity")
 	body := &unreadRecoveryArchive{t: t}
 	directory := t.TempDir()
-	got, err := receiveArchiveEnvelope(context.Background(), io.MultiReader(&prefix, body), directory, record.ArchiveBytes, func(got Record) error {
+	got, err := ReceiveArchiveEnvelope(context.Background(), io.MultiReader(&prefix, body), directory, record.ArchiveBytes, func(got Record) error {
 		if got != record {
 			t.Fatalf("admission metadata changed: %+v", got)
 		}

@@ -32,7 +32,7 @@ func AcceptArchive(ctx context.Context, source io.Reader, request RetentionReque
 		return Record{}, "", err
 	}
 	defer func() { _ = os.RemoveAll(directory) }()
-	record, err := receiveArchiveEnvelope(ctx, source, directory, request.MaxArchiveBytes, func(record Record) error {
+	record, err := ReceiveArchiveEnvelope(ctx, source, directory, request.MaxArchiveBytes, func(record Record) error {
 		if record.RunID != request.RunID || record.RepositoryKey != request.RepositoryKey {
 			return fmt.Errorf("archive intake identity mismatch")
 		}

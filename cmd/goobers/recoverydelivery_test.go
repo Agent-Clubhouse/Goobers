@@ -72,7 +72,7 @@ func TestRecoveryDeliveryServiceStreamsOnlyVerifiedClaimedState(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got, err := recovery.ReceiveArchiveEnvelope(context.Background(), &out, t.TempDir(), 4096)
+				got, err := recovery.ReceiveArchiveEnvelope(context.Background(), &out, t.TempDir(), 4096, nil)
 				if err != nil || got != record {
 					t.Fatalf("received wrong recovery: %+v %v", got, err)
 				}

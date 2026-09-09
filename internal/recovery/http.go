@@ -68,7 +68,7 @@ func (s HTTPArchiveSource) WithArchive(ctx context.Context, repositoryKey, issue
 		return err
 	}
 	defer func() { _ = os.RemoveAll(directory) }()
-	record, err := receiveArchiveEnvelope(ctx, response.Body, directory, 512<<20, func(record Record) error {
+	record, err := ReceiveArchiveEnvelope(ctx, response.Body, directory, 512<<20, func(record Record) error {
 		if record.RepositoryKey != repositoryKey || record.RunID == s.RunID || !time.Now().Before(record.RetainUntil) {
 			return fmt.Errorf("recovery download identity or retention mismatch")
 		}

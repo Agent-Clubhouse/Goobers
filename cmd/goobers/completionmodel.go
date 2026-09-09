@@ -369,6 +369,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "repository", takesArg: true, desc: "Destination Git repository"},
 		{name: "branch", takesArg: true, desc: "New local operator branch"},
 	},
+	"recovery-abandon": {
+		{name: "run", takesArg: true, desc: "Terminal source run"},
+		{name: "ref", takesArg: true, desc: "Exact recovery ref"},
+		{name: "confirm-digest", takesArg: true, desc: "Confirm published patch digest"},
+	},
 	"stats": {
 		{name: "since", takesArg: true, desc: "Only include activity from the preceding duration"},
 		{name: "json", desc: "Emit JSON"},
