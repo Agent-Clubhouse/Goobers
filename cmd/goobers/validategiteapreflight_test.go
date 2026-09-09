@@ -71,6 +71,19 @@ func readGitLog(t *testing.T, path string) string {
 	return string(raw)
 }
 
+func testFileURL(t *testing.T, path string) string {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return "file://" + p
+}
+
 // TestGitRepositoryReachableProbesGiteaForge is the regression test for the
 // REPO001 failure: `goobers validate --check-repos` refused a Gitea repo
 // outright ("provider %q does not support repository preflight"), so a
@@ -237,7 +250,7 @@ func TestGitRepositoryReachableAgainstRealGiteaStyleRemote(t *testing.T) {
 
 	t.Run("existing repo is reachable", func(t *testing.T) {
 		err := gitRepositoryReachable(context.Background(), instance.RepoRef{
-			Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: "file://" + root,
+			Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: testFileURL(t, root),
 		}, "", nil)
 		if err != nil {
 			t.Fatalf("expected the real remote to be reachable: %v", err)
@@ -246,7 +259,7 @@ func TestGitRepositoryReachableAgainstRealGiteaStyleRemote(t *testing.T) {
 
 	t.Run("missing repo is unreachable", func(t *testing.T) {
 		err := gitRepositoryReachable(context.Background(), instance.RepoRef{
-			Provider: "gitea", Owner: "acme", Name: "does-not-exist", BaseURL: "file://" + root,
+			Provider: "gitea", Owner: "acme", Name: "does-not-exist", BaseURL: testFileURL(t, root),
 		}, "", nil)
 		if err == nil {
 			t.Fatal("expected a missing repo to be reported unreachable")
