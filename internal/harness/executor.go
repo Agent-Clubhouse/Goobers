@@ -582,6 +582,10 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	var out Outcome
 	var runErr error
+	capture, err := e.beginTranscriptCapture(env.TaskID, &req)
+	if err != nil {
+		return Outcome{}, nil, nil, err
+	}
 	if nestedAdapter != nil {
 		out, runErr = nestedAdapter.RunNested(ctx, req)
 	} else {
@@ -719,7 +723,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if len(out.Transcript) > 0 {
 		scrubbed := e.scrubber.Scrub(out.Transcript)
 		name := fmt.Sprintf("%s.transcript", e.adapter.Name())
-		ref, spanErr := e.recorder.RecordSpanWithSchema(env.TaskID, name, out.TranscriptSchema, scrubbed)
+		ref, spanErr := e.recordFinalTranscript(capture, runErr == nil && ctx.Err() == nil, env.TaskID, name, out.TranscriptSchema, scrubbed)
 		if spanErr != nil {
 			if runErr == nil {
 				runErr = fmt.Errorf("harness: record span: %w", spanErr)

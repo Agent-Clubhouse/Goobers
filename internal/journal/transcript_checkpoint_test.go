@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,5 +78,46 @@ func TestTranscriptCheckpointRejectsDiscontinuityPermanently(t *testing.T) {
 	bad.Offset = 0
 	if err := capture.Append(bad); err == nil || capture.count != 0 {
 		t.Fatal("failed capture resumed")
+	}
+}
+
+func TestTranscriptCheckpointFinalRetiresOnlyPrivateBlobs(t *testing.T) {
+	run, _ := newRun(t)
+	capture, err := run.BeginTranscriptCapture("implement", "transcript")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("same content\n")
+	if err := capture.Append(TranscriptCheckpoint{Stream: "process-output/1", Data: data, Reason: "process-exit"}); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := capture.RecordFinal("", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(run.dir, ref.Path)); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("cleanup removed final blob: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(run.dir, dirSpans, "checkpoints", capture.id)); !os.IsNotExist(err) {
+		t.Fatalf("partial remains: %v", err)
+	}
+	if _, err := capture.RecordFinal("", data); err != nil {
+		t.Fatalf("idempotent completion: %v", err)
+	}
+	if err := capture.Append(TranscriptCheckpoint{}); err == nil {
+		t.Fatal("completed capture accepted more bytes")
+	}
+	events, _, err := readEvents(filepath.Join(run.dir, fileEvents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	finals := 0
+	for _, event := range events {
+		if event.Type == EventSpanRecorded && event.Name == "transcript" {
+			finals++
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("final span count=%d", finals)
 	}
 }
