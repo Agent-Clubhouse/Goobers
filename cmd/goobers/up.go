@@ -802,10 +802,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Only the local path uses the slot release attached below; the engine
 	// releases its slot when its existing settlement path observes completion.
 	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
+	claimPlane := newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)
+	claimPlane.shared = daemonSharedClaimResolver(l, setup.Config, setup.SharedRegistry, setup.SecretStores)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
-		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)),
+		httpapi.WithClaimService(claimPlane),
 		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(durableTriggers),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
