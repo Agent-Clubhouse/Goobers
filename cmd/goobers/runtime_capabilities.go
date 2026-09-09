@@ -496,6 +496,18 @@ func init() {
 			withSynopsis(synopsisByID["reset-rate-limit"]).
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).
 			withExamples("goobers reset-rate-limit"),
+		command("recovery-abandon", apicontract.ActionMaintenance, runRecoveryAbandon).
+			withSynopsis(synopsisByID["recovery-abandon"]).
+			withHelp("explicitly abandon one retained recovery snapshot", recoveryAbandonHelp).
+			withExamples("goobers recovery-abandon --run source-run --ref refs/goobers/recovery/source-run --confirm-digest sha256:<digest> ./instance"),
+		command("recovery-restore", apicontract.ActionMaintenance, runRecoveryRestore).
+			withSynopsis(synopsisByID["recovery-restore"]).
+			withHelp("restore retained implementation onto current main", recoveryRestoreHelp).
+			withExamples("goobers recovery-restore --record ./retained/record.json --repository ./checkout --branch recovered-work ./instance"),
+		stageCommand("recovery-resume", apicontract.ActionWorkflowExecution, runRecoveryResume).
+			withSynopsis(synopsisByID["recovery-resume"]).
+			withHelp("restore retained implementation into the receiving run (a workflow stage)", recoveryResumeHelp).
+			withExamples("goobers recovery-resume"),
 		groupCommand(
 			"workspace",
 			runWorkspace,

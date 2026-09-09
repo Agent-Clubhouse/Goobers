@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -60,6 +61,11 @@ func TestNamespaceReloadPreservesInFlightRunBranches(t *testing.T) {
 				t.Fatal(err)
 			}
 			layout = layout.ForGaggle("example")
+			run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{Schema: journal.RunSchema, RunID: "repro", Workflow: "implementation", WorkflowVersion: 1, StartedAt: time.Now().UTC()}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = run.Close() }()
 			project := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}
 			cfg := &instance.Config{Repos: []instance.RepoRef{{
 				Provider: "github", Owner: "acme", Name: "web",

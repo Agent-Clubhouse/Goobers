@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "39930c7dd0e85ecc56ac32ec914b6db42c09faa4ff1856ef79ed0128a14885e0",
+  "snapshotSha256": "694ab200654f122e8df99b78aafee9ac3fbb498dc05ea17c8398966add951e6e",
   "changes": [
     {
       "version": 1,
@@ -32,6 +32,10 @@
     {
       "version": 8,
       "description": "Add security-alerts-query (#2984, #2987): the read-only security-alert intake connector stage. Each of the two feeds requires its own EXACT least-privilege read grant, selected by --source: github:code-scanning:read for code scanning, github:dependabot-alerts:read for Dependabot. Exact, so an issue-write or PR-write grant can never release either credential; and split, so a workflow that only nominates dependency work never receives code-scanning access. The stage declares no write capability at all \u2014 it reads alerts and emits an artifact, and the nomination that follows is a separate, separately credentialed stage. Purely additive: a new command with new capabilities; no existing command's requirements change, so every shipped config keeps compiling."
+    },
+    {
+      "version": 9,
+      "description": "Add recovery-resume and recovery-restore (#4494) to workflow admission, requiring repo:push to fetch the configured current main when restoring retained implementation in a stage. Both are newly inventoried workflow commands; no previously inventoried command capability, result-file or claim-mutation contract changes. Standalone operator recovery-restore retains its configured authentication path. Existing configurations retain their admission behavior."
     }
   ]
 }

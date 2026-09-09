@@ -318,6 +318,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		engineRuntime.deps.Journal = emitter
 		if seams != nil {
+			seams.recoveryEmitter = emitter
 			seams.checkpointEmitter = emitter
 		}
 		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)

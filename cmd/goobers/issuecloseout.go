@@ -124,16 +124,7 @@ func issueCloseOutReason(root, runID, gateName string) (string, error) {
 				if err := json.Unmarshal(data, &verdict); err != nil {
 					return "", fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
 				}
-				reason := strings.TrimSpace(verdict.Summary)
-				if verdict.Decision == apiv1.VerdictFail {
-					reason = strings.TrimSpace(verdict.Rationale)
-				}
-				if reason == "" {
-					reason = strings.TrimSpace(verdict.Rationale)
-				}
-				if reason == "" {
-					reason = strings.TrimSpace(verdict.Summary)
-				}
+				reason := issueCloseOutVerdictReason(verdict)
 				if reason != "" {
 					return reason, nil
 				}
@@ -164,6 +155,17 @@ func issueCloseOutReason(root, runID, gateName string) (string, error) {
 		return "", fmt.Errorf("no terminal gate or failed task reason found")
 	}
 	return "", fmt.Errorf("no verdict found for gate %q", gateName)
+}
+
+func issueCloseOutVerdictReason(verdict apiv1.Verdict) string {
+	primary, fallback := verdict.Summary, verdict.Rationale
+	if verdict.Decision == apiv1.VerdictFail {
+		primary, fallback = fallback, primary
+	}
+	if reason := strings.TrimSpace(primary); reason != "" {
+		return reason
+	}
+	return strings.TrimSpace(fallback)
 }
 
 // issueCloseOutReviewVerdict returns the last reviewer verdict journaled for
@@ -464,14 +466,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		// run artifacts they'd have to parse by hand. Appended after the
 		// question validation above so a needs-human park still states its
 		// question, and the evidence follows it.
-		verdict, gateName, found, err := issueCloseOutReviewVerdict(root, runID)
+		evidenceDetail, err := issueCloseOutEvidenceDetail(root, runID)
 		if err != nil {
-			pf(stderr, "error: resolve review verdict for escalation comment: %v\n", err)
+			pf(stderr, "error: resolve evidence for escalation comment: %v\n", err)
 			return 1
 		}
-		if found {
-			comment += issueCloseOutVerdictDetail(verdict, gateName, runID)
-		}
+		comment += evidenceDetail
 		// #2028: needs-remediation never gets the configured human assignee —
 		// withNeedsHumanAssignee only fires for LabelNeedsHuman — so config
 		// load is scoped to the status that actually needs it.

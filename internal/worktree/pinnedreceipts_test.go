@@ -96,12 +96,34 @@ func TestReceiptAcknowledgmentUsesExecutedGuardSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	acknowledged, err := manager.prepareCleanupWithReceipts(context.Background(), "unused", "worktree", "run")
+	target := CleanupTarget{Path: "unused", WorktreeID: "worktree", OwnerRunID: "run"}
+	acknowledged, err := manager.prepareCleanupTargetWithReceipts(context.Background(), target)
 	if err != nil || acknowledged || receiptCalls != 0 {
 		t.Fatalf("newly registered guard was treated as executed: ack=%t calls=%d err=%v", acknowledged, receiptCalls, err)
 	}
-	acknowledged, err = manager.prepareCleanupWithReceipts(context.Background(), "unused", "worktree", "run")
+	acknowledged, err = manager.prepareCleanupTargetWithReceipts(context.Background(), target)
 	if err != nil || !acknowledged || receiptCalls != 1 {
 		t.Fatalf("next cleanup did not execute receipt guard: ack=%t calls=%d err=%v", acknowledged, receiptCalls, err)
+	}
+}
+
+func TestPinnedResetPreservesConsistentCustodyForNextRun(t *testing.T) {
+	manager, repo := pinnedFixture(t)
+	if err := manager.SetCleanupGuard(MutationReceiptGuard, func(context.Context, CleanupTarget) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	first := acquirePinnedFixture(t, manager, repo, "previous-owner", PinnedCleanNone)
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ResetPinned(t.Context(), PinnedResetOptions{RepoURL: repo, BaseRef: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	next, err := manager.AcquirePinned(t.Context(), PinnedOptions{RepoURL: repo, RunID: "next-owner", BaseRef: "main", CleanPolicy: PinnedCleanFull})
+	if err != nil {
+		t.Fatalf("operator reset split receipt and recovery ownership: %v", err)
+	}
+	if err := next.Release(); err != nil {
+		t.Fatal(err)
 	}
 }
