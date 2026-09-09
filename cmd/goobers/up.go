@@ -748,7 +748,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// blocked.json and the cursors), so a pod's compare-and-swap and a
 	// runner-driven run's in-process update contend on one lock rather than
 	// racing across two.
-	durableTriggers, statePlane, err := newDaemonCoordinationServices(l, triggerPlane)
+	durableTriggers, statePlane, err := newDaemonCoordinationServices(l, triggerPlane, setup.InstanceLog)
 	if err != nil {
 		pf(stderr, "error: initialize daemon coordination planes: %v\n", err)
 		return 1

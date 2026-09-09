@@ -14,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -25,6 +26,7 @@ type durableTriggerService struct {
 	sweepMu         sync.Mutex
 	reconcileCursor string
 	bootUncertain   map[string]bool
+	auditLog        *journal.InstanceLog
 	observe         func(context.Context, triggerqueue.Record) (bool, error)
 }
 
@@ -36,7 +38,10 @@ type acceptedTriggerPayload struct {
 	PodRunID  string                 `json:"podRunId"`
 }
 
-func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTriggerService) (*durableTriggerService, *daemonStateService, error) {
+func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTriggerService, auditLog *journal.InstanceLog) (*durableTriggerService, *daemonStateService, error) {
+	if auditLog == nil {
+		return nil, nil, errors.New("trigger dispatch requires an instance audit journal")
+	}
 	state, err := newDaemonStateService(layout)
 	if err != nil {
 		return nil, nil, err
@@ -46,6 +51,7 @@ func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTrigg
 		return nil, nil, err
 	}
 	triggers.observe = acceptedTriggerObserver(layout)
+	triggers.auditLog = auditLog
 	return triggers, state, nil
 }
 
@@ -138,6 +144,9 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	if err := json.Unmarshal(record.Payload, &payload); err != nil {
 		return fmt.Errorf("decode accepted trigger %s: %w", record.ID, err)
 	}
+	if err := s.auditDispatch(record, payload.Request); err != nil {
+		return err
+	}
 	if err := s.queue.BeginDispatch(ctx, record.ID); err != nil {
 		if errors.Is(err, triggerqueue.ErrTransition) {
 			return nil
@@ -157,4 +166,23 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", "scheduler refused the accepted trigger", s.dispatch.now())
 	}
 	return s.queue.RecordDispatch(ctx, record.ID, response.RunID)
+}
+
+// A dispatch-attempt annotation may repeat after a crash between journal append
+// and claiming the queue record. The acceptance ID correlates those attempts;
+// the annotation never claims that execution has already started.
+func (s *durableTriggerService) auditDispatch(record triggerqueue.Record, request httpapi.TriggerRequest) error {
+	if s.auditLog == nil {
+		return nil
+	} // Low-level service test seam only.
+	return s.auditLog.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Actor: record.Actor,
+		Workflow: request.Workflow, Gaggle: request.Gaggle,
+		RunID:  strings.TrimPrefix(record.ID, "trigger-"),
+		Reason: "accepted trigger dispatch requested",
+		Runner: map[string]any{
+			"note": "trigger.dispatch.requested", "acceptanceId": record.ID,
+			"requestId": record.Key, "force": request.Force, "sourceRun": request.SourceRun,
+		},
+	})
 }
