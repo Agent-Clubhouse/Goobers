@@ -316,6 +316,7 @@ func TestHTTPStoreRefusesAValueWithoutAnETag(t *testing.T) {
 // client side: the gaggle is the client's own, never the caller's to choose.
 func TestHTTPPriorityTriggerPostsForItsOwnGaggle(t *testing.T) {
 	var bodies []string
+	var keys []string
 	var auth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/v1/triggers" || request.Method != http.MethodPost {
@@ -323,6 +324,7 @@ func TestHTTPPriorityTriggerPostsForItsOwnGaggle(t *testing.T) {
 			return
 		}
 		auth = request.Header.Get("Authorization")
+		keys = append(keys, request.Header.Get("Idempotency-Key"))
 		raw, _ := io.ReadAll(request.Body)
 		bodies = append(bodies, string(raw))
 		w.Header().Set("Content-Type", "application/json")
@@ -352,6 +354,9 @@ func TestHTTPPriorityTriggerPostsForItsOwnGaggle(t *testing.T) {
 	}
 	if request.Gaggle != "goobers" || request.Workflow != "merge-review" || request.SourceRun != "run-1" {
 		t.Fatalf("request = %+v", request)
+	}
+	if len(keys) != 2 || keys[0] != request.RequestID || keys[1] != request.RequestID {
+		t.Fatalf("retry Idempotency-Key headers = %q, want %q", keys, request.RequestID)
 	}
 	if !strings.HasPrefix(request.RequestID, "priority-") || len(request.RequestID) != len("priority-")+64 {
 		t.Fatalf("requestId = %q, want a bounded content-derived delivery identity", request.RequestID)

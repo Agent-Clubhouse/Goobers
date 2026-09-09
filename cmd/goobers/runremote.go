@@ -161,6 +161,7 @@ func submitRemoteTrigger(
 		return httpapi.TriggerResponse{}, nil, fmt.Errorf("build trigger request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(httpapi.HeaderIdempotencyKey, input.RequestID)
 	request.Header.Set("Accept", "application/json")
 	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)

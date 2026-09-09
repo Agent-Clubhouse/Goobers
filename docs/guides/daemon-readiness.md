@@ -31,3 +31,11 @@ liveness, including the existing grace period before the first scheduler tick.
 No health probe is proof that an individual trigger was accepted or dispatched.
 Use the trigger submission's own result for that decision; do not automatically
 resubmit a request merely because a progress check becomes stale.
+
+`POST /api/v1/triggers` requires an `Idempotency-Key` header (up to 256 bytes,
+with no embedded control characters). Reuse the same key and payload when
+retrying a delivery. If the JSON body includes `requestId`, it must match the
+header after trimming surrounding whitespace; the header alone is sufficient.
+The remote `goobers run` and pod priority-trigger clients transmit both values.
+The current replay reservation is in memory, so a key alone does not yet prove
+acceptance survives a daemon restart.

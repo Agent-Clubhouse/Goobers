@@ -571,6 +571,16 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 				fmt.Sprintf("requestId must be no longer than %d bytes", MaxTriggerRequestIDBytes))
 			return
 		}
+		key, err := idempotencyKeyWithLimit(request, MaxTriggerRequestIDBytes)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, CodeIdempotencyKeyRequired, err.Error())
+			return
+		}
+		if bodyKey := strings.TrimSpace(input.RequestID); bodyKey != "" && bodyKey != key {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "requestId must match Idempotency-Key")
+			return
+		}
+		input.RequestID = key
 		// Pod containment (decision 005 ruling R3): a pod token proves "I am
 		// run X's stage pod". That authorizes minting a run in the gaggle X
 		// belongs to — apply-verdict's crowned-lander priority dispatch — and

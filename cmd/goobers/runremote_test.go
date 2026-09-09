@@ -57,6 +57,7 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 		gotPath    string
 		gotMethod  string
 		gotAuth    string
+		gotKey     string
 		gotRequest httpapi.TriggerRequest
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +65,7 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 		if serveRemoteRootFixture(w, r) {
 			return
 		}
+		gotKey = r.Header.Get(httpapi.HeaderIdempotencyKey)
 		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
 			t.Errorf("decode trigger request: %v", err)
 		}
@@ -86,6 +88,9 @@ func TestRunRemoteTriggerSubmitsToDaemonAPI(t *testing.T) {
 		t.Fatalf("authorization = %q", gotAuth)
 	}
 	want := httpapi.TriggerRequest{Gaggle: "example", Workflow: "nightly", RequestID: "delivery-1", Force: true}
+	if gotKey != want.RequestID {
+		t.Fatalf("Idempotency-Key = %q, want %q", gotKey, want.RequestID)
+	}
 	if gotRequest != want {
 		t.Fatalf("trigger request = %+v, want %+v", gotRequest, want)
 	}
