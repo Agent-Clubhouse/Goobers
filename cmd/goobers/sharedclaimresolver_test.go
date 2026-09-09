@@ -23,8 +23,104 @@ type pinnedClaimTestStore struct {
 	writes   int
 }
 
+func TestPinnedResolverReconciliationUsesOwnerPolicyAndDistinctIncarnation(t *testing.T) {
+	layout, _ := newPinnedClaimResolverRun(t, "shared")
+	resolver := pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
+		return &pinnedClaimTestStore{}, nil
+	}}
+	key := claimsclient.Key{Gaggle: "example", Provider: "github", ExternalID: "42"}
+	ordinary, err := resolver.Admission(t.Context(), key, "shared-run", "claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservationID := formatBacklogReconcileRunID("shared-run", 42, 1)
+	reservation, err := resolver.Admission(t.Context(), key, reservationID, "backlog-reconcile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.RemoteKey != ordinary.RemoteKey || reservation.Owner == ordinary.Owner {
+		t.Fatal("reservation must compete for the same remote key with a distinct owner")
+	}
+	second, err := resolver.Admission(t.Context(), key, formatBacklogReconcileRunID("shared-run", 42, 2), "backlog-reconcile")
+	if err != nil || second.Owner == reservation.Owner {
+		t.Fatalf("concurrent reservation shares ownership: %v", err)
+	}
+	for _, tc := range []struct{ run, workflow string }{
+		{reservationID, "claim"},
+		{formatBacklogReconcileRunID("missing", 42, 1), "backlog-reconcile"},
+		{"shared-run/backlog-reconcile/42/1/extra", "backlog-reconcile"},
+	} {
+		if _, err := resolver.Admission(t.Context(), key, tc.run, tc.workflow); err == nil {
+			t.Fatalf("unverified reservation accepted: %+v", tc)
+		}
+	}
+}
+
 func (s *pinnedClaimTestStore) Read(context.Context, string) (sharedclaim.Observation, error) {
 	return sharedclaim.Observation{Record: s.record, Revision: s.revision, Now: time.Now()}, nil
+}
+
+func TestReconciliationSharedLeaseCannotReleaseOrdinaryClaim(t *testing.T) {
+	layout, run := newPinnedClaimResolverRun(t, "shared")
+	store := &pinnedClaimTestStore{}
+	resolver := stageClaimResolver{pinnedSharedClaimResolver{layout: layout, store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) {
+		return store, nil
+	}}}
+	file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := claimsclient.Key{Gaggle: "example", Provider: "github", ExternalID: "42"}
+	reservationID := formatBacklogReconcileRunID("shared-run", 42, 1)
+	if ok, _, err := file.ClaimScoped(t.Context(), key, reservationID, "backlog-reconcile", time.Minute); err != nil || !ok {
+		t.Fatalf("reserve: %t %v", ok, err)
+	}
+	entries, err := file.ForRunAll(t.Context(), reservationID)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("reservation entries: %+v %v", entries, err)
+	}
+	forged := entries[0]
+	forged.RunID, forged.Workflow = "shared-run", "claim"
+	if _, err := resolver.Release(t.Context(), forged); err == nil {
+		t.Fatal("reservation ownership authorized an ordinary claim release")
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := file.ClaimScoped(t.Context(), key, reservationID, "backlog-reconcile", time.Minute); err == nil || ok {
+		t.Fatal("terminal owning run admitted a reservation")
+	}
+	if released, err := file.ReleaseAllForRun(t.Context(), reservationID); err != nil || len(released) != 1 || store.record.Owner != (sharedclaim.Owner{}) {
+		t.Fatalf("terminal reservation release: %+v %v", released, err)
+	}
+}
+
+func TestStageClaimResolverLocalFallbackDoesNotOverrideRunPin(t *testing.T) {
+	for _, mode := range []string{"local", "shared"} {
+		t.Run(mode, func(t *testing.T) {
+			layout, _ := newPinnedClaimResolverRun(t, mode)
+			resolver := stageClaimResolver{pinnedSharedClaimResolver{layout: layout}}
+			key := claimsclient.Key{Gaggle: "example", Provider: "github", ExternalID: "42"}
+			// The current demo configuration is local. An existing shared pin
+			// must still require its provider, while a local pin needs none.
+			binding, err := resolver.Admission(t.Context(), key, "shared-run", "claim")
+			if mode == "shared" && err == nil {
+				t.Fatal("current local configuration overrode a shared pin")
+			}
+			if mode == "local" && (err != nil || binding != nil) {
+				t.Fatalf("local pin needed a provider: %+v %v", binding, err)
+			}
+			for _, runID := range []string{"legacy-run", formatBacklogReconcileRunID("legacy-run", 42, 1)} {
+				workflowName := "claim"
+				if runID != "legacy-run" {
+					workflowName = "backlog-reconcile"
+				}
+				if binding, err := resolver.Admission(t.Context(), key, runID, workflowName); err != nil || binding != nil {
+					t.Fatalf("legacy local admission %q: %+v %v", runID, binding, err)
+				}
+			}
+		})
+	}
 }
 func (s *pinnedClaimTestStore) CompareAndSwap(_ context.Context, _, revision string, record sharedclaim.Record) error {
 	if revision != s.revision {

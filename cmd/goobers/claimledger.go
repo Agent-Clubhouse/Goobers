@@ -38,7 +38,7 @@ var openStageClaimLedger = stageClaimLedger
 // environment.
 func stageClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
 	return claimsclient.Select(os.Getenv, func() (claimsclient.Ledger, error) {
-		return fileClaimLedger(l, opts...)
+		return fileClaimLedgerWithResolver(l, stageSharedClaimResolver(l), opts...)
 	})
 }
 
@@ -75,8 +75,13 @@ func withClaimJournal(log *journal.InstanceLog, opts ...localscheduler.LedgerOpt
 // fileClaimLedger is the instance's ledger under withClaimLock — one flock
 // acquisition per Locked section, labelled by the caller.
 func fileClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
+	return fileClaimLedgerWithResolver(l, nil, opts...)
+}
+
+func fileClaimLedgerWithResolver(l instance.Layout, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	return claimsclient.NewFile(claimsclient.FileConfig{
+		Shared:     resolver,
 		LedgerPath: filepath.Join(l.SchedulerDir(), claimLedgerFileName),
 		Lock: func(operation string, fn func() error) error {
 			return withClaimLock(lockPath, operation, fn)
@@ -88,11 +93,12 @@ func fileClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (cl
 	})
 }
 
-// fileClaimLedgerForRun is fileClaimLedger with withClaimLockForRun's lock
+// fileClaimLedgerForRunWithResolver uses withClaimLockForRun's lock
 // (the run-attributed lock-event context the run-lifecycle releases use).
-func fileClaimLedgerForRun(l instance.Layout, gaggle, runID string, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
+func fileClaimLedgerForRunWithResolver(l instance.Layout, gaggle, runID string, resolver claimsclient.SharedClaimResolver, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
 	return claimsclient.NewFile(claimsclient.FileConfig{
+		Shared:     resolver,
 		LedgerPath: filepath.Join(l.SchedulerDir(), claimLedgerFileName),
 		Lock: func(operation string, fn func() error) error {
 			return withClaimLockForRun(lockPath, operation, gaggle, runID, fn)
@@ -115,7 +121,7 @@ func heldClaimLedger(l instance.Layout, opts ...localscheduler.LedgerOption) (cl
 // stageClaimLedgerForRun is the stage seam with the run-attributed file lock.
 func stageClaimLedgerForRun(l instance.Layout, gaggle, runID string, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
 	return claimsclient.Select(os.Getenv, func() (claimsclient.Ledger, error) {
-		return fileClaimLedgerForRun(l, gaggle, runID, opts...)
+		return fileClaimLedgerForRunWithResolver(l, gaggle, runID, stageSharedClaimResolver(l), opts...)
 	})
 }
 

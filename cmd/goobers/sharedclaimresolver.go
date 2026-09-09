@@ -55,7 +55,13 @@ func (r pinnedSharedClaimResolver) Release(ctx context.Context, entry claimsclie
 }
 
 func (r pinnedSharedClaimResolver) claimPolicy(key claimsclient.Key, runID, workflow string) (*journal.Reader, journal.RunIdentity, string, error) {
-	directory, err := runDirFor(r.layout, runID)
+	policyRunID := runID
+	owner, reconciliation := parseBacklogReconcileRunID(runID)
+	reconciliation = reconciliation && workflow == "backlog-reconcile"
+	if reconciliation {
+		policyRunID = owner
+	}
+	directory, err := runDirFor(r.layout, policyRunID)
 	if err != nil {
 		return nil, journal.RunIdentity{}, "", err
 	}
@@ -67,10 +73,16 @@ func (r pinnedSharedClaimResolver) claimPolicy(key claimsclient.Key, runID, work
 	if err != nil {
 		return nil, identity, "", err
 	}
-	if identity.RunID != runID || identity.Workflow != workflow || identity.Gaggle != key.Gaggle {
+	if identity.RunID != policyRunID || (!reconciliation && identity.Workflow != workflow) || identity.Gaggle != key.Gaggle {
 		return nil, identity, "", fmt.Errorf("claim request does not match the pinned run identity")
 	}
 	mode, err := pinnedClaimVisibility(reader, identity, providers.ProviderKind(key.Provider))
+	if reconciliation {
+		// Resolve authority from the owning run, but keep each reservation a
+		// distinct lease incarnation. It must not renew or release the owning
+		// run's ordinary claim (nor another concurrent reconciliation).
+		identity.RunID = runID
+	}
 	return reader, identity, mode, err
 }
 
