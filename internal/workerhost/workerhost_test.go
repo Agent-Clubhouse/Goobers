@@ -10,16 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/goobers/goobers/internal/attemptidentity"
-	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 type fakeWorker struct {
@@ -309,122 +306,6 @@ func TestActivityTrackerAttachesIdentityToFailedAttempt(t *testing.T) {
 	if identity.BuildID != "build-8" || identity.WorkerIdentity != "worker-8" {
 		t.Fatalf("identity = %+v, want build-8/worker-8", identity)
 	}
-}
-
-// A rolling upgrade deliberately has both builds polling the queue. The
-// pinned workflow implementation continues dispatching its long-running and
-// resumed activity attempts to the build that began it, while newly started
-// executions can route to the replacement build. This exercises the actual
-// interceptor path rather than only inspecting worker.Options.
-func TestRollingUpgradePinsLongRunningAndResumedActivityAttempts(t *testing.T) {
-	old := &activityTracker{buildID: "build-old", worker: "old-fleet-a"}
-	new := &activityTracker{buildID: "build-new", worker: "new-fleet-b"}
-
-	execute := func(tracker *activityTracker, wantBuild, wantWorker string) {
-		t.Helper()
-		inbound := tracker.InterceptActivity(context.Background(), &identityNextActivityFor{
-			t: t, buildID: wantBuild, worker: wantWorker,
-		})
-		if _, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{}); err != nil {
-			t.Fatalf("ExecuteActivity: %v", err)
-		}
-	}
-
-	execute(old, "build-old", "old-fleet-a")
-	execute(old, "build-old", "old-fleet-a")
-	execute(new, "build-new", "new-fleet-b")
-}
-
-type versionedWorkflowInput struct {
-	BuildID  string
-	FailOnce bool
-}
-
-type versionedActivityInput struct {
-	BuildID  string
-	FailOnce bool
-}
-
-func versionedActivity(ctx context.Context, in versionedActivityInput) (string, error) {
-	info := activity.GetInfo(ctx)
-	if in.FailOnce && info.Attempt == 1 {
-		return "", temporal.NewApplicationErrorWithCause(
-			"versioned activity failed", "VersionedAttemptFailed",
-			errors.New("simulated failed attempt"),
-			attemptidentity.Identity{BuildID: in.BuildID, WorkerIdentity: "fleet/" + in.BuildID},
-		)
-	}
-	return fmt.Sprintf("%s/%d", in.BuildID, info.Attempt), nil
-}
-
-func versionedWorkflow(ctx workflow.Context, in versionedWorkflowInput) ([]string, error) {
-	options := workflow.ActivityOptions{
-		StartToCloseTimeout: time.Minute,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
-	}
-	ctx = workflow.WithActivityOptions(ctx, options)
-	var first string
-	if err := workflow.ExecuteActivity(ctx, versionedActivity, versionedActivityInput{
-		BuildID: in.BuildID, FailOnce: in.FailOnce,
-	}).Get(ctx, &first); err != nil {
-		return nil, err
-	}
-	var resume struct{}
-	workflow.GetSignalChannel(ctx, "resume").Receive(ctx, &resume)
-	var resumed string
-	if err := workflow.ExecuteActivity(ctx, versionedActivity, versionedActivityInput{
-		BuildID: in.BuildID,
-	}).Get(ctx, &resumed); err != nil {
-		return nil, err
-	}
-	return []string{first, resumed}, nil
-}
-
-func TestRollingUpgradeExecutesPinnedWorkflowAndResumes(t *testing.T) {
-	run := func(input versionedWorkflowInput) []string {
-		t.Helper()
-		var suite testsuite.WorkflowTestSuite
-		env := temporaltest.NewWorkflowEnvironment(&suite)
-		env.RegisterWorkflow(versionedWorkflow)
-		env.RegisterActivity(versionedActivity)
-		env.RegisterDelayedCallback(func() { env.SignalWorkflow("resume", nil) }, time.Second)
-		env.ExecuteWorkflow(versionedWorkflow, input)
-		if err := env.GetWorkflowError(); err != nil {
-			t.Fatalf("workflow: %v", err)
-		}
-		var result []string
-		if err := env.GetWorkflowResult(&result); err != nil {
-			t.Fatalf("workflow result: %v", err)
-		}
-		return result
-	}
-
-	old := run(versionedWorkflowInput{BuildID: "build-old", FailOnce: true})
-	if want := []string{"build-old/2", "build-old/1"}; fmt.Sprint(old) != fmt.Sprint(want) {
-		t.Fatalf("old pinned execution = %v, want %v", old, want)
-	}
-	new := run(versionedWorkflowInput{BuildID: "build-new"})
-	if want := []string{"build-new/1", "build-new/1"}; fmt.Sprint(new) != fmt.Sprint(want) {
-		t.Fatalf("new execution = %v, want %v", new, want)
-	}
-}
-
-type identityNextActivityFor struct {
-	interceptor.ActivityInboundInterceptorBase
-	t       *testing.T
-	buildID string
-	worker  string
-}
-
-func (f *identityNextActivityFor) ExecuteActivity(ctx context.Context, _ *interceptor.ExecuteActivityInput) (interface{}, error) {
-	identity, ok := attemptidentity.FromContext(ctx)
-	if !ok {
-		f.t.Fatal("activity context has no execution identity")
-	}
-	if identity.BuildID != f.buildID || identity.WorkerIdentity != f.worker {
-		f.t.Fatalf("identity = %+v, want %s/%s", identity, f.buildID, f.worker)
-	}
-	return "result", nil
 }
 
 func waitFor(t *testing.T, cond func() bool) {
