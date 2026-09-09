@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
 const forceReleaseActorCLI = "cli"
@@ -52,8 +53,9 @@ type ClaimEntry struct {
 	ExpiresAt    time.Time         `json:"expiresAt"`
 	// SharedDeadline marks admission that must not be renewed through the
 	// local-only path, including after the ledger is reopened on restart.
-	SharedDeadline time.Time  `json:"sharedDeadline,omitzero"`
-	ReleasedAt     *time.Time `json:"releasedAt,omitempty"`
+	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
+	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
 }
 
 // expired reports whether the lease is no longer live at now.
@@ -261,7 +263,7 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 // bypassed by a caller-supplied duration (e.g. a workflow's leaseDuration
 // input) reaching a live-lease branch that skips validation.
 func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
-	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration, time.Time{})
+	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration, time.Time{}, sharedclaim.Owner{})
 }
 
 // ClaimScoped acquires a claim namespaced by gaggle, provider, and external ID.
@@ -270,22 +272,28 @@ func (l *ClaimLedger) ClaimScoped(key ClaimKey, runID, workflow string, leaseDur
 	if err != nil {
 		return false, "", err
 	}
-	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration, time.Time{})
+	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration, time.Time{}, sharedclaim.Owner{})
 }
 
 // ClaimScopedUntil acquires a local claim bounded by an already established
 // shared admission deadline. The deadline is checked under the ledger mutex,
 // so waiting for local contention cannot restart the remote lease's lifetime.
 // Callers must still stop execution at the deadline and handle remote release.
-func (l *ClaimLedger) ClaimScopedUntil(key ClaimKey, runID, workflow string, deadline time.Time) (ok bool, holder string, err error) {
+func (l *ClaimLedger) ClaimScopedUntil(key ClaimKey, runID, workflow string, deadline time.Time, owner sharedclaim.Owner) (ok bool, holder string, err error) {
 	if deadline.IsZero() {
 		return false, "", errors.New("localscheduler: claim deadline is required")
+	}
+	if owner.Run != runID {
+		return false, "", errors.New("localscheduler: shared owner must match the local run")
+	}
+	if _, err := sharedclaim.Encode(key.ExternalID, sharedclaim.Record{Version: 1, Owner: owner, ExpiresAt: deadline}); err != nil {
+		return false, "", err
 	}
 	storageKey, err := key.storageKey()
 	if err != nil {
 		return false, "", err
 	}
-	return l.claim(storageKey, key.ExternalID, key, runID, workflow, 0, deadline)
+	return l.claim(storageKey, key.ExternalID, key, runID, workflow, 0, deadline, owner)
 }
 
 type plannedClaim struct {
@@ -408,7 +416,7 @@ func (l *ClaimLedger) refusePlannedClaims(planned []plannedClaim, runID string, 
 	return false, "", nil
 }
 
-func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration, deadline time.Time) (ok bool, holder string, err error) {
+func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration, deadline time.Time, owner sharedclaim.Owner) (ok bool, holder string, err error) {
 	if leaseDuration <= 0 && deadline.IsZero() {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
 	}
@@ -439,6 +447,9 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	if deadline.IsZero() && !prev.SharedDeadline.IsZero() {
 		return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before renewal")
 	}
+	if prev.SharedOwner != (sharedclaim.Owner{}) && prev.SharedOwner != owner && !prev.expired(now) {
+		return false, prev.RunID, nil
+	}
 	entry := ClaimEntry{
 		ItemID:         key.ExternalID,
 		Gaggle:         key.Gaggle,
@@ -449,6 +460,7 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		ClaimedAt:      now,
 		ExpiresAt:      expires,
 		SharedDeadline: deadline,
+		SharedOwner:    owner,
 	}
 	// A live same-owner renewal is continuous ownership, not a new provider
 	// observation. Retain its original as-of timestamp; replacement or expired

@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
 func TestClaimScopedUntilPersistsExactDeadline(t *testing.T) {
@@ -15,9 +17,10 @@ func TestClaimScopedUntilPersistsExactDeadline(t *testing.T) {
 	}
 	key := ClaimKey{Gaggle: "gaggle", Provider: "github", ExternalID: "42"}
 	deadline := now.Add(time.Minute)
+	owner := sharedclaim.Owner{Instance: "instance", Run: "run", Token: "incarnation"}
 	// Time spent reaching the local ledger must not extend the remote lease.
 	now = now.Add(20 * time.Second)
-	if ok, _, err := ledger.ClaimScopedUntil(key, "run", "implement", deadline); err != nil || !ok {
+	if ok, _, err := ledger.ClaimScopedUntil(key, "run", "implement", deadline, owner); err != nil || !ok {
 		t.Fatalf("claim: %v, %v", ok, err)
 	}
 	reopened, err := OpenClaimLedger(path, WithLedgerClock(func() time.Time { return now }))
@@ -30,6 +33,14 @@ func TestClaimScopedUntilPersistsExactDeadline(t *testing.T) {
 	}
 	if !entry.SharedDeadline.Equal(deadline) {
 		t.Fatal("restart lost shared admission marker")
+	}
+	if entry.SharedOwner != owner {
+		t.Fatal("restart lost shared claim incarnation")
+	}
+	replacement := owner
+	replacement.Token = "replacement"
+	if ok, _, err := reopened.ClaimScopedUntil(key, "run", "implement", deadline, replacement); err != nil || ok {
+		t.Fatalf("same run replaced a live incarnation: %v %v", ok, err)
 	}
 	if ok, err := reopened.RenewEntry(entry, time.Hour); err == nil || ok {
 		t.Fatalf("local-only renewal extended shared admission: %v, %v", ok, err)
@@ -45,7 +56,7 @@ func TestClaimScopedUntilPersistsExactDeadline(t *testing.T) {
 		t.Fatalf("local-only reclaim discarded shared admission: %v, %v", ok, err)
 	}
 	for _, expired := range []time.Time{{}, now, now.Add(-time.Second)} {
-		if ok, _, err := ledger.ClaimScopedUntil(key, "run", "implement", expired); err == nil || ok {
+		if ok, _, err := ledger.ClaimScopedUntil(key, "run", "implement", expired, owner); err == nil || ok {
 			t.Fatalf("expired renewal admitted: %v, %v", ok, err)
 		}
 	}
@@ -54,7 +65,8 @@ func TestClaimScopedUntilPersistsExactDeadline(t *testing.T) {
 		t.Fatal("refused renewal mutated existing claim")
 	}
 	now = deadline
-	if ok, _, err := ledger.ClaimScopedUntil(key, "successor", "implement", now.Add(time.Minute)); err != nil || !ok {
+	owner.Run, owner.Token = "successor", "new-incarnation"
+	if ok, _, err := ledger.ClaimScopedUntil(key, "successor", "implement", now.Add(time.Minute), owner); err != nil || !ok {
 		t.Fatalf("expired claim prevents successor admission: %v, %v", ok, err)
 	}
 }
