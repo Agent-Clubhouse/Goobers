@@ -157,6 +157,7 @@ function RunDetailWorkspace({
   const [selectedEvidenceSeq, setSelectedEvidenceSeq] = useState<number>();
   const [revealPending, setRevealPending] = useState(false);
   const [revealError, setRevealError] = useState<string>();
+  const [runIdCopied, setRunIdCopied] = useState(false);
   const { config: portalConfig, loading: portalConfigLoading } = useCobrand();
   const inspectorRef = useRef<HTMLElement>(null);
   const fullscreenRootRef = useRef<HTMLDivElement>(null);
@@ -254,6 +255,15 @@ function RunDetailWorkspace({
       setRevealPending(false);
     }
   };
+  const copyRunId = async () => {
+    try {
+      await navigator.clipboard.writeText(run.id);
+      setRunIdCopied(true);
+    } catch {
+      setRunIdCopied(false);
+    }
+  };
+  const displayedRunId = shortenIdentifier(run.id);
 
   return (
     <>
@@ -262,16 +272,29 @@ function RunDetailWorkspace({
           Runs
         </button>
         <Icon name="chevron" size={14} />
-        <span className="mono">{run.id}</span>
+        <span className="mono breadcrumb-run-id" title={run.id}>
+          {displayedRunId}
+        </span>
       </nav>
 
       <header className="run-heading">
         <div className="run-heading-main">
           <div className="run-title-line">
             <StatusBadge stale={run.stale} status={run.phase} />
-            <span className="mono run-id">{run.id}</span>
+            <span className="mono run-id" title={run.id}>{displayedRunId}</span>
           </div>
-          <h1>Run {run.id}</h1>
+          <div className="run-heading-title">
+            <h1 aria-label={`Run ${run.id}`}>Run <span aria-hidden="true">{displayedRunId}</span></h1>
+            <button
+              aria-label={runIdCopied ? "Run ID copied" : "Copy full run ID"}
+              className="run-id-copy"
+              onClick={() => void copyRunId()}
+              title={runIdCopied ? "Copied" : `Copy ${run.id}`}
+              type="button"
+            >
+              {runIdCopied ? "Copied" : "Copy ID"}
+            </button>
+          </div>
           <p className="run-identity-line">
             <span>
               {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
@@ -681,6 +704,15 @@ function EventLedger({
                       {selected && <span className="selected-event-label">Contains selected event</span>}
                     </span>
                   </button>
+                  <details className="ledger-mobile-detail">
+                    <summary>More group details</summary>
+                    <dl>
+                      <div><dt>Stage</dt><dd>{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</dd></div>
+                      <div><dt>Sequences</dt><dd>{first.seq}–{last.seq}</dd></div>
+                      <div><dt>Records</dt><dd>{entry.events.length}</dd></div>
+                      <div><dt>Categories</dt><dd>{ledgerGroupCategories(entry)}</dd></div>
+                    </dl>
+                  </details>
                 </li>
               );
             }
@@ -748,6 +780,14 @@ function EventLedger({
                     {selected && <span className="selected-event-label">Selected event</span>}
                   </span>
                 </button>
+                <details className="ledger-mobile-detail">
+                  <summary>More event details</summary>
+                  <dl>
+                    <div><dt>Type</dt><dd>{event.type}</dd></div>
+                    <div><dt>Attempt</dt><dd>{event.attempt ?? "None"}</dd></div>
+                    <div><dt>Category</dt><dd>{ledgerCategoryLabel(event)}</dd></div>
+                  </dl>
+                </details>
                 {event.externalRef?.url && (
                   <a
                     className="ledger-event-link"
@@ -816,4 +856,8 @@ function externalRefLabel(kind: string): string {
 function humanizeLedgerValue(value: string): string {
   const words = value.replace(/[._-]+/g, " ").trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
+}
+
+function shortenIdentifier(value: string): string {
+  return value.length > 20 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value;
 }

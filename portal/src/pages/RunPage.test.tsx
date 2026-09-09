@@ -1044,7 +1044,7 @@ describe("run detail", () => {
   });
 
   it("renders pinned identity and narrow-layout semantics with the replay scrubber", async () => {
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 480 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
     renderRun("01JZ300ABORTED");
 
     expect(
@@ -1062,8 +1062,46 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "implement, agentic, Aborted at sequence 5" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pan graph left" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pan graph right" })).toBeInTheDocument();
     expect(portalStyles).toMatch(/\.playback-panel\s*\{[^}]*width:\s*100%/s);
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
+  });
+
+  it("shortens long run identities visually while preserving full accessible copy", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const original = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!original) {
+      throw new Error("Expected active run fixture.");
+    }
+    const longId = "01JZ441DAEMONAPI-EXTREMELY-LONG-RUN-IDENTIFIER";
+    fixtures.runDetails = { [longId]: { ...original, id: longId } };
+    fixtures.runEvents = {
+      [longId]: {
+        ...fixtures.runEvents?.["01JZ441DAEMONAPI"]!,
+        runId: longId,
+      },
+    };
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+
+    renderRun(longId, new FixtureDaemonClient(fixtures));
+
+    expect(await screen.findByRole("heading", { name: `Run ${longId}` })).toHaveTextContent("…");
+    await user.click(screen.getByRole("button", { name: "Copy full run ID" }));
+    expect(writeText).toHaveBeenCalledWith(longId);
+    expect(screen.getByRole("button", { name: "Run ID copied" })).toBeInTheDocument();
+  });
+
+  it("exposes mobile-first ledger fields with expandable secondary detail", async () => {
+    renderRun("01JZ441DAEMONAPI");
+    const row = await screen.findByRole("button", { name: /^Select sequence 6:/ });
+    expect(within(row).getByText("Seq 6")).toBeInTheDocument();
+    expect(within(row).getByText("review")).toBeInTheDocument();
+    expect(within(row).getByText(/^Elapsed /)).toBeInTheDocument();
+    expect(
+      row.parentElement?.querySelector("details.ledger-mobile-detail"),
+    ).not.toBeNull();
   });
 
   it("pivots the run's gaggle/workflow identity into a pre-scoped Runs and Insight view (#2529)", async () => {
