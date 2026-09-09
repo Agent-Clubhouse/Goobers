@@ -1259,6 +1259,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// attach it so subsequent SetWorkflowEnabled calls can drive on-demand
 	// pollOnce reloads and roll back their on-disk edit on rejection.
 	workflowMutations.AttachReloader(reloader)
+	stopConfigMirror := reloader.startConfigMirror(ctx)
+	defer stopConfigMirror()
 	reloader.publishReloadStatus(time.Now())
 
 	// #3969/#4420 follow-up: this MUST run before crash-resume below, not
