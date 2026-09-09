@@ -111,6 +111,7 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 	// new attempt with its own span, exactly as the local runner records it —
 	// collapsing them would hide the retry that is usually the interesting part.
 	started := map[stageKey]JournalOp{}
+	identities := map[stageKey]attemptIdentity{}
 	for _, op := range proj.Ops {
 		ev := op.Event
 		if op.Kind != opAppend || ev == nil {
@@ -120,6 +121,14 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 		case journal.EventStageStarted:
 			key := stageKey{stage: ev.Stage, attempt: ev.Attempt}
 			started[key] = op
+		case journal.EventError:
+			// A failed activity has no result to carry its identity into
+			// stage.finished. Preserve the identity attached to executor_error
+			// so the terminal incomplete span remains attributable.
+			if ev.Stage != "" && ev.Attempt > 0 {
+				key := stageKey{stage: ev.Stage, attempt: ev.Attempt}
+				identities[key] = attemptIdentityFromRunner(ev.Runner)
+			}
 		case journal.EventStageFinished:
 			key := stageKey{stage: ev.Stage, attempt: ev.Attempt}
 			start, ok := started[key]
@@ -128,10 +137,11 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 				// something to paper over with a zero-length span.
 				return fmt.Errorf("engine: stage %q attempt %d finished without a start", ev.Stage, ev.Attempt)
 			}
+			identity := attemptIdentityFromRunner(ev.Runner)
 			_, span, err := sink.StartStageSpan(runCtx, StageSpanID{
 				RunSpanID: run, Stage: ev.Stage, Attempt: ev.Attempt, Branch: ev.Branch,
-				BuildID:        runnerFact(ev.Runner, "buildId"),
-				WorkerIdentity: runnerFact(ev.Runner, "workerIdentity"),
+				BuildID:        identity.buildID,
+				WorkerIdentity: identity.workerIdentity,
 			}, start.Time)
 			if err != nil {
 				return fmt.Errorf("engine: synthesize stage span %q: %w", ev.Stage, err)
@@ -157,8 +167,10 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 	// run's end rather than leaking an unterminated span, and grade it as the
 	// incomplete thing it is.
 	for key, start := range started {
+		identity := identities[key]
 		_, span, err := sink.StartStageSpan(runCtx, StageSpanID{
 			RunSpanID: run, Stage: key.stage, Attempt: key.attempt,
+			BuildID: identity.buildID, WorkerIdentity: identity.workerIdentity,
 		}, start.Time)
 		if err != nil {
 			return fmt.Errorf("engine: synthesize incomplete stage span %q: %w", key.stage, err)
@@ -180,6 +192,18 @@ func SynthesizeRunSpans(ctx context.Context, sink SpanSink, proj JournalProjecti
 type stageKey struct {
 	stage   string
 	attempt int
+}
+
+type attemptIdentity struct {
+	buildID        string
+	workerIdentity string
+}
+
+func attemptIdentityFromRunner(facts map[string]any) attemptIdentity {
+	return attemptIdentity{
+		buildID:        runnerFact(facts, "buildId"),
+		workerIdentity: runnerFact(facts, "workerIdentity"),
+	}
 }
 
 func runnerFact(facts map[string]any, key string) string {

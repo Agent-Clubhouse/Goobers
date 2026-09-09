@@ -13,6 +13,8 @@ type recordedSpan struct {
 	kind     string
 	name     string
 	attempt  int
+	buildID  string
+	worker   string
 	start    time.Time
 	end      time.Time
 	outcome  string
@@ -41,7 +43,9 @@ func (f *fakeSink) StartStageSpan(ctx context.Context, id StageSpanID, at time.T
 	if f.failOn == id.Stage {
 		return ctx, nil, context.Canceled
 	}
-	return ctx, f.record("stage", id.Stage, id.Attempt, at), nil
+	span := f.record("stage", id.Stage, id.Attempt, at)
+	span.buildID, span.worker = id.BuildID, id.WorkerIdentity
+	return ctx, span, nil
 }
 
 func (f *fakeSink) StartGateSpan(ctx context.Context, id GateSpanID, at time.Time) (context.Context, SynthSpan, error) {
@@ -188,6 +192,7 @@ func TestSynthesizeRunSpansClosesStagesLeftOpen(t *testing.T) {
 			appendOp(journal.EventRunFinished, 30, func(e *journal.Event) { e.Status = "failed" }),
 		},
 	}
+
 	sink := &fakeSink{}
 	if err := SynthesizeRunSpans(context.Background(), sink, proj); err != nil {
 		t.Fatalf("SynthesizeRunSpans: %v", err)
@@ -201,6 +206,37 @@ func TestSynthesizeRunSpansClosesStagesLeftOpen(t *testing.T) {
 	}
 	if !stage.end.Equal(at(30)) {
 		t.Fatalf("abandoned stage ended %s, want the run's end %s", stage.end, at(30))
+	}
+}
+
+// A failed activity does not return a ResultEnvelope, but the worker
+// interceptor records its build and worker identity on executor_error. That
+// identity must remain visible on the telemetry span synthesized when the
+// execution terminates or resumes after a rolling upgrade.
+func TestSynthesizeRunSpansAttributesFailedAttemptToExecutingWorker(t *testing.T) {
+	t.Parallel()
+	proj := JournalProjection{
+		Identity: journal.RunIdentity{RunID: "r", Gaggle: "g", Workflow: "long-running", WorkflowVersion: 1},
+		Ops: []JournalOp{
+			appendOp(journal.EventRunStarted, 0, nil),
+			appendOp(journal.EventStageStarted, 1, func(e *journal.Event) { e.Stage, e.Attempt = "implement", 1 }),
+			appendOp(journal.EventError, 30, func(e *journal.Event) {
+				e.Stage, e.Attempt = "implement", 1
+				e.Runner = map[string]any{"buildId": "build-old", "workerIdentity": "old-fleet-a"}
+			}),
+			appendOp(journal.EventRunFinished, 31, func(e *journal.Event) { e.Status = "failed" }),
+		},
+	}
+	sink := &fakeSink{}
+	if err := SynthesizeRunSpans(context.Background(), sink, proj); err != nil {
+		t.Fatalf("SynthesizeRunSpans: %v", err)
+	}
+	stage := sink.spans[1]
+	if stage.buildID != "build-old" || stage.worker != "old-fleet-a" {
+		t.Fatalf("failed attempt identity = %q/%q, want build-old/old-fleet-a", stage.buildID, stage.worker)
+	}
+	if stage.outcome != "incomplete" || !stage.failure {
+		t.Fatalf("failed attempt span = %q failure=%t, want incomplete/true", stage.outcome, stage.failure)
 	}
 }
 

@@ -308,6 +308,48 @@ func TestActivityTrackerAttachesIdentityToFailedAttempt(t *testing.T) {
 	}
 }
 
+// A rolling upgrade deliberately has both builds polling the queue. The
+// pinned workflow implementation continues dispatching its long-running and
+// resumed activity attempts to the build that began it, while newly started
+// executions can route to the replacement build. This exercises the actual
+// interceptor path rather than only inspecting worker.Options.
+func TestRollingUpgradePinsLongRunningAndResumedActivityAttempts(t *testing.T) {
+	old := &activityTracker{buildID: "build-old", worker: "old-fleet-a"}
+	new := &activityTracker{buildID: "build-new", worker: "new-fleet-b"}
+
+	execute := func(tracker *activityTracker, wantBuild, wantWorker string) {
+		t.Helper()
+		inbound := tracker.InterceptActivity(context.Background(), &identityNextActivityFor{
+			t: t, buildID: wantBuild, worker: wantWorker,
+		})
+		if _, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{}); err != nil {
+			t.Fatalf("ExecuteActivity: %v", err)
+		}
+	}
+
+	execute(old, "build-old", "old-fleet-a")
+	execute(old, "build-old", "old-fleet-a")
+	execute(new, "build-new", "new-fleet-b")
+}
+
+type identityNextActivityFor struct {
+	interceptor.ActivityInboundInterceptorBase
+	t       *testing.T
+	buildID string
+	worker  string
+}
+
+func (f *identityNextActivityFor) ExecuteActivity(ctx context.Context, _ *interceptor.ExecuteActivityInput) (interface{}, error) {
+	identity, ok := attemptidentity.FromContext(ctx)
+	if !ok {
+		f.t.Fatal("activity context has no execution identity")
+	}
+	if identity.BuildID != f.buildID || identity.WorkerIdentity != f.worker {
+		f.t.Fatalf("identity = %+v, want %s/%s", identity, f.buildID, f.worker)
+	}
+	return "result", nil
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
