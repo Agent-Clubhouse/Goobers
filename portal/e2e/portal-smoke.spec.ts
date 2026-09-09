@@ -18,6 +18,7 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   runs: { path: "/#/runs", heading: "Runs" },
   errors: { path: "/#/errors", heading: "Matching errors" },
   insight: { path: "/#/insight", heading: "Insight" },
+  cost: { path: "/#/cost", heading: "Cost" },
   workflow: { path: "/#/workflow/core/implementation", heading: "Implementation" },
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
 };
@@ -37,7 +38,7 @@ for (const [name, { path, heading }] of Object.entries(ROUTES)) {
     const consoleErrors = trackConsoleErrors(page);
     await page.goto(path);
 
-    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     if (name === "workflow") {
       const queue = page.getByRole("region", { name: "PR queue eligibility" });
       await expect(queue.getByRole("table", { name: "Per-PR eligibility" })).toBeVisible();
@@ -77,6 +78,44 @@ test("loads Overview and Workflows and processes an SSE invalidation", async ({ 
   expect(invalidation.ok()).toBe(true);
   await expect.poll(() => workflowRunReads).toBeGreaterThanOrEqual(2);
   expect(consoleErrors).toEqual([]);
+});
+
+test("keeps Overview status and recent outcomes compact at desktop and narrow widths", async ({
+  page,
+}) => {
+  const completedRunId = "01JZE2ECOMPLETEDRUNWITHALONGIDENTIFIER";
+  for (const viewport of [
+    { width: 1280, height: 800 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/#/overview");
+
+    const status = page.getByRole("region", {
+      name: "Daemon connection and instance counts",
+    });
+    await expect(status).toContainText("Retention sweep running");
+    await expect(status).toContainText("Workflows1");
+    await expect(status).toContainText("Active runs1");
+    await expect(status).toContainText("Gaggles1");
+
+    const outcomes = page.getByRole("region", { name: "Recent outcomes" });
+    const outcomeRow = outcomes.locator(".data-row").filter({ hasText: completedRunId });
+    await expect(outcomeRow).toBeVisible();
+    await expect(outcomeRow.locator(`a[aria-label="Open run ${completedRunId}"]`)).toHaveAttribute(
+      "href",
+      `#/run/${completedRunId}`,
+    );
+    await expect(outcomes.getByTitle(completedRunId)).toBeVisible();
+    await expect(
+      outcomes.getByTitle(
+        "Implementation · item refs/heads/users/jeffstei/a-very-long-portal-layout-verification-branch",
+      ),
+    ).toBeVisible();
+
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    expect(overflow).toBeLessThanOrEqual(1);
+  }
 });
 
 test("loads the Gaggle page from fixture daemon data", async ({ page }) => {

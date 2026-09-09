@@ -100,6 +100,23 @@ const run = {
   noWork: false,
 };
 
+const completedRun = {
+  ...run,
+  id: "01JZE2ECOMPLETEDRUNWITHALONGIDENTIFIER",
+  trigger: {
+    kind: "item",
+    ref: "refs/heads/users/jeffstei/a-very-long-portal-layout-verification-branch",
+  },
+  phase: "completed",
+  terminal: true,
+  currentStage: undefined,
+  startedAt: "2026-08-17T06:00:00Z",
+  finishedAt: "2026-08-17T06:03:00Z",
+  durationMillis: 180_000,
+  lastActivityAt: "2026-08-17T06:03:00Z",
+  lastSeq: 9,
+};
+
 const runDetail = {
   ...run,
   graph: workflowGraph,
@@ -215,6 +232,18 @@ const responses = new Map([
       status: "ready",
       concurrency: { activeRuns: 1, maxConcurrentRuns: 2 },
       counts: { gaggles: 1, goobers: 1, workflows: 1, activeRuns: 1 },
+      maintenance: {
+        kind: "retention-sweep",
+        state: "running",
+        trigger: "periodic",
+        startedAt: "2026-09-09T18:10:00Z",
+        lastProgressAt: "2026-09-09T19:15:00Z",
+        currentPhase: "projection-retention-with-a-long-but-coherent-phase-name",
+        candidates: 23,
+        removed: 12,
+        failures: 0,
+        lastResult: "running",
+      },
       warnings: [],
     },
   ],
@@ -435,7 +464,7 @@ createServer((request, response) => {
   if (url.pathname === "/api/v1/runs") {
     const phase = url.searchParams.get("phase");
     sendJSON(response, {
-      runs: phase && phase !== "running" ? [] : [run],
+      runs: phase === "completed" ? [completedRun] : phase && phase !== "running" ? [] : [run],
       ...(url.searchParams.get("latestPerWorkflow") === "true"
         ? { workflowActivity: [{ ...identity, activeRuns: 1 }] }
         : {}),
