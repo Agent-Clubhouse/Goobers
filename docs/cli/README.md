@@ -56,6 +56,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
+| [`goobers config-seed`](#goobers-config-seed) | seed a private worker instance from a rendered configuration mirror |
 | [`goobers diagnostics`](#goobers-diagnostics) | collect a portable, redacted support bundle |
 | [`goobers diagnostics bundle`](#goobers-diagnostics-bundle) | write a portable, redacted support bundle |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions |
@@ -870,6 +871,28 @@ instance root.
 ~~~console
 $ goobers config show
 $ goobers config show --json
+~~~
+
+## `goobers config-seed`
+
+seed a private worker instance from a rendered configuration mirror
+
+~~~text
+Usage: goobers config-seed --mirror <absolute-path> --instance <absolute-path>
+
+Seed a dedicated worker instance from the daemon's rendered-config mirror.
+The mirror is read-only; no config-repository credentials are needed.
+The instance path must be a child of a private worker volume, not a mount point.
+A complete validated tree is published at once. A repeated init-container run
+validates and retains its completed seed, even if the mirror has since changed.
+It refuses to overwrite an unrelated instance. Recreate the private worker
+volume to seed a newer generation; this command is not a live config updater.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers config-seed --mirror /mnt/config-mirror --instance /var/lib/worker/instance
 ~~~
 
 ## `goobers connect`

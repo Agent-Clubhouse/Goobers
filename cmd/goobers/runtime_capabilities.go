@@ -400,6 +400,10 @@ func init() {
 			withSynopsis(synopsisByID["worker"]).
 			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
 			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
+		command("config-seed", apicontract.ActionMaintenance, runConfigSeed).
+			withSynopsis(synopsisByID["config-seed"]).
+			withHelp("seed a private worker instance from a rendered configuration mirror", configSeedHelp).
+			withExamples("goobers config-seed --mirror /mnt/config-mirror --instance /var/lib/worker/instance"),
 		coreCommand("dashboard", apicontract.ActionReadOnlyNavigation, runDashboard).
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).

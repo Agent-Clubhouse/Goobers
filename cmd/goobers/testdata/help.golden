@@ -127,6 +127,7 @@ Advanced operator commands:
   claims list       print current claim leases, optionally only expired leases
   claims release    force-release a claim through the live daemon or claims.lock
   config            inspect, materialize, and compare instance configuration
+  config-seed       seed a private worker instance from a rendered configuration mirror
   diagnostics       collect a portable, redacted support bundle
   doctor            preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
   e2e kill-inject   perform one live S6 kill-matrix cell (pod-kill) against a real cluster
@@ -667,6 +668,17 @@ credential comes from and never reads or prints the secret value itself.
 
 Exit codes: 0 = OK, 1 = load/render error, 2 = usage error or not an
 instance root.
+
+### config-seed
+Usage: goobers config-seed --mirror <absolute-path> --instance <absolute-path>
+
+Seed a dedicated worker instance from the daemon's rendered-config mirror.
+The mirror is read-only; no config-repository credentials are needed.
+The instance path must be a child of a private worker volume, not a mount point.
+A complete validated tree is published at once. A repeated init-container run
+validates and retains its completed seed, even if the mirror has since changed.
+It refuses to overwrite an unrelated instance. Recreate the private worker
+volume to seed a newer generation; this command is not a live config updater.
 
 ### connect
 Usage: goobers connect <repository> [--token-env NAME] [--seed] [--replace] [--json] [path]
