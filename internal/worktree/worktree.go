@@ -42,6 +42,9 @@ type CreateOptions struct {
 	// OwnerRunID identifies the workflow run that owns this stage worktree.
 	// Empty defaults to RunID for direct package users.
 	OwnerRunID string
+	// TriggerRef is bounded scheduler metadata retained for cleanup handoff.
+	// It carries no credential and does not authorize remote publication.
+	TriggerRef string
 	// BaseRef is the pinned ref (branch, tag, or commit sha) to branch or
 	// check out from. Required.
 	BaseRef string
@@ -306,6 +309,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		RepositoryDigest: RepositoryDigest(opts.RepoURL),
 		RunID:            opts.RunID,
 		OwnerRunID:       opts.OwnerRunID,
+		TriggerRef:       opts.TriggerRef,
 		Directory:        directory,
 		Branch:           opts.Branch,
 		Writer:           m.writerIdentity,
