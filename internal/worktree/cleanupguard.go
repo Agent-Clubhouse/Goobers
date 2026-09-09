@@ -21,7 +21,7 @@ type CleanupTarget struct {
 	Path       string
 	WorktreeID string
 	OwnerRunID string
-	TriggerRef string
+	Gaggle     string
 	// RepositoryDigest and CreatedAt are copied from the durable marker.
 	// Empty values identify legacy metadata and must not be guessed.
 	RepositoryDigest string
@@ -33,7 +33,7 @@ func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRun
 }
 
 func (m *Manager) prepareMarkerCleanup(ctx context.Context, path, worktreeID string, mk marker) error {
-	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, TriggerRef: mk.TriggerRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
 func (m *Manager) prepareCleanupTarget(ctx context.Context, target CleanupTarget) error {

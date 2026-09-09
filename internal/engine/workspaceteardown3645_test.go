@@ -171,7 +171,7 @@ func TestTeardownFailureLeavesStageResultIntact(t *testing.T) {
 
 type workspaceProvisionerFunc func(context.Context, WorkspaceRequest) (Workspace, error)
 
-func TestProvisionWorkspacePreservesRecoveryTriggerIdentity(t *testing.T) {
+func TestProvisionWorkspacePreservesRecoveryScope(t *testing.T) {
 	var seen WorkspaceRequest
 	activities := &Activities{Workspaces: workspaceProvisionerFunc(func(_ context.Context, request WorkspaceRequest) (Workspace, error) {
 		seen = request
@@ -181,7 +181,7 @@ func TestProvisionWorkspacePreservesRecoveryTriggerIdentity(t *testing.T) {
 	if _, err := activities.provisionWorkspace(t.Context(), &env, apiv1.WorkspaceRepo, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if seen.RunID != env.RunID || seen.Gaggle != env.Gaggle || seen.Stage != "implement" || seen.TriggerRef != env.TriggerRef {
+	if seen.RunID != env.RunID || seen.Gaggle != env.Gaggle || seen.Stage != "implement" {
 		t.Fatalf("workspace lost recovery identity: %+v", seen)
 	}
 }

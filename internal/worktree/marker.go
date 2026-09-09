@@ -30,7 +30,7 @@ type marker struct {
 	RepositoryDigest string `json:"repository_digest,omitempty"`
 	RunID            string `json:"run_id"`
 	OwnerRunID       string `json:"owner_run_id,omitempty"`
-	TriggerRef       string `json:"trigger_ref,omitempty"`
+	Gaggle           string `json:"gaggle,omitempty"`
 	Directory        string `json:"directory,omitempty"`
 	Branch           string `json:"branch,omitempty"`
 	StartRef         string `json:"start_ref,omitempty"`
@@ -80,7 +80,7 @@ func (m marker) retainedAt() time.Time {
 }
 
 func writeMarker(path string, m marker) error {
-	if err := validateMarkerTrigger(m.TriggerRef); err != nil {
+	if err := validateMarkerGaggle(m.Gaggle); err != nil {
 		return err
 	}
 	data, err := json.Marshal(m)
@@ -151,15 +151,15 @@ func readMarker(path string) (marker, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return marker{}, fmt.Errorf("worktree: decode marker %s: %w", path, err)
 	}
-	if err := validateMarkerTrigger(m.TriggerRef); err != nil {
+	if err := validateMarkerGaggle(m.Gaggle); err != nil {
 		return marker{}, err
 	}
 	return m, nil
 }
 
-func validateMarkerTrigger(trigger string) error {
-	if len(trigger) > 1024 || strings.ContainsAny(trigger, "\x00\r\n") {
-		return fmt.Errorf("worktree: invalid bounded recovery trigger reference")
+func validateMarkerGaggle(gaggle string) error {
+	if len(gaggle) > 1024 || strings.ContainsAny(gaggle, "\x00\r\n") {
+		return fmt.Errorf("worktree: invalid bounded recovery gaggle")
 	}
 	return nil
 }

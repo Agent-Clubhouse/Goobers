@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-func TestRecoveryMarkerTriggerBoundOnWriteAndRead(t *testing.T) {
+func TestRecoveryMarkerGaggleBoundOnWriteAndRead(t *testing.T) {
 	for _, trigger := range []string{strings.Repeat("x", 1025), "issue:42\nother", "issue:42\x00"} {
 		filename := filepath.Join(t.TempDir(), "marker.json")
-		value := marker{TriggerRef: trigger}
+		value := marker{Gaggle: trigger}
 		if err := writeMarker(filename, value); err == nil {
 			t.Fatal("invalid trigger was persisted")
 		}
