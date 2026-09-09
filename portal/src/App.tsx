@@ -18,6 +18,7 @@ import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
 import { GettingStartedPage } from "./pages/GettingStartedPage";
 import { GoobersPage } from "./pages/GoobersPage";
+import { CostPage } from "./pages/CostPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
@@ -207,7 +208,11 @@ function Portal({
   // forward by the primary-nav Runs/Insight buttons so switching views does
   // not reset an active scope back to "all" (#2528 acceptance criterion 4).
   const currentScope =
-    (route.page === "runs" || route.page === "insight" || route.page === "errors") && route.filters
+    (route.page === "runs" ||
+      route.page === "insight" ||
+      route.page === "cost" ||
+      route.page === "errors") &&
+    route.filters
       ? scopeIdentity(route.filters)
       : {};
 
@@ -263,6 +268,14 @@ function Portal({
         )}
         {route.page === "insight" && (
           <InsightPage
+            client={client}
+            filters={route.filters}
+            navigate={navigate}
+            standalone={standalone}
+          />
+        )}
+        {route.page === "cost" && (
+          <CostPage
             client={client}
             filters={route.filters}
             navigate={navigate}
