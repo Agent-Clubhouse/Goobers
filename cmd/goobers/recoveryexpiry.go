@@ -53,14 +53,39 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 			return err
 		}
 		eligible, err := recoveryRetirementEligible(reader, record, time.Now().UTC(), operatorEvents)
-		if err != nil || !eligible {
+		if err != nil {
 			return err
+		}
+		var landed []recovery.LandedHead
+		if !eligible {
+			phase, err := reader.PhaseBounded(ctx)
+			if err != nil || !terminalRunPhase(phase) {
+				return err
+			}
+			project, err := recoveryConfiguredProject(setup.Config, record.RepositoryKey)
+			if err != nil {
+				return err
+			}
+			route, err := recoveryLandingRoute(project)
+			if err != nil {
+				return err
+			}
+			landed, err = recoveryLandingHeads(ctx, filepath.Dir(runDir), record, route)
+			if err != nil || len(landed) == 0 {
+				return err
+			}
 		}
 		url, err := recoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
 		if err != nil {
 			return err
 		}
 		found, err := manager.WithRecoveryRepositories(ctx, url, func(repositories []string) error {
+			if !eligible {
+				eligible, err = verifyRecoveryLandingRepositories(ctx, repositories, record, landed)
+				if err != nil || !eligible {
+					return err
+				}
+			}
 			if setup.Config.Retention.DryRun {
 				pf(stdout, "retention candidate kind=recovery rule=recovery-policy run=%q ref=%q\n", record.RunID, record.Ref)
 				return nil
@@ -81,6 +106,26 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 		return err
 	})
 	return err
+}
+
+// A receiving commit may exist only in the pinned clone, not the mirror (or
+// vice versa). One complete content proof suffices; an absent object in another
+// managed copy must not hide that proof. Cleanup still checks every owned ref.
+func verifyRecoveryLandingRepositories(ctx context.Context, repositories []string, record recovery.Record, landed []recovery.LandedHead) (bool, error) {
+	var failures error
+	for _, repository := range repositories {
+		for _, head := range landed {
+			verified, err := recovery.VerifyLandedRestoration(ctx, repository, record, head, 512<<20)
+			if err != nil {
+				failures = errors.Join(failures, err)
+				continue
+			}
+			if verified {
+				return true, nil
+			}
+		}
+	}
+	return false, failures
 }
 
 func recoveryRetentionOwner(runID string, managers []*worktree.Manager, runsByRoot map[string]string) (*worktree.Manager, string, error) {

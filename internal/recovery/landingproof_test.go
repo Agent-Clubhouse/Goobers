@@ -11,7 +11,7 @@ func TestMatchLandedHeadsRequiresExactPairedReceipt(t *testing.T) {
 	const repository = "https://api.github.com/repos/acme/app"
 	intent := providers.LandingIntent{ID: "intent", Operation: "merge", RepositoryAPIURL: repository, PullID: "42", ExpectedHeadSHA: strings.Repeat("a", 40)}
 	confirmation := providers.MergeConfirmation{IntentID: intent.ID, RepositoryAPIURL: repository, PullID: "42", MergeSHA: strings.Repeat("b", 40)}
-	for _, mode := range []string{"paired", "duplicate", "intent-only", "receipt-only", "enqueue", "wrong-intent", "wrong-repository", "wrong-pull", "missing-head", "missing-merge", "conflicting-intent", "conflicting-receipt"} {
+	for _, mode := range []string{"paired", "duplicate", "intent-only", "receipt-only", "enqueue", "wrong-intent", "wrong-repository", "wrong-pull", "missing-head", "missing-merge", "conflicting-intent", "conflicting-receipt", "conflicting-pull"} {
 		t.Run(mode, func(t *testing.T) {
 			intents := []providers.LandingIntent{intent}
 			receipts := []providers.MergeConfirmation{confirmation}
@@ -41,6 +41,12 @@ func TestMatchLandedHeadsRequiresExactPairedReceipt(t *testing.T) {
 			case "conflicting-receipt":
 				receipts = append(receipts, confirmation)
 				receipts[1].MergeSHA = strings.Repeat("c", 40)
+			case "conflicting-pull":
+				intents = append(intents, intent)
+				intents[1].ID = "different-intent"
+				intents[1].ExpectedHeadSHA = strings.Repeat("c", 40)
+				receipts = append(receipts, confirmation)
+				receipts[1].IntentID = intents[1].ID
 			}
 			heads, err := MatchLandedHeads(repository, intents, receipts)
 			wantErr := strings.HasPrefix(mode, "conflicting-")

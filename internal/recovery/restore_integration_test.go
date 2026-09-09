@@ -63,6 +63,14 @@ func TestIntegrationRestoreFullPatchOntoCurrentMain(t *testing.T) {
 		t.Fatalf("unrelated main accepted as restored ancestry: %s %v", found, err)
 	}
 	mainTree := recoveryTestGit(t, repository, "rev-parse", main+"^{tree}")
+	restoredTree := recoveryTestGit(t, repository, "rev-parse", restored+"^{tree}")
+	squash := recoveryTestGit(t, repository, "commit-tree", restoredTree, "-p", main, "-m", "squash landing")
+	if verified, err := VerifyLandedRestoration(t.Context(), repository, record, LandedHead{HeadSHA: restored, MergeSHA: squash}, 1<<20); err != nil || !verified {
+		t.Fatalf("squash landing not verified: %t %v", verified, err)
+	}
+	if verified, err := VerifyLandedRestoration(t.Context(), repository, record, LandedHead{HeadSHA: restored, MergeSHA: main}, 1<<20); err != nil || verified {
+		t.Fatalf("merge without retained content accepted: %t %v", verified, err)
+	}
 	reverted := recoveryTestGit(t, repository, "commit-tree", mainTree, "-p", restored, "-m", "revert restored implementation")
 	if found, err := FindRestoredAncestor(t.Context(), repository, record, reverted, 1<<20); err != nil || found != "" {
 		t.Fatalf("reverted restoration accepted as landed content: %s %v", found, err)

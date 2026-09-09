@@ -9,6 +9,20 @@ import (
 	"strings"
 )
 
+// VerifyLandedRestoration combines a positively confirmed receiving head with
+// its actual merge commit, including squash merges where head is not an
+// ancestor of main. Both must retain the restored paths unchanged.
+func VerifyLandedRestoration(ctx context.Context, repository string, record Record, landed LandedHead, budget int64) (bool, error) {
+	if !gitObjectID.MatchString(landed.MergeSHA) {
+		return false, fmt.Errorf("recovery landing requires an exact merge commit")
+	}
+	restored, err := FindRestoredAncestor(ctx, repository, record, landed.HeadSHA, budget)
+	if err != nil || restored == "" {
+		return false, err
+	}
+	return retainedPathsUnchanged(ctx, repository, record, restored, landed.MergeSHA)
+}
+
 // FindRestoredAncestor finds an exact replay of record in the ancestry of a
 // pinned receiving head. The caller must independently prove that this exact
 // head landed in the same repository; this function does not prove a merge.

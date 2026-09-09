@@ -32,6 +32,7 @@ func MatchLandedHeads(repositoryAPIURL string, intents []providers.LandingIntent
 		byID[intent.ID] = intent
 	}
 	seen := make(map[string]providers.MergeConfirmation)
+	byPull := make(map[string]LandedHead)
 	unique := make(map[LandedHead]bool)
 	for _, confirmation := range confirmations {
 		if confirmation.IntentID == "" {
@@ -48,7 +49,12 @@ func MatchLandedHeads(repositoryAPIURL string, intents []providers.LandingIntent
 		if !gitObjectID.MatchString(intent.ExpectedHeadSHA) || !gitObjectID.MatchString(confirmation.MergeSHA) {
 			continue
 		}
-		unique[LandedHead{HeadSHA: intent.ExpectedHeadSHA, MergeSHA: confirmation.MergeSHA}] = true
+		head := LandedHead{HeadSHA: intent.ExpectedHeadSHA, MergeSHA: confirmation.MergeSHA}
+		if previous, exists := byPull[intent.PullID]; exists && previous != head {
+			return nil, fmt.Errorf("conflicting recovery landing heads for one pull request")
+		}
+		byPull[intent.PullID] = head
+		unique[head] = true
 	}
 	heads := make([]LandedHead, 0, len(unique))
 	for head := range unique {
