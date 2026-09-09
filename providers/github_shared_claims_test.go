@@ -51,6 +51,7 @@ func TestGitHubSharedClaimUsesNonForcedChildCommit(t *testing.T) {
 					if err != nil || got.Owner != owner || !got.ExpiresAt.Equal(now.Add(time.Minute)) {
 						t.Errorf("new coordination lease: %+v %v", got, err)
 					}
+					w.WriteHeader(http.StatusCreated)
 					_ = json.NewEncoder(w).Encode(map[string]string{"sha": newSHA})
 				case r.Method == http.MethodPatch && r.URL.Path == "/repos/acme/repo/git/refs/"+strings.TrimPrefix(sharedClaimRef(key), "refs/"):
 					patches++
@@ -65,7 +66,7 @@ func TestGitHubSharedClaimUsesNonForcedChildCommit(t *testing.T) {
 						t.Error("shared claim used an unconditional ref update")
 					}
 					w.WriteHeader(status)
-					_, _ = w.Write([]byte(`{}`))
+					_ = json.NewEncoder(w).Encode(map[string]any{"ref": sharedClaimRef(key), "object": map[string]string{"type": "commit", "sha": newSHA}})
 				default:
 					t.Errorf("unexpected shared claim request: %s %s", r.Method, r.URL.Path)
 					w.WriteHeader(http.StatusBadRequest)
@@ -84,6 +85,77 @@ func TestGitHubSharedClaimUsesNonForcedChildCommit(t *testing.T) {
 			}
 			if patches != 1 {
 				t.Fatalf("CAS attempts = %d", patches)
+			}
+		})
+	}
+}
+
+func TestGitHubSharedClaimInitialCreationRequiresExactAcknowledgment(t *testing.T) {
+	const key = "github/acme/repo/issues/42"
+	sha := strings.Repeat("a", 40)
+	for _, test := range []struct {
+		name      string
+		status    int
+		confirmed string
+		success   bool
+	}{
+		{"created", http.StatusCreated, sha, true},
+		{"already-exists", http.StatusUnprocessableEntity, sha, false},
+		{"merely-accepted", http.StatusAccepted, sha, false},
+		{"wrong-commit", http.StatusCreated, strings.Repeat("b", 40), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Date", time.Now().UTC().Format(http.TimeFormat))
+				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/ref/"):
+					w.WriteHeader(http.StatusNotFound)
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/trees"):
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]string{"sha": sha})
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/commits"):
+					var body struct {
+						Parents []string
+						Message string
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					if len(body.Parents) != 0 {
+						t.Error("initial claim attached to an unrelated branch")
+					}
+					if _, err := sharedclaim.Decode(key, []byte(body.Message)); err != nil {
+						t.Error(err)
+					}
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]string{"sha": sha})
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/refs"):
+					var body struct {
+						Ref string
+						SHA string
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					if body.Ref != sharedClaimRef(key) || body.SHA != sha {
+						t.Error("incorrect initial coordination ref")
+					}
+					w.WriteHeader(test.status)
+					_ = json.NewEncoder(w).Encode(map[string]any{"ref": sharedClaimRef(key), "object": map[string]string{"type": "commit", "sha": test.confirmed}})
+				default:
+					t.Errorf("unexpected shared claim operation: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL; p.maxRetries = 0 })
+			store := GitHubSharedClaimStore{Provider: provider, Repository: RepositoryRef{Provider: ProviderGitHub, Owner: "acme", Name: "repo"}}
+			err := sharedclaim.Acquire(t.Context(), store, key, sharedclaim.Owner{Instance: "instance", Run: "run", Token: "token"}, time.Minute)
+			if (err == nil) != test.success {
+				t.Fatalf("acquisition: %v", err)
+			}
+			if test.status == http.StatusUnprocessableEntity && !errors.Is(err, sharedclaim.ErrConflict) {
+				t.Fatalf("existing ref was not treated as contention: %v", err)
 			}
 		})
 	}

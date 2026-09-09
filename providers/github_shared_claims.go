@@ -29,6 +29,14 @@ type sharedGitCommit struct {
 	} `json:"tree"`
 }
 
+type sharedGitRef struct {
+	Ref    string `json:"ref"`
+	Object struct {
+		Type string `json:"type"`
+		SHA  string `json:"sha"`
+	} `json:"object"`
+}
+
 func (s GitHubSharedClaimStore) endpoint(parts ...string) (string, error) {
 	if s.Provider == nil || s.Repository.Provider != ProviderGitHub || s.Repository.Owner == "" || s.Repository.Name == "" {
 		return "", fmt.Errorf("shared claims require a GitHub repository")
@@ -61,13 +69,7 @@ func (s GitHubSharedClaimStore) Read(ctx context.Context, key string) (sharedcla
 		_ = response.Body.Close()
 		return sharedclaim.Observation{Now: now}, nil
 	}
-	var ref struct {
-		Ref    string `json:"ref"`
-		Object struct {
-			Type string `json:"type"`
-			SHA  string `json:"sha"`
-		} `json:"object"`
-	}
+	var ref sharedGitRef
 	if err := readSharedGitResponse(response, &ref); err != nil {
 		return sharedclaim.Observation{}, err
 	}
@@ -148,11 +150,25 @@ func (s GitHubSharedClaimStore) CompareAndSwap(ctx context.Context, key, revisio
 	if !sharedGitSHA(created.SHA) {
 		return fmt.Errorf("invalid new shared claim commit")
 	}
+	return s.updateReference(ctx, key, revision, created.SHA)
+}
+
+func (s GitHubSharedClaimStore) updateReference(ctx context.Context, key, revision, sha string) error {
+	var confirmed sharedGitRef
+	var err error
 	if revision == "" {
-		return s.write(ctx, "refs", http.MethodPost, map[string]any{"ref": sharedClaimRef(key), "sha": created.SHA}, nil)
+		err = s.write(ctx, "refs", http.MethodPost, map[string]any{"ref": sharedClaimRef(key), "sha": sha}, &confirmed)
+	} else {
+		err = s.write(ctx, "refs/"+strings.TrimPrefix(sharedClaimRef(key), "refs/"), http.MethodPatch,
+			map[string]any{"sha": sha, "force": false}, &confirmed)
 	}
-	return s.write(ctx, "refs/"+strings.TrimPrefix(sharedClaimRef(key), "refs/"), http.MethodPatch,
-		map[string]any{"sha": created.SHA, "force": false}, nil)
+	if err != nil {
+		return err
+	}
+	if confirmed.Ref != sharedClaimRef(key) || confirmed.Object.Type != "commit" || confirmed.Object.SHA != sha {
+		return fmt.Errorf("shared claim update acknowledgment does not match")
+	}
+	return nil
 }
 
 func (s GitHubSharedClaimStore) write(ctx context.Context, path, method string, body, out any) error {
@@ -167,6 +183,14 @@ func (s GitHubSharedClaimStore) write(ctx context.Context, path, method string, 
 	if response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusUnprocessableEntity {
 		_ = response.Body.Close()
 		return sharedclaim.ErrConflict
+	}
+	expected := http.StatusOK
+	if method == http.MethodPost {
+		expected = http.StatusCreated
+	}
+	if response.StatusCode != expected {
+		_ = response.Body.Close()
+		return fmt.Errorf("shared claim write not confirmed (HTTP %d)", response.StatusCode)
 	}
 	return readSharedGitResponse(response, out)
 }
