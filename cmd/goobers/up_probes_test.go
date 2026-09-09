@@ -86,7 +86,7 @@ func TestUpServesUnauthenticatedProbesOnRealDaemon(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !readiness.Ready {
 		t.Fatalf("readyz status = %d, ready = %t", response.StatusCode, readiness.Ready)
 	}
-	for _, check := range []string{"configLoaded", "stateOpen", "resumeComplete", "sweepsStarted"} {
+	for _, check := range []string{"configLoaded", "stateOpen", "resumeComplete", "sweepsStarted", "apiListening", "triggerSweepReady"} {
 		if !readiness.Checks[check] {
 			t.Fatalf("readyz check %q = false once daemon started: checks = %+v", check, readiness.Checks)
 		}
@@ -292,10 +292,13 @@ func TestReadyzReportsNotReadyBeforeStartupCompletesOnRealDaemon(t *testing.T) {
 			notReadyStatus, notReady.Ready, http.StatusServiceUnavailable)
 	}
 	for check, want := range map[string]bool{
-		"configLoaded":   true,
-		"stateOpen":      true,
-		"resumeComplete": false,
-		"sweepsStarted":  false,
+		"apiListening":      true,
+		"schedulerReady":    false,
+		"triggerSweepReady": false,
+		"configLoaded":      true,
+		"stateOpen":         true,
+		"resumeComplete":    false,
+		"sweepsStarted":     false,
 	} {
 		if notReady.Checks[check] != want {
 			t.Fatalf("mid-startup /readyz check %q = %t, want %t — the named checks must track the startup phase actually reached: checks = %+v",

@@ -335,12 +335,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// below), every one of these four has already flipped true too, in this
 	// same, sequential, error-returns-early function body.
 	var (
-		configLoaded    atomic.Bool  // instance config + scheduler wiring validated
-		stateOpen       atomic.Bool  // scheduler's run-tracking state reconciled from disk
-		resumeComplete  atomic.Bool  // crash-resume of interrupted runs finished
-		sweepsStarted   atomic.Bool  // initial sweeps ran once and their periodic tickers are live
-		schedulerTicked atomic.Bool  // scheduler's heartbeat ticked at least once (liveness grace)
-		lastTickAtNanos atomic.Int64 // in-memory heartbeat /healthz reads (#3806); unix nanos
+		apiListening            atomic.Bool
+		lastTriggerSweepAtNanos atomic.Int64
+		configLoaded            atomic.Bool  // instance config + scheduler wiring validated
+		stateOpen               atomic.Bool  // scheduler's run-tracking state reconciled from disk
+		resumeComplete          atomic.Bool  // crash-resume of interrupted runs finished
+		sweepsStarted           atomic.Bool  // initial sweeps ran once and their periodic tickers are live
+		schedulerTicked         atomic.Bool  // scheduler's heartbeat ticked at least once (liveness grace)
+		lastTickAtNanos         atomic.Int64 // in-memory heartbeat /healthz reads (#3806); unix nanos
 	)
 	stopDaemon := func() {
 		ready.Store(false)
@@ -911,15 +913,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// a named type, not two inline closures — so they are directly unit
 	// testable without a real daemon.
 	probes := &daemonProbeState{
-		ready:           &ready,
-		configLoaded:    &configLoaded,
-		stateOpen:       &stateOpen,
-		resumeComplete:  &resumeComplete,
-		sweepsStarted:   &sweepsStarted,
-		schedulerTicked: &schedulerTicked,
-		lastTickAtNanos: &lastTickAtNanos,
-		livenessTimeout: livenessTimeout,
-		now:             time.Now,
+		apiListening:            &apiListening,
+		lastTriggerSweepAtNanos: &lastTriggerSweepAtNanos,
+		ready:                   &ready,
+		configLoaded:            &configLoaded,
+		stateOpen:               &stateOpen,
+		resumeComplete:          &resumeComplete,
+		sweepsStarted:           &sweepsStarted,
+		schedulerTicked:         &schedulerTicked,
+		lastTickAtNanos:         &lastTickAtNanos,
+		livenessTimeout:         livenessTimeout,
+		now:                     time.Now,
 	}
 	handler = httpapi.WrapWithProbes(handler, probes.liveness, probes.readiness)
 	var apiServerOpts []httpapi.ServerOption
@@ -1198,6 +1202,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: start HTTP API: %v\n", err)
 		return 1
 	}
+	apiListening.Store(true)
+	defer apiListening.Store(false)
 	if webhookServer != nil {
 		if err := runStartupPhase(stdout, tracker, "webhook-listener-start", webhookServer.Address(), webhookServer.Start); err != nil {
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
@@ -1321,7 +1327,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
-	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
+	triggerSweep := func() error {
+		err := sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now)
+		return recordTriggerSweepProgress(&lastTriggerSweepAtNanos, err, time.Now())
+	}
+	triggerSweepErrors.report(triggerSweep())
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 	// #831's daemon-side half: cancel one live in-flight run on operator request
@@ -1535,7 +1545,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case <-delegationTicker.C:
-				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
+				triggerSweepErrors.report(triggerSweep())
 			}
 		}
 	}()
