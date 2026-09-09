@@ -232,6 +232,34 @@ func TestOperatorTrajectoryDefaultsActiveStagesToImplementing(t *testing.T) {
 	}
 }
 
+func TestProjectionRetainsRecoveredPRWithoutPromotingFailedReceipts(t *testing.T) {
+	identity := testIdentity()
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventRunnerMutationRecovered, func(e *journal.Event) {
+			e.ExternalRef = &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42"}
+			e.Runner = map[string]any{"operation": "merge", "mutationReceiptId": "successful"}
+		}),
+		ev(2, 2*time.Second, journal.EventRunnerMutationRecovered, func(e *journal.Event) {
+			e.ExternalRef = &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "99"}
+			e.Runner = map[string]any{"operation": "merge", "outcome": "failure", "mutationReceiptId": "failed"}
+		}),
+	}
+	first := ProjectRun(identity, Projection{}, events[:1])
+	if first.Run.Operator.PullRequest == nil || first.Run.Operator.PullRequest.ID != "42" {
+		t.Fatal("recovered PR disappeared when ordinary projection was unavailable")
+	}
+	whole := ProjectRun(identity, Projection{}, events)
+	incremental := ProjectRun(identity, first, events[1:])
+	for _, projection := range []Projection{whole, incremental} {
+		if projection.Run.Operator.PullRequest == nil || projection.Run.Operator.PullRequest.ID != "42" {
+			t.Fatalf("failed recovery receipt replaced successful PR evidence: %+v", projection.Run.Operator.PullRequest)
+		}
+	}
+	if !reflect.DeepEqual(whole.Run.Operator, incremental.Run.Operator) {
+		t.Fatal("recovered references differ between incremental and full projection")
+	}
+}
+
 // TestProjectionMatchesTheRunContract checks the projected values against what
 // the read contract says a run summary means.
 func TestProjectionMatchesTheRunContract(t *testing.T) {

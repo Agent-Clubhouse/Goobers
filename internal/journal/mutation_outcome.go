@@ -1,5 +1,22 @@
 package journal
 
+// IsReferenceTouch includes successful receipt custody copies wherever a
+// reader needs external-reference evidence. Failed/conflicting recovery facts
+// remain diagnostics, matching the normal projection's EventError behavior.
+func (e Event) IsReferenceTouch() bool {
+	if e.ExternalRef == nil {
+		return false
+	}
+	if e.Type == EventRefTouched {
+		return true
+	}
+	if e.Type != EventRunnerMutationRecovered || e.Error != nil {
+		return false
+	}
+	outcome, _ := e.Runner["outcome"].(string)
+	return outcome != "failure" && outcome != "conflict"
+}
+
 // WithMutationOutcome preserves the enclosing run identity and records the
 // claim owner separately: reconciliation may act on another live run's lease.
 // Failed attempts are errors, not successful ref touches used by mutation KPIs.

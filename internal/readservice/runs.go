@@ -1742,8 +1742,8 @@ func summarizeRunForStage(
 				}
 			}
 			operator.Review = review
-		case journal.EventRefTouched:
-			if event.ExternalRef == nil {
+		case journal.EventRefTouched, journal.EventRunnerMutationRecovered:
+			if !event.IsReferenceTouch() {
 				continue
 			}
 			switch event.ExternalRef.Kind {

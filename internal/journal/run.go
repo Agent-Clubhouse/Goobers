@@ -432,7 +432,7 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 	}
 	var recordedBranch, recordedSHA string
 	for _, event := range events {
-		if event.Type == EventRefTouched && event.ExternalRef != nil && event.ExternalRef.Kind == "branch" {
+		if event.IsReferenceTouch() && event.ExternalRef.Kind == "branch" {
 			recordedBranch = event.ExternalRef.ID
 			recordedSHA = event.ExternalRef.CommitSHA
 		}
