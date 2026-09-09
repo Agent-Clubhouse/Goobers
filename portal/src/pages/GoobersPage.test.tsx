@@ -17,6 +17,33 @@ describe("goobers roster page", () => {
     expect(screen.getByText("Core implementer")).toBeInTheDocument();
     expect(screen.getByText("Tools implementer")).toBeInTheDocument();
     expect(screen.getByText("2 goobers")).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Core product goober personas" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "Developer tools goober personas" }),
+    ).toBeInTheDocument();
+  });
+
+  it("filters by owning gaggle and keeps the group disclosure keyboard accessible", async () => {
+    window.location.hash = "#/goobers?gaggle=core";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const roster = await screen.findByRole("region", { name: "Core product goober personas" });
+    const disclosure = roster.closest("section");
+    const summary = within(disclosure!).getByRole("button", { name: /Core product/ });
+    expect(summary).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Core implementer")).toBeInTheDocument();
+    expect(screen.queryByText("Tools implementer")).not.toBeInTheDocument();
+    expect(screen.getByText("core/implementer")).toBeInTheDocument();
+
+    summary.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(summary).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("link", { name: "View all gaggles" })).toHaveAttribute(
+      "href",
+      "#/goobers",
+    );
   });
 
   it("expands a card to reveal detail and toggle to raw YAML", async () => {
@@ -34,7 +61,13 @@ describe("goobers roster page", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByText("Implements claimed backlog items end to end.")).toBeInTheDocument();
+    const detailPanel = detail.parentElement;
+    if (!detailPanel) {
+      throw new Error("Expected expanded Goober detail.");
+    }
+    expect(
+      within(detailPanel).getByText("Implements claimed backlog items end to end."),
+    ).toBeInTheDocument();
     expect(screen.getByText("core/implementation/implement (agentic)")).toBeInTheDocument();
 
     await userEvent.click(within(detail).getByRole("tab", { name: "Raw YAML" }));
