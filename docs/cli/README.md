@@ -3207,7 +3207,7 @@ $ goobers roots discover --json
 trigger a run manually; --force bypasses cadence budgets
 
 ~~~text
-Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
@@ -3249,8 +3249,10 @@ daemon's authenticated HTTP API instead of the local pending-triggers
 drop, so a caller that does not share the daemon's filesystem — CI, a
 webhook receiver, another pod — can start a run at all. Nothing local is
 read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
-retried submission return the original run instead of minting a second
-one, and the command returns once the daemon accepts the trigger because
+retry use the same acceptance identity. --api-timeout bounds remote validation
+and acceptance (default 30s; must be positive). A timed-out submission has
+unknown acceptance; retry the printed request ID with the same options.
+The command returns once the daemon accepts the trigger because
 a remote client cannot watch the run's journal.
 ~~~
 

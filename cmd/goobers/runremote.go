@@ -79,8 +79,15 @@ func runRemoteTrigger(
 	target runTarget,
 	requestID string,
 	noWait bool,
+	timeout time.Duration,
 	stdout, stderr io.Writer,
 ) int {
+	if timeout <= 0 {
+		pf(stderr, "error: --api-timeout must be positive\n")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if target.PR > 0 {
 		pf(stderr, "error: --pr is not supported over the daemon API; run it from the daemon's own instance root\n")
 		return 2
@@ -110,7 +117,7 @@ func runRemoteTrigger(
 		Force:     target.Force,
 	})
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: trigger acceptance is unknown: %v; retry with --request-id %q and the same workflow/options\n", err, requestID)
 		return 2
 	}
 	if apiErr != nil {
@@ -170,7 +177,7 @@ func submitRemoteTrigger(
 	}
 
 	// A redirect would submit to a target whose root identity was not shown.
-	client := &http.Client{Timeout: remoteTriggerTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 	response, err := client.Do(request)

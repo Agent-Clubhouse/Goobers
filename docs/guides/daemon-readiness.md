@@ -43,6 +43,11 @@ it is not a promise that run admission will succeed. Retrying the same key and
 payload returns the same acceptance identity and the recorded dispatch state.
 `goobers run --no-wait` succeeds on that acceptance.
 
+`--api-timeout` bounds remote root validation and acceptance (default `30s`,
+positive durations only). It does not limit the run's lifetime. If submission
+times out, acceptance is unknown: retry with the request ID printed by the CLI
+and the same workflow/options, rather than generating a new delivery.
+
 The daemon derives one run ID from the durable acceptance identity and passes
 it through manual and priority dispatch. Reopening the queue does not allocate
 a different run ID. This is the identity boundary for crash reconciliation,

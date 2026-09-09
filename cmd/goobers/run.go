@@ -48,7 +48,7 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort [--api <url>] <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
@@ -89,8 +89,10 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"drop, so a caller that does not share the daemon's filesystem — CI, a\n" +
 	"webhook receiver, another pod — can start a run at all. Nothing local is\n" +
 	"read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a\n" +
-	"retried submission return the original run instead of minting a second\n" +
-	"one, and the command returns once the daemon accepts the trigger because\n" +
+	"retry use the same acceptance identity. --api-timeout bounds remote validation\n" +
+	"and acceptance (default 30s; must be positive). A timed-out submission has\n" +
+	"unknown acceptance; retry the printed request ID with the same options.\n" +
+	"The command returns once the daemon accepts the trigger because\n" +
 	"a remote client cannot watch the run's journal.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
@@ -99,12 +101,13 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
+	noWait := fs.Bool("no-wait", false, "return after dispatch, or durable acceptance when using the daemon API")
 	force := fs.Bool("force", false, "bypass hourly and daily cadence budgets for this manual run")
 	githubProgress := fs.Bool("github-progress", false, "publish live progress to one GitHub Check Run (requires checks: write)")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
 	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
 	api := fs.String("api", "", "submit the trigger to this daemon API base URL (default $GOOBERS_DAEMON_API)")
+	apiTimeout := fs.Duration("api-timeout", remoteTriggerTimeout, "maximum duration for remote API validation and trigger acceptance")
 	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API submission (default: random)")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
@@ -147,7 +150,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	if endpoint != "" {
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
-		return runRemoteTrigger(ctx, endpoint, target, *requestID, *noWait, stdout, stderr)
+		return runRemoteTrigger(ctx, endpoint, target, *requestID, *noWait, *apiTimeout, stdout, stderr)
 	}
 	root := "."
 	if fs.NArg() == 2 {
@@ -660,6 +663,7 @@ func runFlagArgs(args []string) []string {
 		}
 		if arg == "--pr" || arg == "-pr" ||
 			arg == "--api" || arg == "-api" ||
+			arg == "--api-timeout" || arg == "-api-timeout" ||
 			arg == "--request-id" || arg == "-request-id" {
 			flags = append(flags, arg)
 			if i+1 < len(args) {
@@ -669,6 +673,7 @@ func runFlagArgs(args []string) []string {
 			continue
 		}
 		if strings.HasPrefix(arg, "--api=") || strings.HasPrefix(arg, "-api=") ||
+			strings.HasPrefix(arg, "--api-timeout=") || strings.HasPrefix(arg, "-api-timeout=") ||
 			strings.HasPrefix(arg, "--request-id=") || strings.HasPrefix(arg, "-request-id=") {
 			flags = append(flags, arg)
 			continue
