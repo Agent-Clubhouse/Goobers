@@ -1335,7 +1335,7 @@ func (s *Local) Transcript(ctx context.Context, runID string, seq uint64) (Trans
 	if err != nil {
 		return TranscriptContent{}, err
 	}
-	completed := completedTranscriptCaptures(run.records)
+	completed := completedTranscriptCaptures(run)
 	for _, record := range run.records {
 		if record.Event.Seq != seq {
 			continue
@@ -1363,7 +1363,7 @@ func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]Tran
 		return nil, err
 	}
 	transcripts := make([]TranscriptContent, 0)
-	completed := completedTranscriptCaptures(run.records)
+	completed := completedTranscriptCaptures(run)
 	for _, record := range run.records {
 		if err := ctx.Err(); err != nil {
 			return nil, err

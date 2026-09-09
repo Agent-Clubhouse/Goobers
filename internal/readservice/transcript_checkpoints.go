@@ -11,13 +11,18 @@ func isTranscriptCheckpoint(event journal.Event) bool {
 		(event.Name == "transcript.partial" || strings.HasSuffix(event.Name, ".transcript.partial"))
 }
 
-func completedTranscriptCaptures(records []journal.EventRecord) map[string]bool {
+func completedTranscriptCaptures(run runRead) map[string]bool {
 	completed := make(map[string]bool)
-	for _, record := range records {
+	for _, record := range run.records {
 		event := record.Event
 		id, _ := event.Runner["transcriptCaptureComplete"].(string)
 		if event.KnownSchema() && event.Type == journal.EventSpanRecorded && id != "" && event.Ref != nil {
-			completed[id] = true
+			// A durable marker is not proof that its bytes are still available.
+			// Preserve sequence-addressed access to any surviving partials when
+			// final storage is missing or corrupt (including recovery failures).
+			if _, err := run.reader.ArtifactBytesBounded(*event.Ref, journal.MaxCheckpointScrubBytes); err == nil {
+				completed[id] = true
+			}
 		}
 	}
 	return completed
