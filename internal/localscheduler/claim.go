@@ -504,7 +504,7 @@ func (l *ClaimLedger) storeClaim(storageKey string, entry ClaimEntry) error {
 // completion and crash-recovery can race to release the same item, and both
 // outcomes are fine as long as exactly one claimant ever wins.
 func (l *ClaimLedger) Release(itemID, runID string) error {
-	return l.release(itemID, runID)
+	return l.release(itemID, runID, sharedclaim.Owner{})
 }
 
 // ReleaseScoped releases a claim identified by its scoped key.
@@ -513,7 +513,21 @@ func (l *ClaimLedger) ReleaseScoped(key ClaimKey, runID string) error {
 	if err != nil {
 		return err
 	}
-	return l.release(storageKey, runID)
+	return l.release(storageKey, runID, sharedclaim.Owner{})
+}
+
+// ReleaseSharedScoped removes only the exact locally recorded incarnation.
+// The coordinator must acknowledge remote release before calling this method;
+// keeping the local owner on failure preserves restart reconciliation evidence.
+func (l *ClaimLedger) ReleaseSharedScoped(key ClaimKey, owner sharedclaim.Owner) error {
+	if owner.Instance == "" || owner.Run == "" || owner.Token == "" {
+		return errors.New("localscheduler: shared release requires complete owner identity")
+	}
+	storageKey, err := key.storageKey()
+	if err != nil {
+		return err
+	}
+	return l.release(storageKey, owner.Run, owner)
 }
 
 // ReleaseEntry releases entry without reconstructing whether it came from a
@@ -550,13 +564,22 @@ func (l *ClaimLedger) RenewEntry(entry ClaimEntry, leaseDuration time.Duration) 
 	return ok, err
 }
 
-func (l *ClaimLedger) release(storageKey, runID string) error {
+func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	entry, held := l.entries[storageKey]
-	if !held || entry.RunID != runID {
+	if !held {
 		return nil
+	}
+	if owner != (sharedclaim.Owner{}) && entry.SharedOwner != owner {
+		return sharedclaim.ErrNotOwner
+	}
+	if entry.RunID != runID {
+		return nil
+	}
+	if !entry.SharedDeadline.IsZero() && owner == (sharedclaim.Owner{}) {
+		return errors.New("localscheduler: shared release requires acknowledged owner-scoped handoff")
 	}
 	previousHistory, hadHistory := l.historyEntry(runID, storageKey)
 	l.recordReleasedHistory(storageKey, entry, l.now())
@@ -610,6 +633,9 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
 	entry, held := l.entries[storageKey]
 	if !held {
 		return nil
+	}
+	if !entry.SharedDeadline.IsZero() {
+		return errors.New("localscheduler: shared force-release requires remote coordination")
 	}
 	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
 	l.recordReleasedHistory(storageKey, entry, l.now())
