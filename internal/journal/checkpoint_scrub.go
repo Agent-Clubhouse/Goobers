@@ -36,6 +36,9 @@ func NewCheckpointScrubber(scrubber Scrubber) (*CheckpointScrubber, error) {
 	if err := stream.add(scrubber); err != nil {
 		return nil, err
 	}
+	if len(stream.stages) == 0 {
+		return nil, errors.New("journal: checkpoint scrubber chain is empty")
+	}
 	return stream, nil
 }
 
@@ -60,6 +63,9 @@ func (s *CheckpointScrubber) add(scrubber Scrubber) error {
 // while a token or private-key block is incomplete. The final transcript still
 // uses the ordinary whole-input scrubber; do not flush the pending raw suffix.
 func (s *CheckpointScrubber) ScrubDelta(delta []byte) ([]byte, error) {
+	if s == nil || len(s.stages) == 0 {
+		return nil, errors.New("journal: checkpoint scrubber is not initialized")
+	}
 	if len(delta) > MaxCheckpointScrubBytes-s.bytes {
 		return nil, errors.New("journal: transcript checkpoint capture exceeds byte limit")
 	}

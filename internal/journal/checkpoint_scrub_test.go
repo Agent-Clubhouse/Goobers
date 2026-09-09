@@ -101,3 +101,14 @@ func TestCheckpointScrubberBoundsCaptureBeforeAllocation(t *testing.T) {
 		t.Fatal("rejected input mutated retained capture")
 	}
 }
+
+func TestCheckpointScrubberUninitializedCannotPassRawBytes(t *testing.T) {
+	for _, stream := range []*CheckpointScrubber{nil, {}} {
+		if data, err := stream.ScrubDelta([]byte("sensitive input")); err == nil || len(data) != 0 {
+			t.Fatal("uninitialized scrubber passed raw bytes")
+		}
+	}
+	if _, err := NewCheckpointScrubber(multiScrubber{}); err == nil {
+		t.Fatal("empty checkpoint chain accepted")
+	}
+}
