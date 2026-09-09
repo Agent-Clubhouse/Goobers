@@ -115,14 +115,18 @@ func validateObservation(observed Observation) error {
 		}
 		return nil
 	}
-	if observed.Record.Version != 1 {
+	return validateRecord(observed.Record)
+}
+
+func validateRecord(record Record) error {
+	if record.Version != 1 {
 		return fmt.Errorf("unsupported shared claim record")
 	}
-	if observed.Record.Owner == (Owner{}) {
-		if !observed.Record.ExpiresAt.IsZero() {
+	if record.Owner == (Owner{}) {
+		if !record.ExpiresAt.IsZero() {
 			return fmt.Errorf("released shared claim retains a deadline")
 		}
-	} else if !validOwner(observed.Record.Owner) || observed.Record.ExpiresAt.IsZero() {
+	} else if !validOwner(record.Owner) || record.ExpiresAt.IsZero() {
 		return fmt.Errorf("invalid shared claim ownership")
 	}
 	return nil
