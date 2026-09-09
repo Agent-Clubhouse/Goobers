@@ -14,6 +14,34 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+func TestRemoteTranscriptActiveCaptureBoundAndFinalRelease(t *testing.T) {
+	w, _ := testWriter(t)
+	const runID = "capture-limit-run"
+	if _, err := w.Emit(t.Context(), openBatch(runID, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	transport := TranscriptTransport{RunID: runID, Gaggle: "web", Emitter: w}
+	var first journal.TranscriptCheckpointSession
+	for i := range MaxActiveTranscriptCaptures {
+		session, err := transport.OpenTranscriptCheckpoint("build", "copilot-cli.transcript", journal.NewPatternScrubber())
+		if err != nil {
+			t.Fatalf("capture %d refused before bound: %v", i, err)
+		}
+		if i == 0 {
+			first = session
+		}
+	}
+	if _, err := transport.OpenTranscriptCheckpoint("build", "copilot-cli.transcript", journal.NewPatternScrubber()); err == nil {
+		t.Fatal("active capture map grew past its per-run bound")
+	}
+	if _, err := first.RecordFinal("", []byte("finished\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transport.OpenTranscriptCheckpoint("build", "copilot-cli.transcript", journal.NewPatternScrubber()); err != nil {
+		t.Fatalf("finalization did not release active capture slot: %v", err)
+	}
+}
+
 func TestWorkflowTranscriptAdoptionRequiresFinalBytes(t *testing.T) {
 	w, runs := testWriter(t)
 	const runID = "adoption-custody"
