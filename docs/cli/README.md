@@ -91,6 +91,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers portal-extension update`](#goobers-portal-extension-update) | update the managed Goobers Portal extension to this binary's bundled version |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers queue-explain`](#goobers-queue-explain) | explain historical PR queue eligibility and claim observations |
+| [`goobers recovery-abandon`](#goobers-recovery-abandon) | explicitly abandon one retained recovery snapshot |
+| [`goobers recovery-restore`](#goobers-recovery-restore) | restore retained implementation onto current main |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
 | [`goobers roots`](#goobers-roots) | inspect and manage instance roots |
@@ -174,6 +176,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers reconcile-branches`](#goobers-reconcile-branches) | report bounded stale goobers/* branch candidates (a workflow stage) |
 | [`goobers reconcile-post-merge`](#goobers-reconcile-post-merge) | reconcile late merge-queue merges (a workflow stage) |
 | [`goobers record-merge-refusal`](#goobers-record-merge-refusal) | record a merge refusal and demote a persistently-stuck lander (a workflow stage) |
+| [`goobers recovery-resume`](#goobers-recovery-resume) | restore retained implementation into the receiving run (a workflow stage) |
 | [`goobers remediation-checkpoint`](#goobers-remediation-checkpoint) | durable per-cause attempt budgets + same-diff escalation (a workflow stage) |
 | [`goobers report-pr-status`](#goobers-report-pr-status) | publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage) |
 | [`goobers resolve-review-threads`](#goobers-resolve-review-threads) | reply to and resolve remediated native review threads (a workflow stage) |
@@ -3016,6 +3019,69 @@ do), 1 = business error, 2 = usage/IO error.
 
 ~~~console
 $ goobers record-merge-refusal
+~~~
+
+## `goobers recovery-abandon`
+
+explicitly abandon one retained recovery snapshot
+
+~~~text
+Usage: goobers recovery-abandon --run <run-id> --ref <recovery-ref> --confirm-digest <patch-digest> [instance]
+
+Abandon one exact retained snapshot from a terminal run. The digest must
+match its published patch digest. Records an operator decision and prevents
+automatic recovery selection. Configured retention subsequently removes
+the owned recovery ref and archive, not user branches. Active runs, stage
+execution, and ambiguous matches are refused.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers recovery-abandon --run source-run --ref refs/goobers/recovery/source-run --confirm-digest sha256:<digest> ./instance
+~~~
+
+## `goobers recovery-restore`
+
+restore retained implementation onto current main
+
+~~~text
+Usage: goobers recovery-restore --record <record.json> --repository <checkout> --branch <new-branch> [instance]
+
+Or select by --issue <id> --repository-key <canonical-key> instead of --record.
+
+Restore a retained implementation archive onto freshly fetched main from
+the matching configured repository. The archive must be snapshot.bundle
+beside record.json. The destination checkout and index remain unchanged;
+the new local branch must not exist. Expired records and runtime asset
+changes are refused. This does not push, open a PR, or abandon recovery.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers recovery-restore --record ./retained/record.json --repository ./checkout --branch recovered-work ./instance
+~~~
+
+## `goobers recovery-resume`
+
+restore retained implementation into the receiving run (a workflow stage)
+
+~~~text
+Usage: goobers recovery-resume [instance]
+
+Restore the current run's single claimed issue onto freshly fetched main,
+then fast-forward its clean receiving worktree to the restored commit.
+Requires workflow run context and repository credentials. Refuses another
+branch, changed or dirty work, and expired claims. Verified retries resume
+the prepared result; completed adoption removes its preparation branch.
+Does not push, open a PR, release the claim, or remove retained state.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers recovery-resume
 ~~~
 
 ## `goobers remediation-checkpoint`

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,7 +282,7 @@ func TestRunAbortCleansConfiguredWorkcopiesRoot(t *testing.T) {
 	}
 }
 
-func TestUpReapsTerminalDeregisteredOrphanAndKeepsMarkedWorktree(t *testing.T) {
+func TestUpPreservesUncapturedTerminalOrphanAndKeepsMarkedWorktree(t *testing.T) {
 	root := initDeterministicDemo(t)
 	setAPIListenAddress(t, root, freeLoopbackAddress(t))
 	l := instance.NewLayout(root)
@@ -365,8 +366,14 @@ func TestUpReapsTerminalDeregisteredOrphanAndKeepsMarkedWorktree(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("runUpContext did not stop after cancellation")
 	}
-	if _, err := os.Stat(orphan.Path); !os.IsNotExist(err) {
-		t.Fatalf("terminal deregistered orphan still exists: %v", err)
+	// The deregistered directory has no Git metadata, so it cannot yet be
+	// faithfully represented as a recovery patch. Preserve its only remaining
+	// bytes and report the deferred handoff, without blocking other cleanup.
+	if data, err := os.ReadFile(filepath.Join(orphan.Path, "leftover")); err != nil || string(data) != "orphan" {
+		t.Fatalf("uncaptured orphan evidence lost: %q %v", data, err)
+	}
+	if !strings.Contains(stdout.String(), worktree.ErrCleanupDeferred.Error()) {
+		t.Fatalf("startup did not report deferred orphan recovery: %s", stdout.String())
 	}
 	if _, err := os.Stat(kept.Path); err != nil {
 		t.Fatalf("kept worktree was removed at startup: %v", err)

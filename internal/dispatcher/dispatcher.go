@@ -773,10 +773,9 @@ var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled 
 // solver's ELIGIBLE-SET output for this stage, in inventory order): resolve
 // the runner (Linux-preferring), verify the image skew contract, wait
 // bounded for capacity, create ONE fresh pod, supervise it, confirm output
-// surrender, and dispose the pod. The pod is disposed on every path that
-// created it — surrender-unconfirmed and stage-failed attempts return their
-// typed error WITH the pod already deleted, because a retried attempt gets a
-// fresh pod, never a reused one (D1).
+// surrender, and dispose the pod when recovery custody permits. Writable pods
+// without a verified recovery acknowledgment are preserved. Every retry still
+// receives a fresh pod, never a reused one (D1).
 func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []RunnerSpec) (Report, error) {
 	runner, err := SelectRunner(attempt, eligible)
 	if err != nil {
@@ -869,7 +868,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		}
 	}
 
-	// Dispose unconditionally: one attempt per pod (D1). A dispose failure
+	// Dispose after the recovery guard: one attempt per pod (D1). A dispose failure
 	// must NOT mask a settled outcome. By the time we reach here superviseErr
 	// == nil means the outcome is settled: supervision reached a terminal
 	// phase (PodSucceeded or PodFailed) AND the gate confirmed surrender — the
@@ -888,7 +887,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// there is no superviseErr == nil state that is not a settled outcome.
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), DefaultDisposalTimeout)
 	defer cancelCleanup()
-	if delErr := d.pods.DeletePod(cleanupCtx, pod.Namespace, pod.Name); delErr != nil {
+	if delErr := d.disposePod(cleanupCtx, pod, attempt); delErr != nil {
 		report.DisposeErr = fmt.Errorf("dispatcher: dispose pod %s/%s: %w", pod.Namespace, pod.Name, delErr)
 	} else {
 		report.Disposed = true

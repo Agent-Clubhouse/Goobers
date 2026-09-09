@@ -214,6 +214,7 @@ func runTraceWithFactories(
 		transcripts = nil
 	}
 	now := time.Now()
+	recoveryState := runRecoveryView(ctx, l, runID, now)
 	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
 	verdicts := loadVerdictViews(ctx, reads, runID, ledger.Events)
@@ -230,6 +231,7 @@ func runTraceWithFactories(
 			Events:        traceJSONEvents(ledger.Events),
 			Spans:         spans,
 			Verdicts:      verdicts,
+			Recovery:      recoveryState,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			pf(stderr, "error: encode trace: %v\n", err)
@@ -243,6 +245,7 @@ func runTraceWithFactories(
 	}
 	if *summary {
 		printTraceRunSummary(stdout, detail, state, repasses, now)
+		printRecoveryView(stdout, recoveryState)
 		pln(stdout, "")
 		renderVerdicts(stdout, verdicts)
 		return 0
@@ -257,6 +260,7 @@ func runTraceWithFactories(
 	if escalation != nil {
 		printEscalationSummary(stdout, *escalation)
 	}
+	printRecoveryView(stdout, recoveryState)
 	pf(stdout, "run:      %s\n", detail.ID)
 	pf(stdout, "workflow: %s (v%d)\n", detail.Workflow, detail.WorkflowVersion)
 	if detail.WorkflowDigest != "" {
@@ -372,6 +376,7 @@ func traceEventsTerminal(events []readservice.RunEvent) bool {
 }
 
 type traceJSONResult struct {
+	Recovery      *recoveryView           `json:"recovery,omitempty"`
 	Identity      journal.RunIdentity     `json:"identity"`
 	Phase         journal.RunPhase        `json:"phase"`
 	State         *journal.State          `json:"state,omitempty"`

@@ -42,6 +42,9 @@ type CreateOptions struct {
 	// OwnerRunID identifies the workflow run that owns this stage worktree.
 	// Empty defaults to RunID for direct package users.
 	OwnerRunID string
+	// Gaggle scopes the owning run's claim lookup during cleanup handoff.
+	// It carries no credential and does not itself authorize publication.
+	Gaggle string
 	// BaseRef is the pinned ref (branch, tag, or commit sha) to branch or
 	// check out from. Required.
 	BaseRef string
@@ -303,15 +306,17 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	pid := os.Getpid()
 	startedAt, _ := processStartTime(pid) // best-effort; zero disables the PID-reuse check for this marker
 	mk := marker{
-		RunID:        opts.RunID,
-		OwnerRunID:   opts.OwnerRunID,
-		Directory:    directory,
-		Branch:       opts.Branch,
-		Writer:       m.writerIdentity,
-		PID:          pid,
-		PIDStartedAt: startedAt,
-		CreatedAt:    time.Now(),
-		Status:       statusActive,
+		RepositoryDigest: RepositoryDigest(opts.RepoURL),
+		RunID:            opts.RunID,
+		OwnerRunID:       opts.OwnerRunID,
+		Gaggle:           opts.Gaggle,
+		Directory:        directory,
+		Branch:           opts.Branch,
+		Writer:           m.writerIdentity,
+		PID:              pid,
+		PIDStartedAt:     startedAt,
+		CreatedAt:        time.Now(),
+		Status:           statusActive,
 	}
 	// Persist ownership before git creates the directory so a crash during
 	// worktree add never leaves an opaque hash that cleanup cannot resolve.
@@ -768,14 +773,18 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 	mk, markerErr := readMarker(markerPath)
 	switch {
 	case markerErr == nil:
+		if err := m.prepareMarkerCleanup(ctx, path, runID, mk); err != nil {
+			return err
+		}
 		if err := m.restoreReservedBranchFromMarker(ctx, key, path, mk); err != nil {
 			return fmt.Errorf("restore guarded branch for stale worktree: %w", err)
 		}
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("read stale marker: %w", markerErr)
-	}
-	if err := m.prepareCleanup(ctx, path, runID, mk.OwnerRunID); err != nil {
-		return err
+	default:
+		if err := m.prepareCleanup(ctx, path, runID, ""); err != nil {
+			return err
+		}
 	}
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", path)
@@ -809,6 +818,9 @@ type RemoveOptions struct {
 // place and marks it kept, so Reap does not treat it as a crash orphan.
 func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	if wt.pinned {
+		if err := wt.manager.handoffPinnedState(ctx, wt.key, wt.RunID); err != nil {
+			return err
+		}
 		if !opts.Keep {
 			if err := wt.manager.handoffPinnedReceipts(ctx, wt.key); err != nil {
 				return err
@@ -836,11 +848,18 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		if worktreeMeasured {
 			mk.SizeBytes = &worktreeBytes
 		}
+		if err := wt.manager.prepareMarkerExit(ctx, wt.Path, wt.RunID, mk, opts.Keep); err != nil {
+			return err
+		}
 		if err := wt.manager.restoreReservedBranchFromMarker(ctx, wt.key, wt.Path, mk); err != nil {
 			return fmt.Errorf("worktree: restore guarded branch for run %s: %w", wt.RunID, err)
 		}
 	case !os.IsNotExist(markerErr):
 		return fmt.Errorf("worktree: read marker for run %s: %w", wt.RunID, markerErr)
+	default:
+		if err := wt.manager.prepareCleanup(ctx, wt.Path, wt.RunID, ""); err != nil {
+			return err
+		}
 	}
 
 	if opts.Keep {
@@ -855,9 +874,6 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		return nil
 	}
 
-	if err := wt.manager.prepareCleanup(ctx, wt.Path, wt.RunID, ownerRunID); err != nil {
-		return err
-	}
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", wt.Path)
 	}); err != nil {

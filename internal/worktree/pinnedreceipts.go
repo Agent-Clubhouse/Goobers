@@ -28,7 +28,21 @@ func (m *Manager) handoffPinnedReceipts(ctx context.Context, key string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	acknowledged, err := m.prepareCleanupWithReceipts(ctx, path, "pin-"+key, owner)
+	target := CleanupTarget{Path: path, WorktreeID: "pin-" + key, OwnerRunID: owner, Pinned: true}
+	custody, custodyErr := readPinnedCustody(root)
+	if custodyErr != nil && !os.IsNotExist(custodyErr) {
+		return custodyErr
+	}
+	if custodyErr == nil {
+		if owner != "" && owner != custody.OwnerRunID {
+			return fmt.Errorf("pinned receipt owner differs from recovery custody")
+		}
+		target.OwnerRunID = custody.OwnerRunID
+		target.Gaggle = custody.Gaggle
+		target.RepositoryDigest = custody.RepositoryDigest
+		target.CreatedAt = custody.CreatedAt
+	}
+	acknowledged, err := m.prepareCleanupTargetWithReceipts(ctx, target)
 	if err != nil {
 		return err
 	}

@@ -812,6 +812,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithCancelService(cancelPlane),
 		httpapi.WithCredentialService(credentialPlane),
 		httpapi.WithBlobService(blobStore),
+		httpapi.WithRecoveryService(recoveryDeliveryService{layout: l, setup: setup}),
 		httpapi.WithSurrenderService(surrenderStore),
 		httpapi.WithStateService(statePlane),
 		// The defect-nomination aggregate read (Goobers#4001). Wired

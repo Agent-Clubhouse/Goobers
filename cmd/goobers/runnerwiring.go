@@ -167,6 +167,10 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// not retain a manager rooted in the opposite lifecycle namespace.
 		wtMgr = nil
 	}
+	recoveryOption, recoveryErr := recoveryCleanupOption(l, cfg, absoluteWorkcopiesRoot, cloneURLFn, sharedReg)
+	if recoveryErr != nil {
+		return runner.Config{}, nil, recoveryErr
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -206,6 +210,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
 	}
+	recoveryOption(wtMgr)
 	if _, err := buildExternalTelemetryRegistry(cfg.ExternalTelemetry, sharedReg); err != nil {
 		return runner.Config{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
 	}
@@ -278,7 +283,8 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 
 	rc := runner.Config{
-		RunControls: cfg.RunConditions.RunControls(),
+		RecoveryEvents: recoveryRunEvents(l),
+		RunControls:    cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			return buildDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,

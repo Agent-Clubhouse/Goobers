@@ -57,6 +57,8 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 }
 
 var providerDispatchAllowlist = map[string]string{
+	"recovery-restore":       "Uses configured Git transport and verified archives, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/record and /http-issue exercise the command against a Gitea identity with an exact local Git URL redirect.",
+	"recovery-resume":        "Uses claims-plane identity and configured Git transport, not forge REST dispatch; TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository/resume-issue exercises actual adoption for a Gitea repository.",
 	"elect-lander":           "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
 	"post-merge":             "CONF-7 (#2496): merge-review still constructs GitHub providers directly.",
 	"preflight-repo-write":   "Repository-write preflight (#4414) is a GitHub-only capability today (branch ruleset introspection has no ADO/Gitea equivalent); Dispatcher fails closed with ErrUnsupported for other providers.",

@@ -40,6 +40,21 @@ func (j *branchJournal) AppendIfAbsent(ev journal.Event, match func(journal.Even
 	})
 }
 
+func (j *branchJournal) AppendBatchIfAbsent(ctx context.Context, events []journal.Event, key func(journal.Event) string) (int, error) {
+	batch := append([]journal.Event(nil), events...)
+	for i := range batch {
+		if batch[i].Branch == 0 {
+			batch[i].Branch = j.branch
+		}
+	}
+	return j.run.AppendBatchIfAbsent(ctx, batch, func(event journal.Event) string {
+		if event.Branch != j.branch {
+			return ""
+		}
+		return key(event)
+	})
+}
+
 func (j *branchJournal) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	return j.run.RecordBranchArtifact(j.branch, name, data)
 }
