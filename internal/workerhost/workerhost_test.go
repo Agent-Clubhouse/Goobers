@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 )
 
 type fakeWorker struct {
@@ -131,12 +132,41 @@ func TestRunServesEveryQueueAndDrains(t *testing.T) {
 		if !strings.Contains(w.opts.Identity, fmt.Sprintf("#%d", os.Getpid())) {
 			t.Errorf("identity %q does not carry the pid", w.opts.Identity)
 		}
+		if w.opts.BuildID != "v9.9.9-test" {
+			t.Errorf("BuildID = %q, want the configured build version", w.opts.BuildID)
+		}
+		if !w.opts.DeploymentOptions.UseVersioning {
+			t.Errorf("DeploymentOptions.UseVersioning = false, want true")
+		}
+		if w.opts.DeploymentOptions.Version.DeploymentName != "goobers" {
+			t.Errorf("DeploymentOptions.Version.DeploymentName = %q, want goobers", w.opts.DeploymentOptions.Version.DeploymentName)
+		}
+		if w.opts.DeploymentOptions.Version.BuildID != "v9.9.9-test" {
+			t.Errorf("DeploymentOptions.Version.BuildID = %q, want configured build version", w.opts.DeploymentOptions.Version.BuildID)
+		}
+		if w.opts.DeploymentOptions.DefaultVersioningBehavior != workflow.VersioningBehaviorPinned {
+			t.Errorf("DefaultVersioningBehavior = %v, want %v", w.opts.DeploymentOptions.DefaultVersioningBehavior, workflow.VersioningBehaviorPinned)
+		}
 		if w.opts.WorkerStopTimeout != 7*time.Second {
 			t.Errorf("WorkerStopTimeout = %v, want the drain timeout", w.opts.WorkerStopTimeout)
 		}
 		if len(w.opts.Interceptors) != 1 {
 			t.Errorf("interceptors = %d, want the in-flight tracker", len(w.opts.Interceptors))
 		}
+	}
+}
+
+func TestWorkerOptionsSkipVersioningWhenBuildVersionUnset(t *testing.T) {
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := h.workerOptions()
+	if opts.BuildID != "" {
+		t.Fatalf("BuildID = %q, want empty when no build version is configured", opts.BuildID)
+	}
+	if opts.DeploymentOptions.UseVersioning {
+		t.Fatal("DeploymentOptions.UseVersioning = true, want false when no build version is configured")
 	}
 }
 

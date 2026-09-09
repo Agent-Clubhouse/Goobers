@@ -17,6 +17,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/goobers/goobers/internal/bootstrap"
 )
@@ -102,11 +103,23 @@ func Identity(buildVersion string) string {
 
 // workerOptions builds the one options set every queue's worker runs under.
 func (h *Host) workerOptions() worker.Options {
-	return worker.Options{
+	opts := worker.Options{
 		Identity:          Identity(h.cfg.BuildVersion),
 		WorkerStopTimeout: h.cfg.DrainTimeout,
 		Interceptors:      []interceptor.WorkerInterceptor{h.tracker},
 	}
+	if h.cfg.BuildVersion != "" {
+		opts.BuildID = h.cfg.BuildVersion
+		opts.DeploymentOptions = worker.DeploymentOptions{
+			UseVersioning: true,
+			Version: worker.WorkerDeploymentVersion{
+				DeploymentName: "goobers",
+				BuildID:        h.cfg.BuildVersion,
+			},
+			DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
+		}
+	}
+	return opts
 }
 
 // Run serves the configured task queues until ctx is cancelled (SIGTERM/
