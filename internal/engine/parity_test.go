@@ -539,7 +539,10 @@ func parityCases() []parityCase {
 //     and content digests of bytes each side wrote itself. The pointer NAME
 //     and Integrity grade are what a stage's admission and evidence depend
 //     on, and both are compared (ContextPointers below).
+const parityInstanceID = "0123456789abcdef0123456789abcdef"
+
 type parityEnvelope struct {
+	InstanceID string
 	Stage      string
 	RunID      string
 	WorkflowID string
@@ -612,11 +615,11 @@ var parityEnvelopeExcludedFields = map[string]string{
 // identical-looking envelopes differ" — so the two must stay in lockstep;
 // TestParityEnvelopeStringPrintsEveryComparedField enforces that.
 func (e parityEnvelope) String() string {
-	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
+	return fmt.Sprintf("instanceId=%s stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
 		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
 		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
 		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s",
-		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
+		e.InstanceID, e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
 		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
 		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
 		e.RepoRef, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
@@ -631,6 +634,7 @@ func stageOf(taskID string) string {
 
 func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 	return parityEnvelope{
+		InstanceID:           env.InstanceID,
 		Stage:                stageOf(env.TaskID),
 		RunID:                env.RunID,
 		WorkflowID:           env.WorkflowID,
@@ -916,6 +920,7 @@ func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 	}
 	runsDir := filepath.Join(instanceRoot, "runs")
 	cfg := runner.Config{
+		InstanceID: parityInstanceID,
 		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
 			return exec, nil
 		},
@@ -996,6 +1001,7 @@ func parityEngineRunInput(t *testing.T, c parityCase, runID string) RunInput {
 		t.Fatalf("register fixture for row %s: %v", c.Row, err)
 	}
 	in, err := reg.StartInputVersion(parityWorkflowName, version, StartSpec{
+		InstanceID:                parityInstanceID,
 		RunID:                     runID,
 		Gaggle:                    c.Spec.Gaggle,
 		RepoRef:                   parityRepoRef,
@@ -1479,7 +1485,8 @@ func TestParityTerminalDiffNamesBothSides(t *testing.T) {
 func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Every field set to a value that appears nowhere else in the rendering.
 	full := parityEnvelope{
-		Stage: "s-stage", RunID: "s-runid", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
+		InstanceID: "s-instanceid",
+		Stage:      "s-stage", RunID: "s-runid", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
 		GooberDigest: "s-gooberdigest",
 		Gaggle:       "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
 		TriggerRef: "s-trigger", OwnershipBoundary: "s-ownership",
@@ -1492,6 +1499,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	}
 	rendered := full.String()
 	for _, sentinel := range []string{
+		"s-instanceid",
 		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gooberdigest", "s-gaggle", "s-namespace", "s-base",
 		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
 		"s-pointers", "s-item", "s-reporef", "s-additional", "s-cones", "s-limits",
@@ -1504,7 +1512,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 24; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 25; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }
