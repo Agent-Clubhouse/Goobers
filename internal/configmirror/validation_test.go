@@ -84,3 +84,32 @@ func TestValidationReclaimsOnlyOwnedCrashLeftovers(t *testing.T) {
 		})
 	}
 }
+
+func TestValidationReclaimsReadOnlySnapshot(t *testing.T) {
+	config, mirror := t.TempDir(), t.TempDir()
+	file := filepath.Join(config, "readonly/instructions.md")
+	writeTestFile(t, file, "instructions")
+	if err := os.Chmod(file, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Dir(file)
+	if err := os.Chmod(directory, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(directory, 0o700)
+		_ = os.Chmod(file, 0o600)
+	})
+	for range 2 {
+		err := PublishValidated(t.Context(), mirror, config, []byte("instance"), func(staged string) error {
+			_, err := os.ReadFile(filepath.Join(staged, "config/readonly/instructions.md"))
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(mirror, ".worker-config-validation")); !os.IsNotExist(err) {
+			t.Fatalf("read-only validation tree leaked: %v", err)
+		}
+	}
+}
