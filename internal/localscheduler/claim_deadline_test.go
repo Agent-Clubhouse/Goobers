@@ -28,6 +28,22 @@ func TestClaimScopedUntilPersistsExactDeadline(t *testing.T) {
 	if !found || !entry.ExpiresAt.Equal(deadline) {
 		t.Fatalf("persisted deadline changed: %+v", entry)
 	}
+	if !entry.SharedDeadline.Equal(deadline) {
+		t.Fatal("restart lost shared admission marker")
+	}
+	if ok, err := reopened.RenewEntry(entry, time.Hour); err == nil || ok {
+		t.Fatalf("local-only renewal extended shared admission: %v, %v", ok, err)
+	}
+	if ok, _, err := reopened.ReclaimAll([]ClaimEntry{entry}, "resumed", "implement", time.Hour); err == nil || ok {
+		t.Fatalf("local-only reclaim copied shared admission: %v, %v", ok, err)
+	}
+	// Even a caller omitting the marker cannot replace the durable admission
+	// through the legacy batch path.
+	unmarked := entry
+	unmarked.SharedDeadline = time.Time{}
+	if ok, _, err := reopened.ReclaimAll([]ClaimEntry{unmarked}, "run", "implement", time.Hour); err == nil || ok {
+		t.Fatalf("local-only reclaim discarded shared admission: %v, %v", ok, err)
+	}
 	for _, expired := range []time.Time{{}, now, now.Add(-time.Second)} {
 		if ok, _, err := ledger.ClaimScopedUntil(key, "run", "implement", expired); err == nil || ok {
 			t.Fatalf("expired renewal admitted: %v, %v", ok, err)

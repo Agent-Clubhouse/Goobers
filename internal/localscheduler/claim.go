@@ -50,7 +50,10 @@ type ClaimEntry struct {
 	Workflow     string            `json:"workflow"`
 	ClaimedAt    time.Time         `json:"claimedAt"`
 	ExpiresAt    time.Time         `json:"expiresAt"`
-	ReleasedAt   *time.Time        `json:"releasedAt,omitempty"`
+	// SharedDeadline marks admission that must not be renewed through the
+	// local-only path, including after the ledger is reopened on restart.
+	SharedDeadline time.Time  `json:"sharedDeadline,omitzero"`
+	ReleasedAt     *time.Time `json:"releasedAt,omitempty"`
 }
 
 // expired reports whether the lease is no longer live at now.
@@ -285,6 +288,12 @@ func (l *ClaimLedger) ClaimScopedUntil(key ClaimKey, runID, workflow string, dea
 	return l.claim(storageKey, key.ExternalID, key, runID, workflow, 0, deadline)
 }
 
+type plannedClaim struct {
+	storageKey       string
+	legacyStorageKey string
+	key              ClaimKey
+}
+
 // ReclaimAll atomically reacquires a prior run's complete claim set. Either
 // every entry is durably assigned to runID in one ledger rewrite, or none are.
 // A live claim held by another run refuses the whole set and reports its owner.
@@ -296,14 +305,12 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 		return true, runID, nil
 	}
 
-	type plannedClaim struct {
-		storageKey       string
-		legacyStorageKey string
-		key              ClaimKey
-	}
 	planned := make([]plannedClaim, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
+		if !entry.SharedDeadline.IsZero() {
+			return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before reclaim")
+		}
 		itemID := entry.ExternalID
 		if itemID == "" {
 			itemID = entry.ItemID
@@ -342,15 +349,8 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	defer l.mu.Unlock()
 
 	now := l.now()
-	for _, claim := range planned {
-		if claim.legacyStorageKey != "" {
-			if existing, held := l.entries[claim.legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
-				return false, existing.RunID, nil
-			}
-		}
-		if existing, held := l.entries[claim.storageKey]; held && !existing.expired(now) && existing.RunID != runID {
-			return false, existing.RunID, nil
-		}
+	if refused, holder, err := l.refusePlannedClaims(planned, runID, now); err != nil || refused {
+		return false, holder, err
 	}
 
 	previous := make(map[string]ClaimEntry, len(l.entries))
@@ -389,6 +389,25 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	return true, runID, nil
 }
 
+// refusePlannedClaims checks the entire batch before any mutation. The caller
+// holds l.mu so a checked claim cannot change before the batch is committed.
+func (l *ClaimLedger) refusePlannedClaims(planned []plannedClaim, runID string, now time.Time) (bool, string, error) {
+	for _, claim := range planned {
+		if existing := l.entries[claim.storageKey]; !existing.SharedDeadline.IsZero() {
+			return true, "", errors.New("localscheduler: shared claim cannot be reclaimed through local-only admission")
+		}
+		if claim.legacyStorageKey != "" {
+			if existing, held := l.entries[claim.legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
+				return true, existing.RunID, nil
+			}
+		}
+		if existing, held := l.entries[claim.storageKey]; held && !existing.expired(now) && existing.RunID != runID {
+			return true, existing.RunID, nil
+		}
+	}
+	return false, "", nil
+}
+
 func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration, deadline time.Time) (ok bool, holder string, err error) {
 	if leaseDuration <= 0 && deadline.IsZero() {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
@@ -417,15 +436,19 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	}
 
 	prev, hadPrev := l.entries[storageKey]
+	if deadline.IsZero() && !prev.SharedDeadline.IsZero() {
+		return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before renewal")
+	}
 	entry := ClaimEntry{
-		ItemID:     key.ExternalID,
-		Gaggle:     key.Gaggle,
-		Provider:   key.Provider,
-		ExternalID: key.ExternalID,
-		RunID:      runID,
-		Workflow:   workflow,
-		ClaimedAt:  now,
-		ExpiresAt:  expires,
+		ItemID:         key.ExternalID,
+		Gaggle:         key.Gaggle,
+		Provider:       key.Provider,
+		ExternalID:     key.ExternalID,
+		RunID:          runID,
+		Workflow:       workflow,
+		ClaimedAt:      now,
+		ExpiresAt:      expires,
+		SharedDeadline: deadline,
 	}
 	// A live same-owner renewal is continuous ownership, not a new provider
 	// observation. Retain its original as-of timestamp; replacement or expired
@@ -433,8 +456,17 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	if hadPrev && prev.RunID == runID && !prev.expired(now) && prev.ReleasedAt == nil {
 		entry.Verification = prev.Verification
 	}
+	if err := l.storeClaim(storageKey, entry); err != nil {
+		return false, "", err
+	}
+	return true, runID, nil
+}
+
+// storeClaim commits ownership and history together. The caller holds l.mu.
+func (l *ClaimLedger) storeClaim(storageKey string, entry ClaimEntry) error {
+	prev, hadPrev := l.entries[storageKey]
 	l.entries[storageKey] = entry
-	previousHistory, hadHistory := l.historyEntry(runID, storageKey)
+	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
 	l.recordHistory(storageKey, entry)
 	if err := l.persist(); err != nil {
 		// Roll back the in-memory mutation so a failed persist leaves the item
@@ -447,11 +479,11 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		} else {
 			delete(l.entries, storageKey)
 		}
-		l.restoreHistory(runID, storageKey, previousHistory, hadHistory)
-		return false, "", err
+		l.restoreHistory(entry.RunID, storageKey, previousHistory, hadHistory)
+		return err
 	}
 	l.journal(journal.EventClaimAcquired, entry)
-	return true, runID, nil
+	return nil
 }
 
 // Release explicitly releases a claim (run finished, failed, or crash-recovery
