@@ -227,6 +227,7 @@ Use only the target release's registry. The current set is:
 | `github:issues:approve` | Apply the trusted `goobers:approved` issue label. |
 | `provider:pr:write` | Perform pull-request operations through the configured repository provider. |
 | `github:pr:write` | Open, inspect, update, or close GitHub pull requests. |
+| `github:pr:read` | Inspect GitHub pull requests read-only. |
 | `github:pr:review` | Submit provider-native pull-request reviews. |
 | `provider:ci:cancel` | Cancel bounded pending provider CI only for an exact reviewed pull-request head. |
 | `github:branch:delete` | Delete a remote GitHub branch. |

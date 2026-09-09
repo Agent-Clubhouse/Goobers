@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/goobers/goobers/internal/platform/durability"
@@ -102,6 +103,10 @@ func (r sidecarMutationRecorder) RecordLandingIntent(ctx context.Context, provid
 }
 
 func appendMutationFact(fact mutationFact) error {
+	return appendMutationFactAt(".", fact)
+}
+
+func appendMutationFactAt(dir string, fact mutationFact) error {
 	// Identity belongs to this durable record, not its semantic contents:
 	// separate attempts may legitimately make identical mutations.
 	fact.ReceiptID = rand.Text()
@@ -109,11 +114,11 @@ func appendMutationFact(fact mutationFact) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(mutationsSidecarFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, mutationsSidecarFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	return persistMutationSidecar(f, append(data, '\n'), func() error { return durability.SyncDir(".") })
+	return persistMutationSidecar(f, append(data, '\n'), func() error { return durability.SyncDir(dir) })
 }
 
 type mutationSidecarWriter interface {
