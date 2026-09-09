@@ -55,8 +55,8 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	}
 
 	l := instance.NewLayout(root)
-	if _, err := os.Stat(l.ConfigFile()); err != nil {
-		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
+	if err := prepareManualRoot(l, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 
@@ -136,13 +136,12 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	}
 
 	// Wait for every dispatched run to reach a terminal state, same as
-	// `goobers run` — required, not just nicer UX: dispatch's goroutine calls
-	// wg.Add(1) from inside trackedStarter.Start, asynchronously relative to
-	// Signal's return, so a bare wg.Wait() here would race it (Wait can
-	// observe the counter still at 0 and return immediately, before the run
-	// even started) — the same Add-before-Wait requirement sync.WaitGroup
-	// always has. waitForRunTerminal's polling loop naturally closes that
-	// race by blocking until each run's own journal shows it under way.
+	// `goobers run` — required, not just nicer UX. Scheduler.dispatch
+	// registers each dispatch with the wait group before launching its
+	// goroutine, and the tracked starter keeps that registration until all
+	// post-run telemetry has completed. waitForRunTerminal's polling loop
+	// observes each run's journal while the wait group is reserved for the
+	// final drain below.
 	type waitResult struct {
 		index int
 		runID string

@@ -406,7 +406,7 @@ func TestStageAttemptsCarryPlacementProvenance(t *testing.T) {
 	}
 	second := got.Attempts[1].Placement
 	if second == nil || second.Runner != "linux-large" || second.Pod != "goobers-stage-implement-4x2vq" ||
-		second.Image != "ghcr.io/goobers/goobers-base:v0.2.0" || second.Node != "aks-linux-0001" ||
+		second.Image != "ghcr.io/goobers/goobers-base:v0.2.0" || second.Node != "aks-linux-0001" || second.OS != "linux" ||
 		second.Host != "goobers-stage-implement-4x2vq" {
 		t.Fatalf("attempt 2 placement = %+v", second)
 	}

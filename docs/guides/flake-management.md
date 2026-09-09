@@ -25,9 +25,13 @@ workflows must not automatically retry a failed step or job.
 3. **Record:** `test/flakeledger` ensures the `ci:flake` label exists. A new
    fingerprint files one issue with its identity, occurrence, run link, and
    failure snippet. Later occurrences append to that issue. These issues have no
-   milestone; the publisher applies `ci:flake` and removes any `goobers:*` or
-   `goobers/status:*` workflow labels before refreshing an issue so flakes cannot
-   enter an automated implementation queue accidentally.
+   milestone; the publisher files them with `ci:flake`, `goobers:approved`, and
+   `goobers:cloud` so the cloud instance can claim them, and it never strips the
+   `goobers:*` or `goobers/status:*` labels an in-flight run put on an issue.
+   If a fingerprint recurs against an issue that was **closed**, the publisher
+   reopens that issue and says so in the appended comment, naming the run that
+   reopened it. Closing a flake issue therefore silences it only until the flake
+   actually comes back; it never retires the fingerprint.
    The hourly `Flake watch` workflow also scans failed checks on open pull
    requests and recent default-branch runs. It prefers structured check
    annotations and temporarily falls back to Actions job logs until structured
@@ -49,8 +53,9 @@ workflows must not automatically retry a failed step or job.
    intermittent, unstable, or quarantined behavior are rejected.
 5. **Fix:** remove the quarantine, exercise the affected package through the
    stress workflow, document the confirming run on the flake issue, and close
-   the issue. If the fingerprint recurs later, the ledger appends the new
-   occurrence to the existing issue.
+   the issue. If the fingerprint recurs later, the ledger reopens the issue and
+   appends the new occurrence, flagged as a regression of the fix rather than a
+   first sighting.
 
 ## Red scheduled workflows
 

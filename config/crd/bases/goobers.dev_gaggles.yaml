@@ -211,6 +211,18 @@ spec:
                 items:
                   type: string
                 type: array
+              cost:
+                description: |-
+                  Cost overrides instance-wide external cost publication. An omitted or
+                  null enabled value inherits the instance default; local accounting remains active.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled selects external cost publication. Null or omitted inherits the
+                      enclosing default; the built-in instance default is true.
+                    nullable: true
+                    type: boolean
+                type: object
               displayName:
                 description: DisplayName is the human-facing name shown on the portal
                   dashboard.

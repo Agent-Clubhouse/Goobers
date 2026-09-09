@@ -1,0 +1,43 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SECURITY ALERTS QUERY" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers security-alerts-query \- emit bounded, untrusted security alerts for work nomination (a connector stage)
+.SH SYNOPSIS
+\fBgoobers security-alerts-query\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers security-alerts-query --source code-scanning|dependabot [--state <state>] [--severity <list>] [--tool <name>] [--ref <ref>] [--ecosystem <list>] [--scope runtime|development] [--max-results <n>] [path]
+
+Read one of the repository's native security alert feeds and emit a bounded,
+schema-validated artifact for work nomination (a connector stage). It is
+strictly read-only: it never files, comments on, or labels an issue.
+
+Each source is backed by its own least-privilege capability, so a stage sees
+one feed and nothing else:
+  code-scanning  github:code-scanning:read      (PAT: Code scanning alerts: Read-only)
+  dependabot     github:dependabot-alerts:read  (PAT: Dependabot alerts: Read-only)
+
+Every alert-derived string — rule text, analysis messages, advisory summaries,
+paths, package names — is repository or third-party content. The artifact
+records integrity `unapproved` for the whole set: it is evidence for a
+nominator to reason about, never instructions to follow.
+
+Each alert carries a stable `dedupeKey` so repeated scheduled runs correlate
+with an existing nomination instead of filing one issue per scan. For code
+scanning the key is tool:rule:path, so one rule firing at many data-flow
+locations is one defect; for Dependabot it is advisory:ecosystem:package:manifest.
+
+--ref narrows code-scanning alerts to one git ref. Default-branch alerts are
+what this intake nominates; a CodeQL failure on an already-open implementation
+PR is ordinary CI and is handled by the ci-poll/repass path, not here.
+
+Exit codes: 0 = artifact written, 1 = config/credential/provider error,
+2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers security-alerts-query --source code-scanning --ref refs/heads/main
+goobers security-alerts-query --source dependabot --severity critical,high
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

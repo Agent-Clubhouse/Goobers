@@ -23,6 +23,9 @@ func TestEscalationResolveSubmitsToDaemonAPI(t *testing.T) {
 		gotRequest httpapi.EscalationResolutionRequest
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		gotPath, gotMethod = r.URL.Path, r.Method
 		gotKey = r.Header.Get(httpapi.HeaderIdempotencyKey)
 		gotAuth = r.Header.Get("Authorization")
@@ -64,6 +67,9 @@ func TestEscalationResolveSubmitsToDaemonAPI(t *testing.T) {
 func TestEscalationResolveReadsEndpointFromEnvironment(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(httpapi.InterventionResult{Phase: "aborted"})
@@ -85,7 +91,10 @@ func TestEscalationResolveReadsEndpointFromEnvironment(t *testing.T) {
 // TestEscalationResolveReportsDaemonRefusal keeps a refusal distinguishable
 // from a usage error: refused is 1, malformed invocation is 2.
 func TestEscalationResolveReportsDaemonRefusal(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(apicontract.ErrorEnvelope{

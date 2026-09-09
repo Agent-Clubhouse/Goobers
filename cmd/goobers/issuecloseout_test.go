@@ -444,6 +444,92 @@ func TestIssueCloseOutNeedsRemediationParksWithoutAssignee(t *testing.T) {
 	}
 }
 
+// TestIssueCloseOutNeedsRemediationReleaseAllowsReclaim is #4639's core
+// acceptance: releasing a claim through issue-close-out must post the
+// goobers-claim-release breadcrumb claimWinner actually reads, not just strip
+// the goobers:claimed label — otherwise the stale claim breadcrumb from the
+// parked run permanently wins claimWinner and a later run can never reclaim
+// the item once it cycles back to goobers:ready. Drives the real claim (via
+// `backlog-query --claim`) and reclaim (a second `backlog-query --claim`)
+// through the CLI rather than only asserting a comment was posted, so a
+// regression that posts the wrong breadcrumb text (or none) would still show
+// up here as a failed reclaim.
+func TestIssueCloseOutNeedsRemediationReleaseAllowsReclaim(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Flaky implementation", "goobers:approved", "goobers:ready")
+
+	const firstRun = "run-first"
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", firstRun)
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	// Sanity: the claim breadcrumb landed for real, not only in the ledger —
+	// claimWinner (and thus this test's reclaim check below) reads it, not
+	// the ledger.
+	server.mu.Lock()
+	claimedComments := len(server.issues[7].comments)
+	server.mu.Unlock()
+	if claimedComments == 0 {
+		t.Fatal("want a claim breadcrumb comment posted by backlog-query --claim")
+	}
+
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
+	t.Setenv("GOOBERS_INPUT_COMMENT", "Implementation parked for remediation: flaky test.")
+	t.Chdir(t.TempDir())
+	code, stdout, stderr = runArgs(t, "issue-close-out", root)
+	if code != 0 || !strings.Contains(stdout, "parked 7 needs-remediation") {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	parked := server.issues[7]
+	releaseBreadcrumb := "goobers-claim-release: run=" + firstRun
+	hasReleaseBreadcrumb := false
+	for _, c := range parked.comments {
+		if strings.Contains(c, releaseBreadcrumb) {
+			hasReleaseBreadcrumb = true
+		}
+	}
+	server.mu.Unlock()
+	if !hasReleaseBreadcrumb {
+		t.Fatalf("issue comments = %+v, want a %q breadcrumb", parked.comments, releaseBreadcrumb)
+	}
+
+	// Move the item back to ready, as the needs-remediation reclaim cycle
+	// does once the fix lands and the item is re-selected.
+	server.mu.Lock()
+	var labels []string
+	for _, l := range server.issues[7].labels {
+		if l == needsRemediationLabel {
+			continue
+		}
+		labels = append(labels, l)
+	}
+	server.issues[7].labels = append(labels, providers.LabelReady)
+	// Must postdate the needs-remediation park's own goobers:ready removal
+	// event above, or the fake server's event history still shows the label
+	// as most-recently removed.
+	server.appendLabelEventLocked(7, providers.LabelReady, true, time.Now().UTC())
+	server.mu.Unlock()
+
+	const secondRun = "run-second"
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", secondRun)
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Chdir(t.TempDir())
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("reclaim: code = %d, stdout = %q, stderr = %q — a stale claim breadcrumb must not block reclaim after release", code, stdout, stderr)
+	}
+}
+
 func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 	root := t.TempDir()
 	runsDir := filepath.Join(root, "runs")

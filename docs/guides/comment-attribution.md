@@ -15,7 +15,7 @@ The Base64 value decodes to UTF-8 JSON with this schema:
   "schema": 1,
   "goobers": true,
   "instance": "MDB1",
-  "gaggle": "efunhouse",
+  "gaggle": "dogfood",
   "workflow": "implementation",
   "task": "escalate",
   "goober": "implementer",

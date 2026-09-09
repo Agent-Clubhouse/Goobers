@@ -223,7 +223,7 @@ func (g PlaneSurrenderGate) Confirmed(ctx context.Context, attempt Attempt) (boo
 	if g.Plane == nil {
 		return false, errors.New("dispatcher: surrender gate has no plane")
 	}
-	return g.Plane.Has(ctx, attempt.RunID, attempt.Stage, attempt.Number)
+	return g.Plane.Has(ctx, attempt.RunID, attempt.Stage, attempt.IdentityAttempt())
 }
 
 // SurrenderDir is a SurrenderPlane backed by a directory — the same stance as

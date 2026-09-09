@@ -206,18 +206,21 @@ func (t *Tree) kill() error {
 		snapshotErr = errors.Join(snapshotErr, fmt.Errorf("proc: terminate job for %d: %w", t.pid, err))
 	}
 	deadline := time.Now().Add(2 * time.Second)
+	// Only the LAST pass's failures are the caller's answer. Kill's contract
+	// is about the state of the tree when it returns, and a descendant that
+	// was mid-exit on one pass and gone on the next was terminated
+	// successfully — joining the earlier pass's error anyway reported a
+	// failure for a tree that is, in fact, dead (#4212).
+	var terminateErr error
 	for {
+		terminateErr = nil
 		for i := len(descendants) - 1; i >= 0; i-- {
 			descendant := descendants[i]
 			if descendant.startTime.IsZero() {
 				continue
 			}
-			current, ok := startTime(descendant.pid)
-			if !ok || !current.Equal(descendant.startTime) {
-				continue
-			}
-			if err := terminatePID(descendant.pid); err != nil && alive(descendant.pid) {
-				snapshotErr = errors.Join(snapshotErr, err)
+			if err := terminateIdentity(descendant.pid, descendant.startTime); err != nil {
+				terminateErr = errors.Join(terminateErr, err)
 			}
 		}
 		if time.Now().After(deadline) {
@@ -230,11 +233,12 @@ func (t *Tree) kill() error {
 			break
 		}
 		if len(descendants) == 0 {
+			terminateErr = nil
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return snapshotErr
+	return errors.Join(snapshotErr, terminateErr)
 }
 
 func snapshotDescendants(root int) ([]processIdentity, error) {
@@ -264,41 +268,107 @@ func snapshotDescendants(root int) ([]processIdentity, error) {
 	for _, process := range processes {
 		children[process.parent] = append(children[process.parent], process.pid)
 	}
+	// The walk is shared with the unix collectors and is cycle-safe: a
+	// Windows entry's parent pid is its creator's pid at creation time and
+	// survives that creator's exit, so a recycled pid can make the recorded
+	// parentage point back into the subtree and an unguarded walk never
+	// terminates (#3922).
 	var descendants []processIdentity
 	var identityErr error
-	queue := append([]int(nil), children[root]...)
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
+	for _, pid := range collectDescendants(root, children) {
 		if started, ok := startTime(pid); ok {
 			descendants = append(descendants, processIdentity{pid: pid, startTime: started})
 		} else if alive(pid) {
 			identityErr = errors.Join(identityErr, fmt.Errorf("proc: read start time for descendant %d", pid))
 		}
-		queue = append(queue, children[pid]...)
 	}
 	return descendants, identityErr
 }
 
+// terminateExitWait bounds how long a terminated process is waited on. The
+// wait used to be INFINITE, which is a hang rather than a timeout: a process
+// stuck in a driver or a kernel transition (a WSL broker's host process is the
+// case this package meets) never signals, so Kill never returned and the whole
+// test binary died on its ten-minute package timeout instead (#3922). A
+// bounded wait turns that into a named error the caller can report.
+const terminateExitWait = 30 * time.Second
+
 // terminatePID force-terminates a single process by pid — the degraded path when
-// no Job Object was assigned.
+// no Job Object was assigned, and for callers that identified their target by
+// something other than a start time.
 func terminatePID(pid int) error {
-	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, uint32(pid))
+	return terminateIdentity(pid, time.Time{})
+}
+
+// terminateIdentity force-terminates pid, refusing to touch it unless it still
+// names the process that started at started (the zero time waives the check).
+//
+// The identity check has to happen on the HANDLE, not before opening one
+// (#4212). A pid is a reusable name: checking the start time and then opening
+// the pid leaves a window in which the recorded process exits and an unrelated
+// one — quite possibly a service this process has no business killing — takes
+// the number, and the terminate lands on that. A handle pins the process
+// object, so a start time read through it describes the process the terminate
+// will actually reach.
+//
+// It also decides what an OpenProcess refusal MEANS, which the previous
+// `alive(pid)` guard could not: alive() probes with OpenProcess too and fails
+// toward "alive" on any error that is not a clean absent-pid, so an
+// ERROR_ACCESS_DENIED was always reported as a live descendant this package
+// had failed to kill — the reported flake, on a pid whose WSL-brokered owner
+// had already recycled it. Re-reading the identity with query-only access
+// separates the two: a pid that no longer answers as the recorded process, or
+// no longer answers at all, is not ours to kill and is not an error; one that
+// still answers as the recorded process and refuses TERMINATE is a genuine
+// permission failure and is reported.
+func terminateIdentity(pid int, started time.Time) error {
+	if pid <= 0 {
+		return nil
+	}
+	access := uint32(windows.PROCESS_TERMINATE | windows.SYNCHRONIZE | windows.PROCESS_QUERY_LIMITED_INFORMATION)
+	h, err := windows.OpenProcess(access, false, uint32(pid))
 	if err != nil {
+		if !started.IsZero() && !identityPresent(pid, started) {
+			return nil
+		}
 		return fmt.Errorf("proc: open %d for terminate: %w", pid, err)
 	}
 	defer func() { _ = windows.CloseHandle(h) }()
+	if !started.IsZero() {
+		current, ok := handleStartTime(h)
+		if !ok || !current.Equal(started) {
+			// The pid was recycled between the snapshot and this open. The
+			// process we recorded is already gone, and whatever holds the
+			// number now is not a descendant of this tree.
+			return nil
+		}
+	}
 	if err := windows.TerminateProcess(h, 1); err != nil {
+		if !started.IsZero() && !identityPresent(pid, started) {
+			return nil
+		}
 		return fmt.Errorf("proc: terminate %d: %w", pid, err)
 	}
-	status, err := windows.WaitForSingleObject(h, windows.INFINITE)
+	status, err := windows.WaitForSingleObject(h, uint32(terminateExitWait/time.Millisecond))
 	if err != nil {
 		return fmt.Errorf("proc: wait for %d to terminate: %w", pid, err)
+	}
+	if status == uint32(windows.WAIT_TIMEOUT) {
+		return fmt.Errorf("proc: process %d did not exit within %s of being terminated", pid, terminateExitWait)
 	}
 	if status != windows.WAIT_OBJECT_0 {
 		return fmt.Errorf("proc: wait for %d to terminate returned status %#x", pid, status)
 	}
 	return nil
+}
+
+// identityPresent reports whether pid still names the process that started at
+// started, read through a query-only handle — the weakest access this package
+// can ask for, so a "no" covers both "the process is gone" and "the process is
+// not ours to look at".
+func identityPresent(pid int, started time.Time) bool {
+	current, ok := startTime(pid)
+	return ok && current.Equal(started)
 }
 
 // requestDump reports unsupported (supported=false): a Job Object cannot deliver

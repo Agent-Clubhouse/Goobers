@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/security-alerts-v1.schema.json",
+  "title": "SecurityAlertsV1",
+  "description": "Version 1 of the deterministic security-alert intake artifact emitted by `goobers security-alerts-query` (#2984, #2987). Every alert-derived string is repository or third-party advisory content and carries integrity `unapproved`: it is data for a nominator to reason about, never instructions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source",
+    "repository",
+    "queriedAt",
+    "alerts",
+    "noWork"
+  ],
+  "properties": {
+    "schema": {
+      "const": "goobers.dev/security-alerts/v1",
+      "description": "Artifact contract identity."
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "code-scanning",
+        "dependabot"
+      ],
+      "description": "Which provider-native alert feed was read."
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The repository the alerts were read from, as owner/name."
+    },
+    "queriedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the query ran, in UTC."
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The bounds actually applied, echoed so an artifact explains its own scope.",
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "Alert state filter applied ('open' by default; the intake nominates live work)."
+        },
+        "severity": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Severity values the query was narrowed to, verbatim as passed to the provider."
+        },
+        "tool": {
+          "type": "string",
+          "description": "Code-scanning analysis tool the query was narrowed to (for example 'CodeQL')."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Git ref the code-scanning query was narrowed to."
+        },
+        "ecosystem": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Package ecosystems the Dependabot query was narrowed to."
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "runtime",
+            "development"
+          ],
+          "description": "Dependency scope the Dependabot query was narrowed to."
+        },
+        "maxResults": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cap on the number of alerts collected before the walk stops."
+        }
+      }
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "True when the feed had at least maxResults alerts, so the artifact may not be the complete set."
+    },
+    "integrity": {
+      "type": "string",
+      "const": "unapproved",
+      "description": "The provenance grade of every alert record in this artifact."
+    },
+    "noWork": {
+      "type": "boolean",
+      "description": "True when the bounded query matched no alerts."
+    },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/alert"
+      },
+      "description": "The bounded, deterministically ordered alert set, most severe first."
+    }
+  },
+  "$defs": {
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "number",
+        "state",
+        "dedupeKey"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "code-scanning",
+            "dependabot"
+          ],
+          "description": "Which feed this alert came from."
+        },
+        "number": {
+          "type": "integer",
+          "description": "The provider's own per-repository alert number. Not a dedupe identity: a re-scan can renumber alerts."
+        },
+        "url": {
+          "type": "string",
+          "description": "Provider web URL for the alert."
+        },
+        "state": {
+          "type": "string",
+          "description": "Provider alert state (open, dismissed, fixed, auto_dismissed)."
+        },
+        "dismissedReason": {
+          "type": "string",
+          "description": "Provider reason a dismissed alert was dismissed, so accepted risk is distinguishable from a false positive."
+        },
+        "severity": {
+          "type": "string",
+          "description": "Severity as the provider reports it; code scanning prefers the CVSS-derived security severity over the tool's own error/warning level."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the provider first reported the alert."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the provider last updated the alert."
+        },
+        "dismissedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the alert was dismissed, if it was."
+        },
+        "fixedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the alert was observed fixed, if it was."
+        },
+        "dedupeKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identity for correlating an alert with an existing nomination across runs. For code scanning it is tool:rule:path \u2014 one rule firing at many data-flow locations is one defect, not one issue per location. For Dependabot it is advisory:ecosystem:package:manifest."
+        },
+        "codeScanning": {
+          "$ref": "#/$defs/codeScanning",
+          "description": "Code-scanning-specific fields; present only when source is code-scanning."
+        },
+        "dependabot": {
+          "$ref": "#/$defs/dependabot",
+          "description": "Dependabot-specific fields; present only when source is dependabot."
+        },
+        "integrity": {
+          "type": "string",
+          "const": "unapproved",
+          "description": "Provenance grade of this record's content."
+        }
+      }
+    },
+    "codeScanning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "toolName": {
+          "type": "string",
+          "description": "Analysis tool that produced the alert."
+        },
+        "toolVersion": {
+          "type": "string",
+          "description": "Version of the analysis tool."
+        },
+        "ruleId": {
+          "type": "string",
+          "description": "Tool rule identifier, the stable half of the dedupe identity."
+        },
+        "ruleName": {
+          "type": "string",
+          "description": "Human-readable rule name."
+        },
+        "ruleDescription": {
+          "type": "string",
+          "description": "Rule description as authored by the tool. Untrusted content."
+        },
+        "message": {
+          "type": "string",
+          "description": "Alert message for the most recent analysis instance. Untrusted content."
+        },
+        "path": {
+          "type": "string",
+          "description": "Repository path the most recent instance flagged. Untrusted content."
+        },
+        "startLine": {
+          "type": "integer",
+          "description": "First line of the flagged region."
+        },
+        "endLine": {
+          "type": "integer",
+          "description": "Last line of the flagged region."
+        },
+        "ref": {
+          "type": "string",
+          "description": "The git ref analyzed. A default-branch ref is nomination input; a pull-request ref is ordinary CI and is handled by the CI-poll/repass path instead."
+        },
+        "commitSha": {
+          "type": "string",
+          "description": "Commit the most recent analysis instance ran against."
+        },
+        "instanceCount": {
+          "type": "integer",
+          "description": "How many analysis instances the provider reports for this alert, so per-location fan-out is visible without being invited."
+        }
+      }
+    },
+    "dependabot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ghsaId": {
+          "type": "string",
+          "description": "GitHub Security Advisory identifier."
+        },
+        "cveId": {
+          "type": "string",
+          "description": "CVE identifier, recovered from the advisory identifier list when the top-level field is null."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Advisory summary. Untrusted third-party content."
+        },
+        "ecosystem": {
+          "type": "string",
+          "description": "Package ecosystem (npm, go, nuget, ...)."
+        },
+        "package": {
+          "type": "string",
+          "description": "Vulnerable package name. Untrusted content."
+        },
+        "manifestPath": {
+          "type": "string",
+          "description": "Manifest declaring the vulnerable dependency. Untrusted content."
+        },
+        "scope": {
+          "type": "string",
+          "description": "Whether the dependency is a runtime or development dependency."
+        },
+        "relationship": {
+          "type": "string",
+          "description": "Whether the dependency is direct or transitive."
+        },
+        "vulnerableVersionRange": {
+          "type": "string",
+          "description": "Version range the advisory declares vulnerable."
+        },
+        "firstPatchedVersion": {
+          "type": "string",
+          "description": "First version that resolves the advisory, when one exists."
+        }
+      }
+    }
+  }
+}

@@ -1267,10 +1267,8 @@ var dslSupportMatrix = supportmatrix.GetDSL
 // checked against this binary's declared supportmatrix.SupportMatrix, so an
 // unsupported or blocked-preview pin fails here, with a clear diagnostic,
 // instead of surfacing later as an opaque interpreterForVersion compile
-// error. The default this applies to a missing pin (supportmatrix.
-// CurrentDSLVersion) is deliberately the exact same default
-// internal/workflow.Compile's own interpreterForVersion falls back to, so
-// this check can never disagree with what actually compiles and runs.
+// error. A missing author-facing pin is a hard error; the compiler's 2.0
+// fallback is reserved for programmatically constructed definitions.
 //
 // This is the sole enforcement point for the lifecycle: internal/configsync's
 // daemon load path and instance.LoadConfigDir's offline CLI path both route
@@ -1987,19 +1985,31 @@ func repoIdentity(ref apiv1.RepoRef) string {
 	return strings.Join([]string{string(ref.Provider), ref.Owner, ref.Project, ref.Name}, "/")
 }
 
-func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+// checkWorkflowVersionAndReferences validates independent workflow references
+// and controls and reports feature support only when an interpreter exists.
+// Its result gates the deeper semantic checks, avoiding version-error cascades.
+func (ix *index) checkWorkflowVersionAndReferences(r *Report, w apiv1.Workflow, file string, allowPreview bool) bool {
+	checkArtifactManifestInputs(r, w, file)
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
 		ix.referenceNotFound(r, errorWorkflowGaggleReference, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 			w.Spec.Gaggle, w.Spec.Gaggle)
 	}
-	r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
-		wf.CheckWorkflowFeatureSupport(wf.Definition{
-			Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec,
-		}, allowPreview))
+	support, knownVersion := dslSupportMatrix().Lookup(w.DSLVersion)
+	canInterpret := w.DSLVersion == "" || (knownVersion && support.Level != supportmatrix.LevelUnsupported)
+	if canInterpret {
+		r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
+			wf.CheckWorkflowFeatureSupport(wf.Definition{
+				Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec,
+			}, allowPreview))
+	}
 	if err := runcontrol.ValidateWorkflow(w.Spec); err != nil {
 		r.add(errorRunControls, Error, file, "Workflow", w.Name, "%v", err)
 	}
+	return canInterpret
+}
 
+func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+	canInterpret := ix.checkWorkflowVersionAndReferences(r, w, file, allowPreview)
 	states := map[string]bool{}
 	for _, t := range w.Spec.Tasks {
 		if states[t.Name] {
@@ -2109,6 +2119,17 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 	}
 
+	// These checks inspect declarations without requiring an interpreter, so
+	// keep reporting them even when a version pin needs repair.
+	ix.checkCapabilityRuntimeSupport(r, w, file)
+	checkSecretShapedInputs(r, w, file)
+	if !canInterpret {
+		// checkWorkflowDSLVersion reports the root cause once as DVL030.
+		// Every semantic facade below would only repeat the router's
+		// same refusal under a different rule code (#4216).
+		return
+	}
+
 	// Delegate the deeper semantic analysis to the workflow compiler so the CLI
 	// and the compiler stay in lockstep: reachability + loop-without-exit,
 	// schedule-expression validity, and capability/harness admission. These are
@@ -2182,7 +2203,6 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckRepoHandoffs(def) {
 		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	ix.checkCapabilityRuntimeSupport(r, w, file)
 	// Stage output/input contracts (#900). These catch the class of defect
 	// that is structurally valid, compiles, and then silently loses data at
 	// runtime — a stage promising outputs it has no channel to emit, or
@@ -2224,12 +2244,6 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckSubprocessTimeoutCoherence(def) {
 		r.addWarning(WarningSubprocessTimeout, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
-	// Stage inputs are history-resident on the engine tier, so a credential
-	// pasted into `inputs:` is persisted verbatim in durable Temporal history
-	// (#2931). Warning, not error: the detection is a pattern net over
-	// literals the author wrote, so it is intentionally incomplete and can
-	// only ever be evidence of shape, never of secrecy.
-	checkSecretShapedInputs(r, w, file)
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's
 	// VER003 "expectedOutputs is declared but not enforced" already warns

@@ -117,7 +117,11 @@ the configured human, since no decision is pending on it.
   automated issue-side unpark existed at all, and that is no longer true.)*
   Two automated unparkers run during backlog reconciliation:
   `staleBlockedOnSiblingMarker` clears `goobers:blocked-on-sibling` once every
-  recorded or commented blocker has closed (#3355), and
+  recorded or commented blocker has closed (#3355) — by merging or by hand, and
+  whether the blocker is a pull request or an issue (#4545); an item whose
+  blockers are recorded only as native GitHub issue dependencies keeps its
+  marker and is surfaced instead by backlog-query's `dependency-recheck`
+  re-sweep, which needs that label to find it — and
   `staleInfrastructureRemediationPark` clears `goobers:needs-remediation`
   (#4154). `hasReconciledMetadataLabel` was widened twice specifically to feed
   them.

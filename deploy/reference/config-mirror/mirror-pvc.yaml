@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goobers-config-mirror
+  namespace: goobers-system
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 2Gi
+  # CHANGE-ME: select a class mountable from both Linux and Windows nodes.
+  # Publication requires atomic file replacement and a reliable writer lock.

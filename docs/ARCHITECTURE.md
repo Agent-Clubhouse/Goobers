@@ -481,6 +481,16 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label selection and FIFO remain unchanged. On public repos, eligibility
   requires a maintainer-applied trust label: backlog content is untrusted input
   (`SEC-047`).
+
+  **There is no free-form provider query, on any provider (#1677).** `labels`,
+  `labelPredicate` and `fieldPredicate` are the entire backlog selection
+  surface, and they are provider-neutral: the same gaggle selects the same work
+  on GitHub, Azure DevOps and Gitea. An earlier `BacklogRef.Query` field was
+  serializable and documented but read by no provider, so the schema advertised
+  a selection capability that silently did nothing; it was deleted before the
+  DSL was tagged, with zero readers. A config that still declares `query:`
+  under `backlog:` is a hard validation error naming what replaced it — never a
+  silently ignored field.
 - **A claim's lifetime is the ledger's, and the marker's lifetime is the
   claim's.** `scheduler/claims.json` is the only source of truth for
   exactly-once processing (`BL-005`); the provider-visible `goobers:claimed`
@@ -521,6 +531,18 @@ The two-store separation from the vision is preserved at every tier:
 Instrumentation is OpenTelemetry throughout (already in `internal/telemetry`); only
 the exporter changes per tier. Work-nomination workflows read these stores; the Tutor
 (V1+) mines the run store.
+
+**Security alerts are a third nomination input** (#2984/#2987), and not a
+telemetry store: `goobers security-alerts-query` reads the forge's own
+code-scanning and Dependabot feeds through two separate read-only capabilities
+(`github:code-scanning:read`, `github:dependabot-alerts:read`) and emits the
+bounded `security-alerts-v1` artifact. Its whole content is repository and
+third-party advisory text, so it is graded `unapproved` and reaches a nominator
+as evidence, never as instruction; each alert carries a `dedupeKey` so repeated
+scheduled runs update one nomination instead of filing one issue per scan or per
+data-flow location. Default-branch alerts are what it nominates — an alert on an
+open pull request is ordinary CI and stays with that PR's `ci-poll`/repass path.
+See the security alert intake guide under `docs/guides/`.
 
 ## 9. Security and auth ladder
 

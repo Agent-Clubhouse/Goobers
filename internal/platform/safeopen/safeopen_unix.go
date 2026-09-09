@@ -17,6 +17,10 @@ import (
 // behavior is byte-identical.
 const openFlags = unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK
 
+func openInRoot(root *os.Root, name string) (*os.File, error) {
+	return root.OpenFile(name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+}
+
 func open(path string) (*os.File, error) {
 	fd, err := unix.Open(path, openFlags, 0)
 	if err != nil {

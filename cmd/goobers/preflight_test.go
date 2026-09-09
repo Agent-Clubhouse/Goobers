@@ -74,8 +74,22 @@ func TestAgentModelCredentialResolverNilWithoutGrant(t *testing.T) {
 // CLI subprocess.
 type harnessFakeRunner struct{ exit int }
 
-func (r *harnessFakeRunner) Run(context.Context, harness.ProcessRequest) (harness.ProcessResult, error) {
-	return harness.ProcessResult{ExitCode: r.exit, Transcript: []byte("copilot version 1.2.3\n")}, nil
+func (r *harnessFakeRunner) Run(_ context.Context, req harness.ProcessRequest) (harness.ProcessResult, error) {
+	return preflightVersionFixture(req, r.exit)
+}
+
+// A ProcessRunner streams stdout separately from its combined diagnostics.
+// Deliberate stderr noise proves callers cannot mistake diagnostics for the
+// version and must still proceed to the independently scripted auth probe.
+func preflightVersionFixture(req harness.ProcessRequest, exit int) (harness.ProcessResult, error) {
+	stdout := []byte("copilot version 1.2.3\n")
+	result := harness.ProcessResult{ExitCode: exit, Transcript: append([]byte("fixture stderr diagnostic\n"), stdout...)}
+	if req.StdoutCapture != nil {
+		if _, err := req.StdoutCapture.Write(stdout); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }
 
 // TestPreflightAgenticHarnesses is the #238 control: an agentic stage's unusable
@@ -211,7 +225,7 @@ func (r *fileRefPreflightRunner) Run(_ context.Context, req harness.ProcessReque
 			r.authProbeEnv = append([]string(nil), req.Env...)
 		}
 	}
-	return harness.ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}, nil
+	return preflightVersionFixture(req, 0)
 }
 
 // TestCopilotPreflightSatisfiedByFileRefOnlyCredential is #4292's acceptance

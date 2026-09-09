@@ -9,12 +9,19 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
 type wireFixtures struct {
+	TriggerRequest           TriggerRequest                             `json:"triggerRequest"`
+	TriggerResponse          TriggerResponse                            `json:"triggerResponse"`
+	TriggerStatus            TriggerStatusResponse                      `json:"triggerStatus"`
+	CancelRequest            CancelRunRequest                           `json:"cancelRequest"`
+	CancelResult             CancelRunResult                            `json:"cancelResult"`
+	QueueEligibility         readservice.QueueEligibilityView           `json:"queueEligibility"`
 	Health                   readservice.Health                         `json:"health"`
 	Instance                 readservice.Instance                       `json:"instance"`
 	PortalConfig             readservice.PortalConfig                   `json:"portalConfig"`
@@ -47,6 +54,12 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "triggerRequest", scriptType: "TriggerRequest"},
+	{name: "triggerResponse", scriptType: "TriggerResponse"},
+	{name: "triggerStatus", scriptType: "TriggerStatusResponse"},
+	{name: "cancelRequest", scriptType: "CancelRunRequest"},
+	{name: "cancelResult", scriptType: "CancelRunResult"},
+	{name: "queueEligibility", scriptType: "QueueEligibilityView"},
 	{name: "health", scriptType: "Health"},
 	{name: "instance", scriptType: "Instance"},
 	{name: "portalConfig", scriptType: "PortalConfig"},
@@ -105,6 +118,12 @@ func TypeScriptWireFixtures() ([]byte, error) {
 	output.Write(fixtures)
 	output.WriteString(" as const satisfies GoWireFixtures;\n")
 	return []byte(output.String()), nil
+}
+
+func queueEligibilityWireFixture(at time.Time) readservice.QueueEligibilityView {
+	report := prqueue.Report{Version: 1, RepositoryKey: "github|||org|repo|", Gaggle: "goobers", Workflow: "review", RunID: "queue-run", ObservedAt: at, CompleteSnapshot: true, Items: []prqueue.Item{}}
+	report.Add(42, prqueue.Escalated)
+	return readservice.QueueEligibilityView{Gaggle: report.Gaggle, Workflow: report.Workflow, AsOf: at, Status: "observed", SourceRunID: report.RunID, SourceStage: "select", Report: &report}
 }
 
 func newWireFixtures() wireFixtures {
@@ -281,6 +300,12 @@ func newWireFixtures() wireFixtures {
 	}
 
 	return wireFixtures{
+		TriggerRequest:   TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
+		TriggerResponse:  TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
+		TriggerStatus:    TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
+		CancelRequest:    CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},
+		CancelResult:     CancelRunResult{Code: "cancellation_requested"},
+		QueueEligibility: queueEligibilityWireFixture(timestamp),
 		Health: readservice.Health{
 			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},
 			APIVersion:       readservice.APIVersion,

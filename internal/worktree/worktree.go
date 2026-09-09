@@ -687,7 +687,32 @@ func (wt *Worktree) Diff(ctx context.Context, baseRef string) ([]byte, error) {
 	if wt.pinned {
 		baseRef = pinnedBaseRef(ctx, wt.Path, baseRef)
 	}
-	args := []string{"diff", baseRef + "...HEAD"}
+	// Evidence artifacts must not depend on repository-local diff drivers,
+	// presentation, hunk, or heuristic settings. Those settings can vary
+	// between otherwise identical runner environments.
+	args := []string{
+		"-c", "diff.algorithm=myers",
+		"-c", "diff.compactionHeuristic=false",
+		"-c", "diff.indentHeuristic=false",
+		"-c", "diff.interHunkContext=0",
+		"-c", "diff.noprefix=false",
+		"-c", "diff.mnemonicPrefix=false",
+		"-c", "diff.orderFile=",
+		"-c", "diff.submodule=short",
+		"-c", "core.quotePath=false",
+		"diff",
+		"--no-ext-diff",
+		"--no-textconv",
+		"--no-color",
+		"--no-renames",
+		"--no-prefix",
+		"--unified=3",
+		"--inter-hunk-context=0",
+		"--no-indent-heuristic",
+		"--submodule=short",
+		"-O" + os.DevNull,
+		baseRef + "...HEAD",
+	}
 	var out []byte
 	var err error
 	if wt.partialMirror {

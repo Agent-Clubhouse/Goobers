@@ -94,6 +94,18 @@ const (
 	CapBacklogBlockers Capability = "backlog.blockers"
 )
 
+// security.alerts: read-only intake of a forge's native security alert feeds
+// (#2984, #2987). Declared per-provider, never mandatory: GitHub exposes code
+// scanning and Dependabot through two separate APIs behind two separate
+// fine-grained permissions, and no other backend has an equivalent today. A
+// provider that does not declare these must fail closed through Dispatcher
+// rather than return an empty list, which a nominator cannot tell apart from
+// "this repository has no alerts".
+const (
+	CapSecurityAlertsCodeScanning Capability = "security.alerts.code-scanning"
+	CapSecurityAlertsDependabot   Capability = "security.alerts.dependabot"
+)
+
 // trigger: backlog availability triggers.
 const (
 	CapTriggerSubscribe Capability = "trigger.subscribe"

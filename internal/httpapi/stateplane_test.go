@@ -348,7 +348,7 @@ func TestPodPrincipalTriggersOnlyForItsOwnGaggle(t *testing.T) {
 	handler := writePlaneHandler(t, pod, AllowAll, WithTriggerService(service))
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath,
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath,
 		`{"gaggle":"goobers","workflow":"merge-review","sourceRun":"run-1"}`))
 	if response.Code != http.StatusOK {
 		t.Fatalf("own-run priority trigger status = %d, body = %s", response.Code, response.Body)
@@ -364,7 +364,7 @@ func TestPodPrincipalTriggersOnlyForItsOwnGaggle(t *testing.T) {
 	// An unscoped trigger from a pod would let the daemon's workflow-name
 	// resolution reach into some other gaggle.
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath,
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath,
 		`{"workflow":"merge-review"}`))
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("unscoped pod trigger status = %d, want 403", response.Code)
@@ -373,7 +373,7 @@ func TestPodPrincipalTriggersOnlyForItsOwnGaggle(t *testing.T) {
 	// Attributing a priority re-tick to somebody else's run would let a pod
 	// claim another run's published state as the reason for the mint.
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath,
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath,
 		`{"gaggle":"goobers","workflow":"merge-review","sourceRun":"run-2"}`))
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("foreign source-run status = %d, want 403", response.Code)
@@ -391,7 +391,7 @@ func TestHumanTriggerIsNotPodScoped(t *testing.T) {
 	handler := writePlaneHandler(t, nil, AllowAll, WithTriggerService(service))
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"merge-review"}`))
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"merge-review"}`))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
 	}

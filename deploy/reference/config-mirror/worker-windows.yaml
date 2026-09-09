@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goobers-worker-windows
+  namespace: goobers-system
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: seed-instance-root-acl
+          command: ["goobers.exe"]
+          args:
+            - config-seed
+            - --mirror
+            - C:\mnt\config-mirror
+            - --instance
+            - C:\var\lib\goobers\instance
+          volumeMounts:
+            - name: config-mirror
+              mountPath: C:\mnt\config-mirror
+              readOnly: true
+      containers:
+        - name: worker
+          args:
+            - worker
+            - --task-queue
+            - goobers-engine-windows
+            - --work-root
+            - C:\var\lib\goobers-worker
+            - --instance
+            - C:\var\lib\goobers\instance
+            - --blob-store
+            - C:\var\lib\goobers-blobs
+      volumes:
+        - name: journal
+          persistentVolumeClaim: null
+          emptyDir: {}
+        - name: config-mirror
+          persistentVolumeClaim:
+            claimName: goobers-config-mirror
+            readOnly: true

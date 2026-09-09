@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"flag"
@@ -23,7 +24,10 @@ import (
 const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
 	"                          [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]\n" +
 	"                          [--temporal-hostport <host:port>] [--temporal-namespace <name>]\n" +
-	"                          [--timeout <duration>]\n" +
+	"                          [--overlay-dir <dir>] [--image-runtime docker|podman]\n" +
+	"                          [--image-pull-policy always|never]\n" +
+	"                          [--image-tools <tool,...>] [--image-ca <root.pem>]\n" +
+	"                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]\n" +
 	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
 	"       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]\n\n" +
 	"--k8s preflights a target Kubernetes cluster against the documented\n" +
@@ -34,17 +38,37 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"  networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)\n" +
 	"  rbac-install       required  §1/§3  permissions to install goobers-system\n" +
 	"  rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces\n" +
-	"  storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists\n" +
+	"  storage-rwx        required  §4     instance-root StorageClass topology\n" +
 	"  mixed-os-placement required  §7     Linux workloads cannot land on Windows nodes\n" +
 	"  oidc-issuer        required* §1/§3  issuer discovery document reachable\n" +
 	"  egress             required* §1/§5  outbound targets reachable from this host\n" +
 	"  temporal-namespace required* §2/§4  configured Temporal namespace is registered\n" +
 	"  registry           optional  §1     registry reachable (host-side sanity)\n\n" +
+	"  apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint\n" +
+	"  runner-class-capacity required §7 active runner pod requests fit a compatible node\n" +
+	"  pod-health           required §2 every observed container is healthy\n" +
+	"  otlp-signal-set      optional §4 currently unconfigured by this CLI\n" +
+	"  overlay-pin-agreement required* #4298 remote base, image, and runner pins agree\n" +
+	"  overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks\n\n" +
 	"Checks marked required* apply when their probe target is configured; left\n" +
-	"unconfigured they report a skipped warn. Every check is read-only: nothing is\n" +
+	"unconfigured they report a skipped warn. Cluster checks are read-only: nothing is\n" +
 	"created on the cluster, and a check that cannot run reports fail with the\n" +
 	"reason — never a silent pass. Reference manifests expressing the same\n" +
 	"requirements live under deploy/reference/ (#663).\n\n" +
+	"--checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.\n" +
+	"For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.\n" +
+	"That check inspects only egress policies labeled goobers.dev/apiserver-egress=true.\n" +
+	"--apiserver-endpoint overrides the comparison endpoint when in-cluster service IPs\n" +
+	"differ from the actual control-plane endpoint used by the network policy. It does\n" +
+	"not change the authenticated Kubernetes client address.\n\n" +
+	"--overlay-dir additionally renders the consumer overlay with kubectl and pulls\n" +
+	"its pinned images using --image-runtime (default docker). Image checks run\n" +
+	"temporary network-isolated containers and remove them afterwards. Use trusted\n" +
+	"overlays/images only. Omitted --image-tools or --image-ca leaves that part\n" +
+	"explicitly unchecked, never PASS. --timeout bounds each render/pull/probe.\n\n" +
+	"--image-pull-policy never inspects cached artifacts only; it does not verify\n" +
+	"the registry's current tag. Default always fails if the pull fails. A configured\n" +
+	"memory high-water gate also requires gh API access to verify source ancestry.\n\n" +
 	"networkpolicy-api warns even when the API is served: a served API is only a\n" +
 	"correlate of enforcement — a CNI can serve it and still ignore policies\n" +
 	"silently. This check is API-discovery only; enforcement can only be proven\n" +
@@ -120,12 +144,19 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	workRoot := fs.String("work-root", "", "worker work root to enumerate with --av-exclusions (default: the worker's own default)")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path (default: the standard loading rules)")
 	kubeContext := fs.String("context", "", "kubeconfig context (default: the current context)")
+	overlayDir := fs.String("overlay-dir", "", "consumer kustomization directory for pin and image checks (--k8s only)")
+	imageRuntime := fs.String("image-runtime", "docker", "image probe runtime: docker or podman (--k8s with --overlay-dir)")
+	imagePullPolicy := fs.String("image-pull-policy", "always", "image acquisition: always pull, or never (inspect cached artifacts only)")
+	imageTools := fs.String("image-tools", "", "comma-separated required PATH tools in pinned images (omitted: unchecked)")
+	imageCA := fs.String("image-ca", "", "internal root CA PEM to verify in pinned image trust stores (omitted: unchecked)")
 	reportFormat := fs.String("report", "text", "report format: text or json")
 	oidcIssuer := fs.String("oidc-issuer", "", "OIDC issuer URL whose discovery document must be reachable")
 	registry := fs.String("registry", "", "container registry host to probe for reachability")
 	egress := fs.String("egress", "", "comma-separated host:port outbound targets that must be reachable")
 	temporalHostPort := fs.String("temporal-hostport", "", "Temporal frontend host:port whose configured namespace must be registered")
 	temporalNamespace := fs.String("temporal-namespace", "", "Temporal namespace to check for (default \"default\")")
+	apiServerEndpoint := fs.String("apiserver-endpoint", "", "API-server comparison URL for egress-policy drift (default: kubeconfig server)")
+	checks := fs.String("checks", "", "comma-separated Kubernetes check IDs (omitted: all checks)")
 	timeout := fs.Duration("timeout", k8spreflight.DefaultTimeout, "per-probe timeout")
 	fs.Usage = helpUsage(stderr, "doctor")
 	if err := fs.Parse(args); err != nil {
@@ -144,6 +175,19 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if modes != 1 {
 		pf(stderr, "goobers doctor: exactly one of --k8s, --repo or --av-exclusions is required\n\n")
 		fs.Usage()
+		return 2
+	}
+	checkIDs, err := validateDoctorCheckFlags(fs, *k8sMode, *checks, *apiServerEndpoint)
+	if err != nil {
+		pf(stderr, "goobers doctor: %v\n", err)
+		return 2
+	}
+	if err := validateDoctorOverlayFlags(fs, *k8sMode, *overlayDir, *imageRuntime); err != nil {
+		pf(stderr, "goobers doctor: %v\n", err)
+		return 2
+	}
+	if *imagePullPolicy != "always" && *imagePullPolicy != "never" {
+		pf(stderr, "goobers doctor: --image-pull-policy must be always or never\n")
 		return 2
 	}
 	// --work-root belongs to --av-exclusions alone. Parsing it and quietly
@@ -188,7 +232,13 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	report := k8spreflight.Run(context.Background(), client, k8spreflight.Options{
-		APIServerEndpoint: host,
+		Checks:            checkIDs,
+		OverlayDir:        *overlayDir,
+		ImageRuntime:      *imageRuntime,
+		ImagePullPolicy:   *imagePullPolicy,
+		ImageTools:        splitCommaList(*imageTools),
+		ImageCAFile:       *imageCA,
+		APIServerEndpoint: cmp.Or(*apiServerEndpoint, host),
 		OIDCIssuer:        *oidcIssuer,
 		Registry:          *registry,
 		Egress:            splitCommaList(*egress),
@@ -210,6 +260,27 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func validateDoctorOverlayFlags(fs *flag.FlagSet, k8s bool, overlay, runtime string) error {
+	var invalid error
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "overlay-dir", "image-runtime", "image-pull-policy", "image-tools", "image-ca":
+			if !k8s {
+				invalid = fmt.Errorf("--%s applies to --k8s only", f.Name)
+			} else if f.Name != "overlay-dir" && strings.TrimSpace(overlay) == "" {
+				invalid = fmt.Errorf("--%s requires --overlay-dir", f.Name)
+			}
+		}
+	})
+	if invalid != nil {
+		return invalid
+	}
+	if runtime != "docker" && runtime != "podman" {
+		return fmt.Errorf("--image-runtime must be docker or podman")
+	}
+	return nil
 }
 
 func splitCommaList(value string) []string {
@@ -401,4 +472,22 @@ func writeDoctorRepoText(stdout io.Writer, reports []doctorRepoReport) {
 			pf(stdout, "  DRIFT field=%q declared=%q live=%q\n", finding.Field, finding.Declared, finding.Live)
 		}
 	}
+}
+
+// validateDoctorCheckFlags rejects ignored scope inputs before loading a
+// Kubernetes client. A mistyped selection must never run the full preflight.
+func validateDoctorCheckFlags(fs *flag.FlagSet, k8sMode bool, raw, endpoint string) ([]string, error) {
+	ids := splitCommaList(raw)
+	supplied := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { supplied[f.Name] = true })
+	if supplied["checks"] && (!k8sMode || len(ids) == 0) {
+		return nil, fmt.Errorf("--checks requires --k8s and at least one check ID")
+	}
+	if supplied["apiserver-endpoint"] && (!k8sMode || strings.TrimSpace(endpoint) == "") {
+		return nil, fmt.Errorf("--apiserver-endpoint requires --k8s and a nonempty URL")
+	}
+	if err := k8spreflight.ValidateChecks(ids); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }

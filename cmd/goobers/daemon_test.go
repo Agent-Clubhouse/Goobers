@@ -775,6 +775,41 @@ func TestBuildReadModelIfNeededCompletesReconstructionBeforeReady(t *testing.T) 
 	}
 }
 
+func TestBuildReadModelIfNeededIgnoresCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	l := instance.NewLayout(t.TempDir())
+	createTerminalRun(t, l.ForGaggle("example"), "cancelled-context-run")
+	store, err := readmodel.Open(l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	before, err := store.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Ready {
+		t.Fatal("fresh projection is ready before its journal build")
+	}
+	if err := buildReadModelIfNeeded(ctx, store, before, l); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Ready {
+		t.Fatal("projection stays unready when startup context was already canceled")
+	}
+	if _, ok, err := store.GetRun(context.Background(), "cancelled-context-run"); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("projection was not reconstructed despite a canceled startup context")
+	}
+}
+
 // TestUpDisableReadModelReadsFlagStartsCleanly is the operator-facing half of
 // #2036's rollback fix: --disable-read-model-reads must parse and let `goobers
 // up` start normally (the mechanism itself — that it actually forces the
@@ -783,10 +818,8 @@ func TestBuildReadModelIfNeededCompletesReconstructionBeforeReady(t *testing.T) 
 // flips).
 func TestUpDisableReadModelReadsFlagStartsCleanly(t *testing.T) {
 	root := initDeterministicDemo(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	var stdout, stderr bytes.Buffer
-	if code := runUpContext(ctx, []string{"--disable-read-model-reads", root}, &stdout, &stderr); code != 0 {
+	if code := runUpThroughStartup(t, []string{"--disable-read-model-reads", root}, &stdout, &stderr); code != 0 {
 		t.Fatalf("runUpContext(--disable-read-model-reads) code = %d, stderr = %q", code, stderr.String())
 	}
 }
@@ -808,10 +841,8 @@ func TestSpansOnlyRunCleanupIsDryRunUnlessOptedIn(t *testing.T) {
 
 	runUpOnce := func(args ...string) (string, string) {
 		t.Helper()
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
 		var stdout, stderr bytes.Buffer
-		if code := runUpContext(ctx, append(args, root), &stdout, &stderr); code != 0 {
+		if code := runUpThroughStartup(t, append(args, root), &stdout, &stderr); code != 0 {
 			t.Fatalf("runUpContext(%v) code = %d, stderr = %q", args, code, stderr.String())
 		}
 		return stdout.String(), stderr.String()
@@ -1072,20 +1103,9 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runUpContext did not return after ctx cancellation")
+	if code := runUpThroughStartup(t, []string{root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("daemon startup/shutdown code=%d stderr=%q", code, stderr.String())
 	}
 
 	if !strings.Contains(stdout.String(), "daemon started") {
@@ -1103,11 +1123,8 @@ func TestUpIdlesThenDrainsOnCancel(t *testing.T) {
 func TestUpScheduledWorkflowHasNoScheduleWarning(t *testing.T) {
 	root := initDeterministicDemo(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	code := runUpContext(ctx, []string{root}, &stdout, &stderr)
+	code := runUpThroughStartup(t, []string{root}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 	}
@@ -1389,19 +1406,37 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Wait for the resumed run to actually reach a terminal phase rather than
-	// guessing at a wall-clock window: a fixed sleep is long enough on an idle
-	// machine but not on a loaded CI runner under -race, which made this test
-	// flake with phase still "running".
+	stdout := newDaemonOutput()
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- runUpContext(ctx, []string{root}, stdout, &stderr) }()
+	joined := false
+	defer func() {
+		cancel()
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Error("daemon did not stop during test cleanup")
+			}
+		}
+	}()
+	select {
+	case <-stdout.started:
+	case code := <-done:
+		joined = true
+		t.Fatalf("daemon exited before startup: code=%d stderr=%q", code, stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not complete startup")
+	}
+	// A resumed run can finish before the daemon's initial count sample. Only
+	// start terminal-driven cancellation once the daemon has actually started.
 	stop := pollUntilRunTerminal(t, filepath.Join(l.RunsDir(), runID), cancel)
 	defer stop()
 
-	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
 	select {
 	case code := <-done:
+		joined = true
 		if code != 0 {
 			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
 		}
@@ -1433,17 +1468,10 @@ func TestUpResumesInterruptedRun(t *testing.T) {
 // skip the instance lock entirely, so two concurrent processes (or a manual
 // run against a live `up` daemon) could mutate scheduler/run-condition state
 // and the shared workcopies/ tree at once. Now it takes the same lock `up`
-// does — this test's lock holder isn't a real daemon sweeping delegation
-// requests, so the attempt still surfaces as a failure, just via #343's
-// delegation timeout rather than the pre-#343 immediate lock-conflict error
-// (see TestRunLockConflictDelegatesRatherThanFailingImmediately in
-// lock_test.go for that distinction, and TestRunDelegatesToLiveDaemon in
-// rundelegate_test.go for the real success path against a live daemon).
+// does. This holder is not a daemon, so automatic API routing refuses without
+// writing delegation files. lock_test.go covers the explicit --no-api fallback;
+// rundelegate_test.go covers success against a real live daemon.
 func TestRunTakesSameLockAsUp(t *testing.T) {
-	prevTimeout := triggerDelegationTimeout
-	triggerDelegationTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { triggerDelegationTimeout = prevTimeout })
-
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
 
@@ -1454,11 +1482,14 @@ func TestRunTakesSameLockAsUp(t *testing.T) {
 	defer release()
 
 	code, _, stderr := runArgs(t, "run", "default-implement", root)
-	if code != 1 {
-		t.Fatalf("code = %d, want 1, stderr = %q", code, stderr)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2, stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "timed out") {
-		t.Fatalf("stderr = %q, want a delegation timeout", stderr)
+	if !strings.Contains(stderr, "no live daemon API") {
+		t.Fatalf("stderr = %q, want non-daemon lock refusal", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(l.SchedulerDir(), pendingTriggersDir)); !os.IsNotExist(err) {
+		t.Fatalf("unexpected file delegation without --no-api: %v", err)
 	}
 }
 

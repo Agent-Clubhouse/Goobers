@@ -41,6 +41,10 @@ const (
 // CandidateFindings is the versioned telemetry connector artifact schema.
 const CandidateFindings = "candidate-findings-v1.schema.json"
 
+// SecurityAlerts is the versioned security-alert intake artifact schema
+// (#2984, #2987) emitted by `goobers security-alerts-query`.
+const SecurityAlerts = "security-alerts-v1.schema.json"
+
 // MissionControlVerdict is the provider-neutral launch verdict artifact schema.
 const MissionControlVerdict = "mission-control-verdict-v1alpha1.schema.json"
 
@@ -55,6 +59,21 @@ const RemediationBriefV1 = "remediation-brief-v1.schema.json"
 
 // AgentToolkitManifest inventories the portable repository-side agent toolkit.
 const AgentToolkitManifest = "agent-toolkit-manifest.schema.json"
+
+// StageArtifactManifest is the workspace-relative artifact staging contract.
+const StageArtifactManifest = "stage-artifact-manifest.schema.json"
+
+// StageArtifactSet is the runner-authored normalized artifact index contract.
+const StageArtifactSet = "stage-artifact-set.schema.json"
+
+// PRQueueEligibility is the bounded historical PR-selection observation.
+const PRQueueEligibility = "pr-queue-eligibility-v1.schema.json"
+
+// InvestigationEvidenceDraft is the semantic-reference evidence input contract.
+const InvestigationEvidenceDraft = "investigation-evidence-draft.schema.json"
+
+// InvestigationEvidence is the verified-pointer canonical evidence contract.
+const InvestigationEvidence = "investigation-evidence.schema.json"
 
 // Diagnostics is the validate/lint machine-readable findings envelope.
 const Diagnostics = "diagnostics.schema.json"

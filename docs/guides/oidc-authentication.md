@@ -153,6 +153,13 @@ goobers up /srv/goobers
 
 The daemon discovers signing keys lazily. If discovery or key retrieval fails,
 requests fail closed rather than falling back to anonymous access.
+Signing keys are cached for at most five minutes, then refreshed even for known
+key IDs so issuer-side key revocation takes effect. Fresh cached keys remain
+usable during an issuer outage; expired keys require a successful refresh.
+Refresh attempts are limited to once per minute. Discovery and signing-key
+redirects cannot downgrade an HTTPS connection to HTTP.
+Shared refreshes have a ten-second deadline independent of caller disconnects,
+so one canceled request cannot interrupt key retrieval for other callers.
 
 ## Portal sign-in (not shipped)
 

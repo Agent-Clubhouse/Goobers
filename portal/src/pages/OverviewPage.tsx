@@ -119,6 +119,12 @@ function Overview({
     <>
       <header className="page-heading">
         <p className="page-kicker">{overview.instance.name}</p>
+        <p>Instance root: <code>{overview.instance.instanceRoot}</code> · Instance ID: <code>{overview.instance.rootIdentity?.id || "unavailable"}</code></p>
+        {overview.instance.rootIdentity?.decommissionedAt && (
+          <p role="alert">Historical root; do not use. Decommissioned {overview.instance.rootIdentity.decommissionedAt}: {overview.instance.rootIdentity.decommissionReason}</p>
+        )}
+        {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
+        {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
         <h1>
           {emptyInstance
             ? standalone

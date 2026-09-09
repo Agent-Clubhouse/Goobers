@@ -13,6 +13,12 @@ const checkedErrorEnvelope: ApiErrorEnvelope = checkedFixtures.errorEnvelope;
 describe("Go daemon wire contract", () => {
   it("provides typed fixtures for every JSON response consumed by the portal", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
+      "triggerRequest",
+      "triggerResponse",
+      "triggerStatus",
+      "cancelRequest",
+      "cancelResult",
+      "queueEligibility",
       "health",
       "instance",
       "portalConfig",
@@ -41,6 +47,10 @@ describe("Go daemon wire contract", () => {
       "errorEnvelope",
     ]);
     expect(checkedFixtures.health.apiVersion).toBe("v1");
+    expect(checkedFixtures.triggerResponse).toMatchObject({ state: "accepted", duplicate: true });
+    expect(checkedFixtures.triggerResponse).not.toHaveProperty("runId");
+    expect(checkedFixtures.triggerStatus).toMatchObject({ state: "dispatched", runId: "0123456789abcdef0123456789abcdef" });
+    expect(checkedFixtures.cancelResult).toEqual({ code: "cancellation_requested" });
     expect(checkedFixtures.goobers.items[0].harness).toBe("claude-code");
     expect(checkedFixtures.runDetail.graphStatus).toBe("pinned");
     expect(checkedFixtures.runEvents.events[0].type).toBe("stage.finished");

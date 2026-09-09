@@ -29,6 +29,10 @@ type Policy struct {
 type Options struct {
 	Now    time.Time
 	DryRun bool
+	// BeforeDelete durably transfers any dependent custody before the journal
+	// is staged or deleted. Errors preserve the journal. Also runs when
+	// completing an interrupted prune; never runs for a dry-run.
+	BeforeDelete func(Result) error
 }
 
 // Result describes one selected or deleted run.
@@ -77,7 +81,7 @@ func Prune(layout instance.Layout, db *rollup.DB, policy Policy, opts Options) (
 		if err := preflightInterruptedPrunes(runRoots); err != nil {
 			return nil, err
 		}
-		if err := finishInterruptedPrunes(runRoots, db); err != nil {
+		if err := finishInterruptedPrunes(runRoots, db, opts.BeforeDelete); err != nil {
 			return nil, err
 		}
 	}
@@ -88,7 +92,7 @@ func Prune(layout instance.Layout, db *rollup.DB, policy Policy, opts Options) (
 
 	pruned := make([]Result, 0, len(candidates))
 	for _, candidate := range candidates {
-		deleted, err := pruneOne(candidate, db)
+		deleted, err := pruneOne(candidate, db, opts.BeforeDelete)
 		if err != nil {
 			return pruned, err
 		}
@@ -182,13 +186,18 @@ func selectCandidates(runs []runInfo, policy Policy, now time.Time) []Result {
 	return candidates
 }
 
-func pruneOne(candidate Result, db *rollup.DB) (bool, error) {
+func pruneOne(candidate Result, db *rollup.DB, beforeDelete func(Result) error) (bool, error) {
 	reserved, err := journal.ReserveTerminalForPrune(candidate.RunDir)
 	if err != nil {
 		return false, fmt.Errorf("telemetry retention: reserve run %s: %w", candidate.RunID, err)
 	}
 	if !reserved {
 		return false, nil
+	}
+	if beforeDelete != nil {
+		if err := beforeDelete(candidate); err != nil {
+			return false, errors.Join(err, journal.ClearPruneReservation(candidate.RunDir))
+		}
 	}
 
 	staged := stagedRunDir(candidate.RunDir)
@@ -233,7 +242,7 @@ func stagingRoot(runRoot string) string {
 	return filepath.Join(filepath.Dir(runRoot), stagingDirName)
 }
 
-func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
+func finishInterruptedPrunes(runRoots []string, db *rollup.DB, beforeDelete func(Result) error) error {
 	for _, root := range runRoots {
 		stagedRoot := stagingRoot(root)
 		entries, err := os.ReadDir(stagedRoot)
@@ -268,6 +277,11 @@ func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
 				}
 			} else if !errors.Is(openErr, fs.ErrNotExist) {
 				return fmt.Errorf("telemetry retention: open staged run %s: %w", runID, openErr)
+			}
+			if beforeDelete != nil {
+				if err := beforeDelete(Result{RunID: runID, RunDir: dir, Reason: "interrupted"}); err != nil {
+					return err
+				}
 			}
 			if err := db.DeleteRun(context.Background(), runID); err != nil {
 				return fmt.Errorf("telemetry retention: finish rollup prune for run %s: %w", runID, err)

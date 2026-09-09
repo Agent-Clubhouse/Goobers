@@ -1506,7 +1506,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	// past the failure that parked it.
 	r.releaseBaselineParks(ctx, ws)
 	ws.gateEval = &gate.Evaluator{
-		Automated:   r.cfg.Automated,
+		Automated:   r.runAutomated(ws.in, ws.jr),
 		Journal:     ws.jr,
 		MaxRepasses: int(ws.in.RunControls.MaxRepasses),
 		Attempts:    ws.gateAttempts,
@@ -5431,10 +5431,9 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // removeErr mirrors dispatchTask's own contract (issue #136): additive, never
 // overriding the gate's own result/err, but never silently discarded either.
 //
-// An automated gate never gets a worktree (#112): its checks are pure
-// functions over env.Inputs alone (internal/gate/automated.go's DefaultChecks
-// "keeps the checker registry pure — no journal/filesystem access"), so
-// unlike an agentic reviewer gate it reads and writes no workspace at all.
+// An automated gate never gets a worktree (#112): scalar checks remain pure,
+// while artifact-aware checks use only upstream pointers and a runner-bound
+// read-only journal resolver. Neither kind reads or writes a workspace.
 // Provisioning one anyway wasted a git clone/checkout on every automated-gate
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
@@ -5450,6 +5449,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	ctx, span := r.startGateSpan(ctx, in, g, gooberName)
 	defer span.End()
 
+	gateEval.RecoveryVerdict = recoveryVerdictResolver(jr)
 	if recovered, ok, recoveryErr := gateEval.RecoverInterrupted(g, ""); recoveryErr != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, recoveryErr)
 		span.Fail(err)
@@ -5500,6 +5500,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			RepoRef:         in.RepoRef.EnvelopeRef(),
 			Item:            in.Item,
 			Limits:          gateLimits,
+			ContextPointers: append([]apiv1.ContextPointer(nil), upstream...),
 		}
 	} else {
 		var wt *worktree.Worktree

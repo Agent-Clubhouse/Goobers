@@ -134,6 +134,9 @@ func TestRunConformantClusterPasses(t *testing.T) {
 	for _, result := range report.Results {
 		want := StatusPass
 		switch result.ID {
+		case "overlay-pin-agreement", "overlay-image-contract":
+			// Cluster health proves nothing about an omitted consumer overlay.
+			want = StatusWarn
 		case "storage-rwx", "networkpolicy-api", "apiserver-ipblock-drift":
 			// storage-rwx: inferred, never a hard pass (§4). networkpolicy-api:
 			// API-discovery only — a served API is a correlate of enforcement,
@@ -457,7 +460,7 @@ func TestAPIServerIPBlockDriftChecksEntriesAndFailsClosedWhenEmpty(t *testing.T)
 			client := newFakeCluster(t)
 			if test.cidr != "" {
 				_, err := client.NetworkingV1().NetworkPolicies("goobers-system").Create(context.Background(), &networkingv1.NetworkPolicy{
-					ObjectMeta: metav1.ObjectMeta{Name: "api-server-egress", Namespace: "goobers-system"},
+					ObjectMeta: metav1.ObjectMeta{Name: "api-server-egress", Namespace: "goobers-system", Labels: map[string]string{APIServerEgressLabel: "true"}},
 					Spec: networkingv1.NetworkPolicySpec{Egress: []networkingv1.NetworkPolicyEgressRule{{
 						To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: test.cidr}}},
 					}}},

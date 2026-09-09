@@ -139,6 +139,11 @@ var copilotLongContextModels = map[string]bool{
 type CopilotAdapter struct {
 	// Command is the base CLI invocation, e.g. []string{"copilot"}.
 	Command []string
+	// RequireLauncherContract rejects unverified launcher overrides before
+	// dispatch. The built-in direct Copilot command keeps its existing contract.
+	RequireLauncherContract bool
+	launcherMu              sync.Mutex
+	launcherContract        *launcherContract
 	// PromptFlag precedes the rendered prompt text in the built argv.
 	// Defaults to "-p" if empty.
 	PromptFlag string
@@ -277,6 +282,9 @@ func (c *CopilotAdapter) ResolveConfig(model string, options map[string]apiexten
 }
 
 func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error) {
+	if _, err := c.launcherSessionContract(ctx); err != nil {
+		return ConfigResolution{}, err
+	}
 	effectiveOptions, fallback, err := copilotFallbackOption(options)
 	if err != nil {
 		return ConfigResolution{}, err
@@ -510,6 +518,9 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
+	if _, err := c.launcherSessionContract(ctx); err != nil {
+		return PreflightInfo{}, err
+	}
 	bin := c.Command[0]
 	if _, err := exec.LookPath(bin); err != nil {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q not found on PATH — install the GitHub Copilot CLI "+
@@ -523,16 +534,22 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	// ExecProcessRunner treats a nil Env as NO environment (SEC-045
 	// default-deny), so the version-check subprocess needs this passed
 	// explicitly the same way Run's credentialEnv does.
-	versionProbe := fmt.Sprintf("harness: copilot-cli: %q %v", bin, args)
+	versionCommand := append(append([]string(nil), resolveHarnessCommand(c.Command)...), args...)
+	versionProbe := fmt.Sprintf("harness: copilot-cli: %q", versionCommand)
+	versionStdout := newTranscriptBuffer(maxPreflightDiagnosticBytes)
 	res, err := c.runner().Run(ctx, ProcessRequest{
-		Command:            append([]string{bin}, args...),
+		Command:            versionCommand,
 		Env:                baseEnv(c.ExtraEnvAllowlist),
 		MaxTranscriptBytes: maxPreflightDiagnosticBytes,
+		StdoutCapture:      versionStdout,
 	})
 	if err != nil || res.ExitCode != 0 {
 		return PreflightInfo{}, preflightProbeError(versionProbe, res, err, "check that the CLI is installed and authenticated")
 	}
-	version := firstOutputLine(res.Transcript)
+	if versionStdout.Truncated() {
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: version stdout exceeded the diagnostic output bound")
+	}
+	version := firstOutputLine(versionStdout.Bytes())
 	if version == "" {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: %q %v returned no version", bin, args)
 	}
@@ -827,24 +844,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			argv = append(argv, "--disable-builtin-mcps")
 		}
 	}
-	nativeTranscriptPath := ""
-	usageOutputArg := filepath.Join(".goobers", "copilot-usage.json")
-	usageOutputPath := filepath.Join(req.Workspace, usageOutputArg)
-	_ = os.Remove(usageOutputPath)
-	argv = append(argv, "--usage-output-file", usageOutputArg)
-	defer func() { _ = os.Remove(usageOutputPath) }()
-	if !copilotCommandSelectsSession(argv) {
-		captureID, err := newHarnessSessionID()
-		if err != nil {
-			return Outcome{}, fmt.Errorf("harness: copilot-cli: create transcript capture id: %w", err)
-		}
-		argv = append(argv, "--session-id", captureID)
-		// Pin the log to this run without replacing the home that also holds
-		// the user's Copilot configuration.
-		if copilotHome, ok := copilotConfigHome(env); ok {
-			nativeTranscriptPath = copilotSessionLogPath(copilotHome, captureID)
-		}
+	captures, err := c.prepareCopilotCaptures(ctx, req, argv, env)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
+	defer captures.cleanup()
+	argv, env = captures.argv, captures.env
+	nativeTranscriptPath, usageOutputPath := captures.transcriptPath, captures.usagePath
 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
@@ -877,6 +883,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: start agent telemetry: %w", err)
 	}
 	defer agentTelemetry.finish(&out, &runErr)
+	nativeCheckpoints, err := startCopilotTranscriptCheckpoints(&req, nativeTranscriptPath, env)
+	if err != nil {
+		return Outcome{}, err
+	}
+	// Finish while the wrapper-owned log still exists, before cleanupSession.
+	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
 	runner := c.runner()
 	started := time.Now()
@@ -887,17 +899,22 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		stdoutCapture = responseCapture
 	}
 	result, processErr := runner.Run(ctx, ProcessRequest{
-		Command:            argv,
-		Dir:                req.Workspace,
-		Env:                env,
-		Timeout:            req.Timeout,
-		MaxTranscriptBytes: req.MaxTranscriptBytes,
-		StdoutCapture:      stdoutCapture,
+		Command:                      argv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      req.Timeout,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                stdoutCapture,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(1),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		// #4179: the session this observes is the one that burned a whole
 		// 5400s budget on a stalled `go mod download` while its journal held
 		// a single lifecycle event.
 		Activity: agentTelemetry.activityObserver(),
 	})
+	// A native-log read/write failure observed during this process is not a
+	// missing completion contract. Preserve it and do not launch recovery.
+	processErr = errors.Join(processErr, nativeCheckpoints.worker.observedError())
 	runErr = processErr
 	var payload []byte
 	var completionErr error
@@ -939,12 +956,14 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 				}
 				recoveryArgv[promptArg] = recoveryPrompt
 				recovery, err := runner.Run(ctx, ProcessRequest{
-					Command:            recoveryArgv,
-					Dir:                req.Workspace,
-					Env:                env,
-					Timeout:            remaining,
-					MaxTranscriptBytes: req.MaxTranscriptBytes,
-					StdoutCapture:      recoveryStdout,
+					Command:                      recoveryArgv,
+					Dir:                          req.Workspace,
+					Env:                          env,
+					Timeout:                      remaining,
+					MaxTranscriptBytes:           req.MaxTranscriptBytes,
+					StdoutCapture:                recoveryStdout,
+					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 					// The recovery turn runs on what is LEFT of the budget,
 					// so a stall here is if anything more urgent to see than
 					// one in the main session (#4179).

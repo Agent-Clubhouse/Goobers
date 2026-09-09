@@ -159,6 +159,14 @@ func resolveGateOutcome(g apiv1.Gate, outcome string, reentry bool, budget *gate
 	}, nil
 }
 
+func applyBudgetVerdict(g apiv1.Gate, result *gateResult, verdict *apiv1.Verdict) *apiv1.Verdict {
+	if converted := gate.BudgetEscalationVerdict(g, result.Charge.Exceeded, verdict); converted != verdict {
+		verdict = converted
+		result.Outcome = string(converted.Decision)
+	}
+	return verdict
+}
+
 func wfTarget(g apiv1.Gate, outcome string) string {
 	target, _ := wf.BranchTarget(g, outcome)
 	return target
@@ -182,26 +190,28 @@ func escalationTarget(g apiv1.Gate) string {
 // the run exactly as a gate with no retry block would. Each attempt's
 // dispatch runs under its own start-to-close window, so a retry gets a fresh
 // timeout.
-func evaluateWithInfraRetry(ctx workflow.Context, g apiv1.Gate, rec *runJournal, call func(workflow.Context) error) error {
+func evaluateWithInfraRetry(ctx workflow.Context, g apiv1.Gate, rec *runJournal, firstClass journal.AttemptClass, call func(workflow.Context, journal.AttemptClass) error) error {
 	maxAttempts, backoff := evaluatorRetryBounds(gateEvaluatorRetry(g))
+	class := firstClass
 	for attempt := 1; ; attempt++ {
-		err := call(ctx)
+		err := call(ctx, class)
 		if err == nil {
 			return nil
 		}
 		if temporal.IsCanceledError(err) || ctx.Err() != nil {
 			return err
 		}
-		class, cerr := ClassifyDispatchFailure(err)
+		failureClass, cerr := ClassifyDispatchFailure(err)
 		if cerr != nil {
 			return cerr
 		}
-		if class != journal.AttemptInfra {
+		if failureClass != journal.AttemptInfra {
 			return err
 		}
 		// Every transient evaluator failure is journaled (#765's
 		// recordEvaluatorRetry parity), including the one that exhausts the
 		// bound — the local evaluator records before it gives up too.
+		class = failureClass
 		rec.evaluatorRetry(ctx, g.Name, attempt, err)
 		if attempt >= maxAttempts {
 			// Bound exhausted — fail the run, never a silent infinite retry.

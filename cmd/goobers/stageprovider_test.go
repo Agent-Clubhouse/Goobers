@@ -140,7 +140,7 @@ func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 	}
 	t.Setenv(executor.InstanceIDEnvVar, identity)
 	t.Setenv("GOOBERS_RUN_ID", "run-123456789")
-	t.Setenv("GOOBERS_GAGGLE", "efunhouse")
+	t.Setenv("GOOBERS_GAGGLE", "dogfood")
 	t.Setenv("GOOBERS_WORKFLOW", "implementation")
 	t.Setenv(executor.TaskEnvVar, "publish-result")
 	t.Setenv(executor.GooberEnvVar, "implementer")
@@ -151,7 +151,7 @@ func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
 	}
 	if got.Instance != "MDB1" ||
 		got.InstanceID != identity ||
-		got.Gaggle != "efunhouse" ||
+		got.Gaggle != "dogfood" ||
 		got.Workflow != "implementation" ||
 		got.Task != "publish-result" ||
 		got.Goober != "implementer" ||
@@ -192,9 +192,13 @@ func TestStageAttributionPreservesOriginatingInstance(t *testing.T) {
 }
 
 func TestStageAttributionIncludesCurrentRunCostReceipt(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "MDB1")
+	root := initDemo(t)
 	runID := "run-123456789"
-	gaggle := "efunhouse"
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil || len(set.Gaggles) != 1 {
+		t.Fatalf("load demo gaggle: %v (report: %+v)", err, report)
+	}
+	gaggle := set.Gaggles[0].Name
 	now := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
 	nanoAIU := int64(8_305_840_000)
 	run, err := journal.Create(instance.NewLayout(root).ForGaggle(gaggle).RunsDir(), journal.RunIdentity{
@@ -235,6 +239,23 @@ func TestStageAttributionIncludesCurrentRunCostReceipt(t *testing.T) {
 	}
 	if *got.Cost.NanoAIU != nanoAIU || got.Cost.Model != "gpt-5.6" || got.Cost.JournalSequence == 0 {
 		t.Fatalf("stage attribution receipt = %+v", got.Cost)
+	}
+	configPath := instance.NewLayout(root).ConfigFile()
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, []byte("\ncost:\n  enabled: false\n")...)
+	if err := os.WriteFile(configPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	suppressed, ok := stageAttribution(root)
+	if !ok || suppressed.Cost != nil || suppressed.Run != runID {
+		t.Fatalf("disabled publication must retain attribution without cost: %+v", suppressed)
+	}
+	local := stageCostReceipt(root, runID)
+	if local == nil || local.NanoAIU == nil || *local.NanoAIU != nanoAIU || local.JournalSequence != got.Cost.JournalSequence {
+		t.Fatalf("disabling publication changed durable local accounting: %+v", local)
 	}
 }
 

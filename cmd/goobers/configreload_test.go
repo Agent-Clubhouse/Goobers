@@ -24,6 +24,39 @@ import (
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
+type webhookListeningAddressWriter struct {
+	buf     bytes.Buffer
+	ready   chan string
+	once    sync.Once
+	address string
+}
+
+func (w *webhookListeningAddressWriter) Write(p []byte) (int, error) {
+	if _, err := w.buf.Write(p); err != nil {
+		return 0, err
+	}
+	text := w.buf.String()
+	marker := "GitHub webhooks listening at "
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return len(p), nil
+	}
+	line := text[idx+len(marker):]
+	if newline := strings.IndexAny(line, "\r\n"); newline >= 0 {
+		line = line[:newline]
+	}
+	if !strings.HasPrefix(line, "http://") {
+		return len(p), nil
+	}
+	address := strings.TrimPrefix(line, "http://")
+	address = strings.SplitN(address, "/", 2)[0]
+	w.once.Do(func() {
+		w.address = address
+		w.ready <- address
+	})
+	return len(p), nil
+}
+
 func TestUpReloadsValidConfigByDefaultAndRejectsInvalidEdit(t *testing.T) {
 	previousReloadInterval := configReloadInterval
 	previousDelegationInterval := delegationSweepInterval
@@ -159,7 +192,7 @@ spec:
 	// `localscheduler: unknown workflow "reloaded-implement"`.
 	waitForDefinitionsReload(t, address, reloadedHealth.Freshness.DefinitionsLoadedAt)
 	stdout := waitForRunnableWorkflow(t, root, "reloaded-implement")
-	runID := runIDFromRunStdout(t, stdout)
+	runID := runIDFromAcceptedTriggerStdout(t, layout, stdout)
 	mirrored := waitForConfigValue(t, "gaggle outbox mirror after reload", func() ([]byte, bool) {
 		data, err := os.ReadFile(filepath.Join(mirrorPath, runID, "local-ci", "attempt-1", "reports", "report.txt"))
 		if errors.Is(err, os.ErrNotExist) {
@@ -309,7 +342,7 @@ func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
 
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
-	setAPIListenAddress(t, root, freeLoopbackAddress(t))
+	setAPIListenAddress(t, root, "127.0.0.1:0")
 
 	sourceRepo := filepath.Join(t.TempDir(), "workflow-source")
 	if err := os.CopyFS(sourceRepo, os.DirFS(layout.ConfigDir())); err != nil {
@@ -325,7 +358,6 @@ func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
 		secretEnv = "GOOBERS_TEST_CONFIG_RECONCILE_WEBHOOK_SECRET"
 		secret    = "config-reconcile-webhook-secret"
 	)
-	webhookAddress := freeLoopbackAddress(t)
 	t.Setenv(secretEnv, secret)
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -335,7 +367,7 @@ func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
 		Kind: instance.WorkflowSourceKindGit,
 		Path: sourceRepo,
 	}
-	cfg.Webhook.Listen = webhookAddress
+	cfg.Webhook.Listen = "127.0.0.1:0"
 	cfg.Webhook.Secret.Env = secretEnv
 	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
 		t.Fatal(err)
@@ -345,8 +377,9 @@ func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
 	started := &daemonStartedWriter{started: make(chan struct{})}
 	daemonDone := make(chan int, 1)
 	var stderr bytes.Buffer
+	webhookEvents := &webhookListeningAddressWriter{ready: make(chan string, 1)}
 	go func() {
-		daemonDone <- runUpContext(ctx, []string{"--quiet", root}, started, &stderr)
+		daemonDone <- runUpContext(ctx, []string{"--quiet", root}, io.MultiWriter(started, webhookEvents), &stderr)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -365,6 +398,14 @@ func TestUpAcceptsPushWebhookForGitWorkflowSource(t *testing.T) {
 		t.Fatalf("daemon exited before startup with code %d: %s", code, stderr.String())
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for daemon startup")
+	}
+	var webhookAddress string
+	select {
+	case webhookAddress = <-webhookEvents.ready:
+	case code := <-daemonDone:
+		t.Fatalf("daemon exited before webhook listener startup with code %d: %s", code, stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for webhook listener startup")
 	}
 
 	workflowPath := filepath.Join(sourceRepo, "gaggles", "example", "workflows", "default-implement.yaml")

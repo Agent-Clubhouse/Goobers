@@ -14,6 +14,12 @@ _goobers_completion()
     command="${COMP_WORDS[1]}"
     flags="-h --help"
     case "${command}" in
+        roots)
+            case "${COMP_WORDS[2]:-}" in
+                discover) flags+=" --json" ;;
+                decommission) flags+=" --reason" ;;
+            esac
+            ;;
         version)
             flags+=" --json"
             ;;
@@ -21,7 +27,7 @@ _goobers_completion()
             flags+=" --json"
             ;;
         init)
-            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --harness --source-tree --json"
+            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --provider --harness --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
@@ -40,6 +46,11 @@ _goobers_completion()
                 goober) flags+=" --force" ;;
                 workflow) flags+=" --force" ;;
                 gaggle) flags+=" --force --from" ;;
+            esac
+            ;;
+        diagnostics)
+            case "${COMP_WORDS[2]:-}" in
+                bundle) flags+=" --run --pr --max-runs --output --json" ;;
             esac
             ;;
         agent-kit)
@@ -65,7 +76,7 @@ _goobers_completion()
             flags+=" --to --instance-schema --write"
             ;;
         doctor)
-            flags+=" --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
+            flags+=" --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
             ;;
         netpol-render)
             flags+=" --out --check --baseline --write-baseline --timeout --print-blob-endpoint"
@@ -113,11 +124,14 @@ _goobers_completion()
         worker)
             flags+=" --instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
+        config-seed)
+            flags+=" --mirror --instance"
+            ;;
         dashboard)
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
             ;;
         run)
-            flags+=" --gaggle --github-progress --pr --api --request-id --no-wait"
+            flags+=" --no-api --api-timeout --force --gaggle --github-progress --pr --api --request-id --no-wait"
             ;;
         approve)
             flags+=" --decision --actor --api"
@@ -153,6 +167,9 @@ _goobers_completion()
             ;;
         schema)
             flags+=" --list --human"
+            ;;
+        queue-explain)
+            flags+=" --json --pr --gaggle --workflow"
             ;;
         explain)
             flags+=" --human"
@@ -204,7 +221,7 @@ _goobers_completion()
             flags+=" --feedback"
             ;;
         backlog-query)
-            flags+=" --claim --debug --release --read-only --reconcile"
+            flags+=" --claim --resweep --debug --release --read-only --reconcile"
             ;;
         file-issues)
             flags+=" --check"
@@ -217,6 +234,9 @@ _goobers_completion()
             ;;
         reconcile-post-merge)
             flags+=" --max --lookback"
+            ;;
+        security-alerts-query)
+            flags+=" --source --state --severity --tool --ref --ecosystem --scope --max-results"
             ;;
         telemetry-query)
             flags+=" --window --aggregate --learning-action --threshold --format --gaggle --workflow"
@@ -256,6 +276,11 @@ _goobers_completion()
 
     candidates=""
     case "${command}" in
+        roots)
+            if (( COMP_CWORD == 2 )); then
+                candidates="discover decommission"
+            fi
+            ;;
         onboarding)
             if (( COMP_CWORD == 2 )); then
                 candidates="stub-sample stub-agent-instructions"
@@ -272,6 +297,11 @@ _goobers_completion()
         scaffold)
             if (( COMP_CWORD == 2 )); then
                 candidates="goober workflow gaggle"
+            fi
+            ;;
+        diagnostics)
+            if (( COMP_CWORD == 2 )); then
+                candidates="bundle"
             fi
             ;;
         agent-kit)

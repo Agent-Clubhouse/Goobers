@@ -149,8 +149,16 @@ func TestFeedBlocksUntilNotified(t *testing.T) {
 		page, read = feed.Since(ctx, head, 10)
 	}()
 
-	// Give the reader time to block, then commit and notify.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the reader to register before committing, so the notification
+	// cannot be lost when the test runs under load.
+	for waiterCount(feed) == 0 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("reader did not register before the test deadline")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
 	seedChange(t, store, 42)
 	feed.Notify()
 

@@ -1119,6 +1119,21 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   These tags are created when Goobers first applies them; no repository
                   label catalog needs to be changed.
                 </span>
+                <span>
+                  Open tag matches: {repositoryReadiness.tagScanComplete ? "" : "at least "}
+                  {repositoryReadiness.tagMatchCount ?? "unknown"}. This is not full workflow eligibility.
+                </span>
+                {repositoryReadiness.tagScanComplete && repositoryReadiness.tagMatchCount === 0 && (
+                  <>
+                    <label className="guided-check">
+                      <input checked={createStarterIssue} onChange={(event) => setCreateStarterIssue(event.target.checked)} type="checkbox" />
+                      <span>Create one safe Azure Boards Task with the selector tags.</span>
+                    </label>
+                    <button className="reconnect-button" disabled={busy !== null || !createStarterIssue} onClick={() => prepareRepository(true)} type="button">
+                      {busy === "prepare" ? "Preparing…" : "Create starter task"}
+                    </button>
+                  </>
+                )}
               </div>
             )}
             {repositoryReadiness && !repositoryReadiness.usesWorkItemTags && (

@@ -232,7 +232,7 @@ func TestPRSelectDispatchesADOAndSelectsPolicyGreenPR(t *testing.T) {
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selected["number"] != "359" {
@@ -288,8 +288,13 @@ func TestPRSelectADOEnforcesOptInAndAssigneePolicy(t *testing.T) {
 	if !strings.Contains(stdout, "missing required opt-in label") {
 		t.Fatalf("stdout = %q, want ADO candidate rejected by opt-in policy", stdout)
 	}
-	if !strings.Contains(stdout, "no eligible PR") {
-		t.Fatalf("stdout = %q, want no eligible ADO PR", stdout)
+	// The no-work line now carries the exclusion tally rather than a generic
+	// "no eligible PR to select this cycle" (#2969/#2968): the whole point is
+	// that "queue empty" and "queue parked, all seven escalated" are different
+	// operational states and must not read the same.
+	if !strings.Contains(stdout, "no work: queue parked") ||
+		!strings.Contains(stdout, "merge-review eligibility policy 1") {
+		t.Fatalf("stdout = %q, want the no-work line to name the exclusion that parked the queue", stdout)
 	}
 	if data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json")); err == nil {
 		if strings.Contains(string(data), `"number"`) {

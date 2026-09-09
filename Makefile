@@ -245,10 +245,12 @@ image:
 .PHONY: deploy-validate
 deploy-validate:
 	kubectl kustomize deploy/reference/goobers-system >/dev/null
+	kubectl kustomize deploy/reference/config-mirror >/dev/null
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a >/dev/null
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check >/dev/null
 	kubectl kustomize deploy/reference/goobers-system | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/config-mirror | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/examples/apiserver-drift-check | $(KUBECONFORM) -strict -summary

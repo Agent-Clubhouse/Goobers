@@ -484,7 +484,11 @@ func TestRecordStageArtifactsSurfacesFailureWithoutPanicking(t *testing.T) {
 	t.Setenv(dispatcher.EnvAttempt, "1")
 
 	var errOut strings.Builder
+	start := time.Now()
 	recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("x")})
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("recordStageArtifacts exceeded the short best-effort retry window: %s", elapsed)
+	}
 	if !strings.Contains(errOut.String(), "record stage artifacts") {
 		t.Fatalf("a journal failure must be VISIBLE on stderr, got %q", errOut.String())
 	}
@@ -937,8 +941,17 @@ func envDefaultDenyProbe(t *testing.T, defaultDeny, cliStage bool) map[string]st
 	for _, name := range append([]string{}, dispatcher.DispatcherControlEnv...) {
 		t.Setenv(name, "")
 	}
+	declared := map[string]string{}
 	for _, e := range pod.Spec.Containers[0].Env {
-		t.Setenv(e.Name, e.Value)
+		if e.ValueFrom != nil {
+			t.Fatalf("probe must resolve ValueFrom before materializing %s", e.Name)
+		}
+		// EnvVar.Value is a kubelet input, not the final process value. The
+		// dispatcher escapes literal dollars; kubelet consumes that escape
+		// once before the stage's shell interprets its own ${VAR} expressions.
+		value := expandKubeletEnvValue(e.Value, declared)
+		declared[e.Name] = value
+		t.Setenv(e.Name, value)
 	}
 	// What the IMAGE exports. Nothing declared it, nothing allowlists it, and
 	// under env:default-deny it is exactly what must not reach the stage — so
@@ -962,6 +975,60 @@ func envDefaultDenyProbe(t *testing.T, defaultDeny, cliStage bool) map[string]st
 		seen[name] = state
 	}
 	return seen
+}
+
+// expandKubeletEnvValue models the EnvVar.Value grammar from the pinned
+// Kubernetes core/v1 API: $$ is one literal dollar, $(NAME) references only
+// earlier declarations (and service variables, absent in this fixture), and
+// unknown references remain literal. Substituted values are not expanded again.
+// Host/image variables deliberately do not enter the declaration lookup.
+func expandKubeletEnvValue(value string, declared map[string]string) string {
+	var expanded strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] == '$' && i+1 < len(value) {
+			switch value[i+1] {
+			case '$':
+				expanded.WriteByte('$')
+				i++
+				continue
+			case '(':
+				if end := strings.IndexByte(value[i+2:], ')'); end >= 0 {
+					name := value[i+2 : i+2+end]
+					if replacement, ok := declared[name]; ok {
+						expanded.WriteString(replacement)
+					} else {
+						expanded.WriteString("$(" + name + ")")
+					}
+					i += end + 2
+					continue
+				}
+			}
+		}
+		expanded.WriteByte(value[i])
+	}
+	return expanded.String()
+}
+
+func TestProbeKubeletEnvironmentExpansion(t *testing.T) {
+	declared := map[string]string{"EARLIER": "present", "INDIRECT": "$(EARLIER)", "EMPTY": ""}
+	for _, tc := range []struct{ input, want string }{
+		{"$(EARLIER)", "present"},
+		{"$(LATER)", "$(LATER)"},
+		{"$(EMPTY)", ""},
+		{"$$(EARLIER)", "$(EARLIER)"},
+		{"$$$$", "$$"},
+		{"$$$(EARLIER)", "$present"},
+		{"$(INDIRECT)", "$(EARLIER)"},
+		{"${EARLIER:+PRESENT}", "${EARLIER:+PRESENT}"},
+		{"$${EARLIER:+PRESENT}", "${EARLIER:+PRESENT}"},
+		{"$(unterminated $", "$(unterminated $"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			if got := expandKubeletEnvValue(tc.input, declared); got != tc.want {
+				t.Fatalf("expanded = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 // #3725: implementing env:default-deny must NOT strip the stage's resolved

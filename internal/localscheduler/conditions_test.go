@@ -299,6 +299,12 @@ func TestZeroWorkflowBudgetOverrideStopsTheWorkflow(t *testing.T) {
 	if reason != ReasonBudget {
 		t.Fatalf("reason = %q, want %q", reason, ReasonBudget)
 	}
+
+	ok, reason = c.admitProviderWorkflow(WorkflowIdentity{Workflow: "wf"}, apiv1.ProviderGitHub, r,
+		time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC), true)
+	if ok || reason != ReasonBudget {
+		t.Fatalf("forced admission with zero hourly override: ok=%v reason=%q, want %q", ok, reason, ReasonBudget)
+	}
 }
 
 func TestZeroDailyBudgetOverrideStopsTheWorkflow(t *testing.T) {
@@ -312,6 +318,12 @@ func TestZeroDailyBudgetOverrideStopsTheWorkflow(t *testing.T) {
 	}
 	if reason != ReasonDailyBudget {
 		t.Fatalf("reason = %q, want %q", reason, ReasonDailyBudget)
+	}
+
+	ok, reason = c.admitProviderWorkflow(WorkflowIdentity{Workflow: "wf"}, apiv1.ProviderGitHub, r,
+		time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC), true)
+	if ok || reason != ReasonDailyBudget {
+		t.Fatalf("forced admission with zero daily override: ok=%v reason=%q, want %q", ok, reason, ReasonDailyBudget)
 	}
 }
 

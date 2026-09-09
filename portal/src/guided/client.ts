@@ -102,6 +102,8 @@ export interface GuidedRepositoryReadiness {
   eligibleCount?: number;
   starterIssueCreated?: boolean;
   usesWorkItemTags?: boolean;
+  tagMatchCount?: number;
+  tagScanComplete?: boolean;
 }
 
 /** The shared shape of the envelope-returning actions: the CLI subprocess's

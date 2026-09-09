@@ -42,6 +42,33 @@ func TestFeatureSupportDelta(t *testing.T) {
 	}
 }
 
+func TestPrereleaseNotesProvideVerifiedInstallation(t *testing.T) {
+	for _, version := range []string{"v0.4.0-rc.1", "v0.4.0-beta.2", "v0.4.0"} {
+		current, err := newFeatureSnapshot(version, workflow.AllFeatures())
+		if err != nil {
+			t.Fatal(err)
+		}
+		notes, err := renderReleaseNotes(current, nil, "## DSL support-matrix delta\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		prerelease := strings.Contains(version, "-")
+		if strings.Contains(notes, "## Installing this pre-release") != prerelease {
+			t.Fatalf("installation policy does not match %s", version)
+		}
+		if prerelease {
+			for _, want := range []string{"version=" + version, "sha256sum --check", "shasum -a 256 --check", "Get-FileHash"} {
+				if !strings.Contains(notes, want) {
+					t.Errorf("notes for %s missing %q", version, want)
+				}
+			}
+			if strings.Index(notes, "sha256sum --check") > strings.Index(notes, "tar -xzf") {
+				t.Fatal("prerelease instructions extract before checksum verification")
+			}
+		}
+	}
+}
+
 func TestFeatureSupportDeltaRejectsDroppedFeature(t *testing.T) {
 	previous := []workflow.Feature{
 		{ID: "feature.deleted", Level: workflow.SupportDeprecated, SinceVersion: "v1.0.0"},

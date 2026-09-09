@@ -103,6 +103,9 @@ func TestRunWorkerWiresResolvedRuntimeIntoTheWorkerHost(t *testing.T) {
 	if want := []string{"goobers-engine", "goobers-engine-windows"}; !slices.Equal(got.TaskQueues, want) {
 		t.Errorf("task queues = %v, want %v", got.TaskQueues, want)
 	}
+	if !strings.HasPrefix(stderr.String(), manualServiceRootHeader(t, root)) {
+		t.Fatalf("successful worker startup omitted its root identity: %s", stderr.String())
+	}
 	if got.HostPort != "temporal.goobers.svc:7233" || got.Namespace != "goobers-cloud" {
 		t.Errorf("frontend = %s (namespace %s), want the flag values", got.HostPort, got.Namespace)
 	}
@@ -155,6 +158,7 @@ func TestRunWorkerWiresResolvedRuntimeIntoTheWorkerHost(t *testing.T) {
 func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T) {
 	root := initDemo(t)
 	declareDispatchRunner(t, root, "linux-pod")
+	configureDispatchAuthority(t, root)
 	blobRoot := filepath.Join(t.TempDir(), "blobs")
 	got := captureWorkerHost(t)
 
@@ -175,6 +179,7 @@ func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T)
 		"--work-root", filepath.Join(t.TempDir(), "work"),
 		"--blob-store", blobRoot,
 		"--dispatch-namespace", "goobers-stages",
+		"--daemon-api", "https://daemon.example:8080",
 		"--config-reload-interval", "0",
 	}, &stdout, &stderr)
 	if code != 0 {
@@ -206,10 +211,18 @@ func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T)
 func TestRunWorkerDispatchNamespaceRequiresInstance(t *testing.T) {
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
 	got := captureWorkerHost(t)
+	previousKube := dispatchKubeClient
+	dispatchKubeClient = func() (kubernetes.Interface, error) {
+		t.Fatal("missing instance reached Kubernetes")
+		return nil, nil
+	}
+	t.Cleanup(func() { dispatchKubeClient = previousKube })
+	workRoot := filepath.Join(t.TempDir(), "work")
 	var stdout, stderr bytes.Buffer
 	code := runWorker([]string{
-		"--work-root", filepath.Join(t.TempDir(), "work"),
+		"--work-root", workRoot,
 		"--dispatch-namespace", "goobers-stages",
+		"--daemon-api", "https://user:do-not-print@daemon.example:8080",
 	}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (usage error)\nstderr: %s", code, stderr.String())
@@ -219,6 +232,12 @@ func TestRunWorkerDispatchNamespaceRequiresInstance(t *testing.T) {
 	}
 	if len(got.TaskQueues) != 0 {
 		t.Error("a worker host was constructed despite the refusal")
+	}
+	if _, err := os.Stat(workRoot); !os.IsNotExist(err) {
+		t.Fatalf("missing instance initialized runtime: %v", err)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "do-not-print") {
+		t.Fatal("missing-instance refusal exposed URL credentials")
 	}
 }
 
@@ -391,6 +410,66 @@ func TestRunEngineProjectUsageAndConfigErrors(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			if code := runEngineProject(tc.args, &stdout, &stderr); code != 2 {
 				t.Fatalf("exit = %d, want 2\nstderr: %s", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunWorkerRefusesUnusableDispatchAuthorityBeforeStarting(t *testing.T) {
+	for _, tc := range []struct{ name, daemon, blob, key, want string }{
+		{"missing daemon", "", "https://daemon.example:8080", "valid", "--daemon-api"},
+		{"invalid daemon", "https://user:do-not-print@daemon.example", "https://daemon.example:8080", "valid", "--daemon-api"},
+		{"missing blob", "https://daemon.example:8080", "", "valid", "GOOBERS_BLOB_ENDPOINT"},
+		{"invalid blob", "https://daemon.example:8080", "https://daemon.example?do-not-print", "valid", "GOOBERS_BLOB_ENDPOINT"},
+		{"missing key", "https://daemon.example:8080", "https://daemon.example:8080", "missing", "api.podTokenKeyFile"},
+		{"unreadable key", "https://daemon.example:8080", "https://daemon.example:8080", "unreadable", "api.podTokenKeyFile"},
+		{"short key", "https://daemon.example:8080", "https://daemon.example:8080", "short", "api.podTokenKeyFile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initDemo(t)
+			declareDispatchRunner(t, root, "linux-pod")
+			configureDispatchAuthority(t, root)
+			t.Setenv("GOOBERS_DAEMON_API", "")
+			t.Setenv("GOOBERS_BLOB_ENDPOINT", tc.blob)
+			layout := instance.NewLayout(root)
+			cfg, err := instance.LoadConfig(layout.ConfigFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch tc.key {
+			case "missing":
+				cfg.API.PodTokenKeyFile = ""
+			case "unreadable":
+				cfg.API.PodTokenKeyFile = filepath.Join(t.TempDir(), "missing.key")
+			case "short":
+				if err := os.WriteFile(cfg.API.PodTokenKeyFile, []byte("do-not-print"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			previous := dispatchKubeClient
+			dispatchKubeClient = func() (kubernetes.Interface, error) {
+				t.Fatal("invalid configuration reached Kubernetes")
+				return nil, nil
+			}
+			t.Cleanup(func() { dispatchKubeClient = previous })
+			got := captureWorkerHost(t)
+			workRoot := filepath.Join(t.TempDir(), "work")
+			var stdout, stderr bytes.Buffer
+			code := runWorker([]string{"--instance", root, "--work-root", workRoot, "--blob-store", t.TempDir(), "--dispatch-namespace", "goobers-stages", "--daemon-api", tc.daemon}, &stdout, &stderr)
+			if code != 2 || !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("exit=%d stderr=%s, want usage refusal naming %s", code, &stderr, tc.want)
+			}
+			if len(got.TaskQueues) != 0 {
+				t.Fatal("invalid configuration constructed a polling worker")
+			}
+			if _, err := os.Stat(workRoot); !os.IsNotExist(err) {
+				t.Fatalf("invalid configuration initialized runtime: %v", err)
+			}
+			if strings.Contains(stdout.String()+stderr.String(), "do-not-print") {
+				t.Fatal("configuration error exposed secret material")
 			}
 		})
 	}

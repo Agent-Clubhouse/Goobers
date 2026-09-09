@@ -124,6 +124,10 @@ func runServiceInstall(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	status, err := manager.Install(context.Background())
 	if err != nil {
 		pf(stderr, "error: install service: %v\n", err)
@@ -156,6 +160,9 @@ func runServiceUninstall(args []string, stdout, stderr io.Writer) int {
 		pln(stdout, "service is not installed")
 		return 0
 	}
+	if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
+		return 2
+	}
 	if err := manager.Uninstall(context.Background()); err != nil {
 		pf(stderr, "error: uninstall service: %v\n", err)
 		return 1
@@ -173,6 +180,9 @@ func runServiceStop(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
+		return 2
 	}
 	if err := manager.Stop(context.Background()); err != nil {
 		if errors.Is(err, daemonservice.ErrNotInstalled) {
@@ -195,6 +205,10 @@ func runServiceStart(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
 	status, err := manager.Start(context.Background())
 	if err != nil {

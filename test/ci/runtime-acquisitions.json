@@ -20,9 +20,10 @@
     ],
     "offline": "Provision a local file GOPROXY with all selected modules, version lists and metadata, plus cached checksum verification data. Put a compatible Go on PATH and set GOTOOLCHAIN=local. GOPROXY=off alone can fail even for cached go-run tools because their deprecation/version metadata lookup is disabled; a warm source tree alone is not sufficient.",
     "sites": [
+      ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}:go-modules",
       ".github/workflows/ci.yml#checks/Download modules:go-modules",
       ".github/workflows/ci.yml#checks/Verify GitHub Actions are pinned:go-modules",
-      ".github/workflows/ci.yml#checks/fmt · tidy · no-phone-home · vet · build · portal:go-modules",
+      ".github/workflows/ci.yml#checks/fmt \u00b7 tidy \u00b7 no-phone-home \u00b7 vet \u00b7 build \u00b7 portal:go-modules",
       ".github/workflows/ci.yml#darwin-build/Download modules:go-modules",
       ".github/workflows/ci.yml#darwin-build/go build (darwin/arm64):go-modules",
       ".github/workflows/ci.yml#darwin-build/go vet (darwin/arm64):go-modules",
@@ -58,6 +59,8 @@
       ".github/workflows/ci.yml#windows-smoke/Windows release packaging:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows rollup migration alias dedup:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows self-update:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows host image preparation:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows image input verifier (PowerShell 5.1):go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows service transitions:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows worktree and event stream:go-modules",
       ".github/workflows/ci.yml#windows-smoke/go build (windows/amd64):go-modules",
@@ -120,6 +123,7 @@
       "runtime-acquisitions:go-modules",
       "schema-description-coverage:go-modules",
       "shipped-workflows:go-modules",
+      "stack-parity:go-modules",
       "stage-name-lint:go-modules",
       "test:go-modules",
       "tidy-check:go-modules",
@@ -171,14 +175,14 @@
   },
   {
     "id": "direct-download",
-    "what": "Pinned golangci-lint installer script and binary used by the hosted composite action",
+    "what": "Pinned golangci-lint installer script and release binary used by the hosted composite action, with a Go module proxy fallback",
     "from": [
       "raw.githubusercontent.com/golangci/golangci-lint",
       "github.com/golangci/golangci-lint/releases"
     ],
-    "offline": "no-offline-path: the hosted setup action invokes curl unconditionally. Local make ci instead requires golangci-lint already on PATH.",
+    "offline": "no-offline-path: the hosted setup action invokes curl unconditionally unless the pinned version is already on GOPATH/bin. Exhausting the release download falls back to go install from the configured GOPROXY, which is the separately declared go-modules acquisition and no more offline than it is. Local make ci instead requires golangci-lint already on PATH.",
     "sites": [
-      ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}@d774e32f9f083fd31fbde23b96444e6ce1807dbc81428d52a95263144992130b:direct-download"
+      ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}@c09af852591b05c574b4485806c32518d0cd07e6c8aa032f9ccd48cdb95c0d0e:direct-download"
     ]
   },
   {
@@ -325,7 +329,8 @@
       "Makefile#deploy-validate::kubernetes-schemas",
       "Makefile#deploy-validate:[2]:kubernetes-schemas",
       "Makefile#deploy-validate:[3]:kubernetes-schemas",
-      "Makefile#deploy-validate:[4]:kubernetes-schemas"
+      "Makefile#deploy-validate:[4]:kubernetes-schemas",
+      "Makefile#deploy-validate:[5]:kubernetes-schemas"
     ]
   },
   {

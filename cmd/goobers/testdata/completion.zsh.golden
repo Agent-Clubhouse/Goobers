@@ -22,7 +22,7 @@ _goobers_completion()
             'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
             'service:install and manage the platform-supervised daemon'
             'dashboard:serve and open the local operations portal'
-            'run:trigger a run manually (still honors run conditions)'
+            'run:trigger a run manually; --force bypasses cadence budgets'
             'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
             'status:validate config, show warnings, list runs, report daemon health, or list live agentic stages'
@@ -43,6 +43,12 @@ _goobers_completion()
     command="${words[2]}"
     flags=(-h --help)
     case "${command}" in
+        roots)
+            case "${words[3]:-}" in
+                discover) flags+=(--json) ;;
+                decommission) flags+=(--reason) ;;
+            esac
+            ;;
         version)
             flags+=(--json)
             ;;
@@ -50,7 +56,7 @@ _goobers_completion()
             flags+=(--json)
             ;;
         init)
-            flags+=(--guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --harness --source-tree --json)
+            flags+=(--guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --provider --harness --source-tree --json)
             ;;
         connect)
             flags+=(--token-env --seed --replace --json)
@@ -69,6 +75,11 @@ _goobers_completion()
                 goober) flags+=(--force) ;;
                 workflow) flags+=(--force) ;;
                 gaggle) flags+=(--force --from) ;;
+            esac
+            ;;
+        diagnostics)
+            case "${words[3]:-}" in
+                bundle) flags+=(--run --pr --max-runs --output --json) ;;
             esac
             ;;
         agent-kit)
@@ -94,7 +105,7 @@ _goobers_completion()
             flags+=(--to --instance-schema --write)
             ;;
         doctor)
-            flags+=(--k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout)
+            flags+=(--checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout)
             ;;
         netpol-render)
             flags+=(--out --check --baseline --write-baseline --timeout --print-blob-endpoint)
@@ -142,11 +153,14 @@ _goobers_completion()
         worker)
             flags+=(--instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
+        config-seed)
+            flags+=(--mirror --instance)
+            ;;
         dashboard)
             flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)
             ;;
         run)
-            flags+=(--gaggle --github-progress --pr --api --request-id --no-wait)
+            flags+=(--no-api --api-timeout --force --gaggle --github-progress --pr --api --request-id --no-wait)
             ;;
         approve)
             flags+=(--decision --actor --api)
@@ -182,6 +196,9 @@ _goobers_completion()
             ;;
         schema)
             flags+=(--list --human)
+            ;;
+        queue-explain)
+            flags+=(--json --pr --gaggle --workflow)
             ;;
         explain)
             flags+=(--human)
@@ -233,7 +250,7 @@ _goobers_completion()
             flags+=(--feedback)
             ;;
         backlog-query)
-            flags+=(--claim --debug --release --read-only --reconcile)
+            flags+=(--claim --resweep --debug --release --read-only --reconcile)
             ;;
         file-issues)
             flags+=(--check)
@@ -246,6 +263,9 @@ _goobers_completion()
             ;;
         reconcile-post-merge)
             flags+=(--max --lookback)
+            ;;
+        security-alerts-query)
+            flags+=(--source --state --severity --tool --ref --ecosystem --scope --max-results)
             ;;
         telemetry-query)
             flags+=(--window --aggregate --learning-action --threshold --format --gaggle --workflow)
@@ -284,6 +304,13 @@ _goobers_completion()
     fi
 
     case "${command}" in
+        roots)
+            if (( CURRENT == 3 )); then
+                candidates=(discover decommission)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         onboarding)
             if (( CURRENT == 3 )); then
                 candidates=(stub-sample stub-agent-instructions)
@@ -305,6 +332,13 @@ _goobers_completion()
         scaffold)
             if (( CURRENT == 3 )); then
                 candidates=(goober workflow gaggle)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        diagnostics)
+            if (( CURRENT == 3 )); then
+                candidates=(bundle)
                 _describe -V 'command' candidates
                 return
             fi

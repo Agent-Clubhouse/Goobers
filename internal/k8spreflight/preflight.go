@@ -9,8 +9,10 @@ package k8spreflight
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -52,6 +54,8 @@ type Result struct {
 
 // Report is the full conformance report, stable for --report json consumers.
 type Report struct {
+	// SelectedChecks records restricted coverage. Empty means the full check set.
+	SelectedChecks []string `json:"selectedChecks,omitempty"`
 	// Target is the cluster endpoint the report was produced against (set by
 	// the CLI; empty when unknown).
 	Target string `json:"target,omitempty"`
@@ -67,7 +71,26 @@ const DefaultTimeout = 10 * time.Second
 // Options carries the operator-supplied probe targets. The zero value runs
 // the cluster-only checks and reports the network probes as skipped warns.
 type Options struct {
-	// APIServerEndpoint is the cluster API server URL returned by kubeconfig.
+	// Checks limits execution to these check IDs. Empty runs the full preflight.
+	Checks []string
+	// OverlayDir is the consumer kustomization directory. Empty means the
+	// overlay-side checks are explicitly unchecked, never a silent pass.
+	OverlayDir string
+	// ImageRuntime is docker or podman (default docker).
+	ImageRuntime string
+	// ImagePullPolicy defaults to always; never explicitly inspects cached images.
+	ImagePullPolicy string
+	// ImageTools names additional PATH tools required of the rendered images.
+	ImageTools []string
+	// ImageCAFile is the internal root CA whose image trust anchor is checked.
+	// Empty leaves that part explicitly unchecked.
+	ImageCAFile       string
+	runOverlayCommand overlayCommandRunner
+	// LookupAPIServerIPs substitutes endpoint DNS resolution in tests. Nil uses
+	// the default resolver. The check always supplies its bounded probe context.
+	LookupAPIServerIPs func(context.Context, string) ([]net.IP, error)
+	// APIServerEndpoint is the endpoint compared with labeled egress policies.
+	// The CLI defaults it to kubeconfig, with an override for in-cluster DNAT.
 	APIServerEndpoint string
 	// OIDCIssuer is the customer OIDC issuer for portal/API auth (§1/§3);
 	// its discovery document must be reachable from the doctor host.
@@ -126,29 +149,59 @@ func (o Options) dialContext() func(ctx context.Context, network, address string
 	return dialer.DialContext
 }
 
-// Run executes the full check set against the target cluster and returns the
-// conformance report. It never returns an error: an unrunnable check is a
-// failing row, not an aborted report.
-func Run(ctx context.Context, client kubernetes.Interface, opts Options) Report {
-	checks := []func(context.Context, kubernetes.Interface, Options) Result{
-		checkClusterVersion,
-		checkNetworkPolicySupport,
-		checkAPIServerIPBlockDrift,
-		checkInstallRBAC,
-		checkGaggleRBAC,
-		checkStorage,
-		checkMixedOSPlacement,
-		checkRunnerClassCapacity,
-		checkPodHealth,
-		checkOTLPSignalSet,
-		checkOIDCIssuer,
-		checkRegistry,
-		checkEgress,
-		checkTemporalNamespace,
+type checkDefinition struct {
+	id  string
+	run func(context.Context, kubernetes.Interface, Options) Result
+}
+
+func checkDefinitions() []checkDefinition {
+	return []checkDefinition{
+		{"cluster-version", checkClusterVersion},
+		{"networkpolicy-api", checkNetworkPolicySupport},
+		{"apiserver-ipblock-drift", checkAPIServerIPBlockDrift},
+		{"rbac-install", checkInstallRBAC},
+		{"rbac-gaggle", checkGaggleRBAC},
+		{"storage-rwx", checkStorage},
+		{"mixed-os-placement", checkMixedOSPlacement},
+		{"runner-class-capacity", checkRunnerClassCapacity},
+		{"pod-health", checkPodHealth},
+		{"otlp-signal-set", checkOTLPSignalSet},
+		{"oidc-issuer", checkOIDCIssuer},
+		{"registry", checkRegistry},
+		{"egress", checkEgress},
+		{"temporal-namespace", checkTemporalNamespace},
+		{"overlay-pin-agreement", checkOverlayPinAgreement},
+		{"overlay-image-contract", checkOverlayImageContract},
 	}
-	report := Report{Conformant: true}
-	for _, check := range checks {
-		result := check(ctx, client, opts)
+}
+
+// ValidateChecks rejects unknown or repeated selections before any probe runs.
+func ValidateChecks(ids []string) error {
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if !slices.ContainsFunc(checkDefinitions(), func(c checkDefinition) bool { return c.id == id }) {
+			return fmt.Errorf("unknown Kubernetes check %q", id)
+		}
+		if seen[id] {
+			return fmt.Errorf("duplicate Kubernetes check %q", id)
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+// Run executes the selected checks, or the full check set when none were
+// selected. An invalid selection fails without making any probe calls.
+func Run(ctx context.Context, client kubernetes.Interface, opts Options) Report {
+	report := Report{Conformant: true, SelectedChecks: slices.Clone(opts.Checks)}
+	if err := ValidateChecks(opts.Checks); err != nil {
+		return Report{SelectedChecks: slices.Clone(opts.Checks), Results: []Result{{ID: "check-selection", Severity: SeverityRequired, Status: StatusFail, Detail: err.Error()}}}
+	}
+	for _, check := range checkDefinitions() {
+		if len(opts.Checks) > 0 && !slices.Contains(opts.Checks, check.id) {
+			continue
+		}
+		result := check.run(ctx, client, opts)
 		if result.Status == StatusFail && result.Severity == SeverityRequired {
 			report.Conformant = false
 		}

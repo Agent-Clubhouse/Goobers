@@ -306,6 +306,14 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 		}
 	}
 	if err := runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", path); err != nil {
+		// A timed-out remove has unknown state. Do not issue another git
+		// command while the repository may still be contended; leave the
+		// candidate intact for the next sweep and preserve the timeout as
+		// the warning that caused the retry.
+		var timeoutErr *GitCleanupTimeoutError
+		if errors.As(err, &timeoutErr) {
+			return err
+		}
 		// The worktree directory itself may already be gone (e.g. the crash
 		// happened mid-remove); prune the administrative metadata instead of
 		// failing the whole reap pass.

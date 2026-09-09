@@ -85,6 +85,10 @@ func runTelemetryPruneAt(args []string, stdout, stderr io.Writer, now time.Time)
 	if config.Telemetry.Retention != nil {
 		retentionConfig = *config.Telemetry.Retention
 	}
+	if err := prepareMaintenanceRoot(layout, *dryRun, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	results, err := pruneTelemetryRetention(layout, retentionConfig, nil, now, *dryRun)
 	if err != nil {
 		pf(stderr, "error: prune telemetry: %v\n", err)

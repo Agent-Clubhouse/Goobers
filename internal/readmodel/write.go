@@ -12,6 +12,10 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// Advance when changed projection semantics require replay of unchanged
+// journals, and append a migration marking the store unready for that replay.
+const currentProjectionVersion = 2
+
 // UpsertRun writes a projection in ONE transaction.
 //
 // The run row, its stage rows, and (later) the change row and dirty-day marks
@@ -45,7 +49,7 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	// change kind, and reading it outside would race another writer between the
 	// read and the write — classifying a progression as a creation, which a
 	// client would act on by prepending a duplicate to its list.
-	previous, existed, err := readRunRowTx(ctx, tx, p.Run.RunID)
+	previous, version, existed, err := readRunRowTx(ctx, tx, p.Run.RunID)
 	if err != nil {
 		return err
 	}
@@ -68,7 +72,7 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 		return nil
 	}
 	if existed && p.Run.LastSeq == previous.LastSeq &&
-		p.Run.Phase == previous.Phase && p.Run.Terminal == previous.Terminal {
+		p.Run.Phase == previous.Phase && p.Run.Terminal == previous.Terminal && version == currentProjectionVersion {
 		return nil
 	}
 
@@ -141,20 +145,21 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 // readRunRowTx reads the columns needed to classify a transition, inside a
 // transaction. Deliberately narrow: only what changeKindFor and the no-op guard
 // consult, so it stays cheap on the write path.
-func readRunRowTx(ctx context.Context, tx *sql.Tx, runID string) (RunRow, bool, error) {
+func readRunRowTx(ctx context.Context, tx *sql.Tx, runID string) (RunRow, int, bool, error) {
 	var out RunRow
 	var terminal int
+	var version int
 	err := tx.QueryRowContext(ctx,
-		`SELECT run_id, phase, terminal, last_seq FROM run WHERE run_id = ?`, runID).
-		Scan(&out.RunID, &out.Phase, &terminal, &out.LastSeq)
+		`SELECT run_id, phase, terminal, last_seq, projection_version FROM run WHERE run_id = ?`, runID).
+		Scan(&out.RunID, &out.Phase, &terminal, &out.LastSeq, &version)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return RunRow{}, false, nil
+		return RunRow{}, 0, false, nil
 	case err != nil:
-		return RunRow{}, false, fmt.Errorf("readmodel: read prior run %s: %w", runID, err)
+		return RunRow{}, 0, false, fmt.Errorf("readmodel: read prior run %s: %w", runID, err)
 	}
 	out.Terminal = terminal != 0
-	return out, true, nil
+	return out, version, true, nil
 }
 
 func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
@@ -174,8 +179,8 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 			repass_count, retry_count, policy_retry_count, infra_retry_count,
 			outcome_verdict, outcome_target, disposition,
 			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste,
-			operator_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			operator_json, projection_version
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
 			gaggle = excluded.gaggle,
 			workflow = excluded.workflow,
@@ -202,7 +207,8 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 			any_premium_measured = excluded.any_premium_measured,
 			any_cost_measured = excluded.any_cost_measured,
 			any_retry_waste = excluded.any_retry_waste,
-			operator_json = excluded.operator_json
+			operator_json = excluded.operator_json,
+			projection_version = excluded.projection_version
 		-- Idempotence, and the guard that makes out-of-order delivery safe: an
 		-- older projection never overwrites a newer one. Without it, a repair
 		-- sweep racing live projection could rewind a run's phase.
@@ -217,7 +223,7 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 		nullString(row.OutcomeVerdict), nullString(row.OutcomeTarget), disposition,
 		boolInt(row.AnyTokenMeasured), boolInt(row.AnyPremiumMeasured),
 		boolInt(row.AnyCostMeasured), boolInt(row.AnyRetryWaste),
-		string(operatorJSON),
+		string(operatorJSON), currentProjectionVersion,
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: upsert run %s: %w", row.RunID, err)

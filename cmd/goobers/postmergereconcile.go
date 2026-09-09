@@ -37,6 +37,9 @@ type postMergeReconcileLedger struct {
 }
 
 type postMergeReconcileEntry struct {
+	// Gaggle identifies the originating publication policy for delayed close-out.
+	// Empty identifies a legacy or standalone record, not the sweep's gaggle.
+	Gaggle        string                    `json:"gaggle,omitempty"`
 	Repository    providers.RepositoryRef   `json:"repository"`
 	PullNumber    string                    `json:"pullNumber"`
 	State         string                    `json:"state"`
@@ -208,7 +211,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 				report.Pending++
 				continue
 			}
-			actionErrs := performPostMergeADOWithPRComments(ctx, provider, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, root, repo, stdout, stderr)
+			actionErrs := performPostMergeADOWithOrigin(ctx, provider, provider, backlogRepoRefForStage(root, repo), poll, entry.PullNumber, root, entry.Gaggle, repo, stdout, stderr)
 			if len(actionErrs) > 0 {
 				report.Pending++
 				ledger.Entries[key] = entry
@@ -495,7 +498,10 @@ func reconcilePostMergeActions(
 		return nil, err
 	}
 	issueIDs := closingIssueNumbers(poll.Body)
-	costReport := collectGitHubPostMergeCostReport(ctx, provider, issuesProvider, entry.Repository, entry.PullNumber, issueIDs, stderr)
+	var costReport postMergeCostReport
+	if costPublicationAllowed(root, entry.Gaggle, entry.Repository, stderr) {
+		costReport = collectGitHubPostMergeCostReport(ctx, provider, issuesProvider, entry.Repository, entry.PullNumber, issueIDs, stderr)
+	}
 	for _, issueID := range issueIDs {
 		if entry.Actions.ClosedIssueNumbers[issueID] {
 			continue
@@ -546,6 +552,8 @@ func recordPostMergeTimeout(root string, repo providers.RepositoryRef, pullNumbe
 			return nil
 		}
 		if existing, ok := ledger.Entries[key]; ok {
+			// Preserve the originating gaggle, including unknown legacy identity,
+			// across retries from other contexts.
 			existing.State = postMergeReconcilePending
 			existing.TimedOutAt = at.UTC()
 			existing.LastCheckedAt = nil
@@ -553,6 +561,7 @@ func recordPostMergeTimeout(root string, repo providers.RepositoryRef, pullNumbe
 			ledger.Entries[key] = existing
 		} else {
 			ledger.Entries[key] = postMergeReconcileEntry{
+				Gaggle:     providerGaggle(),
 				Repository: repo,
 				PullNumber: pullNumber,
 				State:      postMergeReconcilePending,

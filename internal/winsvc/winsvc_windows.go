@@ -61,14 +61,17 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 			// The daemon exited on its own (crash or self-initiated stop).
 			h.code = code
 			changes <- svc.Status{State: svc.StopPending}
-			return false, uint32(code)
+			// Daemon codes are application-specific, not Win32 errors. In
+			// particular, exit 1 must not become ERROR_INVALID_FUNCTION in
+			// SCM diagnostics (#4210).
+			return code != 0, uint32(code)
 		case c := <-r:
 			switch c.Cmd {
 			case svc.Interrogate:
 				changes <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
 				h.code = h.drain(notifier, done, changes)
-				return false, uint32(h.code)
+				return h.code != 0, uint32(h.code)
 			default:
 				// Ignore controls we did not advertise via Accepts.
 			}

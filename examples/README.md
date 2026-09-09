@@ -1,5 +1,9 @@
 # Examples
 
+For Azure DevOps, start with the [`ado-onboarding`](ado-onboarding/) scaffold
+instructions and copyable gaggle. The GitHub-specific walkthrough below is not
+required for ADO setup.
+
 Start with [`hello-world.yaml`](hello-world.yaml) when connecting a new
 instance. Copy it into the target gaggle's `workflows/` directory, update
 `spec.gaggle` if your gaggle is not named `example`, and trigger it manually

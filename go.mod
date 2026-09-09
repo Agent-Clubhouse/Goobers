@@ -29,6 +29,7 @@ require (
 	go.opentelemetry.io/proto/otlp v1.11.0
 	go.temporal.io/api v1.63.5
 	go.temporal.io/sdk v1.48.0
+	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688
@@ -39,6 +40,8 @@ require (
 	k8s.io/apiextensions-apiserver v0.37.0
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
+	k8s.io/component-helpers v0.37.0
+	k8s.io/klog/v2 v2.140.0
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd
 	modernc.org/sqlite v1.57.0
 	sigs.k8s.io/controller-runtime v0.24.1
@@ -84,6 +87,7 @@ require (
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
@@ -106,7 +110,7 @@ require (
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
-	github.com/stretchr/testify v1.12.1 // indirect
+	github.com/stretchr/testify v1.12.1
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/collector/featuregate v1.65.0 // indirect
@@ -116,7 +120,6 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
@@ -131,7 +134,6 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/apiserver v0.37.0 // indirect
 	k8s.io/component-base v0.37.0 // indirect
-	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

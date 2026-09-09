@@ -5,6 +5,10 @@ real application repository. Follow sections 1 and 2 in order: start with a
 credential-free local demo, then graduate to a disposable GitHub-backed run.
 Delete those tutorial repositories and instances when you are done.
 
+For Azure DevOps, use the [production onboarding guide](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md#3-initialize-the-instance):
+`init --template=standard --provider=ado`, then `connect organization/project/repository`.
+The disposable GitHub tutorial below is not required for ADO onboarding.
+
 If your goal is to configure Goobers for an existing repository, skip this
 tutorial and run `goobers init --guided`, then follow
 [Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md). That path

@@ -111,6 +111,13 @@ func testHarnessOptions(t *testing.T, values map[string]interface{}) map[string]
 
 func (f *fakeProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessResult, error) {
 	f.lastReq = req
+	// Preflight fixtures model their scripted transcript as stdout. Runtime
+	// completion fixtures have a workspace and script their streams in act.
+	if req.Dir == "" && req.StdoutCapture != nil {
+		if _, err := req.StdoutCapture.Write(f.result.Transcript); err != nil {
+			return f.result, err
+		}
+	}
 	if f.act != nil {
 		if err := f.act(req); err != nil {
 			return f.result, err

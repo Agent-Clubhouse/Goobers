@@ -59,6 +59,17 @@ a monorepo.
 
 ## Relationships
 
+### External cost publication
+
+Optional `spec.cost.enabled` is a nullable boolean overriding the instance's
+`cost.enabled`. Null or omission inherits the instance value; the built-in
+default is true. False suppresses new provider-visible cost receipts and merge
+cost summaries without disabling local journal usage accounting or normal issue
+close-out. This is a binary-level publication policy shared by supported DSL
+pins, not an extra workflow stage.
+
+### Resource relationships
+
 - Belongs to → an **Instance**.
 - Contains → **Goobers** and **Workflows**.
 - Targets → a project **repo** + a **Backlog** (singleton).

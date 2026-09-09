@@ -11,7 +11,7 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 	attribution := Attribution{
 		Instance:   "MDB1",
 		InstanceID: "e62c1c105fdc4273a72d199394b41cb0",
-		Gaggle:     "efunhouse",
+		Gaggle:     "dogfood",
 		Workflow:   "implementation",
 		Task:       "escalate",
 		Goober:     "implementer",

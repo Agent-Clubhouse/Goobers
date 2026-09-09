@@ -372,15 +372,31 @@ func pullRequestClaimStatus(
 	currentRunID string,
 	now time.Time,
 ) (claimed, ownedByCurrentRun bool) {
+	entry, ok, ownershipComparable := resolvePullRequestClaim(claims, gaggle, provider, number, now)
+	if !ok || !entry.ExpiresAt.After(now) {
+		return false, false
+	}
+	return true, ownershipComparable && currentRunID != "" && entry.RunID == currentRunID
+}
+
+// resolvePullRequestClaim is shared by selection and its operator report.
+// A live unscoped lease blocks a scoped claimant even when the run IDs match:
+// the selector cannot treat ownership across those namespaces as equivalent.
+func resolvePullRequestClaim(
+	claims claimsclient.Listing,
+	gaggle string,
+	provider providers.ProviderKind,
+	number int,
+	now time.Time,
+) (entry claimsclient.Entry, found, ownershipComparable bool) {
 	var (
-		entry claimsclient.Entry
-		ok    bool
+		ok bool
 	)
 	if gaggle == "" {
 		entry, ok = claims.Lookup(claimsclient.Key{ExternalID: pullRequestClaimKey(number)})
 	} else {
 		if legacy, held := claims.Lookup(claimsclient.Key{ExternalID: pullRequestClaimKey(number)}); held && legacy.ExpiresAt.After(now) {
-			return true, false
+			return legacy, true, false
 		}
 		entry, ok = claims.Lookup(pullRequestClaimLedgerKey(gaggle, provider, number))
 		if !ok && provider != providers.ProviderGitHub {
@@ -395,10 +411,7 @@ func pullRequestClaimStatus(
 			entry, ok = claims.Lookup(pullRequestClaimLedgerKey(gaggle, providers.ProviderGitHub, number))
 		}
 	}
-	if !ok || !entry.ExpiresAt.After(now) {
-		return false, false
-	}
-	return true, currentRunID != "" && entry.RunID == currentRunID
+	return entry, ok, true
 }
 
 // clearPRSelectEligibilityWait retires the selected PR's lease entry, so its

@@ -295,11 +295,14 @@ describe("Insight page", () => {
   it("shows provider-native attributed costs, normalized estimates, and coverage", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryCosts = vi.spyOn(client, "getTelemetryCosts");
+    const user = userEvent.setup();
     render(<App client={client} />);
 
     expect(
       await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Exact recorded usage · Loaded Jul 18, 2026/)).toBeInTheDocument();
+    const table = screen.getByRole("table");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
     expect(screen.getAllByText("2.5 AI credits").length).toBeGreaterThan(0);
@@ -317,6 +320,23 @@ describe("Insight page", () => {
     expect(
       screen.getByText("01JZ455ESCALATE: 2.5 AI credits · 3/3 attempts"),
     ).toBeInTheDocument();
+
+    let rows = within(table).getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent("PR #4398");
+    await user.click(screen.getByRole("button", { name: "Descending" }));
+    rows = within(table).getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent("Issue #4398");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "pr");
+    expect(screen.getByText("PR #4398")).toBeInTheDocument();
+    expect(screen.queryByText("Issue #4398")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "all");
+    await user.type(screen.getByRole("searchbox", { name: "Filter" }), "claude-sonnet");
+    expect(screen.getByText("Issue #4398")).toBeInTheDocument();
+    expect(screen.queryByText("PR #4398")).not.toBeInTheDocument();
+    expect(screen.getByText("1 of 2")).toBeInTheDocument();
+
     expect(getTelemetryCosts).toHaveBeenCalledWith(
       expect.objectContaining({
         scope: "summary",

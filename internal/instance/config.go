@@ -70,8 +70,11 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
-	APIVersion string `json:"apiVersion" yaml:"apiVersion"`
-	Kind       string `json:"kind" yaml:"kind"`
+	// Cost controls external cost publication by default. Gaggles may override
+	// it; omitted or null enabled preserves the built-in enabled behavior.
+	Cost       *apiv1.CostReporting `json:"cost,omitempty" yaml:"cost,omitempty"`
+	APIVersion string               `json:"apiVersion" yaml:"apiVersion"`
+	Kind       string               `json:"kind" yaml:"kind"`
 	// SchemaVersion is the instance-config schema revision (dsl-3.0.md D8,
 	// decision record D3) — the config's first version field. Absent means 1,
 	// the pre-Goobernetes schema every existing install is on; 2 introduces
@@ -92,10 +95,13 @@ type Config struct {
 	// target code repositories. Nil keeps the local <instance-root>/config
 	// default.
 	WorkflowSource *WorkflowSource `json:"workflowSource,omitempty" yaml:"workflowSource,omitempty"`
-	API            APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
-	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
-	Portal         PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
-	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	// ConfigMirrorPath opts the daemon into publishing worker-consumable
+	// rendered configuration to an absolute shared path. Empty disables it.
+	ConfigMirrorPath string          `json:"configMirrorPath,omitempty" yaml:"configMirrorPath,omitempty"`
+	API              APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
+	Webhook          WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
+	Portal           PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
+	Telemetry        TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
 	// projection loop disabled; standalone engine commands still use defaults.
 	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
@@ -354,10 +360,8 @@ type RunnerConfig struct {
 	// but hardcoded at the composition root, so pointing a harness at a
 	// contract-compatible wrapper required a Goobers code change. This is the
 	// adopter escape hatch (the launcher twin of EnvPassthrough, #736): a
-	// deployment can run the same engine CLI through a wrapper — e.g.
-	// {"copilot": ["agency", "copilot"]} to launch a wrapper that forwards to
-	// the GitHub Copilot CLI and emits the same session/result artifacts — with
-	// no code change and no new harness. Goobers stays vendor-neutral: the
+	// deployment can run the same engine CLI through a contract-aware wrapper
+	// with no code change and no new harness. Goobers stays vendor-neutral: the
 	// wrapper name lives only in the adopter's instance.yaml, never in the enum.
 	//
 	// Each value must be a non-empty argv whose first element (the program) is
@@ -366,6 +370,10 @@ type RunnerConfig struct {
 	// session capture, completion-file readback) is unchanged — the override
 	// only replaces the launch prefix, so it is safe only for a launcher that
 	// honors the same CLI contract as the harness it overrides.
+	// Copilot overrides other than ["copilot"] must answer the bounded,
+	// non-agentic --goobers-launcher-contract probe with an explicit version-1
+	// session contract. See docs/guides/harness-launcher-contract.md. Merely
+	// forwarding arguments (including agency copilot) is not proof of compatibility.
 	HarnessCommand map[string][]string `json:"harnessCommand,omitempty" yaml:"harnessCommand,omitempty"`
 }
 

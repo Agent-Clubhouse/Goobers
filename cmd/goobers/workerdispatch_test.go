@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -62,6 +65,7 @@ func TestBuildStageDispatchFailsClosed(t *testing.T) {
 // the allowlist actually stamped on a rendered pod.
 func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing.T) {
 	root := initDemo(t)
+	configureDispatchAuthority(t, root)
 	layout := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -97,7 +101,7 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	}
 	t.Cleanup(func() { newStageDispatcher = previousNew })
 
-	if _, err := buildStageDispatch(root, "gaggle-example", "", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
+	if _, err := buildStageDispatch(root, "gaggle-example", "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
 	if !slices.Contains(built.EnvPassthrough, "OPERATOR_DECLARED_VAR") {
@@ -145,6 +149,7 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 // value actually stamped on a rendered goobers-CLI stage pod.
 func TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod(t *testing.T) {
 	root := initDemo(t)
+	configureDispatchAuthority(t, root)
 	repo := declareGitHubAppAuth(t, root, "goobersbot")
 	layout := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
@@ -177,7 +182,7 @@ func TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod(t *testing.
 	}
 	t.Cleanup(func() { newStageDispatcher = previousNew })
 
-	if _, err := buildStageDispatch(root, "gaggle-example", "", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
+	if _, err := buildStageDispatch(root, "gaggle-example", "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
 	if got := built.BotLogins[instance.GitHubBotLoginKey(repo.Owner, repo.Name)]; got != "goobersbot[bot]" {
@@ -211,5 +216,54 @@ func TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod(t *testing.
 	}
 	if !present || stamped != "goobersbot[bot]" {
 		t.Fatalf("%s on the rendered pod = %q (present=%v), want %q", dispatcher.ProviderBotLoginEnv, stamped, present, "goobersbot[bot]")
+	}
+}
+
+// These are real shared-key configuration files, not a fake minter: the
+// production constructor must receive a usable signer, never typed nil.
+func configureDispatchAuthority(t *testing.T, root string) {
+	t.Helper()
+	layout := instance.NewLayout(root)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(t.TempDir(), "pod-token.key")
+	if err := os.WriteFile(key, bytes.Repeat([]byte("k"), 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.API.PodTokenKeyFile = key
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOBERS_BLOB_ENDPOINT", "https://daemon.example:8080")
+}
+
+func TestBuildStageDispatchRejectsMissingSignedKeyBeforeClusterContact(t *testing.T) {
+	root := initDemo(t)
+	declareDispatchRunner(t, root, "linux-pod")
+	t.Setenv("GOOBERS_BLOB_ENDPOINT", "https://daemon.example:8080")
+	previous := dispatchKubeClient
+	dispatchKubeClient = func() (kubernetes.Interface, error) {
+		t.Fatal("unusable authority reached Kubernetes")
+		return nil, nil
+	}
+	t.Cleanup(func() { dispatchKubeClient = previous })
+	_, err := buildStageDispatch(root, "gaggle-example", "https://daemon.example:8080", t.TempDir(), "worker-0", nil)
+	if err == nil || !strings.Contains(err.Error(), "api.podTokenKeyFile is required") {
+		t.Fatalf("error = %v, want named missing signing-key refusal", err)
+	}
+}
+
+func TestStageDispatchEndpointValidation(t *testing.T) {
+	for _, raw := range []string{"http://127.0.0.1:8080", "https://daemon.example:8080/", "https://[::1]:8080/prefix"} {
+		if err := validateStageDispatchEndpoint(raw); err != nil {
+			t.Errorf("valid endpoint rejected: %v", err)
+		}
+	}
+	for _, raw := range []string{"", "  ", "daemon.example:8080", "/relative", "ftp://daemon.example", "https://", "https://daemon.example:0", "https://daemon.example:65536", "https://daemon.example:bad", "https://user:secret@daemon.example", "https://daemon.example?secret=secret", "https://daemon.example#secret", "https://daemon.example?"} {
+		if err := validateStageDispatchEndpoint(raw); err == nil {
+			t.Errorf("invalid endpoint accepted: %q", raw)
+		}
 	}
 }

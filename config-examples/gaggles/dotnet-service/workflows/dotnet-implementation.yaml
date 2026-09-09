@@ -13,9 +13,9 @@ spec:
   # config-examples/gaggles/acme-web/workflows/implementation.yaml already
   # demonstrates — nothing about them differs for .NET. The point this file
   # makes is the one thing that IS stack-specific: the `local-ci` stage runs
-  # this gaggle's declared .NET `ciCommand` (gaggle.yaml, MGV-1/#1009) instead
-  # of the Go default it declares below, and the whole run is gated at SCHEDULE
-  # time on the `dotnet@9` runner capability (RRQ-1/#1101).
+  # this gaggle's declared .NET `ciCommand` (gaggle.yaml, MGV-1/#1009), and the
+  # whole run is gated at SCHEDULE time on the `dotnet@9` runner capability
+  # (RRQ-1/#1101).
   triggers:
     - type: manual
   readiness:
@@ -62,7 +62,11 @@ spec:
       type: deterministic
       goal: Run the project's local CI-equivalent (build + tests) in the worktree.
       run:
-        command: ["make", "ci"]
+        # This gaggle's own stack-native suite, matching the `ciCommand:
+        # ["dotnet", "test"]` gaggle.yaml declares, so the example reads as
+        # what it runs (#2554). ApplyGaggleCICommand still resolves the
+        # gaggle's ciCommand into this stage at runtime (MGV-1/#1009).
+        command: ["dotnet", "test"]
         # Pull in build/test behavior fixes that landed after this run branched.
         syncBase: true
       retry:

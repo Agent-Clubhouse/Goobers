@@ -66,12 +66,13 @@ func checkDemoNetworkIsolation(demo, insecure bool, goos string, stderr io.Write
 	return 0, demoUnisolated, linuxUserNSRestricted
 }
 
-const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--provider=github|ado] --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
 	"gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left\n" +
-	"untouched.\n" +
+	"untouched. Durable root identity is stored in .instance-id;\n" +
+	".instance-id.lock serializes identity creation.\n" +
 	"--guided opens the browser-based setup for a real repository and instance;\n" +
 	"use --instance-path to select its instance root.\n" +
 	"It prepares and validates configuration but does not run a workflow. When the\n" +
@@ -83,6 +84,8 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"--template=standard non-interactively seeds backlog-curation and implementation\n" +
 	"with their three canonical personas. It requires an explicit --ci-command\n" +
 	"JSON argv array and comma-separated --required-capabilities (e.g. node@24).\n" +
+	"Use --provider=ado for Azure DevOps placeholders and GOOBERS_ADO_TOKEN;\n" +
+	"the default provider is github. See docs/guides/ado-authentication.md.\n" +
 	"It creates placeholders: configure repository identity and credential refs\n" +
 	"before running. It does not start workflows and refuses configured targets.\n" +
 	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
@@ -132,6 +135,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart, standard)")
 	ciCommand := fs.String("ci-command", "", "with --template=standard, required local CI command as a JSON argv array")
 	requiredCapabilities := fs.String("required-capabilities", "", "with --template=standard, required comma-separated toolchain capabilities")
+	provider := fs.String("provider", "", "with --template=standard, repository provider (github or ado; defaults to github)")
 	harness := fs.String("harness", "", "with --template, the agent harness every seeded goober uses (copilot, claude-code)")
 	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
 	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
@@ -139,7 +143,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	standard, standardErr := standardInitOptions(*template, *harness, *ciCommand, *requiredCapabilities)
+	standard, standardErr := standardInitOptions(*template, *harness, *ciCommand, *requiredCapabilities, *provider)
 	if standardErr != nil {
 		pf(stderr, "error: %v\n", standardErr)
 		return 2
@@ -245,7 +249,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	var res *instance.InitResult
 	var err error
 	errCode := 2
-	res, err = seedInitTemplate(root, *template, *harness, *demo, standard)
+	res, err = seedInitTemplate(root, *template, *harness, *demo, standard, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		printDefaultedTargetNote(stderr, err, fs.NArg())

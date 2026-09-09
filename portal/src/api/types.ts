@@ -6,6 +6,39 @@ export const SCHEMA_VERSION = "v1";
 export type JsonScalar = string | number | boolean | null;
 export type JsonValue = JsonScalar | JsonValue[] | { [key: string]: JsonValue };
 
+export interface PRQueueClaimObservation {
+  state: "unknown" | "unclaimed" | "expired" | "held-by-this-run" | "held-by-other-run" | "held-in-legacy-namespace";
+  ownerRunId?: string;
+  expiresAt?: string;
+  providerClaimLabel: boolean;
+  comparison: "unavailable" | "no-local-lease-or-provider-label" | "local-lease-and-provider-label" | "provider-label-without-live-local-lease" | "local-lease-without-provider-label";
+  nextStep: string;
+}
+
+export interface PRQueueEligibilityReport {
+  version: 1;
+  repositoryKey: string;
+  gaggle: string;
+  workflow: string;
+  runId: string;
+  observedAt: string;
+  completeSnapshot: boolean;
+  matchingItems: number;
+  omittedItems: number;
+  items: Array<{ number: number; eligible: boolean; reason?: string; nextStep: string; claim: PRQueueClaimObservation }>;
+}
+
+export interface QueueEligibilityView extends WithReadState {
+  gaggle: string;
+  workflow: string;
+  asOf: string;
+  status: "unavailable" | "not-observed" | "observed";
+  sourceRunId?: string;
+  sourceStage?: string;
+  report?: PRQueueEligibilityReport;
+  problem?: string;
+}
+
 export type Environment = "dev" | "staging" | "prod";
 export type Provider = "github" | "ado";
 export type InstanceStatus = "starting" | "ready" | "degraded";
@@ -17,6 +50,41 @@ export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | 
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
+
+export interface TriggerRequest {
+  workflow: string;
+  gaggle?: string;
+  requestId?: string;
+  force?: boolean;
+  sourceRun?: string;
+}
+
+export interface TriggerResponse {
+  acceptanceId?: string;
+  state?: string;
+  runId?: string;
+  duplicate?: boolean;
+}
+
+export interface TriggerStatusResponse {
+  acceptanceId: string;
+  state: string;
+  runId?: string;
+  reason?: string;
+  acceptedAt: string;
+}
+
+export interface CancelRunRequest {
+  workflow?: string;
+  gaggle?: string;
+  actor?: string;
+}
+
+export interface CancelRunResult {
+  phase?: string;
+  code?: string;
+  error?: string;
+}
 export type AttemptClass = "initial" | "policy" | "infra" | "human";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
 export type OutcomeFilter = "finished" | "terminal" | "success" | "failure" | "other";
@@ -275,6 +343,13 @@ export interface Instance extends ContractVersion {
   name: string;
   environment: Environment;
   instanceRoot: string;
+  rootIdentity?: {
+    id?: string;
+    identityProblem?: string;
+    decommissionedAt?: string;
+    decommissionReason?: string;
+    lifecycleProblem?: string;
+  };
   ready: boolean;
   status: InstanceStatus;
   concurrency: Concurrency;
@@ -1309,6 +1384,7 @@ export interface DaemonClient {
   listWorkflows(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<WorkflowPage>;
   getGaggleConnections(gaggle: string, options?: RequestOptions): Promise<GaggleConnections>;
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
+  getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;

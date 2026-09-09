@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -242,7 +243,15 @@ type nominationConnector struct {
 	artifact  []byte
 }
 
+// Run serves the shipped work-nomination workflow's three deterministic
+// connector stages: the telemetry query, and the two security-alert intakes
+// (#2984, #2987). Each is matched on its own declared command, so a stage
+// whose command drifts fails loudly here rather than being served the wrong
+// artifact.
 func (c *nominationConnector) Run(_ context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	if len(run.Command) > 1 && run.Command[1] == "security-alerts-query" {
+		return c.runSecurityAlerts(env, run)
+	}
 	wantCommand := []string{
 		"goobers", "telemetry-query", "--window", "24h",
 		"--workflow", "work-nomination",
@@ -274,6 +283,96 @@ func (c *nominationConnector) Run(_ context.Context, env apiv1.InvocationEnvelop
 	}, nil
 }
 
+// runSecurityAlerts checks the bounds the shipped example declares for each
+// alert feed and records a schema-valid, explicitly untrusted artifact.
+func (c *nominationConnector) runSecurityAlerts(env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	wants := map[string]struct {
+		command    []string
+		resultFile string
+	}{
+		"code-scanning": {
+			// --ref pins the default branch: an alert on a pull-request ref is
+			// ordinary CI, handled by that PR's ci-poll/repass path, and must
+			// not become new backlog work.
+			command: []string{
+				"goobers", "security-alerts-query", "--source", "code-scanning",
+				"--ref", "refs/heads/main", "--severity", "critical,high,medium",
+				"--max-results", "50",
+			},
+			resultFile: "code-scanning-alerts.json",
+		},
+		"dependabot": {
+			command: []string{
+				"goobers", "security-alerts-query", "--source", "dependabot",
+				"--severity", "critical,high", "--max-results", "50",
+			},
+			resultFile: "dependabot-alerts.json",
+		},
+	}
+	source := ""
+	for i, arg := range run.Command {
+		if arg == "--source" && i+1 < len(run.Command) {
+			source = run.Command[i+1]
+		}
+	}
+	want, ok := wants[source]
+	if !ok {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("security-alerts-query names unknown source %q", source)
+	}
+	if !reflect.DeepEqual(run.Command, want.command) {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("%s intake command = %v, want %v", source, run.Command, want.command)
+	}
+	if got := env.Inputs["resultFile"]; got != want.resultFile {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("%s intake resultFile = %#v, want %s", source, got, want.resultFile)
+	}
+	artifact := securityAlertsFixture(source)
+	if err := c.validator.ValidateJSON(schemas.SecurityAlerts, artifact); err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("validate %s intake artifact: %w", source, err)
+	}
+	// The real ShellExecutor derives this grade from the artifact's own
+	// `integrity` field: security-alerts-query is a provider builtin
+	// (StageInvokesProviderBuiltin), so its result is recorded through
+	// providerResultIntegrity rather than as ordinary derived output.
+	// internal/executor pins that derivation; here the fixture states the
+	// grade the executor would compute, so the CONSUMER side is exercised.
+	recorder, ok := c.rec.(interface {
+		RecordArtifactWithIntegrity(string, []byte, apiv1.Integrity) (journal.Ref, error)
+	})
+	if !ok {
+		return apiv1.ResultEnvelope{}, errors.New("artifact recorder cannot record explicit provenance")
+	}
+	ref, err := recorder.RecordArtifactWithIntegrity(
+		env.TaskID+"/"+want.resultFile, artifact, apiv1.IntegrityUnapproved)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	return apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Summary: "materialized " + source + " alerts",
+		Artifacts: []apiv1.ArtifactPointer{{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: "application/json", Integrity: ref.Integrity,
+		}},
+	}, nil
+}
+
+// securityAlertsFixture is one alert per feed, carrying the untrusted grade
+// the whole artifact is defined to have.
+func securityAlertsFixture(source string) []byte {
+	if source == "code-scanning" {
+		return []byte(`{"schema":"goobers.dev/security-alerts/v1","source":"code-scanning",` +
+			`"repository":"acme/web","queriedAt":"2026-09-07T00:00:00Z","truncated":false,` +
+			`"integrity":"unapproved","noWork":false,"alerts":[{"source":"code-scanning","number":11,` +
+			`"state":"open","severity":"high","dedupeKey":"code-scanning:codeql:go/sql-injection:internal/db/query.go",` +
+			`"integrity":"unapproved"}]}`)
+	}
+	return []byte(`{"schema":"goobers.dev/security-alerts/v1","source":"dependabot",` +
+		`"repository":"acme/web","queriedAt":"2026-09-07T00:00:00Z","truncated":false,` +
+		`"integrity":"unapproved","noWork":false,"alerts":[{"source":"dependabot","number":11,` +
+		`"state":"open","severity":"high","dedupeKey":"dependabot:GHSA-2V37-7H3G-55P8:npm:tar:portal/package-lock.json",` +
+		`"integrity":"unapproved"}]}`)
+}
+
 type fixtureNominator struct {
 	validator *validate.Validator
 	runsDir   string
@@ -287,10 +386,20 @@ type fixtureNominator struct {
 	gotFiled    int
 	gotDeduped  int
 	summary     string
+	// gotContext/gotContextIntegrity record what the nominator was actually
+	// handed, so the shipped contextFrom wiring is asserted rather than
+	// assumed: a declared upstream stage that reaches nobody is the #2081
+	// class (an exit written, documented, and unreachable).
+	gotContext          []string
+	gotContextIntegrity []string
 }
 
 func (n *fixtureNominator) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	n.gotGoal = env.Goal
+	for _, pointer := range env.ContextPointers {
+		n.gotContext = append(n.gotContext, pointer.Name)
+		n.gotContextIntegrity = append(n.gotContextIntegrity, string(pointer.Integrity))
+	}
 	n.gotCap, _ = env.Inputs["maxNominationsPerRun"].(string)
 	n.gotDedupe, _ = env.Inputs["dedupeWindowDays"].(string)
 	n.gotMinRuns, _ = env.Inputs["creditAssignmentMinRuns"].(string)
@@ -464,6 +573,26 @@ func TestWorkNominationDryRun(t *testing.T) {
 	}
 	if nominator.gotDeduped != 0 {
 		t.Errorf("deduped = %d, want 0 (first run, nothing existing)", nominator.gotDeduped)
+	}
+	// #2984/#2987: the two alert artifacts must actually REACH the nominator.
+	// A contextFrom that names a stage nobody reads is the #2081 class — an
+	// intake written, documented, and inert.
+	for _, want := range []string{"gather-code-scanning-alerts", "gather-dependabot-alerts"} {
+		if !slices.ContainsFunc(nominator.gotContext, func(name string) bool {
+			return strings.HasPrefix(name, want)
+		}) {
+			t.Errorf("nominator context = %v, want an artifact from %s", nominator.gotContext, want)
+		}
+	}
+	// And they must arrive carrying their untrusted grade, not silently
+	// promoted on the way in: alert content is repository and advisory text.
+	for i, name := range nominator.gotContext {
+		if !strings.HasPrefix(name, "gather-code-scanning-alerts") && !strings.HasPrefix(name, "gather-dependabot-alerts") {
+			continue
+		}
+		if nominator.gotContextIntegrity[i] != string(apiv1.IntegrityUnapproved) {
+			t.Errorf("%s integrity = %q, want unapproved", name, nominator.gotContextIntegrity[i])
+		}
 	}
 	if nominator.summary != "found 4 candidates; 0 deduped; filed 4; 0 skipped at per-run cap" {
 		t.Errorf("nominate summary = %q, want run counts", nominator.summary)

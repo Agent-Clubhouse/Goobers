@@ -61,6 +61,7 @@ func TestPodAttemptJournalsDispatcherPlacementProvenance(t *testing.T) {
 	})
 	fake := &fakeStageDispatcher{report: dispatcher.Report{
 		Runner: "linux-toolchain-ci", Pod: "goobers-stage-build-1", Image: "ghcr.io/example/stage:v9",
+		Node: "linux-node-1", OS: "linux",
 		QueuedAt: queuedAt, PodStartedAt: podStartedAt,
 		Phase: corev1.PodSucceeded, SurrenderConfirmed: true,
 	}}
@@ -74,7 +75,7 @@ func TestPodAttemptJournalsDispatcherPlacementProvenance(t *testing.T) {
 	if !ok {
 		t.Fatalf("no %s event for the pod attempt; the stall sweep and §11 acceptance 6 have nothing to read", journal.EventRunnerPlacement)
 	}
-	if got.Runner != "linux-toolchain-ci" || got.Pod != "goobers-stage-build-1" || got.Image != "ghcr.io/example/stage:v9" {
+	if got.Runner != "linux-toolchain-ci" || got.Pod != "goobers-stage-build-1" || got.Image != "ghcr.io/example/stage:v9" || got.Node != "linux-node-1" || got.OS != "linux" {
 		t.Fatalf("placement = %+v, want the dispatcher's runner/pod/image", got)
 	}
 	if got.QueuedAt == nil || !got.QueuedAt.Equal(queuedAt) {
@@ -206,6 +207,9 @@ func TestAttemptPlacementProjection(t *testing.T) {
 		}
 		if got.PodStartedAt != nil {
 			t.Fatalf("a zero PodStartedAt must stay absent, got %v", got.PodStartedAt)
+		}
+		if got.Node != "" || got.OS != "" {
+			t.Fatalf("older placement result must not invent node/OS: %+v", got)
 		}
 	})
 

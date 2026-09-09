@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -46,7 +48,8 @@ type workerSeams struct {
 	// store is the fleet-wide content-addressed store stage artifacts travel
 	// through. Nil means node-local only: every stage of a run must then be
 	// polled by THIS worker or the first cross-node pointer fails closed.
-	store blobstore.Store
+	store             blobstore.Store
+	checkpointEmitter livejournal.TranscriptEmitter
 	// logf receives reload diagnostics. A rejected reload is loud but never
 	// fatal — the worker keeps serving from its last-known-good snapshot —
 	// so it needs somewhere to say so that is not the failed stage's error.
@@ -312,9 +315,22 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 // journal: the worker did not mint the run, cannot author its identity without
 // inventing conformance-normative fields, and must not create a directory the
 // engine's projection will later try to create itself.
-func (w *workerSeams) recorderFor(g *gaggleSeams, runID string) (runner.ArtifactRecorder, runner.SecretRegistrar) {
+func (w *workerSeams) recorderFor(g *gaggleSeams, runID, gaggle string) (runner.ArtifactRecorder, runner.SecretRegistrar) {
 	dir := workerhost.StagingArtifactsDir(g.runsDir, runID)
-	return workerhost.NewStagingArtifacts(dir, w.scrubber, w.store), w.shared
+	recorder := workerhost.NewStagingArtifacts(dir, w.scrubber, w.store)
+	if w.checkpointEmitter != nil {
+		return &checkpointWorkerArtifacts{StagingArtifacts: recorder, TranscriptTransport: livejournal.TranscriptTransport{
+			RunID: runID, Gaggle: gaggle, Emitter: w.checkpointEmitter, Blobs: w.store,
+		}}, w.shared
+	}
+	return recorder, w.shared
+}
+
+// Embed the concrete recorder to retain its context resolver and bounded-write
+// methods as well as the durable remote checkpoint factory.
+type checkpointWorkerArtifacts struct {
+	*workerhost.StagingArtifacts
+	livejournal.TranscriptTransport
 }
 
 // materialize fetches every context blob this node does not already hold, so
@@ -392,7 +408,7 @@ func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run ap
 	if err := d.seams.materialize(ctx, g, env); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	rec, reg := d.seams.recorderFor(g, env.RunID)
+	rec, reg := d.seams.recorderFor(g, env.RunID, env.Gaggle)
 	exec, err := g.cfg.NewDeterministic(rec, reg)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("worker: construct deterministic executor: %w", err)
@@ -447,7 +463,7 @@ func (a workerGoober) executor(g *gaggleSeams, env apiv1.InvocationEnvelope) (in
 	if g.cfg.NewAgentic == nil {
 		return nil, fmt.Errorf("worker: no agentic executor configured for gaggle %q", env.Gaggle)
 	}
-	rec, reg := a.seams.recorderFor(g, env.RunID)
+	rec, reg := a.seams.recorderFor(g, env.RunID, env.Gaggle)
 	exec, err := g.cfg.NewAgentic(env.Goober, rec, reg)
 	if err != nil {
 		return nil, fmt.Errorf("worker: construct agentic executor for goober %q: %w", env.Goober, err)
@@ -467,17 +483,19 @@ func gaggleProjectRef(set *instance.ConfigSet, gaggle string) apiv1.RepoRef {
 	return apiv1.RepoRef{}
 }
 
-// resolveGoobersForGaggle returns the goober specs a gaggle's stages may name.
+// resolveGoobersForGaggle returns the goober specs a declared gaggle's stages
+// may name. Deterministic tasks and automated gates need no goobers; selecting
+// an absent goober remains an error at the agentic executor boundary.
 func resolveGoobersForGaggle(set *instance.ConfigSet, gaggle string) (map[string]apiv1.GooberSpec, error) {
+	if !slices.ContainsFunc(set.Gaggles, func(candidate apiv1.Gaggle) bool { return candidate.Name == gaggle }) {
+		return nil, fmt.Errorf("worker: gaggle %q not found in config", gaggle)
+	}
 	out := map[string]apiv1.GooberSpec{}
 	for i := range set.Goobers {
 		g := set.Goobers[i]
 		if g.Spec.Gaggle == "" || g.Spec.Gaggle == gaggle {
 			out[g.Name] = g.Spec
 		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("worker: no goobers configured for gaggle %q", gaggle)
 	}
 	return out, nil
 }

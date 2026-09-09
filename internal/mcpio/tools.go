@@ -63,10 +63,10 @@ func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string
 	return resolveRooted(t.cfg.Workspace, rel, createMissingDirs)
 }
 
-// PublishOutput writes content to the task's declared artifactFile. There is
-// exactly one such target per invocation today (a task has one artifactFile
-// input, not a map) — see #2406's issue body for why this doesn't take a
-// name parameter yet.
+// PublishOutput writes the task's single declared control target: artifactFile
+// for legacy output, or artifactManifestFile for a multi-file staging manifest.
+// Manifest payloads are separately prepared by the stage; the runner validates
+// and lifts the complete set only after completion, never from this tool call.
 //
 // The write is atomic (#2422). os.WriteFile truncates the existing artifact
 // before writing its replacement, so a second publish that died mid-write —
@@ -85,10 +85,17 @@ func (t *Toolset) resolveInWorkspace(rel string, createMissingDirs bool) (string
 // caller can tell two successful publishes apart and confirm which one it is
 // looking at.
 func (t *Toolset) PublishOutput(content string) (bytesWritten int, digest string, err error) {
-	if t.cfg.ArtifactFile == "" {
+	target := t.cfg.ArtifactFile
+	if t.cfg.ArtifactManifestFile != "" {
+		if target != "" {
+			return 0, "", fmt.Errorf("artifactFile and artifactManifestFile are mutually exclusive")
+		}
+		target = t.cfg.ArtifactManifestFile
+	}
+	if target == "" {
 		return 0, "", fmt.Errorf("this stage declares no artifactFile input — publish_output has nothing to write to")
 	}
-	full, err := t.resolveInWorkspace(t.cfg.ArtifactFile, true)
+	full, err := t.resolveInWorkspace(target, true)
 	if err != nil {
 		return 0, "", fmt.Errorf("resolve artifactFile: %w", err)
 	}

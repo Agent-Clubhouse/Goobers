@@ -79,6 +79,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"roots discover": {
+		{name: "json", desc: "Emit structured root discovery"},
+	},
+	"roots decommission": {
+		{name: "reason", takesArg: true, desc: "Why this root is historical"},
+	},
 	"version": {
 		{name: "json", desc: "Emit JSON"},
 	},
@@ -108,6 +114,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate, standardInitTemplate}, desc: "Seed a named onboarding template"},
 		{name: "ci-command", takesArg: true, desc: "With --template=standard, local CI command as JSON argv"},
 		{name: "required-capabilities", takesArg: true, desc: "With --template=standard, comma-separated toolchain capabilities"},
+		{name: "provider", takesArg: true, values: []string{"github", "ado"}, desc: "With --template=standard, repository provider"},
 		{name: "harness", takesArg: true, values: []string{string(apiv1.HarnessCopilot), string(apiv1.HarnessClaudeCode)}, desc: "With --template, the harness every seeded goober uses"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
 		{name: "json", desc: "Emit the config-source action result as JSON"},
@@ -194,6 +201,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
+		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
+		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},
+		{name: "overlay-dir", takesArg: true, desc: "Consumer kustomization directory (--k8s)"},
+		{name: "image-runtime", takesArg: true, values: []string{"docker", "podman"}, desc: "Runtime for pinned image checks"},
+		{name: "image-tools", takesArg: true, desc: "Required PATH tools in pinned images"},
+		{name: "image-ca", takesArg: true, desc: "Internal root CA PEM for image trust checks"},
 		{name: "k8s", desc: "Preflight a Kubernetes cluster"},
 		{name: "repo", desc: "Compare repository forge policy with GitHub"},
 		{name: "av-exclusions", desc: "List the directories Goobers writes then reads and verify antivirus exclusions (advisory)"},
@@ -268,6 +282,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "drain-timeout", takesArg: true, desc: "Graceful-drain timeout"},
 		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
 	},
+	"config-seed": {
+		{name: "mirror", takesArg: true, desc: "Read-only rendered config mirror path"},
+		{name: "instance", takesArg: true, desc: "Private worker instance path"},
+	},
 	"speech preflight": {
 		{name: "json", desc: "Emit JSON"},
 	},
@@ -291,12 +309,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
 	"run": {
+		{name: "no-api", desc: "Explicitly use local execution or file delegation"},
+		{name: "api-timeout", takesArg: true, desc: "Bound API validation and acceptance"},
+		{name: "force", desc: "Bypass hourly and daily cadence budgets for this manual run"},
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "github-progress", desc: "Publish live progress to one GitHub Check Run"},
 		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "request-id", takesArg: true, desc: "Retry-safe delivery identity for an API submission"},
-		{name: "no-wait", desc: "Return after the run is dispatched"},
+		{name: "no-wait", desc: "Return on durable API acceptance or local dispatch"},
 	},
 	"approve": {
 		{name: "decision", takesArg: true, desc: "Gate decision"},
@@ -307,6 +328,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"run cancel": {
+		{name: "no-api", desc: "Explicitly use local cancellation or file delegation"},
+		{name: "request-id", takesArg: true, desc: "Reuse an API cancellation identity"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"override": {
@@ -343,6 +366,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "limit", takesArg: true, desc: "Maximum runs"},
 		{name: "watch", desc: "Refresh the status board until interrupted"},
 		{name: "interval", takesArg: true, desc: "Watch refresh interval"},
+	},
+	"queue-explain": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "pr", takesArg: true, desc: "PR number to explain"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle namespace"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow that evaluated the queue"},
 	},
 	"stats": {
 		{name: "since", takesArg: true, desc: "Only include activity from the preceding duration"},
@@ -476,6 +505,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},
+		{name: "resweep", desc: "Run scheduled re-sweep with --claim"},
 		{name: "debug", desc: "Explain candidate eligibility and exclusions"},
 		{name: "release", desc: "Release this run's claim leases early"},
 		{name: "read-only", desc: "Query without mutating provider state"},
@@ -494,6 +524,23 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "max", takesArg: true, desc: "Maximum candidates inspected in one sweep"},
 		{name: "min-age", takesArg: true, desc: "Minimum terminal run age required for deletion"},
 		{name: "after", takesArg: true, desc: "Resume after this branch name in lexical order"},
+	},
+	"diagnostics bundle": {
+		{name: "run", takesArg: true, desc: "Limit the bundle to one run id"},
+		{name: "pr", takesArg: true, desc: "Limit the bundle to runs that touched one pull request"},
+		{name: "max-runs", takesArg: true, desc: "Maximum runs to collect when no run is named"},
+		{name: "output", takesArg: true, desc: "Archive path to write"},
+		{name: "json", desc: "Write the machine-readable document to stdout"},
+	},
+	"security-alerts-query": {
+		{name: "source", takesArg: true, values: []string{"code-scanning", "dependabot"}, desc: "Alert feed to read"},
+		{name: "state", takesArg: true, values: []string{"open", "dismissed", "fixed", "auto_dismissed", "all"}, desc: "Alert state filter (default open)"},
+		{name: "severity", takesArg: true, desc: "Comma-separated severity filter"},
+		{name: "tool", takesArg: true, desc: "Code-scanning analysis tool name"},
+		{name: "ref", takesArg: true, desc: "Code-scanning git ref"},
+		{name: "ecosystem", takesArg: true, desc: "Comma-separated Dependabot package ecosystems"},
+		{name: "scope", takesArg: true, values: []string{"runtime", "development"}, desc: "Dependabot dependency scope"},
+		{name: "max-results", takesArg: true, desc: "Maximum alerts to collect"},
 	},
 	"telemetry-query": {
 		{name: "window", takesArg: true, desc: "Lookback window (e.g. 24h)"},

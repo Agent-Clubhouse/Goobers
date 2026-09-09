@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // Defaults for Config fields left zero. Each is a named constant so a
@@ -44,6 +45,10 @@ const (
 	// DefaultSupervisionInterval paces the supervise loop's pod polls and
 	// liveness relays.
 	DefaultSupervisionInterval = 15 * time.Second
+
+	// DefaultDisposalTimeout bounds cleanup independently of the activity, so
+	// cancellation stops the stage pod instead of leaving it executing.
+	DefaultDisposalTimeout = 30 * time.Second
 
 	// DefaultUnschedulableGrace is how long a pod may report Unschedulable
 	// before its attempt is failed. Five minutes is chosen to outlast an AKS
@@ -278,6 +283,12 @@ type Attempt struct {
 	Workflow string
 	Stage    string
 	Number   int
+	// PodAttempt separates physical dispatch identity from the journal ordinal.
+	// Zero uses Number for legacy callers.
+	PodAttempt int
+	// Class is the driver-supplied retry lineage; empty identifies an initial
+	// or legacy attempt. The pod ordinal cannot determine this class.
+	Class journal.AttemptClass
 	// LedgerTouching marks a stage that mutates instance-ledger state
 	// (claims, close-out). Such a stage NEVER places on Windows
 	// (architecture §6/§11.7) — the solver refuses it upstream and the
@@ -703,18 +714,26 @@ type Report struct {
 	// load-bearing (it IS the skew comparison), so the provenance has to name
 	// the image that actually ran.
 	Image string
+	// Node is the assigned spec.nodeName read from a supervised API pod.
+	// OS is that assigned pod's spec.os, falling back to a recognized
+	// kubernetes.io/os scheduling constraint. It is not an independent node
+	// kernel measurement. Both remain absent until an assignment is observed.
+	Node string
+	OS   string
 	// Phase is the pod's terminal phase.
 	Phase corev1.PodPhase
 	// SurrenderConfirmed reports whether the disposal gate confirmed output
 	// surrender before the pod was disposed.
 	SurrenderConfirmed bool
-	// Disposed reports whether the pod was deleted.
+	// Disposed reports whether Kubernetes accepted the deletion request.
+	// Canceled dispatch additionally observes absence; DisposeErr reports when
+	// that observation could not finish within the cleanup deadline.
 	Disposed bool
-	// DisposeErr records a DeletePod failure encountered while disposing the
+	// DisposeErr records a deletion or disappearance-observation failure for the
 	// pod. It is a leak signal only — a dispose failure NEVER masks a settled
 	// outcome (a confirmed success or a confirmed PodFailed), so Dispatch's
 	// returned error still reflects the settled result and this field carries
-	// the disposal failure alongside it. Disposed==false is the paired signal;
+	// the disposal failure alongside it. Disposed==false means DELETE failed;
 	// the leak is bounded by activeDeadlineSeconds and the restart reconcile
 	// sweep (dispatcher §5).
 	DisposeErr error
@@ -824,14 +843,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// caller that inspects the returned report after a create failure still
 	// sees which image was about to run.
 	//
-	// Scope note, because the comment used to over-promise: this does NOT
-	// reach the engine's callers. engine.DispatchStage discards the report on
-	// every error that left surrender unconfirmed, so the only reports whose
-	// Image crosses that activity boundary are settled ones, which by
-	// definition already created their pod (see engine.StagePlacement). The
-	// stamp stays here regardless: it costs nothing, it is the honest ordering
-	// for a direct caller, and it is what a future failure-carrying seam would
-	// read.
+	// The engine transports settled reports in the result and failed reports
+	// in versioned error details. Keeping this stamp before creation preserves
+	// the selected image even when creation fails, without inventing a pod.
 	report.Image = stageContainerImage(pod)
 
 	if err := d.pods.CreatePod(ctx, pod); err != nil {
@@ -840,7 +854,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()
 
-	phase, superviseErr := d.supervise(ctx, attempt, pod.Namespace, pod.Name)
+	phase, superviseErr := d.supervise(ctx, attempt, pod.Namespace, pod.Name, &report)
 	report.Phase = phase
 
 	if superviseErr == nil {
@@ -864,17 +878,23 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// confirmed stage-failure into an infra error, discarding the surrendered
 	// result and spending an infra retry re-dispatching an already-settled
 	// (possibly MUTATING) stage. So record the disposal failure on the report
-	// as the leak signal (report.Disposed stays false; the leak is bounded by
-	// activeDeadlineSeconds and the restart reconcile sweep, dispatcher §5) and
+	// as the leak signal (Disposed is false for a refused DELETE; accepted
+	// deletion with unconfirmed disappearance sets DisposeErr too). Leaks are
+	// bounded by activeDeadlineSeconds and restart reconcile (dispatcher §5), and
 	// let the settled path fall through: PodFailed → ErrStageFailed, success →
 	// nil. When superviseErr is already non-nil there is no settled outcome to
 	// protect; that infra error is returned unchanged and DisposeErr rides
 	// alongside on the report. superviseErr is never overwritten here, because
 	// there is no superviseErr == nil state that is not a settled outcome.
-	if delErr := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); delErr != nil {
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), DefaultDisposalTimeout)
+	defer cancelCleanup()
+	if delErr := d.pods.DeletePod(cleanupCtx, pod.Namespace, pod.Name); delErr != nil {
 		report.DisposeErr = fmt.Errorf("dispatcher: dispose pod %s/%s: %w", pod.Namespace, pod.Name, delErr)
 	} else {
 		report.Disposed = true
+		if ctx.Err() != nil {
+			report.DisposeErr = d.awaitDisposedPod(cleanupCtx, pod.Namespace, pod.Name)
+		}
 	}
 
 	if superviseErr != nil {
@@ -1000,19 +1020,37 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 // observation to the live journal. Errors from the relay are swallowed by
 // design (the journal is observability, not control flow); errors from the
 // pod read are fatal to supervision.
-func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, name string) (corev1.PodPhase, error) {
+func (d *Dispatcher) supervise(ctx context.Context, attempt Attempt, namespace, name string, report *Report) (corev1.PodPhase, error) {
 	var unschedulableSince time.Time
 	for {
 		pod, err := d.pods.GetPod(ctx, namespace, name)
 		if err != nil {
 			return "", fmt.Errorf("dispatcher: supervise pod %s/%s: %w", namespace, name, err)
 		}
+		// Short stages can pass from Pending to terminal between polls. Read
+		// assignment before every phase/sidecar exit, without inventing a
+		// Running observation or changing the existing creation timestamp.
+		observePodPlacement(report, pod)
 		phase := pod.Status.Phase
 		if d.journal != nil {
 			_ = d.journal.RelayLiveness(ctx, attempt, name, phase)
 		}
 		if phase == corev1.PodSucceeded || phase == corev1.PodFailed {
 			return phase, nil
+		}
+		// DI-9 templates can carry resident sidecars. The stage container's
+		// exit settles execution even while those sidecars keep the pod Running;
+		// surrender is still confirmed by Dispatch before disposal.
+		if stage := stageContainerIn(pod.Spec.Containers); stage != nil {
+			for _, status := range pod.Status.ContainerStatuses {
+				if status.Name != stage.Name || status.State.Terminated == nil {
+					continue
+				}
+				if status.State.Terminated.ExitCode != 0 {
+					return corev1.PodFailed, nil
+				}
+				return corev1.PodSucceeded, nil
+			}
 		}
 		// A pod no node can accept reaches NEITHER terminal phase, so without
 		// this the loop polls until the activity's own deadline expires — the

@@ -291,6 +291,10 @@ func runBlockedClear(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cleared := false
+	if err := prepareManualRoot(layoutFor(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	ambiguous := false
 	err := updateBlockedRecords(layoutFor(root), func(recs map[string]blockedRecord) bool {
 		targetKey := ""

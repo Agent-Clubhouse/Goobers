@@ -30,6 +30,11 @@ var authorSchemaFiles = map[string]string{
 // TestEmbeddedSchemaLeavesMapToFeatureRegistry; entries that become
 // registered (or leave the schemas) fail it too.
 var schemaLeafExceptions = map[string]string{
+	// Publication policy belongs to the binary, not this interpreter.
+	// The public registry and TestCostPublicationFeatureIsIndependentOfWorkflowPin
+	// cover its registration and availability across supported workflow pins.
+	"gaggle.spec.cost.enabled": "binary-layer publication policy; registered in internal/workflow/features.go, independent of the DSL interpreter",
+
 	// Identity envelope: fixed document identity and k8s-style metadata are not
 	// DSL capabilities and are expected to stay excepted.
 	"gaggle.apiVersion":             "identity envelope: fixed document identity, not a DSL capability",

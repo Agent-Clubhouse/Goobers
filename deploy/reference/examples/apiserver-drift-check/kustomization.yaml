@@ -6,6 +6,7 @@ namespace: goobers-system
 resources:
   - rbac.yaml
   - cronjob.yaml
+  - networkpolicy.yaml
 
 images:
   - name: goobers

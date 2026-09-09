@@ -348,6 +348,11 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// and packaging/docker/Dockerfile is the only leg that can drift from
 		// go.mod (ci.yml defers to it via go-version-file). #3452.
 		{label: "go-toolchain", command: tools.goCommand, args: []string{"run", "./test/gotoolchain"}, group: groupChecks},
+		// A non-Go example whose Go command residue is corrected only by an
+		// invisible gaggle override reads as the wrong stack (#2554), and the
+		// hand-maintained stack-support tier table can claim CI evidence
+		// nothing in CI produces (#2555).
+		{label: "stack-parity", command: tools.goCommand, args: []string{"run", "./test/stackparity"}, group: groupChecks},
 	}
 
 	portalPrepared := false

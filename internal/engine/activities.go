@@ -231,32 +231,15 @@ type UnpushedDiffCapture struct {
 // second — which runner served the stage, which pod carried it, which image
 // that pod actually ran, and how long the attempt waited for capacity.
 //
-// SETTLED ATTEMPTS ONLY, and every field is then populated. This is a property
-// of the seam, not a coincidence, so read it as the contract:
-// DispatchStage builds provenance at exactly one return — the one that carries
-// a surrendered envelope — and every dispatcher error that left surrender
-// unconfirmed is returned as a classified error with the report DISCARDED
-// (dispatchstage.go, the SurrenderConfirmed guard). A settled outcome in turn
-// requires CreatePod to have already succeeded, and Dispatch stamps Runner and
-// QueuedAt before it renders, Image off the rendered spec, and Pod and
-// PodStartedAt immediately after the create. So a non-nil *StagePlacement
-// always names all five. Do NOT write a branch for a partially populated
-// block: it is unreachable, and code that handles it is untested code that
-// will rot.
-//
-// The corollary is the honest cost of this shape, and a caller journalling
-// §11 acceptance 6 has to know it: the placement failures an operator most
-// wants to see — a capacity wait that timed out, a decision-009 skew refusal,
-// an agentic kit that would not publish — deliver NO provenance block at all.
-// What crosses instead is the classified error, whose message names the runner
-// ("capacity wait for runner %q", "probe capacity for runner %q") and, for a
-// skew refusal, the exact image ("version-skew refusal for image %q"). That is
-// text, not fields, and it is deliberately all this step ships: carrying a
-// report onto the failure means putting it in the ApplicationError details,
-// where slot 0 already belongs to the infrastructure retry-at instant
-// (classifySeamError / infrastructureRetryDelay), so it is a wire-contract
-// change that belongs with the runner branch that would consume it (step 6),
-// not with the export.
+// Settled attempts carry this block in their result. They always name Runner,
+// QueuedAt, Image, Pod and PodStartedAt: creation must precede surrender.
+// A failed activity cannot transport a result, so its available observations
+// travel instead in versioned application-error details, recovered through
+// DispatchFailurePlacement. A refusal before creation may name only the runner
+// and queue time. No requested pin, daemon host, or guessed pod is substituted.
+// Node and OS remain absent unless supervision observed an assignment and a
+// recognized OS constraint. Older failures have no extension and yield nil;
+// slot zero retains the existing infrastructure retry-at wire contract.
 //
 // Every field is nevertheless omitzero, for decoding tolerance rather than to
 // describe a live state: a block recorded by some other or older producer
@@ -271,6 +254,11 @@ type StagePlacement struct {
 	// runner's declared host, so a deployment-templated runner reports the
 	// template's image and not the Deployment name.
 	Image string `json:"image,omitzero"`
+	// Node is the API-observed pod assignment. OS is the assigned pod's
+	// explicit OS or recognized OS scheduling constraint, not a separate
+	// measurement of the node kernel. Older reports leave both absent.
+	Node string `json:"node,omitzero"`
+	OS   string `json:"os,omitzero"`
 	// QueuedAt and PodStartedAt bound the attempt's wait for capacity:
 	// QueuedAt is stamped when the dispatcher accepted the attempt,
 	// PodStartedAt when the pod was created.
@@ -728,7 +716,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 		// #415: an agentic stage asked to change something changed nothing.
 		// No reviewer can turn that into a pass. Scoped to an agentic subject
 		// because a DETERMINISTIC one legitimately produces no diff.
-		verdict := gate.EmptyDiffVerdict()
+		verdict := gate.MechanicalVerdict(gate.EmptyDiffVerdict(), apiv1.VerdictReasonEmptyDiff, env.ReviewerMechanicalEscalationAllowed)
 		out.Verdict = verdict
 		out.EmptyDiff = true
 		return out, nil
@@ -738,7 +726,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 		// the reviewer could only repeat its previous verdict. Resolving here
 		// is what stops a non-convergent loop from spending the whole repass
 		// budget on reviewer calls with a foregone conclusion.
-		verdict := gate.DuplicateDiffVerdict(out.DiffDigest, nil)
+		verdict := gate.MechanicalVerdict(gate.DuplicateDiffVerdict(out.DiffDigest, nil), apiv1.VerdictReasonUnchangedRepass, env.ReviewerMechanicalEscalationAllowed)
 		out.Verdict = verdict
 		out.DuplicateDiff = true
 		return out, nil
@@ -997,9 +985,9 @@ func readMutationSidecar(workspace string) (facts []mutationFact, issues []strin
 	return facts, issues
 }
 
-// EvaluateAutomated runs an automated gate check. Automated gates are pure
-// functions over env.Inputs and never receive a workspace, matching the local
-// runner (#112) — no provisioning here.
+// EvaluateAutomated runs an automated gate check. Scalar checks remain pure;
+// artifact-aware checks use runner-bound journal readers. Neither kind receives
+// a workspace, matching the local runner (#112) — no provisioning here.
 func (a *Activities) EvaluateAutomated(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
 	if a.Auto == nil {
 		return "", classifySeamError(ErrNotConfigured)

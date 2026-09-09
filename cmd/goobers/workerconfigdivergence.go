@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/instance"
 )
 
 // Worker config-tree divergence detection (#4153).
@@ -53,6 +56,28 @@ import (
 // GET per worker per minute.
 const workerDivergenceCheckInterval = time.Minute
 
+// workerDigestTokenSource keeps static-token deployments compatible while a
+// split worker uses its existing shared key for a separate, short-lived worker
+// identity. Tokens are minted per request, never retained beyond a poll.
+func workerDigestTokenSource(instanceRoot, staticToken string) (func() (string, error), error) {
+	if staticToken != "" {
+		return func() (string, error) { return staticToken, nil }, nil
+	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(instanceRoot).ConfigFile())
+	if err != nil {
+		return nil, err
+	}
+	signer, err := podTokenMinter(cfg)
+	if err != nil || signer == nil {
+		return nil, err
+	}
+	owner, err := os.Hostname()
+	if err != nil {
+		return nil, err
+	}
+	return func() (string, error) { return signer.MintWorkerConfigDigest(owner, 2*time.Minute) }, nil
+}
+
 // divergenceReport is one comparison's outcome.
 type divergenceReport struct {
 	// DaemonDigest is the tree the daemon reports in force, empty when it
@@ -95,7 +120,10 @@ func fetchDaemonConfigDigest(ctx context.Context, client *http.Client, baseURL, 
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
-	response, err := client.Do(request)
+	// A config endpoint relocation must not forward a worker credential.
+	boundedClient := *client
+	boundedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := boundedClient.Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -106,7 +134,14 @@ func fetchDaemonConfigDigest(ctx context.Context, client *http.Client, baseURL, 
 	var payload struct {
 		Digest string `json:"digest"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4097))
+	if err != nil {
+		return "", fmt.Errorf("read config-digest response: %w", err)
+	}
+	if len(body) > 4096 {
+		return "", fmt.Errorf("config-digest response exceeds 4096 bytes")
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", fmt.Errorf("decode config-digest response: %w", err)
 	}
 	if payload.Digest == "" {
@@ -144,7 +179,8 @@ func startWorkerDivergenceWatcher(
 	ctx context.Context,
 	seams *workerSeams,
 	client *http.Client,
-	baseURL, token string,
+	baseURL string,
+	tokenSource func() (string, error),
 	interval time.Duration,
 ) *workerConfigWatcher {
 	ctx, cancel := context.WithCancel(ctx)
@@ -161,7 +197,11 @@ func startWorkerDivergenceWatcher(
 				return
 			case <-ticker.C:
 				requestCtx, cancelRequest := context.WithTimeout(ctx, 15*time.Second)
-				daemonDigest, err := fetchDaemonConfigDigest(requestCtx, client, baseURL, token)
+				token, err := tokenSource()
+				var daemonDigest string
+				if err == nil {
+					daemonDigest, err = fetchDaemonConfigDigest(requestCtx, client, baseURL, token)
+				}
 				cancelRequest()
 				report := compareConfigDigests(seams.currentDigest(), daemonDigest, err)
 				message := report.Message()

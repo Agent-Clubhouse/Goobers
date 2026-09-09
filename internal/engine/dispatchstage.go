@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
@@ -78,6 +79,13 @@ func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
 // written, and an existing history must replay identically
 // (dispatchone_test.go's recorded-history fixture is the guard).
 type DispatchStageInput struct {
+	// PodAttempt is the physical dispatch ordinal across task graph visits.
+	// Zero retains the legacy Envelope.Attempt identity. Journal lineage stays
+	// in Envelope.Attempt/Class and is independent of this surrender/pod key.
+	PodAttempt int `json:"podAttempt,omitempty"`
+	// Class is supplied by the retry driver, independently of the pod ordinal.
+	// Omitted in legacy histories, which retain the initial-attempt default.
+	Class     journal.AttemptClass     `json:"class,omitempty"`
 	Envelope  apiv1.InvocationEnvelope `json:"envelope"`
 	Placement PinnedPlacement          `json:"placement"`
 	Run       *apiv1.DeterministicRun  `json:"run,omitempty"`
@@ -194,7 +202,7 @@ func gatePodAttempt(gateDispatches map[string]int, gate string) int {
 // #3844's instance-root refusal list is command-keyed and a gate declares
 // no command, so there is nothing of it to apply here; the pod entrypoint's
 // backstop still stands for anything a reviewer's harness might spawn.
-func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int) (apiv1.Verdict, error) {
+func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int, class journal.AttemptClass, rec *runJournal) (apiv1.Verdict, error) {
 	workspace := g.EffectiveWorkspace()
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
@@ -206,7 +214,9 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
-	if err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+		PodAttempt:       dispatchPodAttempt(ctx, g.Name, podAttempt),
+		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
 		Placement:        placement,
 		Workspace:        workspace,
@@ -214,7 +224,9 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		WorkspaceBranch:  workspaceBranch,
 		Review:           true,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-	}).Get(ctx, &result); err != nil {
+	}).Get(ctx, &result)
+	recordGatePlacement(ctx, rec, g.Name, podAttempt, class, result, err)
+	if err != nil {
 		return apiv1.Verdict{}, err
 	}
 	if result.Verdict == nil {
@@ -254,7 +266,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 //
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
-func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication, taskDispatches map[string]int) (apiv1.ResultEnvelope, error) {
 	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
 	// declared command or script (dispatchexec), and invoking a goober through
 	// its harness has no pod-side path at all — the local arm reaches it via
@@ -312,8 +324,9 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			return dispatchInstanceRootRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
 		}
 	}
-	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
+		taskDispatches[t.Name]++
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
 		// OwningWorkflowID is read here, inside the workflow, because this
@@ -321,6 +334,8 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		// is claimID+"-run", which no id composed from the pod's labels or
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
 		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+			PodAttempt:       dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
+			Class:            dispatchAttemptClass(ctx, class),
 			Envelope:         attemptEnv,
 			Placement:        placement,
 			Run:              t.Run,
@@ -380,7 +395,7 @@ func instanceRootRefusalReason(taskName string, command []string, kind string) s
 // the walk's continuity record must see an empty digest rather than inherit the
 // previous stage's by omission.
 func dispatchInstanceRootRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, reason string) (apiv1.ResultEnvelope, error) {
-	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
 		return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Summary: "stage requires the daemon's instance root; refused before a pod was created",
@@ -445,6 +460,11 @@ func stageWantsRunContext(run *apiv1.DeterministicRun) bool {
 // (architecture §5 item 5); a local working copy would be dead weight the
 // remote stage never sees.
 func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput) (stageActivityResult, error) {
+	stopHeartbeat := heartbeatDispatch(ctx)
+	defer stopHeartbeat()
+	if err := validatePodAttempt(input.PodAttempt); err != nil {
+		return stageActivityResult{}, err
+	}
 	if a.Dispatcher == nil || a.Surrenders == nil {
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("mode-3 stage dispatch for %q requires a dispatcher and a surrender store: %w", input.Envelope.TaskID, ErrNotConfigured))
 	}
@@ -493,6 +513,8 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		Workflow:       input.Envelope.WorkflowID,
 		Stage:          strings.TrimPrefix(input.Envelope.TaskID, input.Envelope.RunID+":"),
 		Number:         int(input.Envelope.Attempt),
+		PodAttempt:     input.PodAttempt,
+		Class:          input.Class,
 		LedgerTouching: input.Placement.LedgerTouching,
 		CPU:            input.Placement.CPU,
 		Memory:         input.Placement.Memory,
@@ -613,6 +635,8 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		attempt.RunContext = map[string]string{}
 		if repo := input.Envelope.RepoRef; repo.Provider != "" {
 			attempt.RunContext[executor.RepoProviderEnvVar] = string(repo.Provider)
+			// Explicit empty also shadows template EnvFrom for fixed-host repos.
+			attempt.RunContext[executor.RepoBaseURLEnvVar] = repo.BaseURL
 			attempt.RunContext[executor.RepoOwnerEnvVar] = repo.Owner
 			attempt.RunContext[executor.RepoNameEnvVar] = repo.Name
 			if repo.Project != "" {
@@ -649,6 +673,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	}
 
 	report, err := a.Dispatcher.Dispatch(ctx, attempt, input.Placement.Eligible)
+	a.logDispatchCleanup(ctx, attempt, report)
 	// Defense-in-depth for the settled-outcome invariant (#3588): once the
 	// dispatcher has confirmed surrender, the pod's surrendered envelope is the
 	// authoritative outcome — so ANY dispatcher error that arrives with
@@ -660,7 +685,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// dispatch fault here. Keying off SurrenderConfirmed rather than the error
 	// kind alone closes the whole class of post-surrender dispatcher errors.
 	if err != nil && !errors.Is(err, dispatcher.ErrStageFailed) && !report.SurrenderConfirmed {
-		return stageActivityResult{}, classifyDispatchError(err)
+		return unconfirmedDispatchFailure(ctx, err, report)
 	}
 	if err == nil && report.Local {
 		// SelectRunner resolved self inside an eligible set the workflow routed
@@ -675,31 +700,32 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// stage's ResultFailure is a business outcome the definition routes, with
 	// exact parity to the local executor returning a failure envelope rather
 	// than an error.
-	surrendered, rerr := dispatcher.ReadSurrenderedResult(ctx, a.Surrenders, attempt.RunID, attempt.Stage, attempt.Number)
+	surrendered, rerr := a.readDispatchSurrender(ctx, attempt, report.SurrenderConfirmed)
 	if rerr != nil {
 		// The gate confirmed surrender yet the result is unreadable: the
 		// substrate lost or garbled the outputs after the stage did its work.
 		// Infra-classed — the attempt retries on a fresh pod (D1), never
 		// burning the policy budget on a data-plane fault.
 		if errors.Is(rerr, dispatcher.ErrNoSurrender) {
-			return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, rerr)))
+			return dispatchFailureResult(classifySeamError(invoke.InfrastructureFailure(fmt.Errorf("engine: surrender confirmed for stage %q attempt %d but the surrendered result is absent: %w", input.Envelope.TaskID, attempt.Number, rerr))), report)
 		}
-		return stageActivityResult{}, classifySeamError(invoke.InfrastructureFailure(rerr))
+		return dispatchFailureResult(classifySeamError(invoke.InfrastructureFailure(rerr)), report)
 	}
 	if surrendered.Result.Status == "" {
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number))
+		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
 	}
 	if input.Review {
-		return a.reviewActivityResult(input, attempt.Number, surrendered, report)
+		result, reviewErr := a.reviewActivityResult(input, attempt.Number, surrendered, report)
+		return result, withDispatchFailurePlacement(reviewErr, report)
 	}
 	if surrendered.Verdict != nil {
 		// A task attempt has no reviewer; a verdict here means the pod ran
 		// under a review kit it was not dispatched with. Refused rather than
 		// dropped: a silently ignored verdict is exactly the shape a
 		// substituted surrender document would take to look harmless.
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number))
+		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
 	}
-	return a.scrubStageActivityResult(stageActivityResult{
+	result, resultErr := a.scrubStageActivityResult(stageActivityResult{
 		ResultEnvelope:     surrendered.Result,
 		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
 		MutationIssues:     surrendered.MutationIssues,
@@ -715,6 +741,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		WorkspaceDeltaUnchanged: surrendered.WorkspaceDeltaUnchanged && surrendered.WorkspaceDelta == "",
 		Placement:               placementProvenance(report),
 	})
+	return result, withDispatchFailurePlacement(resultErr, report)
 }
 
 // reviewActivityResult projects a REVIEW attempt's surrender (decision 001
@@ -836,9 +863,9 @@ func validateSurrenderedVerdict(verdict apiv1.Verdict) error {
 // activity was handed: the point of the block is to record what the substrate
 // did, so echoing the request back would make it evidence of nothing.
 //
-// A Local report yields nil — DispatchStage already refuses that case as a
-// pin/selection disagreement, and nil keeps "provenance present" equivalent to
-// "a pod ran this".
+// A Local report yields nil because it has no pod substrate observations.
+// Failed dispatches can carry partial observations; a selected runner alone
+// does not imply that a pod was created or started.
 func placementProvenance(report dispatcher.Report) *StagePlacement {
 	if report.Local {
 		return nil
@@ -847,6 +874,8 @@ func placementProvenance(report dispatcher.Report) *StagePlacement {
 		Runner:       report.Runner,
 		Pod:          report.Pod,
 		Image:        report.Image,
+		Node:         report.Node,
+		OS:           report.OS,
 		QueuedAt:     report.QueuedAt,
 		PodStartedAt: report.PodStartedAt,
 	}

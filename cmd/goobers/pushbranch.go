@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -171,19 +172,13 @@ func rebaseOntoRemoteBranch(dir, branch string, env []string) error {
 	if err != nil {
 		return err
 	}
-	fetch := exec.Command("git", "fetch", url, "refs/heads/"+branch)
-	fetch.Dir = dir
-	fetch.Env = composeGitEnv(dir, env)
+	fetch := workspaceGitAuthEnvCommand(dir, env, "fetch", url, "refs/heads/"+branch)
 	if out, err := fetch.CombinedOutput(); err != nil {
 		return fmt.Errorf("fetch remote tip of %q: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
-	rebase := exec.Command("git", "rebase", "FETCH_HEAD")
-	rebase.Dir = dir
-	rebase.Env = composeGitEnv(dir, env)
+	rebase := workspaceGitAuthEnvCommand(dir, env, "rebase", "FETCH_HEAD")
 	if out, err := rebase.CombinedOutput(); err != nil {
-		abort := exec.Command("git", "rebase", "--abort")
-		abort.Dir = dir
-		abort.Env = composeGitEnv(dir, env)
+		abort := workspaceGitAuthEnvCommand(dir, env, "rebase", "--abort")
 		_ = abort.Run()
 		return fmt.Errorf("rebase onto remote tip of %q: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
@@ -265,8 +260,21 @@ func gitFailureFor(cmd *exec.Cmd, err error) error {
 
 // gitSubcommand reads the verb off a command this package built, so the rule
 // above keys on the argv we chose rather than on the message git produced.
+//
+// `-c` is the one pre-verb option that takes a SEPARATE value argument, and
+// that value ("maintenance.autoDetach=false") does not start with a dash — so
+// skipping dashed arguments alone would read it as the verb and every
+// hardened command would look like something other than what it is. The push
+// exemption above keys on this, so misreading it would tag a forge's own
+// rejection as a workspace git fault.
 func gitSubcommand(cmd *exec.Cmd) string {
-	for _, arg := range cmd.Args[1:] {
+	args := cmd.Args[1:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-c" {
+			i++
+			continue
+		}
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
@@ -287,8 +295,34 @@ func workspaceGitCombinedOutput(cmd *exec.Cmd) ([]byte, error) {
 	return out, gitFailureFor(cmd, err)
 }
 
+// hardenedWorkspaceGitArgs pins auto-maintenance to the foreground for every
+// git subprocess this package runs against a managed worktree (#3330).
+//
+// A worktree the daemon created SHARES the mirror's object store, so a rebase,
+// checkout, fetch or push here writes loose objects into `repo.git` and can
+// make git spawn `git maintenance run --auto` against it. Detached — git's
+// default — that orphan outlives the command this process waited on and keeps
+// writing under the mirror while the caller believes it is quiescent, so the
+// teardown that follows (worktree.Reap and FinalizeRun in production,
+// t.TempDir's RemoveAll in tests) walks a tree a live writer is still
+// changing and fails with "directory not empty".
+//
+// internal/worktree pins the same two settings on its OWN git calls
+// (#3990/#4000) and that left this package's calls uncovered: they reach the
+// same object store through the worktree rather than through the mirror path.
+// The pins have to travel on the command line because composeGitEnv strips
+// inherited GIT_CONFIG_* to keep its slot indices unambiguous — so anything
+// layered into the process environment, including the test suite's own
+// disableGitAutoMaintenanceForTests, is dropped before the child sees it.
+//
+// The definition is worktree's, shared rather than restated, so the two
+// cannot drift into disagreeing about what "quiescent" means.
+func hardenedWorkspaceGitArgs(args []string) []string {
+	return append(worktree.ForegroundMaintenanceArgs(), args...)
+}
+
 func workspaceGitCommand(dir string, args ...string) *exec.Cmd {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", hardenedWorkspaceGitArgs(args)...)
 	cmd.Dir = dir
 	cmd.Env = composeGitEnv(dir, nil)
 	return cmd
@@ -313,7 +347,7 @@ func workspaceGitAuthCommand(dir, token string, args ...string) *exec.Cmd {
 // from providers.ADOGitAuthEnvironment, or one gitAuthEnv built once and
 // reuses across several commands.
 func workspaceGitAuthEnvCommand(dir string, authEnv []string, args ...string) *exec.Cmd {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", hardenedWorkspaceGitArgs(args)...)
 	cmd.Dir = dir
 	cmd.Env = composeGitEnv(dir, authEnv)
 	return cmd

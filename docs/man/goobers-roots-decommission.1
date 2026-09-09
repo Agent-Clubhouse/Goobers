@@ -1,0 +1,20 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ROOTS DECOMMISSION" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers roots decommission \- mark a stopped instance root as historical
+.SH SYNOPSIS
+\fBgoobers roots decommission\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers roots decommission --reason=<text> [path]
+
+Persist a historical-root marker bound to the instance ID. Refuses an active
+daemon or another manual lock holder. Does not delete runs or configuration.
+Repeated calls preserve the first marker. Exit codes: 0 = marked, 2 = error.
+.fi
+.SH EXAMPLES
+.nf
+goobers roots decommission --reason=migrated ./old-instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

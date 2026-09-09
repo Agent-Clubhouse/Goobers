@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,8 +23,22 @@ const (
 	flakeLabel       = "ci:flake"
 	flakeLabelColor  = "D73A4A"
 	flakeDescription = "Fingerprint-backed intermittent test failure"
-	snippetLimit     = 8 * 1024
-	signatureLimit   = 1024
+	// approvedLabel and cloudLabel put an auto-filed flake into the cloud
+	// instance's backlog as approved work. Operator ruling (2026-09-07):
+	// before this, flake issues carried ci:flake alone and every goobers:*
+	// label was stripped on refresh, so 54 of 56 open flakes had never been
+	// triaged and none could be claimed. Filing them approved and partitioned
+	// is what makes the autonomous lane able to act on them at all.
+	approvedLabel       = "goobers:approved"
+	approvedLabelColor  = "0E8A16"
+	approvedDescription = "Maintainer-approved — eligible for curation/implementation (SEC-047)"
+	cloudLabel          = "goobers:cloud"
+	cloudLabelColor     = "1D76DB"
+	cloudDescription    = "Claim-partition: issue belongs to the cloud (Goobernetes) instance"
+	snippetLimit        = 8 * 1024
+	signatureLimit      = 1024
+	stateOpen           = "open"
+	stateClosed         = "closed"
 )
 
 var (
@@ -82,6 +95,7 @@ type providerFactory func(token, apiURL string) ledgerProvider
 type publishResult struct {
 	Created   int
 	Refreshed int
+	Reopened  int
 	Skipped   int
 }
 
@@ -120,6 +134,9 @@ func run(
 		return 1
 	}
 	summary := fmt.Sprintf("flake ledger: %d created, %d refreshed", result.Created, result.Refreshed)
+	if result.Reopened > 0 {
+		summary += fmt.Sprintf(", %d reopened", result.Reopened)
+	}
 	if result.Skipped > 0 {
 		summary += fmt.Sprintf(", %d skipped without a distinguishing signature", result.Skipped)
 	}
@@ -235,12 +252,16 @@ func publish(
 	repository providers.RepositoryRef,
 	report failuresReport,
 ) (publishResult, error) {
-	if _, err := provider.EnsureWorkItemLabels(ctx, repository, []providers.WorkItemLabel{{
-		Name:        flakeLabel,
-		Color:       flakeLabelColor,
-		Description: flakeDescription,
-	}}); err != nil {
-		return publishResult{}, fmt.Errorf("ensure %s label: %w", flakeLabel, err)
+	// EnsureWorkItemLabels creates only what is missing and never modifies an
+	// existing label, so naming the two backlog labels here cannot disturb the
+	// colour/description they already carry in a live repo — it just means a
+	// fresh repo can be published into without pre-seeding them by hand.
+	if _, err := provider.EnsureWorkItemLabels(ctx, repository, []providers.WorkItemLabel{
+		{Name: flakeLabel, Color: flakeLabelColor, Description: flakeDescription},
+		{Name: approvedLabel, Color: approvedLabelColor, Description: approvedDescription},
+		{Name: cloudLabel, Color: cloudLabelColor, Description: cloudDescription},
+	}); err != nil {
+		return publishResult{}, fmt.Errorf("ensure backlog labels: %w", err)
 	}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: repository,
@@ -266,7 +287,7 @@ func publish(
 				Repository: repository,
 				Title:      issueTitle(failure),
 				Body:       issueBody(report.Run, failure),
-				Labels:     []string{flakeLabel},
+				Labels:     []string{flakeLabel, approvedLabel, cloudLabel},
 				RunID:      "flake-" + failure.Fingerprint,
 			})
 			if err != nil {
@@ -276,7 +297,6 @@ func publish(
 			result.Created++
 			continue
 		}
-		removeLabels := workflowLabels(item.Labels)
 		marker := occurrenceMarker(report.Run, failure)
 		recorded := strings.Contains(item.Body, marker)
 		if !recorded {
@@ -291,20 +311,32 @@ func publish(
 				}
 			}
 		}
-		comment := ""
-		if !recorded {
-			comment = occurrenceComment(report.Run, failure)
-		}
-		if comment == "" && len(removeLabels) == 0 {
+		if recorded {
+			// This run's occurrence is already on the issue. Do not touch it
+			// again — in particular, do not reopen an issue that was closed
+			// *after* this occurrence was recorded, which would fight the
+			// operator who closed it.
 			continue
 		}
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository:   repository,
-			ID:           item.ID,
-			RemoveLabels: removeLabels,
-			Comment:      comment,
-		}); err != nil {
+		// A fingerprint match against a CLOSED issue means a fixed flake came
+		// back (#4612). Without reopening, the comment lands on an issue nobody
+		// watches and no new issue is filed either, so closing an issue would
+		// permanently retire its fingerprint.
+		reopen := isClosed(item)
+		update := providers.UpdateWorkItemRequest{
+			Repository: repository,
+			ID:         item.ID,
+			Comment:    occurrenceComment(report.Run, failure, reopen),
+		}
+		if reopen {
+			update.State = stateOpen
+		}
+		if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 			return result, fmt.Errorf("refresh issue %s for %s: %w", item.ID, failure.Fingerprint, err)
+		}
+		if reopen {
+			result.Reopened++
+			continue
 		}
 		result.Refreshed++
 	}
@@ -348,18 +380,6 @@ func distinguishingSignature(signature string) bool {
 	return false
 }
 
-func workflowLabels(labels []string) []string {
-	var result []string
-	for _, label := range labels {
-		normalized := strings.ToLower(label)
-		if strings.HasPrefix(normalized, "goobers:") || strings.HasPrefix(normalized, "goobers/status:") {
-			result = append(result, label)
-		}
-	}
-	sort.Strings(result)
-	return result
-}
-
 func issueTitle(failure testFailure) string {
 	title := fmt.Sprintf("[flake] %s %s: %s",
 		singleLine(failure.Package),
@@ -389,22 +409,47 @@ func issueBody(run runMetadata, failure testFailure) string {
 		"",
 		failureSnippet(failure),
 		"",
-		"This issue is maintained by the trusted stress workflow. It intentionally has no milestone or Goobers workflow labels.",
+		"This issue is filed and refreshed automatically by the trusted stress workflow, and enters the cloud instance's backlog as approved work.",
 	}, "\n")
 }
 
-func occurrenceComment(run runMetadata, failure testFailure) string {
-	return strings.Join([]string{
+// isClosed reports whether a work item is in the provider's closed state. The
+// ledger lists issues without a state filter (the GitHub provider defaults to
+// `state: all`), so a closed issue is a normal, expected match here.
+func isClosed(item providers.WorkItem) bool {
+	return strings.EqualFold(strings.TrimSpace(item.State), stateClosed)
+}
+
+func occurrenceComment(run runMetadata, failure testFailure, reopened bool) string {
+	heading := "## Flake recurrence"
+	preamble := []string{}
+	if reopened {
+		// A reopen is the signal that a fix regressed, so it must not read like
+		// an ordinary recurrence in the issue timeline or in notifications.
+		heading = "## Flake recurrence after close — reopened"
+		runID := firstNonEmpty(failure.LastSeenRun, run.RunID, "unknown run")
+		preamble = []string{
+			"This issue was closed, but the fingerprint recurred, so the stress workflow reopened it. " +
+				"Treat it as a regression of the fix rather than a first sighting. " +
+				"Reopened by run `" + singleLine(runID) + "`.",
+			"",
+		}
+	}
+	lines := []string{
 		occurrenceMarker(run, failure),
 		"",
-		"## Flake recurrence",
+		heading,
 		"",
+	}
+	lines = append(lines, preamble...)
+	lines = append(lines,
 		occurrenceLine(run, failure),
 		"",
-		"**Normalized signature:** `" + renderedSignature(failure.FailureSignature) + "`",
+		"**Normalized signature:** `"+renderedSignature(failure.FailureSignature)+"`",
 		"",
 		failureSnippet(failure),
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func occurrenceLine(run runMetadata, failure testFailure) string {

@@ -419,6 +419,8 @@ type guidedRepositoryReadiness struct {
 	EligibleCount       *int     `json:"eligibleCount,omitempty"`
 	StarterIssueCreated bool     `json:"starterIssueCreated,omitempty"`
 	UsesWorkItemTags    bool     `json:"usesWorkItemTags,omitempty"`
+	TagMatchCount       *int     `json:"tagMatchCount,omitempty"`
+	TagScanComplete     bool     `json:"tagScanComplete,omitempty"`
 }
 
 var guidedChooseRepositoryFolder = chooseGuidedRepositoryFolder
@@ -468,7 +470,7 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 		return
 	}
 	gaggle := set.Gaggles[0]
-	selectors, applied, _ := connectDerivedLabels(set, gaggle.Spec.Project.Owner, gaggle.Spec.Project.Name)
+	selectors, applied, _ := connectDerivedLabelsForRepo(set, gaggle.Spec.Project)
 	response := guidedRepositoryReadiness{
 		Provider:        string(gaggle.Spec.Project.Provider),
 		Repository:      guidedRepositoryDisplayName(string(gaggle.Spec.Project.Provider), gaggle.Spec.Project.Owner, gaggle.Spec.Project.Project, gaggle.Spec.Project.Name),
@@ -478,6 +480,10 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 	}
 	if gaggle.Spec.Project.Provider == apiv1.ProviderADO {
 		response.UsesWorkItemTags = true
+		if err := prepareGuidedADORepository(actionCtx, s.instancePath, gaggle, input, &response); err != nil {
+			writeGuidedRepositoryError(w, actionCtx, "ado_backlog_unavailable", err)
+			return
+		}
 		writeGuidedJSON(w, http.StatusOK, response)
 		return
 	}
@@ -889,7 +895,11 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 	} else {
 		opts.CopilotTokenEnv = input.OptionalModelTokenEnv
 	}
-	result, err := instance.InitGuided(instancePath, opts)
+	var identityBanner string
+	result, err := instance.InitGuided(instancePath, opts, func(root, id string) error {
+		identityBanner = fmt.Sprintf("Instance root: %q; instance ID: %q", canonicalStatusRoot(root), id)
+		return s.errorLog.Output(2, identityBanner)
+	})
 	if err != nil {
 		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
 			Code:    "guided_init_failed",
@@ -902,7 +912,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 	s.mu.Unlock()
 	writeGuidedJSON(w, http.StatusOK, guidedInitBody{
 		ExitCode: 0,
-		Stdout: fmt.Sprintf(
+		Stdout: identityBanner + "\n" + fmt.Sprintf(
 			"Created %d workflow module(s) in the Goobers Instance at %s.",
 			len(input.Workflows),
 			result.Root,

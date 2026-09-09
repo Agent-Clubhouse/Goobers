@@ -103,6 +103,84 @@ func jsonRequest(method, path, body string) *http.Request {
 	return request
 }
 
+// Trigger fixtures opt into the required delivery header. Contract tests below
+// use jsonRequest directly so missing or conflicting keys remain observable.
+func triggerJSONRequest(method, path, body string) *http.Request {
+	request := jsonRequest(method, path, body)
+	input := TriggerRequest{RequestID: "test-delivery"}
+	_ = json.Unmarshal([]byte(body), &input)
+	request.Header.Set(HeaderIdempotencyKey, input.RequestID)
+	return request
+}
+
+func TestTriggerRouteRequiresConsistentIdempotencyKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, header, bodyKey string
+		status                int
+	}{
+		{"missing", "", "", http.StatusBadRequest},
+		{"body only", "", "delivery", http.StatusBadRequest},
+		{"conflicting", "first", "second", http.StatusBadRequest},
+		{"control character", "bad\tkey", "", http.StatusBadRequest},
+		{"over cap", strings.Repeat("k", MaxTriggerRequestIDBytes+1), "", http.StatusBadRequest},
+		{"header only", "delivery", "", http.StatusOK},
+		{"matching", "delivery", "delivery", http.StatusOK},
+		{"trimmed", " delivery ", " delivery ", http.StatusOK},
+		{"at cap", strings.Repeat("k", MaxTriggerRequestIDBytes), "", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			triggers := &fakeTriggerService{}
+			handler := writePlaneHandler(t, nil, AllowAll, WithTriggerService(triggers))
+			request := jsonRequest(http.MethodPost, apicontract.TriggerIngestPath,
+				fmt.Sprintf(`{"workflow":"impl","requestId":%q}`, tc.bodyKey))
+			request.Header.Set(HeaderIdempotencyKey, tc.header)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != tc.status {
+				t.Fatalf("status = %d, want %d: %s", response.Code, tc.status, response.Body)
+			}
+			if tc.status != http.StatusOK {
+				if len(triggers.requests) != 0 {
+					t.Fatal("invalid key reached trigger service")
+				}
+				return
+			}
+			if len(triggers.requests) != 1 || triggers.requests[0].RequestID != strings.TrimSpace(tc.header) {
+				t.Fatalf("requests = %+v", triggers.requests)
+			}
+		})
+	}
+}
+
+func TestTriggerRouteUsesAuthenticatedActor(t *testing.T) {
+	triggers := &fakeTriggerService{response: TriggerResponse{RunID: "run-9"}}
+	handler := writePlaneHandler(t, &fakeAuthenticator{principal: &Principal{Subject: "operator", Roles: []Role{RoleOperate}}}, RequireRoles(), WithTriggerService(triggers))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"implementation","requestId":"delivery"}`))
+	if response.Code != http.StatusOK || len(triggers.requests) != 1 || triggers.requests[0].Actor != "operator" {
+		t.Fatalf("trigger actor not bound: status=%d requests=%+v", response.Code, triggers.requests)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"implementation","actor":"another-operator"}`))
+	if response.Code != http.StatusBadRequest || len(triggers.requests) != 1 {
+		t.Fatal("body supplied its own attribution identity")
+	}
+}
+
+func TestTriggerRouteReportsDurableAcceptance(t *testing.T) {
+	triggers := &fakeTriggerService{response: TriggerResponse{AcceptanceID: "trigger-1", State: "accepted"}}
+	handler := writePlaneHandler(t, nil, AllowAll, WithTriggerService(triggers))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"impl"}`))
+	var result TriggerResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusAccepted || result.AcceptanceID != "trigger-1" || result.RunID != "" {
+		t.Fatalf("acceptance = %d %+v", response.Code, result)
+	}
+}
+
 func writePlanePaths() []string {
 	return []string{
 		apicontract.ClaimAcquirePath,
@@ -214,7 +292,7 @@ func TestPodPrincipalIsConfinedToItsOwnClaims(t *testing.T) {
 
 	// Triggers, escalations, and reads are off-plane for pods entirely.
 	for _, request := range []*http.Request{
-		jsonRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"w"}`),
+		triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"workflow":"w"}`),
 		jsonRequest(http.MethodPost, "/api/v1/runs/run-1/escalation/resolve", `{"resolution":"deny"}`),
 		httptest.NewRequest(http.MethodGet, apicontract.HealthPath, nil),
 	} {
@@ -324,7 +402,7 @@ func TestTriggerRouteCapsRequestIDLength(t *testing.T) {
 
 	atCap := strings.Repeat("d", MaxTriggerRequestIDBytes)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath,
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath,
 		fmt.Sprintf(`{"workflow":"impl","requestId":%q}`, atCap)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("at-cap requestId status = %d, body = %s", response.Code, response.Body)
@@ -335,7 +413,7 @@ func TestTriggerRouteCapsRequestIDLength(t *testing.T) {
 
 	over := strings.Repeat("d", MaxTriggerRequestIDBytes+1)
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath,
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath,
 		fmt.Sprintf(`{"workflow":"impl","requestId":%q}`, over)))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("over-cap requestId status = %d, want 400", response.Code)
@@ -350,7 +428,7 @@ func TestTriggerRouteValidatesAndDispatches(t *testing.T) {
 	handler := writePlaneHandler(t, nil, AllowAll, WithTriggerService(triggers))
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"gaggle":"g","workflow":"impl","requestId":"d-1"}`))
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"gaggle":"g","workflow":"impl","requestId":"d-1"}`))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body)
 	}
@@ -363,7 +441,7 @@ func TestTriggerRouteValidatesAndDispatches(t *testing.T) {
 	}
 
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"gaggle":"g"}`))
+	handler.ServeHTTP(response, triggerJSONRequest(http.MethodPost, apicontract.TriggerIngestPath, `{"gaggle":"g"}`))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("workflow-less trigger status = %d, want 400", response.Code)
 	}

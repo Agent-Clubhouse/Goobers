@@ -59,6 +59,7 @@ type Reader interface {
 	Workflows(context.Context, string, PageRequest) (WorkflowPage, error)
 	Connections(context.Context, string) (GaggleConnections, error)
 	Workflow(context.Context, string, string) (WorkflowDetail, error)
+	QueueEligibility(context.Context, string, string) (QueueEligibilityView, error)
 }
 
 // Health is the versioned daemon health response.
@@ -225,6 +226,24 @@ func (s *Local) StartActiveRunSampler(interval time.Duration) func() error {
 	}
 	sampler.Start()
 	return sampler.Stop
+}
+
+// WaitForInitialActiveRunSample waits for the existing background sampler's first
+// result. Daemon startup uses a bounded context before advertising readiness;
+// HTTP reads continue to use memory only and never wait or scan on demand.
+// Sampling errors are returned, not replaced with an invented zero count.
+func (s *Local) WaitForInitialActiveRunSample(ctx context.Context) error {
+	sampler := s.activeSampler.Load()
+	if sampler == nil {
+		return ErrActiveCountsUnavailable
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-sampler.initialSample:
+		_, _, err := sampler.Counts()
+		return err
+	}
 }
 
 func (s *Local) projectedActiveRunCounts(ctx context.Context) (map[localscheduler.WorkflowIdentity]int, error) {

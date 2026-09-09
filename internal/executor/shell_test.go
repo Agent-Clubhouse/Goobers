@@ -1631,3 +1631,29 @@ func TestStageReferencesGuardedPathMatchesWholeTokens(t *testing.T) {
 		t.Fatal("with no guarded paths configured, nothing may be refused")
 	}
 }
+
+// #2984/#2987: the security-alert intake's artifact is provider-derived
+// repository and third-party advisory content. It must reach a consumer graded
+// `unapproved`, not as ordinary `derived` stage output — `derived` satisfies a
+// maintainer minimum, so mis-grading it would let alert text (rule messages,
+// advisory summaries, package names) into a maintainer-only consumer.
+//
+// Two things have to hold together for that: the stage must be recognized as a
+// provider builtin at all, and the weakest integrity in its artifact must win.
+func TestShellExecutor_SecurityAlertIntakeIsRecordedUnapproved(t *testing.T) {
+	command := []string{"goobers", "security-alerts-query", "--source", "code-scanning"}
+	if !StageInvokesProviderBuiltin(command) {
+		t.Fatal("security-alerts-query is not recognized as a provider builtin, so its result would be graded derived")
+	}
+
+	const artifact = `{"schema":"goobers.dev/security-alerts/v1","source":"code-scanning",` +
+		`"integrity":"unapproved","alerts":[{"number":11,"integrity":"unapproved"}]}`
+	exec, rec := newTestExecutor(t, nil)
+	ref, err := exec.recordResultArtifact("task-1/result", []byte(artifact), StageInvokesProviderBuiltin(command))
+	if err != nil {
+		t.Fatalf("recordResultArtifact: %v", err)
+	}
+	if ref.Integrity != apiv1.IntegrityUnapproved || rec.integrity["task-1/result"] != apiv1.IntegrityUnapproved {
+		t.Fatalf("integrity = %q / %q, want unapproved", ref.Integrity, rec.integrity["task-1/result"])
+	}
+}

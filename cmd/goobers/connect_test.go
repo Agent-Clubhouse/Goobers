@@ -18,6 +18,31 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestConnectLabelsDoNotCrossProviderIdentity(t *testing.T) {
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
+		{ObjectMeta: metav1.ObjectMeta{Name: "github"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}, Backlog: apiv1.BacklogRef{Labels: []string{"github-only"}}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "ado"}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "boards", Name: "web"}, Backlog: apiv1.BacklogRef{Labels: []string{"ado-only"}}}},
+	}}
+	selectors, _, _ := connectDerivedLabelsForRepo(set, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
+	if !slices.Equal(selectors, []string{"github-only"}) {
+		t.Fatalf("GitHub connection borrowed ADO selectors: %v", selectors)
+	}
+}
+
+func TestConnectADOLabelsDoNotCrossProjects(t *testing.T) {
+	set := &instance.ConfigSet{}
+	for _, project := range []string{"one", "two"} {
+		set.Gaggles = append(set.Gaggles, apiv1.Gaggle{ObjectMeta: metav1.ObjectMeta{Name: project}, Spec: apiv1.GaggleSpec{Project: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: project, Name: "web"}, Backlog: apiv1.BacklogRef{Labels: []string{project + "-only"}}}})
+		set.Workflows = append(set.Workflows, apiv1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: project + "-flow"}, Spec: apiv1.WorkflowSpec{Gaggle: project}})
+	}
+	target := set.Gaggles[1].Spec.Project
+	target.Branch = "another-branch"
+	selectors, _, workflow := connectDerivedLabelsForRepo(set, target)
+	if !slices.Equal(selectors, []string{"two-only"}) || workflow != "two-flow" {
+		t.Fatalf("ADO project identity crossed: selectors=%v workflow=%s", selectors, workflow)
+	}
+}
+
 // connectTestInstance scaffolds a template instance in an isolated temp dir
 // and returns its root. template is "starter" (bare init) or "quickstart".
 // The default token env is cleared so an ambient developer token can never
@@ -264,11 +289,7 @@ func TestConnectRejectsNonRepoPositional(t *testing.T) {
 	}
 }
 
-// TestConnectRefusesAzureDevOpsIdentity reproduces cold-start ado #7 attempt 1:
-// the honest three-part ADO identity used to get a bare "GitHub is the only
-// supported provider in v1" refusal that named no way forward. Every ADO
-// spelling now gets the exact instance.yaml block to write by hand, and
-// nothing on disk is touched.
+// ADO identities must not silently convert an existing GitHub template.
 func TestConnectRefusesAzureDevOpsIdentity(t *testing.T) {
 	root := connectTestInstance(t, "quickstart")
 	configFile := instance.NewLayout(root).ConfigFile()
@@ -284,20 +305,12 @@ func TestConnectRefusesAzureDevOpsIdentity(t *testing.T) {
 		"git@ssh.dev.azure.com:v3/contoso/example-project/example-repo",
 	} {
 		code, _, stderr := runArgs(t, "connect", identity, "--token-env", "GOOBERS_ADO_TOKEN", root)
-		if code != 2 {
-			t.Fatalf("connect %q code = %d, want 2; stderr=%q", identity, code, stderr)
+		if code != 1 {
+			t.Fatalf("connect %q code = %d, want 1; stderr=%q", identity, code, stderr)
 		}
 		for _, want := range []string{
-			connectADOIdentityCode,
-			"Azure DevOps organization/project/repository identity",
-			"provider: ado",
-			"owner: contoso",
-			"project: example-project",
-			"name: example-repo",
-			"env: GOOBERS_ADO_TOKEN",
-			"spec.backlog.project",
-			"docs/guides/ado-authentication.md",
-			"reference-workflows/instance.yaml.example",
+			"--template=standard --provider=ado",
+			"never changes an existing repository's provider",
 		} {
 			if !strings.Contains(stderr, want) {
 				t.Errorf("connect %q stderr lacks %q:\n%s", identity, want, stderr)
@@ -378,7 +391,7 @@ func TestConnectADORefusalNeverEchoesPastedToken(t *testing.T) {
 	if strings.Contains(stderr, "ghp_abcdef0123456789") {
 		t.Fatalf("refusal echoed the pasted token: %q", stderr)
 	}
-	if !strings.Contains(stderr, "env: "+connectADOTokenEnvHint) {
+	if !strings.Contains(stderr, "valid token environment variable name") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }
@@ -789,7 +802,7 @@ func TestConnectDerivedLabelsCoverWorkflowAppliedLabels(t *testing.T) {
 		},
 	}
 
-	selectors, applied, workflow := connectDerivedLabels(set, "acme", "web")
+	selectors, applied, workflow := connectDerivedLabelsForRepo(set, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
 	wantSelectors := []string{"goobers:approved", "goobers:ready"}
 	if !slices.Equal(selectors, wantSelectors) {
 		t.Fatalf("selectors = %v, want %v", selectors, wantSelectors)
@@ -842,7 +855,7 @@ func TestConnectDerivedLabelsStayQuietForSelectorOnlyConfig(t *testing.T) {
 			},
 		}},
 	}
-	selectors, applied, _ := connectDerivedLabels(set, "acme", "web")
+	selectors, applied, _ := connectDerivedLabelsForRepo(set, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"})
 	if !slices.Equal(selectors, []string{"goobers", "goobers:ready"}) {
 		t.Fatalf("selectors = %v", selectors)
 	}

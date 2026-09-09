@@ -108,6 +108,7 @@ func AllFeatures() []Feature {
 	for _, feature := range v30.AllFeatures() {
 		merge(v30Feature(feature))
 	}
+	features = append(features, costPublicationFeature())
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
 	})
@@ -181,7 +182,29 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 	if err != nil {
 		return nil, err
 	}
-	return interpreter.featuresForGaggle(spec)
+	features, err := interpreter.featuresForGaggle(spec)
+	if err != nil {
+		return nil, err
+	}
+	if spec.Cost != nil {
+		features = append(features, costPublicationFeature())
+		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
+	}
+	return features, nil
+}
+
+// Cost publication is a binary-level provider policy, not an interpreter
+// operation. Register it here so supported workflow pins share the setting
+// without changing a frozen interpreter's executable contract.
+func costPublicationFeature() Feature {
+	return Feature{
+		ID: "gaggle.spec.cost.enabled", Level: SupportGA, SinceVersion: "v0.4.0",
+		History: []SupportTransition{{Level: SupportGA, SinceVersion: "v0.4.0"}},
+		DSLVersions: []DSLFeatureSupport{
+			{Version: "2.0", Level: SupportGA},
+			{Version: "3.0", Level: SupportGA},
+		},
+	}
 }
 
 // FeaturesForGoober resolves features used by a goober for a pinned definition.

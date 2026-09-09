@@ -1750,57 +1750,93 @@ summary:focus-visible {
   margin: -4px 0 10px;
 }
 
-.external-cost-list {
+.external-cost-controls {
+  align-items: end;
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 10px;
+  grid-template-columns: minmax(240px, 2fr) minmax(150px, 1fr) minmax(180px, 1fr) auto auto;
+  margin-bottom: 12px;
 }
 
-.external-cost-card {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 14px;
+.external-cost-controls label {
+  display: grid;
+  gap: 4px;
 }
 
-.external-cost-title {
-  align-items: baseline;
-  display: flex;
-  justify-content: space-between;
-}
-
-.external-cost-title span,
-.external-cost-totals dt,
+.external-cost-controls label span,
 .cost-coverage-warning,
 .external-cost-models {
   color: var(--muted);
   font-size: 11px;
 }
 
-.external-cost-totals {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin: 12px 0;
+.external-cost-controls input,
+.external-cost-controls select {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  font: inherit;
+  min-height: 34px;
+  padding: 6px 9px;
 }
 
-.external-cost-totals dd {
-  font-weight: 720;
-  margin: 3px 0 0;
+.external-cost-sort-direction {
+  min-height: 34px;
 }
 
 .cost-coverage-warning {
   color: var(--warning);
 }
 
+.external-cost-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+
+.external-cost-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 980px;
+  width: 100%;
+}
+
+.external-cost-table th,
+.external-cost-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 11px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.external-cost-table th {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.external-cost-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.external-cost-value {
+  font-weight: 720;
+  white-space: nowrap;
+}
+
 .external-cost-models {
-  margin: 10px 0 0;
+  margin: 0;
   padding-left: 18px;
 }
 
 .external-cost-runs {
   color: var(--muted);
   font-size: 11px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .external-cost-runs ul {
@@ -5912,6 +5948,10 @@ a.telemetry-error-row:hover {
     grid-column: 1 / -1;
   }
 
+  .external-cost-controls {
+    grid-template-columns: minmax(240px, 2fr) minmax(150px, 1fr) minmax(180px, 1fr);
+  }
+
   .stage-distribution-row > .icon {
     grid-column: 3;
     grid-row: 1;
@@ -5967,6 +6007,14 @@ a.telemetry-error-row:hover {
     display: flex;
     justify-content: end;
     margin: 0;
+  }
+
+  .external-cost-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .external-cost-sort-direction {
+    justify-self: start;
   }
 
   .nav-item {

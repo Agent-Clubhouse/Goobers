@@ -99,6 +99,16 @@ var cliCommands []cliCommand
 
 func init() {
 	cliCommands = []cliCommand{
+		groupCommand("roots", runRoots,
+			subcommand("roots discover", "discover", apicontract.ActionReadOnlyNavigation, runRootsDiscover).
+				withSynopsis(synopsisByID["roots discover"]).
+				withHelp("discover likely instance roots and daemon ownership", rootsDiscoverHelp).
+				withExamples("goobers roots discover --json"),
+			subcommand("roots decommission", "decommission", apicontract.ActionMaintenance, runRootsDecommission).
+				withSynopsis(synopsisByID["roots decommission"]).
+				withHelp("mark a stopped instance root as historical", rootsDecommissionHelp).
+				withExamples("goobers roots decommission --reason=migrated ./old-instance"),
+		).withHelp("inspect and manage instance roots", rootsHelp),
 		coreAliasCommand(
 			"version",
 			[]string{"--version", "version"},
@@ -200,6 +210,20 @@ func init() {
 			withSynopsis(synopsisByID["scaffold"]).
 			withHelp("scaffold a goober, workflow, or gaggle", scaffoldHelp).
 			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow", "goobers scaffold gaggle ledger --from example"),
+		groupCommand(
+			"diagnostics",
+			runDiagnostics,
+			subcommand("diagnostics bundle", "bundle", apicontract.ActionReadOnlyNavigation, runDiagnosticsBundle).
+				withHelp("write a portable, redacted support bundle", diagnosticsBundleHelp).
+				withExamples(
+					"goobers diagnostics bundle ./my-instance",
+					"goobers diagnostics bundle --run 8f2c --output /tmp/incident.tar.gz ./my-instance",
+					"goobers diagnostics bundle --pr 4123 --json ./my-instance",
+				),
+		).
+			withSynopsis(synopsisByID["diagnostics"]).
+			withHelp("collect a portable, redacted support bundle", diagnosticsHelp).
+			withExamples("goobers diagnostics bundle ./my-instance"),
 		groupCommand(
 			"agent-kit",
 			runAgentKit,
@@ -376,6 +400,10 @@ func init() {
 			withSynopsis(synopsisByID["worker"]).
 			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
 			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
+		command("config-seed", apicontract.ActionMaintenance, runConfigSeed).
+			withSynopsis(synopsisByID["config-seed"]).
+			withHelp("seed a private worker instance from a rendered configuration mirror", configSeedHelp).
+			withExamples("goobers config-seed --mirror /mnt/config-mirror --instance /var/lib/worker/instance"),
 		coreCommand("dashboard", apicontract.ActionReadOnlyNavigation, runDashboard).
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).
@@ -394,7 +422,7 @@ func init() {
 				withExamples("goobers run cancel <run-id>"),
 		).
 			withSynopsis(synopsisByID["run"]).
-			withHelp("trigger a run manually (still honors run conditions)", runHelp).
+			withHelp("trigger a run manually; --force bypasses cadence budgets", runHelp).
 			withExamples("goobers run default-implement", "goobers run --gaggle example default-implement", "goobers run example/default-implement --no-wait"),
 		runtimeCommand("approve", "approve", runApprove).
 			withSynopsis(synopsisByID["approve"]).
@@ -456,6 +484,10 @@ func init() {
 			withSynopsis(synopsisByID["schema"]).
 			withHelp("emit a JSON Schema embedded in this build", schemaHelp).
 			withExamples("goobers schema --list", "goobers schema workflow", "goobers schema --human goober"),
+		command("queue-explain", apicontract.ActionReadOnlyNavigation, runQueueExplain).
+			withSynopsis(synopsisByID["queue-explain"]).
+			withHelp("explain historical PR queue eligibility and claim observations", queueExplainHelp).
+			withExamples("goobers queue-explain --gaggle=core --workflow=merge-review --pr=42"),
 		command("explain", apicontract.ActionReadOnlyNavigation, runExplain).
 			withSynopsis(synopsisByID["explain"]).
 			withHelp("project field facts from an embedded JSON Schema", explainHelp).
@@ -700,6 +732,13 @@ func init() {
 			withSynopsis(synopsisByID["post-merge"]).
 			withHelp("post-merge fan-out + close the referenced issue (a workflow stage)", postMergeHelp).
 			withExamples("goobers post-merge"),
+		stageCommand("security-alerts-query", apicontract.ActionWorkflowExecution, runSecurityAlertsQuery).
+			withSynopsis(synopsisByID["security-alerts-query"]).
+			withHelp("emit bounded, untrusted security alerts for work nomination (a connector stage)", securityAlertsQueryHelp).
+			withExamples(
+				"goobers security-alerts-query --source code-scanning --ref refs/heads/main",
+				"goobers security-alerts-query --source dependabot --severity critical,high",
+			),
 		stageCommand("telemetry-query", apicontract.ActionWorkflowExecution, runTelemetryQuery).
 			withSynopsis(synopsisByID["telemetry-query"]).
 			withHelp("emit versioned candidate findings (a connector stage)", telemetryQueryHelp).

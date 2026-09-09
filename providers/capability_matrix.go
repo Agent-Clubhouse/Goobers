@@ -34,6 +34,7 @@ func AllCapabilities() []Capability {
 		CapPRMerge, CapPRMergeInventory, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll, CapPRUpdateBranch, CapBranchDelete,
 		CapRepoPolicyRead, CapPRStatusPublish, CapCICancel,
 		CapBacklogList, CapBacklogGet, CapBacklogComments, CapBacklogCreate, CapBacklogUpdate, CapBacklogStatus, CapBacklogClaim, CapBacklogBlockers,
+		CapSecurityAlertsCodeScanning, CapSecurityAlertsDependabot,
 		CapTriggerSubscribe,
 	}
 }

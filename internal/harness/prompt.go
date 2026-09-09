@@ -160,10 +160,19 @@ func renderResponseCompletionRecoveryPrompt(req RunRequest) string {
 
 func completionContract(req RunRequest) (string, string) {
 	if req.Mode == ModeReview {
+		if req.Envelope.ReviewerDeferralAllowed {
+			return "verdict", strings.Replace(verdictShapeHint, `"pass"|"fail"|"needs-changes"`, `"pass"|"fail"|"needs-changes"|"defer"`, 1) + reviewerDeferralHint
+		}
 		return "verdict", verdictShapeHint
 	}
 	return "result", resultShapeHint
 }
+
+const reviewerDeferralHint = `
+
+This gate declares a separate defer route. Use decision "defer" for sibling ordering or a cluster with no eligible lander, not "fail" or "needs-changes" merely to express waiting. Include reasonCode "ordering" or "no-lander" and a non-empty rationale; preserve all findings and supporting evidence. Deferral never grants landing authority; do not set elected to true.
+
+Reserve decision "fail" for actual implementation or policy rejection, with reasonCode "implementation-rejected" or "policy-rejected" and an explicit non-empty rationale. Use "needs-changes" for repairable implementation defects. Omit reasonCode on pass and needs-changes.`
 
 // resultShapeHint deliberately omits "error", "artifacts", "transcript", and
 // "metrics" from the base shape. "error" is required only on a

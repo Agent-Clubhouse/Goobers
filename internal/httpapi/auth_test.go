@@ -139,12 +139,14 @@ func TestServerRefusesNonLoopbackWithoutTLSAndAuthenticator(t *testing.T) {
 		t.Fatalf("hardened non-loopback NewServer = %v, want nil", err)
 	}
 	// A null authenticator passed explicitly is still null — fail closed.
-	explicitNull, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithAuthenticator(NullAuthenticator{}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewServer("0.0.0.0:0", explicitNull, discardLogger(), WithTLS(certFile, keyFile)); err == nil {
-		t.Fatal("expected explicit NullAuthenticator to be refused off-loopback")
+	for _, authenticator := range []Authenticator{NullAuthenticator{}, &NullAuthenticator{}} {
+		explicitNull, err := NewHandler(&fakeReader{}, AllowAll, discardLogger(), WithAuthenticator(authenticator))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewServer("0.0.0.0:0", explicitNull, discardLogger(), WithTLS(certFile, keyFile)); err == nil {
+			t.Fatalf("expected explicit %T to be refused off-loopback", authenticator)
+		}
 	}
 }
 

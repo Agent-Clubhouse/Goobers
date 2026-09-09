@@ -17,6 +17,17 @@
       "required": ["project", "backlog", "isolation"],
       "properties": {
         "displayName": { "type": "string", "description": "Human-facing gaggle name shown in the portal." },
+        "cost": {
+          "type": "object",
+          "description": "Overrides external cost publication without disabling local usage accounting.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": ["boolean", "null"],
+              "description": "Overrides instance cost.enabled when boolean; null or omitted inherits the instance default."
+            }
+          }
+        },
         "selfIdentity": { "type": "string", "minLength": 1, "description": "Provider login used as this gaggle's self identity for assignment-aware backlog operations. Omitted inherits instance.yaml selfIdentity." },
         "project": { "$ref": "#/$defs/repoRef", "description": "Primary code repository this gaggle works on." },
         "backlog": { "$ref": "#/$defs/backlogRef", "description": "Singleton source of work-item truth for this gaggle." },

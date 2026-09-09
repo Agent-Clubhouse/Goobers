@@ -43,7 +43,7 @@ show command or concept help
 scaffold an instance root
 .TP
 \fBgoobers run\fR
-trigger a run manually (still honors run conditions)
+trigger a run manually; --force bypasses cadence budgets
 .TP
 \fBgoobers scaffold\fR
 scaffold a goober, workflow, or gaggle
@@ -139,6 +139,15 @@ apply the recorded checked-in source to the runtime instance
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
 .TP
+\fBgoobers config-seed\fR
+seed a private worker instance from a rendered configuration mirror
+.TP
+\fBgoobers diagnostics\fR
+collect a portable, redacted support bundle
+.TP
+\fBgoobers diagnostics bundle\fR
+write a portable, redacted support bundle
+.TP
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 .TP
@@ -232,11 +241,23 @@ update the managed Goobers Portal extension to this binary's bundled version
 \fBgoobers preflight\fR
 check WSL full-isolation readiness and optionally hand off a command
 .TP
+\fBgoobers queue-explain\fR
+explain historical PR queue eligibility and claim observations
+.TP
 \fBgoobers rerun-stage\fR
 rerun a stage with a recorded instruction addendum
 .TP
 \fBgoobers reset-rate-limit\fR
 clear the hourly run-rate budget without deleting runs/
+.TP
+\fBgoobers roots\fR
+inspect and manage instance roots
+.TP
+\fBgoobers roots decommission\fR
+mark a stopped instance root as historical
+.TP
+\fBgoobers roots discover\fR
+discover likely instance roots and daemon ownership
 .TP
 \fBgoobers run abort\fR
 mark a stuck non-terminal run aborted
@@ -464,6 +485,9 @@ reply to and resolve remediated native review threads (a workflow stage)
 \fBgoobers respond-to-findings\fR
 post a validated per-finding remediation response to the claimed PR (a workflow stage)
 .TP
+\fBgoobers security-alerts-query\fR
+emit bounded, untrusted security alerts for work nomination (a connector stage)
+.TP
 \fBgoobers select-source\fR
 select and claim an unconsumed L6 decomposition disposition (a workflow stage)
 .TP
@@ -508,9 +532,12 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-config-diff\fR(1),
 \fBgoobers-config-materialize\fR(1),
 \fBgoobers-config-show\fR(1),
+\fBgoobers-config-seed\fR(1),
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),
 \fBgoobers-dashboard\fR(1),
+\fBgoobers-diagnostics\fR(1),
+\fBgoobers-diagnostics-bundle\fR(1),
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
@@ -571,6 +598,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-publish-batch\fR(1),
 \fBgoobers-push-branch\fR(1),
 \fBgoobers-push-remediated\fR(1),
+\fBgoobers-queue-explain\fR(1),
 \fBgoobers-rebase-pr\fR(1),
 \fBgoobers-reconcile-branches\fR(1),
 \fBgoobers-reconcile-post-merge\fR(1),
@@ -581,6 +609,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-reset-rate-limit\fR(1),
 \fBgoobers-resolve-review-threads\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
+\fBgoobers-roots\fR(1),
+\fBgoobers-roots-decommission\fR(1),
+\fBgoobers-roots-discover\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
 \fBgoobers-run-cancel\fR(1),
@@ -592,6 +623,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-scaffold-goober\fR(1),
 \fBgoobers-scaffold-workflow\fR(1),
 \fBgoobers-schema\fR(1),
+\fBgoobers-security-alerts-query\fR(1),
 \fBgoobers-select-source\fR(1),
 \fBgoobers-self-update\fR(1),
 \fBgoobers-service\fR(1),

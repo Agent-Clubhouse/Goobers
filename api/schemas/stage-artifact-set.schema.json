@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/stage-artifact-set.schema.json",
+  "title": "Runner-authored stage artifact index",
+  "description": "Normalized slot-zero index. Runtime additionally requires sorted unique names, contiguous slots, and exact equality with positional context pointers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "entries"],
+  "properties": {
+    "schemaVersion": {"const": "goobers.dev/stage-artifact-set/v1alpha1", "description": "Artifact-set contract version."},
+    "entries": {
+      "type": "array", "maxItems": 64,
+      "description": "Payloads ordered by semantic name. The index itself occupies result slot zero.",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "slot", "artifact"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$", "description": "Unique semantic lookup key."},
+          "slot": {"type": "integer", "minimum": 1, "maximum": 64, "description": "One-based result slot; all slots must be unique and contiguous."},
+          "artifact": {"$ref": "artifact-pointer.schema.json", "description": "Runner-authored pointer, matching every field of the corresponding context pointer."}
+        }
+      }
+    }
+  }
+}
