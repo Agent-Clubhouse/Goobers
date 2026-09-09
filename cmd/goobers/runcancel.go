@@ -350,6 +350,10 @@ func (s *daemonCancelService) auditCancellation(input httpapi.CancelRunRequest) 
 // dispositions keep their exit codes; accepted engine cancellation reports a
 // request without claiming a terminal outcome.
 func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) int {
+	return runRemoteCancelWithKey(endpoint, runID, action, "", stdout, stderr)
+}
+
+func runRemoteCancelWithKey(endpoint, runID, action, key string, stdout, stderr io.Writer) int {
 	if strings.TrimSpace(endpoint) == "" {
 		pf(stderr, "error: no daemon API endpoint configured\n")
 		return 2
@@ -362,17 +366,25 @@ func runRemoteCancel(endpoint, runID, action string, stdout, stderr io.Writer) i
 	if err != nil {
 		actor = "cli"
 	}
+	if key == "" {
+		key, err = newInterventionIdempotencyKey()
+		if err != nil {
+			pf(stderr, "error: generate cancellation request ID: %v\n", err)
+			return 2
+		}
+	}
 	var result httpapi.CancelRunResult
-	apiErr, err := callDaemonMutationAPI(
+	apiErr, err := callDaemonMutationAPIWithKey(
 		instance.NewLayout("."), endpoint, apicontract.RouteCancelRun,
-		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, &result,
+		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, &result, key,
 	)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: %v; cancellation outcome may be unknown; retry run cancel with --request-id=%q and the same target\n", err, key)
 		return 2
 	}
 	if apiErr != nil {
 		pf(stderr, "error: %s: %s\n", apiErr.Code, apiErr.Message)
+		pf(stderr, "cancellation request ID: %q (reuse --request-id with the same target to reconcile)\n", key)
 		return 1
 	}
 	switch {

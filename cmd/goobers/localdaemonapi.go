@@ -30,7 +30,7 @@ func localDaemonAPIBase(layout instance.Layout) (string, error) {
 	return daemonAPIScheme(config) + "://" + address, nil
 }
 
-func tryLocalAPICancel(layout instance.Layout, runID string, noAPI bool, stdout, stderr io.Writer) (bool, int) {
+func tryLocalAPICancel(layout instance.Layout, runID, requestID string, noAPI bool, stdout, stderr io.Writer) (bool, int) {
 	if noAPI {
 		return false, 0
 	}
@@ -47,5 +47,5 @@ func tryLocalAPICancel(layout instance.Layout, runID string, noAPI bool, stdout,
 		pf(stderr, "error: resolve daemon API: %v; use --no-api only for explicit file delegation\n", err)
 		return true, 2
 	}
-	return true, runRemoteCancel(endpoint, runID, "cancelled", stdout, stderr)
+	return true, runRemoteCancelWithKey(endpoint, runID, "cancelled", requestID, stdout, stderr)
 }

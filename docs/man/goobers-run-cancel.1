@@ -6,7 +6,7 @@ goobers run cancel \- cancel a live in-flight run via the daemon
 \fBgoobers run cancel\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers run cancel [--api=<url> | --no-api] <run-id> [path]
+Usage: goobers run cancel [--api=<url> | --no-api] [--request-id=<id>] <run-id> [path]
 
 Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
@@ -20,6 +20,12 @@ A live local daemon is contacted through its HTTP API automatically.
 API failures never silently fall back to file delegation. Use --no-api
 to explicitly select local cancellation/file delegation; this overrides
 $GOOBERS_DAEMON_API and cannot be combined with --api.
+API cancellation uses durable, actor-and-target-bound request identities.
+Reuse --request-id after an uncertain response; without it an ID is
+generated and printed on API errors. Completed receipts are retained for
+at least seven days. An unfinished receipt is never silently re-executed:
+retry the same ID to reconcile, or inspect the run before a new request.
+--request-id requires the API and is not supported with --no-api.
 With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that
 daemon's authenticated HTTP API instead of the local pending-cancels
 drop, so a caller that does not share the daemon's filesystem can stop a

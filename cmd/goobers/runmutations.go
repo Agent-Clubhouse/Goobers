@@ -199,6 +199,22 @@ func callDaemonMutationAPI(
 	input any,
 	result any,
 ) (*apicontract.APIError, error) {
+	key, err := newInterventionIdempotencyKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate intervention idempotency key: %w", err)
+	}
+	return callDaemonMutationAPIWithKey(layout, endpoint, routeID, pathValues, input, result, key)
+}
+
+func callDaemonMutationAPIWithKey(
+	layout instance.Layout,
+	endpoint string,
+	routeID apicontract.RouteID,
+	pathValues map[string]string,
+	input any,
+	result any,
+	key string,
+) (*apicontract.APIError, error) {
 	baseURL := endpoint
 	if baseURL == "" {
 		config, err := instance.LoadConfig(layout.ConfigFile())
@@ -229,10 +245,6 @@ func callDaemonMutationAPI(
 		return nil, fmt.Errorf("build %s request: %w", routeID, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	key, err := newInterventionIdempotencyKey()
-	if err != nil {
-		return nil, fmt.Errorf("generate intervention idempotency key: %w", err)
-	}
 	request.Header.Set(httpapi.HeaderIdempotencyKey, key)
 	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)

@@ -950,7 +950,7 @@ func delegateAbortToLiveDaemon(l instance.Layout, runID string, identity journal
 	}
 }
 
-const runCancelHelp = "Usage: goobers run cancel [--api=<url> | --no-api] <run-id> [path]\n\n" +
+const runCancelHelp = "Usage: goobers run cancel [--api=<url> | --no-api] [--request-id=<id>] <run-id> [path]\n\n" +
 	"Ask the live `goobers up` daemon to stop a run it is actively executing\n" +
 	"(default path \".\"): it cancels the active stage, tears down the run\n" +
 	"worktree, releases the backlog claim so the item can be re-queued, and\n" +
@@ -963,6 +963,12 @@ const runCancelHelp = "Usage: goobers run cancel [--api=<url> | --no-api] <run-i
 	"API failures never silently fall back to file delegation. Use --no-api\n" +
 	"to explicitly select local cancellation/file delegation; this overrides\n" +
 	"$GOOBERS_DAEMON_API and cannot be combined with --api.\n" +
+	"API cancellation uses durable, actor-and-target-bound request identities.\n" +
+	"Reuse --request-id after an uncertain response; without it an ID is\n" +
+	"generated and printed on API errors. Completed receipts are retained for\n" +
+	"at least seven days. An unfinished receipt is never silently re-executed:\n" +
+	"retry the same ID to reconcile, or inspect the run before a new request.\n" +
+	"--request-id requires the API and is not supported with --no-api.\n" +
 	"With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that\n" +
 	"daemon's authenticated HTTP API instead of the local pending-cancels\n" +
 	"drop, so a caller that does not share the daemon's filesystem can stop a\n" +
@@ -980,6 +986,7 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = helpUsage(stderr, "run cancel")
 	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	noAPI := fs.Bool("no-api", false, "explicitly use local cancellation/file delegation instead of the daemon API")
+	requestID := fs.String("request-id", "", "reuse the same cancellation identity for an API retry")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -999,7 +1006,7 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if endpoint != "" {
-		return runRemoteCancel(endpoint, runID, "cancelled", stdout, stderr)
+		return runRemoteCancelWithKey(endpoint, runID, "cancelled", *requestID, stdout, stderr)
 	}
 
 	l := instance.NewLayout(root)
@@ -1012,8 +1019,12 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if handled, code := tryLocalAPICancel(l, runID, *noAPI, stdout, stderr); handled {
+	if handled, code := tryLocalAPICancel(l, runID, *requestID, *noAPI, stdout, stderr); handled {
 		return code
+	}
+	if *requestID != "" {
+		pf(stderr, "error: --request-id requires daemon API cancellation; no live API selected\n")
+		return 2
 	}
 	dir, err := l.FindRunDir(runID)
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 
 	"go.temporal.io/api/serviceerror"
 
+	"github.com/goobers/goobers/internal/cancelreceipt"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -104,6 +105,43 @@ func (f *engineCancelFixture) request(runID, body string) *httptest.ResponseReco
 	response := httptest.NewRecorder()
 	f.handler.ServeHTTP(response, request)
 	return response
+}
+
+func TestDaemonEngineCancelHTTPDurableRetryDoesNotCancelTwice(t *testing.T) {
+	f := newEngineCancelFixture(t, "engine-retry", "engine-retry")
+	path := filepath.Join(f.layout.SchedulerDir(), "cancellation-receipts.db")
+	store, err := cancelreceipt.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.receipts, f.service.auditLog = store, f.service.engine.log
+	first := f.request("engine-retry", `{"actor":"untrusted-body"}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", first.Code, first.Body)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = cancelreceipt.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	f.service.receipts = store
+	for i := 0; i < 5; i++ {
+		again := f.request("engine-retry", `{"actor":"another-spoofed-actor"}`)
+		if again.Code != http.StatusOK || again.Body.String() != first.Body.String() {
+			t.Fatalf("retry status=%d body=%s want=%s", again.Code, again.Body, first.Body)
+		}
+	}
+	conflict := f.request("engine-retry", `{"workflow":"another-workflow"}`)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body)
+	}
+	_, _, cancelled := f.temporal.snapshot()
+	if len(cancelled) != 1 {
+		t.Fatalf("duplicate engine calls=%v", cancelled)
+	}
 }
 
 func TestDaemonEngineCancelHTTPRequestsWithoutTerminalizing(t *testing.T) {

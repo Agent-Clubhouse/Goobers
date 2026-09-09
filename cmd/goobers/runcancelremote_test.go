@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -71,6 +72,38 @@ func TestRunCancelSubmitsToDaemonAPI(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "cancelled run run-1") {
 		t.Fatalf("stdout = %q", stdout)
+	}
+}
+
+func TestRunCancelPreservesRetryIdentityOnUnknownResponse(t *testing.T) {
+	for _, supplied := range []string{"", "retry-delivery"} {
+		t.Run("key="+supplied, func(t *testing.T) {
+			t.Setenv(remoteDaemonAPIEnv, "")
+			var gotKey string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveRemoteRootFixture(w, r) {
+					return
+				}
+				gotKey = r.Header.Get(httpapi.HeaderIdempotencyKey)
+				w.Header().Set("Content-Type", "application/json")
+				// The daemon may have executed the cancellation, but the response
+				// was truncated. A retry must retain its original operation key.
+				_, _ = w.Write([]byte(`{"code":`))
+			}))
+			defer server.Close()
+			args := []string{"run", "cancel", "--api", server.URL}
+			if supplied != "" {
+				args = append(args, "--request-id", supplied)
+			}
+			args = append(args, "run-1")
+			code, _, stderr := runArgs(t, args...)
+			if code != 2 || gotKey == "" || (supplied != "" && supplied != gotKey) {
+				t.Fatalf("code=%d key=%q stderr=%q", code, gotKey, stderr)
+			}
+			if !strings.Contains(stderr, fmt.Sprintf("--request-id=%q", gotKey)) || !strings.Contains(stderr, "unknown") {
+				t.Fatalf("missing reconciliation guidance: %q", stderr)
+			}
+		})
 	}
 }
 
