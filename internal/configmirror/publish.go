@@ -27,14 +27,6 @@ const (
 	MaxSnapshotBytes = 1 << 30
 )
 
-// Publish copies only the supplied instance document and rendered config tree.
-// The caller must supply worker-safe instance bytes after validating the tree.
-// A fixed staging filename, protected by a writer lock, also reclaims a prior
-// crashed publication without accumulating unbounded temporary directories.
-func Publish(ctx context.Context, destination, configDir string, instanceDocument []byte) error {
-	return publish(ctx, destination, configDir, instanceDocument, nil)
-}
-
 // PublishValidated validates the captured bytes in a private extracted tree
 // before replacing the public snapshot. This lets the daemon compare the exact
 // captured generation with its applied digest rather than re-reading a source

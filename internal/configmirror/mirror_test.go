@@ -2,11 +2,18 @@ package configmirror
 
 import (
 	"archive/zip"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// Publish is the test-only transport seam for deliberately opaque documents.
+// Production publication always validates the captured configuration.
+func Publish(ctx context.Context, destination, configDir string, document []byte) error {
+	return publish(ctx, destination, configDir, document, nil)
+}
 
 func writeTestFile(t *testing.T, path, body string) {
 	t.Helper()

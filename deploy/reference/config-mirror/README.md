@@ -26,6 +26,12 @@ seed mechanisms. The mirror is not subject to the ConfigMap 1 MiB ceiling;
 bounded admission currently permits 10,000 entries, 64 MiB per file, and 1 GiB
 of uncompressed content.
 
+Asset source modes travel as verified sibling metadata so Windows does not
+recompute a Unix kit identity from its native permission bits. The metadata
+binds every asset path, mode, and byte; changing the copied files without a new
+seed is refused. Native Windows permissions and executable-file rules remain
+unchanged. Keep the metadata with its seeded asset directory.
+
 After accepted daemon reloads, worker-config.zip is atomically replaced. A
 seeding worker holds one opened archive for its entire copy, validates the
 instance and all referenced instructions/skills, and publishes its private
