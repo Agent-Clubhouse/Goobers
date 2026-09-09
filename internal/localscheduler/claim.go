@@ -693,6 +693,12 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	}
 	var released []releasedClaim
 	for storageKey, entry := range l.entries {
+		// Expiry ends execution authority, not cleanup custody. A shared
+		// record must pass through provider-coordinated release before its
+		// persisted incarnation can be discarded, including after a crash.
+		if !entry.SharedDeadline.IsZero() {
+			continue
+		}
 		if entry.expired(now) {
 			previous, hadHistoryEntry := l.historyEntry(entry.RunID, storageKey)
 			l.recordReleasedHistory(storageKey, entry, now)

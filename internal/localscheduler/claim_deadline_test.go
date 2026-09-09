@@ -65,6 +65,12 @@ func TestClaimScopedUntilPersistsExactDeadline(t *testing.T) {
 		t.Fatal("refused renewal mutated existing claim")
 	}
 	now = deadline
+	if released, err := reopened.RecoverExpired(now); err != nil || len(released) != 0 {
+		t.Fatalf("local reaper discarded shared cleanup custody: %+v %v", released, err)
+	}
+	if retained, held := reopened.LookupScoped(key); !held || retained.SharedOwner != owner {
+		t.Fatal("local reaper lost expired shared incarnation")
+	}
 	owner.Run, owner.Token = "successor", "new-incarnation"
 	if ok, _, err := ledger.ClaimScopedUntil(key, "successor", "implement", now.Add(time.Minute), owner); err != nil || !ok {
 		t.Fatalf("expired claim prevents successor admission: %v, %v", ok, err)
