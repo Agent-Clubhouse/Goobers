@@ -112,7 +112,7 @@ export function RunPage({
             <small>{query.state.error.message}</small>
           </span>
           <button className="text-button" onClick={query.retry} type="button">
-            Try again
+            Retry
           </button>
         </div>
       )}

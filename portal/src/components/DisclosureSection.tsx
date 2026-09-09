@@ -6,17 +6,28 @@ export function DisclosureSection({
   count,
   defaultOpen = false,
   eyebrow,
+  onOpenChange,
+  open: controlledOpen,
   title,
 }: {
   children: React.ReactNode;
   count?: number;
   defaultOpen?: boolean;
   eyebrow: string;
+  onOpenChange?: (open: boolean) => void;
+  open?: boolean;
   title: string;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const open = controlledOpen ?? uncontrolledOpen;
   const headingId = useId();
   const contentId = useId();
+  const setOpen = (nextOpen: boolean) => {
+    if (controlledOpen === undefined) {
+      setUncontrolledOpen(nextOpen);
+    }
+    onOpenChange?.(nextOpen);
+  };
 
   return (
     <section aria-labelledby={headingId} className="content-section disclosure-section">
@@ -25,7 +36,7 @@ export function DisclosureSection({
           aria-controls={contentId}
           aria-expanded={open}
           className="disclosure-section-toggle"
-          onClick={() => setOpen((current) => !current)}
+          onClick={() => setOpen(!open)}
           type="button"
         >
           <span>

@@ -8,7 +8,7 @@ export type Route =
   | { page: "gaggle"; id: string }
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
-  | { page: "insight"; filters?: ScopeFilters }
+  | { page: "insight"; filters?: InsightRouteFilters }
   | { page: "cost"; filters?: ScopeFilters }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
@@ -17,6 +17,12 @@ export type Route =
 // (#2528) — kept as named aliases so call sites read in terms of the view
 // they're for, without three parallel field-by-field type declarations.
 export type RunRouteFilters = ScopeFilters;
+
+export type InsightSection = "contributors" | "usage" | "failures" | "latency";
+
+export interface InsightRouteFilters extends ScopeFilters {
+  section?: InsightSection;
+}
 
 export interface ErrorRouteFilters extends ScopeFilters {
   code?: string;
@@ -71,8 +77,13 @@ export function parseRoute(hash = window.location.hash): Route {
     };
   }
   if (area === "insight") {
-    const filters = parseScopeFilters(search);
-    return hasScopeFilters(filters) ? { page: "insight", filters } : { page: "insight" };
+    const filters = {
+      ...parseScopeFilters(search),
+      section: insightSectionQuery(search),
+    };
+    return hasScopeFilters(filters) || filters.section
+      ? { page: "insight", filters }
+      : { page: "insight" };
   }
   if (area === "cost") {
     const filters = parseScopeFilters(search);
@@ -116,6 +127,9 @@ export function routeHash(route: Route): string {
   if ((route.page === "insight" || route.page === "cost") && route.filters) {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
+    if (route.page === "insight") {
+      writeQuery(search, "section", route.filters.section);
+    }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/${route.page}${suffix}`;
   }
@@ -164,6 +178,16 @@ function populationQuery(search: URLSearchParams): ScopeFilters["population"] {
   value === "premium-measured" ||
   value === "cost-measured" ||
     value === "retry-waste"
+    ? value
+    : undefined;
+}
+
+function insightSectionQuery(search: URLSearchParams): InsightSection | undefined {
+  const value = optionalQuery(search, "section");
+  return value === "contributors" ||
+    value === "usage" ||
+    value === "failures" ||
+    value === "latency"
     ? value
     : undefined;
 }
