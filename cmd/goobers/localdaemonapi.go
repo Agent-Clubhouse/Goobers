@@ -4,9 +4,14 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
 )
+
+func isNoAPIFlag(arg string) bool {
+	return arg == "--no-api" || arg == "-no-api" || strings.HasPrefix(arg, "--no-api=") || strings.HasPrefix(arg, "-no-api=")
+}
 
 func requestedDaemonAPI(explicit string, noAPI bool) (string, error) {
 	if noAPI {

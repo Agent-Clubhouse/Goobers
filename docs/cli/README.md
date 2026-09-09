@@ -3207,7 +3207,7 @@ $ goobers roots discover --json
 trigger a run manually; --force bypasses cadence budgets
 
 ~~~text
-Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
+Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort [--api <url>] <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
@@ -3223,12 +3223,16 @@ manual run. All other run conditions remain enforced. --force cannot be
 combined with --pr because targeted pull-request runs are signal triggers.
 If a live `goobers up` daemon already
 holds the instance lock,
-delegates the trigger to it instead of failing (#343) — dispatched through
+submits through its API automatically — dispatched through
 the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =
 completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
-escalated. A successful submission-only mode (such as --no-wait, once
-available) exits 0 because it does not observe a terminal phase.
+escalated. --no-wait exits 0 on durable API acceptance, before dispatch.
+Without --no-wait, local API callers observe dispatch status then wait
+for the run's terminal journal phase. API failures never silently fall
+back to files. --no-api explicitly selects local execution/file delegation
+and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.
+Targeted --pr runs currently require --no-api from the instance root.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires
 checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,

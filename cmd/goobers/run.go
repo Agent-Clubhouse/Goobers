@@ -48,7 +48,7 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url> | --no-api] [--api-timeout <duration>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--force] [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort [--api <url>] <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
@@ -63,12 +63,16 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"combined with --pr because targeted pull-request runs are signal triggers.\n" +
 	"If a live `goobers up` daemon already\n" +
 	"holds the instance lock,\n" +
-	"delegates the trigger to it instead of failing (#343) — dispatched through\n" +
+	"submits through its API automatically — dispatched through\n" +
 	"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n" +
 	"completed, 1 = failed/aborted or business error (unknown workflow, invalid\n" +
 	"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n" +
-	"escalated. A successful submission-only mode (such as --no-wait, once\n" +
-	"available) exits 0 because it does not observe a terminal phase.\n" +
+	"escalated. --no-wait exits 0 on durable API acceptance, before dispatch.\n" +
+	"Without --no-wait, local API callers observe dispatch status then wait\n" +
+	"for the run's terminal journal phase. API failures never silently fall\n" +
+	"back to files. --no-api explicitly selects local execution/file delegation\n" +
+	"and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.\n" +
+	"Targeted --pr runs currently require --no-api from the instance root.\n" +
 	"--github-progress publishes the versioned hosted-progress contract to one\n" +
 	"GitHub Check Run whenever the journal sequence advances. It requires\n" +
 	"checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,\n" +
@@ -107,6 +111,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
 	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
 	api := fs.String("api", "", "submit the trigger to this daemon API base URL (default $GOOBERS_DAEMON_API)")
+	noAPI := fs.Bool("no-api", false, "explicitly use local execution/file delegation instead of the daemon API")
 	apiTimeout := fs.Duration("api-timeout", remoteTriggerTimeout, "maximum duration for remote API validation and trigger acceptance")
 	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API submission (default: random)")
 	fs.Usage = helpUsage(stderr, "run")
@@ -132,7 +137,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	// filesystem, so the pending-triggers drop below would land where nothing
 	// sweeps it (#3279). Submit through the daemon's trigger plane instead;
 	// no instance root is required to ask a remote daemon to act.
-	endpoint, err := remoteDaemonAPIBase(*api)
+	endpoint, err := requestedDaemonAPI(*api, *noAPI)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -190,7 +195,7 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
-		return runDelegatedTrigger(ctx, l, target, root, *noWait, stdout, stderr)
+		return runLocalTriggerSubmission(ctx, l, target, root, *requestID, *noWait, *noAPI, *apiTimeout, stdout, stderr)
 	}
 	if *noWait && runProcessExits {
 		release()
@@ -638,6 +643,10 @@ func runFlagArgs(args []string) []string {
 	positionals := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if isNoAPIFlag(arg) {
+			flags = append(flags, arg)
+			continue
+		}
 		if arg == "--no-wait" || arg == "-no-wait" ||
 			strings.HasPrefix(arg, "--no-wait=") || strings.HasPrefix(arg, "-no-wait=") {
 			flags = append(flags, arg)

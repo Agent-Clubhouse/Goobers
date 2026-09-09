@@ -89,7 +89,7 @@ func runRemoteTrigger(
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if target.PR > 0 {
-		pf(stderr, "error: --pr is not supported over the daemon API; run it from the daemon's own instance root\n")
+		pf(stderr, "error: --pr is not supported over the daemon API; use --no-api from the daemon's own instance root\n")
 		return 2
 	}
 	requestID = strings.TrimSpace(requestID)
