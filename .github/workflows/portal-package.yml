@@ -45,6 +45,7 @@ jobs:
             portal/.portal-package/*.sha256
             portal/.portal-package/package/portal-artifact.json
           if-no-files-found: error
+          include-hidden-files: true
   release:
     if: github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main' && inputs.version != ''
     needs: package
