@@ -3301,7 +3301,7 @@ $ goobers run abort <run-id>
 cancel a live in-flight run via the daemon
 
 ~~~text
-Usage: goobers run cancel [--api=<url>] <run-id> [path]
+Usage: goobers run cancel [--api=<url> | --no-api] <run-id> [path]
 
 Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
@@ -3311,6 +3311,10 @@ journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
 (CancelWorkflow) instead, with no live daemon required. Use `run abort`
 instead when no daemon is running (that path finalizes a stuck run's
 journal directly).
+A live local daemon is contacted through its HTTP API automatically.
+API failures never silently fall back to file delegation. Use --no-api
+to explicitly select local cancellation/file delegation; this overrides
+$GOOBERS_DAEMON_API and cannot be combined with --api.
 With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that
 daemon's authenticated HTTP API instead of the local pending-cancels
 drop, so a caller that does not share the daemon's filesystem can stop a
