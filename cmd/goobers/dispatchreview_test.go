@@ -70,15 +70,15 @@ func newPodPlanes(t *testing.T, checkoutToken string) *podPlanes {
 		t.Setenv(name, staging)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if serveLocalExecutionPolicy(w, r) {
-			return
-		}
 		body, _ := io.ReadAll(r.Body)
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		switch {
 		case r.URL.Path == "/api/v1/claims/list":
-			_ = json.NewEncoder(w).Encode(map[string]any{"entries": []localscheduler.ClaimEntry{{
+			// Execution-policy reads and recovery custody use the same claims
+			// route. Both must see this run's live claim, not a policy-only
+			// handler that shadows the recovery response with an empty list.
+			_ = json.NewEncoder(w).Encode(map[string]any{"claimVisibility": "local", "entries": []localscheduler.ClaimEntry{{
 				RunID: os.Getenv(dispatcher.EnvRunID), Gaggle: os.Getenv(dispatcher.EnvGaggle),
 				ItemID: "42", ExpiresAt: time.Now().Add(time.Hour),
 			}}})
