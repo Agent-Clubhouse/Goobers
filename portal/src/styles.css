@@ -538,13 +538,22 @@ summary:focus-visible {
 }
 
 .maintenance-indicator {
+  align-items: baseline;
+  display: flex;
   flex: 1 1 420px;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   min-width: 0;
 }
 
 .maintenance-indicator span {
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.maintenance-indicator span::before {
+  content: "·";
+  margin-right: 10px;
 }
 
 .instance-strip strong {
@@ -1134,6 +1143,22 @@ summary:focus-visible {
   gap: 8px;
 }
 
+.section-error {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.section-error .text-button {
+  flex: none;
+}
+
+.attention-group {
+  display: grid;
+  gap: 0;
+}
+
 .attention-row {
   align-items: start;
   background: var(--danger-soft);
@@ -1144,6 +1169,23 @@ summary:focus-visible {
   grid-template-columns: auto minmax(0, 1fr) auto;
   padding: 16px;
   width: 100%;
+}
+
+.attention-group-summary {
+  grid-template-columns: auto auto minmax(180px, 1fr) minmax(150px, auto) auto auto;
+}
+
+.attention-group-summary .attention-copy,
+.attention-group-summary .attention-meta {
+  min-width: 0;
+}
+
+.attention-group-summary .attention-copy strong,
+.attention-group-summary .attention-copy span,
+.attention-group-summary .attention-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attention-row:hover {
@@ -1186,7 +1228,69 @@ summary:focus-visible {
 .attention-actions {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
+}
+
+.attention-select-all {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 680;
+  gap: 6px;
+}
+
+.attention-expand {
+  background: transparent;
+  border: 0;
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+  padding: 6px 0;
+  white-space: nowrap;
+}
+
+.attention-group-runs {
+  border: 1px solid color-mix(in srgb, var(--danger) 22%, var(--line));
+  border-radius: 0 0 11px 11px;
+  border-top: 0;
+  margin: -10px 8px 0;
+  padding: 13px 8px 5px;
+}
+
+.attention-run-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  padding: 8px;
+}
+
+.attention-run-row + .attention-run-row {
+  border-top: 1px solid var(--line);
+}
+
+.attention-run-link {
+  color: inherit;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  text-decoration: none;
+}
+
+.attention-run-link strong,
+.attention-run-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-run-link span,
+.attention-run-row time {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .attention-collapse-toggle {
@@ -1275,6 +1379,12 @@ summary:focus-visible {
   gap: 18px;
 }
 
+.outcome-grid ~ .data-row {
+  min-height: 56px;
+  padding-bottom: 8px;
+  padding-top: 8px;
+}
+
 .data-header {
   color: var(--muted);
   font-size: 9px;
@@ -1331,7 +1441,7 @@ summary:focus-visible {
 
 .outcome-grid,
 .outcome-grid ~ .data-row {
-  grid-template-columns: minmax(270px, 1.7fr) 130px minmax(130px, 0.8fr) 80px 18px;
+  grid-template-columns: minmax(220px, 1.7fr) 110px minmax(150px, 0.9fr) 80px 18px;
 }
 
 .workflow-grid,
@@ -6505,6 +6615,34 @@ a.telemetry-error-row:hover {
     grid-template-columns: auto 1fr auto;
   }
 
+  .attention-group-summary {
+    align-items: center;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .attention-group-summary .attention-icon,
+  .attention-group-summary .attention-meta {
+    display: none;
+  }
+
+  .attention-group-summary .attention-expand {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .attention-group-summary .attention-dismiss {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
+  .attention-run-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .attention-run-row time {
+    display: none;
+  }
+
   .attention-meta {
     display: none;
   }
@@ -6653,6 +6791,40 @@ a.telemetry-error-row:hover {
   .page-content {
     padding-left: 12px;
     padding-right: 12px;
+  }
+
+  .attention-actions {
+    align-items: flex-start;
+    display: grid;
+    gap: 6px 14px;
+    grid-template-columns: repeat(2, auto);
+  }
+
+  .attention-group-summary {
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .attention-group-summary .attention-dismiss {
+    overflow: hidden;
+    padding-left: 7px;
+    padding-right: 7px;
+    text-overflow: ellipsis;
+    width: 74px;
+  }
+
+  .attention-group-runs {
+    margin-left: 4px;
+    margin-right: 4px;
+  }
+
+  .attention-run-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .attention-run-row .attention-dismiss {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .gaggle-workflow-node dl {
