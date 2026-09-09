@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
@@ -62,8 +63,9 @@ type versioningActivityResult struct {
 
 func versioningWorkflow(ctx workflow.Context) ([]versioningActivityResult, error) {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: time.Minute,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
+		StartToCloseTimeout:    time.Minute,
+		ScheduleToStartTimeout: time.Second,
+		RetryPolicy:            &temporal.RetryPolicy{MaximumAttempts: 2},
 	})
 	var first versioningActivityResult
 	if err := workflow.ExecuteActivity(ctx, "VersioningActivity", true).Get(ctx, &first); err != nil {
@@ -161,11 +163,35 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 	}
 	resultErr := make(chan error, 1)
 	go func() { resultErr <- run.Get(ctx, nil) }()
+	var historyErr error
+	waitFor(t, func() bool {
+		iter := server.Client().GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+		scheduled := int64(0)
+		for iter.HasNext() {
+			event, err := iter.Next()
+			if err != nil {
+				historyErr = err
+				return false
+			}
+			if event.GetEventType() == enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED {
+				scheduled++
+			}
+			if scheduled >= 3 && event.GetEventType() == enumspb.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT {
+				attrs := event.GetActivityTaskTimedOutEventAttributes()
+				if attrs.GetStartedEventId() == 0 {
+					return true
+				}
+			}
+		}
+		return false
+	})
+	if historyErr != nil {
+		t.Fatalf("read pinned workflow history: %v", historyErr)
+	}
 	select {
 	case err := <-resultErr:
 		t.Fatalf("new worker executed workflow pinned to build-old: %v", err)
-	case <-time.After(2 * time.Second):
-		// The new worker must not be able to execute work pinned to build-old.
+	default:
 	}
 	startVersionedWorker(t, server.Client(), queue, "build-old", "old-worker-resumed", oldRecords)
 	var result []versioningActivityResult
