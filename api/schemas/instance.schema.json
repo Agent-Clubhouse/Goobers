@@ -68,6 +68,10 @@
       "description": "Where the definitions-as-code tree (gaggles, goobers, workflows) is read from, independently of the target code repositories. Omitted keeps the local <instance-root>/config directory.",
       "$ref": "#/$defs/workflowSource"
     },
+    "configMirrorPath": {
+      "type": "string",
+      "description": "Absolute shared path where the daemon publishes worker-consumable rendered configuration after successful synchronization or reload. Omitted or empty disables the mirror. Workers seed their local instance configuration without fetching the configuration repository or receiving its credentials."
+    },
     "runner": {
       "description": "This runner's static claims and execution defaults: the toolchains it advertises, the extra ambient environment variables stages may see, and the baseline stage deadline.",
       "$ref": "#/$defs/runner"
