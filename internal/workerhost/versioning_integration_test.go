@@ -140,7 +140,7 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 	queue := "workerhost-versioning"
 	oldRecords := &versioningRecorder{}
 	newRecords := &versioningRecorder{}
-	startVersionedWorker(t, server.Client(), queue, "build-old", "old-worker", oldRecords)
+	oldWorker := startVersionedWorker(t, server.Client(), queue, "build-old", "old-worker", oldRecords)
 	run, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:        "versioning-pinned",
 		TaskQueue: queue,
@@ -153,11 +153,21 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 		attempts := oldRecords.snapshot()
 		return len(attempts) == 2 && attempts[0].Failed && attempts[1].Identity.BuildID == "build-old"
 	})
+	oldWorker.Stop()
 	startVersionedWorker(t, server.Client(), queue, "build-new", "new-worker", newRecords)
 
 	if err := server.Client().SignalWorkflow(ctx, run.GetID(), run.GetRunID(), "resume", nil); err != nil {
 		t.Fatalf("signal old workflow: %v", err)
 	}
+	resultErr := make(chan error, 1)
+	go func() { resultErr <- run.Get(ctx, nil) }()
+	select {
+	case err := <-resultErr:
+		t.Fatalf("new worker executed workflow pinned to build-old: %v", err)
+	case <-time.After(2 * time.Second):
+		// The new worker must not be able to execute work pinned to build-old.
+	}
+	startVersionedWorker(t, server.Client(), queue, "build-old", "old-worker-resumed", oldRecords)
 	var result []versioningActivityResult
 	if err := run.Get(ctx, &result); err != nil {
 		t.Fatalf("old workflow: %v", err)
@@ -166,8 +176,8 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 		t.Fatalf("pinned workflow activities = %+v, want both build-old", result)
 	}
 	for _, attempt := range oldRecords.snapshot() {
-		if attempt.Identity.BuildID != "build-old" || attempt.Identity.WorkerIdentity != "old-worker" {
-			t.Fatalf("old attempt identity = %+v, want build-old/old-worker", attempt)
+		if attempt.Identity.BuildID != "build-old" || attempt.Identity.WorkerIdentity == "" {
+			t.Fatalf("old attempt identity = %+v, want build-old and a worker identity", attempt)
 		}
 	}
 

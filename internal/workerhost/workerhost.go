@@ -208,13 +208,28 @@ func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interc
 	if err == nil {
 		return result, nil
 	}
-	// Temporal serializes activity errors, so preserve the original failure
-	// class while attaching the worker identity needed by the workflow journal.
+	// Keep the original error as the cause so its details and retry options
+	// remain available to the engine, while the outer error carries identity.
 	failureType := "GoobersAttemptFailure"
-	if appErr, ok := err.(*temporal.ApplicationError); ok {
+	var appErr *temporal.ApplicationError
+	if errors.As(err, &appErr) {
 		failureType = appErr.Type()
 	}
-	return nil, temporal.NewApplicationErrorWithCause(
-		err.Error(), failureType, err, identity,
-	)
+	return nil, temporal.NewApplicationErrorWithOptions(err.Error(), failureType, temporal.ApplicationErrorOptions{
+		NonRetryable: appErr != nil && appErr.NonRetryable(),
+		Cause:        err,
+		NextRetryDelay: func() time.Duration {
+			if appErr == nil {
+				return 0
+			}
+			return appErr.NextRetryDelay()
+		}(),
+		Category: func() temporal.ApplicationErrorCategory {
+			if appErr == nil {
+				return temporal.ApplicationErrorCategoryUnspecified
+			}
+			return appErr.Category()
+		}(),
+		Details: []interface{}{identity},
+	})
 }

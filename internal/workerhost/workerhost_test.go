@@ -241,8 +241,19 @@ type failingActivity struct {
 	interceptor.ActivityInboundInterceptorBase
 }
 
+type metadataFailingActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+}
+
 func (f *failingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
 	return nil, errors.New("attempt failed")
+}
+
+func (f *metadataFailingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
+	return nil, temporal.NewApplicationErrorWithOptions("dispatch failed", "InfrastructureFailure", temporal.ApplicationErrorOptions{
+		NextRetryDelay: time.Minute,
+		Details:        []interface{}{time.Now().Add(time.Hour)},
+	})
 }
 
 func (f *identityNextActivity) ExecuteActivity(ctx context.Context, _ *interceptor.ExecuteActivityInput) (interface{}, error) {
@@ -305,6 +316,37 @@ func TestActivityTrackerAttachesIdentityToFailedAttempt(t *testing.T) {
 	}
 	if identity.BuildID != "build-8" || identity.WorkerIdentity != "worker-8" {
 		t.Fatalf("identity = %+v, want build-8/worker-8", identity)
+	}
+}
+
+func TestActivityTrackerPreservesFailedAttemptMetadata(t *testing.T) {
+	tracker := &activityTracker{buildID: "build-9", worker: "worker-9"}
+	inbound := tracker.InterceptActivity(context.Background(), &metadataFailingActivity{})
+	_, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+	if err == nil {
+		t.Fatal("ExecuteActivity succeeded, want failure")
+	}
+	var wrapped *temporal.ApplicationError
+	if !errors.As(err, &wrapped) {
+		t.Fatalf("error = %T, want Temporal application error", err)
+	}
+	var identity attemptidentity.Identity
+	if decodeErr := wrapped.Details(&identity); decodeErr != nil {
+		t.Fatalf("decode identity: %v", decodeErr)
+	}
+	if identity.BuildID != "build-9" || identity.WorkerIdentity != "worker-9" {
+		t.Fatalf("identity = %+v, want build-9/worker-9", identity)
+	}
+	var original *temporal.ApplicationError
+	if !errors.As(errors.Unwrap(wrapped), &original) {
+		t.Fatal("wrapped error lost original application error")
+	}
+	if original.NextRetryDelay() != time.Minute {
+		t.Fatalf("retry delay = %v, want 1m", original.NextRetryDelay())
+	}
+	var retryAt time.Time
+	if decodeErr := original.Details(&retryAt); decodeErr != nil {
+		t.Fatalf("decode retry detail: %v", decodeErr)
 	}
 }
 

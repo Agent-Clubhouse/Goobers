@@ -209,29 +209,41 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 }
 
 func attemptIdentityFromError(err error) *attemptidentity.Identity {
-	var appErr *temporal.ApplicationError
-	if !errors.As(err, &appErr) || !appErr.HasDetails() {
-		return nil
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		var appErr *temporal.ApplicationError
+		if !errors.As(current, &appErr) || !appErr.HasDetails() {
+			continue
+		}
+		var identity attemptidentity.Identity
+		if appErr.Details(&identity) == nil && identity.WorkerIdentity != "" {
+			return &identity
+		}
+		var retryAt time.Time
+		if appErr.Details(&retryAt, &identity) == nil && identity.WorkerIdentity != "" {
+			return &identity
+		}
 	}
-	var identity attemptidentity.Identity
-	if appErr.Details(&identity) != nil || identity.WorkerIdentity == "" {
-		return nil
-	}
-	return &identity
+	return nil
 }
 
 func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) time.Duration {
-	var appErr *temporal.ApplicationError
-	if !errors.As(err, &appErr) || appErr.Type() != FailureTypeInfrastructure || !appErr.HasDetails() {
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		var appErr *temporal.ApplicationError
+		if !errors.As(current, &appErr) || appErr.Type() != FailureTypeInfrastructure || !appErr.HasDetails() {
+			continue
+		}
+		var retryAt time.Time
+		if appErr.Details(&retryAt) != nil {
+			var identity attemptidentity.Identity
+			if appErr.Details(&retryAt, &identity) != nil {
+				continue
+			}
+		}
+		until := retryAt.Sub(now)
+		if until > backoff {
+			return until
+		}
 		return backoff
-	}
-	var retryAt time.Time
-	if err := appErr.Details(&retryAt); err != nil {
-		return backoff
-	}
-	until := retryAt.Sub(now)
-	if until > backoff {
-		return until
 	}
 	return backoff
 }

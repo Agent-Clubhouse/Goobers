@@ -57,19 +57,22 @@ func dispatchFailureResult(err error, report dispatcher.Report) (stageActivityRe
 // yield nil. A pre-create refusal can name a selected runner without inventing
 // a pod, node, image, or timestamp that was never observed.
 func DispatchFailurePlacement(err error) *StagePlacement {
-	var appErr *temporal.ApplicationError
-	if !errors.As(err, &appErr) || !appErr.HasDetails() {
-		return nil
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		var appErr *temporal.ApplicationError
+		if !errors.As(current, &appErr) || !appErr.HasDetails() {
+			continue
+		}
+		if appErr.Type() != FailureTypeInfrastructure && appErr.Type() != FailureTypeStage {
+			continue
+		}
+		var retryAt time.Time
+		var evidence dispatchFailureEvidence
+		if readDispatchFailureDetails(appErr, &retryAt, &evidence) == nil &&
+			evidence.SchemaVersion == 1 && evidence.Placement != nil && evidence.Placement.Runner != "" {
+			return evidence.Placement
+		}
 	}
-	if appErr.Type() != FailureTypeInfrastructure && appErr.Type() != FailureTypeStage {
-		return nil
-	}
-	var retryAt time.Time
-	var evidence dispatchFailureEvidence
-	if readDispatchFailureDetails(appErr, &retryAt, &evidence) != nil || evidence.SchemaVersion != 1 || evidence.Placement == nil || evidence.Placement.Runner == "" {
-		return nil
-	}
-	return evidence.Placement
+	return nil
 }
 
 // Encoded SDK details return a decoding error for an incompatible payload;
