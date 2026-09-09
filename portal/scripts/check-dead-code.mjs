@@ -76,6 +76,7 @@ const testOnlyExports = {
     "insightWindowFilters",
     "insightErrorSignatureFilters",
     "selectInsightCostTrendBuckets",
+    "serializeInsightAggregate",
   ],
   "src/liveData.tsx": [
     "LiveDataController",

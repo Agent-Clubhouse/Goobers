@@ -14,6 +14,30 @@ import type {
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveQuery } from "./liveQuery";
 
+const aggregateLoadTails = new WeakMap<DaemonClient, Promise<unknown>>();
+
+export function serializeInsightAggregate<T>(
+  client: DaemonClient,
+  signal: AbortSignal,
+  load: () => Promise<T>,
+): Promise<T> {
+  const previous = aggregateLoadTails.get(client) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(() => {
+    if (signal.aborted) {
+      const error = new Error("Insight aggregate request was cancelled.");
+      error.name = "AbortError";
+      throw error;
+    }
+    return load();
+  });
+  aggregateLoadTails.set(client, current);
+  return current.finally(() => {
+    if (aggregateLoadTails.get(client) === current) {
+      aggregateLoadTails.delete(client);
+    }
+  });
+}
+
 export type InsightWindow = "24h" | "7d" | "30d" | "all";
 
 export interface InsightSnapshot {
@@ -97,7 +121,9 @@ export function useInsightStats(
       const filters = scopeRequest
         ? insightStatsFilters(window, gaggle, workflow)
         : insightWindowFilters(window);
-      const stats = await client.getTelemetryStats(filters, { signal });
+      const stats = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryStats(filters, { signal }),
+      );
       return { filters, stats, window };
     },
   });
@@ -191,19 +217,21 @@ export function useInsightCostTrend(
       const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
       const trendUntil = bucketRanges.at(-1)?.until;
       const trendBucketCount = previousRange ? bucketRanges.length * 2 : bucketRanges.length;
-      const stats = await client.getTelemetryStats(
-        {
-          gaggle,
-          workflow,
-          since: currentRange.since,
-          until: currentRange.until,
-          trendSince,
-          trendUntil,
-          trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,
-          trendPreviousSince: previousRange?.since,
-          trendPreviousUntil: previousRange?.until,
-        },
-        { signal },
+      const stats = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryStats(
+          {
+            gaggle,
+            workflow,
+            since: currentRange.since,
+            until: currentRange.until,
+            trendSince,
+            trendUntil,
+            trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,
+            trendPreviousSince: previousRange?.since,
+            trendPreviousUntil: previousRange?.until,
+          },
+          { signal },
+        ),
       );
       const buckets = selectInsightCostTrendBuckets(
         stats.trend ?? [],
@@ -242,7 +270,9 @@ export function useInsightCostRollup(
     errorMessage: "Unable to read instance spend.",
     load: async (signal) => {
       const filters = insightWindowFilters(window);
-      const stats = await client.getTelemetryStats(filters, { signal });
+      const stats = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryStats(filters, { signal }),
+      );
       return costRollupFromStats(filters, stats, window);
     },
   });
@@ -265,7 +295,9 @@ export function useInsightExternalCosts(
     errorMessage: "Unable to read pull request and issue costs.",
     load: async (signal) => {
       const filters = insightCostFilters(window);
-      const result = await client.getTelemetryCosts(filters, { signal });
+      const result = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryCosts(filters, { signal }),
+      );
       return {
         filters,
         result,
@@ -320,7 +352,9 @@ export function useInsightErrorSignatures(
     errorMessage: "Unable to read failure reasons.",
     load: async (signal) => {
       const filters = insightErrorSignatureFilters(window, gaggle, workflow, stage);
-      const result = await client.getTelemetryErrorSignatures(filters, { signal });
+      const result = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryErrorSignatures(filters, { signal }),
+      );
       return { filters, requestKey, result };
     },
   });
