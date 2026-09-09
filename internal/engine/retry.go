@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 )
@@ -93,11 +94,13 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		}
 		var res apiv1.ResultEnvelope
 		var err error
+		var identity *attemptidentity.Identity
 		emitErr := rec.emitPending(ctx)
 		if emitErr == nil {
 			var activityResult stageActivityResult
 			activityResult, err = dispatch(ctx, int(attempt), class)
 			res = activityResult.ResultEnvelope
+			identity = activityResult.AttemptIdentity
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
 				return apiv1.ResultEnvelope{}, err
 			}
@@ -123,7 +126,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				}
 				rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
 				rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
-				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
+				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError, identity)
 				emitErr = rec.emitPending(ctx)
 				if emitErr == nil {
 					// Only a WINNING attempt's delta is carried forward. A
@@ -173,10 +176,14 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 		if cerr != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
-		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err)
+		if identity == nil {
+			identity = attemptIdentityFromError(err)
+		}
+		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err, identity)
 		if isWorkerLossTimeout(err) && len(t.PolicyActions) > 0 {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
 		}
+
 		retryLimit, retryCount := policyMaxAttempts, policyAttempts
 		shouldRetry := policyAttempts < policyMaxAttempts
 		nextRetryClass = journal.AttemptPolicy
@@ -199,6 +206,18 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+}
+
+func attemptIdentityFromError(err error) *attemptidentity.Identity {
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) || !appErr.HasDetails() {
+		return nil
+	}
+	var identity attemptidentity.Identity
+	if appErr.Details(&identity) != nil || identity.WorkerIdentity == "" {
+		return nil
+	}
+	return &identity
 }
 
 func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) time.Duration {

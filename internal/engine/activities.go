@@ -16,6 +16,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
@@ -121,8 +122,9 @@ type DispatchStageResult struct {
 	// Embed the legacy activity result so its JSON stays flat and histories
 	// recorded before mutation metadata was added remain replay-decodable.
 	apiv1.ResultEnvelope
-	Mutations      []MutationFact `json:"mutations,omitempty"`
-	MutationIssues []string       `json:"mutationIssues,omitempty"`
+	AttemptIdentity *attemptidentity.Identity `json:"attemptIdentity,omitempty"`
+	Mutations       []MutationFact            `json:"mutations,omitempty"`
+	MutationIssues  []string                  `json:"mutationIssues,omitempty"`
 	// WorkspaceDelta is the blob digest of a bundle carrying what this stage
 	// committed (#3763), for the engine's continuity record to hand to a
 	// later stage. A pod surrenders one; a self-placed stage on a writable
@@ -568,7 +570,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 				return stageActivityResult{}, classifySeamError(perr)
 			}
 			result.SelfPlacement = selfStagePlacement()
-			return a.scrubStageActivityResult(result)
+			return a.scrubStageActivityResult(ctx, result)
 		}
 		return stageActivityResult{}, classifySeamError(err)
 	}
@@ -589,7 +591,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	result.SelfPlacement = selfStagePlacement()
-	return a.scrubStageActivityResult(result)
+	return a.scrubStageActivityResult(ctx, result)
 }
 
 // salvageOnTimeout implements the #724 ruling for the engine's self arm: a
@@ -836,7 +838,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 			if derr != nil {
 				return stageActivityResult{}, classifySeamError(fmt.Errorf("encode base-sync conflict detail for stage %q: %w", env.TaskID, derr))
 			}
-			return a.scrubStageActivityResult(stageActivityResult{
+			return a.scrubStageActivityResult(ctx, stageActivityResult{
 				ResultEnvelope: apiv1.ResultEnvelope{
 					Status:  apiv1.ResultFailure,
 					Summary: runner.BaseSyncConflictSummary,
@@ -863,7 +865,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	result.SelfPlacement = selfStagePlacement()
-	return a.scrubStageActivityResult(result)
+	return a.scrubStageActivityResult(ctx, result)
 }
 
 // selfStagePlacement is the in-process arms' placement provenance (#3875): what
@@ -920,7 +922,10 @@ func publishWorkspaceDelta(ctx context.Context, ws Workspace, mode apiv1.Workspa
 	return nil
 }
 
-func (a *Activities) scrubStageActivityResult(result stageActivityResult) (stageActivityResult, error) {
+func (a *Activities) scrubStageActivityResult(ctx context.Context, result stageActivityResult) (stageActivityResult, error) {
+	if identity, ok := attemptidentity.FromContext(ctx); ok {
+		result.AttemptIdentity = &identity
+	}
 	// Activity return values are persisted in Temporal history before the final
 	// journal writer can scrub them. Redact at this boundary so history and the
 	// later projection commit the same bytes and therefore the same digests.

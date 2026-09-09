@@ -94,6 +94,8 @@ func TestJournalSpanExporterWritesLosslessOTLPJSON(t *testing.T) {
 		attribute.String(AttrStageType, StageTypeAgentic),
 		attribute.Int(AttrAttemptNumber, 2),
 		attribute.String(AttrAttemptKind, AttemptKindPolicy),
+		attribute.String(AttrBuildID, "build-7"),
+		attribute.String(AttrWorkerIdentity, "worker-7"),
 		attribute.String(AttrItemID, "781"),
 		attribute.String(AttrItemURL, "https://github.com/Agent-Clubhouse/Goobers/issues/781"),
 		attribute.String(AttrOutcome, OutcomeFailure),

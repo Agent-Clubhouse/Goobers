@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
@@ -427,16 +428,18 @@ type contextManifest struct {
 }
 
 // executorError mirrors runTask's per-attempt dispatch-failure event.
-func (r *runJournal) executorError(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error) {
+func (r *runJournal) executorError(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error, identity *attemptidentity.Identity) {
 	code := telemetry.ErrCodeExecutor
 	if failureClass == journal.AttemptInfra {
 		code = telemetry.ErrCodeInfraFailure
 	}
-	r.append(ctx, journal.Event{
+	ev := journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
 		Error:  &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
 		Runner: map[string]any{"retryFailureClass": string(failureClass), "errorCode": code, "errorClass": string(telemetry.ClassifyError(code))},
-	})
+	}
+	addAttemptIdentity(&ev, identity)
+	r.append(ctx, ev)
 }
 
 func (r *runJournal) integrityRefused(ctx workflow.Context, stage string, admission *apiv1.IntegrityAdmissionError) {
@@ -456,14 +459,37 @@ func (r *runJournal) integrityRefused(ctx workflow.Context, stage string, admiss
 // journaled as a span op immediately before stage.finished, mirroring the
 // local runner's own ordering (the harness executor records its span mid-run,
 // before runTask appends stage.finished) — see JournalSpanOp (#2907).
-func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result apiv1.ResultEnvelope, continueOnError bool) {
+func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result apiv1.ResultEnvelope, continueOnError bool, identity *attemptidentity.Identity) {
 	if result.Transcript != nil {
 		r.spanAt(workflow.Now(ctx), JournalSpanOp{
 			Stage: stage, Attempt: attempt, Class: class,
 			Name: stage + ".transcript", Ref: journalRefFrom(*result.Transcript),
 		})
 	}
-	r.append(ctx, stageFinishedEvent(stage, attempt, class, result, continueOnError))
+	ev := stageFinishedEvent(stage, attempt, class, result, continueOnError)
+	addAttemptIdentity(&ev, identity)
+	r.append(ctx, ev)
+}
+
+func addAttemptIdentity(ev *journal.Event, identity *attemptidentity.Identity) {
+	if identity == nil {
+		return
+	}
+	if ev.Runner == nil {
+		ev.Runner = map[string]any{}
+	}
+	ev.Runner["buildId"] = identity.BuildID
+	ev.Runner["workerIdentity"] = identity.WorkerIdentity
+	if identity.TaskQueue != "" {
+		ev.Runner["taskQueue"] = identity.TaskQueue
+	}
+	if identity.ActivityID != "" {
+		ev.Runner["activityId"] = identity.ActivityID
+	}
+	if identity.ActivityType != "" {
+		ev.Runner["activityType"] = identity.ActivityType
+	}
+	ev.Runner["activityAttempt"] = identity.Attempt
 }
 
 // stageFinishedEvent builds the stage.finished event, including the

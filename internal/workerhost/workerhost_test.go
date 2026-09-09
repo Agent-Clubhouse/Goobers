@@ -12,8 +12,11 @@ import (
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+
+	"github.com/goobers/goobers/internal/attemptidentity"
 )
 
 type fakeWorker struct {
@@ -229,6 +232,30 @@ type fakeNextActivity struct {
 	t       *testing.T
 }
 
+type identityNextActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+	t *testing.T
+}
+
+type failingActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+}
+
+func (f *failingActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
+	return nil, errors.New("attempt failed")
+}
+
+func (f *identityNextActivity) ExecuteActivity(ctx context.Context, _ *interceptor.ExecuteActivityInput) (interface{}, error) {
+	identity, ok := attemptidentity.FromContext(ctx)
+	if !ok {
+		f.t.Fatal("activity context has no execution identity")
+	}
+	if identity.BuildID != "build-7" || identity.WorkerIdentity != "worker-7" {
+		f.t.Fatalf("identity = %+v, want build-7/worker-7", identity)
+	}
+	return "result", nil
+}
+
 func (f *fakeNextActivity) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (interface{}, error) {
 	if got := f.tracker.inFlight(); got != 1 {
 		f.t.Errorf("in-flight during execution = %d, want 1", got)
@@ -245,6 +272,39 @@ func TestActivityTrackerCountsExecutionWindow(t *testing.T) {
 	}
 	if got := tracker.inFlight(); got != 0 {
 		t.Fatalf("in-flight after completion = %d, want 0", got)
+	}
+}
+
+func TestActivityTrackerPropagatesAttemptIdentity(t *testing.T) {
+	tracker := &activityTracker{buildID: "build-7", worker: "worker-7"}
+	next := &identityNextActivity{t: t}
+	inbound := tracker.InterceptActivity(context.Background(), next)
+	got, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+	if err != nil {
+		t.Fatalf("ExecuteActivity: %v", err)
+	}
+	if got != "result" {
+		t.Fatalf("result = %v, want result", got)
+	}
+}
+
+func TestActivityTrackerAttachesIdentityToFailedAttempt(t *testing.T) {
+	tracker := &activityTracker{buildID: "build-8", worker: "worker-8"}
+	inbound := tracker.InterceptActivity(context.Background(), &failingActivity{})
+	_, err := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+	if err == nil {
+		t.Fatal("ExecuteActivity succeeded, want failure")
+	}
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("error = %T, want Temporal application error", err)
+	}
+	var identity attemptidentity.Identity
+	if decodeErr := appErr.Details(&identity); decodeErr != nil {
+		t.Fatalf("decode identity: %v", decodeErr)
+	}
+	if identity.BuildID != "build-8" || identity.WorkerIdentity != "worker-8" {
+		t.Fatalf("identity = %+v, want build-8/worker-8", identity)
 	}
 }
 

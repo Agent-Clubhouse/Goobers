@@ -16,9 +16,11 @@ import (
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/goobers/goobers/internal/attemptidentity"
 	"github.com/goobers/goobers/internal/bootstrap"
 )
 
@@ -80,7 +82,10 @@ func New(cfg Config) (*Host, error) {
 	if cfg.DrainTimeout <= 0 {
 		cfg.DrainTimeout = DefaultDrainTimeout
 	}
-	h := &Host{cfg: cfg, tracker: &activityTracker{}}
+	h := &Host{cfg: cfg, tracker: &activityTracker{
+		buildID: cfg.BuildVersion,
+		worker:  Identity(cfg.BuildVersion),
+	}}
 	h.dial = bootstrap.DialTemporal
 	h.newWorker = func(c client.Client, taskQueue string, opts worker.Options) managedWorker {
 		w := worker.New(c, taskQueue, opts)
@@ -172,7 +177,9 @@ func (h *Host) Run(ctx context.Context) error {
 // a non-zero count is work the drain window abandoned.
 type activityTracker struct {
 	interceptor.WorkerInterceptorBase
-	n atomic.Int64
+	n       atomic.Int64
+	buildID string
+	worker  string
 }
 
 func (t *activityTracker) inFlight() int64 { return t.n.Load() }
@@ -192,5 +199,22 @@ type trackedActivityInbound struct {
 func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (interface{}, error) {
 	a.tracker.n.Add(1)
 	defer a.tracker.n.Add(-1)
-	return a.Next.ExecuteActivity(ctx, in)
+	identity := attemptidentity.Identity{
+		BuildID:        a.tracker.buildID,
+		WorkerIdentity: a.tracker.worker,
+	}
+	ctx = attemptidentity.WithContext(ctx, identity)
+	result, err := a.Next.ExecuteActivity(ctx, in)
+	if err == nil {
+		return result, nil
+	}
+	// Temporal serializes activity errors, so preserve the original failure
+	// class while attaching the worker identity needed by the workflow journal.
+	failureType := "GoobersAttemptFailure"
+	if appErr, ok := err.(*temporal.ApplicationError); ok {
+		failureType = appErr.Type()
+	}
+	return nil, temporal.NewApplicationErrorWithCause(
+		err.Error(), failureType, err, identity,
+	)
 }

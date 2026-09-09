@@ -715,7 +715,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
 	}
 	if input.Review {
-		result, reviewErr := a.reviewActivityResult(input, attempt.Number, surrendered, report)
+		result, reviewErr := a.reviewActivityResult(ctx, input, attempt.Number, surrendered, report)
 		return result, withDispatchFailurePlacement(reviewErr, report)
 	}
 	if surrendered.Verdict != nil {
@@ -725,7 +725,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		// substituted surrender document would take to look harmless.
 		return dispatchFailureResult(classifySeamError(fmt.Errorf("engine: surrendered result for task stage %q attempt %d carries a verdict; only a review attempt surrenders one (fail closed)", input.Envelope.TaskID, attempt.Number)), report)
 	}
-	result, resultErr := a.scrubStageActivityResult(stageActivityResult{
+	result, resultErr := a.scrubStageActivityResult(ctx, stageActivityResult{
 		ResultEnvelope:     surrendered.Result,
 		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
 		MutationIssues:     surrendered.MutationIssues,
@@ -769,7 +769,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 //   - A workspace delta beside a verdict: refused. A reviewer never
 //     publishes (ReviewGoober), and a review pod that surrendered commits
 //     has done something no reviewer does.
-func (a *Activities) reviewActivityResult(input DispatchStageInput, number int, surrendered dispatcher.SurrenderedResult, report dispatcher.Report) (stageActivityResult, error) {
+func (a *Activities) reviewActivityResult(ctx context.Context, input DispatchStageInput, number int, surrendered dispatcher.SurrenderedResult, report dispatcher.Report) (stageActivityResult, error) {
 	stage := input.Envelope.TaskID
 	if surrendered.Result.Status != apiv1.ResultSuccess {
 		code, message := failureCause(surrendered.Result.Error)
@@ -793,7 +793,7 @@ func (a *Activities) reviewActivityResult(input DispatchStageInput, number int, 
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: reviewer gate %q attempt %d surrendered an invalid verdict: %w (fail closed)", stage, number, err))
 	}
 	verdict := *surrendered.Verdict
-	return a.scrubStageActivityResult(stageActivityResult{
+	return a.scrubStageActivityResult(ctx, stageActivityResult{
 		ResultEnvelope: surrendered.Result,
 		Verdict:        &verdict,
 		Placement:      placementProvenance(report),

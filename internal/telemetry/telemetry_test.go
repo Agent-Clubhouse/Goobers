@@ -956,6 +956,8 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.stage.type",
 		"goobers.attempt.n",
 		"goobers.attempt.kind",
+		"goobers.build.id",
+		"goobers.worker.identity",
 		"goobers.item.id",
 		"goobers.item.url",
 		"goobers.outcome",
