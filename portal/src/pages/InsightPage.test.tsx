@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
+import { DaemonApiError } from "../api/errors";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
 
 beforeEach(() => {
@@ -333,6 +334,49 @@ describe("Insight page", () => {
       }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it("keeps Cost usable and gives upgrade guidance when attributed costs are unsupported", async () => {
+    window.location.hash = "#/cost";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "getTelemetryCosts").mockRejectedValue(
+      new DaemonApiError(404, "not_found", "route not found"),
+    );
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Selected-scope cost" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Attributed costs are not supported by this daemon. Upgrade Goobers to enable pull request and issue cost reporting.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  it("isolates a missing trend capability without blanking Cost", async () => {
+    window.location.hash = "#/cost";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const original = client.getTelemetryStats.bind(client);
+    vi.spyOn(client, "getTelemetryStats").mockImplementation(async (request, options) => {
+      const result = await original(request, options);
+      return request?.trendBuckets ? { ...result, trend: undefined } : result;
+    });
+    render(<App client={client} />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Selected-scope cost" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Instance spend" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Cost by pull request and issue" }),
+    ).toBeInTheDocument();
   });
 
   it("shows a cost trend and a same-length prior-period comparison for the selected scope", async () => {

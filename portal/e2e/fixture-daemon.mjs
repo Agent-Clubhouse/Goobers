@@ -384,10 +384,20 @@ const contentTypes = {
 };
 const eventStreams = new Set();
 let eventSequence = 0;
+const constrainedAdmission = {
+  active: 0,
+  peak: 0,
+  requests: 0,
+};
 
 function sendJSON(response, value) {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify(value));
+}
+
+function sendError(response, status, code, message, headers = {}) {
+  response.writeHead(status, { "Content-Type": "application/json", ...headers });
+  response.end(JSON.stringify({ error: { code, message } }));
 }
 
 function emitInvalidation() {
@@ -442,6 +452,17 @@ function serveStatic(pathname, mode, response) {
 
 createServer((request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+  if (url.pathname === "/api/v1/test/admission") {
+    if (request.method === "POST") {
+      constrainedAdmission.active = 0;
+      constrainedAdmission.peak = 0;
+      constrainedAdmission.requests = 0;
+      sendJSON(response, { reset: true });
+      return;
+    }
+    sendJSON(response, constrainedAdmission);
+    return;
+  }
   if (url.pathname === "/api/v1/events") {
     serveEvents(response);
     return;
@@ -473,7 +494,30 @@ createServer((request, response) => {
   }
   const fixture = responses.get(url.pathname);
   if (fixture) {
-    sendJSON(response, fixture);
+    if (request.headers["x-test-constrained-admission"] !== "1") {
+      sendJSON(response, fixture);
+      return;
+    }
+    constrainedAdmission.requests += 1;
+    if (constrainedAdmission.active >= 1) {
+      sendError(
+        response,
+        503,
+        "class_saturated",
+        "too many concurrent bounded requests; retry shortly",
+        { "Retry-After": "0" },
+      );
+      return;
+    }
+    constrainedAdmission.active += 1;
+    constrainedAdmission.peak = Math.max(
+      constrainedAdmission.peak,
+      constrainedAdmission.active,
+    );
+    setTimeout(() => {
+      constrainedAdmission.active -= 1;
+      sendJSON(response, fixture);
+    }, 40);
     return;
   }
   serveStatic(url.pathname, url.searchParams.get("mode"), response);

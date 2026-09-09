@@ -140,3 +140,32 @@ test("loads the Errors page from fixture daemon data", async ({ page }) => {
   );
   expect(consoleErrors).toEqual([]);
 });
+
+test("bounds route reads when daemon admission is constrained", async ({ page }) => {
+  await page.route("**/api/v1/**", async (route) => {
+    if (new URL(route.request().url()).pathname.startsWith("/api/v1/test/")) {
+      await route.continue();
+      return;
+    }
+    await route.continue({
+      headers: {
+        ...route.request().headers(),
+        "x-test-constrained-admission": "1",
+      },
+    });
+  });
+  const enabled = await page.request.post("/api/v1/test/admission");
+  expect(enabled.ok()).toBe(true);
+
+  await page.goto("/#/overview");
+  await page.getByRole("button", { name: "Workflows" }).click();
+  await page.getByRole("button", { name: "Runs" }).click();
+  await page.getByRole("button", { name: "Insight" }).click();
+  await page.getByRole("button", { name: "Cost" }).click();
+  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
+
+  const result = await page.request.get("/api/v1/test/admission");
+  const stats = (await result.json()) as { peak: number; requests: number };
+  expect(stats.peak).toBeLessThanOrEqual(1);
+  expect(stats.requests).toBeLessThanOrEqual(30);
+});
