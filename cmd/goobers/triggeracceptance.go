@@ -38,21 +38,26 @@ type acceptedTriggerPayload struct {
 	PodRunID  string                 `json:"podRunId"`
 }
 
-func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTriggerService, auditLog *journal.InstanceLog) (*durableTriggerService, *daemonStateService, error) {
+func newDaemonCoordinationServices(layout instance.Layout, dispatch *daemonTriggerService, runners *daemonRunnerRegistry, auditLog *journal.InstanceLog) (*durableTriggerService, *daemonStateService, *daemonCancelService, error) {
 	if auditLog == nil {
-		return nil, nil, errors.New("trigger dispatch requires an instance audit journal")
+		return nil, nil, nil, errors.New("trigger dispatch requires an instance audit journal")
 	}
 	state, err := newDaemonStateService(layout)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	triggers, err := newDurableTriggerService(filepath.Join(layout.SchedulerDir(), "accepted-triggers.db"), dispatch)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	cancels, err := newPersistentDaemonCancelService(layout, runners, auditLog)
+	if err != nil {
+		_ = triggers.queue.Close()
+		return nil, nil, nil, err
 	}
 	triggers.observe = acceptedTriggerObserver(layout)
 	triggers.auditLog = auditLog
-	return triggers, state, nil
+	return triggers, state, cancels, nil
 }
 
 func newDurableTriggerService(path string, dispatch *daemonTriggerService) (*durableTriggerService, error) {

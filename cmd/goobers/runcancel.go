@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/cancelreceipt"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -265,6 +266,7 @@ type daemonCancelService struct {
 	runners  *daemonRunnerRegistry
 	engine   *daemonEngineCancelService
 	auditLog *journal.InstanceLog
+	receipts *cancelreceipt.Store
 
 	mu      sync.RWMutex
 	release func(runID, workflow string)
@@ -284,6 +286,13 @@ func (s *daemonCancelService) AttachRelease(release func(runID, workflow string)
 }
 
 func (s *daemonCancelService) Cancel(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
+	if s.receipts != nil {
+		return s.cancelWithReceipt(ctx, input)
+	}
+	return s.cancelOnce(ctx, input)
+}
+
+func (s *daemonCancelService) cancelOnce(ctx context.Context, input httpapi.CancelRunRequest) (httpapi.CancelRunResult, error) {
 	if err := s.auditCancellation(input); err != nil {
 		return httpapi.CancelRunResult{}, err
 	}

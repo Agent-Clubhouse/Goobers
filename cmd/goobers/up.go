@@ -748,12 +748,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// blocked.json and the cursors), so a pod's compare-and-swap and a
 	// runner-driven run's in-process update contend on one lock rather than
 	// racing across two.
-	durableTriggers, statePlane, err := newDaemonCoordinationServices(l, triggerPlane, setup.InstanceLog)
+	durableTriggers, statePlane, cancelPlane, err := newDaemonCoordinationServices(l, triggerPlane, setup.RunnerRegistry, setup.InstanceLog)
 	if err != nil {
 		pf(stderr, "error: initialize daemon coordination planes: %v\n", err)
 		return 1
 	}
 	defer func() { _ = durableTriggers.queue.Close() }()
+	defer func() { _ = cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
 	// stage start through the same capability-gated machinery the local
@@ -800,8 +801,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// sweep's live Runner path and retained engine runs through CancelWorkflow.
 	// Only the local path uses the slot release attached below; the engine
 	// releases its slot when its existing settlement path observes completion.
-	cancelPlane := newDaemonCancelService(setup.RunnerRegistry)
-	cancelPlane.auditLog = setup.InstanceLog
 	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
