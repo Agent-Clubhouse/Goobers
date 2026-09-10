@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -44,14 +45,26 @@ func (l *ClaimLedger) ClaimSharedScoped(ctx context.Context, store sharedclaim.S
 }
 
 // ReleaseCoordinatedShared retains the local incarnation until the provider
-// acknowledges its owner-scoped release. An uncertain ACK is not success and
-// does not erase the evidence needed to reconcile after restart.
+// acknowledges its owner-scoped release or a fresh validated read proves that
+// incarnation is already gone. A successor is never released. An uncertain ACK
+// retains custody for reconciliation after restart.
 func (l *ClaimLedger) ReleaseCoordinatedShared(ctx context.Context, store sharedclaim.Store, remoteKey string, key ClaimKey, owner sharedclaim.Owner) error {
 	if _, err := key.storageKey(); err != nil {
 		return err
 	}
-	if err := sharedclaim.Release(ctx, store, remoteKey, owner); err != nil {
+	if err := releaseSharedCustody(ctx, store, remoteKey, owner); err != nil {
 		return err
 	}
 	return l.ReleaseSharedScoped(key, owner)
+}
+
+func releaseSharedCustody(ctx context.Context, store sharedclaim.Store, remoteKey string, owner sharedclaim.Owner) error {
+	err := sharedclaim.Release(ctx, store, remoteKey, owner)
+	if errors.Is(err, sharedclaim.ErrNotOwner) {
+		// Retire only local custody, with a second authoritative observation.
+		// Network errors, malformed records, and a return to our incarnation
+		// remain failures; none are evidence that cleanup is complete.
+		return sharedclaim.ConfirmOwnerGone(ctx, store, remoteKey, owner)
+	}
+	return err
 }

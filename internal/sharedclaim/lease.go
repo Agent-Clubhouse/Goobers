@@ -127,6 +127,32 @@ func Release(ctx context.Context, store Store, key string, owner Owner) error {
 	return store.CompareAndSwap(ctx, key, observed.Revision, Record{Version: 1})
 }
 
+// ConfirmOwnerGone is read-only evidence for retiring stale local custody.
+// It does not release the current remote owner. In particular, Release still
+// refuses a successor; callers must explicitly choose local reconciliation.
+func ConfirmOwnerGone(ctx context.Context, store Store, key string, owner Owner) error {
+	if store == nil || !validKey(key) || !validOwner(owner) {
+		return fmt.Errorf("invalid shared custody reconciliation")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	observed, err := store.Read(ctx, key)
+	if err != nil {
+		return err
+	}
+	if err := validateObservation(observed); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if observed.Record.Owner == owner {
+		return ErrConflict
+	}
+	return nil
+}
+
 func validOwner(owner Owner) bool {
 	return validIdentityText(owner.Instance, 256) && validIdentityText(owner.Run, 256) && validIdentityText(owner.Token, 256)
 }

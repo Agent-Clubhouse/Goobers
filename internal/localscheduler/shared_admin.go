@@ -33,7 +33,7 @@ func (l *ClaimLedger) ForceReleaseCoordinatedShared(ctx context.Context, store s
 	if err != nil || !held {
 		return err
 	}
-	if err := sharedclaim.Release(ctx, store, remoteKey, owner); err != nil {
+	if err := releaseSharedCustody(ctx, store, remoteKey, owner); err != nil {
 		return err
 	}
 	return l.forceRelease(storageKey, actor, owner)
