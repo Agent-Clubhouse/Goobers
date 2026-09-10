@@ -71,8 +71,28 @@ bypass the final release's support checks. The optional `effectiveIn` field in
 schema-version-1 support snapshots records the actual enforcement release for
 the already-shipped DSL 1.4 early removal: `v0.4.0`, while the unchanged history
 retains the previously promised `v0.5.0`. This is a narrowly validated correction
-of a historical breach, not a general exemption from lifecycle windows. Readers
-should use `level` for what the binary accepts and retain both dates for audit.
+of a historical breach, not a general exemption from lifecycle windows. An
+`effectiveIn` correction that predates its published transition also requires a
+declared `retraction` (`internal/supportmatrix.Retraction`: the withdrawn
+commitment, the release performing the withdrawal, and a rationale) — the
+append-only evolution guard honors a matching retraction instead of refusing
+the discrepancy, and the release-notes support-matrix delta surfaces it under
+"Retracted commitments" (#4708). Readers should use `level` for what the
+binary accepts and retain both dates for audit.
+
+This check (`ValidateSupportPolicyForRelease` in `release/supportnotes.go`,
+invoked at actual packaging time) only ever runs against a version that is
+either an explicit `-version` flag/`GOOBERS_VERSION` or exactly on a git tag —
+a `git describe` result several commits past a tag (an ordinary development
+build) is skipped, not checked against whichever tag happens to be nearest.
+Whether the compiled-in matrix can actually ship is instead asserted on every
+PR, independent of checkout position, against
+**`supportmatrix.NextPlannedRelease`** — a single declared constant naming the
+next planned stable release line, reviewed like any other change
+(`internal/supportmatrix/supportmatrix.go`;
+`TestDSLMatrixAgainstNextPlannedRelease`). Bump it when the plan changes; a PR
+that writes a lifecycle transition the declared release can't ship fails
+immediately, on that PR, rather than only at tag time (#4709).
 
 Before publication, signed archives execute natively on Linux AMD64/ARM64,
 macOS AMD64/ARM64, and Windows AMD64. Each native leg checks its checksum,

@@ -54,6 +54,20 @@ const (
 	// later, separate lock ceremony staged under ValidateSupportPolicy's
 	// append-only rules.
 	V3DSLVersion = "3.0"
+
+	// NextPlannedRelease is the next planned stable release line this repo
+	// intends to cut (#4709). TestDSLMatrixAgainstNextPlannedRelease asserts
+	// ValidateSupportPolicyForRelease and the evolution rules against it on
+	// every PR, in ordinary `go test` — independent of `git describe`'s
+	// output, whose value depends on how many commits a checkout sits past
+	// whichever tag happens to be nearest (#4663: an untagged checkout
+	// several hundred commits past an old stable tag spuriously fired the
+	// release-level check against that stale tag, not against any release
+	// actually being cut). A PR that writes a lifecycle transition
+	// unshippable in this declared version fails on that PR, not at tag
+	// time. Reviewed and bumped like any other change; documented in
+	// docs/guides/releases.md.
+	NextPlannedRelease = "v0.4.0"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.

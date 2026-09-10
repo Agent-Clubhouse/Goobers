@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/goobers/goobers/internal/supportmatrix"
@@ -31,14 +32,34 @@ type supportDelta struct {
 	NewlyRetracted []supportmatrix.Version
 }
 
+// gitDescribeAheadOfTagSuffix matches the trailing shape `git describe`
+// appends when HEAD is NOT exactly on a tag: `-<commit count>-g<short hash>`,
+// optionally followed by `-dirty`. It is a literal string-shape check, not a
+// git query, so classifying a version this way is itself deterministic and
+// unit-testable.
+var gitDescribeAheadOfTagSuffix = regexp.MustCompile(`-[0-9]+-g[0-9a-f]+(-dirty)?$`)
+
 // checkSupportMatrixForRelease refuses to package a tagged release whose
 // compiled-in DSL support matrix declares a level the release does not actually
 // reach — a level whose lifecycle transition is dated at a release that has not
 // happened yet (#4215). Prereleases are checked against their stable release
 // line too: an RC must not bypass the gate that its final release will face.
 // Unversioned development builds have no release line to check.
+//
+// A version several commits past a tag (git describe's own shape for "not
+// exactly on a tag") is likewise skipped: it names an ordinary development
+// build, not an intended release, and checking it would refuse based on
+// whichever tag the checkout happens to sit nearest — the exact bug #4663
+// reports, where a checkout hundreds of commits past a stale stable tag
+// spuriously failed against that tag's release line. Whether a lifecycle
+// transition can actually ship is asserted independently of checkout
+// position by TestDSLMatrixAgainstNextPlannedRelease (#4709), against the
+// declared supportmatrix.NextPlannedRelease, on every PR.
 func checkSupportMatrixForRelease(version string) error {
 	version = strings.TrimSpace(version)
+	if gitDescribeAheadOfTagSuffix.MatchString(version) {
+		return nil
+	}
 	releaseLine, _, _ := strings.Cut(version, "-")
 	if !isFinalReleaseVersion(releaseLine) {
 		return nil

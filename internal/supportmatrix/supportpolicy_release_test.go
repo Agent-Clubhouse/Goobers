@@ -91,6 +91,47 @@ func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 	}
 }
 
+// TestDSLMatrixAgainstNextPlannedRelease asserts ValidateSupportPolicyForRelease
+// and the evolution rules against the DECLARED NextPlannedRelease (#4709),
+// not a value derived from the checkout's nearest git tag. Unlike
+// TestDSLMatrixAgainstNextReleases's nextPatch/nextMinor (which recompute
+// their target every run from whichever tag git describe finds nearest —
+// exactly the topology-dependence #4663 reports, where an untagged checkout
+// hundreds of commits past a stale tag fired the release-level check against
+// that stale tag instead of any release actually being cut), this test's
+// target never changes just because the checkout moved: it changes only when
+// a reviewer bumps the constant. A PR that writes a transition unshippable in
+// the declared release fails here, on the PR, every time — not only when the
+// checkout happens to sit near the right tag.
+func TestDSLMatrixAgainstNextPlannedRelease(t *testing.T) {
+	current := GetDSL()
+	if err := ValidateSupportPolicyForRelease(current, NextPlannedRelease); err != nil {
+		t.Fatalf("compiled-in DSL support matrix cannot ship in the declared NextPlannedRelease %s: %v", NextPlannedRelease, err)
+	}
+
+	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
+	released, latestTag, _ := loadLatestReleasedSupportMatrix(t, root)
+	firstTag, _, _ := supportReleaseTagRange(t, root)
+	planned, err := parseSupportReleaseVersion(NextPlannedRelease, false)
+	if err != nil {
+		t.Fatalf("parse NextPlannedRelease %q: %v", NextPlannedRelease, err)
+	}
+	var firstRelease releaseVersion
+	if firstTag != "" {
+		firstRelease, err = parseSupportReleaseVersion(firstTag, false)
+		if err != nil {
+			t.Fatalf("parse first release tag %s: %v", firstTag, err)
+		}
+	}
+	releaseAnchor := firstRelease
+	if firstTag == "" {
+		releaseAnchor = planned
+	}
+	if err := validateSupportMatrixAfterTag(released, current, latestTag, planned, releaseAnchor); err != nil {
+		t.Fatalf("compiled-in DSL support matrix would fail cutting the declared NextPlannedRelease %s: %v", NextPlannedRelease, err)
+	}
+}
+
 func TestPreTagSimulationRejectsOffByOneSupportDeadline(t *testing.T) {
 	matrix := SupportMatrix{
 		"1.0": {
