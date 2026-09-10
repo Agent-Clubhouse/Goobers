@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -71,6 +72,64 @@ type AgentProvenance struct {
 	Fidelity        string   `json:"fidelity,omitempty"`
 }
 
+// AgentProgressKind names the normalized operator-readable status record. These
+// are intentionally bounded, explicit, and one-way: we record the current
+// intent or observed fact, never hidden private reasoning.
+type AgentProgressKind string
+
+const (
+	AgentProgressPlan       AgentProgressKind = "plan"
+	AgentProgressProgress   AgentProgressKind = "progress"
+	AgentProgressDecision   AgentProgressKind = "decision"
+	AgentProgressBlocker    AgentProgressKind = "blocker"
+	AgentProgressQuestion   AgentProgressKind = "question"
+	AgentProgressNextAction AgentProgressKind = "next_action"
+	AgentProgressSummary    AgentProgressKind = "summary"
+)
+
+// AgentProgressSource classifies how an operator-readable status was emitted.
+type AgentProgressSource string
+
+const (
+	AgentProgressSourceNative   AgentProgressSource = "native"
+	AgentProgressSourceModel    AgentProgressSource = "model"
+	AgentProgressSourceEvidence AgentProgressSource = "evidence"
+)
+
+// AgentProgress is a bounded, resumable, operator-readable status update for a
+// single agent invocation. It intentionally omits hidden chain-of-thought and
+// only describes observable facts or explicit summaries the model chose to emit.
+type AgentProgress struct {
+	Schema     string                  `json:"schema"`
+	AgentID    string                  `json:"agentId"`
+	RunID      string                  `json:"runId"`
+	Stage      string                  `json:"stage"`
+	Attempt    int                     `json:"attempt"`
+	Sequence   uint64                  `json:"sequence"`
+	Kind       AgentProgressKind       `json:"kind"`
+	Source     AgentProgressSource     `json:"source,omitempty"`
+	OccurredAt time.Time               `json:"occurredAt"`
+	UpdatedAt  time.Time               `json:"updatedAt,omitempty"`
+	Fidelity   string                  `json:"fidelity,omitempty"`
+	Summary    string                  `json:"summary,omitempty"`
+	Plan       []string                `json:"plan,omitempty"`
+	Progress   []string                `json:"progress,omitempty"`
+	Decision   string                  `json:"decision,omitempty"`
+	Blocker    string                  `json:"blocker,omitempty"`
+	Question   string                  `json:"question,omitempty"`
+	NextAction string                  `json:"nextAction,omitempty"`
+	Evidence   []AgentProgressEvidence `json:"evidence,omitempty"`
+}
+
+// AgentProgressEvidence attaches a named observable fact or artifact to a status
+// update without persisting a raw private chain-of-thought transcript.
+type AgentProgressEvidence struct {
+	Type  string `json:"type,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Label string `json:"label,omitempty"`
+	Ref   *Ref   `json:"ref,omitempty"`
+}
+
 // PeerMessageMetadata describes only the orchestration effect of a peer
 // message. Content is intentionally absent.
 type PeerMessageMetadata struct {
@@ -93,6 +152,11 @@ func ValidateAgentEvent(event Event) error {
 			return fmt.Errorf("journal: agent lifecycle event has no agent")
 		}
 		return validateAgent(*event.Agent)
+	case EventAgentProgress:
+		if event.Progress == nil {
+			return fmt.Errorf("journal: agent progress event has no progress payload")
+		}
+		return validateAgentProgress(*event.Progress)
 	case EventAgentMessage:
 		if event.PeerMessage == nil || event.PeerMessage.ID == "" ||
 			event.PeerMessage.SenderID == "" || event.PeerMessage.RecipientID == "" ||
@@ -103,6 +167,97 @@ func ValidateAgentEvent(event Event) error {
 	default:
 		return fmt.Errorf("journal: unsupported nested-agent event %q", event.Type)
 	}
+}
+
+func validateAgentProgress(progress AgentProgress) error {
+	if progress.Schema != "goobers.dev/journal/agent-progress/v1" || progress.AgentID == "" ||
+		progress.RunID == "" || progress.Stage == "" || progress.Attempt < 1 {
+		return fmt.Errorf("journal: invalid nested-agent progress identity %q", progress.AgentID)
+	}
+	if progress.OccurredAt.IsZero() {
+		return fmt.Errorf("journal: invalid nested-agent progress timestamp for %q", progress.AgentID)
+	}
+	if err := validateAgentProgressSize(progress); err != nil {
+		return err
+	}
+	if err := validateAgentProgressEnums(progress); err != nil {
+		return err
+	}
+	return validateAgentProgressText(progress)
+}
+
+func validateAgentProgressSize(progress AgentProgress) error {
+	if len(progress.Summary) > 4096 || len(progress.Decision) > 2048 || len(progress.Blocker) > 2048 ||
+		len(progress.Question) > 2048 || len(progress.NextAction) > 2048 || len(progress.Plan) > 100 ||
+		len(progress.Progress) > 100 || len(progress.Evidence) > 100 {
+		return fmt.Errorf("journal: nested-agent progress payload exceeds size limits for %q", progress.AgentID)
+	}
+	return nil
+}
+
+func validateAgentProgressEnums(progress AgentProgress) error {
+	switch progress.Kind {
+	case AgentProgressPlan, AgentProgressProgress, AgentProgressDecision, AgentProgressBlocker,
+		AgentProgressQuestion, AgentProgressNextAction, AgentProgressSummary:
+	default:
+		return fmt.Errorf("journal: invalid nested-agent progress kind %q", progress.Kind)
+	}
+	switch progress.Source {
+	case "", AgentProgressSourceNative, AgentProgressSourceModel, AgentProgressSourceEvidence:
+	default:
+		return fmt.Errorf("journal: invalid nested-agent progress source %q", progress.Source)
+	}
+	switch progress.Fidelity {
+	case "", AgentFidelityFull, AgentFidelityPartial, AgentFidelityNone:
+	default:
+		return fmt.Errorf("journal: invalid nested-agent progress fidelity %q", progress.Fidelity)
+	}
+	return nil
+}
+
+func validateAgentProgressText(progress AgentProgress) error {
+	if containsPrivateReasoning(progress.Summary) {
+		return fmt.Errorf("journal: nested-agent progress summary must not contain hidden reasoning")
+	}
+	if containsPrivateReasoning(progress.Decision) || containsPrivateReasoning(progress.Blocker) ||
+		containsPrivateReasoning(progress.Question) || containsPrivateReasoning(progress.NextAction) {
+		return fmt.Errorf("journal: nested-agent progress field must not contain hidden reasoning")
+	}
+	if hasPrivateReasoning(progress.Plan) {
+		return fmt.Errorf("journal: nested-agent progress plan must not contain hidden reasoning")
+	}
+	if hasPrivateReasoning(progress.Progress) {
+		return fmt.Errorf("journal: nested-agent progress record must not contain hidden reasoning")
+	}
+	if hasPrivateReasoningEvidence(progress.Evidence) {
+		return fmt.Errorf("journal: nested-agent progress evidence must not contain hidden reasoning")
+	}
+	return nil
+}
+
+func hasPrivateReasoning(values []string) bool {
+	for _, value := range values {
+		if containsPrivateReasoning(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPrivateReasoningEvidence(evidence []AgentProgressEvidence) bool {
+	for _, ref := range evidence {
+		if containsPrivateReasoning(ref.Type) || containsPrivateReasoning(ref.ID) || containsPrivateReasoning(ref.Label) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPrivateReasoning(v string) bool {
+	l := strings.ToLower(v)
+	return strings.Contains(l, "chain-of-thought") || strings.Contains(l, "chain of thought") ||
+		strings.Contains(l, "private reasoning") || strings.Contains(l, "hidden reasoning") ||
+		strings.Contains(l, "scratchpad") || strings.Contains(l, "inner monologue")
 }
 
 // ScrubAgentEvent applies the same byte-level policy used by the journal

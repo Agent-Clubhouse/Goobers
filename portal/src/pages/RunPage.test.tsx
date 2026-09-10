@@ -49,6 +49,176 @@ describe("run detail", () => {
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
+  it("renders nested current status cards and structured progress history", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!detail) {
+      throw new Error("Expected active run detail fixture.");
+    }
+    detail.agentProgress = [
+      {
+        agentId: "coordinator-1",
+        runId: detail.id,
+        stage: "implement",
+        attempt: 1,
+        role: "coordinator",
+        fidelity: "none",
+        degraded: true,
+        degradedText: "structured progress unavailable (degraded to tool/transcript activity)",
+        currentStatus: {
+          source: "lifecycle",
+          sequence: 4,
+          lifecycle: "waiting",
+          summary: "Waiting for more input or tool activity.",
+          updatedAt: detail.startedAt,
+        },
+        history: [],
+        children: [
+          {
+            agentId: "worker-1",
+            parentId: "coordinator-1",
+            runId: detail.id,
+            stage: "implement",
+            attempt: 1,
+            role: "worker",
+            fidelity: "full",
+            currentStatus: {
+              source: "progress",
+              sequence: 6,
+              kind: "decision",
+              summary: "Selected the parser fix.",
+              updatedAt: detail.startedAt,
+            },
+            latest: {
+              schema: "goobers.dev/journal/agent-progress/v1",
+              agentId: "worker-1",
+              runId: detail.id,
+              stage: "implement",
+              attempt: 1,
+              sequence: 6,
+              kind: "decision",
+              source: "model",
+              occurredAt: detail.startedAt,
+              updatedAt: detail.startedAt,
+              fidelity: "full",
+              summary: "Selected the parser fix.",
+              decision: "Patch the parser branch.",
+              evidence: [{ type: "tool", id: "grep-1", label: "failing test" }],
+            },
+            history: [
+              {
+                schema: "goobers.dev/journal/agent-progress/v1",
+                agentId: "worker-1",
+                runId: detail.id,
+                stage: "implement",
+                attempt: 1,
+                sequence: 5,
+                kind: "plan",
+                source: "native",
+                occurredAt: detail.startedAt,
+                updatedAt: detail.startedAt,
+                fidelity: "full",
+                plan: ["Inspect parser", "Patch branch"],
+              },
+              {
+                schema: "goobers.dev/journal/agent-progress/v1",
+                agentId: "worker-1",
+                runId: detail.id,
+                stage: "implement",
+                attempt: 1,
+                sequence: 6,
+                kind: "decision",
+                source: "model",
+                occurredAt: detail.startedAt,
+                updatedAt: detail.startedAt,
+                fidelity: "full",
+                summary: "Selected the parser fix.",
+                decision: "Patch the parser branch.",
+                evidence: [{ type: "tool", id: "grep-1", label: "failing test" }],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    renderRun("01JZ441DAEMONAPI", new FixtureDaemonClient(fixtures));
+
+    expect(await screen.findByRole("heading", { name: "Current status" })).toBeInTheDocument();
+    expect(screen.getByText("coordinator-1")).toBeInTheDocument();
+    expect(screen.getByText("Waiting")).toBeInTheDocument();
+    expect(
+      screen.getByText("structured progress unavailable (degraded to tool/transcript activity)"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("worker-1")).toBeInTheDocument();
+    expect(screen.getByText("Decision · model")).toBeInTheDocument();
+    expect(screen.getByText("Patch the parser branch.")).toBeInTheDocument();
+    expect(screen.getAllByText("Evidence: failing test").length).toBeGreaterThan(0);
+  });
+
+  it("keeps attempt-scoped cards separate for repeated agent ids", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!detail) {
+      throw new Error("Expected active run detail fixture.");
+    }
+    detail.agentProgress = [
+      {
+        agentId: "worker-1",
+        runId: detail.id,
+        stage: "implement",
+        attempt: 1,
+        role: "worker",
+        fidelity: "full",
+        currentStatus: {
+          source: "progress",
+          sequence: 6,
+          kind: "summary",
+          summary: "Attempt one final status.",
+        },
+        latest: {
+          schema: "goobers.dev/journal/agent-progress/v1",
+          agentId: "worker-1",
+          runId: detail.id,
+          stage: "implement",
+          attempt: 1,
+          sequence: 6,
+          kind: "summary",
+          source: "model",
+          occurredAt: detail.startedAt,
+          fidelity: "full",
+          summary: "Attempt one final status.",
+        },
+        history: [],
+      },
+      {
+        agentId: "worker-1",
+        runId: detail.id,
+        stage: "implement",
+        attempt: 2,
+        role: "worker",
+        fidelity: "none",
+        degraded: true,
+        degradedText: "structured progress unavailable (degraded to tool/transcript activity)",
+        currentStatus: {
+          source: "lifecycle",
+          sequence: 7,
+          lifecycle: "waiting",
+          summary: "Running without structured progress; showing lifecycle-only status.",
+        },
+        history: [],
+      },
+    ];
+    renderRun("01JZ441DAEMONAPI", new FixtureDaemonClient(fixtures));
+
+    await screen.findByRole("heading", { name: "Current status" });
+    expect(screen.getByText("stage implement · attempt 1 · fidelity full")).toBeInTheDocument();
+    expect(screen.getByText("stage implement · attempt 2 · fidelity none")).toBeInTheDocument();
+    expect(screen.getByText("Attempt one final status.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Running without structured progress; showing lifecycle-only status."),
+    ).toBeInTheDocument();
+  });
+
   it("renders stale run detail as visibly unmonitored", async () => {
     const fixtures = populatedDaemonFixtures();
     const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];

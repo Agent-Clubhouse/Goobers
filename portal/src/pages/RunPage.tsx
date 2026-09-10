@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import type { DaemonClient, ExternalRef, RunDetail, RunEvent } from "../api/types";
+import type {
+  AgentProgressRecord,
+  AgentProgressSummary,
+  DaemonClient,
+  ExternalRef,
+  RunDetail,
+  RunEvent,
+} from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
@@ -401,6 +408,8 @@ function RunDetailWorkspace({
         />
       )}
 
+      <AgentProgressPanel summaries={run.agentProgress ?? []} />
+
       <section
         className="run-detail-workspace"
         data-scroll-owner="page"
@@ -499,6 +508,217 @@ function RunDetailWorkspace({
       </section>
     </>
   );
+}
+
+function AgentProgressPanel({ summaries }: { summaries: AgentProgressSummary[] }) {
+  if (summaries.length === 0) {
+    return null;
+  }
+  return (
+    <section aria-labelledby="agent-progress-title" className="agent-progress-panel">
+      <div className="panel-heading-row">
+        <div>
+          <p className="section-kicker">Agents</p>
+          <h2 id="agent-progress-title">Current status</h2>
+        </div>
+        <span className="graph-legend">Attempt-scoped lifecycle and structured progress</span>
+      </div>
+      <div className="agent-progress-list">
+        {summaries.map((summary) => (
+          <AgentProgressCard key={agentProgressCardKey(summary)} summary={summary} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AgentProgressCard({ summary }: { summary: AgentProgressSummary }) {
+  const current = summary.currentStatus;
+  const history = summary.history ?? [];
+  const currentLabel = current ? agentCurrentLabel(current) : "Unknown";
+  const currentSummary = current?.summary?.trim() || "No current status summary recorded.";
+
+  return (
+    <article className="agent-progress-card">
+      <header className="agent-progress-card-header">
+        <div>
+          <p className="agent-progress-card-title">
+            <strong>{summary.agentId}</strong>
+            {summary.role ? <span> · {summary.role}</span> : null}
+          </p>
+          <p className="agent-progress-card-meta">
+            stage {summary.stage} · attempt {summary.attempt} · fidelity {summary.fidelity}
+          </p>
+        </div>
+        <span className={`agent-progress-badge agent-progress-badge-${agentBadgeTone(summary)}`}>
+          {currentLabel}
+        </span>
+      </header>
+
+      <p className="agent-progress-card-summary">{currentSummary}</p>
+
+      {summary.degraded && (
+        <p className="agent-progress-degraded">{summary.degradedText}</p>
+      )}
+
+      {summary.latest && (
+        <div className="agent-progress-latest">
+          <strong>Latest structured progress</strong>
+          <span>
+            {agentProgressLabel(summary.latest)} · seq {summary.latest.sequence}
+          </span>
+          {renderAgentProgressDetails(summary.latest, currentSummary)}
+          {summary.latest.evidence && summary.latest.evidence.length > 0 && (
+            <span>Evidence: {formatAgentEvidence(summary.latest.evidence)}</span>
+          )}
+        </div>
+      )}
+
+      <div className="agent-progress-history">
+        <strong>Progress history</strong>
+        {history.length === 0 ? (
+          <p className="empty-detail">No structured progress records yet.</p>
+        ) : (
+          <ol>
+            {history.map((record) => (
+              <li key={`${record.sequence}-${record.kind}`}>
+                <span className="mono">seq {record.sequence}</span>{" "}
+                <span>{agentProgressLabel(record)}</span>{" "}
+                <span>{agentProgressSummary(record)}</span>
+                {record.evidence && record.evidence.length > 0 && (
+                  <small>Evidence: {formatAgentEvidence(record.evidence)}</small>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+
+      {summary.children && summary.children.length > 0 && (
+        <div className="agent-progress-children">
+          {summary.children.map((child) => (
+            <AgentProgressCard key={agentProgressCardKey(child)} summary={child} />
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function agentProgressCardKey(summary: AgentProgressSummary): string {
+  return `${summary.stage}:${summary.agentId}:${summary.attempt}`;
+}
+
+function agentCurrentLabel(summary: NonNullable<AgentProgressSummary["currentStatus"]>): string {
+  if (summary.source === "progress") {
+    return summary.kind ? humanizeAgentProgressKind(summary.kind) : "Progress";
+  }
+  switch (summary.lifecycle) {
+    case "waiting":
+      return "Waiting";
+    case "resumed":
+      return "Running";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return "Started";
+  }
+}
+
+function agentBadgeTone(summary: AgentProgressSummary): "active" | "success" | "danger" | "warning" {
+  if (summary.currentStatus?.source === "progress") {
+    switch (summary.currentStatus.kind) {
+      case "blocker":
+      case "question":
+        return "warning";
+      case "decision":
+      case "summary":
+        return "success";
+    }
+  }
+  switch (summary.currentStatus?.lifecycle) {
+    case "failed":
+    case "cancelled":
+      return "danger";
+    case "completed":
+      return "success";
+    case "waiting":
+      return "warning";
+    default:
+      return "active";
+  }
+}
+
+function agentProgressLabel(record: AgentProgressRecord): string {
+  const source = record.source ? ` · ${record.source}` : "";
+  return `${humanizeAgentProgressKind(record.kind)}${source}`;
+}
+
+function agentProgressSummary(record: AgentProgressRecord): string {
+  return (
+    record.summary?.trim() ||
+    record.progress?.join("; ") ||
+    record.decision?.trim() ||
+    record.blocker?.trim() ||
+    record.question?.trim() ||
+    record.nextAction?.trim() ||
+    record.plan?.join("; ") ||
+    humanizeAgentProgressKind(record.kind)
+  );
+}
+
+function formatAgentEvidence(
+  evidence: NonNullable<AgentProgressRecord["evidence"]>,
+): string {
+  return evidence
+    .map((item) => item.label || item.id || item.type || "evidence")
+    .join(", ");
+}
+
+function renderAgentProgressDetails(record: AgentProgressRecord, currentSummary?: string) {
+  const details: Array<{ label: string; value: string }> = [];
+  const summary = record.summary?.trim();
+  if (summary && summary !== currentSummary?.trim()) {
+    details.push({ label: "Summary", value: summary });
+  }
+  if (record.plan?.length) {
+    details.push({ label: "Plan", value: record.plan.join("; ") });
+  }
+  if (record.progress?.length) {
+    details.push({ label: "Progress", value: record.progress.join("; ") });
+  }
+  if (record.decision?.trim()) {
+    details.push({ label: "Decision", value: record.decision.trim() });
+  }
+  if (record.blocker?.trim()) {
+    details.push({ label: "Blocker", value: record.blocker.trim() });
+  }
+  if (record.question?.trim()) {
+    details.push({ label: "Question", value: record.question.trim() });
+  }
+  if (record.nextAction?.trim()) {
+    details.push({ label: "Next action", value: record.nextAction.trim() });
+  }
+  if (details.length === 0) {
+    const compact = agentProgressSummary(record);
+    if (!compact || compact === currentSummary?.trim()) {
+      return null;
+    }
+    return <span>{compact}</span>;
+  }
+  return details.map((detail) => (
+    <span key={`${detail.label}:${detail.value}`}>
+      {detail.label}: <span>{detail.value}</span>
+    </span>
+  ));
+}
+
+function humanizeAgentProgressKind(kind: string): string {
+  return kind.replace(/_/g, " ").replace(/^\w/, (char) => char.toUpperCase());
 }
 
 function EventLedger({
