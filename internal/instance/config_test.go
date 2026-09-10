@@ -103,7 +103,7 @@ speech:
 		cfg.Speech.Language != "en-US" || cfg.Speech.Rate != 210 || cfg.Speech.Timeout != "8s" {
 		t.Fatalf("unexpected speech config: %+v", cfg.Speech)
 	}
-	if !cfg.Retention.Enabled || !cfg.Retention.DryRun || cfg.Retention.MaxRetainedWorktreeBytes != 1048576 {
+	if !cfg.Retention.EnabledEffective() || !cfg.Retention.DryRun || cfg.Retention.MaxRetainedWorktreeBytes != 1048576 {
 		t.Fatalf("unexpected retention config: %+v", cfg.Retention)
 	}
 
@@ -1210,21 +1210,51 @@ workflowSource:
 	}
 }
 
-func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
+// TestRetentionConfigDefaultsToOptOutPruning pins #4253's flip: a config that
+// says nothing about retention prunes on the default age bound, rather than
+// prunes nothing. This test previously asserted the opposite
+// (TestRetentionConfigDefaultsDisabledAndValidatesLimits) and was rewritten
+// with the policy, not adjusted until it passed.
+func TestRetentionConfigDefaultsToOptOutPruning(t *testing.T) {
 	var zero RetentionConfig
-	if zero.Enabled || zero.DryRun || zero.MaxRetainedWorktreeBytes != 0 {
-		t.Fatalf("zero retention config is not disabled: %+v", zero)
+	if !zero.EnabledEffective() {
+		t.Fatalf("zero retention config is not enabled by default: %+v", zero)
+	}
+	if zero.DryRun || zero.MaxRetainedWorktreeBytes != 0 {
+		t.Fatalf("zero retention config changed beyond Enabled: %+v", zero)
+	}
+	if zero.ImmediateFirstEnable() {
+		t.Fatal("zero retention config must take the safe first-enable grace window")
 	}
 
-	if got, err := zero.RetainedWorktreeMaxAgeDuration(); err != nil || got != 0 {
-		t.Fatalf("default RetainedWorktreeMaxAgeDuration = %s, %v; want 0, nil", got, err)
+	// The whole point of the flip: an omitted age is the default bound, not
+	// "no bound".
+	if got, err := zero.RetainedWorktreeMaxAgeDuration(); err != nil || got != DefaultRetainedWorktreeMaxAge {
+		t.Fatalf("default RetainedWorktreeMaxAgeDuration = %s, %v; want %s, nil", got, err, DefaultRetainedWorktreeMaxAge)
+	}
+	if err := (&Config{Retention: zero}).Validate(); err != nil {
+		t.Fatalf("Validate(zero retention) error = %v, want nil", err)
+	}
+
+	// An explicit "0s" is now the escape hatch that turns the age rule off,
+	// so it parses rather than erroring...
+	off := RetentionConfig{RetainedWorktreeMaxAge: "0s", MaxRetainedWorktreeBytes: 1}
+	if got, err := off.RetainedWorktreeMaxAgeDuration(); err != nil || got != 0 {
+		t.Fatalf(`RetainedWorktreeMaxAgeDuration("0s") = %s, %v; want 0, nil`, got, err)
+	}
+	if err := (&Config{Retention: off}).Validate(); err != nil {
+		t.Fatalf("Validate(age off, byte cap set) error = %v, want nil", err)
 	}
 
 	for _, cfg := range []RetentionConfig{
 		{MaxRetainedWorktreeBytes: -1},
 		{RetainedWorktreeMaxAge: "not-a-duration"},
-		{RetainedWorktreeMaxAge: "0s"},
 		{RetainedWorktreeMaxAge: "-1h"},
+		// ...but turning the age rule off with no byte ceiling leaves
+		// retention enabled and enforcing nothing, which is the silent no-op
+		// this validation has always existed to refuse.
+		{RetainedWorktreeMaxAge: "0s"},
+		{FirstEnable: "someday"},
 	} {
 		if err := (&Config{Retention: cfg}).Validate(); err == nil || !strings.Contains(err.Error(), "retention.") {
 			t.Fatalf("Validate(%+v) error = %v, want retention error", cfg, err)
@@ -1237,16 +1267,25 @@ func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
 // limit previously pruned nothing, giving an operator false confidence that
 // disk usage was bounded.
 func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
-	if err := (&Config{Retention: RetentionConfig{Enabled: true}}).Validate(); err == nil || !strings.Contains(err.Error(), "retention.enabled requires at least one") {
-		t.Fatalf("Validate(enabled, no limits) error = %v, want a retention.enabled-requires-a-limit error", err)
+	// #2052's trap — enabled with no limits, pruning nothing, while the
+	// operator believes disk is bounded — is now structurally impossible:
+	// an omitted age resolves to DefaultRetainedWorktreeMaxAge, so "enabled
+	// with no limits" is a bounded configuration rather than a silent no-op.
+	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true)}}).Validate(); err != nil {
+		t.Fatalf("Validate(enabled, no explicit limits) error = %v, want nil now that the age default applies", err)
+	}
+	// The trap only survives if the operator explicitly turns the age rule
+	// off and sets no ceiling, which is still refused.
+	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true), RetainedWorktreeMaxAge: "0s"}}).Validate(); err == nil || !strings.Contains(err.Error(), "prune nothing") {
+		t.Fatalf("Validate(enabled, age rule off, no ceiling) error = %v, want a prunes-nothing error", err)
 	}
 
 	// A single configured axis remains a valid, intentional configuration —
 	// this must NOT be rejected by the new check.
-	if err := (&Config{Retention: RetentionConfig{Enabled: true, MaxRetainedWorktreeBytes: 1}}).Validate(); err != nil {
+	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true), MaxRetainedWorktreeBytes: 1}}).Validate(); err != nil {
 		t.Fatalf("Validate(enabled, byte cap only) error = %v, want nil", err)
 	}
-	if err := (&Config{Retention: RetentionConfig{Enabled: true, RetainedWorktreeMaxAge: "1h"}}).Validate(); err != nil {
+	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true), RetainedWorktreeMaxAge: "1h"}}).Validate(); err != nil {
 		t.Fatalf("Validate(enabled, age limit only) error = %v, want nil", err)
 	}
 

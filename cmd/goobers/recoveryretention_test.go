@@ -22,7 +22,14 @@ func TestConfiguredRetentionReapsInterruptedRecoveryRetirement(t *testing.T) {
 			if err := os.MkdirAll(retired, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			cfg := instance.RetentionConfig{Enabled: mode == "delete" || mode == "failure" || mode == "enabled-dry-run", DryRun: mode == "dry-run" || mode == "enabled-dry-run"}
+			// FirstEnable: immediate keeps these modes testing enforcement rather
+			// than #4253's first-enable grace window, which would otherwise make
+			// every mode a dry run on this fixture's first pass.
+			cfg := instance.RetentionConfig{
+				Enabled:     boolPtr(mode == "delete" || mode == "failure" || mode == "enabled-dry-run"),
+				DryRun:      mode == "dry-run" || mode == "enabled-dry-run",
+				FirstEnable: "immediate",
+			}
 			if mode == "failure" {
 				if err := os.WriteFile(filepath.Join(retired, "unknown"), nil, 0o600); err != nil {
 					t.Fatal(err)
