@@ -69,19 +69,24 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 			Workload:         key.Workload,
 			RunCount:         len(group),
 		}
-		byNode := map[string]*ContributingPath{}
+		byPath := map[string]*ContributingPath{}
 		for _, observation := range group {
 			for _, contribution := range observation.Attribution.Contributions {
-				path := byNode[contribution.NodeID]
+				pathNodes := contributionPath(contribution)
+				if len(pathNodes) == 0 {
+					continue
+				}
+				key := strings.Join(pathNodes, "/")
+				path := byPath[key]
 				if path == nil {
-					path = &ContributingPath{Nodes: []string{contribution.NodeID}, Evidence: make([]AttributionEvidenceLink, 0, 1)}
-					byNode[contribution.NodeID] = path
+					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...), Evidence: make([]AttributionEvidenceLink, 0, 1)}
+					byPath[key] = path
 				}
 				path.Share += contribution.Share
 				path.Confidence += contribution.Confidence
 				path.Evidence = append(path.Evidence, AttributionEvidenceLink{
 					RunID:  observation.RunID,
-					NodeID: contribution.NodeID,
+					NodeID: lastNode(pathNodes),
 					Stage:  contribution.Stage,
 					Detail: fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence)),
 					Source: "contribution",
@@ -103,8 +108,8 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 			}
 		}
 
-		paths := make([]ContributingPath, 0, len(byNode))
-		for _, path := range byNode {
+		paths := make([]ContributingPath, 0, len(byPath))
+		for _, path := range byPath {
 			if len(path.Evidence) == 0 {
 				continue
 			}
@@ -143,6 +148,32 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		return out[i].EffectiveVersion < out[j].EffectiveVersion
 	})
 	return out
+}
+
+func contributionPath(contribution Contribution) []string {
+	if len(contribution.Path) > 0 {
+		path := make([]string, 0, len(contribution.Path))
+		for _, nodeID := range contribution.Path {
+			if strings.TrimSpace(nodeID) == "" {
+				continue
+			}
+			path = append(path, nodeID)
+		}
+		if len(path) > 0 {
+			return path
+		}
+	}
+	if strings.TrimSpace(contribution.NodeID) == "" {
+		return nil
+	}
+	return []string{contribution.NodeID}
+}
+
+func lastNode(path []string) string {
+	if len(path) == 0 {
+		return ""
+	}
+	return path[len(path)-1]
 }
 
 // AggregateAttributions is a compatibility alias for cohort-level aggregation.

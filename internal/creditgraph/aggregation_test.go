@@ -79,3 +79,46 @@ func TestAggregateAttributionEvidencePreservesMixedConfidence(t *testing.T) {
 		t.Fatalf("counter evidence = %d, want 2", len(got[0].CounterEvidence))
 	}
 }
+
+func TestAggregateAttributionEvidencePreservesDistinctPaths(t *testing.T) {
+	obs := []AttributionObservation{{
+		RunID:            "run-1",
+		EffectiveVersion: "v1",
+		Workload:         "main",
+		Attribution: Attribution{
+			Contributions: []Contribution{
+				{NodeID: "node-a", Path: []string{"root", "route-a", "node-a"}, Share: 0.7, Confidence: 0.8},
+				{NodeID: "node-a", Path: []string{"root", "route-b", "node-a"}, Share: 0.3, Confidence: 0.6},
+			},
+		},
+	}}
+
+	got := AggregateAttributionEvidence(obs)
+	if len(got) != 1 {
+		t.Fatalf("cohorts = %d, want 1", len(got))
+	}
+	if len(got[0].TopContributingPaths) != 2 {
+		t.Fatalf("top path count = %d, want 2 distinct paths", len(got[0].TopContributingPaths))
+	}
+	if got[0].TopContributingPaths[0].Nodes[0] != "root" {
+		t.Fatalf("first path = %#v, want root-prefixed path", got[0].TopContributingPaths[0].Nodes)
+	}
+}
+
+func TestAggregateAttributionEvidenceGroupsByVersionAndWorkload(t *testing.T) {
+	obs := []AttributionObservation{
+		{RunID: "run-1", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{
+			Contributions: []Contribution{{NodeID: "node-a", Share: 0.7, Confidence: 0.8}},
+		}},
+		{RunID: "run-2", EffectiveVersion: "v1", Workload: "worker", Attribution: Attribution{
+			Contributions: []Contribution{{NodeID: "node-b", Share: 0.9, Confidence: 0.7}},
+		}},
+	}
+	got := AggregateAttributionEvidence(obs)
+	if len(got) != 2 {
+		t.Fatalf("cohorts = %d, want 2 different workload cohorts", len(got))
+	}
+	if got[0].Workload != "main" || got[1].Workload != "worker" {
+		t.Fatalf("cohort workloads = %q, %q, want main then worker", got[0].Workload, got[1].Workload)
+	}
+}
