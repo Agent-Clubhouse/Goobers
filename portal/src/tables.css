@@ -43,13 +43,20 @@
   font-size: var(--table-body-size);
 }
 
-.data-table-shell .distribution-name small,
-.data-table-shell .distribution-values strong {
+.data-table-shell .distribution-name small {
   font-size: var(--table-meta-size);
+}
+
+.data-table-shell .distribution-values strong {
+  font-size: var(--table-body-size);
 }
 
 .data-table-shell .distribution-values small {
   font-size: var(--table-header-size);
+}
+
+.data-table-shell .error-signature-code small {
+  font-family: inherit;
 }
 
 .gaggle-spend-row {

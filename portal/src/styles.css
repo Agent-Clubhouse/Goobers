@@ -3445,8 +3445,8 @@ a.telemetry-error-latest:hover {
   align-items: center;
   color: inherit;
   display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(190px, 0.85fr) minmax(180px, 1.35fr) auto 16px;
+  gap: 20px;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(100px, 0.55fr) minmax(360px, 1.75fr) 16px;
   min-height: 82px;
   padding: 12px 13px;
   text-decoration: none;
@@ -3530,13 +3530,14 @@ a.telemetry-error-latest:hover {
 
 .distribution-values {
   display: grid;
-  gap: 13px;
-  grid-template-columns: repeat(5, minmax(44px, auto));
+  gap: 18px;
+  grid-template-columns: repeat(5, minmax(58px, 1fr));
+  width: 100%;
 }
 
 .distribution-values > span {
   display: grid;
-  gap: 2px;
+  gap: 5px;
   text-align: right;
 }
 
