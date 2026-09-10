@@ -64,7 +64,7 @@ func sharedVisibilityRepositories(layout instance.Layout) ([]providers.Repositor
 	}
 	defer func() { _ = directory.Close() }()
 	entries, err := directory.ReadDir(4097)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	if len(entries) > 4096 {

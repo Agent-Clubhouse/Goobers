@@ -26,6 +26,7 @@ func (v GitHubSharedClaimVisibility) validate(key string) error {
 	return requireOwnerRepo(v.Repository)
 }
 
+// ReadClaimed reads the issue's current human-visible claim label.
 func (v GitHubSharedClaimVisibility) ReadClaimed(ctx context.Context, key string) (bool, error) {
 	if err := v.validate(key); err != nil {
 		return false, err
@@ -37,6 +38,7 @@ func (v GitHubSharedClaimVisibility) ReadClaimed(ctx context.Context, key string
 	return slices.Contains(item.Labels, LabelClaimed), nil
 }
 
+// SetClaimed adds or removes only the claim label, without replacing other labels.
 func (v GitHubSharedClaimVisibility) SetClaimed(ctx context.Context, key string, present bool) error {
 	if err := v.validate(key); err != nil {
 		return err
