@@ -8,8 +8,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,12 +22,14 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
 
 const (
 	contractEvidenceDir       = "GOOBERS_SHIPPED_CONTRACT_EVIDENCE_DIR"
+	daemonAPIAddressFileName  = "api.address"
 	ephemeralAPIListenAddress = "127.0.0.1:0"
 	// #4414 added preflight-repo-write as implementation.yaml's new first
 	// stage (before query-backlog), which renumbers this scenario name —
@@ -225,29 +229,25 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 		_ = logFile.Close()
 	}()
 
-	var lastStatus string
-	running := false
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-waitErr:
-			exited = true
-			return "", fmt.Errorf("`goobers up` exited before reporting running: %w\n%s", err, readLog(logFile, logPath))
-		default:
-		}
-		output, err := runGoobers(bin, 10*time.Second, "status", "--daemon", instanceRoot)
-		lastStatus = output
-		if err == nil && strings.Contains(output, "daemon running") {
-			running = true
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
+	readyAddress, processExited, err := waitForDaemonReadiness(instanceRoot, waitErr, 30*time.Second)
+	if processExited {
+		exited = true
 	}
-	if err := os.WriteFile(filepath.Join(outDir, "daemon-status.txt"), []byte(lastStatus), 0o644); err != nil {
+	if err != nil {
+		return "", fmt.Errorf("%w\ndaemon log:\n%s", err, readLog(logFile, logPath))
+	}
+
+	status, statusErr := runGoobers(bin, 10*time.Second, "status", "--daemon", instanceRoot)
+	if err := os.WriteFile(filepath.Join(outDir, "daemon-status.txt"), []byte(status), 0o644); err != nil {
 		return "", fmt.Errorf("write daemon status evidence: %w", err)
 	}
-	if !running {
-		return "", fmt.Errorf("daemon did not report running within 30s; last status:\n%s\ndaemon log:\n%s", lastStatus, readLog(logFile, logPath))
+	if statusErr != nil {
+		return "", fmt.Errorf("daemon API at %s reported ready but daemon status failed: %w\nstatus:\n%s\ndaemon log:\n%s",
+			readyAddress, statusErr, status, readLog(logFile, logPath))
+	}
+	if !strings.Contains(status, "daemon running") {
+		return "", fmt.Errorf("daemon API at %s reported ready but daemon status was not running:\n%s\ndaemon log:\n%s",
+			readyAddress, status, readLog(logFile, logPath))
 	}
 
 	if err := sendCtrlBreak(uint32(cmd.Process.Pid)); err != nil {
@@ -282,9 +282,58 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 	}
 
 	return "## Foreground daemon lifecycle (real binary)\n\n" +
-		"`goobers up` started, `status --daemon` reported it running, Ctrl+Break " +
+		"`goobers up` published its API, `/readyz` reported ready, " +
+		"`status --daemon` reported it running, Ctrl+Break " +
 		"triggered a clean exit, and the scheduler journal recorded " +
 		"`daemon.clean_shutdown`.\n\n", nil
+}
+
+func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout time.Duration) (string, bool, error) {
+	addressPath := filepath.Join(instance.NewLayout(instanceRoot).SchedulerDir(), daemonAPIAddressFileName)
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	var lastErr error
+	for {
+		data, err := os.ReadFile(addressPath)
+		if err != nil {
+			lastErr = fmt.Errorf("read daemon API address: %w", err)
+		} else {
+			address := strings.TrimSpace(string(data))
+			if address == "" {
+				lastErr = fmt.Errorf("daemon API address is empty")
+			} else {
+				response, requestErr := client.Get("http://" + address + httpapi.ReadinessPath)
+				if requestErr != nil {
+					lastErr = fmt.Errorf("query daemon readiness at %s: %w", address, requestErr)
+				} else {
+					var readiness httpapi.ReadinessStatus
+					decodeErr := json.NewDecoder(response.Body).Decode(&readiness)
+					closeErr := response.Body.Close()
+					switch {
+					case decodeErr != nil:
+						lastErr = fmt.Errorf("decode daemon readiness at %s: %w", address, decodeErr)
+					case closeErr != nil:
+						lastErr = fmt.Errorf("close daemon readiness response at %s: %w", address, closeErr)
+					case response.StatusCode == http.StatusOK && readiness.Ready:
+						return address, false, nil
+					default:
+						lastErr = fmt.Errorf("daemon readiness at %s returned %s with ready=%t",
+							address, response.Status, readiness.Ready)
+					}
+				}
+			}
+		}
+
+		select {
+		case err := <-waitErr:
+			return "", true, fmt.Errorf("`goobers up` exited before its API became ready: %v", err)
+		case <-deadline.C:
+			return "", false, fmt.Errorf("daemon API did not become ready within %s: %w", timeout, lastErr)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // prepareConsole makes this process a safe sender of console control events.

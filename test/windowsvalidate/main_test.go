@@ -3,10 +3,18 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -55,6 +63,59 @@ func TestConfigureEphemeralAPI(t *testing.T) {
 	}
 	if config.API.Listen != ephemeralAPIListenAddress {
 		t.Fatalf("API listen = %q, want %q", config.API.Listen, ephemeralAPIListenAddress)
+	}
+}
+
+func TestWaitForDaemonReadinessWaitsForReadyProbe(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.ReadinessPath {
+			t.Errorf("path = %q, want %q", request.URL.Path, httpapi.ReadinessPath)
+		}
+		ready := requests.Add(1) >= 2
+		status := http.StatusServiceUnavailable
+		if ready {
+			status = http.StatusOK
+		}
+		response.WriteHeader(status)
+		fmt.Fprintf(response, `{"ready":%t}`, ready)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	addressPath := filepath.Join(instance.NewLayout(root).SchedulerDir(), daemonAPIAddressFileName)
+	if err := os.MkdirAll(filepath.Dir(addressPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(addressPath, []byte(strings.TrimPrefix(server.URL, "http://")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	address, exited, err := waitForDaemonReadiness(root, make(chan error), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exited {
+		t.Fatal("process reported exited")
+	}
+	if address != strings.TrimPrefix(server.URL, "http://") {
+		t.Fatalf("address = %q, want %q", address, strings.TrimPrefix(server.URL, "http://"))
+	}
+	if requests.Load() < 2 {
+		t.Fatalf("readiness requests = %d, want at least 2", requests.Load())
+	}
+}
+
+func TestWaitForDaemonReadinessReportsEarlyExit(t *testing.T) {
+	waitErr := make(chan error, 1)
+	waitErr <- errors.New("startup failed")
+
+	_, exited, err := waitForDaemonReadiness(t.TempDir(), waitErr, time.Second)
+	if !exited {
+		t.Fatal("process exit was not reported")
+	}
+	if err == nil || !strings.Contains(err.Error(), "startup failed") {
+		t.Fatalf("error = %v, want startup failure", err)
 	}
 }
 
