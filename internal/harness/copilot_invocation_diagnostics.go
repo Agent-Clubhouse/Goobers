@@ -55,11 +55,15 @@ type copilotInvocationDiagnostics struct {
 // version or tool list is recorded as such) but fail-closed on IO: the same
 // .goobers directory was just proven writable by the prompt write, so a
 // failure here means the workspace is broken and the session should not start.
-func writeCopilotInvocationDiagnostics(req RunRequest, argv []string) error {
+func writeCopilotInvocationDiagnostics(req RunRequest, argv, declaredTools []string, disableUsageOutput bool) error {
+	usageCapture := copilotUsageCapture(req.HarnessVersion)
+	if disableUsageOutput {
+		usageCapture = "session-transcript"
+	}
 	diagnostics := copilotInvocationDiagnostics{
 		CLIVersion:      req.HarnessVersion,
-		UsageCapture:    copilotUsageCapture(req.HarnessVersion),
-		DeclaredTools:   append([]string(nil), req.Tools...),
+		UsageCapture:    usageCapture,
+		DeclaredTools:   append([]string(nil), declaredTools...),
 		PermissionArgs:  copilotPermissionArgs(argv),
 		ToolConstrained: len(req.Tools) > 0,
 		Sandboxed:       req.Sandbox != nil,

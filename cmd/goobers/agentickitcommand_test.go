@@ -120,7 +120,11 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 		switch a := adapter.(type) {
 		case *harness.CopilotAdapter:
 			argv = a.Command
-			if !slices.Equal(a.AuthCheckArgs, copilotAuthCheckArgs) {
+			expectedAuthArgs := copilotAuthCheckArgs
+			if len(declared) > 0 && !slices.Equal(declared, []string{"copilot"}) {
+				expectedAuthArgs = forwardingLauncherAuthCheckArgs()
+			}
+			if !slices.Equal(a.AuthCheckArgs, expectedAuthArgs) {
 				t.Fatal("model authentication preflight was altered")
 			}
 			if a.RequireLauncherContract != (len(declared) > 0 && !slices.Equal(declared, []string{"copilot"})) {

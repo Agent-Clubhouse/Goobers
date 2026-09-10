@@ -254,15 +254,17 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	if len(req.Command) == 0 {
 		return ProcessResult{}, fmt.Errorf("harness: empty command")
 	}
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = DefaultTimeout
-	}
+	timeout := effectiveProcessTimeout(ctx, req.Timeout, time.Now())
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.Command(req.Command[0], req.Command[1:]...)
 	cmd.Dir = req.Dir
+	// A launcher can exit successfully after spawning helpers that inherited
+	// its stdout/stderr handles. Without WaitDelay, cmd.Wait blocks until every
+	// helper closes those pipes, turning a completed launcher session into a
+	// harness timeout while its child services are still shutting down.
+	cmd.WaitDelay = groupKillWaitDelay
 	// A nil Env would make os/exec inherit the daemon's full environment —
 	// exactly the SEC-045 fail-open default #122 flags. An explicit non-nil,
 	// possibly-empty slice always wins instead, so "no Env supplied" means
@@ -352,6 +354,10 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	switch {
 	case err == nil && !timedOut && !canceled:
 		result.ExitCode = 0
+	case errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success():
+		_ = tree.Kill()
+		result.ExitCode = 0
+		err = nil
 	case errors.As(err, &exitErr):
 		result.ExitCode = exitErr.ExitCode()
 	}
@@ -366,4 +372,14 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 		return result, errors.Join(fmt.Errorf("harness: run %v: %w", req.Command, err), checkpointErr)
 	}
 	return result, checkpointErr
+}
+
+func effectiveProcessTimeout(ctx context.Context, requested time.Duration, now time.Time) time.Duration {
+	if requested <= 0 {
+		requested = DefaultTimeout
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		return min(requested, max(deadline.Sub(now), 0))
+	}
+	return requested
 }

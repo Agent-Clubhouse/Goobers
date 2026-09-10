@@ -211,7 +211,7 @@ func TestWriteCopilotInvocationDiagnostics(t *testing.T) {
 		"--available-tools=view,shell", "--add-github-mcp-toolset=issues", "--silent",
 	}
 
-	if err := writeCopilotInvocationDiagnostics(req, argv); err != nil {
+	if err := writeCopilotInvocationDiagnostics(req, argv, req.Tools, false); err != nil {
 		t.Fatalf("writeCopilotInvocationDiagnostics: %v", err)
 	}
 
