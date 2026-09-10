@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 
@@ -41,6 +44,7 @@ type fakeTelemetryStore struct {
 	outcomes       []rollup.ImplementationOutcome
 	outcomeGaggle  string
 	outcomeSince   time.Time
+	invocations    map[string][]rollup.AgentInvocation
 }
 
 func (f *fakeTelemetryStore) CostAggregates(_ context.Context, req rollup.CostQuery) (rollup.CostResult, error) {
@@ -53,6 +57,13 @@ func (f *fakeTelemetryStore) ImplementationOutcomes(_ context.Context, gaggle st
 	f.outcomeGaggle = gaggle
 	f.outcomeSince = since
 	return f.outcomes, f.err
+}
+
+func (f *fakeTelemetryStore) AgentInvocations(_ context.Context, runID string) ([]rollup.AgentInvocation, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]rollup.AgentInvocation(nil), f.invocations[runID]...), nil
 }
 
 type analyticsReadModel struct {
@@ -152,6 +163,47 @@ func TestTelemetryStatsProjectsAttributionCohortsFromRequest(t *testing.T) {
 	}
 	if result.AttributionCohorts[0].TopContributingPaths[0].Evidence[0].JournalPath == "" {
 		t.Fatalf("status attribution evidence missing journal pointer: %+v", result.AttributionCohorts[0].TopContributingPaths[0].Evidence[0])
+	}
+}
+
+func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
+	root, store, runID := seedStoredAttributionRun(t)
+	service := &Local{
+		sources: LocalSources{
+			Layout:    instance.NewLayout(root),
+			ReadModel: store,
+		},
+		telemetry: &Telemetry{store: &fakeTelemetryStore{
+			invocations: map[string][]rollup.AgentInvocation{
+				runID: {{
+					SpanID: "span-1", Kind: "task", Stage: "implement",
+					Model: "gpt-5.4", HarnessVersion: "copilot-cli/1.0.0",
+				}},
+			},
+		}},
+	}
+	result, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{
+		Gaggle: "core", Workflow: "implementation", Since: time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 8, 22, 13, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AttributionCohorts) != 1 {
+		t.Fatalf("attribution cohorts = %+v, want one stored cohort", result.AttributionCohorts)
+	}
+	cohort := result.AttributionCohorts[0]
+	if cohort.Workload != string(journal.TriggerManual) {
+		t.Fatalf("workload = %q, want %q", cohort.Workload, journal.TriggerManual)
+	}
+	if cohort.EffectiveVersion == "" || len(cohort.TopContributingPaths) == 0 || len(cohort.CounterEvidence) == 0 {
+		t.Fatalf("stored attribution cohort missing real evidence: %+v", cohort)
+	}
+	if got := cohort.TopContributingPaths[0].Evidence[0]; got.JournalSequence == 0 || got.ArtifactDigest == "" || got.JournalPath == "" {
+		t.Fatalf("stored contribution evidence = %+v, want exact journal/artifact link", got)
+	}
+	if got := cohort.CounterEvidence[0]; got.JournalSequence == 0 || got.JournalPath == "" {
+		t.Fatalf("stored counter evidence = %+v, want exact journal link", got)
 	}
 }
 
@@ -390,6 +442,114 @@ func TestTelemetryStatsTrendUsesOneBatchedQueryAndPreservesWindows(t *testing.T)
 		*got.TrendPrevious.Usage[0].CostUSD != 4 {
 		t.Fatalf("trend projection = %+v, previous = %+v", got.Trend, got.TrendPrevious)
 	}
+}
+
+func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
+	t.Helper()
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := readmodel.Open(filepath.Join(root, readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	startedAt := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	runID := "stored-attribution-run"
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		WorkflowDigest:  "sha256:workflow",
+		GooberDigest:    "sha256:goober",
+		Gaggle:          "core",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+	now := startedAt.Add(time.Minute)
+	if err := run.Append(journal.Event{
+		Type:  journal.EventStageStarted,
+		Stage: "implement", Attempt: 1,
+		Time: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := journal.Event{
+		Type:  journal.EventAgentLifecycle,
+		Stage: "implement",
+		Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1",
+			ID:     "root", RunID: runID, Stage: "implement", Attempt: 1,
+			ResolvedModel: "gpt-5.4", Lifecycle: journal.AgentFailed,
+			StartedAt: now, UpdatedAt: now,
+		},
+	}
+	if err := run.Append(agent); err != nil {
+		t.Fatal(err)
+	}
+	artifactRef, err := run.RecordStageArtifact("implement", 1, "", "diff.json", []byte(`{"changed":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript := []byte(strings.Join([]string{
+		`{"role":"assistant","model":"gpt-5.4","tool_call":{"id":"call-1","name":"bash"}}`,
+		`{"role":"tool","tool_call":{"id":"call-1","success":false}}`,
+	}, "\n"))
+	spanRef, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: "implement",
+		Runner: map[string]any{
+			creditgraph.SpanProvenanceKeyKind:    creditgraph.SpanProvenanceAnnotation,
+			creditgraph.SpanProvenanceKeyAgentID: "root",
+			creditgraph.SpanProvenanceKeyDigest:  spanRef.Digest,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status: string(apiv1.ResultFailure), Time: now.Add(time.Second),
+		Artifacts: []journal.Ref{{
+			Path: artifactRef.Path, Digest: artifactRef.Digest, Size: artifactRef.Size,
+			MediaType: artifactRef.MediaType, Integrity: artifactRef.Integrity,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Verdict: "fail", Target: "@abort",
+		Time: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finishedAt := now.Add(2 * time.Second)
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{
+		Run: readmodel.RunRow{
+			RunID: runID, Gaggle: "core", Workflow: "implementation",
+			WorkflowDigest: "sha256:workflow", GooberDigest: "sha256:goober",
+			TriggerKind: string(journal.TriggerManual),
+			Phase:       journal.PhaseFailed, Terminal: true,
+			StartedAt: startedAt, FinishedAt: &finishedAt, LastActivity: finishedAt,
+			LastSeq: 8, OutcomeVerdict: "fail", OutcomeTarget: "@abort",
+		},
+		Nodes: []readmodel.NodeRow{{
+			RunID: runID, Kind: "stage", Name: "implement", Attempts: 1,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return root, store, runID
 }
 
 func TestTelemetryStatsTrendEmptyUsageSerializesAsArrays(t *testing.T) {
