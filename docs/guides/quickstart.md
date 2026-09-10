@@ -73,9 +73,10 @@ dashboard-enabled binary does.
 
 ## Pick an agent harness
 
-Every agentic goober needs one configured harness: GitHub Copilot CLI or
-Claude Code CLI. Install and sign in to whichever one your goobers declare
-(`harness: copilot` or `harness: claude-code` in their `goober.yaml`) before
+Every agentic goober needs one configured harness: GitHub Copilot CLI, Claude
+Code CLI, or OpenAI Codex CLI. Install and authenticate whichever one your
+goobers declare (`harness: copilot`, `harness: claude-code`, or
+`harness: codex` in their `goober.yaml`) before
 section 2 below — the deterministic demo in section 1 needs neither. For
 Claude Code:
 
@@ -83,6 +84,17 @@ Claude Code:
 npm install -g @anthropic-ai/claude-code
 claude auth login
 ```
+
+Codex:
+
+```text
+npm install -g @openai/codex
+```
+
+Codex requires an OpenAI API key through `agent:model` and must currently be
+configured manually because the quickstart's restrictive `tools: [shell]`
+declaration cannot be enforced by Codex CLI. See
+[Codex harness](codex-harness.md).
 
 For host setup differences (Homebrew paths, WSL 2, launchd/systemd PATH
 quirks), see the platform guide linked in section 1 below. Section 2

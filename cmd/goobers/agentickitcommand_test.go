@@ -20,7 +20,7 @@ import (
 )
 
 func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
-	for _, selected := range []apiv1.Harness{apiv1.HarnessCopilot, apiv1.HarnessClaudeCode} {
+	for _, selected := range []apiv1.Harness{apiv1.HarnessCopilot, apiv1.HarnessClaudeCode, apiv1.HarnessCodex} {
 		for _, choice := range []string{"omitted", "explicit-default", "override"} {
 			name := string(selected) + "/" + choice
 			t.Run(name, func(t *testing.T) {
@@ -31,9 +31,9 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				other := apiv1.HarnessClaudeCode
+				other := apiv1.HarnessCopilot
 				if selected == other {
-					other = apiv1.HarnessCopilot
+					other = apiv1.HarnessClaudeCode
 				}
 				cfg.Runner.HarnessCommand = map[string][]string{string(other): {"unrelated-launcher-must-not-travel"}}
 				var declared []string
@@ -44,6 +44,8 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 					declared = []string{"copilot"}
 					if selected == apiv1.HarnessClaudeCode {
 						declared = []string{"claude"}
+					} else if selected == apiv1.HarnessCodex {
+						declared = []string{"codex"}
 					}
 				}
 				if len(declared) > 0 {
@@ -90,6 +92,13 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 					if kit.IsReview() != review {
 						t.Fatal("review completion contract changed")
 					}
+					wantModelEnv := copilotModelEnv
+					if selected == apiv1.HarnessCodex {
+						wantModelEnv = codexModelEnv
+					}
+					if got := kit.EnvCapabilities["agent:model"]; got != wantModelEnv {
+						t.Fatalf("kit agent:model env = %q, want %q", got, wantModelEnv)
+					}
 					assertPodLauncher(t, kit, selected, declared)
 				}
 			})
@@ -132,6 +141,8 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 			}
 		case *harness.ClaudeAdapter:
 			argv = a.Command
+		case *harness.CodexAdapter:
+			argv = a.Command
 		default:
 			t.Fatalf("unexpected real adapter %T", adapter)
 		}
@@ -140,6 +151,8 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 			want = []string{"copilot"}
 			if selected == apiv1.HarnessClaudeCode {
 				want = []string{"claude"}
+			} else if selected == apiv1.HarnessCodex {
+				want = []string{"codex"}
 			}
 		}
 		if !slices.Equal(argv, want) {

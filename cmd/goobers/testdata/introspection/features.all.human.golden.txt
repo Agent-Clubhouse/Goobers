@@ -77,6 +77,7 @@ goober.spec.conditionalPolicyActions                     2.0          ga        
 goober.spec.displayName                                  2.0          ga               supported        dev
 goober.spec.gaggle                                       2.0          ga               supported        dev
 goober.spec.harness.claude-code                          2.0          ga               supported        dev
+goober.spec.harness.codex                                2.0          ga               supported        dev
 goober.spec.harness.copilot                              2.0          ga               supported        dev
 goober.spec.harnessOptions                               2.0          ga               supported        dev
 goober.spec.instructions                                 2.0          ga               supported        dev
@@ -272,6 +273,7 @@ goober.spec.conditionalPolicyActions                     3.0          ga        
 goober.spec.displayName                                  3.0          ga               preview          dev
 goober.spec.gaggle                                       3.0          ga               preview          dev
 goober.spec.harness.claude-code                          3.0          ga               preview          dev
+goober.spec.harness.codex                                3.0          ga               preview          dev
 goober.spec.harness.copilot                              3.0          ga               preview          dev
 goober.spec.harnessOptions                               3.0          ga               preview          dev
 goober.spec.instructions                                 3.0          ga               preview          dev
@@ -386,4 +388,4 @@ workflow.terminal.abort                                  3.0          ga        
 workflow.terminal.complete                               3.0          ga               preview          dev
 workflow.terminal.escalate                               3.0          ga               preview          dev
 
-386 feature/version row(s)
+388 feature/version row(s)

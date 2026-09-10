@@ -395,6 +395,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "goober.spec.harness.codex",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "goober.spec.harness.copilot",
       "stability": "ga",
       "sinceVersion": "dev"
