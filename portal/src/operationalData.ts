@@ -393,10 +393,14 @@ export async function loadOperationalSnapshot(
     instance,
     inventories: previous?.inventories ?? [],
     runs: previous?.runs ?? [],
-    loadingSections: {
-      inventory: wantInventory,
-      runs: wantRuns,
-    },
+    ...(previous
+      ? {}
+      : {
+          loadingSections: {
+            inventory: wantInventory,
+            runs: wantRuns,
+          },
+        }),
   });
 
   const inventoriesPromise = settlePromise(
@@ -1124,10 +1128,14 @@ export async function loadOperationalOverview(
     gaggleCount: previous?.gaggleCount ?? 0,
     workflowNames: previous?.workflowNames ?? new Map<string, string>(),
     groups: previous?.groups ?? { active: [], attention: [], recent: [] },
-    loadingSections: {
-      inventory: wantInventory,
-      runs: wantRuns,
-    },
+    ...(previous
+      ? {}
+      : {
+          loadingSections: {
+            inventory: wantInventory,
+            runs: wantRuns,
+          },
+        }),
   });
 
   const inventoryPromise = settlePromise(
