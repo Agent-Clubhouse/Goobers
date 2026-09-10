@@ -58,6 +58,37 @@ export function renderRunAssociations(operator) {
     return links.length ? '<div class="run-associations">' + links.join("") + "</div>" : "\u2014";
 }
 
+// The snapshot cards and the run table interpolate values the portal does not
+// control — an instance name from instance.yaml, run IDs, workflow and gaggle
+// names, and phases all originate in a repository or a run's own metadata
+// (#4567). Building those rows here, rather than inline in the browser
+// script, is what makes them unit-testable against hostile input: both
+// functions are inlined into the page verbatim via .toString(), with
+// escapeAssociationHtml remapped onto the client's escapeHtml.
+
+export function renderSnapshotCard(label, value) {
+    return '<div class="label">' + escapeAssociationHtml(label) +
+        '</div><div class="value">' + escapeAssociationHtml(value) + "</div>";
+}
+
+// parts.actionsLink and parts.associations are already-built HTML from
+// safeExternalUrl and renderRunAssociations, which escape their own inputs;
+// every value read off the run itself is escaped here.
+export function renderRunRowCells(run, parts) {
+    const cell = (value) => "<td>" + escapeAssociationHtml(value) + "</td>";
+    const runId = (run && (run.runId || run.id)) || "";
+    const extra = (parts && parts.actionsLink) || "";
+    const associations = (parts && parts.associations) || "\u2014";
+    return "<td><code>" + escapeAssociationHtml(runId) + "</code>" + extra + "</td>" +
+        cell((run && run.workflow) || "") +
+        cell((run && run.gaggle) || "") +
+        cell((run && run.trigger && run.trigger.kind) || "\u2014") +
+        '<td><span class="phase">' + escapeAssociationHtml((run && run.phase) || "") + "</span></td>" +
+        "<td>" + associations + "</td>" +
+        cell((parts && parts.startedAt) || "") +
+        cell((parts && parts.lastActivityAt) || "");
+}
+
 export function renderGraphLegend() {
     return '<div class="graph-legend" aria-label="Workflow state legend">' +
         '<strong>State legend:</strong> ' +
@@ -1132,7 +1163,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     for (const [label, value] of cards) {
       const div = document.createElement("div");
       div.className = "card";
-      div.innerHTML = '<div class="label">' + label + '</div><div class="value">' + value + "</div>";
+      div.innerHTML = renderSnapshotCard(label, value);
       cardsEl.appendChild(div);
     }
 
@@ -1428,15 +1459,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const associations = renderRunAssociations(r.operator);
       tr.className = "clickable-row";
       tr.dataset.runId = runId;
-      tr.innerHTML =
-        "<td><code>" + runId + "</code>" + actionsLink + "</td>" +
-        "<td>" + (r.workflow || "") + "</td>" +
-        "<td>" + (r.gaggle || "") + "</td>" +
-        "<td>" + escapeHtml(r.trigger?.kind || "\u2014") + "</td>" +
-        '<td><span class="phase">' + (r.phase || "") + "</span></td>" +
-        "<td>" + associations + "</td>" +
-        "<td>" + fmtTime(r.startedAt) + "</td>" +
-        "<td>" + fmtTime(r.lastActivityAt) + "</td>";
+      tr.innerHTML = renderRunRowCells(r, {
+        actionsLink,
+        associations,
+        startedAt: fmtTime(r.startedAt),
+        lastActivityAt: fmtTime(r.lastActivityAt),
+      });
       tr.querySelectorAll(".actions-run-link, .run-association-link").forEach((link) =>
         link.addEventListener("click", (event) => event.stopPropagation()));
       tr.addEventListener("click", () => openRun(runId));
@@ -1955,6 +1983,10 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   const renderRunAssociations = ${renderRunAssociations.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderSnapshotCard = ${renderSnapshotCard.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderRunRowCells = ${renderRunRowCells.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const BOOLEAN_FILTER_KEYS = new Set(["showNoWork"]);
   const normalizeViewFilters = ${normalizeViewFilters.toString()};
