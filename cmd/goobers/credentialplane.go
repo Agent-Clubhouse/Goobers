@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -371,16 +374,41 @@ func (s *daemonCredentialService) resolveExternalTelemetryConnectorCredential(ct
 	return &httpapi.MintedCredential{Capability: string(capability.TelemetryRead), Value: value}, nil
 }
 
-// locateRun finds the run directory across the configured gaggles (plus the
-// legacy ungaggled runs dir), the same candidate walk the intervention
-// service uses. Exactly one match is required.
+// locateRun finds the run directory across the configured gaggles, falling
+// back to the legacy ungaggled runs dir only when no scoped journal exists.
+// Engine-backed runs temporarily project a compatibility journal into the
+// legacy directory while the authoritative gaggle journal is live; treating
+// that shadow as a second gaggle makes every credential resolve fail closed.
 func (s *daemonCredentialService) locateRun(defs credentialPlaneDefinitions, runID string) (string, error) {
 	gaggles := make([]string, 0, len(defs.Scopes))
 	for gaggle := range defs.Scopes {
 		gaggles = append(gaggles, gaggle)
 	}
-	found, err := locateOwnedRun(s.layout, gaggles, runID)
-	return found.dir, err
+	sort.Strings(gaggles)
+
+	found := ""
+	for _, gaggle := range gaggles {
+		dir := filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID)
+		if _, err := os.Stat(filepath.Join(dir, "run.yaml")); err == nil {
+			if found != "" && found != dir {
+				return "", credentialPlaneError(http.StatusConflict, "ambiguous_run_id", "run ID exists in more than one gaggle")
+			}
+			found = dir
+		} else if !os.IsNotExist(err) {
+			return "", credentialPlaneError(http.StatusInternalServerError, "run_lookup_failed", "run could not be inspected")
+		}
+	}
+	if found != "" {
+		return found, nil
+	}
+
+	legacy := filepath.Join(s.layout.RunsDir(), runID)
+	if _, err := os.Stat(filepath.Join(legacy, "run.yaml")); err == nil {
+		return legacy, nil
+	} else if !os.IsNotExist(err) {
+		return "", credentialPlaneError(http.StatusInternalServerError, "run_lookup_failed", "run could not be inspected")
+	}
+	return "", credentialPlaneError(http.StatusNotFound, "run_not_found", "run was not found")
 }
 
 // stageProfile is the credential identity of one stage of a pinned

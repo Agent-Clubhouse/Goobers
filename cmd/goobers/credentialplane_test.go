@@ -318,6 +318,57 @@ func TestCredentialPlaneRefusesUnknownStageAndRun(t *testing.T) {
 	}
 }
 
+func TestCredentialPlanePrefersScopedRunOverEngineLegacyProjection(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	const runID = "run-engine-projection"
+	for _, dir := range []string{
+		filepath.Join(layout.ForGaggle("web").RunsDir(), runID),
+		filepath.Join(layout.RunsDir(), runID),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "run.yaml"), []byte("schema: goobers.dev/run/v1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := newDaemonCredentialService(layout, &instance.Config{}, nil, nil, nil)
+	got, err := service.locateRun(credentialPlaneDefinitions{
+		Scopes: map[string]credentialGaggleScope{"web": {}},
+	}, runID)
+	if err != nil {
+		t.Fatalf("locateRun: %v", err)
+	}
+	want := filepath.Join(layout.ForGaggle("web").RunsDir(), runID)
+	if got != want {
+		t.Fatalf("locateRun = %q, want scoped journal %q", got, want)
+	}
+}
+
+func TestCredentialPlaneStillRefusesRunAcrossTwoGaggles(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	const runID = "run-gaggle-collision"
+	for _, gaggle := range []string{"api", "web"} {
+		dir := filepath.Join(layout.ForGaggle(gaggle).RunsDir(), runID)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "run.yaml"), []byte("schema: goobers.dev/run/v1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	service := newDaemonCredentialService(layout, &instance.Config{}, nil, nil, nil)
+	_, err := service.locateRun(credentialPlaneDefinitions{
+		Scopes: map[string]credentialGaggleScope{"api": {}, "web": {}},
+	}, runID)
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusConflict || planeErr.Code != "ambiguous_run_id" {
+		t.Fatalf("collision refusal = %d %s, want 409 ambiguous_run_id", planeErr.Status, planeErr.Code)
+	}
+}
+
 // TestCredentialPlaneVerifiesAgainstThePinnedDefinition proves the stage
 // identity is checked against the run's PINNED definition, not the currently
 // served one: a run pinned to a definition where implement declares only
