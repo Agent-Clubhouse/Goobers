@@ -226,7 +226,6 @@ function InsightContent({
         <section className="content-section">
           <div className="section-heading">
             <div>
-              <p className="section-kicker">Outcomes</p>
               <h2>Success and failure</h2>
             </div>
             <span className="section-count">Terminal outcomes exclude other states</span>
@@ -392,7 +391,6 @@ function CurationHealth({
     <section className="content-section">
       <div className="section-heading">
         <div>
-          <p className="section-kicker">Backlog</p>
           <h2>Ready-pool health</h2>
         </div>
         <span className="section-count">{curation.runs} curation runs</span>
@@ -476,9 +474,6 @@ function FailureReasonBreakdown({
   const snapshot = state.status === "ready" || state.status === "stale" ? state.data : undefined;
   return (
     <>
-      <p className="error-signature-description">
-        Grouped by code and coarse class. Error class may be unknown.
-      </p>
       {state.status === "loading" ? (
         <SectionQueryStatus loading message="Loading failure reasons…" />
       ) : state.status === "error" ? (
@@ -911,7 +906,6 @@ export function CostTrend({
         retry={retry}
       />
       <div className="usage-trend-heading">
-        <p className="section-kicker">Trend</p>
         <h3>Cost over time</h3>
       </div>
       {hasSamples ? (
@@ -1363,7 +1357,6 @@ function ExternalCostHeading({ loadedAt }: { loadedAt?: string }) {
   return (
     <div className="section-heading">
       <div>
-        <p className="section-kicker">Attribution</p>
         <h2>Cost by pull request and issue</h2>
       </div>
       <span className="section-count">
