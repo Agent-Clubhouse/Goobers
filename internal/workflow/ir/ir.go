@@ -555,7 +555,6 @@ func (d Document) ExplainLoss(source any) []Loss {
 	default:
 		return unsupportedSourceLoss(source)
 	}
-	return nil
 }
 
 // RoundTripLoss is the package-level convenience wrapper used by authoring tools.
