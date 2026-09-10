@@ -2217,5 +2217,9 @@ func buildPodVerifier(cfg *instance.Config) (podauth.Verifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
 	}
-	return podauth.NewSignedKey(bytes.TrimSpace(key))
+	verifier, err := podauth.NewSignedKey(bytes.TrimSpace(key))
+	if err != nil {
+		return nil, err
+	}
+	return verifier, nil
 }
