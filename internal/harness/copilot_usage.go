@@ -43,7 +43,11 @@ type copilotCapturePaths struct {
 }
 
 func (c *CopilotAdapter) prepareCopilotCaptures(ctx context.Context, req RunRequest, argv, env []string) (copilotCapturePaths, error) {
-	argv, usagePath, cleanupUsage, err := prepareCopilotUsageOutput(req, argv)
+	usageReq := req
+	if c.DisableUsageOutput {
+		usageReq.HarnessVersion = ""
+	}
+	argv, usagePath, cleanupUsage, err := prepareCopilotUsageOutput(usageReq, argv)
 	if err != nil {
 		return copilotCapturePaths{}, err
 	}

@@ -1,10 +1,13 @@
 # Copilot launcher session contract
 
 `runner.harnessCommand` replaces a harness's launch prefix. A wrapper is not
-necessarily compatible merely because it forwards arguments. In particular,
-`agency copilot` has been observed to interpret `--session-id` as a remote task
-identifier rather than a local transcript correlation ID. It is not a supported
-drop-in example. Use direct Copilot unless the wrapper implements this contract.
+necessarily compatible merely because it forwards arguments. Goobers supports
+two generic integration paths:
+
+- A launcher can implement the versioned handshake below.
+- A launcher without the handshake can be admitted as `adapter-managed` only
+  after the normal headless authentication preflight proves that a generated
+  `--session-id` produces the corresponding non-empty native Copilot transcript.
 
 For mode 3 stage pods, the worker carries only the selected goober's configured
 argv in the content-addressed execution kit, for both task invocations and
@@ -14,15 +17,19 @@ authentication preflight. Omitted overrides retain the default command. Deploy
 matching updated worker and stage binaries: older stage binaries do not consume
 the kit's launcher override.
 
-The default command, and an explicit `["copilot"]`, retain the existing direct
-Copilot behavior. Every other Copilot override must respond to its complete
+The default command and an explicit `["copilot"]` retain the existing direct
+Copilot behavior. Every other Copilot override is first probed using its complete
 configured prefix followed by `--goobers-launcher-contract`. This probe must not
 start an agent, contact a model, request credentials, or modify a session. It
 returns exactly one JSON object on stdout, at most 16 KiB, within ten seconds.
-Stderr diagnostics are captured separately and are never parsed as the contract. Nonzero exit,
-truncated output, unknown fields, or unsupported versions/modes fail admission
-and preflight before workflow dispatch. Successful contracts are cached for that
-adapter instance. Changing a wrapper requires rebuilding/restarting that instance.
+Stderr diagnostics are captured separately and are never parsed as the contract.
+A nonzero exit is treated as an absent handshake and proceeds to the behavioral
+`adapter-managed` proof. Truncated output, malformed successful output, unknown
+fields, and unsupported versions or modes fail closed before workflow dispatch.
+Successful contracts and behavioral
+proofs are cached for that Goobers process. Changing a wrapper requires
+restarting that process. A separate worker or stage process performs
+its own proof; verification is never written to configuration or shared storage.
 
 ```json
 {"version":1,"sessionMode":"adapter-managed"}
@@ -54,11 +61,12 @@ completion, usage, model, tool, credential, and sandbox contracts; this is not a
 new harness type. The wrapper must also support version and authentication probes
 on its complete configured launch prefix.
 
-The handshake is an explicit compatibility declaration, not proof that an
-arbitrary wrapper implements it correctly. Validate a new wrapper end to end
-with a harmless workflow in its target OS and isolation posture. Do not declare
-`adapter-managed` just to bypass an incompatibility error: that restores the
-very session-ID assumption the gate prevents.
+The handshake is an explicit compatibility declaration. The behavioral fallback
+is proof only of direct local session forwarding, not of every launcher feature.
+Configured launchers therefore use native-session usage accounting and do not
+receive optional Copilot flags inferred only from the reported CLI version.
+Validate a new launcher end to end with a harmless workflow in its target OS and
+isolation posture.
 
 ## Durable partial transcripts
 

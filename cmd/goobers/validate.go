@@ -38,6 +38,9 @@ import (
 // auth error otherwise. `--available-tools=` (empty allowlist) disables every
 // tool so the probe can never touch the filesystem or run shell commands;
 // `--allow-all-tools` is still required to enable non-interactive mode.
+// Configured forwarding launchers use a headless completion posture
+// (`--silent --no-ask-user --autopilot`) and expose only `view` plus
+// `task_complete`; no filesystem mutation or shell tool is exposed.
 //
 // This runs in BOTH the operator-invoked `goobers validate --check-harness` and
 // the automatic daemon-startup preflight (adapterFor wires it into every

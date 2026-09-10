@@ -47,6 +47,7 @@ func TestCopilotNativeCheckpointsSpanRecoveryAndFinishBeforeCleanup(t *testing.T
 	}
 	adapter := &CopilotAdapter{Command: []string{"copilot-checkpoint-test"}, Runner: runner,
 		RequireLauncherContract: true, launcherContract: &launcherContract{Version: 1, SessionMode: "wrapper-managed"},
+		launcherContractVerified: true,
 	}
 	_, err := adapter.Run(context.Background(), RunRequest{
 		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath,
