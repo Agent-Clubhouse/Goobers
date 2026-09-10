@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +38,7 @@ func registerSharedVisibilityRepository(ctx context.Context, layout instance.Lay
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if repo.Provider != providers.ProviderGitHub || repo.Owner == "" || repo.Name == "" {
+	if !validSharedVisibilityRepository(repo) {
 		return fmt.Errorf("invalid shared visibility repository")
 	}
 	data, err := json.Marshal(sharedVisibilityRegistration{Version: 1, Repository: repo})
@@ -107,8 +108,19 @@ func readSharedVisibilityRegistration(layout instance.Layout, entry os.DirEntry)
 	}
 	canonical, err := json.Marshal(registration)
 	repo := registration.Repository
-	if err != nil || !bytes.Equal(canonical, data) || registration.Version != 1 || repo.Provider != providers.ProviderGitHub || repo.Owner == "" || repo.Name == "" || sharedRepositoryFilename(repo) != entry.Name() {
+	if err != nil || !bytes.Equal(canonical, data) || registration.Version != 1 || !validSharedVisibilityRepository(repo) || sharedRepositoryFilename(repo) != entry.Name() {
 		return providers.RepositoryRef{}, fmt.Errorf("shared visibility registration identity mismatch")
 	}
 	return repo, nil
+}
+
+func validSharedVisibilityRepository(repo providers.RepositoryRef) bool {
+	if repo.Provider != providers.ProviderGitHub || repo.Owner == "" || repo.Name == "" {
+		return false
+	}
+	if repo.URL == "" {
+		return true
+	}
+	u, err := url.Parse(repo.URL)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == ""
 }

@@ -16,6 +16,19 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestSharedVisibilityRegistrationRejectsCredentialBearingURLs(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	for _, address := range []string{"https://user:secret@example.com/api", "https://example.com/api?token=secret", "https://example.com/api#secret", "file:///tmp/credentials", "relative-path"} {
+		repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "repo", URL: address}
+		if err := registerSharedVisibilityRepository(t.Context(), layout, repo); err == nil {
+			t.Fatalf("credential-bearing or invalid URL persisted: %q", address)
+		}
+	}
+	if _, err := os.Stat(layout.SchedulerDir()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid registration touched disk: %v", err)
+	}
+}
+
 func TestSharedVisibilityRegistrySurvivesConcurrentRegistration(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "repo"}
