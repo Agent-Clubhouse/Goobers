@@ -404,7 +404,7 @@ func (d Document) Diff(other Document) (Diff, error) {
 	changes = appendDiffCollectionChanges(changes, d, other)
 	changes = appendDiffNodeChanges(changes, d.Nodes, other.Nodes)
 	changes = appendDiffEdgeChanges(changes, d.Edges, other.Edges)
-	return finalizeDiff(changes), nil
+	return finalizeDiff(changes, behaviorChanged), nil
 }
 
 func appendDiffMetadataChanges(changes []Change, before, after Document, behaviorChanged bool) []Change {
@@ -486,16 +486,30 @@ func appendDiffEdgeChanges(changes []Change, before, after []Edge) []Change {
 	return changes
 }
 
-func finalizeDiff(changes []Change) Diff {
+func finalizeDiff(changes []Change, behaviorChanged bool) Diff {
+	if behaviorChanged && !hasBehavioralChange(changes) {
+		changes = append(changes, Change{
+			Path:        "semantic",
+			Kind:        DiffBehavioral,
+			Explanation: "normalized workflow content changed outside cosmetic metadata",
+		})
+	}
 	if len(changes) == 0 {
 		return Diff{Kind: DiffNoChange, Summary: "normalized workflow IR is behaviorally equivalent"}
 	}
-	for _, change := range changes {
-		if change.Kind == DiffBehavioral {
-			return Diff{Kind: DiffBehavioral, Summary: "normalized workflow IR differs in behavior", Changes: changes}
-		}
+	if hasBehavioralChange(changes) {
+		return Diff{Kind: DiffBehavioral, Summary: "normalized workflow IR differs in behavior", Changes: changes}
 	}
 	return Diff{Kind: DiffCosmetic, Summary: "normalized workflow IR differs only in cosmetic metadata", Changes: changes}
+}
+
+func hasBehavioralChange(changes []Change) bool {
+	for _, change := range changes {
+		if change.Kind == DiffBehavioral {
+			return true
+		}
+	}
+	return false
 }
 
 func semanticContentChanged(before, after Document) bool {

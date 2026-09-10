@@ -244,6 +244,132 @@ func TestIRProvenanceAndSemanticDiff(t *testing.T) {
 	}
 }
 
+func TestSemanticDiffClassifiesBehavioralChangesAcrossIRSurfaces(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*workflow.Definition)
+	}{
+		{
+			name: "permissions",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Requires.Capabilities = []string{"issues.write"}
+			},
+		},
+		{
+			name: "triggers",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Triggers[0].Selector["label"] = "blocked"
+			},
+		},
+		{
+			name: "task payload",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Tasks[0].Retry.MaxAttempts = 3
+			},
+		},
+		{
+			name: "gate payload",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Gates[0].Automated.Params["status"] = "green"
+			},
+		},
+		{
+			name: "schemas",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Tasks[0].ExpectedOutputs = []string{"artifact"}
+			},
+		},
+		{
+			name: "parallel settings",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Parallels[0].MaxConcurrentBranches = 2
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeDef := semanticDiffBehavioralBaseDefinition()
+			before, err := Normalize(beforeDef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterDef := cloneDefinitionForTest(t, beforeDef)
+			tc.mutate(&afterDef)
+			after, err := Normalize(afterDef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			diff, err := SemanticDiff(before, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff.Kind != DiffBehavioral {
+				t.Fatalf("SemanticDiff kind = %q, want %q; changes=%#v", diff.Kind, DiffBehavioral, diff.Changes)
+			}
+			if !containsBehavioralChange(diff.Changes) {
+				t.Fatalf("SemanticDiff changes = %#v, want at least one behavioral change", diff.Changes)
+			}
+		})
+	}
+}
+
+func semanticDiffBehavioralBaseDefinition() workflow.Definition {
+	return workflow.Definition{
+		Name: "semantic-surfaces", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "prepare",
+			Triggers: []apiv1.Trigger{{
+				Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"label": "ready"},
+			}},
+			Requires: &apiv1.WorkflowRequirements{Capabilities: []string{"repo:read"}},
+			Tasks: []apiv1.Task{
+				{
+					Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "prepare", Next: "gate",
+					ExpectedOutputs: []string{"result"}, Retry: &apiv1.RetryPolicy{MaxAttempts: 1},
+				},
+				{Name: "scan-a", Type: apiv1.TaskDeterministic, Goal: "scan a", Next: workflow.TargetJoin},
+				{Name: "scan-b", Type: apiv1.TaskDeterministic, Goal: "scan b", Next: workflow.TargetJoin},
+				{Name: "publish", Type: apiv1.TaskAgentic, Goal: "publish", Goober: "ops", Capabilities: []string{"repo:push"}},
+			},
+			Gates: []apiv1.Gate{{
+				Name: "gate", Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{
+					Check: "ready", Params: map[string]string{"status": "ok"},
+				},
+				Branches: map[string]string{"approved": "fanout"},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fanout", FailurePolicy: apiv1.BranchContinueOnError, Join: "publish",
+				MaxConcurrentBranches: 1,
+				Branches:              []apiv1.Branch{{Name: "left", Start: "scan-a"}, {Name: "right", Start: "scan-b"}},
+			}},
+		},
+	}
+}
+
+func cloneDefinitionForTest(t *testing.T, def workflow.Definition) workflow.Definition {
+	t.Helper()
+	raw, err := json.Marshal(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cloned workflow.Definition
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		t.Fatal(err)
+	}
+	return cloned
+}
+
+func containsBehavioralChange(changes []Change) bool {
+	for _, change := range changes {
+		if change.Kind == DiffBehavioral {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNormalizeReturnsImmutableSnapshot(t *testing.T) {
 	def := workflow.Definition{
 		Name: "snapshot", Version: 1,
