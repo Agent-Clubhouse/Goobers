@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -25,15 +26,85 @@ const (
 
 // Document is the canonical, versioned representation of a workflow definition.
 type Document struct {
-	SchemaVersion string          `json:"schemaVersion"`
-	Compiler      Compiler        `json:"compiler"`
-	Source        Source          `json:"source"`
-	Triggers      []apiv1.Trigger `json:"triggers"`
-	Start         string          `json:"start"`
-	Schemas       []Schema        `json:"schemas,omitempty"`
-	Nodes         []Node          `json:"nodes"`
-	Edges         []Edge          `json:"edges"`
-	Permissions   []string        `json:"permissions,omitempty"`
+	SchemaVersion    string               `json:"schemaVersion"`
+	Compiler         Compiler             `json:"compiler"`
+	Source           Source               `json:"source"`
+	Triggers         []apiv1.Trigger      `json:"triggers"`
+	Start            string               `json:"start"`
+	Schemas          []Schema             `json:"schemas,omitempty"`
+	Nodes            []Node               `json:"nodes"`
+	Edges            []Edge               `json:"edges"`
+	Permissions      []string             `json:"permissions,omitempty"`
+	SourceDefinition *workflow.Definition `json:"sourceDefinition,omitempty"`
+	FeatureGates     []string             `json:"featureGates,omitempty"`
+	Provenance       *Provenance          `json:"provenance,omitempty"`
+}
+
+// Provenance records who or what created a workflow IR document, what source
+// material it came from, and how validation concluded.
+type Provenance struct {
+	Generator   string `json:"generator,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Tool        string `json:"tool,omitempty"`
+	Version     string `json:"version,omitempty"`
+	UserIntent  string `json:"userIntent,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
+	Validation  string `json:"validation,omitempty"`
+	ValidatedBy string `json:"validatedBy,omitempty"`
+	Decision    string `json:"decision,omitempty"`
+}
+
+// GenerationProvenance is the persisted, source-aware record of how a workflow
+// IR document was created and validated.
+type GenerationProvenance = Provenance
+
+// DiffKind classifies a semantic comparison between two IR documents.
+type DiffKind string
+
+const (
+	DiffNoChange   DiffKind = "no-change"
+	DiffCosmetic   DiffKind = "cosmetic"
+	DiffBehavioral DiffKind = "behavioral"
+)
+
+// Change captures the smallest material difference in a semantic diff.
+type Change struct {
+	Path        string   `json:"path"`
+	Before      string   `json:"before,omitempty"`
+	After       string   `json:"after,omitempty"`
+	Kind        DiffKind `json:"kind"`
+	Explanation string   `json:"explanation,omitempty"`
+}
+
+// Diff summarizes whether a pair of IR documents remains equivalent or changed in
+// behavior.
+type Diff struct {
+	Kind    DiffKind `json:"kind"`
+	Summary string   `json:"summary,omitempty"`
+	Changes []Change `json:"changes,omitempty"`
+}
+
+// Inspection summarizes a normalized IR document for authoring and tooling
+// clients without re-reading the source definition.
+type Inspection struct {
+	Start           string   `json:"start"`
+	TriggerTypes    []string `json:"triggerTypes,omitempty"`
+	Nodes           []string `json:"nodes,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
+	NodeCount       int      `json:"nodeCount"`
+	EdgeCount       int      `json:"edgeCount"`
+	PermissionCount int      `json:"permissionCount"`
+	SourceDigest    string   `json:"sourceDigest,omitempty"`
+}
+
+// Loss records where a round-trip from source->IR->source cannot retain an exact
+// source-level representation.
+type Loss struct {
+	Field       string `json:"field,omitempty"`
+	Before      string `json:"before,omitempty"`
+	After       string `json:"after,omitempty"`
+	Explanation string `json:"explanation"`
 }
 
 // Compiler identifies the implementation and contract version that produced a document.
@@ -102,19 +173,35 @@ type Edge struct {
 
 // Normalize converts a workflow definition into deterministic canonical IR.
 func Normalize(def workflow.Definition) (Document, error) {
+	return NormalizeWithMetadata(def, nil, nil)
+}
+
+// NormalizeWithMetadata converts a workflow definition into canonical IR and
+// persists the source and generation metadata alongside the normalized graph.
+func NormalizeWithMetadata(def workflow.Definition, provenance *Provenance, featureGates []string) (Document, error) {
 	digest, err := workflow.ComputeDigest(def)
 	if err != nil {
 		return Document{}, fmt.Errorf("digest workflow definition: %w", err)
 	}
+	source, err := cloneDefinition(def)
+	if err != nil {
+		return Document{}, fmt.Errorf("snapshot workflow definition: %w", err)
+	}
 	doc := Document{
-		SchemaVersion: SchemaVersion,
-		Compiler:      Compiler{Name: CompilerName, Version: CompilerVersion},
-		Source:        Source{Name: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Digest: digest},
-		Triggers:      cloneTriggers(def.Spec.Triggers),
-		Start:         def.Spec.Start,
-		Schemas:       []Schema{},
-		Nodes:         []Node{},
-		Edges:         []Edge{},
+		SchemaVersion:    SchemaVersion,
+		Compiler:         Compiler{Name: CompilerName, Version: CompilerVersion},
+		Source:           Source{Name: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Digest: digest},
+		Triggers:         cloneTriggers(def.Spec.Triggers),
+		Start:            def.Spec.Start,
+		Schemas:          []Schema{},
+		Nodes:            []Node{},
+		Edges:            []Edge{},
+		SourceDefinition: &source,
+		FeatureGates:     append([]string(nil), featureGates...),
+	}
+	if provenance != nil {
+		copy := *provenance
+		doc.Provenance = &copy
 	}
 	for _, task := range def.Spec.Tasks {
 		node := Node{Name: task.Name, Kind: string(task.Type), Task: cloneTask(task), SideEffect: sideEffect(task)}
@@ -187,6 +274,18 @@ func Normalize(def workflow.Definition) (Document, error) {
 	return doc, nil
 }
 
+func cloneDefinition(def workflow.Definition) (workflow.Definition, error) {
+	raw, err := json.Marshal(def)
+	if err != nil {
+		return workflow.Definition{}, err
+	}
+	var copy workflow.Definition
+	if err := json.Unmarshal(raw, &copy); err != nil {
+		return workflow.Definition{}, err
+	}
+	return copy, nil
+}
+
 // Digest validates the document and returns its canonical SHA-256 digest.
 func (d Document) Digest() (string, error) {
 	if err := Validate(d); err != nil {
@@ -198,6 +297,258 @@ func (d Document) Digest() (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// Capabilities returns the effective permission set declared by the normalized
+// document, ordered canonically for authoring and policy checks.
+func (d Document) Capabilities() []string {
+	seen := make(map[string]struct{}, len(d.Permissions))
+	out := make([]string, 0, len(d.Permissions))
+	for _, cap := range d.Permissions {
+		if cap == "" {
+			continue
+		}
+		if _, ok := seen[cap]; ok {
+			continue
+		}
+		seen[cap] = struct{}{}
+		out = append(out, cap)
+	}
+	for _, node := range d.Nodes {
+		if node.Task == nil {
+			continue
+		}
+		for _, cap := range node.Task.Capabilities {
+			if cap == "" {
+				continue
+			}
+			if _, ok := seen[cap]; ok {
+				continue
+			}
+			seen[cap] = struct{}{}
+			out = append(out, cap)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Inspect returns a compact, deterministic summary of the normalized IR graph.
+func (d Document) Inspect() Inspection {
+	triggerTypes := make([]string, 0, len(d.Triggers))
+	seenTriggers := make(map[string]struct{}, len(d.Triggers))
+	for _, trigger := range d.Triggers {
+		if _, ok := seenTriggers[string(trigger.Type)]; ok {
+			continue
+		}
+		seenTriggers[string(trigger.Type)] = struct{}{}
+		triggerTypes = append(triggerTypes, string(trigger.Type))
+	}
+	sort.Strings(triggerTypes)
+	nodes := make([]string, 0, len(d.Nodes))
+	for _, node := range d.Nodes {
+		nodes = append(nodes, node.Name)
+	}
+	sort.Strings(nodes)
+	caps := d.Capabilities()
+	return Inspection{
+		Start:           d.Start,
+		TriggerTypes:    triggerTypes,
+		Nodes:           nodes,
+		Capabilities:    caps,
+		NodeCount:       len(d.Nodes),
+		EdgeCount:       len(d.Edges),
+		PermissionCount: len(caps),
+		SourceDigest:    d.Source.Digest,
+	}
+}
+
+// SemanticDiff compares two IR documents and classifies whether any difference
+// is merely cosmetic or changes workflow behavior.
+func SemanticDiff(before, after Document) (Diff, error) {
+	if err := Validate(before); err != nil {
+		return Diff{}, fmt.Errorf("validate before document: %w", err)
+	}
+	if err := Validate(after); err != nil {
+		return Diff{}, fmt.Errorf("validate after document: %w", err)
+	}
+	return before.Diff(after)
+}
+
+func formatProvenance(p *Provenance) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return p.Generator + ":" + p.Model + ":" + p.Tool + ":" + p.Validation
+}
+
+func summarizeSourceDefinition(def *workflow.Definition) string {
+	if def == nil {
+		return "<nil>"
+	}
+	return def.Name + "@" + fmt.Sprintf("v%d", def.Version) + ":" + def.DSLVersion
+}
+
+// Diff compares the receiver to another normalized document and classifies the
+// change kind.
+func (d Document) Diff(other Document) (Diff, error) {
+	if err := Validate(d); err != nil {
+		return Diff{}, fmt.Errorf("validate document: %w", err)
+	}
+	if err := Validate(other); err != nil {
+		return Diff{}, fmt.Errorf("validate other document: %w", err)
+	}
+	changes := collectDiffChanges(d, other)
+	if len(changes) == 0 {
+		return Diff{Kind: DiffNoChange, Summary: "normalized workflow IR is behaviorally equivalent"}, nil
+	}
+	if hasBehavioralChange(changes) {
+		return Diff{Kind: DiffBehavioral, Summary: "normalized workflow IR differs in behavior", Changes: changes}, nil
+	}
+	return Diff{Kind: DiffCosmetic, Summary: "normalized workflow IR differs only in cosmetic metadata", Changes: changes}, nil
+}
+
+func collectDiffChanges(d, other Document) []Change {
+	changes := make([]Change, 0, 16)
+	if d.Source.Digest != other.Source.Digest && semanticContentChanged(d, other) {
+		changes = append(changes, Change{Path: "source.digest", Before: d.Source.Digest, After: other.Source.Digest, Kind: DiffBehavioral, Explanation: "source normalization digest changed with normalized workflow content"})
+	}
+	appendDiffChange(&changes, d.Start != other.Start, "start", d.Start, other.Start, DiffBehavioral, "workflow entry point changed")
+	appendDiffChange(&changes, d.Source.DSLVersion != other.Source.DSLVersion, "source.dslVersion", d.Source.DSLVersion, other.Source.DSLVersion, DiffCosmetic, "source DSL version annotation changed without altering normalized behavior")
+	appendDiffChange(&changes, !reflect.DeepEqual(d.FeatureGates, other.FeatureGates), "featureGates", fmt.Sprintf("%v", d.FeatureGates), fmt.Sprintf("%v", other.FeatureGates), DiffCosmetic, "feature-gate metadata changed without altering normalized workflow semantics")
+	appendDiffChange(&changes, !reflect.DeepEqual(d.SourceDefinition, other.SourceDefinition), "sourceDefinition", summarizeSourceDefinition(d.SourceDefinition), summarizeSourceDefinition(other.SourceDefinition), DiffCosmetic, "persisted source metadata changed without altering normalized workflow semantics")
+	if (d.Provenance == nil) != (other.Provenance == nil) || (d.Provenance != nil && other.Provenance != nil && *d.Provenance != *other.Provenance) {
+		changes = append(changes, Change{Path: "provenance", Before: formatProvenance(d.Provenance), After: formatProvenance(other.Provenance), Kind: DiffCosmetic, Explanation: "generation provenance changed without altering normalized workflow semantics"})
+	}
+	appendDiffChange(&changes, len(d.Nodes) != len(other.Nodes), "nodes", fmt.Sprintf("%d", len(d.Nodes)), fmt.Sprintf("%d", len(other.Nodes)), DiffBehavioral, "node count changed")
+	appendDiffChange(&changes, len(d.Edges) != len(other.Edges), "edges", fmt.Sprintf("%d", len(d.Edges)), fmt.Sprintf("%d", len(other.Edges)), DiffBehavioral, "edge count changed")
+	appendNodeDiffs(&changes, d.Nodes, other.Nodes)
+	appendEdgeDiffs(&changes, d.Edges, other.Edges)
+	return changes
+}
+
+func appendDiffChange(changes *[]Change, changed bool, path, before, after string, kind DiffKind, explanation string) {
+	if !changed {
+		return
+	}
+	*changes = append(*changes, Change{Path: path, Before: before, After: after, Kind: kind, Explanation: explanation})
+}
+
+func appendNodeDiffs(changes *[]Change, before, after []Node) {
+	for i, node := range before {
+		if i >= len(after) {
+			break
+		}
+		otherNode := after[i]
+		if node.Name != otherNode.Name || node.Kind != otherNode.Kind || node.SideEffect != otherNode.SideEffect {
+			*changes = append(*changes, Change{Path: "nodes[" + node.Name + "]", Before: node.Name + "/" + node.Kind + "/" + node.SideEffect, After: otherNode.Name + "/" + otherNode.Kind + "/" + otherNode.SideEffect, Kind: DiffBehavioral, Explanation: "node identity or execution class changed"})
+		}
+		if node.Task != nil && otherNode.Task != nil && node.Task.Goal != otherNode.Task.Goal {
+			*changes = append(*changes, Change{Path: "nodes[" + node.Name + "].task.goal", Before: node.Task.Goal, After: otherNode.Task.Goal, Kind: DiffBehavioral, Explanation: "task intent changed"})
+		}
+		if node.Gate != nil && otherNode.Gate != nil && node.Gate.Evaluator != otherNode.Gate.Evaluator {
+			*changes = append(*changes, Change{Path: "nodes[" + node.Name + "].gate.evaluator", Before: string(node.Gate.Evaluator), After: string(otherNode.Gate.Evaluator), Kind: DiffBehavioral, Explanation: "gate evaluator changed"})
+		}
+	}
+}
+
+func appendEdgeDiffs(changes *[]Change, before, after []Edge) {
+	for i, edge := range before {
+		if i >= len(after) {
+			break
+		}
+		otherEdge := after[i]
+		if edge.From != otherEdge.From || edge.To != otherEdge.To || edge.Condition != otherEdge.Condition {
+			*changes = append(*changes, Change{Path: "edges[" + fmt.Sprintf("%d", i) + "]", Before: edge.From + "->" + edge.To + "[" + edge.Condition + "]", After: otherEdge.From + "->" + otherEdge.To + "[" + otherEdge.Condition + "]", Kind: DiffBehavioral, Explanation: "transition behavior changed"})
+		}
+	}
+}
+
+func hasBehavioralChange(changes []Change) bool {
+	for _, change := range changes {
+		if change.Kind == DiffBehavioral {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticContentChanged(before, after Document) bool {
+	type semanticDocument struct {
+		Triggers    []apiv1.Trigger `json:"triggers"`
+		Start       string          `json:"start"`
+		Schemas     []Schema        `json:"schemas"`
+		Nodes       []Node          `json:"nodes"`
+		Edges       []Edge          `json:"edges"`
+		Permissions []string        `json:"permissions"`
+	}
+	left, _ := json.Marshal(semanticDocument{
+		Triggers: before.Triggers, Start: before.Start, Schemas: before.Schemas,
+		Nodes: before.Nodes, Edges: before.Edges, Permissions: before.Permissions,
+	})
+	right, _ := json.Marshal(semanticDocument{
+		Triggers: after.Triggers, Start: after.Start, Schemas: after.Schemas,
+		Nodes: after.Nodes, Edges: after.Edges, Permissions: after.Permissions,
+	})
+	return string(left) != string(right)
+}
+
+// ExplainLoss records the unavoidable information loss when a workflow source is
+// converted to canonical IR and back to a generated representation.
+func (d Document) ExplainLoss(source any) []Loss {
+	loss := make([]Loss, 0, 2)
+	switch src := source.(type) {
+	case workflow.Definition:
+		loss = append(loss, explainDefinitionLoss(src, d)...)
+	case apiv1.Workflow:
+		loss = append(loss, explainWorkflowLoss(src, d)...)
+	case nil:
+		return nil
+	}
+	return loss
+}
+
+func explainDefinitionLoss(src workflow.Definition, doc Document) []Loss {
+	loss := make([]Loss, 0, 2)
+	digest, err := workflow.ComputeDigest(src)
+	if err != nil || digest != doc.Source.Digest {
+		loss = append(loss, Loss{Field: "source.digest", Before: digest, After: doc.Source.Digest, Explanation: "the persisted source does not match the IR source digest"})
+		return loss
+	}
+	if doc.SourceDefinition == nil {
+		loss = append(loss, Loss{Field: "source.definition", Before: "workflow definition", After: "not persisted", Explanation: "the IR predates source-definition persistence, so exact round-trip fidelity cannot be established"})
+		return loss
+	}
+	if !reflect.DeepEqual(src, *doc.SourceDefinition) {
+		loss = append(loss, Loss{Field: "source.definition", Before: "original workflow definition", After: "persisted workflow definition", Explanation: "the persisted source differs from the supplied definition"})
+	}
+	return loss
+}
+
+func explainWorkflowLoss(src apiv1.Workflow, doc Document) []Loss {
+	loss := make([]Loss, 0, 2)
+	if src.Name != doc.Source.Name {
+		loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: doc.Source.Name, Explanation: "the supplied source does not identify the persisted IR source"})
+	}
+	if doc.SourceDefinition == nil {
+		loss = append(loss, Loss{Field: "source.definition", Before: src.Name, After: "not persisted", Explanation: "the IR does not retain the original workflow definition needed to establish fidelity for this workflow source"})
+		return loss
+	}
+	if doc.SourceDefinition.Name != src.Name {
+		loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: doc.SourceDefinition.Name, Explanation: "the supplied workflow name does not match the persisted source definition"})
+	}
+	if doc.SourceDefinition.DSLVersion != src.DSLVersion {
+		loss = append(loss, Loss{Field: "source.dslVersion", Before: src.DSLVersion, After: doc.SourceDefinition.DSLVersion, Explanation: "the supplied workflow DSL version does not match the persisted source record"})
+	}
+	if !reflect.DeepEqual(src.Spec, doc.SourceDefinition.Spec) {
+		loss = append(loss, Loss{Field: "source.spec", Before: "supplied workflow spec", After: "persisted workflow spec", Explanation: "the supplied workflow spec differs from the persisted source definition"})
+	}
+	return loss
+}
+
+// RoundTripLoss is the package-level convenience wrapper used by authoring tools.
+func RoundTripLoss(source any, doc Document) []Loss {
+	return doc.ExplainLoss(source)
 }
 
 // Validate verifies the structural and version invariants of a Workflow IR document.

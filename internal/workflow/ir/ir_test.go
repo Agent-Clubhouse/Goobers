@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workflow"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestNormalizeIsDeterministicAndPreservesSourceDigest(t *testing.T) {
@@ -149,6 +150,97 @@ func TestNormalizePreservesCanonicalGraphSemantics(t *testing.T) {
 	}
 	if nodes["prepare"].SideEffect != "none" || nodes["publish"].SideEffect != "external" {
 		t.Fatalf("side effects = prepare:%q publish:%q", nodes["prepare"].SideEffect, nodes["publish"].SideEffect)
+	}
+}
+
+func TestIRProvenanceAndSemanticDiff(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks: []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build", Next: "gate"},
+				{Name: "deploy", Type: apiv1.TaskAgentic, Goal: "deploy", Goober: "ops", Capabilities: []string{"repo:push"}}},
+			Gates: []apiv1.Gate{{Name: "gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "ready"}, Branches: map[string]string{"ok": "deploy"}}},
+		},
+	}
+	first, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenance := &Provenance{Generator: "copilot", Model: "gpt-4o", Tool: "workflow-ir", UserIntent: "ship", Validation: "schema-check", Decision: "pass"}
+	first, err = NormalizeWithMetadata(base, provenance, []string{"stable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SourceDefinition == nil || !reflect.DeepEqual(*first.SourceDefinition, base) {
+		t.Fatalf("source definition was not persisted: %#v", first.SourceDefinition)
+	}
+	if !reflect.DeepEqual(first.Provenance, provenance) || !reflect.DeepEqual(first.FeatureGates, []string{"stable"}) {
+		t.Fatalf("generation metadata was not persisted: provenance=%#v gates=%v", first.Provenance, first.FeatureGates)
+	}
+	inspect := first.Inspect()
+	if got := inspect.Start; got != "build" {
+		t.Fatalf("Inspect().Start = %q, want %q", got, "build")
+	}
+	if got := inspect.Capabilities; !reflect.DeepEqual(got, []string{"repo:push"}) {
+		t.Fatalf("Inspect().Capabilities = %#v, want %#v", got, []string{"repo:push"})
+	}
+	second, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := SemanticDiff(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff over same semantics with different provenance = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	other := second
+	other.Start = "deploy"
+	changed, err := SemanticDiff(first, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Kind != DiffBehavioral {
+		t.Fatalf("SemanticDiff on changed start = %q, want %q", changed.Kind, DiffBehavioral)
+	}
+	if losses := first.ExplainLoss(base); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(base) = %#v, want no loss for persisted source", losses)
+	}
+	legacy := first
+	legacy.SourceDefinition = nil
+	losses := legacy.ExplainLoss(base)
+	if len(losses) != 1 || !strings.Contains(losses[0].Explanation, "predates") {
+		t.Fatalf("ExplainLoss(legacy) = %#v, want explicit persistence loss", losses)
+	}
+	cosmetic := first
+	cosmetic.Source.DSLVersion = "next"
+	cosmetic.Source.Digest = "sha256:source-changed-by-dsl-version"
+	diff, err = SemanticDiff(first, cosmetic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff on DSL-version-only metadata = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	featureOnly := first
+	featureOnly.FeatureGates = []string{"alpha"}
+	diff, err = SemanticDiff(first, featureOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff on feature-gate-only metadata = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	workflowSource := apiv1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "pipeline"}, DSLVersion: base.DSLVersion, Spec: base.Spec}
+	if losses := first.ExplainLoss(workflowSource); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(apiv1.Workflow same definition) = %#v, want no loss", losses)
+	}
+	workflowSource.Spec.Tasks[0].Goal = "different-goal"
+	if losses := first.ExplainLoss(workflowSource); len(losses) == 0 || !strings.Contains(losses[0].Explanation, "differs") {
+		t.Fatalf("ExplainLoss(apiv1.Workflow changed spec) = %#v, want explicit fidelity loss", losses)
 	}
 }
 
