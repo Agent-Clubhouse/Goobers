@@ -299,7 +299,7 @@ func TestMarshalCIChecksArtifactPrioritizesFailuresBeforePendingChecks(t *testin
 	}
 	checks[maxCIChecks] = failing
 
-	data, err := marshalCIChecksArtifact(checks, nil)
+	data, err := marshalCIChecksArtifact(checks, nil, nil)
 	if err != nil {
 		t.Fatalf("marshalCIChecksArtifact: %v", err)
 	}
@@ -615,6 +615,66 @@ func TestCIPollConfigFromEnvelope_PollIntervalsParseAsDuration(t *testing.T) {
 	}
 }
 
+// TestCIPollConfigFromEnvelope_RetryInputsParse proves #4750's new inputs
+// parse to the documented types: maxAttempts a plain integer count,
+// backoffSeconds a time.ParseDuration string like its poll-cadence siblings.
+func TestCIPollConfigFromEnvelope_RetryInputsParse(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs: map[string]interface{}{
+			InputPRNumber:                        "7",
+			InputRetryFailedChecksMaxAttempts:    "2",
+			InputRetryFailedChecksBackoffSeconds: "30s",
+		},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	if cfg.RetryFailedChecksMaxAttempts != 2 {
+		t.Fatalf("RetryFailedChecksMaxAttempts = %d, want 2", cfg.RetryFailedChecksMaxAttempts)
+	}
+	if cfg.RetryFailedChecksBackoff != 30*time.Second {
+		t.Fatalf("RetryFailedChecksBackoff = %s, want 30s", cfg.RetryFailedChecksBackoff)
+	}
+}
+
+// TestCIPollConfigFromEnvelope_RetryMaxAttemptsDefaultsToZero proves the
+// opt-in default: a workflow that never declares retryFailedChecksMaxAttempts
+// gets 0 (disabled), not some other implicit default.
+func TestCIPollConfigFromEnvelope_RetryMaxAttemptsDefaultsToZero(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs:  map[string]interface{}{InputPRNumber: "7"},
+	}
+	cfg, err := CIPollConfigFromEnvelope(env)
+	if err != nil {
+		t.Fatalf("CIPollConfigFromEnvelope: %v", err)
+	}
+	if cfg.RetryFailedChecksMaxAttempts != 0 {
+		t.Fatalf("RetryFailedChecksMaxAttempts = %d, want 0 (disabled) when unset", cfg.RetryFailedChecksMaxAttempts)
+	}
+	if cfg.RetryFailedChecksBackoff != 0 {
+		t.Fatalf("RetryFailedChecksBackoff = %s, want 0 when unset", cfg.RetryFailedChecksBackoff)
+	}
+}
+
+// TestCIPollConfigFromEnvelope_RetryMaxAttemptsRejectsNegative fails closed on
+// a malformed declared value rather than silently defaulting (matching
+// durationInput's posture for the other poll-cadence inputs).
+func TestCIPollConfigFromEnvelope_RetryMaxAttemptsRejectsNegative(t *testing.T) {
+	env := apiv1.InvocationEnvelope{
+		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Inputs: map[string]interface{}{
+			InputPRNumber:                     "7",
+			InputRetryFailedChecksMaxAttempts: "-1",
+		},
+	}
+	if _, err := CIPollConfigFromEnvelope(env); err == nil {
+		t.Fatal("expected an error for a negative retryFailedChecksMaxAttempts value")
+	}
+}
+
 func TestCIPollConfigFromEnvelope_DeclaredLimitCapsLegacyTimeoutInput(t *testing.T) {
 	env := apiv1.InvocationEnvelope{
 		RepoRef: apiv1.RepoRef{Owner: "acme", Name: "widgets"},
@@ -700,6 +760,206 @@ func (a *annotatingPoller) CIFailures(_ context.Context, _ providers.RepositoryR
 		})
 	}
 	return failures, nil
+}
+
+// rerunningPoller is a fakePoller that also implements CIFailureRerunner
+// (#4750), tracking how many times a mechanical rerun was triggered.
+type rerunningPoller struct {
+	fakePoller
+	headSHA    string
+	rerunCalls int
+	rerunErr   error
+}
+
+func (r *rerunningPoller) PollPullRequest(ctx context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	result, err := r.fakePoller.PollPullRequest(ctx, req)
+	result.HeadSHA = r.headSHA
+	return result, err
+}
+
+func (r *rerunningPoller) RerunFailedChecks(_ context.Context, _ providers.RepositoryRef, _ string) error {
+	r.rerunCalls++
+	return r.rerunErr
+}
+
+// TestCIPollExecutor_RetryFailedChecksRecoversWithoutReportingFailure is
+// #4750's core acceptance: a failing check triggers exactly one mechanical
+// rerun (RetryFailedChecksMaxAttempts=1) and, once the provider reports a
+// subsequent passing conclusion, the poll reaches OutputCIStatus=passing
+// without ever surfacing a failing outcome to implement/review.
+func TestCIPollExecutor_RetryFailedChecksRecoversWithoutReportingFailure(t *testing.T) {
+	poller := &rerunningPoller{
+		fakePoller: fakePoller{results: []providers.CheckState{providers.CheckStateFailing, providers.CheckStatePassing}},
+		headSHA:    "cafe1234",
+	}
+	recorder := newFakeRecorder()
+	exec, err := NewCIPollExecutor(poller, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+
+	cfg := cfgFor("o", "r", "42")
+	cfg.RetryFailedChecksMaxAttempts = 1
+	cfg.RetryFailedChecksBackoff = time.Millisecond
+
+	result, err := exec.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if poller.rerunCalls != 1 {
+		t.Fatalf("rerun calls = %d, want exactly 1", poller.rerunCalls)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs[%s] = %v, want %q — the retry must reach a passing outcome, not report the pre-retry failure",
+			OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStatePassing)
+	}
+	if len(result.Artifacts) != 0 || len(recorder.recorded) != 0 {
+		t.Fatalf("expected no failure-evidence artifact once the retry recovered, got %+v", result.Artifacts)
+	}
+}
+
+// TestCIPollExecutor_RetryDisabledByDefaultNeverCallsRerun is the acceptance
+// criteria's regression guard: RetryFailedChecksMaxAttempts unset (the zero
+// value) must never call the rerun capability and must behave byte-identical
+// to the pre-#4750 failing outcome.
+func TestCIPollExecutor_RetryDisabledByDefaultNeverCallsRerun(t *testing.T) {
+	poller := &rerunningPoller{
+		fakePoller: fakePoller{results: []providers.CheckState{providers.CheckStateFailing}},
+		headSHA:    "cafe1234",
+	}
+	recorder := newFakeRecorder()
+	exec, err := NewCIPollExecutor(poller, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+
+	result, err := exec.Run(context.Background(), cfgFor("o", "r", "42"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if poller.rerunCalls != 0 {
+		t.Fatalf("rerun calls = %d, want 0 when RetryFailedChecksMaxAttempts is unset", poller.rerunCalls)
+	}
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStateFailing) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStateFailing)
+	}
+}
+
+// TestCIPollExecutor_RetryExhaustsAttemptsThenReportsFailure proves the retry
+// budget is bounded: with a check that never recovers, exactly
+// RetryFailedChecksMaxAttempts reruns are triggered and the poll still
+// reaches the normal terminal failing outcome (with evidence) afterward.
+func TestCIPollExecutor_RetryExhaustsAttemptsThenReportsFailure(t *testing.T) {
+	poller := &rerunningPoller{
+		fakePoller: fakePoller{
+			results: []providers.CheckState{providers.CheckStateFailing},
+			checks:  failingChecksFixture(),
+		},
+		headSHA: "cafe1234",
+	}
+	recorder := newFakeRecorder()
+	exec, err := NewCIPollExecutor(poller, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+
+	cfg := cfgFor("o", "r", "42")
+	cfg.RetryFailedChecksMaxAttempts = 2
+	cfg.RetryFailedChecksBackoff = time.Millisecond
+
+	result, err := exec.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if poller.rerunCalls != 2 {
+		t.Fatalf("rerun calls = %d, want exactly 2 (the configured max)", poller.rerunCalls)
+	}
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStateFailing) {
+		t.Fatalf("outputs[%s] = %v, want %q once the retry budget is exhausted", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStateFailing)
+	}
+	if len(result.Artifacts) == 0 {
+		t.Fatal("expected failure evidence to still be recorded once retries are exhausted")
+	}
+}
+
+// TestCIPollExecutor_RetryRerunErrorFallsThroughToOrdinaryFailure is
+// mega-puffin's case 1 from the #4750 design clarification: the rerun call
+// erroring (a transport failure, or the actions:write permission gap tracked
+// in #4751) must never become a new failure mode. ci-poll falls straight
+// through to the exact terminal "failing" outcome a workflow that never
+// declared retryFailedChecksMaxAttempts would reach — Run itself returns no
+// error — with the rerun failure recorded as evidence, not swallowed.
+func TestCIPollExecutor_RetryRerunErrorFallsThroughToOrdinaryFailure(t *testing.T) {
+	poller := &rerunningPoller{
+		fakePoller: fakePoller{
+			results: []providers.CheckState{providers.CheckStateFailing},
+			checks:  failingChecksFixture(),
+		},
+		headSHA:  "cafe1234",
+		rerunErr: errors.New("boom"),
+	}
+	recorder := newFakeRecorder()
+	exec, err := NewCIPollExecutor(poller, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+
+	cfg := cfgFor("o", "r", "42")
+	cfg.RetryFailedChecksMaxAttempts = 1
+
+	result, err := exec.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v, want no error — a rerun failure must fall through cleanly", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (the poll itself still determined a terminal outcome)", result.Status)
+	}
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStateFailing) {
+		t.Fatalf("outputs[%s] = %v, want %q unchanged from today's behavior", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStateFailing)
+	}
+	if len(result.Artifacts) == 0 {
+		t.Fatal("expected failure evidence to still be recorded")
+	}
+	data := recorder.recorded[CIChecksArtifactName]
+	var artifact CIChecksArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("decode %s: %v", CIChecksArtifactName, err)
+	}
+	if artifact.Metadata.RetryFailedChecksError == "" {
+		t.Fatal("expected the rerun failure to be recorded in the artifact metadata as evidence")
+	}
+}
+
+// TestCIPollExecutor_RetryRequiresRerunnerCapability proves a poller that does
+// not implement CIFailureRerunner (ADO/Gitea today) falls straight through to
+// the plain failing outcome even with retries configured, exactly as if the
+// retry feature didn't exist for that provider.
+func TestCIPollExecutor_RetryRequiresRerunnerCapability(t *testing.T) {
+	poller := &fakePoller{results: []providers.CheckState{providers.CheckStateFailing}}
+	recorder := newFakeRecorder()
+	exec, err := NewCIPollExecutor(poller, recorder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+
+	cfg := cfgFor("o", "r", "42")
+	cfg.RetryFailedChecksMaxAttempts = 1
+
+	result, err := exec.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStateFailing) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStateFailing)
+	}
 }
 
 func failingChecksFixture() []providers.CheckDetail {
@@ -876,7 +1136,7 @@ func TestMarshalCIChecksArtifact_ShedsSummariesBeforeAnnotations(t *testing.T) {
 		}
 	}
 
-	data, err := marshalCIChecksArtifact(checks, annotations)
+	data, err := marshalCIChecksArtifact(checks, annotations, nil)
 	if err != nil {
 		t.Fatalf("marshalCIChecksArtifact: %v", err)
 	}
@@ -916,7 +1176,7 @@ func TestMarshalCIChecksArtifact_ModerateOverflowKeepsEveryAnnotation(t *testing
 		annotations[name] = []providers.CheckAnnotation{{Path: "a.go", StartLine: 1, Message: "boom"}}
 	}
 
-	data, err := marshalCIChecksArtifact(checks, annotations)
+	data, err := marshalCIChecksArtifact(checks, annotations, nil)
 	if err != nil {
 		t.Fatalf("marshalCIChecksArtifact: %v", err)
 	}
