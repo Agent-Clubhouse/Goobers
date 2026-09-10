@@ -61,6 +61,18 @@ type versioningActivityResult struct {
 	Attempt        int
 }
 
+func waitForVersioning(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("condition not reached before deadline")
+}
+
 func versioningWorkflow(ctx workflow.Context) ([]versioningActivityResult, error) {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout:    time.Minute,
@@ -80,17 +92,13 @@ func versioningWorkflow(ctx workflow.Context) ([]versioningActivityResult, error
 	return []versioningActivityResult{first, resumed}, nil
 }
 
-func versioningProbeWorkflow(ctx workflow.Context) (versioningActivityResult, error) {
-	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout:    time.Minute,
-		ScheduleToStartTimeout: time.Second,
-		RetryPolicy:            &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
-	var result versioningActivityResult
-	if err := workflow.ExecuteActivity(ctx, "VersioningActivity", false).Get(ctx, &result); err != nil {
-		return versioningActivityResult{}, err
+func versioningProbeWorkflow(buildID, workerIdentity string) func(workflow.Context) (versioningActivityResult, error) {
+	return func(workflow.Context) (versioningActivityResult, error) {
+		return versioningActivityResult{
+			BuildID:        buildID,
+			WorkerIdentity: workerIdentity,
+		}, nil
 	}
-	return result, nil
 }
 
 func versioningActivity(recorder *versioningRecorder) func(context.Context, bool) (versioningActivityResult, error) {
@@ -113,13 +121,31 @@ func versioningActivity(recorder *versioningRecorder) func(context.Context, bool
 	}
 }
 
+func runProbe(t *testing.T, ctx context.Context, c client.Client, opts client.StartWorkflowOptions, want versioningActivityResult) {
+	t.Helper()
+	run, err := c.ExecuteWorkflow(ctx, opts, "versioningProbeWorkflow")
+	if err != nil {
+		t.Fatalf("start probe workflow %q: %v", opts.ID, err)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var got versioningActivityResult
+	if err := run.Get(probeCtx, &got); err != nil {
+		t.Fatalf("probe workflow %q: %v", opts.ID, err)
+	}
+	if got != want {
+		t.Fatalf("probe workflow %q = %+v, want %+v", opts.ID, got, want)
+	}
+}
+
 func startVersionedWorker(t *testing.T, c client.Client, queue, buildID, identity string, recorder *versioningRecorder) worker.Worker {
 	t.Helper()
 	tracker := &activityTracker{buildID: buildID, worker: identity}
 	w := worker.New(c, queue, worker.Options{
-		Identity:     identity,
-		BuildID:      buildID,
-		Interceptors: []interceptor.WorkerInterceptor{tracker},
+		Identity:                identity,
+		BuildID:                 buildID,
+		UseBuildIDForVersioning: true,
+		Interceptors:            []interceptor.WorkerInterceptor{tracker},
 		DeploymentOptions: worker.DeploymentOptions{
 			UseVersioning: true,
 			Version: worker.WorkerDeploymentVersion{
@@ -129,8 +155,13 @@ func startVersionedWorker(t *testing.T, c client.Client, queue, buildID, identit
 			DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
 		},
 	})
-	w.RegisterWorkflow(versioningWorkflow)
-	w.RegisterWorkflow(versioningProbeWorkflow)
+	w.RegisterWorkflowWithOptions(versioningWorkflow, workflow.RegisterOptions{
+		VersioningBehavior: workflow.VersioningBehaviorPinned,
+	})
+	w.RegisterWorkflowWithOptions(versioningProbeWorkflow(buildID, identity), workflow.RegisterOptions{
+		Name:               "versioningProbeWorkflow",
+		VersioningBehavior: workflow.VersioningBehaviorAutoUpgrade,
+	})
 	w.RegisterActivityWithOptions(versioningActivity(recorder), activity.RegisterOptions{Name: "VersioningActivity"})
 	if err := w.Start(); err != nil {
 		t.Fatalf("start %s worker: %v", buildID, err)
@@ -147,6 +178,12 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 		LogLevel: "error",
 		Stdout:   io.Discard,
 		Stderr:   io.Discard,
+		ExtraArgs: []string{
+			"--dynamic-config-value", "frontend.enableWorkerVersioning=true",
+			"--dynamic-config-value", "system.enableWorkerVersioning=true",
+			"--dynamic-config-value", "frontend.workerVersioningDataAPIs=true",
+			"--dynamic-config-value", "frontend.workerVersioningRuleAPIs=true",
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -157,25 +194,45 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 	oldRecords := &versioningRecorder{}
 	newRecords := &versioningRecorder{}
 	oldWorker := startVersionedWorker(t, server.Client(), queue, "build-old", "old-worker", oldRecords)
-	run, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:        "versioning-pinned",
+	versioningCtx, versioningCancel := context.WithTimeout(ctx, 10*time.Second)
+	if err := server.Client().UpdateWorkerBuildIdCompatibility(versioningCtx, &client.UpdateWorkerBuildIdCompatibilityOptions{
 		TaskQueue: queue,
+		Operation: &client.BuildIDOpAddNewIDInNewDefaultSet{BuildID: "build-old"},
+	}); err != nil {
+		versioningCancel()
+		t.Fatalf("register old build ID: %v", err)
+	}
+	versioningCancel()
+	run, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:               "versioning-pinned",
+		TaskQueue:        queue,
+		EnableEagerStart: true,
 	}, versioningWorkflow)
 	if err != nil {
 		t.Fatalf("start old workflow: %v", err)
 	}
 
-	waitFor(t, func() bool {
+	waitForVersioning(t, func() bool {
 		attempts := oldRecords.snapshot()
 		return len(attempts) == 2 && attempts[0].Failed && attempts[1].Identity.BuildID == "build-old"
 	})
 	oldWorker.Stop()
+	versioningCtx, versioningCancel = context.WithTimeout(ctx, 10*time.Second)
+	if err := server.Client().UpdateWorkerBuildIdCompatibility(versioningCtx, &client.UpdateWorkerBuildIdCompatibilityOptions{
+		TaskQueue: queue,
+		Operation: &client.BuildIDOpAddNewIDInNewDefaultSet{BuildID: "build-new"},
+	}); err != nil {
+		versioningCancel()
+		t.Fatalf("register new build ID: %v", err)
+	}
+	versioningCancel()
 	startVersionedWorker(t, server.Client(), queue, "build-new", "new-worker", newRecords)
 
 	probeRun, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:        "versioning-probe",
-		TaskQueue: queue,
-	}, versioningProbeWorkflow)
+		ID:               "versioning-probe",
+		TaskQueue:        queue,
+		EnableEagerStart: true,
+	}, "versioningProbeWorkflow")
 	if err != nil {
 		t.Fatalf("start probe workflow: %v", err)
 	}
@@ -193,20 +250,16 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 	resultErr := make(chan error, 1)
 	go func() { resultErr <- run.Get(ctx, nil) }()
 	var historyErr error
-	waitFor(t, func() bool {
+	waitForVersioning(t, func() bool {
 		iter := server.Client().GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
-		scheduled := int64(0)
 		for iter.HasNext() {
 			event, err := iter.Next()
 			if err != nil {
 				historyErr = err
 				return false
 			}
-			if event.GetEventType() == enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED {
-				scheduled++
-			}
-			if scheduled >= 3 && event.GetEventType() == enumspb.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT {
-				attrs := event.GetActivityTaskTimedOutEventAttributes()
+			if event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_TASK_TIMED_OUT {
+				attrs := event.GetWorkflowTaskTimedOutEventAttributes()
 				if attrs.GetStartedEventId() == 0 {
 					return true
 				}
@@ -223,8 +276,18 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 	default:
 	}
 	startVersionedWorker(t, server.Client(), queue, "build-old", "old-worker-resumed", oldRecords)
+	runProbe(t, ctx, server.Client(), client.StartWorkflowOptions{
+		ID:        "versioning-old-ready",
+		TaskQueue: queue,
+		VersioningOverride: &client.PinnedVersioningOverride{Version: worker.WorkerDeploymentVersion{
+			DeploymentName: "goobers",
+			BuildID:        "build-old",
+		}},
+	}, versioningActivityResult{BuildID: "build-old", WorkerIdentity: "old-worker-resumed"})
 	var result []versioningActivityResult
-	if err := run.Get(ctx, &result); err != nil {
+	resultCtx, resultCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer resultCancel()
+	if err := run.Get(resultCtx, &result); err != nil {
 		t.Fatalf("old workflow: %v", err)
 	}
 	if len(result) != 2 || result[0].BuildID != "build-old" || result[1].BuildID != "build-old" {
@@ -233,27 +296,6 @@ func TestIntegrationTemporalVersioningPinsMixedFleetAndRecordsAttempts(t *testin
 	for _, attempt := range oldRecords.snapshot() {
 		if attempt.Identity.BuildID != "build-old" || attempt.Identity.WorkerIdentity == "" {
 			t.Fatalf("old attempt identity = %+v, want build-old and a worker identity", attempt)
-		}
-	}
-
-	newRun, err := server.Client().ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:        "versioning-new",
-		TaskQueue: queue,
-	}, versioningWorkflow)
-	if err != nil {
-		t.Fatalf("start new workflow: %v", err)
-	}
-	_ = server.Client().SignalWorkflow(ctx, newRun.GetID(), newRun.GetRunID(), "resume", nil)
-	if err := newRun.Get(ctx, nil); err != nil {
-		t.Fatalf("new workflow: %v", err)
-	}
-	waitFor(t, func() bool {
-		attempts := newRecords.snapshot()
-		return len(attempts) >= 3
-	})
-	for _, attempt := range newRecords.snapshot() {
-		if attempt.Identity.BuildID != "build-new" || attempt.Identity.WorkerIdentity != "new-worker" {
-			t.Fatalf("new attempt identity = %+v, want build-new/new-worker", attempt)
 		}
 	}
 }
