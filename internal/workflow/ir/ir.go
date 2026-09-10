@@ -384,6 +384,13 @@ func formatProvenance(p *Provenance) string {
 	return p.Generator + ":" + p.Model + ":" + p.Tool + ":" + p.Validation
 }
 
+func summarizeSourceDefinition(def *workflow.Definition) string {
+	if def == nil {
+		return "<nil>"
+	}
+	return def.Name + "@" + fmt.Sprintf("v%d", def.Version) + ":" + def.DSLVersion
+}
+
 func (d Document) Diff(other Document) (Diff, error) {
 	if err := Validate(d); err != nil {
 		return Diff{}, fmt.Errorf("validate document: %w", err)
@@ -391,7 +398,7 @@ func (d Document) Diff(other Document) (Diff, error) {
 	if err := Validate(other); err != nil {
 		return Diff{}, fmt.Errorf("validate other document: %w", err)
 	}
-	changes := make([]Change, 0, 8)
+	changes := make([]Change, 0, 12)
 	behaviorChanged := semanticContentChanged(d, other)
 	if d.Source.Digest != other.Source.Digest && behaviorChanged {
 		changes = append(changes, Change{Path: "source.digest", Before: d.Source.Digest, After: other.Source.Digest, Kind: DiffBehavioral, Explanation: "source normalization digest changed with normalized workflow content"})
@@ -401,6 +408,12 @@ func (d Document) Diff(other Document) (Diff, error) {
 	}
 	if d.Source.DSLVersion != other.Source.DSLVersion {
 		changes = append(changes, Change{Path: "source.dslVersion", Before: d.Source.DSLVersion, After: other.Source.DSLVersion, Kind: DiffCosmetic, Explanation: "source DSL version annotation changed without altering normalized behavior"})
+	}
+	if !reflect.DeepEqual(d.FeatureGates, other.FeatureGates) {
+		changes = append(changes, Change{Path: "featureGates", Before: fmt.Sprintf("%v", d.FeatureGates), After: fmt.Sprintf("%v", other.FeatureGates), Kind: DiffCosmetic, Explanation: "feature-gate metadata changed without altering normalized workflow semantics"})
+	}
+	if !reflect.DeepEqual(d.SourceDefinition, other.SourceDefinition) {
+		changes = append(changes, Change{Path: "sourceDefinition", Before: summarizeSourceDefinition(d.SourceDefinition), After: summarizeSourceDefinition(other.SourceDefinition), Kind: DiffCosmetic, Explanation: "persisted source metadata changed without altering normalized workflow semantics"})
 	}
 	if (d.Provenance == nil) != (other.Provenance == nil) || (d.Provenance != nil && other.Provenance != nil && *d.Provenance != *other.Provenance) {
 		changes = append(changes, Change{Path: "provenance", Before: formatProvenance(d.Provenance), After: formatProvenance(other.Provenance), Kind: DiffCosmetic, Explanation: "generation provenance changed without altering normalized workflow semantics"})
@@ -474,7 +487,7 @@ func semanticContentChanged(before, after Document) bool {
 // ExplainLoss records the unavoidable information loss when a workflow source is
 // converted to canonical IR and back to a generated representation.
 func (d Document) ExplainLoss(source any) []Loss {
-	loss := make([]Loss, 0, 1)
+	loss := make([]Loss, 0, 2)
 	switch src := source.(type) {
 	case workflow.Definition:
 		digest, err := workflow.ComputeDigest(src)
@@ -488,6 +501,19 @@ func (d Document) ExplainLoss(source any) []Loss {
 	case apiv1.Workflow:
 		if src.Name != d.Source.Name {
 			loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.Source.Name, Explanation: "the supplied source does not identify the persisted IR source"})
+		}
+		if d.SourceDefinition != nil {
+			if d.SourceDefinition.Name != src.Name {
+				loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.SourceDefinition.Name, Explanation: "the supplied workflow name does not match the persisted source definition"})
+			}
+			if d.SourceDefinition.DSLVersion != src.DSLVersion {
+				loss = append(loss, Loss{Field: "source.dslVersion", Before: src.DSLVersion, After: d.SourceDefinition.DSLVersion, Explanation: "the supplied workflow DSL version does not match the persisted source record"})
+			}
+			if !reflect.DeepEqual(src.Spec, d.SourceDefinition.Spec) {
+				loss = append(loss, Loss{Field: "source.spec", Before: "supplied workflow spec", After: "persisted workflow spec", Explanation: "the supplied workflow spec differs from the persisted source definition"})
+			}
+		} else {
+			loss = append(loss, Loss{Field: "source.definition", Before: src.Name, After: "not persisted", Explanation: "the IR does not retain the original workflow definition needed to establish fidelity for this workflow source"})
 		}
 	case nil:
 		return nil

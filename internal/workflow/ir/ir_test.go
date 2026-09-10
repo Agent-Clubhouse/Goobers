@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workflow"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestNormalizeIsDeterministicAndPreservesSourceDigest(t *testing.T) {
@@ -223,6 +224,23 @@ func TestIRProvenanceAndSemanticDiff(t *testing.T) {
 	}
 	if diff.Kind != DiffCosmetic {
 		t.Fatalf("SemanticDiff on DSL-version-only metadata = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	featureOnly := first
+	featureOnly.FeatureGates = []string{"alpha"}
+	diff, err = SemanticDiff(first, featureOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff on feature-gate-only metadata = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	workflowSource := apiv1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "pipeline"}, DSLVersion: base.DSLVersion, Spec: base.Spec}
+	if losses := first.ExplainLoss(workflowSource); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(apiv1.Workflow same definition) = %#v, want no loss", losses)
+	}
+	workflowSource.Spec.Tasks[0].Goal = "different-goal"
+	if losses := first.ExplainLoss(workflowSource); len(losses) == 0 || !strings.Contains(losses[0].Explanation, "differs") {
+		t.Fatalf("ExplainLoss(apiv1.Workflow changed spec) = %#v, want explicit fidelity loss", losses)
 	}
 }
 
