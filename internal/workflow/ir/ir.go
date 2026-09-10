@@ -430,9 +430,9 @@ func appendCosmeticDiffs(changes *[]Change, d, other Document) {
 
 func appendBehavioralDiffs(changes *[]Change, d, other Document) {
 	appendDiffChange(changes, d.Start != other.Start, "start", d.Start, other.Start, DiffBehavioral, "workflow entry point changed")
-	appendDiffChange(changes, !reflect.DeepEqual(d.Triggers, other.Triggers), "triggers", fmt.Sprintf("%v", d.Triggers), fmt.Sprintf("%v", other.Triggers), DiffBehavioral, "workflow triggers changed")
-	appendDiffChange(changes, !reflect.DeepEqual(d.Permissions, other.Permissions), "permissions", fmt.Sprintf("%v", d.Permissions), fmt.Sprintf("%v", other.Permissions), DiffBehavioral, "workflow permissions changed")
-	appendDiffChange(changes, !reflect.DeepEqual(d.Schemas, other.Schemas), "schemas", fmt.Sprintf("%v", d.Schemas), fmt.Sprintf("%v", other.Schemas), DiffBehavioral, "workflow schemas changed")
+	appendDiffChange(changes, !sameTriggers(d.Triggers, other.Triggers), "triggers", fmt.Sprintf("%v", d.Triggers), fmt.Sprintf("%v", other.Triggers), DiffBehavioral, "workflow triggers changed")
+	appendDiffChange(changes, !sameStringSet(d.Permissions, other.Permissions), "permissions", fmt.Sprintf("%v", d.Permissions), fmt.Sprintf("%v", other.Permissions), DiffBehavioral, "workflow permissions changed")
+	appendDiffChange(changes, !sameSchemas(d.Schemas, other.Schemas), "schemas", fmt.Sprintf("%v", d.Schemas), fmt.Sprintf("%v", other.Schemas), DiffBehavioral, "workflow schemas changed")
 	appendDiffChange(changes, len(d.Nodes) != len(other.Nodes), "nodes", fmt.Sprintf("%d", len(d.Nodes)), fmt.Sprintf("%d", len(other.Nodes)), DiffBehavioral, "node count changed")
 	appendDiffChange(changes, len(d.Edges) != len(other.Edges), "edges", fmt.Sprintf("%d", len(d.Edges)), fmt.Sprintf("%d", len(other.Edges)), DiffBehavioral, "edge count changed")
 	appendNodeDiffs(changes, d.Nodes, other.Nodes)
@@ -495,35 +495,198 @@ func compareSingleNode(changes *[]Change, node, otherNode Node) {
 	if node.HumanGate != otherNode.HumanGate {
 		*changes = append(*changes, Change{Path: "nodes[" + node.Name + "].humanGate", Before: fmt.Sprintf("%t", node.HumanGate), After: fmt.Sprintf("%t", otherNode.HumanGate), Kind: DiffBehavioral, Explanation: "node human gate requirement changed"})
 	}
-	if !reflect.DeepEqual(node.Task, otherNode.Task) {
+	if !taskEquivalent(node.Task, otherNode.Task) {
 		*changes = append(*changes, Change{Path: "nodes[" + node.Name + "].task", Before: fmt.Sprintf("%v", node.Task), After: fmt.Sprintf("%v", otherNode.Task), Kind: DiffBehavioral, Explanation: "task definition changed"})
 	}
-	if !reflect.DeepEqual(node.Gate, otherNode.Gate) {
+	if !gateEquivalent(node.Gate, otherNode.Gate) {
 		*changes = append(*changes, Change{Path: "nodes[" + node.Name + "].gate", Before: fmt.Sprintf("%v", node.Gate), After: fmt.Sprintf("%v", otherNode.Gate), Kind: DiffBehavioral, Explanation: "gate definition changed"})
 	}
-	if !reflect.DeepEqual(node.Parallel, otherNode.Parallel) {
+	if !parallelEquivalent(node.Parallel, otherNode.Parallel) {
 		*changes = append(*changes, Change{Path: "nodes[" + node.Name + "].parallel", Before: fmt.Sprintf("%v", node.Parallel), After: fmt.Sprintf("%v", otherNode.Parallel), Kind: DiffBehavioral, Explanation: "parallel definition changed"})
 	}
 }
 
 func appendEdgeDiffs(changes *[]Change, before, after []Edge) {
-	limit := len(before)
-	if len(after) < limit {
-		limit = len(after)
+	if sameEdgeSet(before, after) {
+		return
 	}
-	for i := 0; i < limit; i++ {
-		edge := before[i]
-		otherEdge := after[i]
-		if edge != otherEdge {
-			*changes = append(*changes, Change{Path: fmt.Sprintf("edges[%d]", i), Before: formatEdge(edge), After: formatEdge(otherEdge), Kind: DiffBehavioral, Explanation: "transition behavior changed"})
+	if len(before) != len(after) {
+		for i := 0; i < len(before); i++ {
+			if !containsEdge(after, before[i]) {
+				*changes = append(*changes, Change{Path: fmt.Sprintf("edges[%d]", i), Before: formatEdge(before[i]), After: "<none>", Kind: DiffBehavioral, Explanation: "transition edge removed"})
+			}
+		}
+		for i := 0; i < len(after); i++ {
+			if !containsEdge(before, after[i]) {
+				*changes = append(*changes, Change{Path: fmt.Sprintf("edges[%d]", i), Before: "<none>", After: formatEdge(after[i]), Kind: DiffBehavioral, Explanation: "transition edge added"})
+			}
+		}
+		return
+	}
+	for i := 0; i < len(before); i++ {
+		if !containsEdge(after, before[i]) {
+			*changes = append(*changes, Change{Path: fmt.Sprintf("edges[%d]", i), Before: formatEdge(before[i]), After: "<none>", Kind: DiffBehavioral, Explanation: "transition behavior changed"})
 		}
 	}
-	for i := limit; i < len(before); i++ {
-		*changes = append(*changes, Change{Path: fmt.Sprintf("edges[%d]", i), Before: formatEdge(before[i]), After: "<none>", Kind: DiffBehavioral, Explanation: "transition edge removed"})
+}
+
+func sameStringSet(a, b []string) bool {
+	return reflect.DeepEqual(normalizeStringSlice(a), normalizeStringSlice(b))
+}
+
+func sameSchemas(a, b []Schema) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	for i := limit; i < len(after); i++ {
-		*changes = append(*changes, Change{Path: fmt.Sprintf("edges[%d]", i), Before: "<none>", After: formatEdge(after[i]), Kind: DiffBehavioral, Explanation: "transition edge added"})
+	canonA := make([]string, 0, len(a))
+	for _, s := range a {
+		canonA = append(canonA, canonicalSchema(s))
 	}
+	canonB := make([]string, 0, len(b))
+	for _, s := range b {
+		canonB = append(canonB, canonicalSchema(s))
+	}
+	sort.Strings(canonA)
+	sort.Strings(canonB)
+	return reflect.DeepEqual(canonA, canonB)
+}
+
+func sameTriggers(a, b []apiv1.Trigger) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	canonA := make([]string, 0, len(a))
+	for _, tr := range a {
+		canonA = append(canonA, canonicalTrigger(tr))
+	}
+	canonB := make([]string, 0, len(b))
+	for _, tr := range b {
+		canonB = append(canonB, canonicalTrigger(tr))
+	}
+	sort.Strings(canonA)
+	sort.Strings(canonB)
+	return reflect.DeepEqual(canonA, canonB)
+}
+
+func sameEdgeSet(a, b []Edge) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	canonA := make([]string, 0, len(a))
+	for _, edge := range a {
+		canonA = append(canonA, canonicalEdge(edge))
+	}
+	canonB := make([]string, 0, len(b))
+	for _, edge := range b {
+		canonB = append(canonB, canonicalEdge(edge))
+	}
+	sort.Strings(canonA)
+	sort.Strings(canonB)
+	return reflect.DeepEqual(canonA, canonB)
+}
+
+func containsEdge(edges []Edge, target Edge) bool {
+	for _, edge := range edges {
+		if canonicalEdge(edge) == canonicalEdge(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeStringSlice(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func canonicalTask(task *apiv1.Task) *apiv1.Task {
+	if task == nil {
+		return nil
+	}
+	clone := task.DeepCopy()
+	clone.Capabilities = normalizeStringSlice(clone.Capabilities)
+	clone.ContextFrom = normalizeStringSlice(clone.ContextFrom)
+	clone.PolicyActions = normalizeStringSlice(clone.PolicyActions)
+	clone.RequiredCapabilities = normalizeStringSlice(clone.RequiredCapabilities)
+	clone.ExpectedOutputs = normalizeStringSlice(clone.ExpectedOutputs)
+	clone.Outbox = normalizeStringSlice(clone.Outbox)
+	return clone
+}
+
+func taskEquivalent(a, b *apiv1.Task) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return reflect.DeepEqual(canonicalTask(a), canonicalTask(b))
+}
+
+func gateEquivalent(a, b *apiv1.Gate) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	cloneA := a.DeepCopy()
+	cloneB := b.DeepCopy()
+	if cloneA.Human != nil {
+		cloneA.Human.Approvers = normalizeStringSlice(cloneA.Human.Approvers)
+	}
+	if cloneB.Human != nil {
+		cloneB.Human.Approvers = normalizeStringSlice(cloneB.Human.Approvers)
+	}
+	return reflect.DeepEqual(cloneA, cloneB)
+}
+
+func parallelEquivalent(a, b *apiv1.Parallel) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	cloneA := a.DeepCopy()
+	cloneB := b.DeepCopy()
+	sort.Slice(cloneA.Branches, func(i, j int) bool {
+		if cloneA.Branches[i].Name != cloneA.Branches[j].Name {
+			return cloneA.Branches[i].Name < cloneA.Branches[j].Name
+		}
+		return cloneA.Branches[i].Start < cloneA.Branches[j].Start
+	})
+	sort.Slice(cloneB.Branches, func(i, j int) bool {
+		if cloneB.Branches[i].Name != cloneB.Branches[j].Name {
+			return cloneB.Branches[i].Name < cloneB.Branches[j].Name
+		}
+		return cloneB.Branches[i].Start < cloneB.Branches[j].Start
+	})
+	return reflect.DeepEqual(cloneA, cloneB)
+}
+
+func canonicalSchema(s Schema) string {
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return s.Name
+	}
+	return string(raw)
+}
+
+func canonicalTrigger(tr apiv1.Trigger) string {
+	tr.Events = normalizeStringSlice(tr.Events)
+	raw, err := json.Marshal(tr)
+	if err != nil {
+		return fmt.Sprintf("%v", tr)
+	}
+	return string(raw)
+}
+
+func canonicalEdge(edge Edge) string {
+	return edge.From + "|" + edge.Condition + "|" + edge.To
 }
 
 func formatEdge(edge Edge) string {

@@ -435,6 +435,57 @@ func TestSemanticDiffBehavioralFields(t *testing.T) {
 	}
 }
 
+func TestSemanticDiffIgnoresOrderOnlyChanges(t *testing.T) {
+	def := workflow.Definition{
+		Name: "fanout-order", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "task-a",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}, {Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+			Tasks: []apiv1.Task{
+				{Name: "task-a", Type: apiv1.TaskDeterministic, Goal: "task a", Next: "fanout", Capabilities: []string{"issues:write", "repo:push"}, ExpectedOutputs: []string{"summary", "result"}},
+				{Name: "task-b", Type: apiv1.TaskDeterministic, Goal: "task b", Next: workflow.TargetJoin},
+				{Name: "task-c", Type: apiv1.TaskDeterministic, Goal: "task c", Next: workflow.TargetJoin},
+				{Name: "task-d", Type: apiv1.TaskDeterministic, Goal: "task d"},
+			},
+			Parallels: []apiv1.Parallel{{
+				Name: "fanout", FailurePolicy: apiv1.BranchContinueOnError, Join: "task-d",
+				Branches: []apiv1.Branch{{Name: "left", Start: "task-b"}, {Name: "right", Start: "task-c"}},
+			}},
+		},
+	}
+	baseDoc, err := Normalize(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered := baseDoc
+	reordered.Triggers = []apiv1.Trigger{baseDoc.Triggers[1], baseDoc.Triggers[0]}
+	for i := range reordered.Nodes {
+		if reordered.Nodes[i].Name == "task-a" && reordered.Nodes[i].Task != nil {
+			task := *reordered.Nodes[i].Task
+			task.Capabilities = []string{"repo:push", "issues:write"}
+			task.ExpectedOutputs = []string{"result", "summary"}
+			reordered.Nodes[i].Task = &task
+		}
+		if reordered.Nodes[i].Name == "fanout" && reordered.Nodes[i].Parallel != nil {
+			parallel := *reordered.Nodes[i].Parallel
+			parallel.Branches = []apiv1.Branch{parallel.Branches[1], parallel.Branches[0]}
+			reordered.Nodes[i].Parallel = &parallel
+		}
+	}
+	reordered.Edges = make([]Edge, len(baseDoc.Edges))
+	copy(reordered.Edges, baseDoc.Edges)
+	for i := 0; i < len(reordered.Edges)/2; i++ {
+		reordered.Edges[i], reordered.Edges[len(reordered.Edges)-1-i] = reordered.Edges[len(reordered.Edges)-1-i], reordered.Edges[i]
+	}
+	diff, err := SemanticDiff(baseDoc, reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind == DiffBehavioral {
+		t.Fatalf("order-only semantic changes were misclassified as behavioral: %#v", diff.Changes)
+	}
+}
+
 func TestNormalizeReturnsImmutableSnapshot(t *testing.T) {
 	def := workflow.Definition{
 		Name: "snapshot", Version: 1,
