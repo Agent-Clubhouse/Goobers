@@ -200,3 +200,76 @@ func TestAggregateAttributionEvidenceDoesNotFabricateConcreteLinks(t *testing.T)
 		t.Fatalf("counter evidence = %+v, want no fabricated concrete links", got[0].CounterEvidence)
 	}
 }
+
+func TestAggregateAttributionEvidencePrefersConcreteMutationPaths(t *testing.T) {
+	obs := []AttributionObservation{{
+		RunID:            "run-8",
+		EffectiveVersion: "v1",
+		Workload:         "main",
+		Attribution: Attribution{
+			Contributions: []Contribution{
+				{
+					NodeID: "stage:implement#1",
+					Path: []string{
+						"outcome:@abort",
+						"run:run-8",
+						"stage:implement#1",
+					},
+					Kind:       KindStage,
+					Stage:      "implement",
+					Share:      1,
+					Confidence: 0.6,
+				},
+				{
+					NodeID: "model:root@sha256:span#1",
+					Path: []string{
+						"outcome:@abort",
+						"run:run-8",
+						"stage:implement#1",
+						"subagent:root",
+						"model:root@sha256:span#1",
+					},
+					Kind:       KindModelInvocation,
+					Stage:      "implement",
+					Share:      1,
+					Confidence: 0.6,
+				},
+			},
+		},
+		Evidence: []AttributionEvidenceLink{
+			{
+				RunID:           "run-8",
+				NodeID:          "stage:implement#1",
+				Stage:           "implement",
+				Detail:          "share=1.000000, confidence=0.600000",
+				Source:          "contribution",
+				JournalSequence: 7,
+				JournalPath:     "gaggles/example/runs/run-8/events.jsonl",
+			},
+			{
+				RunID:             "run-8",
+				NodeID:            "model:root@sha256:span#1",
+				Stage:             "implement",
+				Detail:            "share=1.000000, confidence=0.600000",
+				Source:            "contribution",
+				JournalSequence:   5,
+				JournalPath:       "gaggles/example/runs/run-8/events.jsonl",
+				ArtifactPath:      "spans/sha256/aa/bb",
+				ArtifactDigest:    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+				ArtifactMediaType: "application/jsonl",
+			},
+		},
+	}}
+
+	got := AggregateAttributionEvidence(obs)
+	if len(got) != 1 || len(got[0].TopContributingPaths) != 1 {
+		t.Fatalf("cohorts = %+v, want one surfaced concrete path", got)
+	}
+	path := got[0].TopContributingPaths[0]
+	if lastNode(path.Nodes) != "model:root@sha256:span#1" {
+		t.Fatalf("top path = %+v, want span-scoped concrete node ahead of structural stage path", path)
+	}
+	if len(path.Evidence) != 1 || path.Evidence[0].ArtifactDigest == "" {
+		t.Fatalf("top path evidence = %+v, want exact artifact-backed evidence", path.Evidence)
+	}
+}
