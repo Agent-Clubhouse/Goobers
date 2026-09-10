@@ -201,27 +201,24 @@ func effectiveVersionHash(row readmodel.RunRow, invocations []rollup.AgentInvoca
 }
 
 func singleModelHarness(invocations []rollup.AgentInvocation) (string, string) {
-	models := map[string]bool{}
-	harnesses := map[string]bool{}
-	for _, invocation := range invocations {
-		if strings.TrimSpace(invocation.Model) != "" {
-			models[invocation.Model] = true
-		}
-		if strings.TrimSpace(invocation.HarnessVersion) != "" {
-			harnesses[invocation.HarnessVersion] = true
-		}
+	type pair struct {
+		model   string
+		harness string
 	}
-	if len(models) != 1 || len(harnesses) != 1 {
+	pairs := map[pair]struct{}{}
+	for _, invocation := range invocations {
+		pairs[pair{
+			model:   strings.TrimSpace(invocation.Model),
+			harness: strings.TrimSpace(invocation.HarnessVersion),
+		}] = struct{}{}
+	}
+	if len(pairs) != 1 {
 		return "", ""
 	}
-	var model, harness string
-	for candidate := range models {
-		model = candidate
+	for candidate := range pairs {
+		return candidate.model, candidate.harness
 	}
-	for candidate := range harnesses {
-		harness = candidate
-	}
-	return model, harness
+	return "", ""
 }
 
 func workloadKey(row readmodel.RunRow) string {

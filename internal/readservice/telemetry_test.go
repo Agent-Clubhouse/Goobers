@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -221,6 +222,33 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 	}
 	if got := cohort.CounterEvidence[0]; got.JournalSequence == 0 || got.JournalPath == "" {
 		t.Fatalf("stored counter evidence = %+v, want exact journal link", got)
+	}
+}
+
+func TestEffectiveVersionHashPreservesSingleObservedBlankProvenanceField(t *testing.T) {
+	t.Parallel()
+
+	row := readmodel.RunRow{
+		WorkflowDigest: "sha256:workflow",
+		GooberDigest:   "sha256:goober",
+	}
+	invocations := []rollup.AgentInvocation{{
+		Model:          "gpt-5.4",
+		HarnessVersion: "",
+	}}
+
+	got := effectiveVersionHash(row, invocations)
+	want := rollup.EffectiveVersion{
+		WorkflowDigest: row.WorkflowDigest,
+		GooberDigest:   row.GooberDigest,
+		Model:          "gpt-5.4",
+		HarnessVersion: "",
+	}.Hash()
+	if got != want {
+		t.Fatalf("effectiveVersionHash() = %q, want %q", got, want)
+	}
+	if got == learning.EffectiveVersion(row.WorkflowDigest, row.GooberDigest) {
+		t.Fatalf("effectiveVersionHash() = %q, unexpectedly collapsed to workflow/goober-only hash", got)
 	}
 }
 
