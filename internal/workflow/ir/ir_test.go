@@ -215,9 +215,12 @@ func TestIRProvenanceAndSemanticDiff(t *testing.T) {
 	if len(losses) != 1 || !strings.Contains(losses[0].Explanation, "predates") {
 		t.Fatalf("ExplainLoss(legacy) = %#v, want explicit persistence loss", losses)
 	}
-	cosmetic := first
-	cosmetic.Source.DSLVersion = "next"
-	cosmetic.Source.Digest = "sha256:source-changed-by-dsl-version"
+	cosmeticDef := base
+	cosmeticDef.DSLVersion = "next"
+	cosmetic, err := Normalize(cosmeticDef)
+	if err != nil {
+		t.Fatal(err)
+	}
 	diff, err = SemanticDiff(first, cosmetic)
 	if err != nil {
 		t.Fatal(err)
@@ -241,6 +244,39 @@ func TestIRProvenanceAndSemanticDiff(t *testing.T) {
 	workflowSource.Spec.Tasks[0].Goal = "different-goal"
 	if losses := first.ExplainLoss(workflowSource); len(losses) == 0 || !strings.Contains(losses[0].Explanation, "differs") {
 		t.Fatalf("ExplainLoss(apiv1.Workflow changed spec) = %#v, want explicit fidelity loss", losses)
+	}
+}
+
+func TestExplainLossHandlesPointerAndUnsupportedSources(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks:    []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build"}},
+		},
+	}
+	doc, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if losses := doc.ExplainLoss(&base); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(*workflow.Definition) = %#v, want no loss", losses)
+	}
+	workflowSource := &apiv1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "pipeline"},
+		DSLVersion: base.DSLVersion,
+		Spec:       base.Spec,
+	}
+	if losses := doc.ExplainLoss(workflowSource); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(*apiv1.Workflow) = %#v, want no loss", losses)
+	}
+	var nilDefinition *workflow.Definition
+	if losses := doc.ExplainLoss(nilDefinition); len(losses) != 1 || !strings.Contains(losses[0].Explanation, "nil *workflow.Definition") {
+		t.Fatalf("ExplainLoss(nil *workflow.Definition) = %#v, want explicit nil-pointer loss", losses)
+	}
+	if losses := doc.ExplainLoss("pipeline"); len(losses) != 1 || !strings.Contains(losses[0].Explanation, "unsupported source type string") {
+		t.Fatalf("ExplainLoss(string) = %#v, want explicit unsupported-source loss", losses)
 	}
 }
 
@@ -444,6 +480,69 @@ func TestValidateRejectsInconsistentEvaluatorAndParallelConfiguration(t *testing
 	base.Start = "fanout"
 	if err := Validate(base); err == nil || !strings.Contains(err.Error(), "at least two branches") {
 		t.Fatalf("Validate parallel error = %v, want structural error", err)
+	}
+}
+
+func TestValidateRejectsInconsistentPersistedSourceDefinition(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 2, DSLVersion: "3.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks:    []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build"}},
+		},
+	}
+	doc, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*workflow.Definition)
+		want   string
+	}{
+		{
+			name: "name",
+			mutate: func(def *workflow.Definition) {
+				def.Name = "other"
+			},
+			want: "source metadata name",
+		},
+		{
+			name: "version",
+			mutate: func(def *workflow.Definition) {
+				def.Version++
+			},
+			want: "source metadata version",
+		},
+		{
+			name: "dsl version",
+			mutate: func(def *workflow.Definition) {
+				def.DSLVersion = "4.0"
+			},
+			want: "source metadata DSL version",
+		},
+		{
+			name: "digest",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Tasks[0].Goal = "changed"
+			},
+			want: "source metadata digest",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := doc
+			sourceCopy, err := cloneDefinition(*doc.SourceDefinition)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(&sourceCopy)
+			mutated.SourceDefinition = &sourceCopy
+			if err := Validate(mutated); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 

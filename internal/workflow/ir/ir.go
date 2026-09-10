@@ -535,38 +535,27 @@ func semanticContentChanged(before, after Document) bool {
 // ExplainLoss records the unavoidable information loss when a workflow source is
 // converted to canonical IR and back to a generated representation.
 func (d Document) ExplainLoss(source any) []Loss {
-	loss := make([]Loss, 0, 2)
 	switch src := source.(type) {
 	case workflow.Definition:
-		digest, err := workflow.ComputeDigest(src)
-		if err != nil || digest != d.Source.Digest {
-			loss = append(loss, Loss{Field: "source.digest", Before: digest, After: d.Source.Digest, Explanation: "the persisted source does not match the IR source digest"})
-		} else if d.SourceDefinition == nil {
-			loss = append(loss, Loss{Field: "source.definition", Before: "workflow definition", After: "not persisted", Explanation: "the IR predates source-definition persistence, so exact round-trip fidelity cannot be established"})
-		} else if !reflect.DeepEqual(src, *d.SourceDefinition) {
-			loss = append(loss, Loss{Field: "source.definition", Before: "original workflow definition", After: "persisted workflow definition", Explanation: "the persisted source differs from the supplied definition"})
+		return d.explainDefinitionLoss(src)
+	case *workflow.Definition:
+		if src == nil {
+			return typedNilSourceLoss("*workflow.Definition")
 		}
+		return d.explainDefinitionLoss(*src)
 	case apiv1.Workflow:
-		if src.Name != d.Source.Name {
-			loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.Source.Name, Explanation: "the supplied source does not identify the persisted IR source"})
+		return d.explainWorkflowLoss(src)
+	case *apiv1.Workflow:
+		if src == nil {
+			return typedNilSourceLoss("*v1alpha1.Workflow")
 		}
-		if d.SourceDefinition != nil {
-			if d.SourceDefinition.Name != src.Name {
-				loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.SourceDefinition.Name, Explanation: "the supplied workflow name does not match the persisted source definition"})
-			}
-			if d.SourceDefinition.DSLVersion != src.DSLVersion {
-				loss = append(loss, Loss{Field: "source.dslVersion", Before: src.DSLVersion, After: d.SourceDefinition.DSLVersion, Explanation: "the supplied workflow DSL version does not match the persisted source record"})
-			}
-			if !reflect.DeepEqual(src.Spec, d.SourceDefinition.Spec) {
-				loss = append(loss, Loss{Field: "source.spec", Before: "supplied workflow spec", After: "persisted workflow spec", Explanation: "the supplied workflow spec differs from the persisted source definition"})
-			}
-		} else {
-			loss = append(loss, Loss{Field: "source.definition", Before: src.Name, After: "not persisted", Explanation: "the IR does not retain the original workflow definition needed to establish fidelity for this workflow source"})
-		}
+		return d.explainWorkflowLoss(*src)
 	case nil:
 		return nil
+	default:
+		return unsupportedSourceLoss(source)
 	}
-	return loss
+	return nil
 }
 
 // RoundTripLoss is the package-level convenience wrapper used by authoring tools.
@@ -584,6 +573,9 @@ func Validate(d Document) error {
 	}
 	if d.Source.Name == "" || d.Source.Digest == "" {
 		return fmt.Errorf("source metadata requires name and digest")
+	}
+	if err := validateSourceDefinition(d); err != nil {
+		return err
 	}
 	names := map[string]bool{}
 	for _, n := range d.Nodes {
@@ -714,6 +706,80 @@ func Validate(d Document) error {
 		default:
 			return fmt.Errorf("unsupported trigger type %q", trigger.Type)
 		}
+	}
+	return nil
+}
+
+func (d Document) explainDefinitionLoss(src workflow.Definition) []Loss {
+	loss := make([]Loss, 0, 2)
+	digest, err := workflow.ComputeDigest(src)
+	if err != nil || digest != d.Source.Digest {
+		loss = append(loss, Loss{Field: "source.digest", Before: digest, After: d.Source.Digest, Explanation: "the persisted source does not match the IR source digest"})
+	} else if d.SourceDefinition == nil {
+		loss = append(loss, Loss{Field: "source.definition", Before: "workflow definition", After: "not persisted", Explanation: "the IR predates source-definition persistence, so exact round-trip fidelity cannot be established"})
+	} else if !reflect.DeepEqual(src, *d.SourceDefinition) {
+		loss = append(loss, Loss{Field: "source.definition", Before: "original workflow definition", After: "persisted workflow definition", Explanation: "the persisted source differs from the supplied definition"})
+	}
+	return loss
+}
+
+func (d Document) explainWorkflowLoss(src apiv1.Workflow) []Loss {
+	loss := make([]Loss, 0, 3)
+	if src.Name != d.Source.Name {
+		loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.Source.Name, Explanation: "the supplied source does not identify the persisted IR source"})
+	}
+	if d.SourceDefinition == nil {
+		return append(loss, Loss{Field: "source.definition", Before: src.Name, After: "not persisted", Explanation: "the IR does not retain the original workflow definition needed to establish fidelity for this workflow source"})
+	}
+	if d.SourceDefinition.Name != src.Name {
+		loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.SourceDefinition.Name, Explanation: "the supplied workflow name does not match the persisted source definition"})
+	}
+	if d.SourceDefinition.DSLVersion != src.DSLVersion {
+		loss = append(loss, Loss{Field: "source.dslVersion", Before: src.DSLVersion, After: d.SourceDefinition.DSLVersion, Explanation: "the supplied workflow DSL version does not match the persisted source record"})
+	}
+	if !reflect.DeepEqual(src.Spec, d.SourceDefinition.Spec) {
+		loss = append(loss, Loss{Field: "source.spec", Before: "supplied workflow spec", After: "persisted workflow spec", Explanation: "the supplied workflow spec differs from the persisted source definition"})
+	}
+	return loss
+}
+
+func unsupportedSourceLoss(source any) []Loss {
+	return []Loss{{
+		Field:       "source.type",
+		Before:      fmt.Sprintf("%T", source),
+		After:       "unsupported",
+		Explanation: fmt.Sprintf("round-trip loss cannot be evaluated for unsupported source type %T", source),
+	}}
+}
+
+func typedNilSourceLoss(typeName string) []Loss {
+	return []Loss{{
+		Field:       "source",
+		Before:      typeName,
+		After:       "nil",
+		Explanation: fmt.Sprintf("round-trip loss cannot be evaluated from a nil %s", typeName),
+	}}
+}
+
+func validateSourceDefinition(d Document) error {
+	if d.SourceDefinition == nil {
+		return nil
+	}
+	if d.SourceDefinition.Name != d.Source.Name {
+		return fmt.Errorf("source metadata name %q does not match persisted source definition %q", d.Source.Name, d.SourceDefinition.Name)
+	}
+	if d.SourceDefinition.Version != d.Source.Version {
+		return fmt.Errorf("source metadata version %d does not match persisted source definition version %d", d.Source.Version, d.SourceDefinition.Version)
+	}
+	if d.SourceDefinition.DSLVersion != d.Source.DSLVersion {
+		return fmt.Errorf("source metadata DSL version %q does not match persisted source definition %q", d.Source.DSLVersion, d.SourceDefinition.DSLVersion)
+	}
+	digest, err := workflow.ComputeDigest(*d.SourceDefinition)
+	if err != nil {
+		return fmt.Errorf("compute persisted source definition digest: %w", err)
+	}
+	if digest != d.Source.Digest {
+		return fmt.Errorf("source metadata digest %q does not match persisted source definition digest %q", d.Source.Digest, digest)
 	}
 	return nil
 }
