@@ -7,5 +7,5 @@
     "rootDir": "./src",
     "outDir": "./.portal-package/package/types"
   },
-  "include": ["src/package.tsx"]
+  "include": ["src/package.tsx", "src/vite-env.d.ts"]
 }
