@@ -913,30 +913,123 @@ function CostTrendSparkline({
   points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[];
   window: InsightWindow;
 }) {
+  const width = 720;
+  const height = 220;
+  const margin = { top: 14, right: 18, bottom: 42, left: 64 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
   const scaleMax = Math.max(...points.map((point) => point.usage?.p95CostUSD ?? 0), 0.0001);
+  const chartPoints = points.map((point, index) => {
+    const x =
+      margin.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
+    const p50 = point.usage?.p50CostUSD ?? 0;
+    const p95 = Math.max(p50, point.usage?.p95CostUSD ?? 0);
+    return {
+      ...point,
+      p50,
+      p95,
+      x,
+      p50Y: margin.top + plotHeight - (p50 / scaleMax) * plotHeight,
+      p95Y: margin.top + plotHeight - (p95 / scaleMax) * plotHeight,
+    };
+  });
+  const baseline = margin.top + plotHeight;
+  const p50Area = areaPath(
+    chartPoints.map((point) => [point.x, point.p50Y]),
+    baseline,
+  );
+  const spreadArea = bandPath(
+    chartPoints.map((point) => [point.x, point.p95Y]),
+    chartPoints.map((point) => [point.x, point.p50Y]),
+  );
+  const p50Line = linePath(chartPoints.map((point) => [point.x, point.p50Y]));
+  const p95Line = linePath(chartPoints.map((point) => [point.x, point.p95Y]));
+  const xTickIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  const yTicks = [scaleMax, scaleMax / 2, 0];
+
   return (
-    <div className="usage-trend-sparkline" role="img" aria-label={sparklineAriaLabel(points)}>
-      {points.map((point) => {
-        const p50 = point.usage?.p50CostUSD;
-        const p95 = point.usage?.p95CostUSD;
-        const p50Height = `${Math.min(100, ((p50 ?? 0) / scaleMax) * 100)}%`;
-        const p95Height = `${Math.min(100, ((p95 ?? 0) / scaleMax) * 100)}%`;
-        return (
-          <span
-            className="usage-trend-bar"
-            key={point.since}
-            title={`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(p50)}, P95 ${formatMeasuredCost(p95)}`}
-          >
-            <span className="usage-trend-bar-track">
-              <span className="usage-trend-bar-p95" style={{ height: p95Height }} />
-              <span className="usage-trend-bar-p50" style={{ height: p50Height }} />
-            </span>
-            <small>{formatBucketTick(point.since, window)}</small>
-          </span>
-        );
-      })}
+    <div className="usage-trend-chart">
+      <svg
+        aria-label={sparklineAriaLabel(points)}
+        className="usage-trend-chart-plot"
+        role="img"
+        viewBox={`0 0 ${width} ${height}`}
+      >
+        <title>{sparklineAriaLabel(points)}</title>
+        {yTicks.map((tick) => {
+          const y = margin.top + plotHeight - (tick / scaleMax) * plotHeight;
+          return (
+            <g className="usage-trend-gridline" key={tick}>
+              <line x1={margin.left} x2={width - margin.right} y1={y} y2={y} />
+              <text x={margin.left - 10} y={y + 4}>
+                {formatMeasuredCost(tick)}
+              </text>
+            </g>
+          );
+        })}
+        <path className="usage-trend-area usage-trend-area-p50" d={p50Area} />
+        <path className="usage-trend-area usage-trend-area-spread" d={spreadArea} />
+        <path className="usage-trend-line usage-trend-line-p50" d={p50Line} />
+        <path className="usage-trend-line usage-trend-line-p95" d={p95Line} />
+        {chartPoints.map((point) => (
+          <g key={point.since}>
+            <circle className="usage-trend-point usage-trend-point-p50" cx={point.x} cy={point.p50Y} r="3">
+              <title>{`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(point.p50)}`}</title>
+            </circle>
+            <circle className="usage-trend-point usage-trend-point-p95" cx={point.x} cy={point.p95Y} r="3">
+              <title>{`${formatBucketLabel(point.since, point.until)}: P95 ${formatMeasuredCost(point.p95)}`}</title>
+            </circle>
+          </g>
+        ))}
+        <line
+          className="usage-trend-axis"
+          x1={margin.left}
+          x2={width - margin.right}
+          y1={baseline}
+          y2={baseline}
+        />
+        {xTickIndexes.map((index) => {
+          const point = chartPoints[index];
+          return point ? (
+            <text
+              className="usage-trend-x-label"
+              key={point.since}
+              textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}
+              x={point.x}
+              y={height - 15}
+            >
+              {formatBucketTick(point.since, window)}
+            </text>
+          ) : null;
+        })}
+      </svg>
+      <div className="usage-trend-legend" aria-hidden="true">
+        <span><i className="usage-trend-key usage-trend-key-p50" />P50 cost</span>
+        <span><i className="usage-trend-key usage-trend-key-spread" />P50–P95 spread</span>
+      </div>
     </div>
   );
+}
+
+function linePath(points: [number, number][]): string {
+  return points.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`).join(" ");
+}
+
+function areaPath(points: [number, number][], baseline: number): string {
+  if (points.length === 0) {
+    return "";
+  }
+  return `${linePath(points)} L ${points.at(-1)![0]} ${baseline} L ${points[0][0]} ${baseline} Z`;
+}
+
+function bandPath(upper: [number, number][], lower: [number, number][]): string {
+  if (upper.length === 0) {
+    return "";
+  }
+  return `${linePath(upper)} ${[...lower]
+    .reverse()
+    .map(([x, y]) => `L ${x} ${y}`)
+    .join(" ")} Z`;
 }
 
 function sparklineAriaLabel(

@@ -60,7 +60,7 @@ function GooberRoster({
 
   return (
     <>
-      <header className="page-heading page-heading-row">
+      <header className="page-heading">
         <div>
           <p className="page-kicker">Agent personas</p>
           <h1>Goobers</h1>
@@ -77,13 +77,13 @@ function GooberRoster({
             </a>
           )}
         </div>
-        <div className="scope-chip">
-          <span className="scope-mark">G</span>
-          {entries.length} {entries.length === 1 ? "goober" : "goobers"}
-        </div>
       </header>
 
-      {entries.length === 0 ? (
+      {snapshot.loadingSections?.inventory && entries.length === 0 ? (
+        <div className="inline-empty section-loading" role="status">
+          Goober inventory is loading. The roster will fill in as definitions arrive.
+        </div>
+      ) : entries.length === 0 ? (
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
@@ -170,7 +170,6 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
           <code className="goober-identity">{gaggle.name}/{goober.name}</code>
         </span>
         <span className="goober-card-toggle-meta">
-          <span className="definition-status">{goober.status}</span>
           <span aria-hidden="true" className="goober-card-chevron">
             <Icon name="chevron" size={14} />
           </span>

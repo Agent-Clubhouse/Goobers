@@ -15,6 +15,7 @@ describe("workflows page", () => {
 
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
     for (const gaggle of ["Core product", "Developer tools"]) {
+      await userEvent.click(screen.getByRole("button", { name: new RegExp(gaggle) }));
       const inventory = screen.getByRole("region", { name: `${gaggle} workflow definitions` });
       expect(
         within(inventory).getByRole("link", {
@@ -64,6 +65,7 @@ describe("workflows page", () => {
     });
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
     fireEvent.click(
       (await screen.findAllByRole("button", { name: "Copy manual run command" }))[0],
     );
@@ -88,6 +90,7 @@ describe("workflows page", () => {
     });
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
     fireEvent.click(
       (await screen.findAllByRole("button", { name: "Copy manual run command" }))[0],
     );

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonApiError, DaemonUnavailableError } from "./api/errors";
@@ -39,6 +39,7 @@ const testConfig: LiveDataConfig = {
 beforeEach(() => {
   vi.useFakeTimers();
   window.sessionStorage.clear();
+  window.localStorage.clear();
   Object.defineProperty(window.navigator, "onLine", { configurable: true, value: true });
   Object.defineProperty(document, "visibilityState", {
     configurable: true,
@@ -49,10 +50,51 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
 describe("LiveDataController", () => {
+  it("shares one SSE transport across tabs and broadcasts invalidations", async () => {
+    vi.stubGlobal("BroadcastChannel", TestBroadcastChannel);
+    const stream = new ControlledEventStream();
+    const leaderClient = new ScriptedClient([() => Promise.resolve(stream)]);
+    const followerClient = new ScriptedClient([]);
+    const leader = new LiveDataController(
+      leaderClient,
+      { ...testConfig, crossTabEnabled: true },
+      { cursorScope: "same-instance" },
+    );
+    const follower = new LiveDataController(
+      followerClient,
+      { ...testConfig, crossTabEnabled: true },
+      { cursorScope: "same-instance" },
+    );
+    const leaderRefresh = vi.fn().mockResolvedValue(true);
+    const followerRefresh = vi.fn().mockResolvedValue(true);
+    leader.subscribe(["run"], leaderRefresh);
+    follower.subscribe(["run"], followerRefresh);
+
+    leader.start();
+    await settle();
+    follower.start();
+    await settle();
+    expect(leaderClient.requests).toHaveLength(1);
+    expect(followerClient.requests).toHaveLength(0);
+    leaderRefresh.mockClear();
+    followerRefresh.mockClear();
+
+    stream.push(update("fixture:1", ["run"]));
+    await vi.advanceTimersByTimeAsync(testConfig.invalidationWindowMs);
+    await settle();
+
+    expect(leaderRefresh).toHaveBeenCalledOnce();
+    expect(followerRefresh).toHaveBeenCalledOnce();
+
+    follower.stop();
+    leader.stop();
+  });
+
   it("keeps reconnecting without polling when the host disables polling", async () => {
     const client = new ScriptedClient([
       () => Promise.reject(new Error("stream offline")),
@@ -1281,6 +1323,7 @@ describe("live page integration", () => {
     render(<App client={client} />);
 
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Core product/ }));
     expect(screen.getByText("1 active / 2 max")).toBeInTheDocument();
     const coreSection = screen
       .getByRole("heading", { name: "Core product" })
@@ -1364,6 +1407,7 @@ describe("live page integration", () => {
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Core product/ }));
     expect(listGaggles).toHaveBeenCalledTimes(populatedInventoryReads.gaggles);
     expect(listGoobers).toHaveBeenCalledTimes(populatedInventoryReads.goobers);
     expect(listWorkflows).toHaveBeenCalledTimes(populatedInventoryReads.workflows);
@@ -1488,6 +1532,36 @@ class MutableFixtureClient extends FixtureDaemonClient {
     }
     gaggle.activeRunCount = activeRuns;
     workflow.concurrency.activeRuns = activeRuns;
+  }
+}
+
+class TestBroadcastChannel extends EventTarget {
+  private static readonly channels = new Map<string, Set<TestBroadcastChannel>>();
+
+  constructor(readonly name: string) {
+    super();
+    const peers = TestBroadcastChannel.channels.get(name) ?? new Set();
+    peers.add(this);
+    TestBroadcastChannel.channels.set(name, peers);
+  }
+
+  postMessage(message: unknown): void {
+    for (const peer of TestBroadcastChannel.channels.get(this.name) ?? []) {
+      if (peer === this) {
+        continue;
+      }
+      queueMicrotask(() => {
+        peer.dispatchEvent(new MessageEvent("message", { data: message }));
+      });
+    }
+  }
+
+  close(): void {
+    const peers = TestBroadcastChannel.channels.get(this.name);
+    peers?.delete(this);
+    if (peers?.size === 0) {
+      TestBroadcastChannel.channels.delete(this.name);
+    }
   }
 }
 

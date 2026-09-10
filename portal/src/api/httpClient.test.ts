@@ -343,7 +343,7 @@ describe("HttpDaemonClient", () => {
       .mockResolvedValueOnce(
         Response.json(
           { error: { code: "class_saturated", message: "retry shortly" } },
-          { status: 503, headers: { "Retry-After": "0" } },
+          { status: 429, headers: { "Retry-After": "0" } },
         ),
       )
       .mockResolvedValueOnce(Response.json(health));
@@ -357,6 +357,65 @@ describe("HttpDaemonClient", () => {
 
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(admissionStates).toEqual(["/api/v1/health", undefined]);
+  });
+
+  it("stops retrying a saturated request after the configured limit", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json(
+        { error: { code: "class_saturated", message: "retry shortly" } },
+        { status: 429, headers: { "Retry-After": "0" } },
+      ),
+    );
+    const client = new HttpDaemonClient({
+      fetch: fetcher,
+      admissionMaxRetries: 1,
+      admissionRetryBaseMs: 1,
+    });
+
+    await expect(client.getHealth()).rejects.toMatchObject({
+      status: 429,
+      code: "class_saturated",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps lightweight reads moving while an aggregate class honors Retry-After", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let runsAttempts = 0;
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url === "/api/v1/runs") {
+        runsAttempts += 1;
+        if (runsAttempts === 1) {
+          return Response.json(
+            { error: { code: "class_saturated", message: "retry later" } },
+            { status: 429, headers: { "Retry-After": "10" } },
+          );
+        }
+        return Response.json({ runs: [], page: { limit: 50, total: 0, hasMore: false, nextCursor: "" } });
+      }
+      return Response.json(health);
+    });
+    const client = new HttpDaemonClient({
+      fetch: fetcher,
+      admissionRetryBaseMs: 1,
+      maxConcurrentRequests: 2,
+    });
+
+    try {
+      const runs = client.listRuns();
+      await vi.waitFor(() => expect(runsAttempts).toBe(1));
+      await expect(client.getHealth()).resolves.toEqual(health);
+      expect(runsAttempts).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(runs).resolves.toMatchObject({ runs: [] });
+      expect(runsAttempts).toBe(2);
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("cancels obsolete queued route work before it reaches the daemon", async () => {

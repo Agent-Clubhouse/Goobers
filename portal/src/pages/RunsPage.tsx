@@ -190,13 +190,25 @@ function formatPopulation(filters: RunRouteFilters): string {
 }
 
 function RunHistoryRow({ run }: { run: RunSummary }) {
+  const workItem = run.operator?.issue;
+
   return (
     <DataRow href={routeHash({ page: "run", id: run.id })} label={`Open run ${run.id}`}>
       <span className="row-primary">
-        <span className="row-title mono">{run.id}</span>
+        <span className="row-title">
+          {workItem ? (
+            <>
+              <span className="mono">#{workItem.number}</span>
+              {workItem.title ? ` · ${workItem.title}` : ""}
+            </>
+          ) : (
+            <span className="mono">{run.id}</span>
+          )}
+        </span>
         <span className="row-subtitle">
           {run.gaggle} / {run.workflow}
           {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
+          {workItem ? <span className="mono"> · {run.id}</span> : null}
         </span>
       </span>
       <StatusBadge stale={run.stale} status={run.phase} />

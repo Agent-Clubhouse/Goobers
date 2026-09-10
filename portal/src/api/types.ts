@@ -346,6 +346,7 @@ export interface Freshness {
 
 export interface Instance extends ContractVersion {
   name: string;
+  version?: string;
   environment: Environment;
   instanceRoot: string;
   rootIdentity?: {

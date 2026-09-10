@@ -18,7 +18,6 @@ export function DaemonLoadingState({ standalone = false }: { standalone?: boolea
       <span aria-hidden="true" className="loading-mark" />
       <div>
         <h1>{standalone ? "Loading instance data" : "Connecting to Goobers Instance"}</h1>
-        <p>Loading the current instance, workforce, workflows, and runs.</p>
       </div>
     </section>
   );

@@ -141,8 +141,9 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
         // Through the family, not straight to the loader: an event arriving
         // while a read is already running queues one follow-up pass rather
         // than cancelling the read that was about to answer the question.
-        owned.request(reason === "initial" ? "initial" : "event");
-        return true;
+        return owned
+          .request(reason === "initial" ? "initial" : "event")
+          .then(() => true);
       },
       latest.current.scope,
     );
@@ -181,7 +182,7 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
     // already moves ready/stale data to "stale" and keeps it visible while the
     // refetch runs.
     cache.remove(cacheKey);
-    family.current?.request("retry");
+    void family.current?.request("retry");
   }, [cache, cacheKey]);
 
   return { refreshing, retry, state };

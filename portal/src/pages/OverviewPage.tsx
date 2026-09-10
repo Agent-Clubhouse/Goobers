@@ -73,7 +73,8 @@ function Overview({
   standalone: boolean;
 }) {
   const groups = overview.groups;
-  const inventoryLoaded = !overview.sectionErrors?.inventory;
+  const inventoryLoaded =
+    !overview.loadingSections?.inventory && !overview.sectionErrors?.inventory;
   const emptyInstance = inventoryLoaded && overview.gaggleCount === 0;
   const emptyWorkflows =
     inventoryLoaded && !emptyInstance && overview.instance.counts.workflows === 0;
@@ -165,17 +166,19 @@ function Overview({
         {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
         {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
         <h1>
-          {emptyInstance
-            ? standalone
-              ? overview.health.ready
-                ? "Instance is ready."
-                : "Instance data is loading."
-            : !healthy
-              ? "Daemon is unhealthy."
-              : overview.health.ready
-                ? "Daemon is ready."
-                : "Daemon is starting."
-            : attentionHeading(activeAttention.length)}
+          {overview.loadingSections?.inventory
+            ? "Instance data is loading."
+            : emptyInstance
+              ? standalone
+                ? overview.health.ready
+                  ? "Instance is ready."
+                  : "Instance data is loading."
+                : !healthy
+                  ? "Daemon is unhealthy."
+                  : overview.health.ready
+                    ? "Daemon is ready."
+                    : "Daemon is starting."
+              : attentionHeading(activeAttention.length)}
         </h1>
         <p>
           {emptyInstance
@@ -188,6 +191,10 @@ function Overview({
           <div>
             <dt>Instance name</dt>
             <dd>{overview.instance.name}</dd>
+          </div>
+          <div>
+            <dt>Version</dt>
+            <dd>{overview.instance.version ?? ""}</dd>
           </div>
           <div>
             <dt>Instance root</dt>
@@ -224,6 +231,16 @@ function Overview({
           <button className="text-button" onClick={retry} type="button">
             Retry run activity
           </button>
+        </div>
+      )}
+      {(overview.loadingSections?.inventory || overview.loadingSections?.runs) && (
+        <div className="inline-empty section-loading" role="status">
+          Showing the instance now.{" "}
+          {overview.loadingSections.inventory && overview.loadingSections.runs
+            ? "Inventory and run activity are still loading."
+            : overview.loadingSections.inventory
+              ? "Inventory is still loading."
+              : "Run activity is still loading."}
         </div>
       )}
 
@@ -703,11 +720,17 @@ function RunSection({
               {active ? (
                 <>
                   <span className="row-workflow">
-                    {workflowDisplayName(overview, run)}
-                    <ScopePivot
-                      label={workflowDisplayName(overview, run)}
-                      scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-                    />
+                    <span>{run.gaggle} / {workflowDisplayName(overview, run)}</span>
+                    <a
+                      className="workflow-detail-link"
+                      href={routeHash({
+                        page: "workflow",
+                        gaggle: run.gaggle,
+                        id: run.workflow,
+                      })}
+                    >
+                      Open workflow
+                    </a>
                   </span>
                   <span className="stage-progress">
                     <span aria-hidden="true" className="stage-progress-mark" />
@@ -718,11 +741,17 @@ function RunSection({
                 <>
                   <StatusBadge status={run.phase} />
                   <span className="row-workflow">
-                    {workflowDisplayName(overview, run)}
-                    <ScopePivot
-                      label={workflowDisplayName(overview, run)}
-                      scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-                    />
+                    <span>{run.gaggle} / {workflowDisplayName(overview, run)}</span>
+                    <a
+                      className="workflow-detail-link"
+                      href={routeHash({
+                        page: "workflow",
+                        gaggle: run.gaggle,
+                        id: run.workflow,
+                      })}
+                    >
+                      Open workflow
+                    </a>
                   </span>
                 </>
               )}

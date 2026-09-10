@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { publishAdmissionState, publishReadState } from "./liveData";
 import { HttpDaemonClient } from "./api/httpClient";
 import { bindUIActions } from "./api/surfaceActions";
@@ -31,8 +31,10 @@ import { scopeIdentity } from "./scope";
 import { GettingStartedShell } from "./shell/GettingStartedShell";
 import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
+import { DaemonLoadingState } from "./components/DaemonQueryState";
 
 const portalDiagnostics = createPortalDiagnostics();
+const PORTAL_CONFIG_CACHE_KEY = "goobers-portal-config";
 const daemonClient = new HttpDaemonClient({
   diagnostics: portalDiagnostics,
   onAdmissionState: publishAdmissionState,
@@ -122,8 +124,9 @@ function Portal({
   const standalone = mode !== "daemon";
   const { theme, toggleTheme } = useTheme();
   const [route, setRoute] = useState<Route>(() => parseRoute());
-  const [config, setConfig] = useState<PortalConfig>(defaultPortalConfig);
-  const [loading, setLoading] = useState(true);
+  const cachedConfig = useMemo(readCachedPortalConfig, []);
+  const [config, setConfig] = useState<PortalConfig>(cachedConfig ?? defaultPortalConfig);
+  const [loading, setLoading] = useState(cachedConfig === undefined);
   const initialRoute = useRef(true);
 
   useEffect(() => {
@@ -132,22 +135,32 @@ function Portal({
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (initialRoute.current) {
       initialRoute.current = false;
       return;
+    }
+    const scrollPane = document.querySelector<HTMLElement>(".portal-main");
+    if (typeof scrollPane?.scrollTo === "function") {
+      scrollPane.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    } else if (scrollPane) {
+      scrollPane.scrollTop = 0;
+      scrollPane.scrollLeft = 0;
     }
     document.getElementById("main-content")?.focus();
   }, [route]);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    if (!cachedConfig) {
+      setLoading(true);
+    }
     void client
       .getPortalConfig()
       .then((nextConfig) => {
         if (cancelled) return;
         setConfig(nextConfig);
+        writeCachedPortalConfig(nextConfig);
       })
       .catch(() => {
         if (cancelled) return;
@@ -160,9 +173,12 @@ function Portal({
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [cachedConfig, client]);
 
   useEffect(() => {
+    if (loading) {
+      return;
+    }
     applyThemeOverrides(config, theme);
     document.title = config.brand.name;
 
@@ -180,7 +196,7 @@ function Portal({
     if (icon?.dataset.cobrand === "true") {
       icon.remove();
     }
-  }, [config, theme]);
+  }, [config, loading, theme]);
 
   // approve/override/rerun (HITL-7/#469): registered now so the UI surface
   // participates in the CLI/API/UI runtime-mutation parity check alongside
@@ -241,6 +257,14 @@ function Portal({
     warningSource,
     warningFixtures,
   );
+
+  if (loading) {
+    return (
+      <div className="portal-bootstrap">
+        <DaemonLoadingState standalone={standalone} />
+      </div>
+    );
+  }
 
   return (
     <CobrandContext.Provider value={{ config, loading }}>
@@ -330,5 +354,38 @@ function Portal({
         )}
       </PortalShell>
     </CobrandContext.Provider>
+  );
+}
+
+function readCachedPortalConfig(): PortalConfig | undefined {
+  try {
+    const raw = window.sessionStorage.getItem(PORTAL_CONFIG_CACHE_KEY);
+    if (!raw) {
+      return undefined;
+    }
+    const value = JSON.parse(raw) as unknown;
+    return isPortalConfig(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCachedPortalConfig(config: PortalConfig): void {
+  try {
+    window.sessionStorage.setItem(PORTAL_CONFIG_CACHE_KEY, JSON.stringify(config));
+  } catch {
+    // The cache only avoids a cold-brand flash; storage failure is harmless.
+  }
+}
+
+function isPortalConfig(value: unknown): value is PortalConfig {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "brand" in value &&
+    typeof value.brand === "object" &&
+    value.brand !== null &&
+    "name" in value.brand &&
+    typeof value.brand.name === "string"
   );
 }

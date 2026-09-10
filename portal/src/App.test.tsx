@@ -9,6 +9,7 @@ const storedValues = new Map<string, string>();
 
 beforeEach(() => {
   storedValues.clear();
+  window.sessionStorage.clear();
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: {
@@ -54,7 +55,9 @@ describe("portal foundation", () => {
 
     expect(await screen.findByText("Standalone read-only")).toBeInTheDocument();
     expect(screen.getByText("Daemon not running; reading this instance locally")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Instance is ready." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Instance is ready." }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Local instance loaded")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
@@ -183,7 +186,7 @@ describe("portal foundation", () => {
     renderLiveApp();
 
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-    await user.click(screen.getByRole("button", { name: "Use light theme" }));
+    await user.click(await screen.findByRole("button", { name: "Use light theme" }));
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(window.localStorage.getItem("goobers-theme")).toBe("light");
@@ -192,7 +195,7 @@ describe("portal foundation", () => {
   it("operates primary navigation from the keyboard and moves focus to the route content", async () => {
     const user = userEvent.setup();
     renderLiveApp();
-    const workflowsButton = screen.getByRole("button", { name: "Workflows" });
+    const workflowsButton = await screen.findByRole("button", { name: "Workflows" });
 
     workflowsButton.focus();
     await user.keyboard("{Enter}");
@@ -232,7 +235,7 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     renderLiveApp();
 
-    await user.click(screen.getByRole("link", { name: "Skip to main content" }));
+    await user.click(await screen.findByRole("link", { name: "Skip to main content" }));
 
     expect(window.location.hash).toBe("#/workflows");
     expect(screen.getByRole("heading", { name: "Workflows" })).toBeInTheDocument();

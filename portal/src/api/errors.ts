@@ -41,7 +41,7 @@ export class MissingCapabilityError extends DaemonClientError {
 export function isAdmissionFailure(error: unknown): error is DaemonApiError {
   return (
     error instanceof DaemonApiError &&
-    error.status === 503 &&
+    (error.status === 429 || error.status === 503) &&
     error.code === "class_saturated"
   );
 }

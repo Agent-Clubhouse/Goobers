@@ -1104,23 +1104,15 @@ describe("run detail", () => {
     ).not.toBeNull();
   });
 
-  it("pivots the run's gaggle/workflow identity into a pre-scoped Runs and Insight view (#2529)", async () => {
-    const user = userEvent.setup();
+  it("keeps workflow identity and pin metadata together without unrelated page pivots", async () => {
     renderRun("01JZ400FAILED");
 
     await screen.findByRole("heading", { name: "Run 01JZ400FAILED" });
-    expect(
-      screen.getByRole("link", { name: "View core / implementation in Insight" }),
-    ).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
-
-    await user.click(
-      screen.getByRole("link", { name: "View core / implementation in Runs" }),
+    expect(document.querySelector(".run-identity-line")).toHaveTextContent(
+      "core / implementation · Pinned v7 · sha256:core",
     );
-
-    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Insight drill-through scope")).toHaveTextContent(
-      "core / implementation",
-    );
+    expect(screen.queryByRole("link", { name: /View core \/ implementation in/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Workflow pin")).not.toBeInTheDocument();
   });
 
   it("surfaces the coded failure reason and deep-links from a failed run", async () => {

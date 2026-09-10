@@ -163,8 +163,9 @@ describe("workflow topology graph", () => {
 
     expect(screen.getByRole("group", { name: "Graph view controls" })).toBeInTheDocument();
     expect(viewport).toHaveAttribute("data-responsive-layout", "scroll-under-820");
-    expect(viewport).toHaveAttribute("data-zoom", "1.000");
-    expect(screen.getByText("100%")).toBeInTheDocument();
+    const fittedZoom = fitGraphZoom(4492, 182, 720, 360);
+    expect(viewport).toHaveAttribute("data-zoom", fittedZoom.toFixed(3));
+    expect(screen.getByText(`${Math.round(fittedZoom * 100)}%`)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pan (left|right|up|down)/ })).not.toBeInTheDocument();
 
     viewport.focus();

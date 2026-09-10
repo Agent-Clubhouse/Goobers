@@ -224,8 +224,8 @@ export function PortalShell({
           {admissionState && (
             <div className="admission-degraded" role="alert">
               <strong>Daemon is busy.</strong>{" "}
-              Requests are queued and retrying automatically. Wait for capacity or navigate away
-              to cancel work for this view.
+              Live refresh is backing off automatically. New navigation requests are not held
+              behind unlimited retries.
             </div>
           )}
           {children}

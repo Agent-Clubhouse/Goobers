@@ -74,6 +74,14 @@ describe("runs history page", () => {
     );
   });
 
+  it("identifies runs by their work item while retaining the run ID", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const row = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    expect(row).toHaveTextContent("#3088 · Operator status progress");
+    expect(within(row).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();
+  });
+
   it("hides no-work runs by default and reveals them via the toggle (#2188)", async () => {
     const noWorkRun: RunSummary = {
       id: "01JZ000NOWORK",

@@ -124,7 +124,7 @@ describe("overview page", () => {
     expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
   });
 
-  it("keeps the initial progress state until an empty inventory successfully loads", async () => {
+  it("renders instance identity while an empty inventory is still loading", async () => {
     const client = new FixtureDaemonClient(emptyDaemonFixtures());
     const realListGaggles = client.listGaggles.bind(client);
     let releaseInventory: () => void = () => {};
@@ -139,8 +139,12 @@ describe("overview page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Connecting to Goobers Instance" }),
+      await screen.findByRole("heading", { name: "Instance data is loading." }),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Inventory and run activity are still loading/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
     expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
 

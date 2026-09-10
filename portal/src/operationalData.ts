@@ -30,7 +30,7 @@ import {
 import { useLiveData, type LiveFreshness } from "./liveData";
 
 const PAGE_LIMIT = 100;
-const HEALTH_REFRESH_INTERVAL_MS = 5_000;
+const HEALTH_REFRESH_INTERVAL_MS = 60_000;
 
 // The Overview is a bounded triage surface — active work, what needs attention,
 // and a short window of recent outcomes — not a history browser
@@ -59,7 +59,7 @@ const OVERVIEW_RUN_PHASES: readonly RunPhase[] = [
 // (attentionDismissals.ts, #2563), not a replacement for it.
 const ATTENTION_RECENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const OPERATIONAL_OVERVIEW_CACHE_KEY = dataCacheKey("operational-overview");
-export const INVENTORY_CACHE_TTL_MS = 5 * 60_000;
+export const INVENTORY_CACHE_TTL_MS = 10 * 60_000;
 const OPERATIONAL_DEPENDENCIES: readonly DataCacheDependency[] = [
   { model: "instance" },
   { model: "workflow" },
@@ -92,6 +92,10 @@ export interface OperationalSnapshot {
   instance: Instance;
   inventories: GaggleInventory[];
   runs: RunSummary[];
+  loadingSections?: {
+    inventory?: boolean;
+    runs?: boolean;
+  };
 }
 
 /**
@@ -131,6 +135,7 @@ export interface SnapshotLoadOptions {
   cache?: SessionDataCache;
   previous?: OperationalSnapshot;
   models?: ReadonlySet<UpdateModel>;
+  onPartial?: (snapshot: OperationalSnapshot) => void;
   scope?: OperationalScope;
 }
 
@@ -247,6 +252,17 @@ export function useOperationalSnapshot(
           cache,
           previous: data.current,
           models,
+          onPartial: (partial) => {
+            if (signal.aborted) {
+              return;
+            }
+            data.current = partial;
+            setState(
+              isFresh()
+                ? { status: "ready", data: partial }
+                : { status: "stale", data: partial },
+            );
+          },
           scope: { gaggle, workflow },
         });
         if (signal.aborted) {
@@ -357,16 +373,55 @@ export async function loadOperationalSnapshot(
     previous === undefined || models === undefined || models.has("instance") || models.has("workflow");
   const wantRuns = previous === undefined || models === undefined || models.has("run");
   const requestOptions = { signal };
-  const [health, instance, inventories, workflowSnapshot] = await Promise.all([
-    client.getHealth(requestOptions),
-    client.getInstance(requestOptions),
+  const inventoriesPromise = settlePromise(
     wantInventory
       ? loadOperationalInventory(client, options?.cache, signal, options?.scope)
       : Promise.resolve(previous!.inventories),
+  );
+  const workflowSnapshotPromise = settlePromise(
     wantRuns
       ? loadWorkflowOutcomes(client, options?.scope, signal)
       : Promise.resolve({ runs: previous!.runs, activity: undefined }),
+  );
+  const [healthResult, instanceResult] = await Promise.allSettled([
+    client.getHealth(requestOptions),
+    client.getInstance(requestOptions),
   ]);
+  const health = settledValue(healthResult);
+  const instance = settledValue(instanceResult);
+  if (!health || !instance) {
+    await Promise.all([inventoriesPromise, workflowSnapshotPromise]);
+    throw (
+      settledError(healthResult) ??
+      settledError(instanceResult) ??
+      new Error("Unable to read daemon data.")
+    );
+  }
+
+  options?.onPartial?.({
+    health,
+    instance,
+    inventories: previous?.inventories ?? [],
+    runs: previous?.runs ?? [],
+    loadingSections: {
+      inventory: wantInventory,
+      runs: wantRuns,
+    },
+  });
+
+  const [inventoriesResult, workflowSnapshotResult] = await Promise.all([
+    inventoriesPromise,
+    workflowSnapshotPromise,
+  ]);
+  const inventories = settledValue(inventoriesResult);
+  const workflowSnapshot = settledValue(workflowSnapshotResult);
+  if (!inventories || !workflowSnapshot) {
+    throw (
+      settledError(inventoriesResult) ??
+      settledError(workflowSnapshotResult) ??
+      new Error("Unable to read daemon data.")
+    );
+  }
 
   return {
     health,
@@ -524,6 +579,10 @@ export interface OperationalOverview {
   // Present only when part of the Overview could not be read. Everything else
   // on the object is still authoritative and renderable (#1709).
   sectionErrors?: OverviewSectionErrors;
+  loadingSections?: {
+    inventory?: boolean;
+    runs?: boolean;
+  };
 }
 
 export interface OperationalOverviewQuery {
@@ -535,6 +594,7 @@ export interface OverviewLoadOptions {
   cache?: SessionDataCache;
   previous?: OperationalOverview;
   models?: ReadonlySet<UpdateModel>;
+  onPartial?: (overview: OperationalOverview) => void;
 }
 
 export function workflowDisplayName(
@@ -572,6 +632,17 @@ export function useOperationalOverview(client: DaemonClient): OperationalOvervie
           cache,
           previous: data.current,
           models,
+          onPartial: (partial) => {
+            if (signal.aborted) {
+              return;
+            }
+            data.current = partial;
+            setState(
+              isFresh()
+                ? { status: "ready", data: partial }
+                : { status: "stale", data: partial },
+            );
+          },
         });
         if (signal.aborted) {
           return false;
@@ -1026,34 +1097,62 @@ export async function loadOperationalOverview(
   // returned 200, and the operator saw none of it. Health and instance are
   // precisely what say *what* is wrong, so they must survive a run-list
   // timeout (#1709).
-  const [health, instance, inventory, groups] = await Promise.allSettled([
-    client.getHealth(requestOptions),
-    client.getInstance(requestOptions),
+  const healthPromise = client.getHealth(requestOptions);
+  const instancePromise = client.getInstance(requestOptions);
+  const inventoryPromise = settlePromise(
     wantInventory
       ? loadOverviewInventory(client, options?.cache, signal)
       : Promise.resolve<OverviewInventory>({
           gaggleCount: previous!.gaggleCount,
           workflowNames: previous!.workflowNames,
         }),
-    wantRuns ? loadOverviewRunGroups(client, signal, previous?.groups) : Promise.resolve(previous!.groups),
+  );
+  const groupsPromise = settlePromise(
+    wantRuns
+      ? loadOverviewRunGroups(client, signal, previous?.groups)
+      : Promise.resolve(previous!.groups),
+  );
+
+  const [health, instance] = await Promise.allSettled([
+    healthPromise,
+    instancePromise,
   ]);
 
-  // An aborted request is not a degraded section — the caller is discarding this
-  // load entirely — so fail fast rather than reporting every section as broken.
   if (signal?.aborted) {
     throw settledError(health) ?? new Error("Overview load was aborted.");
   }
 
   const resolvedHealth = settledValue(health) ?? previous?.health;
   const resolvedInstance = settledValue(instance) ?? previous?.instance;
-  // With neither a fresh nor a previous value for the identity reads there is
-  // nothing to render, so this genuinely is a page-level failure.
   if (resolvedHealth === undefined || resolvedInstance === undefined) {
     throw (
       settledError(health) ??
       settledError(instance) ??
       new Error("Unable to read daemon data.")
     );
+  }
+
+  options?.onPartial?.({
+    health: resolvedHealth,
+    instance: resolvedInstance,
+    gaggleCount: previous?.gaggleCount ?? 0,
+    workflowNames: previous?.workflowNames ?? new Map<string, string>(),
+    groups: previous?.groups ?? { active: [], attention: [], recent: [] },
+    loadingSections: {
+      inventory: wantInventory,
+      runs: wantRuns,
+    },
+  });
+
+  const [inventory, groups] = await Promise.all([
+    inventoryPromise,
+    groupsPromise,
+  ]);
+
+  // An aborted request is not a degraded section — the caller is discarding this
+  // load entirely — so fail fast rather than reporting every section as broken.
+  if (signal?.aborted) {
+    throw settledError(health) ?? new Error("Overview load was aborted.");
   }
 
   const resolvedInventory = settledValue(inventory) ?? {
@@ -1081,6 +1180,13 @@ export async function loadOperationalOverview(
     groups: resolvedGroups,
     ...(inventoryError || runsError ? { sectionErrors } : {}),
   };
+}
+
+function settlePromise<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  return promise.then(
+    (value) => ({ status: "fulfilled", value }),
+    (reason: unknown) => ({ status: "rejected", reason }),
+  );
 }
 
 function settledValue<T>(result: PromiseSettledResult<T>): T | undefined {

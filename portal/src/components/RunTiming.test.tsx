@@ -16,11 +16,11 @@ it("separates live workflow and goober elapsed time despite browser clock skew",
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
   const view = render(<RunTiming run={run} />);
-  expect(screen.getByLabelText("Workflow elapsed time")).toHaveTextContent("18m");
-  expect(screen.getByLabelText("Goober implementer (implement) elapsed time")).toHaveTextContent("12m");
+  expect(screen.getByLabelText("Run elapsed time")).toHaveTextContent("18m");
+  expect(screen.getByLabelText("Goober implementer elapsed time")).toHaveTextContent("12m");
   act(() => { vi.advanceTimersByTime(60_000); });
-  expect(screen.getByLabelText("Workflow elapsed time")).toHaveTextContent("19m");
-  expect(screen.getByLabelText("Goober implementer (implement) elapsed time")).toHaveTextContent("13m");
+  expect(screen.getByLabelText("Run elapsed time")).toHaveTextContent("19m");
+  expect(screen.getByLabelText("Goober implementer elapsed time")).toHaveTextContent("13m");
   view.unmount();
   expect(vi.getTimerCount()).toBe(0);
 });
@@ -38,13 +38,13 @@ it("shows parallel activity, missing timestamps and truncation explicitly", () =
   render(<RunTiming run={{ ...run, activityTruncated: true, activeStages: [
     ...run.activeStages!, { name: "other", kind: "stage", branch: 2, startedAt: "0001-01-01T00:00:00Z" },
   ] }} />);
-  expect(screen.getByLabelText("Stage other elapsed time")).toHaveTextContent("branch 2: elapsed unavailable");
+  expect(screen.getByLabelText("Stage other elapsed time")).toHaveTextContent("other · branch 2 · elapsed unavailable");
   expect(screen.getByText("Additional stage activity omitted")).toBeInTheDocument();
 });
 
 it("keeps terminal durations fixed without an active timer", () => {
   vi.useFakeTimers();
   render(<RunTiming run={{ ...run, terminal: true }} />);
-  expect(screen.queryByLabelText("Workflow elapsed time")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Run elapsed time")).not.toBeInTheDocument();
   expect(vi.getTimerCount()).toBe(0);
 });

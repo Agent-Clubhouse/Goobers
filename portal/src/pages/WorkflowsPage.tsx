@@ -47,7 +47,7 @@ function WorkflowInventory({
 }) {
   return (
     <>
-      <header className="page-heading page-heading-row">
+      <header className="page-heading">
         <div>
           <p className="page-kicker">Definitions</p>
           <h1>Workflows</h1>
@@ -57,14 +57,13 @@ function WorkflowInventory({
               : "Versioned processes and their provisioned workforce, read from the daemon."}
           </p>
         </div>
-        <div className="scope-chip">
-          <span className="scope-mark">G</span>
-          {snapshot.inventories.length}{" "}
-          {snapshot.inventories.length === 1 ? "gaggle" : "gaggles"}
-        </div>
       </header>
 
-      {snapshot.inventories.length === 0 ? (
+      {snapshot.loadingSections?.inventory && snapshot.inventories.length === 0 ? (
+        <div className="inline-empty section-loading" role="status">
+          Workflow inventory is loading. The page will fill in as definitions arrive.
+        </div>
+      ) : snapshot.inventories.length === 0 ? (
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
@@ -99,7 +98,7 @@ function GaggleSection({
   const { gaggle } = inventory;
   const headingId = `gaggle-${gaggle.name}`;
   const contentId = `${headingId}-inventory`;
-  const [expanded, setExpanded] = useState(inventory.workflows.length <= 3);
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <section aria-labelledby={headingId} className="gaggle-section">
@@ -142,14 +141,13 @@ function GaggleSection({
             <dd>{gaggle.activeRunCount}</dd>
           </div>
         </dl>
-      </div>
-
-      <div className="gaggle-inventory-actions">
-        <a className="gaggle-detail-link" href={routeHash({ page: "gaggle", id: gaggle.name })}>
-          Open gaggle details
-          <Icon name="arrow" size={16} />
-        </a>
-        <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
+        <div className="gaggle-inventory-actions">
+          <a className="gaggle-detail-link" href={routeHash({ page: "gaggle", id: gaggle.name })}>
+            Open details
+            <Icon name="arrow" size={16} />
+          </a>
+          <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
+        </div>
       </div>
 
       {expanded && (

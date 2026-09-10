@@ -16,7 +16,7 @@ describe("goobers roster page", () => {
     expect(window.location.hash).toBe("#/goobers");
     expect(screen.getByText("Core implementer")).toBeInTheDocument();
     expect(screen.getByText("Tools implementer")).toBeInTheDocument();
-    expect(screen.getByText("2 goobers")).toBeInTheDocument();
+    expect(screen.queryByText("2 goobers")).not.toBeInTheDocument();
     expect(
       screen.getByRole("region", { name: "Core product goober personas" }),
     ).toBeInTheDocument();

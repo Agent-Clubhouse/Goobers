@@ -23,6 +23,10 @@ import type { PortalDiagnostics } from "./portalDiagnostics";
 const ALL_MODELS: UpdateModel[] = ["instance", "run", "workflow"];
 const CURSOR_STORAGE_KEY = "goobers-live-event-cursor";
 const SEEN_EVENT_LIMIT = 512;
+const LIVE_CHANNEL_NAME = "goobers-portal-live-updates";
+const LIVE_LEADER_KEY = "goobers-portal-live-leader";
+const LIVE_LEADER_LEASE_MS = 15_000;
+const LIVE_LEADER_HEARTBEAT_MS = 5_000;
 
 export type LiveFreshness =
   | "connected"
@@ -38,6 +42,8 @@ export interface LiveDataSSEFailure {
 }
 
 export interface LiveDataConfig {
+  /** Share one SSE transport across visible tabs when BroadcastChannel is available. */
+  crossTabEnabled?: boolean;
   pollingEnabled?: boolean;
   invalidationWindowMs: number;
   reconnectBaseDelayMs: number;
@@ -93,7 +99,7 @@ const defaultConfig: LiveDataConfig = {
   streamIdleTimeoutMs: 45_000,
   connectionSettledMs: 10_000,
   failuresBeforePolling: 3,
-  pollingIntervalMs: 5_000,
+  pollingIntervalMs: 60_000,
   refreshMaxDelayMs: 60_000,
   maxPendingInvalidations: 64,
 };
@@ -104,6 +110,22 @@ type ModelListener = (
   invalidations?: readonly ModelInvalidation[],
 ) => boolean | void | Promise<boolean | void>;
 type StateListener = (state: LiveFreshness, failure?: LiveDataSSEFailure) => void;
+type LiveChannelMessage =
+  | {
+      sender: string;
+      type: "event";
+      event: DaemonUpdateEvent;
+    }
+  | {
+      sender: string;
+      type: "freshness";
+      freshness: LiveFreshness;
+      failure?: LiveDataSSEFailure;
+    }
+  | {
+      sender: string;
+      type: "leader-released";
+    };
 
 export interface LiveDataScope {
   gaggle?: string;
@@ -189,6 +211,7 @@ export function LiveDataProvider({
     [
       cache,
       client,
+      config?.crossTabEnabled,
       config?.failuresBeforePolling,
       config?.pollingEnabled,
       config?.invalidationWindowMs,
@@ -311,6 +334,14 @@ export class LiveDataController {
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly cache: SessionDataCache;
   private readonly cursorStorageKey: string;
+  private readonly liveChannelName: string;
+  private readonly leaderStorageKey: string;
+  private readonly tabId =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  private liveChannel: BroadcastChannel | undefined;
+  private leaderTimer: ReturnType<typeof setInterval> | undefined;
+  private isLeader = true;
   private skipNextSnapshotRefresh = false;
   private started = false;
   freshness: LiveFreshness = "reconnecting";
@@ -324,6 +355,12 @@ export class LiveDataController {
     this.cursorStorageKey = dependencies.cursorScope === undefined
       ? CURSOR_STORAGE_KEY
       : `${CURSOR_STORAGE_KEY}:${encodeURIComponent(dependencies.cursorScope)}`;
+    this.liveChannelName = dependencies.cursorScope === undefined
+      ? LIVE_CHANNEL_NAME
+      : `${LIVE_CHANNEL_NAME}:${encodeURIComponent(dependencies.cursorScope)}`;
+    this.leaderStorageKey = dependencies.cursorScope === undefined
+      ? LIVE_LEADER_KEY
+      : `${LIVE_LEADER_KEY}:${encodeURIComponent(dependencies.cursorScope)}`;
   }
 
   readonly isFresh = (): boolean => this.freshness === "connected";
@@ -401,7 +438,11 @@ export class LiveDataController {
       this.setFreshness("stale");
       return;
     }
-    this.connect("initial");
+    if (this.startCrossTabCoordination()) {
+      this.connect("initial");
+    } else {
+      this.queueRefresh({ cursor: "", models: ALL_MODELS }, 0);
+    }
   }
 
   stop(): void {
@@ -418,6 +459,7 @@ export class LiveDataController {
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
+    this.stopCrossTabCoordination();
     this.cache.dispose();
     this.pendingInvalidations.clear();
     this.lastQueuedCursor = "";
@@ -429,7 +471,9 @@ export class LiveDataController {
     }
     this.invalidationsPaused = false;
     this.failureCount = 0;
-    this.connect("online");
+    if (this.tryBecomeLeader()) {
+      this.connect("online");
+    }
     this.resumeInvalidations();
   };
 
@@ -455,6 +499,7 @@ export class LiveDataController {
       this.clearReconnectTimer();
       this.clearPollingTimer();
       this.clearInvalidationTimer();
+      this.releaseLeadership();
       this.setFreshness("stale");
       return;
     }
@@ -464,12 +509,19 @@ export class LiveDataController {
     }
     this.invalidationsPaused = false;
     this.failureCount = 0;
-    this.connect("visibility-visible");
+    if (this.tryBecomeLeader()) {
+      this.connect("visibility-visible");
+    }
     this.resumeInvalidations();
   };
 
   private connect(cause: string, delayMs?: number): void {
-    if (!this.started || !navigator.onLine || document.visibilityState === "hidden") {
+    if (
+      !this.started ||
+      !navigator.onLine ||
+      document.visibilityState === "hidden" ||
+      (this.liveChannel !== undefined && !this.isLeader)
+    ) {
       return;
     }
     if (cause !== "initial") {
@@ -636,6 +688,9 @@ export class LiveDataController {
     if (event.type === "heartbeat" || this.hasApplied(event.id)) {
       return;
     }
+    if (this.isLeader) {
+      this.postLiveMessage({ sender: this.tabId, type: "event", event });
+    }
     // An epoch change forces a SNAPSHOT, not a quiet cursor swap (#1930, §8.2).
     //
     // The store was rebuilt, so this client's view predates a generation it can
@@ -785,6 +840,9 @@ export class LiveDataController {
   }
 
   private scheduleReconnect(delay: number, cause: string): void {
+    if (this.liveChannel !== undefined && !this.isLeader) {
+      return;
+    }
     this.clearReconnectTimer();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
@@ -1011,8 +1069,155 @@ export class LiveDataController {
     }
     this.freshness = freshness;
     this.lastNotifiedSSEFailure = this.lastSSEFailure;
+    if (this.isLeader) {
+      this.postLiveMessage({
+        sender: this.tabId,
+        type: "freshness",
+        freshness,
+        ...(this.lastSSEFailure ? { failure: this.lastSSEFailure } : {}),
+      });
+    }
     for (const listener of this.stateListeners) {
       listener(freshness, this.lastSSEFailure);
+    }
+  }
+
+  private startCrossTabCoordination(): boolean {
+    if (
+      this.config.crossTabEnabled === false ||
+      (import.meta.env.MODE === "test" && this.config.crossTabEnabled !== true) ||
+      typeof BroadcastChannel === "undefined"
+    ) {
+      this.isLeader = true;
+      return true;
+    }
+    try {
+      this.liveChannel = new BroadcastChannel(this.liveChannelName);
+      this.liveChannel.addEventListener("message", this.onLiveChannelMessage);
+      this.leaderTimer = setInterval(
+        this.maintainLeadership,
+        LIVE_LEADER_HEARTBEAT_MS,
+      );
+      return this.tryBecomeLeader();
+    } catch {
+      this.liveChannel = undefined;
+      this.isLeader = true;
+      return true;
+    }
+  }
+
+  private stopCrossTabCoordination(): void {
+    this.releaseLeadership();
+    if (this.leaderTimer !== undefined) {
+      clearInterval(this.leaderTimer);
+      this.leaderTimer = undefined;
+    }
+    this.liveChannel?.removeEventListener("message", this.onLiveChannelMessage);
+    this.liveChannel?.close();
+    this.liveChannel = undefined;
+    this.isLeader = true;
+  }
+
+  private readonly maintainLeadership = (): void => {
+    if (!this.started || document.visibilityState === "hidden" || !navigator.onLine) {
+      return;
+    }
+    if (this.isLeader) {
+      this.writeLeaderLease();
+      return;
+    }
+    if (this.tryBecomeLeader()) {
+      this.failureCount = 0;
+      this.connect("cross-tab-leader");
+    }
+  };
+
+  private tryBecomeLeader(): boolean {
+    if (!this.liveChannel) {
+      this.isLeader = true;
+      return true;
+    }
+    try {
+      const now = Date.now();
+      const lease = readLeaderLease(this.leaderStorageKey);
+      if (lease && lease.id !== this.tabId && lease.expiresAt > now) {
+        this.isLeader = false;
+        return false;
+      }
+      window.localStorage.setItem(
+        this.leaderStorageKey,
+        JSON.stringify({ id: this.tabId, expiresAt: now + LIVE_LEADER_LEASE_MS }),
+      );
+      this.isLeader = readLeaderLease(this.leaderStorageKey)?.id === this.tabId;
+      if (this.isLeader) {
+        this.writeLeaderLease();
+      }
+      return this.isLeader;
+    } catch {
+      this.isLeader = true;
+      return true;
+    }
+  }
+
+  private writeLeaderLease(): void {
+    try {
+      window.localStorage.setItem(
+        this.leaderStorageKey,
+        JSON.stringify({
+          id: this.tabId,
+          expiresAt: Date.now() + LIVE_LEADER_LEASE_MS,
+        }),
+      );
+    } catch {
+      // Storage can be unavailable in hardened browser contexts. In that case
+      // each tab keeps its own live connection rather than losing updates.
+    }
+  }
+
+  private releaseLeadership(): void {
+    if (!this.liveChannel || !this.isLeader) {
+      return;
+    }
+    try {
+      if (readLeaderLease(this.leaderStorageKey)?.id === this.tabId) {
+        window.localStorage.removeItem(this.leaderStorageKey);
+      }
+    } catch {
+      // Best-effort lease cleanup; expiration provides the recovery path.
+    }
+    this.postLiveMessage({ sender: this.tabId, type: "leader-released" });
+    this.isLeader = false;
+  }
+
+  private readonly onLiveChannelMessage = (message: MessageEvent<LiveChannelMessage>): void => {
+    const value = message.data;
+    if (!value || value.sender === this.tabId || !this.started) {
+      return;
+    }
+    if (value.type === "event") {
+      this.applyEvent(value.event);
+      return;
+    }
+    if (value.type === "freshness" && !this.isLeader) {
+      this.lastSSEFailure = value.failure;
+      this.setFreshness(value.freshness);
+      return;
+    }
+    if (
+      value.type === "leader-released" &&
+      document.visibilityState !== "hidden" &&
+      navigator.onLine &&
+      this.tryBecomeLeader()
+    ) {
+      this.connect("cross-tab-release");
+    }
+  };
+
+  private postLiveMessage(message: LiveChannelMessage): void {
+    try {
+      this.liveChannel?.postMessage(message);
+    } catch {
+      // A live channel is an optimization. The local tab remains authoritative.
     }
   }
 
@@ -1081,6 +1286,29 @@ function copyInvalidation(invalidation: ModelInvalidation): ModelInvalidation {
       ? { workflows: invalidation.workflows.map((workflow) => ({ ...workflow })) }
       : {}),
   };
+}
+
+function readLeaderLease(key: string): { id: string; expiresAt: number } | undefined {
+  const raw = window.localStorage.getItem(key);
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "id" in value &&
+      "expiresAt" in value &&
+      typeof value.id === "string" &&
+      typeof value.expiresAt === "number"
+    ) {
+      return { id: value.id, expiresAt: value.expiresAt };
+    }
+  } catch {
+    window.localStorage.removeItem(key);
+  }
+  return undefined;
 }
 
 function matchesScope(

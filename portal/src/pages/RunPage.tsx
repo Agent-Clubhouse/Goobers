@@ -5,7 +5,6 @@ import { FailurePanel } from "../components/FailurePanel";
 import { KeyMomentsDigest } from "../components/KeyMomentsDigest";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
-import { ScopePivot } from "../components/ScopePivot";
 import {
   WorkflowTopologyGraph,
   type WorkflowGraphFullscreenMode,
@@ -297,12 +296,12 @@ function RunDetailWorkspace({
           </div>
           <p className="run-identity-line">
             <span>
-              {run.gaggle} / {run.workflow} · Workflow version {run.workflowVersion}
+              {run.gaggle} / {run.workflow} · Pinned v
+              {run.graph?.version ?? run.workflowVersion} ·{" "}
+              <span className="mono">
+                {run.graph?.digest ?? run.workflowDigest ?? "Digest unavailable"}
+              </span>
             </span>
-            <ScopePivot
-              label={`${run.gaggle} / ${run.workflow}`}
-              scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-            />
           </p>
           {!portalConfigLoading && portalConfig.capabilities.revealRun && (
             <div className="run-file-actions">
@@ -340,13 +339,6 @@ function RunDetailWorkspace({
           <div>
             <dt>Duration</dt>
             <dd>{formatDuration(run.durationMillis)}</dd>
-          </div>
-          <div>
-            <dt>Workflow pin</dt>
-            <dd className="mono run-pin">
-              v{run.graph?.version ?? run.workflowVersion} ·{" "}
-              {run.graph?.digest ?? run.workflowDigest ?? "Unavailable"}
-            </dd>
           </div>
         </dl>
       </header>
