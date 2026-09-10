@@ -1234,16 +1234,43 @@ type TelemetryConfig struct {
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
 	// Retention bounds terminal run journals and their rollup rows. Automatic
-	// daemon pruning is opt-in; explicit pruning can use the configured policy
-	// while automation remains disabled.
+	// daemon pruning is opt-out (#4253, ruling on #3056): it defaults on, at
+	// DefaultTelemetryRetentionWindow/DefaultTelemetryRetentionMaxRuns,
+	// unless this block sets enabled: false. A fresh instance whose data
+	// already exceeds policy the first time this runs gets a safe
+	// first-enable grace window (see TelemetryRetentionConfig.FirstEnable)
+	// rather than immediate deletion.
 	Retention *TelemetryRetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
 }
 
 // TelemetryRetentionConfig controls pruning of terminal run telemetry.
 type TelemetryRetentionConfig struct {
-	Enabled bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Enabled defaults to true (opt-out, #4253) — nil and unset are the same
+	// as true. Set explicitly to false to keep automatic pruning off while
+	// still allowing an explicit `goobers telemetry prune` to use this
+	// policy.
+	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Window  string `json:"window,omitempty" yaml:"window,omitempty"`
 	MaxRuns int    `json:"maxRuns,omitempty" yaml:"maxRuns,omitempty"`
+	// FirstEnable controls the #3056 ruling's safe first-enable behavior:
+	// the default ("" / "gracePeriod") holds a 7-day dry-run window — report
+	// what would be pruned, delete nothing — the first time an instance's
+	// existing data is found to already exceed policy. "immediate" skips
+	// straight to enforcement, e.g. for an operator who has already reviewed
+	// what would be deleted.
+	FirstEnable string `json:"firstEnable,omitempty" yaml:"firstEnable,omitempty"`
+}
+
+// EnabledEffective reports whether automatic telemetry retention pruning
+// runs (defaults to true — see Enabled's doc comment).
+func (c TelemetryRetentionConfig) EnabledEffective() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// ImmediateFirstEnable reports whether FirstEnable opted out of the safe
+// first-enable grace window.
+func (c TelemetryRetentionConfig) ImmediateFirstEnable() bool {
+	return c.FirstEnable == "immediate"
 }
 
 // WindowDuration returns the configured retention window. Empty uses 90 days.

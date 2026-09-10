@@ -1395,6 +1395,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			reportDaemonBehavior(stdout, identity.Behavior)
 			reportFleetEnrollment(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
+			reportTelemetryRetentionPolicy(l, now, stdout)
 			reportAVExclusionReadiness(l, stdout, realAVExclusionDeps())
 			return 1
 		}
@@ -1404,6 +1405,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 		reportDaemonBehavior(stdout, identity.Behavior)
 		reportFleetEnrollment(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
+		reportTelemetryRetentionPolicy(l, now, stdout)
 		reportAVExclusionReadiness(l, stdout, realAVExclusionDeps())
 		return 0
 	}
@@ -1429,6 +1431,29 @@ func reportPendingTriggerQueue(schedulerDir string, now time.Time, stdout io.Wri
 		return
 	}
 	pf(stdout, "pending triggers: %d outstanding, oldest %s\n", depth, oldestAge.Truncate(time.Second))
+}
+
+// reportTelemetryRetentionPolicy surfaces #4253/#3056's "status + portal
+// permanently surface: policy in force, last pass, candidate count"
+// acceptance criterion. Silent when no pass has ever recorded state —
+// retention explicitly disabled (telemetry.retention.enabled: false), or the
+// daemon has never ticked its retention sweep yet — same silent-when-
+// nothing-notable convention as reportPendingTriggerQueue.
+func reportTelemetryRetentionPolicy(l instance.Layout, now time.Time, stdout io.Writer) {
+	state, ok, err := readTelemetryRetentionState(l)
+	if err != nil || !ok {
+		return
+	}
+	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
+	switch {
+	case state.LastPassDryRun && !state.EnforceAt.IsZero():
+		pf(stdout, "telemetry retention: grace period active until %s (%d candidate(s) as of last pass %s ago) — nothing deleted yet\n",
+			state.EnforceAt.UTC().Format(time.RFC3339), state.CandidateCount, lastPassAgo)
+	case state.LastPassDryRun:
+		pf(stdout, "telemetry retention: policy in force, no candidates as of last pass %s ago\n", lastPassAgo)
+	default:
+		pf(stdout, "telemetry retention: policy in force, last pass %s ago pruned %d run(s)\n", lastPassAgo, state.PrunedCount)
+	}
 }
 
 func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {

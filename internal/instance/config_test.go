@@ -77,7 +77,7 @@ speech:
 	if !cfg.TelemetryEnabled() {
 		t.Fatalf("expected telemetry enabled by default")
 	}
-	if cfg.Telemetry.Retention == nil || !cfg.Telemetry.Retention.Enabled ||
+	if cfg.Telemetry.Retention == nil || !cfg.Telemetry.Retention.EnabledEffective() ||
 		cfg.Telemetry.Retention.Window != "30d" || cfg.Telemetry.Retention.MaxRuns != 25 {
 		t.Fatalf("unexpected telemetry retention config: %+v", cfg.Telemetry.Retention)
 	}
@@ -1327,8 +1327,19 @@ retention:
 
 func TestTelemetryRetentionConfigDefaultsAndValidatesLimits(t *testing.T) {
 	var zero TelemetryRetentionConfig
-	if zero.Enabled {
-		t.Fatal("zero telemetry retention config must disable automatic pruning")
+	// #4253 (ruling on #3056): automatic pruning is opt-OUT — a zero-value
+	// config (no telemetry.retention block, or one that omits enabled)
+	// leaves automatic pruning ON at the default window/maxRuns.
+	if !zero.EnabledEffective() {
+		t.Fatal("zero telemetry retention config must default to enabled (opt-out, #4253)")
+	}
+	explicitlyDisabled := false
+	disabled := TelemetryRetentionConfig{Enabled: &explicitlyDisabled}
+	if disabled.EnabledEffective() {
+		t.Fatal("explicit enabled: false must still disable automatic pruning")
+	}
+	if zero.ImmediateFirstEnable() {
+		t.Fatal("zero telemetry retention config must default to the safe first-enable grace period, not immediate")
 	}
 	if got, err := zero.WindowDuration(); err != nil || got != DefaultTelemetryRetentionWindow {
 		t.Fatalf("default WindowDuration = %s, %v; want %s", got, err, DefaultTelemetryRetentionWindow)
