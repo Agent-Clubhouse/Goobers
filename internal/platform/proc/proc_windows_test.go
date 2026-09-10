@@ -240,7 +240,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",
-		"$child = Start-Process wsl.exe -ArgumentList '-e','sh','-c','sleep 30' -PassThru; Set-Content -LiteralPath $env:GOOBERS_WSL_PID -Value $child.Id; Start-Sleep -Seconds 30",
+		"$child = Start-Process wsl.exe -ArgumentList '-e','sh','-c','sleep 30' -WindowStyle Hidden -PassThru; Set-Content -LiteralPath $env:GOOBERS_WSL_PID -Value $child.Id; Start-Sleep -Seconds 30",
 	)
 	cmd.Env = append(os.Environ(), "GOOBERS_WSL_PID="+marker)
 	tree, err := Start(cmd)
