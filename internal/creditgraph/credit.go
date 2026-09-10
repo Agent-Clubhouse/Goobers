@@ -147,6 +147,8 @@ type attributor struct {
 	outcomeSign         float64
 	gapCount            map[string]int
 	share               map[string]float64
+	bestPathWeight      map[string]float64
+	bestPath            map[string][]string
 	weightedUncertainty map[string]float64
 	attempts            map[string][]Node
 }
@@ -162,6 +164,8 @@ func Attribute(graph *Graph) Attribution {
 		graph:               graph,
 		gapCount:            map[string]int{},
 		share:               map[string]float64{},
+		bestPathWeight:      map[string]float64{},
+		bestPath:            map[string][]string{},
 		weightedUncertainty: map[string]float64{},
 		attempts:            map[string][]Node{},
 	}
@@ -175,7 +179,7 @@ func Attribute(graph *Graph) Attribution {
 	}
 	root, _ := graph.Root()
 	a.outcomeSign = statusSign(root.Attributes["status"])
-	a.propagate(graph.RootID, 1, 0, map[string]bool{})
+	a.propagate(graph.RootID, 1, 0, map[string]bool{}, nil)
 
 	attribution := Attribution{
 		Schema:      AttributionSchemaVersion,
@@ -197,6 +201,7 @@ func Attribute(graph *Graph) Attribution {
 		uncertainty = combine(uncertainty, a.subtreeUncertainty(node.ID))
 		attribution.Contributions = append(attribution.Contributions, Contribution{
 			NodeID: node.ID, Kind: node.Kind, Label: node.Label, Stage: node.Stage,
+			Path:    append([]string(nil), a.bestPath[node.ID]...),
 			Attempt: node.Attempt, Share: round(share), Score: round(share * a.signOf(node)),
 			Uncertainty: round(uncertainty), Confidence: round(1 - uncertainty),
 			Provenance: node.Provenance,
@@ -210,7 +215,7 @@ func Attribute(graph *Graph) Attribution {
 // preferring edges toward nodes whose own recorded signal agrees with the
 // outcome. The path set makes a declared dependency cycle terminate rather
 // than recurse forever.
-func (a *attributor) propagate(id string, share, inherited float64, path map[string]bool) {
+func (a *attributor) propagate(id string, share, inherited float64, path map[string]bool, route []string) {
 	if share < shareEpsilon || path[id] {
 		return
 	}
@@ -218,9 +223,14 @@ func (a *attributor) propagate(id string, share, inherited float64, path map[str
 	if !ok {
 		return
 	}
+	currentPath := append(append([]string(nil), route...), id)
 	uncertainty := combine(inherited, a.localUncertainty(node))
 	a.share[id] += share
 	a.weightedUncertainty[id] += share * uncertainty
+	if best := a.bestPathWeight[id]; len(a.bestPath[id]) == 0 || share > best+shareEpsilon {
+		a.bestPathWeight[id] = share
+		a.bestPath[id] = currentPath
+	}
 	path[id] = true
 	defer delete(path, id)
 
@@ -239,7 +249,7 @@ func (a *attributor) propagate(id string, share, inherited float64, path map[str
 		if edge.Provenance != ProvenanceRecorded {
 			childUncertainty = combine(uncertainty, unknownEdgeUncertainty)
 		}
-		a.propagate(edge.To, share*weights[i]/total, childUncertainty, path)
+		a.propagate(edge.To, share*weights[i]/total, childUncertainty, path, currentPath)
 	}
 }
 

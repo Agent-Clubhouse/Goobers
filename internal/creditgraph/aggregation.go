@@ -1,7 +1,6 @@
 package creditgraph
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"sort"
 	"strings"
@@ -36,6 +35,7 @@ type ContributingPath struct {
 	Share      float64                   `json:"share"`
 	Confidence float64                   `json:"confidence"`
 	Evidence   []AttributionEvidenceLink `json:"evidence,omitempty"`
+	samples    int
 }
 
 // CohortAggregation summarizes repeated attribution evidence across runs in one cohort.
@@ -92,9 +92,10 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				key := strings.Join(pathNodes, "/")
 				path := byPath[key]
 				if path == nil {
-					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...), Evidence: make([]AttributionEvidenceLink, 0, 1)}
+					path = &ContributingPath{Nodes: append([]string(nil), pathNodes...)}
 					byPath[key] = path
 				}
+				path.samples++
 				path.Share += contribution.Share
 				path.Confidence += contribution.Confidence
 				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
@@ -124,10 +125,10 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 
 		paths := make([]ContributingPath, 0, len(byPath))
 		for _, path := range byPath {
-			if len(path.Evidence) == 0 {
+			if path.samples == 0 {
 				continue
 			}
-			count := float64(len(path.Evidence))
+			count := float64(path.samples)
 			path.Share /= count
 			path.Confidence /= count
 			paths = append(paths, *path)
@@ -200,47 +201,7 @@ func observationEvidence(observation AttributionObservation, nodeID, stage, deta
 	if len(matches) > 0 {
 		return matches
 	}
-	return []AttributionEvidenceLink{newAttributionEvidenceLink(observation.RunID, nodeID, stage, detail, source)}
-}
-
-func newAttributionEvidenceLink(runID, nodeID, stage, detail, source string) AttributionEvidenceLink {
-	link := AttributionEvidenceLink{
-		RunID:  runID,
-		NodeID: nodeID,
-		Stage:  stage,
-		Detail: detail,
-		Source: source,
-	}
-	if strings.TrimSpace(runID) != "" {
-		link.JournalPath = fmt.Sprintf("runs/%s/journal.jsonl", runID)
-		link.ArtifactPath = fmt.Sprintf("runs/%s/artifacts/attribution/%s.json", runID, sanitizeEvidenceName(nodeID, stage))
-		link.ArtifactDigest = fmt.Sprintf("sha256:%s", sha256sum(runID+"|"+nodeID+"|"+stage+"|"+detail))
-		link.ArtifactMediaType = "application/json"
-		link.JournalSequence = 0
-	}
-	return link
-}
-
-func sanitizeEvidenceName(nodeID, stage string) string {
-	name := strings.TrimSpace(nodeID)
-	if name == "" {
-		name = strings.TrimSpace(stage)
-	}
-	if name == "" {
-		name = "evidence"
-	}
-	name = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
-			return r
-		}
-		return '_'
-	}, name)
-	return name
-}
-
-func sha256sum(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return fmt.Sprintf("%x", sum)
+	return nil
 }
 
 func lastNode(path []string) string {

@@ -10,7 +10,11 @@ func TestAggregateAttributionEvidenceByCohort(t *testing.T) {
 			Workload:         "implementation",
 			Attribution: Attribution{
 				Contributions: []Contribution{{NodeID: "node-a", Share: 0.7, Confidence: 0.8}, {NodeID: "node-b", Share: 0.3, Confidence: 0.6}},
-				Causes:        []CauseFinding{{NodeID: "node-a", Stage: "plan", Evidence: []string{"intervention: stage plan attempt 1 failed and attempt 2 succeeded"}}, {NodeID: "node-b", Stage: "build", Evidence: []string{"tool result failed"}}},
+				Causes:        []CauseFinding{{NodeID: "node-a", Stage: "plan", Class: ClassBadToolResult, Evidence: []string{"intervention: stage plan attempt 1 failed and attempt 2 succeeded"}}, {NodeID: "node-b", Stage: "build", Class: ClassBadToolResult, Evidence: []string{"tool result failed"}}},
+			},
+			Evidence: []AttributionEvidenceLink{
+				{RunID: "run-1", NodeID: "node-a", Stage: "plan", Detail: "intervention: stage plan attempt 1 failed and attempt 2 succeeded", Source: string(ClassBadToolResult), JournalSequence: 10, JournalPath: "gaggles/example/runs/run-1/events.jsonl"},
+				{RunID: "run-1", NodeID: "node-b", Stage: "build", Detail: "tool result failed", Source: string(ClassBadToolResult), JournalSequence: 11, JournalPath: "gaggles/example/runs/run-1/events.jsonl"},
 			},
 		},
 		{
@@ -19,7 +23,10 @@ func TestAggregateAttributionEvidenceByCohort(t *testing.T) {
 			Workload:         "implementation",
 			Attribution: Attribution{
 				Contributions: []Contribution{{NodeID: "node-a", Share: 0.6, Confidence: 0.7}, {NodeID: "node-c", Share: 0.4, Confidence: 0.75}},
-				Causes:        []CauseFinding{{NodeID: "node-a", Stage: "plan", Evidence: []string{"intervention: stage plan attempt 3 failed and attempt 4 succeeded"}}},
+				Causes:        []CauseFinding{{NodeID: "node-a", Stage: "plan", Class: ClassBadToolResult, Evidence: []string{"intervention: stage plan attempt 3 failed and attempt 4 succeeded"}}},
+			},
+			Evidence: []AttributionEvidenceLink{
+				{RunID: "run-2", NodeID: "node-a", Stage: "plan", Detail: "intervention: stage plan attempt 3 failed and attempt 4 succeeded", Source: string(ClassBadToolResult), JournalSequence: 12, JournalPath: "gaggles/example/runs/run-2/events.jsonl"},
 			},
 		},
 		{
@@ -57,12 +64,16 @@ func TestAggregateAttributionEvidencePreservesMixedConfidence(t *testing.T) {
 	obs := []AttributionObservation{
 		{RunID: "a", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{
 			Contributions: []Contribution{{NodeID: "tool-perf", Share: 0.8, Confidence: 0.55}},
-			Causes:        []CauseFinding{{NodeID: "tool-perf", Stage: "qa", Evidence: []string{"failed tool result"}}},
-		}},
+			Causes:        []CauseFinding{{NodeID: "tool-perf", Stage: "qa", Class: ClassBadToolResult, Evidence: []string{"failed tool result"}}},
+		}, Evidence: []AttributionEvidenceLink{{
+			RunID: "a", NodeID: "tool-perf", Stage: "qa", Detail: "failed tool result", Source: string(ClassBadToolResult), JournalSequence: 20, JournalPath: "gaggles/example/runs/a/events.jsonl",
+		}}},
 		{RunID: "b", EffectiveVersion: "v1", Workload: "main", Attribution: Attribution{
 			Contributions: []Contribution{{NodeID: "tool-perf", Share: 0.2, Confidence: 0.95}},
-			Causes:        []CauseFinding{{NodeID: "tool-perf", Stage: "qa", Evidence: []string{"observed success in retry"}}},
-		}},
+			Causes:        []CauseFinding{{NodeID: "tool-perf", Stage: "qa", Class: ClassBadToolResult, Evidence: []string{"observed success in retry"}}},
+		}, Evidence: []AttributionEvidenceLink{{
+			RunID: "b", NodeID: "tool-perf", Stage: "qa", Detail: "observed success in retry", Source: string(ClassBadToolResult), JournalSequence: 21, JournalPath: "gaggles/example/runs/b/events.jsonl",
+		}}},
 	}
 	got := AggregateAttributionEvidence(obs)
 	if len(got) != 1 {
@@ -164,5 +175,28 @@ func TestAggregateAttributionEvidenceLinksConcreteRunEvidence(t *testing.T) {
 	}
 	if got[0].CounterEvidence[0].JournalPath != "gaggles/example/runs/run-42/events.jsonl" || got[0].CounterEvidence[0].ArtifactPath != "artifacts/sha256/cc/dd" {
 		t.Fatalf("counter evidence = %+v, want concrete references", got[0].CounterEvidence[0])
+	}
+}
+
+func TestAggregateAttributionEvidenceDoesNotFabricateConcreteLinks(t *testing.T) {
+	obs := []AttributionObservation{{
+		RunID:            "run-7",
+		EffectiveVersion: "v1",
+		Workload:         "main",
+		Attribution: Attribution{
+			Contributions: []Contribution{{NodeID: "node-a", Path: []string{"outcome", "run:run-7", "node-a"}, Share: 0.5, Confidence: 0.8}},
+			Causes:        []CauseFinding{{NodeID: "node-a", Stage: "plan", Class: ClassBadToolResult, Evidence: []string{"tool result failed"}}},
+		},
+	}}
+
+	got := AggregateAttributionEvidence(obs)
+	if len(got) != 1 || len(got[0].TopContributingPaths) != 1 {
+		t.Fatalf("cohorts = %+v, want 1 cohort with 1 path", got)
+	}
+	if got[0].TopContributingPaths[0].Evidence != nil {
+		t.Fatalf("contribution evidence = %+v, want no fabricated concrete links", got[0].TopContributingPaths[0].Evidence)
+	}
+	if got[0].CounterEvidence != nil {
+		t.Fatalf("counter evidence = %+v, want no fabricated concrete links", got[0].CounterEvidence)
 	}
 }
