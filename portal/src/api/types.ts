@@ -325,10 +325,18 @@ export interface ConfigAuthoringErrorEnvelope {
 
 export interface Health extends ContractVersion {
 	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+  build?: BuildMetadata;
+  readState?: ReadState;
   ready: boolean;
   healthy: boolean;
   instance: InstanceIdentity;
   freshness: Freshness;
+}
+
+export interface BuildMetadata {
+  version: string;
+  commit: string;
+  date: string;
 }
 
 export interface InstanceIdentity {

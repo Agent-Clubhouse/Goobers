@@ -30,6 +30,8 @@ export function GoobersPage({
   return (
     <GooberRoster
       gaggleName={gaggleName}
+      inventoryError={query.state.status === "stale" ? query.state.error : undefined}
+      retry={query.retry}
       snapshot={query.state.data}
       standalone={standalone}
     />
@@ -43,10 +45,14 @@ interface RosterEntry {
 
 function GooberRoster({
   gaggleName,
+  inventoryError,
+  retry,
   snapshot,
   standalone,
 }: {
   gaggleName?: string;
+  inventoryError?: Error;
+  retry: () => void;
   snapshot: OperationalSnapshot;
   standalone: boolean;
 }) {
@@ -79,7 +85,17 @@ function GooberRoster({
         </div>
       </header>
 
-      {snapshot.loadingSections?.inventory && entries.length === 0 ? (
+      {inventoryError && entries.length === 0 ? (
+        <div className="run-stale-state run-stale-state-error" role="alert">
+          <span>
+            <strong>Goober inventory is unavailable</strong>
+            <small>{inventoryError.message}</small>
+          </span>
+          <button className="text-button" onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      ) : snapshot.loadingSections?.inventory && entries.length === 0 ? (
         <div className="inline-empty section-loading" role="status">
           Goober inventory is loading. The roster will fill in as definitions arrive.
         </div>

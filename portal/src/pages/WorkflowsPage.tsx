@@ -35,13 +35,24 @@ export function WorkflowsPage({
     return null;
   }
 
-  return <WorkflowInventory snapshot={query.state.data} standalone={standalone} />;
+  return (
+    <WorkflowInventory
+      inventoryError={query.state.status === "stale" ? query.state.error : undefined}
+      retry={query.retry}
+      snapshot={query.state.data}
+      standalone={standalone}
+    />
+  );
 }
 
 function WorkflowInventory({
+  inventoryError,
+  retry,
   snapshot,
   standalone,
 }: {
+  inventoryError?: Error;
+  retry: () => void;
   snapshot: OperationalSnapshot;
   standalone: boolean;
 }) {
@@ -59,7 +70,17 @@ function WorkflowInventory({
         </div>
       </header>
 
-      {snapshot.loadingSections?.inventory && snapshot.inventories.length === 0 ? (
+      {inventoryError && snapshot.inventories.length === 0 ? (
+        <div className="run-stale-state run-stale-state-error" role="alert">
+          <span>
+            <strong>Workflow inventory is unavailable</strong>
+            <small>{inventoryError.message}</small>
+          </span>
+          <button className="text-button" onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      ) : snapshot.loadingSections?.inventory && snapshot.inventories.length === 0 ? (
         <div className="inline-empty section-loading" role="status">
           Workflow inventory is loading. The page will fill in as definitions arrive.
         </div>

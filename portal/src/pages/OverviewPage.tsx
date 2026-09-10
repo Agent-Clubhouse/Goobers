@@ -194,7 +194,18 @@ function Overview({
           </div>
           <div>
             <dt>Version</dt>
-            <dd>{overview.instance.version ?? ""}</dd>
+            <dd>
+              {overview.health.build ? (
+                <span title={`Commit ${overview.health.build.commit} · Built ${overview.health.build.date}`}>
+                  {overview.health.build.version}
+                  {overview.health.build.commit
+                    ? ` · ${overview.health.build.commit.slice(0, 7)}`
+                    : ""}
+                </span>
+              ) : (
+                "Unavailable"
+              )}
+            </dd>
           </div>
           <div>
             <dt>Instance root</dt>

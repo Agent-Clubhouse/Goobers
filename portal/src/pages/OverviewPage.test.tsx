@@ -24,6 +24,22 @@ describe("overview page", () => {
     expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent("migrated to replacement");
   });
 
+  it("shows the authoritative daemon binary version from health metadata", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health.build = {
+      version: "v1.2.3",
+      commit: "abcdef0123456789",
+      date: "2026-09-10T00:00:00Z",
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(await screen.findByText("v1.2.3 · abcdef0")).toHaveAttribute(
+      "title",
+      "Commit abcdef0123456789 · Built 2026-09-10T00:00:00Z",
+    );
+  });
+
   it("renders fixture-driven attention, active, and recent run groups", async () => {
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 

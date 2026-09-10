@@ -1615,7 +1615,7 @@ summary:focus-visible {
 
 .all-runs-grid,
 .all-runs-grid ~ .data-row {
-  grid-template-columns: minmax(220px, 1.35fr) 100px minmax(135px, 0.95fr) 155px 76px 18px;
+  grid-template-columns: minmax(170px, 1.1fr) 100px minmax(135px, 1fr) 155px 76px 18px;
 }
 
 .all-runs-grid ~ .data-row {

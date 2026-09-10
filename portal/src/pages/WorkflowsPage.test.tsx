@@ -25,6 +25,28 @@ describe("workflows page", () => {
     }
   });
 
+  it("renders page structure before a cold inventory load finishes", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const realListGaggles = client.listGaggles.bind(client);
+    let releaseInventory: () => void = () => {};
+    const inventoryGate = new Promise<void>((resolve) => {
+      releaseInventory = resolve;
+    });
+    vi.spyOn(client, "listGaggles").mockImplementation(async (...args) => {
+      await inventoryGate;
+      return realListGaggles(...args);
+    });
+
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getByText(/Workflow inventory is loading/)).toBeInTheDocument();
+    expect(screen.queryByText("Core product")).not.toBeInTheDocument();
+
+    releaseInventory();
+    expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
+  });
+
   it("uses compact persona summaries and collapses large gaggle inventories", async () => {
     const fixtures = populatedDaemonFixtures();
     const workflow = fixtures.workflows?.core?.items[0];

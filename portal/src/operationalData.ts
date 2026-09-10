@@ -283,9 +283,10 @@ export function useOperationalSnapshot(
         }
         const queryError =
           error instanceof Error ? error : new Error("Unable to read daemon data.");
-        setState((current) =>
-          current.status === "ready" || current.status === "stale"
-            ? { status: "stale", data: current.data, error: queryError }
+        const partial = data.current;
+        setState(
+          partial
+            ? { status: "stale", data: partial, error: queryError }
             : { status: "error", error: queryError },
         );
         return false;

@@ -1135,6 +1135,86 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  it("uses health revision checks to skip unchanged fallback snapshots", async () => {
+    const unavailable = () => Promise.reject(new DaemonUnavailableError());
+    const client = new ScriptedClient([unavailable, unavailable, unavailable, unavailable]);
+    const health = {
+      ...populatedDaemonFixtures().health,
+      readState: {
+        epoch: "projection-a",
+        appliedSeq: 1,
+        observedAt: "2026-09-10T00:00:00Z",
+        lagSeconds: 0,
+        pendingIntake: 0,
+        oldestPendingSourceAge: 0,
+        intakeWriteFailures: 0,
+        minChangeSeq: 1,
+        completeness: "complete" as const,
+        degraded: [],
+      },
+    };
+    vi.spyOn(client, "getHealth").mockImplementation(async () => health);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn().mockResolvedValue(true);
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockClear();
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(110);
+    await settle();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    health.readState.appliedSeq = 2;
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    controller.stop();
+  });
+
+  it("retries a fallback snapshot when refreshing a new revision fails", async () => {
+    const unavailable = () => Promise.reject(new DaemonUnavailableError());
+    const client = new ScriptedClient([unavailable, unavailable, unavailable, unavailable]);
+    const health = {
+      ...populatedDaemonFixtures().health,
+      readState: {
+        epoch: "projection-a",
+        appliedSeq: 1,
+        observedAt: "2026-09-10T00:00:00Z",
+        lagSeconds: 0,
+        pendingIntake: 0,
+        oldestPendingSourceAge: 0,
+        intakeWriteFailures: 0,
+        minChangeSeq: 1,
+        completeness: "complete" as const,
+        degraded: [],
+      },
+    };
+    vi.spyOn(client, "getHealth").mockImplementation(async () => health);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockReset();
+    refresh.mockResolvedValueOnce(false).mockResolvedValue(true);
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(110);
+    await settle();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    controller.stop();
+  });
+
   it("waits for each polling refresh before scheduling the next", async () => {
     const unavailable = () => Promise.reject(new DaemonUnavailableError());
     const client = new ScriptedClient([unavailable, unavailable, unavailable]);

@@ -8,6 +8,7 @@ import {
   useCallback,
 } from "react";
 import { DaemonApiError } from "./api/errors";
+import { positionOf, type Position } from "./api/queryFamily";
 import type {
   DaemonClient,
   DaemonEventStream,
@@ -313,6 +314,8 @@ export class LiveDataController {
   private invalidationRevision = 0;
   private invalidationTimer: ReturnType<typeof setTimeout> | undefined;
   private polling = false;
+  private pollController: AbortController | undefined;
+  private pollingPosition: Position | undefined;
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private connectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -821,7 +824,7 @@ export class LiveDataController {
   }
 
   private async runPollingCycle(): Promise<void> {
-    const refreshed = await this.runRefresh([{ cursor: "", models: ALL_MODELS }]);
+    const refreshed = await this.pollForChanges();
     if (!this.polling || !this.started) {
       return;
     }
@@ -837,6 +840,38 @@ export class LiveDataController {
       this.pollingTimer = undefined;
       void this.runPollingCycle();
     }, refreshed ? this.config.pollingIntervalMs : this.refreshRetryDelay());
+  }
+
+  private async pollForChanges(): Promise<boolean> {
+    const controller = new AbortController();
+    this.pollController?.abort();
+    this.pollController = controller;
+    try {
+      const health = await this.client.getHealth({ signal: controller.signal });
+      if (controller.signal.aborted) {
+        return false;
+      }
+      const position = positionOf(health.readState);
+      if (
+        position &&
+        this.pollingPosition &&
+        position.epoch === this.pollingPosition.epoch &&
+        position.appliedSeq <= this.pollingPosition.appliedSeq
+      ) {
+        return true;
+      }
+      const refreshed = await this.runRefresh([{ cursor: "", models: ALL_MODELS }]);
+      if (refreshed) {
+        this.pollingPosition = position;
+      }
+      return refreshed;
+    } catch {
+      return false;
+    } finally {
+      if (this.pollController === controller) {
+        this.pollController = undefined;
+      }
+    }
   }
 
   private scheduleReconnect(delay: number, cause: string): void {
@@ -878,6 +913,8 @@ export class LiveDataController {
 
   private clearPollingTimer(): void {
     this.polling = false;
+    this.pollController?.abort();
+    this.pollController = undefined;
     if (this.pollingTimer !== undefined) {
       clearTimeout(this.pollingTimer);
       this.pollingTimer = undefined;

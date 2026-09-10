@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { FixtureDaemonClient } from "./api/fixtureClient";
+import { defaultPortalConfig } from "./cobrand";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
@@ -42,6 +43,30 @@ describe("portal foundation", () => {
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
     // The walkthrough nav entry belongs to `goobers init --guided` only.
     expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
+  });
+
+  it("renders cached branding immediately while refreshing it in the background", async () => {
+    const fixtures = populatedDaemonFixtures();
+    window.sessionStorage.setItem(
+      "goobers-portal-config",
+      JSON.stringify({
+        ...defaultPortalConfig,
+        brand: {
+          ...defaultPortalConfig.brand,
+          name: "Cached Goobers",
+        },
+      }),
+    );
+    const client = new FixtureDaemonClient(fixtures);
+    vi.spyOn(client, "getPortalConfig").mockImplementation(() => new Promise(() => {}));
+
+    render(<App client={client} />);
+
+    expect(screen.getByText("Cached Goobers")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
   });
 
   it("labels standalone read-only mode in the portal chrome", async () => {
