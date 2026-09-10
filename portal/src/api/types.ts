@@ -50,6 +50,16 @@ export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | 
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
+export type AgentLifecycle = "started" | "waiting" | "resumed" | "completed" | "failed" | "cancelled";
+export type AgentProgressKind =
+  | "plan"
+  | "progress"
+  | "decision"
+  | "blocker"
+  | "question"
+  | "next_action"
+  | "summary";
+export type AgentProgressSource = "native" | "model" | "evidence";
 
 export interface TriggerRequest {
   workflow: string;
@@ -721,6 +731,7 @@ export interface OperatorRunSummary {
 export interface RunDetail extends RunSummary {
   graph?: WorkflowGraph;
   graphStatus: "pinned" | "unavailable";
+  agentProgress?: AgentProgressSummary[];
   escalation?: EscalationCause;
   /** The same cause projection as escalation, present for every non-completed terminal phase (#4246). */
   terminalCause?: EscalationCause;
@@ -766,6 +777,75 @@ export interface EscalationSelector {
   name: string;
 }
 
+export interface AgentProgressEvidence {
+  type?: string;
+  id?: string;
+  label?: string;
+  ref?: {
+    path: string;
+    digest: string;
+    size?: number;
+    mediaType?: string;
+    integrity?: string;
+  };
+}
+
+export interface AgentProgressRecord {
+  schema: string;
+  agentId: string;
+  runId: string;
+  stage: string;
+  attempt: number;
+  sequence: number;
+  kind: AgentProgressKind;
+  source?: AgentProgressSource;
+  occurredAt: string;
+  updatedAt?: string;
+  fidelity?: "full" | "partial" | "none";
+  summary?: string;
+  plan?: string[];
+  progress?: string[];
+  decision?: string;
+  blocker?: string;
+  question?: string;
+  nextAction?: string;
+  evidence?: AgentProgressEvidence[];
+}
+
+export interface AgentLifecycleStatus {
+  sequence: number;
+  lifecycle: AgentLifecycle;
+  updatedAt?: string;
+}
+
+export interface AgentCurrentStatus {
+  source: "lifecycle" | "progress";
+  sequence: number;
+  lifecycle?: AgentLifecycle;
+  kind?: AgentProgressKind;
+  summary?: string;
+  updatedAt?: string;
+}
+
+export interface AgentProgressSummary {
+  agentId: string;
+  parentId?: string;
+  runId: string;
+  stage: string;
+  attempt: number;
+  role?: string;
+  coordinator?: boolean;
+  worker?: boolean;
+  fidelity: "full" | "partial" | "none";
+  degraded?: boolean;
+  degradedText?: string;
+  lifecycle?: AgentLifecycleStatus;
+  currentStatus?: AgentCurrentStatus;
+  latest?: AgentProgressRecord;
+  history: AgentProgressRecord[];
+  children?: AgentProgressSummary[];
+}
+
 export type KnownRunEventType =
   | "run.started"
   | "run.resumed"
@@ -803,7 +883,10 @@ export type KnownRunEventType =
   | "parallel.started"
   | "parallel.finished"
   | "branch.started"
-  | "branch.finished";
+  | "branch.finished"
+  | "agent.lifecycle"
+  | "agent.message"
+  | "agent.progress";
 
 export type RunEventType = KnownRunEventType | (string & Record<never, never>);
 
@@ -849,6 +932,29 @@ export interface RunEvent {
   outputs?: Record<string, JsonValue>;
   artifacts?: ArtifactMetadata[];
   artifact?: ArtifactMetadata;
+  agent?: {
+    schema: string;
+    id: string;
+    parentId?: string;
+    runId: string;
+    stage: string;
+    attempt: number;
+    objective?: string;
+    coordinator?: boolean;
+    worker?: boolean;
+    leaf?: boolean;
+    lifecycle: AgentLifecycle;
+    fidelity?: "full" | "partial" | "none";
+    updatedAt: string;
+  };
+  progress?: AgentProgressRecord;
+  peerMessage?: {
+    id: string;
+    senderId: string;
+    recipientId: string;
+    occurredAt: string;
+    purpose: string;
+  };
   name?: string;
   externalRef?: ExternalRef;
   error?: ErrorDetail;

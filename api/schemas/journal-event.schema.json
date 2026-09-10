@@ -82,6 +82,7 @@
         "parallel.finished",
         "agent.lifecycle",
         "agent.message",
+        "agent.progress",
         "init.completed",
         "trigger.fired",
         "tick.skipped",
@@ -319,6 +320,11 @@
       "$ref": "#/$defs/agentProvenance",
       "x-conformance": "excluded"
     },
+    "progress": {
+      "description": "Operator-readable progress update emitted intentionally by a nested agent or adapter without retaining hidden chain-of-thought.",
+      "$ref": "#/$defs/agentProgress",
+      "x-conformance": "excluded"
+    },
     "peerMessage": {
       "description": "Orchestration-relevant peer metadata; raw message content is never retained.",
       "$ref": "#/$defs/peerMessage",
@@ -466,6 +472,46 @@
         "purpose": { "description": "Orchestration purpose without retaining raw message content.", "type": "string", "minLength": 1 },
         "artifact": { "description": "Artifact reference carrying message content, when persisted separately.", "$ref": "#/$defs/ref" },
         "contentHash": { "description": "Digest of the omitted raw message content.", "type": "string" }
+      }
+    },
+    "agentProgress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "agentId", "runId", "stage", "attempt", "sequence", "kind", "occurredAt"],
+      "properties": {
+        "schema": { "description": "Versioned schema identifier for the agent progress record.", "const": "goobers.dev/journal/agent-progress/v1" },
+        "agentId": { "description": "Stable identifier for the agent invocation whose progress is reported.", "type": "string", "minLength": 1 },
+        "runId": { "description": "Run that owns the progress update.", "type": "string", "minLength": 1 },
+        "stage": { "description": "Workflow stage that launched the agent.", "type": "string", "minLength": 1 },
+        "attempt": { "description": "One-based stage attempt containing the invocation.", "type": "integer", "minimum": 1 },
+        "sequence": { "description": "Monotonically increasing sequence index within the agent invocation attempt for stable resumable ordering.", "type": "integer", "minimum": 0 },
+        "kind": { "description": "Normalized status kind.", "type": "string", "enum": ["plan", "progress", "decision", "blocker", "question", "next_action", "summary"] },
+        "source": { "description": "The origin of the status payload.", "type": "string", "enum": ["native", "model", "evidence"] },
+        "occurredAt": { "description": "Time the agent status update was emitted.", "type": "string", "format": "date-time" },
+        "updatedAt": { "description": "Time the status entry was last updated.", "type": "string", "format": "date-time" },
+        "fidelity": { "description": "Completeness of progress telemetry emitted by the adapter.", "type": "string", "enum": ["full", "partial", "none"] },
+        "summary": { "description": "Bounded checkpoint summary suitable for reconnect or resume.", "type": "string" },
+        "plan": { "description": "Ordered milestone list for a plan update.", "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "progress": { "description": "Completed milestone or current activity for a progress update.", "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "decision": { "description": "Conclusion or decision selected by the agent.", "type": "string" },
+        "blocker": { "description": "Dependency, missing input, or policy/resource constraint.", "type": "string" },
+        "question": { "description": "Input requested from a human or another agent.", "type": "string" },
+        "nextAction": { "description": "Immediate intended action for the next step.", "type": "string" },
+        "evidence": {
+          "description": "Observable fact or artifact references cited by the update.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/agentProgressEvidence" }
+        }
+      }
+    },
+    "agentProgressEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "description": "Kind of evidence cited by the agent.", "type": "string" },
+        "id": { "description": "Stable pointer or event identifier for the evidence.", "type": "string" },
+        "label": { "description": "Human-readable label for the evidence.", "type": "string" },
+        "ref": { "$ref": "#/$defs/ref" }
       }
     },
     "errorDetail": {

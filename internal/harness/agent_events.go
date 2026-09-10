@@ -321,7 +321,7 @@ func projectAgentEvents(data []byte, req RunRequest) []journal.Event {
 
 		var event journal.Event
 		if json.Unmarshal(line, &event) != nil ||
-			(event.Type != journal.EventAgentLifecycle && event.Type != journal.EventAgentMessage) {
+			(event.Type != journal.EventAgentLifecycle && event.Type != journal.EventAgentMessage && event.Type != journal.EventAgentProgress) {
 			continue
 		}
 		if event.Type == journal.EventAgentLifecycle && event.Agent != nil {
@@ -339,6 +339,21 @@ func projectAgentEvents(data []byte, req RunRequest) []journal.Event {
 				event.Agent.Fidelity = journal.AgentFidelityFull
 			}
 		}
+		if event.Type == journal.EventAgentProgress && event.Progress != nil {
+			event.Progress.RunID = req.Envelope.RunID
+			event.Progress.Stage = req.Envelope.TaskID
+			event.Progress.Attempt = req.Attempt
+			if event.Progress.Attempt < 1 {
+				event.Progress.Attempt = int(req.Envelope.Attempt)
+			}
+			if event.Progress.Attempt < 1 {
+				event.Progress.Attempt = 1
+			}
+			event.Progress.Schema = "goobers.dev/journal/agent-progress/v1"
+			if event.Progress.Fidelity == "" {
+				event.Progress.Fidelity = journal.AgentFidelityFull
+			}
+		}
 		if journal.ValidateAgentEvent(event) != nil {
 			continue
 		}
@@ -351,12 +366,13 @@ func normalizedAgentRecord(data []byte) ([]byte, bool) {
 	var event struct {
 		Type        journal.EventType            `json:"type"`
 		Agent       *journal.AgentProvenance     `json:"agent,omitempty"`
+		Progress    *journal.AgentProgress       `json:"progress,omitempty"`
 		PeerMessage *journal.PeerMessageMetadata `json:"peerMessage,omitempty"`
 	}
 	if json.Unmarshal(data, &event) != nil {
 		return nil, false
 	}
-	if event.Type != journal.EventAgentLifecycle && event.Type != journal.EventAgentMessage {
+	if event.Type != journal.EventAgentLifecycle && event.Type != journal.EventAgentMessage && event.Type != journal.EventAgentProgress {
 		return nil, false
 	}
 	normalized, err := json.Marshal(event)

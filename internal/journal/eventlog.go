@@ -17,6 +17,15 @@ func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Tim
 	ev.Seq = *seq
 	ev.Schema = EventSchema
 	ev.Time = now()
+	if ev.Type == EventAgentProgress && ev.Progress != nil {
+		ev.Progress.Sequence = ev.Seq
+		if ev.Progress.OccurredAt.IsZero() {
+			ev.Progress.OccurredAt = ev.Time
+		}
+		if ev.Progress.UpdatedAt.IsZero() {
+			ev.Progress.UpdatedAt = ev.Progress.OccurredAt
+		}
+	}
 
 	line, err := marshalEvent(ev)
 	if err != nil {
@@ -45,7 +54,7 @@ func marshalEvent(ev Event) ([]byte, error) {
 	if ev.Type == EventNotificationReceipt && ev.NotificationReceipt == nil {
 		return nil, fmt.Errorf("%s requires a notification receipt", EventNotificationReceipt)
 	}
-	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage {
+	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage || ev.Type == EventAgentProgress {
 		if err := ValidateAgentEvent(ev); err != nil {
 			return nil, err
 		}

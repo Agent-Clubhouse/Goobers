@@ -321,6 +321,68 @@ func TestTraceJSONPreservesIdentityRefsAndMissingState(t *testing.T) {
 	}
 }
 
+func TestTraceRendersAgentProgressAndHistory(t *testing.T) {
+	root := t.TempDir()
+	const runID = "trace-progress-test"
+	run := newTraceTestRun(t, root, runID)
+
+	p1 := journal.AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      runID,
+		Stage:      "implement",
+		Attempt:    1,
+		Sequence:   1,
+		Kind:       journal.AgentProgressPlan,
+		Source:     journal.AgentProgressSourceNative,
+		Fidelity:   journal.AgentFidelityFull,
+		OccurredAt: time.Now(),
+		Plan:       []string{"Step 1", "Step 2"},
+	}
+	p2 := journal.AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      runID,
+		Stage:      "implement",
+		Attempt:    1,
+		Sequence:   2,
+		Kind:       journal.AgentProgressDecision,
+		Source:     journal.AgentProgressSourceModel,
+		Fidelity:   journal.AgentFidelityFull,
+		OccurredAt: time.Now(),
+		Summary:    "Chose approach A",
+		Decision:   "Approach A selected",
+		Evidence:   []journal.AgentProgressEvidence{{Type: "tool", ID: "grep-1", Label: "match"}},
+	}
+
+	if err := run.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &p1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &p2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		"agent progress & status:",
+		"agent: worker-1 stage=implement attempt=1",
+		"latest [decision seq=3 source=model]:",
+		"summary:     Chose approach A",
+		"decision:    Approach A selected",
+		"evidence:    grep-1 (match)",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestTraceListsRecordedTranscripts(t *testing.T) {
 	root := t.TempDir()
 	const runID = "transcript-list"
@@ -625,6 +687,58 @@ func TestTraceFollowContinuesThroughResumedLifecycle(t *testing.T) {
 	}, "\n")
 	if got := stdout.String(); got != want {
 		t.Fatalf("trace --follow stdout = %q, want %q", got, want)
+	}
+}
+
+func TestTraceFollowRendersLifecycleOnlyAgentProgressFallback(t *testing.T) {
+	root := t.TempDir()
+	const runID = "follow-agent-progress-fallback"
+	run := newTraceTestRun(t, root, runID)
+	t.Cleanup(func() { _ = run.Close() })
+
+	stdout := newTraceFollowBuffer()
+	var stderr bytes.Buffer
+	result := make(chan int, 1)
+	go func() {
+		result <- runTraceWithFollowContext(
+			context.Background(),
+			[]string{"--follow", runID, root},
+			stdout,
+			&stderr,
+		)
+	}()
+	stdout.waitForWrite(t)
+
+	now := time.Now().UTC()
+	for _, event := range []journal.Event{
+		{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityNone,
+		}},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := waitForTraceFollow(t, result); code != 0 {
+		t.Fatalf("trace --follow: code = %d, stderr = %q", code, stderr.String())
+	}
+	got := stdout.String()
+	for _, want := range []string{
+		"agent progress & status:",
+		"agent: worker-1 stage=implement attempt=1 (worker) fidelity=none",
+		"current [lifecycle started seq=2]: Running without structured progress; showing lifecycle-only status.",
+		"status: structured progress unavailable (degraded to tool/transcript activity)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("trace --follow output missing %q:\n%s", want, got)
+		}
 	}
 }
 
