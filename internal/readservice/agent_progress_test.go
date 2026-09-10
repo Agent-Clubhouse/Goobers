@@ -338,11 +338,14 @@ func TestRunAgentProgressDropsLateProgressFromOlderPod(t *testing.T) {
 		t.Fatalf("root summaries = %d, want 1", len(progress))
 	}
 	summary := progress[0]
-	if len(summary.History) != 0 {
-		t.Fatalf("history = %#v, want older pod progress filtered out", summary.History)
+	if len(summary.History) != 1 || summary.History[0].Summary != "Older pod summary" {
+		t.Fatalf("history = %#v, want pre-reconnect progress preserved", summary.History)
 	}
 	if summary.Current == nil || summary.Current.Source != "lifecycle" || summary.Current.Lifecycle != journal.AgentResumed {
 		t.Fatalf("current status = %#v, want lifecycle resumed from latest pod", summary.Current)
+	}
+	if summary.Latest == nil || summary.Latest.Summary != "Older pod summary" {
+		t.Fatalf("latest progress = %#v, want earlier valid progress record retained", summary.Latest)
 	}
 	if !summary.Degraded || summary.DegradedText == "" {
 		t.Fatalf("degraded summary = %#v, want lifecycle-only degraded fallback", summary)

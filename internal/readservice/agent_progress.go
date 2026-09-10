@@ -380,22 +380,19 @@ type progressInvocationIdentity struct {
 
 func latestPodAgentProgressRecords(records []journal.EventRecord) []journal.EventRecord {
 	latest := make(map[progressInvocationIdentity]uint64)
-	for _, record := range records {
-		invocation, ok := progressInvocationForEvent(record.Event)
-		if !ok {
-			continue
-		}
-		if ordinal := progressEventPodOrdinal(record.Event); ordinal > latest[invocation] {
-			latest[invocation] = ordinal
-		}
-	}
 	filtered := make([]journal.EventRecord, 0, len(records))
 	for _, record := range records {
 		invocation, ok := progressInvocationForEvent(record.Event)
-		if ok {
-			if ordinal := latest[invocation]; ordinal > 0 && progressEventPodOrdinal(record.Event) != ordinal {
-				continue
-			}
+		if !ok {
+			filtered = append(filtered, record)
+			continue
+		}
+		ordinal := progressEventPodOrdinal(record.Event)
+		if highest := latest[invocation]; highest > 0 && ordinal < highest {
+			continue
+		}
+		if ordinal > latest[invocation] {
+			latest[invocation] = ordinal
 		}
 		filtered = append(filtered, record)
 	}
