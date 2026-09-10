@@ -3,14 +3,36 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/podauth"
 )
+
+// The ledger is atomically replaced. Execution needs a complete durable
+// snapshot, not the write lock that can be held across remote lease renewal.
+// Waiting for that lock would make a healthy renewal look like a stalled
+// observer. Authentication and own-run policy checks remain in List.
+func (s *daemonClaimService) executionClaimSnapshot(ctx context.Context, runID, mode string) (httpapi.ClaimListResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return httpapi.ClaimListResponse{}, err
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(s.layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		return httpapi.ClaimListResponse{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return httpapi.ClaimListResponse{}, err
+	}
+	return httpapi.ClaimListResponse{ClaimVisibility: mode, ObservedAt: time.Now(),
+		Entries: claimEntriesWire(ledger.ForRunAll(runID)), History: claimEntriesWire(ledger.HistoryForRun(runID))}, nil
+}
 
 func workerExecutionBearer(emitter *livejournal.HTTPEmitter, runID string) (string, error) {
 	if emitter.Token != "" {

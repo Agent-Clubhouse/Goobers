@@ -160,3 +160,38 @@ func TestExecutionFenceObservesClaimsAcquiredDuringExecution(t *testing.T) {
 		t.Fatal("new claim was never fenced")
 	}
 }
+
+func TestExecutionFenceStalledReadWithoutKnownClaimFailsClosed(t *testing.T) {
+	first := true
+	unblock, exited := make(chan struct{}), make(chan struct{})
+	ctx, stop, err := StartExecutionFence(t.Context(), "run", func(context.Context) (Listing, error) {
+		if first {
+			first = false
+			return Listing{}, nil
+		}
+		// No known deadline exists yet. Simulate an IO operation that even
+		// ignores cancellation; the executor must still be stopped.
+		<-unblock
+		close(exited)
+		return Listing{}, nil
+	})
+	defer stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+		if !errors.Is(context.Cause(ctx), ErrSharedExecutionExpired) {
+			t.Error(context.Cause(ctx))
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("stalled observation left execution unbounded before first claim was observed")
+	}
+	stop()
+	close(unblock)
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("snapshot reader did not exit")
+	}
+}

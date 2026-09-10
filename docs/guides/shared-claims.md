@@ -51,6 +51,11 @@ The execution monitor does not extend a known deadline while a claims read is
 stalled. Administrative release durably revokes local execution before attempting
 remote cleanup, even when provider credentials are unavailable.
 
+Execution snapshots have a one-second read watchdog, including before the first
+claim is observed. A stalled read cancels shared execution rather than leaving
+it unbounded. Daemon execution snapshots read the atomically replaced ledger
+without taking the claim-write lock, so remote renewal does not block them.
+
 ## Crash recovery and retry bounds
 
 Before remote issue-claim transitions, the instance writes credential-free

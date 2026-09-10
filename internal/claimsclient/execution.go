@@ -18,7 +18,7 @@ var ErrSharedExecutionExpired = errors.New("shared claim execution authority exp
 func StartExecutionFence(parent context.Context, runID string, snapshot func(context.Context) (Listing, error)) (context.Context, context.CancelFunc, error) {
 	ctx, cancel := context.WithCancelCause(parent)
 	stop := func() { cancel(context.Canceled) }
-	initial, err := snapshot(ctx)
+	initial, err := executionSnapshot(ctx, cancel, snapshot)
 	state := executionClaims{runID: runID, held: make(map[Key]Entry)}
 	if err == nil {
 		err = state.update(initial, time.Now())
@@ -40,7 +40,7 @@ func StartExecutionFence(parent context.Context, runID string, snapshot func(con
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				listing, err := snapshot(ctx)
+				listing, err := executionSnapshot(ctx, cancel, snapshot)
 				select {
 				case updates <- observation{listing, err}:
 				case <-ctx.Done():
@@ -82,6 +82,26 @@ func StartExecutionFence(parent context.Context, runID string, snapshot func(con
 		}
 	}()
 	return ctx, stop, nil
+}
+
+// A known lease has its own deadline timer. This watchdog also bounds stalled
+// observation before the first claim is seen (or after an early release), when
+// no lease timer exists yet. Cancellation of execution is independent of the
+// snapshot function returning, including a stuck filesystem read.
+func executionSnapshot(ctx context.Context, cancel context.CancelCauseFunc, snapshot func(context.Context) (Listing, error)) (Listing, error) {
+	readCtx, readCancel := context.WithTimeout(ctx, time.Second)
+	watchdog := context.AfterFunc(readCtx, func() {
+		if errors.Is(readCtx.Err(), context.DeadlineExceeded) {
+			cancel(ErrSharedExecutionExpired)
+		}
+	})
+	defer func() { watchdog(); readCancel() }()
+	listing, err := snapshot(readCtx)
+	if errors.Is(readCtx.Err(), context.DeadlineExceeded) {
+		cancel(ErrSharedExecutionExpired)
+		return Listing{}, ErrSharedExecutionExpired
+	}
+	return listing, err
 }
 
 type executionClaims struct {

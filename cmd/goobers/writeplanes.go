@@ -274,7 +274,7 @@ func (s *daemonClaimService) List(ctx context.Context, request httpapi.ClaimList
 		if err != nil {
 			return response, err
 		}
-		response.ClaimVisibility = mode
+		return s.executionClaimSnapshot(ctx, request.RunID, mode)
 	}
 	err := s.withLedger(claimLockOperationAPIList, httpapi.ClaimRequest{Gaggle: request.Gaggle, RunID: request.RunID}, func(ledger *localscheduler.ClaimLedger) error {
 		var entries, history []localscheduler.ClaimEntry
@@ -300,9 +300,6 @@ func (s *daemonClaimService) List(ctx context.Context, request httpapi.ClaimList
 		}
 		response.Entries = claimEntriesWire(entries)
 		response.History = claimEntriesWire(history)
-		if request.Execution {
-			response.ObservedAt = time.Now()
-		}
 		return nil
 	})
 	return response, err

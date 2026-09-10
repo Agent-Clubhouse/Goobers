@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,8 +19,51 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/sharedclaim"
 )
+
+func TestExecutionSnapshotDoesNotWaitForClaimWriteLock(t *testing.T) {
+	layout, _ := newPinnedClaimResolverRun(t, "shared")
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "42"}
+	owner := sharedclaim.Owner{Instance: "instance", Run: "shared-run", Token: "owner"}
+	if ok, _, err := ledger.ClaimScopedUntil(key, owner.Run, "claim", time.Now().Add(time.Minute), owner); err != nil || !ok {
+		t.Fatalf("seed: %v %v", ok, err)
+	}
+	foreign := key
+	foreign.ExternalID = "43"
+	if ok, _, err := ledger.ClaimScoped(foreign, "another-run", "claim", time.Minute); err != nil || !ok {
+		t.Fatalf("seed foreign: %v %v", ok, err)
+	}
+	holder, err := lock.TryAcquire(filepath.Join(layout.SchedulerDir(), claimLockFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Release() }()
+	service := newDaemonClaimService(layout, nil, nil)
+	type result struct {
+		response httpapi.ClaimListResponse
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		response, err := service.List(t.Context(), httpapi.ClaimListRequest{RunID: "shared-run", Scope: httpapi.ClaimListScopeRun, Execution: true, IncludeHistory: true})
+		done <- result{response: response, err: err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil || got.response.ClaimVisibility != "shared" || got.response.ObservedAt.IsZero() || len(got.response.Entries) != 1 || got.response.Entries[0].RunID != "shared-run" {
+			t.Fatalf("invalid unlocked own-run snapshot: %+v %v", got.response, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("execution observation waited for the remote-transition write lock")
+	}
+}
 
 func TestDispatchExecSharedDeadlineStopsActualStageProcess(t *testing.T) {
 	now := time.Now()
