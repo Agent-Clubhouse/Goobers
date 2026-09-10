@@ -537,7 +537,7 @@ func resultFileContractProblem(t apiv1.Task, subcommand string) string {
 }
 
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, knownExternalTelemetryConnectors map[string]bool, checkAllGooberCapabilities bool) []string {
-	var problems []string
+	problems := claimVisibilityProblems(def.Spec.Readiness.ClaimVisibility)
 	maxConcurrentRuns := def.Spec.Readiness.MaxConcurrentRuns
 	if maxConcurrentRuns <= 0 {
 		maxConcurrentRuns = 1

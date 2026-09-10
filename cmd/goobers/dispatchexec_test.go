@@ -192,6 +192,9 @@ func TestRunDispatchExecContextSurrendersToTheWriteAPI(t *testing.T) {
 		body  []byte
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveLocalExecutionPolicy(w, r) {
+			return
+		}
 		received.path = r.URL.Path
 		received.token = r.Header.Get("Authorization")
 		received.body, _ = io.ReadAll(r.Body)
@@ -262,6 +265,9 @@ func TestRunDispatchExecContextSurrenderRetriesTransientFailure(t *testing.T) {
 	// (which shrink the backoff to assert on deadline expiry precisely).
 	var attempts int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveLocalExecutionPolicy(w, r) {
+			return
+		}
 		attempts++
 		if attempts <= 2 {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -299,6 +305,9 @@ func TestRunDispatchExecContextSurrenderRetriesTransientFailure(t *testing.T) {
 // reports whether it could tell the daemon what happened, not what happened.
 func TestRunDispatchExecContextSurrendersFailureEnvelopeWithExitZero(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveLocalExecutionPolicy(w, r) {
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
 	}))
@@ -316,6 +325,15 @@ func TestRunDispatchExecContextSurrendersFailureEnvelopeWithExitZero(t *testing.
 	if code := runDispatchExecContext(context.Background(), io.Discard, io.Discard); code != 0 {
 		t.Fatalf("exit code = %d, want 0 (the failure is IN the surrendered envelope, not the process exit)", code)
 	}
+}
+
+func serveLocalExecutionPolicy(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path != apicontract.ClaimListPath {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"entries":[],"claimVisibility":"local"}`))
+	return true
 }
 
 // Missing pod identity means there is nothing to surrender to: fail loud and

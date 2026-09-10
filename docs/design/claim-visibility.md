@@ -1,6 +1,6 @@
 # Design: Claim visibility - local by default, shared by opt-in
 
-> Status: **approved — decision record; contract only, not implemented**
+> Status: **approved — GitHub implementation pending merge; local remains the default**
 > Requirements: [`docs/requirements/scheduler.md`](../requirements/scheduler.md)
 > (`SCH-020`-`SCH-022`),
 > [`docs/requirements/backlog-providers.md`](../requirements/backlog-providers.md)
@@ -51,9 +51,18 @@ must be unambiguously distinguishable:
 
 Shared admission and live-activity queries must consider only shared coordination
 records and ignore local mirrors. Conversely, local-marker reconciliation and
-cleanup must not mutate or remove shared coordination records. The concrete
-GitHub encoding - for example, a separate marker namespace or an explicit mode
-discriminator - belongs to #1487; the required behavioral separation does not.
+cleanup must not mutate or remove shared coordination records. GitHub uses
+append-only `refs/heads/goobers-shared-claims/<sha256(item-key)>` refs with
+canonical, versioned commit messages. Non-forced child-commit updates provide
+compare-and-swap ownership. A release advances the ref to a tombstone instead of
+deleting it, preserving revision history against delayed writers.
+
+The approved implementation separates atomic ownership from the non-atomic
+`goobers:claimed` label. The label is eventually reconciled, not an admission
+input. A delayed cleanup may briefly remove a successor's label; post-write
+ownership reads and periodic retries repair it. Label failure never grants,
+revokes, or transfers ownership. Shared runs do not participate in the legacy
+comment-based claim election.
 
 ## Claim and release contract
 
@@ -78,9 +87,18 @@ claim record have both been established. A remote record held by another
 instance blocks the claim. Failure partway through acquisition must not start
 work with a partially established claim; the implementation must roll back or
 reconcile the partial state and fail closed. Normal completion, terminal
-failure, crash recovery, and lease expiry must remove the remote record alongside
-the local release. Failed remote cleanup must remain visible for reconciliation
-rather than being reported as a complete shared release.
+failure, crash recovery, and lease expiry must end remote ownership alongside
+the local release. Expired records are not live ownership; owner-scoped cleanup
+writes released tombstones. Failed remote cleanup retains local custody for
+reconciliation. If a fresh validated observation proves that the old incarnation
+is already gone, its local custody can retire without writing the successor's
+record. An uncertain acknowledgment alone is not proof of completion.
+
+Before a shared issue transition can write remotely, the instance durably
+registers the repository for visibility retries. Registration survives local
+release and run retention, so an empty ledger cannot hide an orphaned remote
+write. An independent daemon loop discovers protocol records from Git refs and
+repairs labels using current provider-clock lease state.
 
 ## Provider sequence
 
@@ -108,6 +126,8 @@ workflows as globally visible.
 
 ## Scope
 
-This record reserves the workflow contract and its semantics only. It does not
-add the DSL field, provider mutations, reconciliation, or the live query surface;
-those belong to #1487 and #1488.
+The GitHub implementation includes the DSL field, pinned admission policy,
+atomic remote ownership, execution fencing, owner-scoped cleanup, and label
+reconciliation. The live query surface remains separate work under #1488.
+See [operating shared claims](../guides/shared-claims.md) for credentials,
+retry limits, and recovery expectations.

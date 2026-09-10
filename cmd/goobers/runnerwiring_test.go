@@ -1112,6 +1112,7 @@ func TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery(t *testing
 }
 
 func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *testing.T) {
+	layout, _ := newPinnedClaimResolverRun(t, "local")
 	copilotHome := t.TempDir()
 	t.Setenv("COPILOT_HOME", copilotHome)
 	lister := &runnerWiringModelLister{responses: [][]harness.CopilotModelInfo{
@@ -1158,7 +1159,6 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		t.Fatalf("model discovery env = %v, want configured COPILOT_HOME", lister.env)
 	}
 
-	layout := instance.NewLayout(t.TempDir())
 	runnerCfg, _, err := buildRunnerConfig(runnerCompositionInput{
 		Layout:               layout,
 		Config:               &instance.Config{Runner: instance.RunnerConfig{EnvPassthrough: []string{"COPILOT_HOME"}}},
@@ -1176,8 +1176,11 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		t.Fatalf("NewAgentic: %v", err)
 	}
 	if _, err := agentic.Invoke(context.Background(), apiv1.InvocationEnvelope{
-		TaskID:    "implement",
-		Workspace: recorder.dir,
+		RunID:      "shared-run",
+		Gaggle:     "example",
+		WorkflowID: "claim",
+		TaskID:     "implement",
+		Workspace:  recorder.dir,
 	}); err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -1448,6 +1451,7 @@ func TestBuildRunnerConfigGitAskpassUsesAbsoluteWorkcopiesRoot(t *testing.T) {
 }
 
 func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
+	layout, _ := newPinnedClaimResolverRun(t, "local")
 	project := apiv1.RepoRef{
 		Provider: apiv1.ProviderGitHub,
 		Owner:    "acme",
@@ -1460,7 +1464,7 @@ func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 		LargeRepo: true,
 	}}}
 	cfg, _, err := buildRunnerConfig(runnerCompositionInput{
-		Layout:         instance.NewLayout(t.TempDir()).ForGaggle("builders"),
+		Layout:         layout,
 		Config:         instanceConfig,
 		SharedRegistry: journal.NewRegistryScrubber(),
 		GaggleProject:  project,
@@ -1485,8 +1489,11 @@ func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 		script = "@echo off\r\necho %MSBUILDDISABLENODEREUSE%"
 	}
 	result, err := deterministic.Run(context.Background(), apiv1.InvocationEnvelope{
-		TaskID:    "build",
-		Workspace: t.TempDir(),
+		RunID:      "shared-run",
+		Gaggle:     "example",
+		WorkflowID: "claim",
+		TaskID:     "build",
+		Workspace:  t.TempDir(),
 	}, apiv1.DeterministicRun{Script: script})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

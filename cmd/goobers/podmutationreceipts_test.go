@@ -38,6 +38,9 @@ func TestPodMutationReceiptsSurviveSurrender(t *testing.T) {
 				t.Fatal(err)
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveLocalExecutionPolicy(w, r) {
+					return
+				}
 				if r.URL.Path != "/api/v1/runs/source-run/stages/land/attempts/1/surrender" {
 					t.Errorf("unexpected live-only publication: %s", r.URL.Path)
 					w.WriteHeader(http.StatusBadRequest)
