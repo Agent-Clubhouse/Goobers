@@ -233,13 +233,26 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 	if processExited {
 		exited = true
 	}
-	if err != nil {
-		return "", fmt.Errorf("%w\ndaemon log:\n%s", err, readLog(logFile, logPath))
-	}
 
 	status, statusErr := runGoobers(bin, 10*time.Second, "status", "--daemon", instanceRoot)
-	if err := os.WriteFile(filepath.Join(outDir, "daemon-status.txt"), []byte(status), 0o644); err != nil {
-		return "", fmt.Errorf("write daemon status evidence: %w", err)
+	statusWriteErr := os.WriteFile(filepath.Join(outDir, "daemon-status.txt"), []byte(status), 0o644)
+	if err != nil {
+		var diagnosticErrors []string
+		if statusErr != nil {
+			diagnosticErrors = append(diagnosticErrors, "status command: "+statusErr.Error())
+		}
+		if statusWriteErr != nil {
+			diagnosticErrors = append(diagnosticErrors, "write daemon status evidence: "+statusWriteErr.Error())
+		}
+		diagnostics := ""
+		if len(diagnosticErrors) > 0 {
+			diagnostics = "\ndiagnostic errors: " + strings.Join(diagnosticErrors, "; ")
+		}
+		return "", fmt.Errorf("%w\nstatus:\n%s%s\ndaemon log:\n%s",
+			err, status, diagnostics, readLog(logFile, logPath))
+	}
+	if statusWriteErr != nil {
+		return "", fmt.Errorf("write daemon status evidence: %w", statusWriteErr)
 	}
 	if statusErr != nil {
 		return "", fmt.Errorf("daemon API at %s reported ready but daemon status failed: %w\nstatus:\n%s\ndaemon log:\n%s",
@@ -298,6 +311,11 @@ func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout t
 
 	var lastErr error
 	for {
+		select {
+		case err := <-waitErr:
+			return daemonExitedBeforeReadiness(err)
+		default:
+		}
 		if ctx.Err() != nil {
 			if lastErr == nil {
 				lastErr = ctx.Err()
@@ -321,22 +339,26 @@ func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout t
 				)
 				if requestErr != nil {
 					lastErr = fmt.Errorf("create daemon readiness request at %s: %w", address, requestErr)
-				} else if response, requestErr := client.Do(request); requestErr != nil {
-					lastErr = fmt.Errorf("query daemon readiness at %s: %w", address, requestErr)
 				} else {
-					var readiness httpapi.ReadinessStatus
-					decodeErr := json.NewDecoder(response.Body).Decode(&readiness)
-					closeErr := response.Body.Close()
-					switch {
-					case decodeErr != nil:
-						lastErr = fmt.Errorf("decode daemon readiness at %s: %w", address, decodeErr)
-					case closeErr != nil:
-						lastErr = fmt.Errorf("close daemon readiness response at %s: %w", address, closeErr)
-					case response.StatusCode == http.StatusOK && readiness.Ready:
-						return address, false, nil
-					default:
-						lastErr = fmt.Errorf("daemon readiness at %s returned %s with ready=%t",
-							address, response.Status, readiness.Ready)
+					response, requestErr := client.Do(request)
+					if requestErr != nil {
+						if response != nil && response.Body != nil {
+							_ = response.Body.Close()
+						}
+						lastErr = fmt.Errorf("query daemon readiness at %s: %w", address, requestErr)
+					} else {
+						var readiness httpapi.ReadinessStatus
+						decodeErr := json.NewDecoder(response.Body).Decode(&readiness)
+						_ = response.Body.Close()
+						switch {
+						case decodeErr != nil:
+							lastErr = fmt.Errorf("decode daemon readiness at %s: %w", address, decodeErr)
+						case response.StatusCode == http.StatusOK && readiness.Ready:
+							return address, false, nil
+						default:
+							lastErr = fmt.Errorf("daemon readiness at %s returned %s with ready=%t",
+								address, response.Status, readiness.Ready)
+						}
 					}
 				}
 			}
@@ -344,11 +366,13 @@ func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout t
 
 		select {
 		case err := <-waitErr:
-			if err == nil {
-				return "", true, fmt.Errorf("`goobers up` exited cleanly before its API became ready")
-			}
-			return "", true, fmt.Errorf("`goobers up` exited before its API became ready: %w", err)
+			return daemonExitedBeforeReadiness(err)
 		case <-ctx.Done():
+			select {
+			case err := <-waitErr:
+				return daemonExitedBeforeReadiness(err)
+			default:
+			}
 			if lastErr == nil {
 				lastErr = ctx.Err()
 			}
@@ -356,6 +380,13 @@ func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout t
 		case <-poll.C:
 		}
 	}
+}
+
+func daemonExitedBeforeReadiness(err error) (string, bool, error) {
+	if err == nil {
+		return "", true, fmt.Errorf("`goobers up` exited cleanly before its API became ready")
+	}
+	return "", true, fmt.Errorf("`goobers up` exited before its API became ready: %w", err)
 }
 
 // prepareConsole makes this process a safe sender of console control events.

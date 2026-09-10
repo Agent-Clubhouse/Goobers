@@ -133,6 +133,19 @@ func TestWaitForDaemonReadinessReportsEarlyExit(t *testing.T) {
 	}
 }
 
+func TestWaitForDaemonReadinessPrefersExitOverElapsedTimeout(t *testing.T) {
+	waitErr := make(chan error, 1)
+	waitErr <- errors.New("startup failed")
+
+	_, exited, err := waitForDaemonReadiness(t.TempDir(), waitErr, 0)
+	if !exited {
+		t.Fatal("process exit was not reported")
+	}
+	if err == nil || !strings.Contains(err.Error(), "startup failed") {
+		t.Fatalf("error = %v, want startup failure", err)
+	}
+}
+
 func TestWaitForDaemonReadinessBoundsProbeByOverallTimeout(t *testing.T) {
 	requestStarted := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
