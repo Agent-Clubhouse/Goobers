@@ -278,3 +278,77 @@ func TestRunAgentProgressDropsLateProgressFromOlderPod(t *testing.T) {
 		t.Fatalf("degraded summary = %#v, want lifecycle-only degraded fallback", summary)
 	}
 }
+
+func TestRunAgentProgressPreservesEarlierAttemptsAcrossNewerPods(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	const runID = "test-agent-progress-attempt-pods"
+
+	j, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
+		StartedAt:       time.Now(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+
+	now := time.Now().UTC()
+	events := []journal.Event{
+		{Type: journal.EventAgentLifecycle, Runner: map[string]any{"emitKey": "pod/1/agent.lifecycle"}, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentProgress, Runner: map[string]any{"emitKey": "pod/1/agent.progress"}, Progress: &journal.AgentProgress{
+			Schema: "goobers.dev/journal/agent-progress/v1", AgentID: "worker-1", RunID: runID,
+			Stage: "implement", Attempt: 1, Kind: journal.AgentProgressSummary,
+			Source: journal.AgentProgressSourceModel, OccurredAt: now.Add(time.Minute),
+			Summary: "Attempt one progress",
+		}},
+		{Type: journal.EventAgentLifecycle, Runner: map[string]any{"emitKey": "pod/2/agent.lifecycle"}, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 2, Worker: true, Lifecycle: journal.AgentWaiting, StartedAt: now.Add(2 * time.Minute),
+			UpdatedAt: now.Add(2 * time.Minute), Fidelity: journal.AgentFidelityNone,
+		}},
+		{Type: journal.EventAgentProgress, Runner: map[string]any{"emitKey": "pod/1/late.progress"}, Progress: &journal.AgentProgress{
+			Schema: "goobers.dev/journal/agent-progress/v1", AgentID: "worker-1", RunID: runID,
+			Stage: "implement", Attempt: 1, Kind: journal.AgentProgressDecision,
+			Source: journal.AgentProgressSourceModel, OccurredAt: now.Add(3 * time.Minute),
+			Decision: "Late attempt-one decision",
+		}},
+	}
+	for _, event := range events {
+		if err := j.Append(event); err != nil {
+			t.Fatalf("Append %s: %v", event.Type, err)
+		}
+	}
+	_ = j.Close()
+
+	reads, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatalf("NewOfflineRuns: %v", err)
+	}
+	progress, err := reads.RunAgentProgress(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunAgentProgress: %v", err)
+	}
+	if len(progress) != 2 {
+		t.Fatalf("expected both attempts to remain visible, got %d summaries", len(progress))
+	}
+	if progress[0].Attempt != 1 || len(progress[0].History) != 2 || progress[0].Current == nil ||
+		progress[0].Current.Source != "progress" || progress[0].Latest == nil ||
+		progress[0].Latest.Decision != "Late attempt-one decision" {
+		t.Fatalf("attempt 1 summary = %#v", progress[0])
+	}
+	if progress[1].Attempt != 2 || progress[1].Current == nil ||
+		progress[1].Current.Source != "lifecycle" || progress[1].Current.Lifecycle != journal.AgentWaiting {
+		t.Fatalf("attempt 2 current status = %#v", progress[1].Current)
+	}
+	if !progress[1].Degraded || progress[1].DegradedText == "" {
+		t.Fatalf("attempt 2 degraded summary = %#v", progress[1])
+	}
+}

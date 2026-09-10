@@ -347,27 +347,29 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-type progressStageIdentity struct {
-	runID string
-	stage string
+type progressInvocationIdentity struct {
+	runID   string
+	stage   string
+	agentID string
+	attempt int
 }
 
 func latestPodAgentProgressRecords(records []journal.EventRecord) []journal.EventRecord {
-	latest := make(map[progressStageIdentity]uint64)
+	latest := make(map[progressInvocationIdentity]uint64)
 	for _, record := range records {
-		stage, ok := progressStageForEvent(record.Event)
+		invocation, ok := progressInvocationForEvent(record.Event)
 		if !ok {
 			continue
 		}
-		if ordinal := progressEventPodOrdinal(record.Event); ordinal > latest[stage] {
-			latest[stage] = ordinal
+		if ordinal := progressEventPodOrdinal(record.Event); ordinal > latest[invocation] {
+			latest[invocation] = ordinal
 		}
 	}
 	filtered := make([]journal.EventRecord, 0, len(records))
 	for _, record := range records {
-		stage, ok := progressStageForEvent(record.Event)
+		invocation, ok := progressInvocationForEvent(record.Event)
 		if ok {
-			if ordinal := latest[stage]; ordinal > 0 && progressEventPodOrdinal(record.Event) != ordinal {
+			if ordinal := latest[invocation]; ordinal > 0 && progressEventPodOrdinal(record.Event) != ordinal {
 				continue
 			}
 		}
@@ -376,25 +378,39 @@ func latestPodAgentProgressRecords(records []journal.EventRecord) []journal.Even
 	return filtered
 }
 
-func progressStageForEvent(event journal.Event) (progressStageIdentity, bool) {
+func progressInvocationForEvent(event journal.Event) (progressInvocationIdentity, bool) {
 	switch event.Type {
 	case journal.EventAgentLifecycle:
-		if event.Agent == nil || event.Agent.RunID == "" || event.Agent.Stage == "" {
-			return progressStageIdentity{}, false
+		if event.Agent == nil || event.Agent.RunID == "" || event.Agent.Stage == "" || event.Agent.ID == "" || event.Agent.Attempt < 1 {
+			return progressInvocationIdentity{}, false
 		}
-		return progressStageIdentity{runID: event.Agent.RunID, stage: event.Agent.Stage}, true
+		return progressInvocationIdentity{
+			runID:   event.Agent.RunID,
+			stage:   event.Agent.Stage,
+			agentID: event.Agent.ID,
+			attempt: event.Agent.Attempt,
+		}, true
 	case journal.EventAgentProgress:
-		if event.Progress == nil {
-			return progressStageIdentity{}, false
+		if event.Progress == nil || event.Progress.AgentID == "" {
+			return progressInvocationIdentity{}, false
 		}
 		runID := firstNonEmpty(event.Progress.RunID, event.RunID)
 		stage := firstNonEmpty(event.Progress.Stage, event.Stage)
-		if runID == "" || stage == "" {
-			return progressStageIdentity{}, false
+		attempt := event.Progress.Attempt
+		if attempt < 1 {
+			attempt = event.Attempt
 		}
-		return progressStageIdentity{runID: runID, stage: stage}, true
+		if runID == "" || stage == "" || attempt < 1 {
+			return progressInvocationIdentity{}, false
+		}
+		return progressInvocationIdentity{
+			runID:   runID,
+			stage:   stage,
+			agentID: event.Progress.AgentID,
+			attempt: attempt,
+		}, true
 	default:
-		return progressStageIdentity{}, false
+		return progressInvocationIdentity{}, false
 	}
 }
 

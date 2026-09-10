@@ -371,6 +371,94 @@ func TestRunAppendAssignsAgentProgressSequenceFromDurableJournalOrder(t *testing
 	}
 }
 
+func TestAgentProgressPayloadIsRedactedAtJournalBoundary(t *testing.T) {
+	const secret = "progress-secret-value"
+	registry, scrubber := DefaultScrubber()
+	registry.Register([]byte(secret))
+	root := t.TempDir()
+	run, err := Create(root, testIdentity(), nil, WithScrubber(scrubber), WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	progress := AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-" + secret,
+		RunID:      testIdentity().RunID,
+		Stage:      "work",
+		Attempt:    1,
+		Kind:       AgentProgressSummary,
+		Source:     AgentProgressSourceModel,
+		OccurredAt: time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC),
+		Summary:    "Summary " + secret,
+		Plan:       []string{"Plan " + secret},
+		Progress:   []string{"Progress " + secret},
+		Decision:   "Decision " + secret,
+		Blocker:    "Blocker " + secret,
+		Question:   "Question " + secret,
+		NextAction: "Next " + secret,
+		Evidence: []AgentProgressEvidence{{
+			Type:  "tool-" + secret,
+			ID:    "grep-" + secret,
+			Label: "label-" + secret,
+			Ref: &Ref{
+				Path:      "artifacts/" + secret,
+				Digest:    "sha256:" + secret,
+				MediaType: "application/" + secret,
+			},
+		}},
+	}
+	if err := run.Append(Event{Type: EventAgentProgress, Progress: &progress}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, testIdentity().RunID, fileEvents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("journal retained secret in agent.progress payload: %s", raw)
+	}
+
+	reader, err := OpenRead(filepath.Join(root, testIdentity().RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	if last.Progress == nil || len(last.Progress.Plan) != 1 || len(last.Progress.Progress) != 1 || len(last.Progress.Evidence) != 1 || last.Progress.Evidence[0].Ref == nil {
+		t.Fatalf("persisted progress = %#v", last.Progress)
+	}
+	fields := []string{
+		last.Progress.AgentID,
+		last.Progress.Summary,
+		last.Progress.Plan[0],
+		last.Progress.Progress[0],
+		last.Progress.Decision,
+		last.Progress.Blocker,
+		last.Progress.Question,
+		last.Progress.NextAction,
+		last.Progress.Evidence[0].Type,
+		last.Progress.Evidence[0].ID,
+		last.Progress.Evidence[0].Label,
+		last.Progress.Evidence[0].Ref.Path,
+		last.Progress.Evidence[0].Ref.Digest,
+		last.Progress.Evidence[0].Ref.MediaType,
+	}
+	for _, field := range fields {
+		if strings.Contains(field, secret) {
+			t.Fatalf("typed journal read restored secret in progress field %q", field)
+		}
+	}
+	if !strings.Contains(last.Progress.Summary, Redacted) || !strings.Contains(last.Progress.Evidence[0].Label, Redacted) {
+		t.Fatalf("persisted progress did not preserve explicit redaction markers: %#v", last.Progress)
+	}
+}
+
 func runAppendProgress(t *testing.T, event Event) error {
 	t.Helper()
 	run, _ := newRun(t)
