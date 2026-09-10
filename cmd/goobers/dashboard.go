@@ -31,6 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/portalassets"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 const (
@@ -100,7 +101,7 @@ const dashboardHelp = "Usage: goobers dashboard [--port=<port|auto>] [--listen=<
 	"daemon; use --wait-for-daemon=<duration> to choose another bound.\n" +
 	"--listen overrides the full bind address (host:port) and takes the place\n" +
 	"of --port when given; binding a non-loopback host requires api.auth to be\n" +
-	"configured in instance.yaml (SEC-043) — there is no insecure override.\n" +
+	"configured in instance.yaml (SEC-043) â€” there is no insecure override.\n" +
 	"Blocks until interrupted. Exit codes: 0 = clean shutdown, 1 = service or\n" +
 	"browser failure, 2 = usage/IO error.\n"
 
@@ -109,14 +110,14 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	flags.SetOutput(stderr)
 	portValue := flags.String("port", strconv.Itoa(defaultDashboardPort), "dashboard port, or \"auto\" to use the first available port from 8081")
 	listenValue := flags.String("listen", "", "dashboard bind address as host:port, overriding --port's loopback default; "+
-		"a non-loopback host requires api.auth (instance.yaml) to be configured — there is no insecure override")
+		"a non-loopback host requires api.auth (instance.yaml) to be configured â€” there is no insecure override")
 	noOpen := flags.Bool("no-open", false, "print the dashboard URL without opening a browser")
 	devAssets := flags.String("dev-assets", "", "serve a portal build from this directory instead of embedded assets")
 	var waitForDaemon dashboardWaitFlag
 	flags.Var(&waitForDaemon, "wait-for-daemon", "wait for a concurrently starting daemon (default 30s; optionally specify a duration)")
 	// dashboardHelp carries a %d for the default port, so it renders here (and
 	// in the registry) through defaultDashboardPort rather than via the plain
-	// helpUsage path — keeping the documented port coupled to the constant.
+	// helpUsage path â€” keeping the documented port coupled to the constant.
 	flags.Usage = func() { pf(stderr, dashboardHelp, defaultDashboardPort) }
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -144,7 +145,7 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	}
 	layout := instance.NewLayout(root)
 	if _, err := os.Stat(layout.ConfigFile()); err != nil {
-		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", layout.ConfigFile())
+		pf(stderr, "error: %s not found (not an instance root â€” run `goobers init` first)\n", layout.ConfigFile())
 		return 2
 	}
 	config, err := instance.LoadConfig(layout.ConfigFile())
@@ -320,13 +321,13 @@ func parseDashboardListen(value string) (string, dashboardPort, error) {
 // validateDashboardListenHost fails closed exactly the way instance config validation
 // gates the daemon API (#640, SEC-043): a loopback host keeps the tier-1
 // local-trust default, and a non-loopback host is refused unless the
-// instance has an authenticator configured (api.auth.oidc) — there is
+// instance has an authenticator configured (api.auth.oidc) â€” there is
 // deliberately no insecure override (#2884). Unlike the API, this does not
 // also require api.tls: the dashboard's own listener never terminates TLS in
 // either serving mode (daemon-attach proxies over the daemon's own
 // transport; standalone speaks plain HTTP), so requiring a certificate here
 // without the process ever loading or serving it would just be a config
-// checkbox — transport security off-loopback is the ingress/reverse-proxy's
+// checkbox â€” transport security off-loopback is the ingress/reverse-proxy's
 // job, per the documented single-HTTPS-door topology
 // (deploy/reference/goobers-system/api-ingress-example.yaml).
 func validateDashboardListenHost(host string, config *instance.Config) error {
@@ -336,7 +337,7 @@ func validateDashboardListenHost(host string, config *instance.Config) error {
 	if config.API.Auth == nil {
 		return fmt.Errorf("--listen: host %q is not loopback: exposing the dashboard off-loopback requires "+
 			"api.auth.oidc to be configured in instance.yaml so the portal is authenticated; there is no "+
-			"insecure override — bind a loopback address instead (SEC-043, #2884)", host)
+			"insecure override â€” bind a loopback address instead (SEC-043, #2884)", host)
 	}
 	return nil
 }
@@ -373,7 +374,7 @@ func listenDashboard(host string, port dashboardPort) (net.Listener, error) {
 // WithRunRevealer the same way `goobers up` gates it on the API's own
 // listen address (#2884): the reveal-in-Finder action shells out on the
 // dashboard process's own machine, which is only correct when the caller is
-// necessarily on that same machine — true for loopback, not guaranteed once
+// necessarily on that same machine â€” true for loopback, not guaranteed once
 // --listen opts into a non-loopback bind (docs/design/portal-reveal-remote-posture.md).
 func prepareDashboardAPI(ctx context.Context, layout instance.Layout, config *instance.Config, errorLog *log.Logger, loopback bool, waitForDaemon time.Duration) (dashboardAPI, error) {
 	lockPath := filepath.Join(layout.SchedulerDir(), "up.lock")
@@ -559,8 +560,8 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	if err != nil {
 		return dashboardAPI{}, err
 	}
-	// The standalone dashboard had NO projection at all (#1933, §11.2): no
-	// Telemetry, no ReadModel, so every list was a full scan of all history —
+	// The standalone dashboard had NO projection at all (#1933, Â§11.2): no
+	// Telemetry, no ReadModel, so every list was a full scan of all history â€”
 	// and this is the configuration a new user meets first.
 	//
 	// Open the read model, building it if empty. On a read-only volume this
@@ -571,21 +572,6 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	}
 	readStore, readMode, _ := readservice.OpenReadModel(topology)
 	if readStore != nil {
-		// No measurement source here, and that is deliberate (#1782).
-		//
-		// The obvious move is to attach one -- the population flags come from the
-		// telemetry rollup, and without a source they project as zero. But
-		// standalone is contractually required to leave the instance
-		// BYTE-IDENTICAL, and opening a SQLite database creates its -wal and -shm
-		// alongside the file. TestStandaloneDashboardAPILeavesInstanceUnchanged
-		// caught exactly that.
-		//
-		// Attaching is also unnecessary. Standalone constructs its service with
-		// Telemetry nil, and listRunsUnannotated refuses a telemetry-backed
-		// population filter with ErrTelemetryUnavailable BEFORE it dispatches to
-		// the read model. So the zeroed flags are unreachable: the filter is
-		// refused with a typed error rather than answered wrongly with an empty
-		// page, which is the same behaviour standalone had before this change.
 		if err := readservice.EnsureBuilt(context.Background(), readStore, layout, nil); err != nil {
 			// A failed build degrades rather than fails: single-run routes still
 			// work, and saying so beats refusing to start.
@@ -593,14 +579,29 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		}
 	}
 
+	telemetry, telemetryErr := rollup.OpenExistingReader(context.Background(), layout.TelemetryDB())
+	if telemetryErr != nil && !errors.Is(telemetryErr, os.ErrNotExist) {
+		if readStore != nil {
+			_ = readStore.Close()
+		}
+		return dashboardAPI{}, fmt.Errorf("open standalone telemetry: %w", telemetryErr)
+	}
+
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      layout,
 		Config:      config,
 		Definitions: definitions,
 		Validation:  report,
+		Telemetry:   telemetry,
 		ReadModel:   readStore,
 	}, func() bool { return true })
 	if err != nil {
+		if telemetry != nil {
+			_ = telemetry.Close()
+		}
+		if readStore != nil {
+			_ = readStore.Close()
+		}
 		return dashboardAPI{}, err
 	}
 	reads.SetReadMode(readMode)
@@ -627,7 +628,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	if loopback {
 		// The reveal action shells out on this process's own machine (#2306);
 		// off-loopback that machine is not necessarily the requesting user's, so
-		// it is withheld rather than silently opening a window on the server —
+		// it is withheld rather than silently opening a window on the server â€”
 		// the same guard `goobers up` applies to the API's own listener
 		// (docs/design/portal-reveal-remote-posture.md).
 		streamOpts = append(streamOpts, httpapi.WithRunRevealer(runDirectoryRevealer(layout)))
@@ -668,10 +669,15 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		// (#1929); the change-feed stream holds no goroutine of its own beyond
 		// each subscription, which the handler cancels.
 		close: func() error {
-			if readStore != nil {
-				return readStore.Close()
+			var telemetryCloseErr error
+			if telemetry != nil {
+				telemetryCloseErr = telemetry.Close()
 			}
-			return nil
+			var readStoreCloseErr error
+			if readStore != nil {
+				readStoreCloseErr = readStore.Close()
+			}
+			return errors.Join(telemetryCloseErr, readStoreCloseErr)
 		},
 	}, nil
 }
@@ -756,8 +762,8 @@ const (
 
 // serveInstanceAsset serves a co-branding file from the instance's assets/ dir
 // when the cleaned request path resolves to an existing regular file inside
-// that dir, and reports whether it did. On any miss — traversal outside the
-// dir, a directory, or a nonexistent file — it serves nothing and returns
+// that dir, and reports whether it did. On any miss â€” traversal outside the
+// dir, a directory, or a nonexistent file â€” it serves nothing and returns
 // false so the caller falls through to the embedded bundle.
 func serveInstanceAsset(w http.ResponseWriter, r *http.Request, instanceRoot string) bool {
 	assetsDir := filepath.Join(instanceRoot, portalAssetDirName)
@@ -863,7 +869,7 @@ func runDirectoryRevealer(layout instance.Layout) func(context.Context, string) 
 }
 
 // podRunGaggleResolver answers "which gaggle does run X belong to?" from the
-// run's own journal header — the daemon-side half of the telemetry read
+// run's own journal header â€” the daemon-side half of the telemetry read
 // plane's containment (decision 005 R4 / finding 002 C3). A pod token proves
 // only which run its bearer is; this is what turns that into a gaggle the
 // daemon can compare a requested scope against.
@@ -872,7 +878,7 @@ func runDirectoryRevealer(layout instance.Layout) func(context.Context, string) 
 // rewritten, so the answer cannot drift mid-run the way a projection or a
 // live config lookup could. An unknown run, an unreadable header, or a header
 // naming no gaggle all surface as an error or an empty string, and the
-// handler refuses on either — unknown scope is not "any scope".
+// handler refuses on either â€” unknown scope is not "any scope".
 func podRunGaggleResolver(layout instance.Layout) func(context.Context, string) (string, error) {
 	return func(_ context.Context, runID string) (string, error) {
 		dir, err := layout.FindRunDir(runID)
