@@ -229,6 +229,9 @@ func TestKillTerminatesEscapedDescendants(t *testing.T) {
 }
 
 func TestKillTerminatesWSLDescendants(t *testing.T) {
+	if os.Getenv("GOOBERS_RUN_WSL_INTEGRATION_TEST") != "1" {
+		t.Skip("set GOOBERS_RUN_WSL_INTEGRATION_TEST=1 to run the disruptive WSL integration test")
+	}
 	if _, err := exec.LookPath("wsl.exe"); err != nil {
 		t.Skip("wsl.exe is not installed")
 	}

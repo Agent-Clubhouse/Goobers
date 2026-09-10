@@ -1218,6 +1218,8 @@ jobs:
         run: make build-operator
 
       - name: Windows platform runtime
+        env:
+          GOOBERS_RUN_WSL_INTEGRATION_TEST: "1"
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
 
       - name: Windows service transitions
