@@ -197,7 +197,7 @@ func TestAttemptPlacementProjection(t *testing.T) {
 
 	t.Run("pod arm wins over self", func(t *testing.T) {
 		got, ok := attemptPlacement(stageActivityResult{
-			Placement: &StagePlacement{Runner: "linux-ci", Build: "v9", Worker: "goobers-worker/v9@host#1", Pod: "p", Image: "i", QueuedAt: queued},
+			Placement:     &StagePlacement{Runner: "linux-ci", Build: "v9", Worker: "goobers-worker/v9@host#1", Pod: "p", Image: "i", QueuedAt: queued},
 			SelfPlacement: &journal.Placement{Runner: journal.PlacementRunnerSelf},
 		})
 		if !ok || got.Runner != "linux-ci" || got.Build != "v9" || got.Worker != "goobers-worker/v9@host#1" || got.Pod != "p" {

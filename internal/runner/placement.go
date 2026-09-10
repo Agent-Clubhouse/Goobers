@@ -54,10 +54,10 @@ func selfPlacement() journal.Placement {
 		// Node ONLY from the deployment's downward API. os.Hostname() is not
 		// a node name — inside a pod it is the POD name — so it goes to Host,
 		// the field whose name is true of it in both places.
-		Node:  os.Getenv(EnvPlacementNode),
-		Pod:   os.Getenv(EnvPlacementPod),
-		Image: os.Getenv(EnvPlacementImage),
-		Build: os.Getenv(EnvPlacementBuild),
+		Node:   os.Getenv(EnvPlacementNode),
+		Pod:    os.Getenv(EnvPlacementPod),
+		Image:  os.Getenv(EnvPlacementImage),
+		Build:  os.Getenv(EnvPlacementBuild),
 		Worker: os.Getenv(EnvPlacementWorker),
 	}
 	if host, err := os.Hostname(); err == nil {
