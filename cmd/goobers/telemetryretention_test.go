@@ -158,6 +158,90 @@ func TestConfiguredTelemetryRetentionNoCandidatesNeverStartsGraceWindow(t *testi
 	}
 }
 
+// TestConfiguredTelemetryRetentionStartsGraceWindowAfterPriorEmptyPass is a
+// regression guard for #4253's fix-forward bug: an earlier version gated the
+// "first encounter" dry-run fallback on whether a state file merely existed
+// (!hasState) rather than on whether a grace window had ever actually
+// started (state.EnforceAt.IsZero()). Since the state file is written on
+// every pass — including a harmless empty one — that let a single 0-candidate
+// pass permanently satisfy the "first pass" check: the very next pass to
+// find real candidates, no matter how much later, enforced immediately with
+// zero grace period. This chains exactly that sequence — an empty pass
+// first, then a later pass that first finds real candidates — and requires
+// the second pass to still be a dry run that starts the grace window,
+// mirroring TestConfiguredTelemetryRetentionOptOutStartsGraceWindowThenEnforces's
+// structure but with the empty pass prepended.
+func TestConfiguredTelemetryRetentionStartsGraceWindowAfterPriorEmptyPass(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	instanceLayout := instance.NewLayout(root)
+	db, err := rollup.Open(instanceLayout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}
+
+	// Pass 1: fresh instance, nothing old enough to prune yet. Correctly a
+	// dry run with 0 candidates — this is the pass that used to (incorrectly)
+	// "use up" the first-encounter check by merely writing a state file.
+	results, dryRun, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, now)
+	if err != nil {
+		t.Fatalf("empty pass: %v", err)
+	}
+	if !dryRun || len(results) != 0 {
+		t.Fatalf("empty pass = (results %#v, dryRun %v), want 0 candidates, dry run", results, dryRun)
+	}
+
+	// Weeks later, a run finally ages past policy — the first pass that ever
+	// finds real candidates. This must still be a dry run (the grace window
+	// starting now), not immediate enforcement.
+	later := now.Add(30 * 24 * time.Hour)
+	runDir := createTelemetryRetentionRun(t, instanceLayout.ForGaggle("example"), "first-real-candidate", later.Add(-48*time.Hour))
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
+		t.Fatal(err)
+	}
+
+	results, dryRun, err = pruneConfiguredTelemetryRetention(instanceLayout, config, db, later)
+	if err != nil {
+		t.Fatalf("first-candidates pass: %v", err)
+	}
+	if !dryRun {
+		t.Fatal("first pass to find real candidates after a prior empty pass must still be a dry run (grace window), not immediate enforcement")
+	}
+	if len(results) != 1 || results[0].RunID != "first-real-candidate" {
+		t.Fatalf("first-candidates pass results = %#v", results)
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("first-candidates dry-run pass deleted the run journal: %v", err)
+	}
+
+	state, ok, err := readTelemetryRetentionState(instanceLayout)
+	if err != nil || !ok {
+		t.Fatalf("readTelemetryRetentionState: ok=%v err=%v", ok, err)
+	}
+	if state.EnforceAt.IsZero() {
+		t.Fatal("grace window must have started (EnforceAt set) once real candidates were first found")
+	}
+
+	// After the grace window elapses, enforcement begins for real.
+	afterGrace := state.EnforceAt.Add(time.Hour)
+	results, dryRun, err = pruneConfiguredTelemetryRetention(instanceLayout, config, db, afterGrace)
+	if err != nil {
+		t.Fatalf("post-grace pass: %v", err)
+	}
+	if dryRun {
+		t.Fatal("pass after the grace window elapsed must enforce for real")
+	}
+	if len(results) != 1 || results[0].RunID != "first-real-candidate" {
+		t.Fatalf("post-grace prune results = %#v", results)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("post-grace enforcement left journal: %v", err)
+	}
+}
+
 // TestConfiguredTelemetryRetentionExplicitlyDisabledIsNoOp proves
 // telemetry.retention.enabled: false still fully disables automatic pruning
 // under the new opt-out default.
