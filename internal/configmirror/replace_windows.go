@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"unsafe"
 
-	"github.com/goobers/goobers/internal/platform/durability"
 	"golang.org/x/sys/windows"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // MoveFileEx replacement refuses an existing target with open handles even
