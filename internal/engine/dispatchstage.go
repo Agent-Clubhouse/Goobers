@@ -872,6 +872,8 @@ func placementProvenance(report dispatcher.Report) *StagePlacement {
 	}
 	return &StagePlacement{
 		Runner:       report.Runner,
+		Build:        report.Build,
+		Worker:       report.Worker,
 		Pod:          report.Pod,
 		Image:        report.Image,
 		Node:         report.Node,

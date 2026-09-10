@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // Defaults for Config fields left zero. Each is a named constant so a
@@ -701,6 +703,13 @@ func (t PlaneTokens) Distinct(podToken string) bool {
 type Report struct {
 	// Runner is the resolved runner name.
 	Runner string
+	// Build and Worker are the worker versioning identity this dispatcher is
+	// running under. They stay empty on a local self-host resolution with no
+	// remote pod, but are carried through pod-dispatch reports and failed
+	// activity placement evidence so the engine can attribute the attempt to the
+	// exact versioned worker that observed it.
+	Build  string
+	Worker string
 	// Local marks a self-host resolution: the stage belongs to the local
 	// execution path, and no pod was created.
 	Local bool
@@ -777,13 +786,15 @@ var ErrPodUnschedulable = errors.New("dispatcher: stage pod cannot be scheduled 
 // without a verified recovery acknowledgment are preserved. Every retry still
 // receives a fresh pod, never a reused one (D1).
 func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []RunnerSpec) (Report, error) {
-	runner, err := SelectRunner(attempt, eligible)
+	selected, err := SelectRunner(attempt, eligible)
 	if err != nil {
 		return Report{}, err
 	}
-	report := Report{Runner: runner.Name, QueuedAt: d.now().UTC()}
+	report := Report{Runner: selected.Name, QueuedAt: d.now().UTC()}
+	report.Build = os.Getenv(runner.EnvPlacementBuild)
+	report.Worker = os.Getenv(runner.EnvPlacementWorker)
 
-	if runner.HostKind == instance.RunnerHostSelf {
+	if selected.HostKind == instance.RunnerHostSelf {
 		// host: self — the local execution path (fresh worktree per attempt,
 		// createStageWorkspace semantics). No pod, and none of the pod-plane
 		// contract applies (architecture §3).
@@ -830,11 +841,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		return Report{}, err
 	}
 
-	if err := d.waitForCapacity(ctx, runner); err != nil {
+	if err := d.waitForCapacity(ctx, selected); err != nil {
 		return report, err
 	}
 
-	pod, err := d.renderFor(ctx, attempt, runner)
+	pod, err := d.renderFor(ctx, attempt, selected)
 	if err != nil {
 		return report, err
 	}

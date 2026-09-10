@@ -380,6 +380,8 @@ func attemptPlacement(result stageActivityResult) (journal.Placement, bool) {
 	if pod := result.Placement; pod != nil {
 		placement := journal.Placement{
 			Runner: pod.Runner,
+			Build:  pod.Build,
+			Worker: pod.Worker,
 			Pod:    pod.Pod,
 			Image:  pod.Image,
 			Node:   pod.Node,

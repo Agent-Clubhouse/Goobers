@@ -60,7 +60,8 @@ func TestPodAttemptJournalsDispatcherPlacementProvenance(t *testing.T) {
 		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
 	})
 	fake := &fakeStageDispatcher{report: dispatcher.Report{
-		Runner: "linux-toolchain-ci", Pod: "goobers-stage-build-1", Image: "ghcr.io/example/stage:v9",
+		Runner: "linux-toolchain-ci", Build: "v9.9.9-test", Worker: "goobers-worker/v9.9.9-test@ci#42",
+		Pod: "goobers-stage-build-1", Image: "ghcr.io/example/stage:v9",
 		Node: "linux-node-1", OS: "linux",
 		QueuedAt: queuedAt, PodStartedAt: podStartedAt,
 		Phase: corev1.PodSucceeded, SurrenderConfirmed: true,
@@ -75,8 +76,8 @@ func TestPodAttemptJournalsDispatcherPlacementProvenance(t *testing.T) {
 	if !ok {
 		t.Fatalf("no %s event for the pod attempt; the stall sweep and §11 acceptance 6 have nothing to read", journal.EventRunnerPlacement)
 	}
-	if got.Runner != "linux-toolchain-ci" || got.Pod != "goobers-stage-build-1" || got.Image != "ghcr.io/example/stage:v9" || got.Node != "linux-node-1" || got.OS != "linux" {
-		t.Fatalf("placement = %+v, want the dispatcher's runner/pod/image", got)
+	if got.Runner != "linux-toolchain-ci" || got.Build != "v9.9.9-test" || got.Worker != "goobers-worker/v9.9.9-test@ci#42" || got.Pod != "goobers-stage-build-1" || got.Image != "ghcr.io/example/stage:v9" || got.Node != "linux-node-1" || got.OS != "linux" {
+		t.Fatalf("placement = %+v, want the dispatcher's runner/build/worker/pod/image", got)
 	}
 	if got.QueuedAt == nil || !got.QueuedAt.Equal(queuedAt) {
 		t.Fatalf("queuedAt = %v, want %v — the dispatch-latency carrier the scale rung reads", got.QueuedAt, queuedAt)
@@ -196,11 +197,11 @@ func TestAttemptPlacementProjection(t *testing.T) {
 
 	t.Run("pod arm wins over self", func(t *testing.T) {
 		got, ok := attemptPlacement(stageActivityResult{
-			Placement:     &StagePlacement{Runner: "linux-ci", Pod: "p", Image: "i", QueuedAt: queued},
+			Placement: &StagePlacement{Runner: "linux-ci", Build: "v9", Worker: "goobers-worker/v9@host#1", Pod: "p", Image: "i", QueuedAt: queued},
 			SelfPlacement: &journal.Placement{Runner: journal.PlacementRunnerSelf},
 		})
-		if !ok || got.Runner != "linux-ci" || got.Pod != "p" {
-			t.Fatalf("attemptPlacement = %+v (ok=%t), want the pod that actually ran the work", got, ok)
+		if !ok || got.Runner != "linux-ci" || got.Build != "v9" || got.Worker != "goobers-worker/v9@host#1" || got.Pod != "p" {
+			t.Fatalf("attemptPlacement = %+v (ok=%t), want the pod that actually ran the work with its build/worker identity", got, ok)
 		}
 		if got.QueuedAt == nil || !got.QueuedAt.Equal(queued) {
 			t.Fatalf("queuedAt = %v, want %v", got.QueuedAt, queued)

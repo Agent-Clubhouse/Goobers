@@ -249,6 +249,11 @@ type UnpushedDiffCapture struct {
 type StagePlacement struct {
 	// Runner is the inventory entry SelectRunner resolved for the attempt.
 	Runner string `json:"runner,omitzero"`
+	// Build is the Temporal build ID the executing worker reported at runtime.
+	Build string `json:"build,omitzero"`
+	// Worker is the exact Temporal worker identity string for the process that
+	// observed this attempt.
+	Worker string `json:"worker,omitzero"`
 	// Pod is the created pod's name.
 	Pod string `json:"pod,omitzero"`
 	// Image is the image the stage container actually ran — the decision-009
