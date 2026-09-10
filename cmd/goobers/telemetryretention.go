@@ -140,18 +140,24 @@ func pruneConfiguredTelemetryRetention(
 		return nil, false, nil
 	}
 
-	state, hasState, err := readTelemetryRetentionState(layout)
+	state, _, err := readTelemetryRetentionState(layout)
 	if err != nil {
 		return nil, false, err
 	}
 	immediate := config.ImmediateFirstEnable()
 	withinGrace := !state.EnforceAt.IsZero() && now.Before(state.EnforceAt)
-	// A fresh instance (no state yet) also runs dry — this is the probe pass
-	// that decides whether a grace window needs to start at all. An instance
-	// with nothing yet to prune stays harmlessly dry-run forever (there is
-	// nothing a real pass would do differently), only actually starting the
-	// window the first time it finds real candidates.
-	dryRun = !immediate && (withinGrace || !hasState)
+	// A grace window that has never started (EnforceAt still zero) also runs
+	// dry — this is the probe pass that decides whether a window needs to
+	// start at all. This must key off EnforceAt, not "does a state file
+	// exist": the state file is written on every pass, including a dry pass
+	// that found zero candidates, so gating on file existence alone (#4253's
+	// original bug) let a single harmless empty pass permanently satisfy the
+	// "first pass" check — the very next pass to find real candidates, no
+	// matter how much later, then enforced immediately with zero grace
+	// period. An instance with nothing yet to prune stays harmlessly dry-run
+	// forever (there is nothing a real pass would do differently), only
+	// actually starting the window the first time it finds real candidates.
+	dryRun = !immediate && (withinGrace || state.EnforceAt.IsZero())
 
 	results, err = pruneTelemetryRetention(layout, config, db, now, dryRun)
 	if err != nil {
