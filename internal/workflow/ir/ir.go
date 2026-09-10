@@ -699,7 +699,11 @@ func Validate(d Document) error {
 			return fmt.Errorf("edge target %q from %q is not declared", edge.To, edge.From)
 		}
 	}
-	for _, trigger := range d.Triggers {
+	return validateTriggers(d.Triggers)
+}
+
+func validateTriggers(triggers []apiv1.Trigger) error {
+	for _, trigger := range triggers {
 		switch trigger.Type {
 		case apiv1.TriggerManual, apiv1.TriggerBacklogItem, apiv1.TriggerSchedule, apiv1.TriggerSignal, apiv1.TriggerWebhook:
 		default:
