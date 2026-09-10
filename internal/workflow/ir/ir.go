@@ -400,68 +400,102 @@ func (d Document) Diff(other Document) (Diff, error) {
 	}
 	changes := make([]Change, 0, 12)
 	behaviorChanged := semanticContentChanged(d, other)
-	if d.Source.Digest != other.Source.Digest && behaviorChanged {
-		changes = append(changes, Change{Path: "source.digest", Before: d.Source.Digest, After: other.Source.Digest, Kind: DiffBehavioral, Explanation: "source normalization digest changed with normalized workflow content"})
+	changes = appendDiffMetadataChanges(changes, d, other, behaviorChanged)
+	changes = appendDiffCollectionChanges(changes, d, other)
+	changes = appendDiffNodeChanges(changes, d.Nodes, other.Nodes)
+	changes = appendDiffEdgeChanges(changes, d.Edges, other.Edges)
+	return finalizeDiff(changes), nil
+}
+
+func appendDiffMetadataChanges(changes []Change, before, after Document, behaviorChanged bool) []Change {
+	if before.Source.Digest != after.Source.Digest && behaviorChanged {
+		changes = append(changes, Change{Path: "source.digest", Before: before.Source.Digest, After: after.Source.Digest, Kind: DiffBehavioral, Explanation: "source normalization digest changed with normalized workflow content"})
 	}
-	if d.Start != other.Start {
-		changes = append(changes, Change{Path: "start", Before: d.Start, After: other.Start, Kind: DiffBehavioral, Explanation: "workflow entry point changed"})
+	if before.Start != after.Start {
+		changes = append(changes, Change{Path: "start", Before: before.Start, After: after.Start, Kind: DiffBehavioral, Explanation: "workflow entry point changed"})
 	}
-	if d.Source.DSLVersion != other.Source.DSLVersion {
-		changes = append(changes, Change{Path: "source.dslVersion", Before: d.Source.DSLVersion, After: other.Source.DSLVersion, Kind: DiffCosmetic, Explanation: "source DSL version annotation changed without altering normalized behavior"})
+	if before.Source.DSLVersion != after.Source.DSLVersion {
+		changes = append(changes, Change{Path: "source.dslVersion", Before: before.Source.DSLVersion, After: after.Source.DSLVersion, Kind: DiffCosmetic, Explanation: "source DSL version annotation changed without altering normalized behavior"})
 	}
-	if !reflect.DeepEqual(d.FeatureGates, other.FeatureGates) {
-		changes = append(changes, Change{Path: "featureGates", Before: fmt.Sprintf("%v", d.FeatureGates), After: fmt.Sprintf("%v", other.FeatureGates), Kind: DiffCosmetic, Explanation: "feature-gate metadata changed without altering normalized workflow semantics"})
+	if !reflect.DeepEqual(before.FeatureGates, after.FeatureGates) {
+		changes = append(changes, Change{Path: "featureGates", Before: fmt.Sprintf("%v", before.FeatureGates), After: fmt.Sprintf("%v", after.FeatureGates), Kind: DiffCosmetic, Explanation: "feature-gate metadata changed without altering normalized workflow semantics"})
 	}
-	if !reflect.DeepEqual(d.SourceDefinition, other.SourceDefinition) {
-		changes = append(changes, Change{Path: "sourceDefinition", Before: summarizeSourceDefinition(d.SourceDefinition), After: summarizeSourceDefinition(other.SourceDefinition), Kind: DiffCosmetic, Explanation: "persisted source metadata changed without altering normalized workflow semantics"})
+	if !reflect.DeepEqual(before.SourceDefinition, after.SourceDefinition) {
+		changes = append(changes, Change{Path: "sourceDefinition", Before: summarizeSourceDefinition(before.SourceDefinition), After: summarizeSourceDefinition(after.SourceDefinition), Kind: DiffCosmetic, Explanation: "persisted source metadata changed without altering normalized workflow semantics"})
 	}
-	if (d.Provenance == nil) != (other.Provenance == nil) || (d.Provenance != nil && other.Provenance != nil && *d.Provenance != *other.Provenance) {
-		changes = append(changes, Change{Path: "provenance", Before: formatProvenance(d.Provenance), After: formatProvenance(other.Provenance), Kind: DiffCosmetic, Explanation: "generation provenance changed without altering normalized workflow semantics"})
+	if provenanceChanged(before.Provenance, after.Provenance) {
+		changes = append(changes, Change{Path: "provenance", Before: formatProvenance(before.Provenance), After: formatProvenance(after.Provenance), Kind: DiffCosmetic, Explanation: "generation provenance changed without altering normalized workflow semantics"})
 	}
-	if len(d.Nodes) != len(other.Nodes) {
-		changes = append(changes, Change{Path: "nodes", Before: fmt.Sprintf("%d", len(d.Nodes)), After: fmt.Sprintf("%d", len(other.Nodes)), Kind: DiffBehavioral, Explanation: "node count changed"})
+	return changes
+}
+
+func provenanceChanged(before, after *Provenance) bool {
+	if (before == nil) != (after == nil) {
+		return true
 	}
-	if len(d.Edges) != len(other.Edges) {
-		changes = append(changes, Change{Path: "edges", Before: fmt.Sprintf("%d", len(d.Edges)), After: fmt.Sprintf("%d", len(other.Edges)), Kind: DiffBehavioral, Explanation: "edge count changed"})
+	if before == nil {
+		return false
 	}
-	for i, node := range d.Nodes {
-		if i >= len(other.Nodes) {
+	return *before != *after
+}
+
+func appendDiffCollectionChanges(changes []Change, before, after Document) []Change {
+	if len(before.Nodes) != len(after.Nodes) {
+		changes = append(changes, Change{Path: "nodes", Before: fmt.Sprintf("%d", len(before.Nodes)), After: fmt.Sprintf("%d", len(after.Nodes)), Kind: DiffBehavioral, Explanation: "node count changed"})
+	}
+	if len(before.Edges) != len(after.Edges) {
+		changes = append(changes, Change{Path: "edges", Before: fmt.Sprintf("%d", len(before.Edges)), After: fmt.Sprintf("%d", len(after.Edges)), Kind: DiffBehavioral, Explanation: "edge count changed"})
+	}
+	return changes
+}
+
+func appendDiffNodeChanges(changes []Change, before, after []Node) []Change {
+	for i, node := range before {
+		if i >= len(after) {
 			break
 		}
-		otherNode := other.Nodes[i]
-		if node.Name != otherNode.Name || node.Kind != otherNode.Kind || node.SideEffect != otherNode.SideEffect {
-			changes = append(changes, Change{Path: "nodes[" + node.Name + "]", Before: node.Name + "/" + node.Kind + "/" + node.SideEffect, After: otherNode.Name + "/" + otherNode.Kind + "/" + otherNode.SideEffect, Kind: DiffBehavioral, Explanation: "node identity or execution class changed"})
-		}
-		if node.Task != nil && otherNode.Task != nil && node.Task.Goal != otherNode.Task.Goal {
-			changes = append(changes, Change{Path: "nodes[" + node.Name + "].task.goal", Before: node.Task.Goal, After: otherNode.Task.Goal, Kind: DiffBehavioral, Explanation: "task intent changed"})
-		}
-		if node.Gate != nil && otherNode.Gate != nil && node.Gate.Evaluator != otherNode.Gate.Evaluator {
-			changes = append(changes, Change{Path: "nodes[" + node.Name + "].gate.evaluator", Before: string(node.Gate.Evaluator), After: string(otherNode.Gate.Evaluator), Kind: DiffBehavioral, Explanation: "gate evaluator changed"})
-		}
+		otherNode := after[i]
+		changes = appendDiffNodeChange(changes, node, otherNode)
 	}
-	for i, edge := range d.Edges {
-		if i >= len(other.Edges) {
+	return changes
+}
+
+func appendDiffNodeChange(changes []Change, before, after Node) []Change {
+	if before.Name != after.Name || before.Kind != after.Kind || before.SideEffect != after.SideEffect {
+		changes = append(changes, Change{Path: "nodes[" + before.Name + "]", Before: before.Name + "/" + before.Kind + "/" + before.SideEffect, After: after.Name + "/" + after.Kind + "/" + after.SideEffect, Kind: DiffBehavioral, Explanation: "node identity or execution class changed"})
+	}
+	if before.Task != nil && after.Task != nil && before.Task.Goal != after.Task.Goal {
+		changes = append(changes, Change{Path: "nodes[" + before.Name + "].task.goal", Before: before.Task.Goal, After: after.Task.Goal, Kind: DiffBehavioral, Explanation: "task intent changed"})
+	}
+	if before.Gate != nil && after.Gate != nil && before.Gate.Evaluator != after.Gate.Evaluator {
+		changes = append(changes, Change{Path: "nodes[" + before.Name + "].gate.evaluator", Before: string(before.Gate.Evaluator), After: string(after.Gate.Evaluator), Kind: DiffBehavioral, Explanation: "gate evaluator changed"})
+	}
+	return changes
+}
+
+func appendDiffEdgeChanges(changes []Change, before, after []Edge) []Change {
+	for i, edge := range before {
+		if i >= len(after) {
 			break
 		}
-		otherEdge := other.Edges[i]
+		otherEdge := after[i]
 		if edge.From != otherEdge.From || edge.To != otherEdge.To || edge.Condition != otherEdge.Condition {
 			changes = append(changes, Change{Path: "edges[" + fmt.Sprintf("%d", i) + "]", Before: edge.From + "->" + edge.To + "[" + edge.Condition + "]", After: otherEdge.From + "->" + otherEdge.To + "[" + otherEdge.Condition + "]", Kind: DiffBehavioral, Explanation: "transition behavior changed"})
 		}
 	}
+	return changes
+}
+
+func finalizeDiff(changes []Change) Diff {
 	if len(changes) == 0 {
-		return Diff{Kind: DiffNoChange, Summary: "normalized workflow IR is behaviorally equivalent"}, nil
+		return Diff{Kind: DiffNoChange, Summary: "normalized workflow IR is behaviorally equivalent"}
 	}
-	hasBehavioral := false
 	for _, change := range changes {
 		if change.Kind == DiffBehavioral {
-			hasBehavioral = true
-			break
+			return Diff{Kind: DiffBehavioral, Summary: "normalized workflow IR differs in behavior", Changes: changes}
 		}
 	}
-	if hasBehavioral {
-		return Diff{Kind: DiffBehavioral, Summary: "normalized workflow IR differs in behavior", Changes: changes}, nil
-	}
-	return Diff{Kind: DiffCosmetic, Summary: "normalized workflow IR differs only in cosmetic metadata", Changes: changes}, nil
+	return Diff{Kind: DiffCosmetic, Summary: "normalized workflow IR differs only in cosmetic metadata", Changes: changes}
 }
 
 func semanticContentChanged(before, after Document) bool {
