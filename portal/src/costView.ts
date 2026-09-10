@@ -100,10 +100,7 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
       (model) =>
         `${model.model}: ${formatAmounts(model.nativeTotals, "unmeasured")} · ${model.measuredAttempts}/${model.usageAttempts} attempts`,
     ),
-    runs: aggregate.runs.map(
-      (run) =>
-        `${run.runId}: ${formatAmounts(run.nativeTotals, "unmeasured")} · ${run.measuredAttempts}/${run.usageAttempts} attempts`,
-    ),
+    runs: aggregate.runs.map((run) => run.runId),
   };
 }
 

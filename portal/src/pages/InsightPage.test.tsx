@@ -172,7 +172,6 @@ describe("Insight page", () => {
   it("shows exact cost and token rollups with contributor-specific drill-downs", async () => {
     window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
-    const listRuns = vi.spyOn(client, "listRuns");
     const user = userEvent.setup();
     render(<App client={client} />);
 
@@ -183,24 +182,8 @@ describe("Insight page", () => {
     expect(
       screen.queryByRole("link", { name: /^View AI credit runs behind/ }),
     ).not.toBeInTheDocument();
-    const costLinks = screen.getAllByRole("link", { name: /^View AI cost runs behind/ });
-    expect(costLinks).toHaveLength(1);
-    expect(costLinks[0]).toHaveAccessibleName(
-      /Instance: total Unmeasured, 8 samples, P50 \$0\.80, P95 \$2\.50/,
-    );
-
-    const costLink = screen.getByRole("link", {
-      name: /View AI cost runs behind Instance/,
-    });
-    const wasteLink = screen.getByRole("link", {
-      name: /View retry-waste runs behind Instance/,
-    });
-    expect(costLink).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
-    expect(wasteLink).toHaveAttribute("href", expect.stringContaining("population=retry-waste"));
-    for (const link of [costLink, wasteLink]) {
-      expect(link).toHaveAttribute("href", expect.not.stringContaining("outcome=finished"));
-      expect(link).toHaveAttribute("href", expect.stringMatching(/since=.*until=/));
-    }
+    expect(screen.queryByRole("link", { name: /^View AI cost runs behind/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^View retry-waste runs behind/ })).not.toBeInTheDocument();
     expect(screen.getByText("12,000 tokens")).toBeInTheDocument();
     expect(screen.getByText("$0.75")).toBeInTheDocument();
 
@@ -208,68 +191,33 @@ describe("Insight page", () => {
       screen.getByLabelText("Scope"),
       JSON.stringify(["workflow", "core", "implementation"]),
     );
-    expect(screen.getAllByRole("link", { name: /^View AI cost runs behind/ })).toHaveLength(1);
-    expect(
-      screen.getByRole("link", {
-        name: /View AI cost runs behind core \/ implementation: total .* 8 samples, P50 \$0\.80, P95 \$2\.50/,
-      }),
-    ).toBeInTheDocument();
-    expect(costLink).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
+    expect(screen.queryByRole("link", { name: /^View AI cost runs behind/ })).not.toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
       JSON.stringify(["gaggle", "core"]),
     );
-    expect(
-      screen.getByRole("link", {
-        name: /View AI cost runs behind core: total .* 8 samples, P50 \$0\.80, P95 \$2\.50/,
-      }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^View AI cost runs behind/ })).not.toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
       JSON.stringify(["stage", "core", "implementation", "implement"]),
     );
-    expect(
-      screen.getByRole("link", {
-        name: /View AI cost runs behind core \/ implementation \/ implement: total .* 4 samples, P50 \$1\.25, P95 \$2\.50/,
-      }),
-    ).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
+    expect(screen.queryByRole("link", { name: /^View AI cost runs behind/ })).not.toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
       JSON.stringify(["stage", "tools", "implementation", "implement"]),
     );
 
-    const unmeasuredCost = screen.getByRole("link", {
-      name: /View AI cost runs behind tools \/ implementation \/ implement: total Unmeasured, Unmeasured, P50 Unmeasured, P95 Unmeasured/,
-    });
+    const unmeasuredCost = screen
+      .getByText("AI cost", { selector: ".usage-metric-static .usage-metric-heading strong" })
+      .closest<HTMLElement>(".usage-metric-static");
+    if (!unmeasuredCost) throw new Error("Expected a static AI cost metric.");
     expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(3);
     expect(screen.getByText("No retry waste")).toBeInTheDocument();
     expect(within(unmeasuredCost).queryByText("$0.00")).not.toBeInTheDocument();
-    expect(unmeasuredCost).toHaveAttribute(
-      "href",
-      expect.stringMatching(
-        /gaggle=tools.*workflow=implementation.*stage=implement.*population=cost-measured/,
-      ),
-    );
-
-    await user.click(unmeasuredCost);
-    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(listRuns).toHaveBeenCalledWith(
-        expect.objectContaining({
-          gaggle: "tools",
-          workflow: "implementation",
-          stage: "implement",
-          outcome: undefined,
-          population: "cost-measured",
-          since: expect.stringMatching(/Z$/),
-          until: expect.stringMatching(/Z$/),
-        }),
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      ),
-    );
+    expect(unmeasuredCost.tagName).toBe("DIV");
   });
 
   it("shows provider-native attributed costs, normalized estimates, and coverage", async () => {
@@ -298,15 +246,22 @@ describe("Insight page", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("gpt-5.6-sol: 2.5 AI credits · 3/3 attempts")).toBeInTheDocument();
     expect(screen.getByText("claude-sonnet: $0.42 · 2/2 attempts")).toBeInTheDocument();
-    expect(
-      screen.getByText("01JZ455ESCALATE: 2.5 AI credits · 3/3 attempts"),
-    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "View 1 run for PR #4398" }));
+    expect(screen.getByRole("dialog", { name: "PR #4398 runs" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "01JZ455ESCALATE" })).toHaveAttribute(
+      "href",
+      "#/run/01JZ455ESCALATE",
+    );
+    await user.click(screen.getByRole("button", { name: "Close run list" }));
 
     let rows = within(table).getAllByRole("row").slice(1);
     expect(rows[0]).toHaveTextContent("PR #4398");
-    await user.click(screen.getByRole("button", { name: "Descending" }));
+    const nativeSort = screen.getByRole("button", { name: /Provider-native/ });
+    expect(nativeSort.closest("th")).toHaveAttribute("aria-sort", "descending");
+    await user.click(nativeSort);
     rows = within(table).getAllByRole("row").slice(1);
     expect(rows[0]).toHaveTextContent("Issue #4398");
+    expect(nativeSort.closest("th")).toHaveAttribute("aria-sort", "ascending");
 
     await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "pr");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();

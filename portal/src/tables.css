@@ -1,0 +1,79 @@
+.data-table-shell {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: var(--table-body-size);
+  overflow: hidden;
+}
+
+.data-table-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--table-header-size);
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  line-height: 1.25;
+  padding: 10px 13px;
+  text-transform: uppercase;
+}
+
+.data-table-disclosure {
+  align-items: center;
+  background: var(--surface);
+  border: 0;
+  border-top: 1px solid var(--line);
+  color: var(--accent-ink);
+  cursor: pointer;
+  display: flex;
+  font-size: var(--table-meta-size);
+  font-weight: 700;
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  min-height: 40px;
+  padding: 9px 13px;
+  width: 100%;
+}
+
+.data-table-disclosure:hover {
+  background: var(--accent-soft);
+}
+
+.data-table-shell .distribution-name strong {
+  font-size: var(--table-body-size);
+}
+
+.data-table-shell .distribution-name small,
+.data-table-shell .distribution-values strong {
+  font-size: var(--table-meta-size);
+}
+
+.data-table-shell .distribution-values small {
+  font-size: var(--table-header-size);
+}
+
+.gaggle-spend-row {
+  font-family: inherit;
+  font-size: var(--table-body-size);
+}
+
+.gaggle-spend-row > span:not(:first-child),
+.distribution-values strong,
+.insight-number,
+.insight-rate > strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.external-cost-table .data-table-header th {
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.data-table-shell.external-cost-table-wrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+}

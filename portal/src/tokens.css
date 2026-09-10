@@ -32,6 +32,9 @@
   --font-ui: 0.875rem;
   --font-meta: 0.75rem;
   --font-label: 0.6875rem;
+  --table-header-size: var(--font-label);
+  --table-body-size: var(--font-ui);
+  --table-meta-size: var(--font-meta);
 }
 
 :root[data-theme="dark"] {

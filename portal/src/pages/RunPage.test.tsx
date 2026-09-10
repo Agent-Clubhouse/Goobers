@@ -482,6 +482,10 @@ describe("run detail", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("GitHub opened pull request #1432.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open related pull request #1432" })).toHaveAttribute(
+      "href",
+      "https://github.example/pull/1432",
+    );
     expect(screen.getByRole("link", { name: "Open linked pull request" })).toHaveAttribute(
       "href",
       "https://github.example/pull/1432",

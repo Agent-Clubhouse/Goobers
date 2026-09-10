@@ -281,6 +281,7 @@ export function insightRunFilters(
     stage,
     outcome,
     population,
+    status: "all",
     since: filters.since,
     until: filters.until,
   };

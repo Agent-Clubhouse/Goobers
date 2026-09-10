@@ -18,7 +18,12 @@ describe("definition routing", () => {
 
   describe("Work Items routing", () => {
     it("round-trips list filters and item detail identities", () => {
-      const list = { page: "work-items" as const, kind: "pr" as const };
+      const list = {
+        page: "work-items" as const,
+        kind: "pr" as const,
+        gaggle: "core tools",
+        query: "acme/app#42",
+      };
       const detail = {
         page: "work-items" as const,
         provider: "github",
@@ -28,6 +33,7 @@ describe("definition routing", () => {
       };
 
       expect(parseRoute(routeHash(list))).toEqual(list);
+      expect(routeHash(list)).toBe("#/work-items?kind=pr&gaggle=core+tools&q=acme%2Fapp%2342");
       expect(routeHash(detail)).toBe("#/work-items/github/acme/app/issue/42");
       expect(parseRoute(routeHash(detail))).toEqual(detail);
       expect(activeArea(detail)).toBe("work-items");

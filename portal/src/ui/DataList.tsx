@@ -39,9 +39,9 @@ export function DataList({
   const hidden = rows.length - visible.length;
 
   return (
-    <div aria-label={ariaLabel} className="data-table" role="region">
+    <div aria-label={ariaLabel} className="data-table data-table-shell" role="region">
       {columns && (
-        <div aria-hidden="true" className={`data-header ${gridClassName}`}>
+        <div aria-hidden="true" className={`data-header data-table-header ${gridClassName}`}>
           {columns.map((column, index) => (
             <span key={`${column}-${index}`}>{column}</span>
           ))}

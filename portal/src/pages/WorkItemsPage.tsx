@@ -33,6 +33,7 @@ export function WorkItemsPage({
         client={client}
         externalId={route.id}
         kind={route.kind}
+        navigate={navigate}
         provider={route.provider}
         repository={route.repository}
         standalone={standalone}
@@ -42,8 +43,10 @@ export function WorkItemsPage({
   return (
     <WorkItemListView
       client={client}
+      gaggle={route.gaggle}
       kind={route.kind}
       navigate={navigate}
+      query={route.query}
       standalone={standalone}
     />
   );
@@ -51,16 +54,21 @@ export function WorkItemsPage({
 
 function WorkItemListView({
   client,
+  gaggle,
   kind,
   navigate,
+  query,
   standalone,
 }: {
   client: DaemonClient;
+  gaggle?: string;
   kind?: WorkItemKind;
   navigate: Navigate;
+  query?: string;
   standalone: boolean;
 }) {
   const [state, setState] = useState<PageState<WorkItemPage>>({ status: "loading" });
+  const [searchQuery, setSearchQuery] = useState(query ?? "");
   const load = () => {
     const controller = new AbortController();
     setState({ status: "loading" });
@@ -74,11 +82,45 @@ function WorkItemListView({
   };
 
   useEffect(load, [client, kind]);
+  useEffect(() => setSearchQuery(query ?? ""), [query]);
 
   if (state.status === "loading") return <DaemonLoadingState standalone={standalone} />;
   if (state.status === "error") {
     return <DaemonErrorState error={state.error} retry={load} standalone={standalone} />;
   }
+
+  const gaggleOptions = [...new Set(
+    state.data.items.map((item) => item.gaggle).filter((value): value is string => Boolean(value)),
+  )].sort((left, right) => left.localeCompare(right));
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+  const items = state.data.items.filter((item) => {
+    if (gaggle && item.gaggle !== gaggle) return false;
+    if (!normalizedQuery) return true;
+    return [
+      workItemLabel(item.repository, item.externalId),
+      item.repository,
+      item.externalId,
+    ].some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
+  });
+  const updateFilters = (updates: { kind?: WorkItemKind; gaggle?: string; query?: string }) => {
+    navigate({
+      page: "work-items",
+      kind,
+      gaggle,
+      query: searchQuery || undefined,
+      ...updates,
+    });
+  };
+  const updateSearch = (value: string) => {
+    setSearchQuery(value);
+    const hash = routeHash({
+      page: "work-items",
+      kind,
+      gaggle,
+      query: value || undefined,
+    });
+    window.history.replaceState(window.history.state, "", hash);
+  };
 
   return (
     <>
@@ -96,22 +138,47 @@ function WorkItemListView({
           <button
             className={kind === value ? "filter-button filter-button-active" : "filter-button"}
             key={label}
-            onClick={() => navigate({ page: "work-items", kind: value })}
+            onClick={() => updateFilters({ kind: value })}
             type="button"
           >
             {label}
           </button>
         ))}
+        <div className="work-item-filter-fields">
+          <label className="filter-select work-item-filter-field">
+            <span>Gaggle</span>
+            <select
+              aria-label="Filter work items by gaggle"
+              onChange={(event) => updateFilters({ gaggle: event.target.value || undefined })}
+              value={gaggle ?? ""}
+            >
+              <option value="">All gaggles</option>
+              {gaggleOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-search work-item-filter-field">
+            <span>Find work item</span>
+            <input
+              aria-label="Search work items"
+              onChange={(event) => updateSearch(event.target.value)}
+              placeholder="Repository or number"
+              type="search"
+              value={searchQuery}
+            />
+          </label>
+        </div>
       </div>
       <section className="content-section">
-        {state.data.items.length === 0 ? (
+        {items.length === 0 ? (
           <p className="inline-empty">No confirmed provider actions match this filter.</p>
         ) : (
-          <div className="data-table work-items-table">
-            <div aria-hidden="true" className="data-header work-item-grid">
+          <div className="data-table data-table-shell work-items-table">
+            <div aria-hidden="true" className="data-header data-table-header work-item-grid">
               <span>Work item</span><span>Last action</span><span>Workflow</span><span>Actions</span><span />
             </div>
-            {state.data.items.map((item) => (
+            {items.map((item) => (
               <button
                 aria-label={`Open ${item.kind === "pr" ? "PR" : "issue"} #${item.externalId} in ${item.repository}`}
                 className="data-row work-item-grid"
@@ -155,6 +222,7 @@ function WorkItemDetailView({
   client,
   externalId,
   kind,
+  navigate,
   provider,
   repository,
   standalone,
@@ -162,6 +230,7 @@ function WorkItemDetailView({
   client: DaemonClient;
   externalId: string;
   kind: WorkItemKind;
+  navigate: Navigate;
   provider: string;
   repository: string;
   standalone: boolean;
@@ -187,6 +256,13 @@ function WorkItemDetailView({
   const item = state.data;
   return (
     <>
+      <nav aria-label="Breadcrumb" className="breadcrumbs">
+        <button onClick={() => navigate({ page: "work-items", kind })} type="button">
+          Work Items
+        </button>
+        <Icon name="chevron" size={14} />
+        <span>{workItemLabel(repository, externalId)}</span>
+      </nav>
       <header className="page-heading">
         <p className="page-kicker">{provider} {kind === "pr" ? "pull request" : "issue"} activity</p>
         <h1>{workItemLabel(repository, externalId)}</h1>
@@ -202,13 +278,6 @@ function WorkItemDetailView({
           </span>
         </div>
         <div className="page-heading-actions">
-          <a
-            className="scope-pivot-link work-item-heading-link"
-            href={routeHash({ page: "work-items", kind })}
-          >
-            <Icon name="work-item" size={14} />
-            Back to Work Items
-          </a>
           {item.url && (
             <a
               className="scope-pivot-link work-item-heading-link"
@@ -220,32 +289,27 @@ function WorkItemDetailView({
               Open {kind === "pr" ? "pull request" : "issue"}
             </a>
           )}
+          {item.relatedPullRequests.map((related) => (
+            <a
+              aria-label={`Open related PR ${workItemLabel(related.repository, related.externalId)}`}
+              className="scope-pivot-link work-item-heading-link"
+              href={related.url ?? routeHash({
+                page: "work-items",
+                provider: related.provider,
+                repository: related.repository,
+                kind: "pr",
+                id: related.externalId,
+              })}
+              key={`${related.repository}/${related.externalId}`}
+              rel={related.url ? "noreferrer" : undefined}
+              target={related.url ? "_blank" : undefined}
+            >
+              <Icon name="arrow" size={14} />
+              Related PR {workItemLabel(related.repository, related.externalId)}
+            </a>
+          ))}
         </div>
       </header>
-      {item.relatedPullRequests.length > 0 && (
-        <section className="content-section work-item-related">
-          <h2>Related pull requests</h2>
-          <p>Inferred from runs attributed to both this issue and the pull request.</p>
-          <div className="work-item-related-links">
-            {item.relatedPullRequests.map((related) => (
-              <a
-                href={related.url ?? routeHash({
-                  page: "work-items",
-                  provider: related.provider,
-                  repository: related.repository,
-                  kind: "pr",
-                  id: related.externalId,
-                })}
-                key={`${related.repository}/${related.externalId}`}
-                rel={related.url ? "noreferrer" : undefined}
-                target={related.url ? "_blank" : undefined}
-              >
-                {workItemLabel(related.repository, related.externalId)}
-              </a>
-            ))}
-          </div>
-        </section>
-      )}
       <section className="content-section">
         <ol className="work-item-timeline">
           {item.actions.map((action) => (

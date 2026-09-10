@@ -231,8 +231,8 @@ function InsightContent({
             </div>
             <span className="section-count">Terminal outcomes exclude other states</span>
           </div>
-          <div className="insight-outcomes">
-            <div aria-hidden="true" className="insight-outcome-header">
+          <div className="data-table-shell insight-outcomes">
+            <div aria-hidden="true" className="data-table-header insight-outcome-header">
               <span>Scope</span>
               <span>Success rate</span>
               <span>Succeeded</span>
@@ -335,8 +335,8 @@ function CreditAssignment({
   return (
     <>
       <p className="usage-description">Failure, escalation, and retry-waste contributors.</p>
-      <div className="insight-outcomes">
-        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header">
+      <div className="data-table-shell insight-outcomes">
+        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header data-table-header">
           <span>Node</span>
           <span>Failure share</span>
           <span>Failures</span>
@@ -370,12 +370,12 @@ function CreditAssignment({
             <strong>{credit.retryWasteAttempts}</strong>
           </a>
         ))}
+        {credits.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer contributors" : `View all ${credits.length} contributors`}
+          </button>
+        )}
       </div>
-      {credits.length > INITIAL_DETAIL_ROWS && (
-        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
-          {showAll ? "Show fewer contributors" : `View all ${credits.length} contributors`}
-        </button>
-      )}
     </>
   );
 }
@@ -509,8 +509,8 @@ function FailureReasonRows({ snapshot }: { snapshot: InsightErrorSignaturesSnaps
   const visibleItems = showAll ? items : items.slice(0, INITIAL_DETAIL_ROWS);
   return (
     <>
-      <div className="error-signatures">
-        <div aria-hidden="true" className="error-signature-header">
+      <div className="data-table-shell error-signatures">
+        <div aria-hidden="true" className="data-table-header error-signature-header">
           <span>Code</span>
           <span>Coarse class</span>
           <span>Count</span>
@@ -525,12 +525,12 @@ function FailureReasonRows({ snapshot }: { snapshot: InsightErrorSignaturesSnaps
             signature={signature}
           />
         ))}
+        {items.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer failure reasons" : `View all ${items.length} failure reasons`}
+          </button>
+        )}
       </div>
-      {items.length > INITIAL_DETAIL_ROWS && (
-        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
-          {showAll ? "Show fewer failure reasons" : `View all ${items.length} failure reasons`}
-        </button>
-      )}
     </>
   );
 }
@@ -687,8 +687,8 @@ export function UsageAnalytics({
     ),
   });
   return (
-    <div className="usage-analytics usage-analytics-split">
-      <div aria-hidden="true" className="usage-header">
+    <div className="data-table-shell usage-analytics usage-analytics-split">
+      <div aria-hidden="true" className="data-table-header usage-header">
         <span>Scope</span>
         <span>{mode === "insight" ? "Tokens" : "AI cost"}</span>
         <span>Retry waste</span>
@@ -715,7 +715,6 @@ export function UsageAnalytics({
           <UsagePercentiles
             ariaLabel={`View AI cost runs behind ${label}: total ${formatMeasuredCost(usage.costUSD)}, ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
             formatter={formatMeasuredCost}
-            href={costHref}
             label="AI cost"
             p50={usage.p50CostUSD}
             p95={usage.p95CostUSD}
@@ -723,7 +722,12 @@ export function UsageAnalytics({
             total={usage.costUSD}
           />
         )}
-        <RetryWasteMetric href={wasteHref} includeCost={mode === "cost"} label={label} usage={usage} />
+        <RetryWasteMetric
+          href={mode === "insight" ? wasteHref : undefined}
+          includeCost={mode === "cost"}
+          label={label}
+          usage={usage}
+        />
       </div>
     </div>
   );
@@ -741,15 +745,15 @@ function UsagePercentiles({
 }: {
   ariaLabel: string;
   formatter: (value: number | undefined) => string;
-  href: string;
+  href?: string;
   label: string;
   p50?: number;
   p95?: number;
   samples: number;
   total?: number;
 }) {
-  return (
-    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>
+  const content = (
+    <>
       <span className="usage-metric-heading">
         <strong>{label}</strong>
         <small>{formatSamples(samples)}</small>
@@ -770,7 +774,12 @@ function UsagePercentiles({
           <strong>{formatter(p95)}</strong>
         </span>
       </span>
-    </a>
+    </>
+  );
+  return href ? (
+    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>{content}</a>
+  ) : (
+    <div className="usage-metric-link usage-metric-static">{content}</div>
   );
 }
 
@@ -780,7 +789,7 @@ function RetryWasteMetric({
   label,
   usage,
 }: {
-  href: string;
+  href?: string;
   includeCost: boolean;
   label: string;
   usage: TelemetryUsageStats;
@@ -793,12 +802,8 @@ function RetryWasteMetric({
           formatMeasuredTokens(usage.retryWasteTokens),
           ...(includeCost ? [formatMeasuredCost(usage.retryWasteCostUSD)] : []),
         ].join(", ");
-  return (
-    <a
-      aria-label={`View retry-waste runs behind ${label}: ${description}`}
-      className="usage-metric-link usage-waste-link"
-      href={href}
-    >
+  const content = (
+    <>
       <span className="usage-metric-heading">
         <strong>Retry waste</strong>
         <small>
@@ -828,7 +833,18 @@ function RetryWasteMetric({
           )}
         </span>
       )}
+    </>
+  );
+  return href ? (
+    <a
+      aria-label={`View retry-waste runs behind ${label}: ${description}`}
+      className="usage-metric-link usage-waste-link"
+      href={href}
+    >
+      {content}
     </a>
+  ) : (
+    <div className="usage-metric-link usage-metric-static usage-waste-link">{content}</div>
   );
 }
 
@@ -1135,6 +1151,7 @@ export function ExternalCostBreakdown({
   const [kind, setKind] = useState<"all" | "pr" | "issue">("all");
   const [sortKey, setSortKey] = useState<ExternalCostSortKey>("native");
   const [sortDirection, setSortDirection] = useState<ExternalCostSortDirection>("desc");
+  const [openRuns, setOpenRuns] = useState<{ label: string; runs: string[] }>();
   const rows = useMemo(
     () =>
       costs.status === "ready" || costs.status === "stale"
@@ -1145,6 +1162,26 @@ export function ExternalCostBreakdown({
   const visibleRows = useMemo(
     () => sortExternalCostRows(filterExternalCostRows(rows, filter, kind), sortKey, sortDirection),
     [filter, kind, rows, sortDirection, sortKey],
+  );
+  const selectSort = (nextSortKey: ExternalCostSortKey) => {
+    if (nextSortKey === sortKey) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setSortKey(nextSortKey);
+    setSortDirection(
+      nextSortKey === "work-item" || nextSortKey === "provider" ? "asc" : "desc",
+    );
+  };
+  const sortHeading = (label: string, key: ExternalCostSortKey) => (
+    <button
+      className="external-cost-sort-heading"
+      onClick={() => selectSort(key)}
+      type="button"
+    >
+      {label}
+      {sortKey === key && <span aria-hidden="true">{sortDirection === "asc" ? "↑" : "↓"}</span>}
+    </button>
   );
 
   if (costs.status === "error") {
@@ -1220,27 +1257,6 @@ export function ExternalCostBreakdown({
                 <option value="issue">Issues</option>
               </select>
             </label>
-            <label>
-              <span>Sort by</span>
-              <select
-                onChange={(event) => setSortKey(event.target.value as ExternalCostSortKey)}
-                value={sortKey}
-              >
-                <option value="work-item">Work item</option>
-                <option value="provider">Provider</option>
-                <option value="native">Provider-native cost</option>
-                <option value="normalized">Normalized estimate</option>
-                <option value="coverage">Coverage</option>
-                <option value="runs">Run count</option>
-              </select>
-            </label>
-            <button
-              className="secondary-button external-cost-sort-direction"
-              onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}
-              type="button"
-            >
-              {sortDirection === "asc" ? "Ascending" : "Descending"}
-            </button>
             <span className="section-count">
               {visibleRows.length} of {rows.length}
             </span>
@@ -1248,16 +1264,28 @@ export function ExternalCostBreakdown({
           {visibleRows.length === 0 ? (
             <p className="inline-empty">No attributed costs match the current filters.</p>
           ) : (
-            <div className="external-cost-table-wrap">
+            <div className="data-table-shell external-cost-table-wrap">
               <table className="external-cost-table">
-                <thead>
+                <thead className="data-table-header">
                   <tr>
-                    <th>Work item</th>
-                    <th>Provider</th>
-                    <th>Provider-native</th>
-                    <th>Normalized estimate</th>
-                    <th>Coverage</th>
-                    <th>Details</th>
+                    <th aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                      {sortHeading("Work item", "work-item")}
+                    </th>
+                    <th aria-sort={sortKey === "provider" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                      {sortHeading("Provider", "provider")}
+                    </th>
+                    <th aria-sort={sortKey === "native" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                      {sortHeading("Provider-native", "native")}
+                    </th>
+                    <th aria-sort={sortKey === "normalized" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                      {sortHeading("Normalized estimate", "normalized")}
+                    </th>
+                    <th aria-sort={sortKey === "coverage" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                      {sortHeading("Coverage", "coverage")}
+                    </th>
+                    <th aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                      {sortHeading("Runs / models", "runs")}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1280,20 +1308,49 @@ export function ExternalCostBreakdown({
                           </ul>
                         )}
                         {row.runs.length > 0 && (
-                          <details className="external-cost-runs">
-                            <summary>
-                              {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
-                            </summary>
-                            <ul aria-label={`${row.label} run breakdown`}>
-                              {row.runs.map((run) => <li key={run}>{run}</li>)}
-                            </ul>
-                          </details>
+                          <button
+                            aria-label={`View ${row.runs.length} run${row.runs.length === 1 ? "" : "s"} for ${row.label}`}
+                            className="text-button external-cost-runs-button"
+                            onClick={() => setOpenRuns({ label: row.label, runs: row.runs })}
+                            type="button"
+                          >
+                            {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
+                          </button>
                         )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+          {openRuns && (
+            <div className="artifact-dialog-backdrop">
+              <section
+                aria-labelledby="external-cost-runs-title"
+                aria-modal="true"
+                className="artifact-dialog external-cost-runs-dialog"
+                role="dialog"
+              >
+                <header>
+                  <h2 id="external-cost-runs-title">{openRuns.label} runs</h2>
+                  <button
+                    aria-label="Close run list"
+                    className="dialog-close"
+                    onClick={() => setOpenRuns(undefined)}
+                    type="button"
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                </header>
+                <ul aria-label={`${openRuns.label} run breakdown`}>
+                  {openRuns.runs.map((run) => (
+                    <li key={run}>
+                      <a href={routeHash({ page: "run", id: run })}>{run}</a>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             </div>
           )}
         </>
@@ -1372,8 +1429,8 @@ export function InstanceCostRollup({
       {rankedGaggles.length === 0 ? (
         <p className="inline-empty">No gaggle has a measured AI cost in this window.</p>
       ) : (
-        <div className="gaggle-spend-table">
-          <div aria-hidden="true" className="gaggle-spend-header">
+        <div className="data-table-shell gaggle-spend-table">
+          <div aria-hidden="true" className="data-table-header gaggle-spend-header">
             <span>Gaggle</span>
             <span>P50 cost</span>
             <span>P95 cost</span>
@@ -1444,8 +1501,8 @@ function StageDistributions({
   const visibleStages = showAll ? stages : stages.slice(0, INITIAL_DETAIL_ROWS);
   return (
     <>
-      <div className="stage-distributions">
-        <div className="distribution-legend">
+      <div className="data-table-shell stage-distributions">
+        <div className="data-table-header distribution-legend">
           <span>
             <i className="distribution-mark distribution-mark-p50" /> P50
           </span>
@@ -1459,12 +1516,12 @@ function StageDistributions({
         {visibleStages.map((stage) => (
           <StageDistributionRow filters={filters} key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`} scaleMax={scaleMax} stage={stage} />
         ))}
+        {stages.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer stages" : `View all ${stages.length} stages`}
+          </button>
+        )}
       </div>
-      {stages.length > INITIAL_DETAIL_ROWS && (
-        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
-          {showAll ? "Show fewer stages" : `View all ${stages.length} stages`}
-        </button>
-      )}
     </>
   );
 }

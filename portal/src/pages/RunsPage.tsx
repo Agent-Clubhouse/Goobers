@@ -31,7 +31,14 @@ export function RunsPage({
   navigate: Navigate;
   standalone: boolean;
 }) {
-  const filter = filters?.status ?? "active";
+  const analyticalScope = Boolean(
+    filters?.since ||
+    filters?.until ||
+    filters?.outcome ||
+    filters?.population ||
+    filters?.stage,
+  );
+  const filter = filters?.status ?? (analyticalScope ? "all" : "active");
   const inventoryQuery = useOperationalSnapshot(client);
   // Hides routine no-work schedule ticks by default (#2188): a run whose only
   // stage reported no eligible work, on an instance ticking every ~60s, would
@@ -134,52 +141,54 @@ export function RunsPage({
             {option === "all" ? "All runs" : option}
           </button>
         ))}
-        <label className="filter-select">
-          <span>Gaggle</span>
-          <select
-            aria-label="Filter by gaggle"
-            onChange={(event) => setGaggle(event.target.value)}
-            value={filters?.gaggle ?? ""}
-          >
-            <option value="">All gaggles</option>
-            {gaggleOptions.map((gaggle) => (
-              <option key={gaggle.name} value={gaggle.name}>
-                {gaggle.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="filter-select">
-          <span>Workflow</span>
-          <select
-            aria-label="Filter by workflow"
-            onChange={(event) => setWorkflow(event.target.value)}
-            value={
-              filters?.workflow
-                ? JSON.stringify([filters.gaggle ?? "", filters.workflow])
-                : ""
-            }
-          >
-            <option value="">All workflows</option>
-            {workflowOptions.map((workflow) => (
-              <option
-                key={`${workflow.gaggle}/${workflow.name}`}
-                value={JSON.stringify([workflow.gaggle, workflow.name])}
-              >
-                {filters?.gaggle ? workflow.label : `${workflow.gaggle} / ${workflow.label}`}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="filter-toggle">
-          <input
-            aria-label="Show no-work runs"
-            checked={showNoWork}
-            onChange={(event) => setShowNoWork(event.target.checked)}
-            type="checkbox"
-          />
-          Show no-work runs
-        </label>
+        <div className="run-filter-fields">
+          <label className="filter-select run-filter-field">
+            <span>Gaggle</span>
+            <select
+              aria-label="Filter by gaggle"
+              onChange={(event) => setGaggle(event.target.value)}
+              value={filters?.gaggle ?? ""}
+            >
+              <option value="">All gaggles</option>
+              {gaggleOptions.map((gaggle) => (
+                <option key={gaggle.name} value={gaggle.name}>
+                  {gaggle.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-select run-filter-field">
+            <span>Workflow</span>
+            <select
+              aria-label="Filter by workflow"
+              onChange={(event) => setWorkflow(event.target.value)}
+              value={
+                filters?.workflow
+                  ? JSON.stringify([filters.gaggle ?? "", filters.workflow])
+                  : ""
+              }
+            >
+              <option value="">All workflows</option>
+              {workflowOptions.map((workflow) => (
+                <option
+                  key={`${workflow.gaggle}/${workflow.name}`}
+                  value={JSON.stringify([workflow.gaggle, workflow.name])}
+                >
+                  {filters?.gaggle ? workflow.label : `${workflow.gaggle} / ${workflow.label}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-toggle run-filter-field">
+            <input
+              aria-label="Show no-work runs"
+              checked={showNoWork}
+              onChange={(event) => setShowNoWork(event.target.checked)}
+              type="checkbox"
+            />
+            Show no-work runs
+          </label>
+        </div>
       </div>
 
       {query.state.status === "stale" && query.state.error && (

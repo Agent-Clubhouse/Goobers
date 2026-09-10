@@ -78,7 +78,7 @@ describe("external cost view model", () => {
         coverageRatio: 0.75,
         lowerBound: true,
         models: ["gpt-5.6-sol: 2.5 AI credits · 3/3 attempts"],
-        runs: ["run-1: 2.5 AI credits · 3/3 attempts"],
+        runs: ["run-1"],
       },
     ]);
   });

@@ -10,7 +10,15 @@ export type Route =
   | { page: "errors"; filters: ErrorRouteFilters }
   | { page: "insight"; filters?: InsightRouteFilters }
   | { page: "cost"; filters?: ScopeFilters }
-  | { page: "work-items"; kind?: "pr" | "issue"; provider?: string; repository?: string; id?: string }
+  | {
+      page: "work-items";
+      kind?: "pr" | "issue";
+      gaggle?: string;
+      query?: string;
+      provider?: string;
+      repository?: string;
+      id?: string;
+    }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
 
@@ -77,6 +85,8 @@ export function parseRoute(hash = window.location.hash): Route {
     return {
       page: "work-items",
       kind: filterKind === "pr" || filterKind === "issue" ? filterKind : undefined,
+      gaggle: optionalQuery(search, "gaggle"),
+      query: optionalQuery(search, "q"),
     };
   }
   if (area === "workflows") {
@@ -141,6 +151,8 @@ export function routeHash(route: Route): string {
     }
     const search = new URLSearchParams();
     writeQuery(search, "kind", route.kind);
+    writeQuery(search, "gaggle", route.gaggle);
+    writeQuery(search, "q", route.query);
     return `#/work-items${search.size > 0 ? `?${search.toString()}` : ""}`;
   }
   if (route.page === "goobers" && route.gaggle) {

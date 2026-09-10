@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
+import type { DaemonClient, ExternalRef, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { KeyMomentsDigest } from "../components/KeyMomentsDigest";
@@ -263,6 +263,7 @@ function RunDetailWorkspace({
     }
   };
   const displayedRunId = shortenIdentifier(run.id);
+  const relatedReferences = collectRelatedReferences(run, events);
 
   return (
     <>
@@ -291,7 +292,7 @@ function RunDetailWorkspace({
               title={runIdCopied ? "Copied" : `Copy ${run.id}`}
               type="button"
             >
-              {runIdCopied ? "Copied" : "Copy ID"}
+              <Icon name={runIdCopied ? "check" : "copy"} size={16} />
             </button>
           </div>
           <p className="run-identity-line">
@@ -303,11 +304,32 @@ function RunDetailWorkspace({
               </span>
             </span>
           </p>
-          {!portalConfigLoading && portalConfig.capabilities.revealRun && (
-            <div className="run-file-actions">
-              <button disabled={revealPending} onClick={() => void revealFiles()} type="button">
+          {((!portalConfigLoading && portalConfig.capabilities.revealRun) ||
+            relatedReferences.length > 0) && (
+            <div className="run-heading-actions">
+              {!portalConfigLoading && portalConfig.capabilities.revealRun && (
+                <button
+                  className="scope-pivot-link run-heading-action"
+                  disabled={revealPending}
+                  onClick={() => void revealFiles()}
+                  type="button"
+                >
+                  <Icon name="artifact" size={14} />
                 {revealPending ? "Opening…" : "Reveal run files"}
-              </button>
+                </button>
+              )}
+              {relatedReferences.map((reference) => (
+                <a
+                  className="scope-pivot-link run-heading-action"
+                  href={reference.url}
+                  key={`${reference.provider}/${reference.kind}/${reference.id}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <Icon name="arrow" size={14} />
+                  Open related {externalRefLabel(reference.kind)} #{reference.id}
+                </a>
+              ))}
               {revealError && <span role="alert">{revealError}</span>}
             </div>
           )}
@@ -573,7 +595,7 @@ function EventLedger({
 
   return (
     <section aria-labelledby="event-ledger-title" className="event-ledger">
-      <div className="panel-heading-row">
+      <div className="panel-heading-row event-ledger-heading">
         <div>
           <p className="section-kicker">Journal</p>
           <h2 id="event-ledger-title">Event ledger</h2>
@@ -843,6 +865,27 @@ function ledgerCategoryLabel(event: RunEvent): string {
 
 function externalRefLabel(kind: string): string {
   return kind.toLowerCase() === "pr" ? "pull request" : humanizeLedgerValue(kind).toLowerCase();
+}
+
+function collectRelatedReferences(run: RunDetail, events: RunEvent[]): ExternalRef[] {
+  const references = events
+    .map((event) => event.externalRef)
+    .filter((reference): reference is ExternalRef => Boolean(reference?.url));
+  const pullRequest = run.operator?.pullRequest;
+  if (pullRequest?.url) {
+    references.push({
+      provider: pullRequest.provider,
+      kind: pullRequest.kind,
+      id: pullRequest.id,
+      url: pullRequest.url,
+    });
+  }
+  return [...new Map(
+    references.map((reference) => [
+      `${reference.provider}/${reference.kind}/${reference.id}`,
+      reference,
+    ]),
+  ).values()];
 }
 
 function humanizeLedgerValue(value: string): string {

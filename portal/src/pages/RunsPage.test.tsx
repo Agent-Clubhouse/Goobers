@@ -71,6 +71,25 @@ describe("runs history page", () => {
     );
   });
 
+  it("treats analytical drill-through URLs as all runs when status is omitted", async () => {
+    window.location.hash =
+      "#/runs?gaggle=core&population=cost-measured&since=2026-09-03T07%3A06%3A25.802Z&until=2026-09-10T07%3A06%3A25.802Z";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const listRuns = vi.spyOn(client, "listRuns");
+    render(<App client={client} />);
+
+    await screen.findByRole("heading", { name: "Runs" });
+    expect(screen.getByRole("button", { name: "All runs" })).toHaveAttribute("aria-pressed", "true");
+    expect(listRuns).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gaggle: "core",
+        population: "cost-measured",
+        phase: undefined,
+      }),
+      expect.anything(),
+    );
+  });
+
   it("persists status, gaggle, and workflow filters in the route", async () => {
     window.location.hash = "#/runs?status=all";
     const user = userEvent.setup();

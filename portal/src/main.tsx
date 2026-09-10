@@ -4,6 +4,7 @@ import { App } from "./App";
 import { bootstrapPortalTheme } from "./cobrand";
 import "./tokens.css";
 import "./styles.css";
+import "./tables.css";
 
 bootstrapPortalTheme();
 
