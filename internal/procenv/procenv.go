@@ -31,7 +31,10 @@ import (
 // authenticated CLIs such as Copilot to find their existing per-user config;
 // Windows runtime/shell paths (SystemRoot/WINDIR/TEMP/TMP/ComSpec/PATHEXT/
 // PSModulePath), required for Node CSPRNG initialization and PowerShell tool
-// execution;
+// execution; SystemDrive (#4706), which tools such as pip consult to resolve
+// machine-level configuration locations (e.g. C:\ProgramData\pip\pip.ini) —
+// without it such a lookup silently falls back to a relative path under the
+// stage's working directory instead of the host's actual configuration;
 // the Windows Program* install roots (#3753) —
 // ProgramData/ProgramFiles/ProgramFiles(x86)/ProgramW6432/CommonProgramFiles/
 // CommonProgramFiles(x86) — from which NuGet derives its machine-wide settings
@@ -61,7 +64,7 @@ import (
 var Vars = []string{
 	"PATH", "HOME", "USER", "TMPDIR",
 	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
-	"SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec", "PATHEXT", "PSModulePath",
+	"SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec", "PATHEXT", "PSModulePath", "SystemDrive",
 	// Windows Program* install roots (#3753): NuGet builds its machine-wide
 	// settings path from ProgramData, so without these `dotnet build`/`dotnet
 	// test`/`msbuild` fails immediately with "Failed to load NuGet settings.
