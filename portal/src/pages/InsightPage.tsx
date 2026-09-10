@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
@@ -12,7 +12,6 @@ import type {
 import { isMissingCostCapability } from "../api/errors";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
-import { DisclosureSection } from "../components/DisclosureSection";
 import { ScopeStrip } from "../components/ScopeStrip";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
 import {
@@ -51,7 +50,6 @@ import {
   routeHash,
   type ErrorRouteFilters,
   type InsightRouteFilters,
-  type InsightSection,
   type Navigate,
   type RunRouteFilters,
 } from "../routing";
@@ -80,17 +78,12 @@ export function InsightPage({
 }) {
   const window = filters?.window ?? "7d";
   const requestedScope = insightScopeFromRoute(filters);
-  const activeSection = filters?.section;
-  const routeFilters = (scope: InsightScope, nextWindow: InsightWindow, section = activeSection) => ({
-    ...insightScopeRouteFilters(scope, nextWindow),
-    section,
-  });
+  const routeFilters = (scope: InsightScope, nextWindow: InsightWindow) =>
+    insightScopeRouteFilters(scope, nextWindow);
   const setScope = (nextScope: InsightScope) =>
     navigate({ page: "insight", filters: routeFilters(nextScope, window) });
   const setWindow = (nextWindow: InsightWindow) =>
     navigate({ page: "insight", filters: routeFilters(requestedScope, nextWindow) });
-  const setSection = (section: InsightSection | undefined) =>
-    navigate({ page: "insight", filters: routeFilters(requestedScope, window, section) });
   const errorScope = insightScopeApiParameters(requestedScope);
   const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
   const errorSignatures = useInsightErrorSignatures(
@@ -179,10 +172,8 @@ export function InsightPage({
       )}
 
       <InsightContent
-        activeSection={activeSection}
         errorSignatures={errorSignatures.state}
         errorSignaturesRetry={errorSignatures.retry}
-        onSectionChange={setSection}
         view={view}
       />
     </>
@@ -190,16 +181,12 @@ export function InsightPage({
 }
 
 function InsightContent({
-  activeSection,
   errorSignatures,
   errorSignaturesRetry,
-  onSectionChange,
   view,
 }: {
-  activeSection?: InsightSection;
   errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
   errorSignaturesRetry: () => void;
-  onSectionChange: (section: InsightSection | undefined) => void;
   view: InsightViewModel;
 }) {
   const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage } = view;
@@ -269,52 +256,38 @@ function InsightContent({
       )}
 
       {creditAssignment.length > 0 && (
-        <DisclosureSection
+        <InsightReportSection
           count={creditAssignment.length}
-          eyebrow="Exceptions"
-          onOpenChange={(open) => onSectionChange(open ? "contributors" : undefined)}
-          open={activeSection === "contributors"}
           title="Highest-contributing nodes"
         >
           <CreditAssignment credits={creditAssignment} filters={filters} />
-        </DisclosureSection>
+        </InsightReportSection>
       )}
 
       {usage && (
-        <DisclosureSection
-          eyebrow="AI usage"
-          onOpenChange={(open) => onSectionChange(open ? "usage" : undefined)}
-          open={activeSection === "usage"}
-          title="Tokens and retry waste"
-        >
+        <InsightReportSection title="Tokens and retry waste">
           <p className="usage-description">
             Attempt measurements are aggregated for the selected scope. Runners that do not
             report usage remain unmeasured.
           </p>
           <UsageAnalytics filters={filters} mode="insight" usage={usage} />
-        </DisclosureSection>
+        </InsightReportSection>
       )}
 
-      <DisclosureSection
+      <InsightReportSection
         count={
           errorSignatures.status === "ready" || errorSignatures.status === "stale"
             ? errorSignatures.data.result.items.length
             : undefined
         }
-        eyebrow="Failures"
-        onOpenChange={(open) => onSectionChange(open ? "failures" : undefined)}
-        open={activeSection === "failures"}
         title="Failure reasons"
       >
         <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
-      </DisclosureSection>
+      </InsightReportSection>
 
       {(hasOutcomes || stages.length > 0) && (
-        <DisclosureSection
+        <InsightReportSection
           count={stages.length}
-          eyebrow="Latency"
-          onOpenChange={(open) => onSectionChange(open ? "latency" : undefined)}
-          open={activeSection === "latency"}
           title="Slowest stages"
         >
           {stages.length === 0 ? (
@@ -322,11 +295,31 @@ function InsightContent({
           ) : (
             <StageDistributions filters={filters} stages={stages} />
           )}
-        </DisclosureSection>
+        </InsightReportSection>
       )}
         </>
       )}
     </>
+  );
+}
+
+function InsightReportSection({
+  children,
+  count,
+  title,
+}: {
+  children: React.ReactNode;
+  count?: number;
+  title: string;
+}) {
+  return (
+    <section className="content-section insight-report-section">
+      <div className="section-heading">
+        <h2>{title}</h2>
+        {count !== undefined && <span className="section-count">{count}</span>}
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -720,13 +713,14 @@ export function UsageAnalytics({
           />
         ) : (
           <UsagePercentiles
-            ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+            ariaLabel={`View AI cost runs behind ${label}: total ${formatMeasuredCost(usage.costUSD)}, ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
             formatter={formatMeasuredCost}
             href={costHref}
             label="AI cost"
             p50={usage.p50CostUSD}
             p95={usage.p95CostUSD}
             samples={usage.costSamples}
+            total={usage.costUSD}
           />
         )}
         <RetryWasteMetric href={wasteHref} includeCost={mode === "cost"} label={label} usage={usage} />
@@ -743,6 +737,7 @@ function UsagePercentiles({
   p50,
   p95,
   samples,
+  total,
 }: {
   ariaLabel: string;
   formatter: (value: number | undefined) => string;
@@ -751,6 +746,7 @@ function UsagePercentiles({
   p50?: number;
   p95?: number;
   samples: number;
+  total?: number;
 }) {
   return (
     <a aria-label={ariaLabel} className="usage-metric-link" href={href}>
@@ -758,7 +754,13 @@ function UsagePercentiles({
         <strong>{label}</strong>
         <small>{formatSamples(samples)}</small>
       </span>
-      <span className="usage-percentiles">
+      <span className={`usage-percentiles${total !== undefined ? " usage-percentiles-with-total" : ""}`}>
+        {total !== undefined && (
+          <span>
+            <small>Total</small>
+            <strong>{formatter(total)}</strong>
+          </span>
+        )}
         <span>
           <small>P50</small>
           <strong>{formatter(p50)}</strong>
@@ -1120,40 +1122,6 @@ function DeltaBadge({
   return <span className={`usage-trend-delta usage-trend-delta-${direction}`}>{label}</span>;
 }
 
-const BUDGET_THRESHOLD_STORAGE_KEY = "goobers-insight-budget-threshold-usd";
-
-/**
- * The daemon has no budget-config endpoint (#2533 is portal-only), so the
- * soft threshold an operator sets is a local browser preference, not shared
- * instance state. Reads/writes are wrapped in try/catch (matching how
- * unavailable storage is handled elsewhere, e.g. private-browsing quota
- * errors) so a storage failure degrades to "no threshold set" instead of
- * crashing the page.
- */
-function readStoredThreshold(): number | undefined {
-  try {
-    const stored = window.localStorage.getItem(BUDGET_THRESHOLD_STORAGE_KEY);
-    const parsed = stored ? Number(stored) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeStoredThreshold(value: number | undefined): void {
-  try {
-    if (value === undefined) {
-      window.localStorage.removeItem(BUDGET_THRESHOLD_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(BUDGET_THRESHOLD_STORAGE_KEY, String(value));
-    }
-  } catch {
-    // Storage unavailable (private browsing, quota) — the in-memory state
-    // set alongside this call still drives the UI for the rest of the
-    // session; it just won't survive a reload.
-  }
-}
-
 export function ExternalCostBreakdown({
   costs,
   refreshing,
@@ -1348,15 +1316,6 @@ function ExternalCostHeading({ loadedAt }: { loadedAt?: string }) {
   );
 }
 
-function useBudgetThreshold(): [number | undefined, (value: number | undefined) => void] {
-  const [threshold, setThresholdState] = useState<number | undefined>(readStoredThreshold);
-  const setThreshold = useCallback((value: number | undefined) => {
-    setThresholdState(value);
-    writeStoredThreshold(value);
-  }, []);
-  return [threshold, setThreshold];
-}
-
 export function InstanceCostRollup({
   costRollup,
   refreshing,
@@ -1368,8 +1327,6 @@ export function InstanceCostRollup({
   retry: () => void;
   window: InsightWindow;
 }) {
-  const [threshold, setThreshold] = useBudgetThreshold();
-
   if (costRollup.status === "loading") {
     return (
       <section className="content-section cost-section-stable">
@@ -1391,7 +1348,6 @@ export function InstanceCostRollup({
   }
   const data = costRollup.data;
   const rankedGaggles = data.byGaggle.filter((entry) => (entry.usage?.costSamples ?? 0) > 0);
-  const total = data.totalCostSamples === 0 ? undefined : data.totalCostUSD;
 
   return (
     <section className="content-section cost-section-stable">
@@ -1409,11 +1365,9 @@ export function InstanceCostRollup({
         retry={retry}
       />
       <div className="instance-spend-summary">
-        <div className="instance-spend-total">
-          <small>Total AI cost · all gaggles</small>
-          <strong>{data.totalCostSamples === 0 ? "Unmeasured" : formatMeasuredCost(total)}</strong>
-        </div>
-        <BudgetThreshold onChange={setThreshold} threshold={threshold} total={total} />
+        <p className="usage-description">
+          Gaggle detail for the selected instance scope.
+        </p>
       </div>
       {rankedGaggles.length === 0 ? (
         <p className="inline-empty">No gaggle has a measured AI cost in this window.</p>
@@ -1437,10 +1391,7 @@ export function InstanceCostRollup({
 function RollupHeading({ window }: { window: InsightWindow }) {
   return (
     <div className="section-heading">
-      <div>
-        <p className="section-kicker">AI usage</p>
-        <h2>Instance spend</h2>
-      </div>
+      <h2>Cost by gaggle</h2>
       <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
     </div>
   );
@@ -1479,68 +1430,6 @@ function GaggleSpendRow({
       <span>{formatSamples(usage?.costSamples ?? 0)}</span>
     </a>
   );
-}
-
-function BudgetThreshold({
-  onChange,
-  threshold,
-  total,
-}: {
-  onChange: (value: number | undefined) => void;
-  threshold: number | undefined;
-  total: number | undefined;
-}) {
-  const [draft, setDraft] = useState(() => (threshold === undefined ? "" : String(threshold)));
-
-  const commit = () => {
-    const parsed = Number(draft);
-    onChange(draft.trim() !== "" && Number.isFinite(parsed) && parsed > 0 ? parsed : undefined);
-  };
-
-  const status = budgetStatus(total, threshold);
-
-  return (
-    <div className="budget-threshold">
-      <label>
-        <small>Soft budget (USD)</small>
-        <input
-          inputMode="decimal"
-          onBlur={commit}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              commit();
-              event.currentTarget.blur();
-            }
-          }}
-          placeholder="Not set"
-          type="number"
-          value={draft}
-        />
-      </label>
-      {status && (
-        <span className={`budget-status budget-status-${status.kind}`} role="status">
-          {status.label}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function budgetStatus(
-  total: number | undefined,
-  threshold: number | undefined,
-): { kind: "under" | "over"; label: string } | undefined {
-  if (threshold === undefined || total === undefined) {
-    return undefined;
-  }
-  const ratio = total / threshold;
-  return ratio >= 1
-    ? {
-        kind: "over",
-        label: `${(ratio * 100).toFixed(0)}% of budget — over by ${formatMeasuredCost(total - threshold)}`,
-      }
-    : { kind: "under", label: `${(ratio * 100).toFixed(0)}% of budget` };
 }
 
 function StageDistributions({

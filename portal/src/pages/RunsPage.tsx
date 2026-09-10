@@ -11,7 +11,7 @@ import { formatTimestamp } from "../runDetailData";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
-const FILTERS: readonly RunsFilter[] = ["all", "active", "attention", "complete"];
+const FILTERS: readonly RunsFilter[] = ["active", "attention", "complete", "all"];
 const NARROW_RUNS_PAGE_SIZE = 20;
 
 export function RunsPage({
@@ -23,7 +23,7 @@ export function RunsPage({
   filters?: RunRouteFilters;
   standalone: boolean;
 }) {
-  const [filter, setFilter] = useState<RunsFilter>("all");
+  const [filter, setFilter] = useState<RunsFilter>("active");
   // Hides routine no-work schedule ticks by default (#2188): a run whose only
   // stage reported no eligible work, on an instance ticking every ~60s, would
   // otherwise bury the runs an operator actually came here to find. The

@@ -570,17 +570,24 @@ func (s *Local) workflowsUnannotated(ctx context.Context, gaggle string, request
 	if err != nil {
 		return WorkflowPage{}, err
 	}
-	schedulerStatus, err := s.SchedulerStatus(ctx)
-	if err != nil {
-		return WorkflowPage{}, err
+	refill := map[localscheduler.WorkflowIdentity]RefillOccupancyStatus{}
+	var fallbacks map[localscheduler.WorkflowIdentity]readmodel.EngineFallback
+	if projected := s.projectedWorkflowSchedulerState(); projected != nil {
+		refill = refillOccupancyByWorkflow(
+			workflowRefillOccupancy(inventory.definitions.Workflows, active, projected.refillBlocked),
+		)
+		fallbacks = projected.engineFallbacks
 	}
-	refill := refillOccupancyByWorkflow(schedulerStatus.RefillOccupancy)
 	items := make([]WorkflowSummary, 0)
 	for i := range inventory.definitions.Workflows {
 		def := &inventory.definitions.Workflows[i]
 		if def.Spec.Gaggle == gaggle {
 			item := s.workflowSummary(inventory, def, active, refill)
-			item.EngineFallback = schedulerStatus.engineFallbackFor(def.Spec.Gaggle, def.Name)
+			identity := localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}
+			if fallback, ok := fallbacks[identity]; ok {
+				value := fallback
+				item.EngineFallback = &value
+			}
 			items = append(items, item)
 		}
 	}
@@ -655,21 +662,28 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 	if err != nil {
 		return WorkflowDetail{}, err
 	}
-	schedulerStatus, err := s.SchedulerStatus(ctx)
-	if err != nil {
-		return WorkflowDetail{}, err
+	refill := map[localscheduler.WorkflowIdentity]RefillOccupancyStatus{}
+	var fallbacks map[localscheduler.WorkflowIdentity]readmodel.EngineFallback
+	if projected := s.projectedWorkflowSchedulerState(); projected != nil {
+		refill = refillOccupancyByWorkflow(
+			workflowRefillOccupancy(inventory.definitions.Workflows, active, projected.refillBlocked),
+		)
+		fallbacks = projected.engineFallbacks
 	}
 	detail := WorkflowDetail{
 		WorkflowSummary: s.workflowSummary(
 			inventory,
 			def,
 			active,
-			refillOccupancyByWorkflow(schedulerStatus.RefillOccupancy),
+			refill,
 		),
 		Graph:  inventory.graphs[workflowKey{gaggle: gaggle, name: name}],
 		Stages: workflowStages(def),
 	}
-	detail.EngineFallback = schedulerStatus.engineFallbackFor(gaggle, name)
+	if fallback, ok := fallbacks[localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: name}]; ok {
+		value := fallback
+		detail.EngineFallback = &value
+	}
 	return detail, nil
 }
 

@@ -2,10 +2,54 @@
   box-sizing: border-box;
 }
 
+.workflow-gaggle-group {
+  margin-top: 28px;
+}
+
+.workflow-gaggle-summary {
+  background: var(--surface);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.workflow-gaggle-summary .goober-group-summary {
+  min-width: 0;
+}
+
+.workflow-gaggle-actions {
+  align-items: center;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px;
+}
+
+.workflow-gaggle-content {
+  border-top: 1px solid var(--line);
+  padding: 0 16px 18px;
+}
+
 html {
   background: var(--bg);
   height: 100%;
   overflow: hidden;
+}
+
+.goober-group-summary-meta {
+  align-items: center;
+  display: inline-flex;
+  gap: 12px;
+}
+
+.goober-group-chevron {
+  color: var(--muted);
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+.goober-group-summary[aria-expanded="true"] .goober-group-chevron {
+  transform: rotate(90deg);
 }
 
 body {
@@ -18,8 +62,41 @@ body {
   overflow: hidden;
 }
 
+.goober-ownership-list {
+  display: grid;
+  gap: 3px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 #root {
   height: 100%;
+}
+
+.copy-command-compact {
+  max-width: none;
+}
+
+.copy-command-button-compact {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--muted-strong);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 640;
+  gap: 3px;
+  min-height: 28px;
+  padding: 0;
+}
+
+.copy-command-button-compact:hover,
+.copy-command-button-compact:focus-visible {
+  color: var(--ink);
+  text-decoration: underline;
 }
 
 button,
@@ -888,6 +965,18 @@ summary:focus-visible {
   padding: 18px 13px;
 }
 
+.section-loading {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.section-loading .loading-mark {
+  border-width: 2px;
+  height: 18px;
+  width: 18px;
+}
+
 .inline-empty-recovery {
   display: grid;
   gap: 6px;
@@ -1158,6 +1247,7 @@ summary:focus-visible {
 .goober-groups {
   display: grid;
   gap: 38px;
+  max-width: 960px;
 }
 
 .goober-group {
@@ -1207,7 +1297,7 @@ summary:focus-visible {
 }
 
 .goober-roster-page {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .goober-card-toggle {
@@ -1610,7 +1700,46 @@ summary:focus-visible {
 
 .workflow-grid,
 .workflow-grid ~ .data-row {
-  grid-template-columns: minmax(290px, 1.7fr) minmax(130px, 0.8fr) minmax(130px, 0.8fr) minmax(150px, 0.8fr) 18px;
+  grid-template-columns:
+    minmax(220px, 1.4fr)
+    minmax(150px, 0.8fr)
+    minmax(125px, 0.65fr)
+    minmax(145px, 0.75fr)
+    minmax(300px, 1.35fr);
+}
+
+.workflow-row {
+  cursor: default;
+}
+
+.workflow-row:hover {
+  background: transparent;
+}
+
+.workflow-trigger-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.workflow-trigger-list > span {
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.workflow-row-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.workflow-row-actions .scope-pivot {
+  flex-wrap: wrap;
 }
 
 .all-runs-grid,
@@ -2552,6 +2681,37 @@ summary:focus-visible {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.usage-percentiles-with-total {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.overview-loading-title {
+  display: inline-flex;
+  min-width: 1.5em;
+}
+
+.overview-loading-title > span {
+  animation: overview-loading-dot 1.2s infinite both;
+}
+
+.overview-loading-title > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.overview-loading-title > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes overview-loading-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+  }
+  30% {
+    opacity: 1;
+  }
+}
 .usage-waste-values {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }

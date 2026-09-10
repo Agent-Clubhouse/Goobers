@@ -21,7 +21,7 @@ type blockingAggregateReader struct {
 	calls    atomic.Int32
 }
 
-func (r *blockingAggregateReader) Instance(ctx context.Context) (readservice.Instance, error) {
+func (r *blockingAggregateReader) TelemetryStats(ctx context.Context, _ readservice.TelemetryStatsRequest) (readservice.TelemetryStatsResult, error) {
 	if r.calls.Add(1) == 1 {
 		close(r.entered)
 	}
@@ -30,9 +30,9 @@ func (r *blockingAggregateReader) Instance(ctx context.Context) (readservice.Ins
 		if r.canceled != nil {
 			close(r.canceled)
 		}
-		return readservice.Instance{}, ctx.Err()
+		return readservice.TelemetryStatsResult{}, ctx.Err()
 	case <-r.release:
-		return readservice.Instance{Name: "shared"}, nil
+		return readservice.TelemetryStatsResult{}, nil
 	}
 }
 
@@ -55,7 +55,7 @@ func TestIdenticalAggregateGETsShareOneAdmissionAndRead(t *testing.T) {
 		go func() {
 			started.Done()
 			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, InstancePath, nil))
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, TelemetryStatsPath, nil))
 			responses <- response
 		}()
 	}
@@ -83,7 +83,7 @@ func TestIdenticalAggregateGETsShareOneAdmissionAndRead(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, InstancePath, nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, TelemetryStatsPath, nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("sequential status = %d, body = %s", response.Code, response.Body)
 	}
@@ -104,7 +104,7 @@ func TestCancelledAggregateWaiterDoesNotCancelSharedRead(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	firstRequest := httptest.NewRequest(http.MethodGet, InstancePath, nil).WithContext(ctx)
+	firstRequest := httptest.NewRequest(http.MethodGet, TelemetryStatsPath, nil).WithContext(ctx)
 	firstDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		response := httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestCancelledAggregateWaiterDoesNotCancelSharedRead(t *testing.T) {
 	secondDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, InstancePath, nil))
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, TelemetryStatsPath, nil))
 		secondDone <- response
 	}()
 	time.Sleep(20 * time.Millisecond)
@@ -156,7 +156,7 @@ func TestAggregateRequestContextStillCarriesServerBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, InstancePath, nil)
+	request := httptest.NewRequest(http.MethodGet, TelemetryStatsPath, nil)
 	ctx, cancel := context.WithCancel(request.Context())
 	cancel()
 	response := httptest.NewRecorder()
@@ -188,7 +188,7 @@ func TestSoleAggregateCancellationReachesReader(t *testing.T) {
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		response := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodGet, InstancePath, nil).WithContext(ctx)
+		request := httptest.NewRequest(http.MethodGet, TelemetryStatsPath, nil).WithContext(ctx)
 		handler.ServeHTTP(response, request)
 		done <- response
 	}()

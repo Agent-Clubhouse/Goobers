@@ -699,6 +699,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: stop active-run sampler: %v\n", err)
 		}
 	}()
+	stopSchedulerProjector := reads.StartSchedulerStateProjector(0)
+	defer func() {
+		if err := stopSchedulerProjector(); err != nil {
+			pf(stderr, "error: stop scheduler-state projector: %v\n", err)
+		}
+	}()
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth

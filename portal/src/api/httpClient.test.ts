@@ -305,6 +305,31 @@ describe("HttpDaemonClient", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("does not attach a remounted consumer to an aborted shared request", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      if (fetcher.mock.calls.length === 1) {
+        await new Promise<void>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      }
+      return Response.json(health);
+    });
+    const client = new HttpDaemonClient({ fetch: fetcher });
+    const firstController = new AbortController();
+
+    const first = client.getHealth({ signal: firstController.signal });
+    firstController.abort();
+    const remounted = client.getHealth();
+
+    await expect(first).rejects.toBeInstanceOf(RequestCancelledError);
+    await expect(remounted).resolves.toEqual(health);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("bounds simultaneous reads across query families", async () => {
     const releases: Array<() => void> = [];
     let active = 0;

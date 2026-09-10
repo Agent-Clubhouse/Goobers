@@ -31,7 +31,6 @@ import { scopeIdentity } from "./scope";
 import { GettingStartedShell } from "./shell/GettingStartedShell";
 import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
-import { DaemonLoadingState } from "./components/DaemonQueryState";
 
 const portalDiagnostics = createPortalDiagnostics();
 const PORTAL_CONFIG_CACHE_KEY = "goobers-portal-config";
@@ -257,14 +256,6 @@ function Portal({
     warningSource,
     warningFixtures,
   );
-
-  if (loading) {
-    return (
-      <div className="portal-bootstrap">
-        <DaemonLoadingState standalone={standalone} />
-      </div>
-    );
-  }
 
   return (
     <CobrandContext.Provider value={{ config, loading }}>

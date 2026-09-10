@@ -171,6 +171,12 @@ type Local struct {
 	// TimeToFirstPR so those requests read the journal's growth since the last
 	// request instead of its whole history (#3050).
 	instanceLog instanceFold
+
+	// workflowSchedulerState is the request-safe projection of the small subset
+	// of scheduler state used to decorate workflow inventory. HTTP collection
+	// reads never hydrate it from the instance journal.
+	workflowSchedulerState atomic.Pointer[workflowSchedulerProjection]
+	schedulerProjector     atomic.Pointer[schedulerStateProjector]
 }
 
 type definitionSnapshot struct {

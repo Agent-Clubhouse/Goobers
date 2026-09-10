@@ -16,7 +16,11 @@ export type Route =
 // The Runs and Insight route filters are exactly the shared scope model
 // (#2528) — kept as named aliases so call sites read in terms of the view
 // they're for, without three parallel field-by-field type declarations.
-export type RunRouteFilters = ScopeFilters;
+export type RunStatusFilter = "active" | "attention" | "complete" | "all";
+
+export interface RunRouteFilters extends ScopeFilters {
+  status?: RunStatusFilter;
+}
 
 export type InsightSection = "contributors" | "usage" | "failures" | "latency";
 
@@ -63,8 +67,11 @@ export function parseRoute(hash = window.location.hash): Route {
     return gaggle ? { page: "goobers", gaggle } : { page: "goobers" };
   }
   if (area === "runs") {
-    const filters = parseScopeFilters(search);
-    return hasScopeFilters(filters) ? { page: "runs", filters } : { page: "runs" };
+    const filters: RunRouteFilters = {
+      ...parseScopeFilters(search),
+      status: runStatusQuery(search),
+    };
+    return hasScopeFilters(filters) || filters.status ? { page: "runs", filters } : { page: "runs" };
   }
   if (area === "errors") {
     return {
@@ -112,6 +119,7 @@ export function routeHash(route: Route): string {
   if (route.page === "runs" && route.filters) {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
+    writeQuery(search, "status", route.filters.status);
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/runs${suffix}`;
   }
@@ -188,6 +196,16 @@ function insightSectionQuery(search: URLSearchParams): InsightSection | undefine
     value === "usage" ||
     value === "failures" ||
     value === "latency"
+    ? value
+    : undefined;
+}
+
+function runStatusQuery(search: URLSearchParams): RunStatusFilter | undefined {
+  const value = optionalQuery(search, "status");
+  return value === "active" ||
+    value === "attention" ||
+    value === "complete" ||
+    value === "all"
     ? value
     : undefined;
 }

@@ -374,16 +374,6 @@ export async function loadOperationalSnapshot(
     previous === undefined || models === undefined || models.has("instance") || models.has("workflow");
   const wantRuns = previous === undefined || models === undefined || models.has("run");
   const requestOptions = { signal };
-  const inventoriesPromise = settlePromise(
-    wantInventory
-      ? loadOperationalInventory(client, options?.cache, signal, options?.scope)
-      : Promise.resolve(previous!.inventories),
-  );
-  const workflowSnapshotPromise = settlePromise(
-    wantRuns
-      ? loadWorkflowOutcomes(client, options?.scope, signal)
-      : Promise.resolve({ runs: previous!.runs, activity: undefined }),
-  );
   const [healthResult, instanceResult] = await Promise.allSettled([
     client.getHealth(requestOptions),
     client.getInstance(requestOptions),
@@ -391,7 +381,6 @@ export async function loadOperationalSnapshot(
   const health = settledValue(healthResult);
   const instance = settledValue(instanceResult);
   if (!health || !instance) {
-    await Promise.all([inventoriesPromise, workflowSnapshotPromise]);
     throw (
       settledError(healthResult) ??
       settledError(instanceResult) ??
@@ -410,6 +399,16 @@ export async function loadOperationalSnapshot(
     },
   });
 
+  const inventoriesPromise = settlePromise(
+    wantInventory
+      ? loadOperationalInventory(client, options?.cache, signal, options?.scope)
+      : Promise.resolve(previous!.inventories),
+  );
+  const workflowSnapshotPromise = settlePromise(
+    wantRuns
+      ? loadWorkflowOutcomes(client, options?.scope, signal)
+      : Promise.resolve({ runs: previous!.runs, activity: undefined }),
+  );
   const [inventoriesResult, workflowSnapshotResult] = await Promise.all([
     inventoriesPromise,
     workflowSnapshotPromise,
@@ -1100,20 +1099,6 @@ export async function loadOperationalOverview(
   // timeout (#1709).
   const healthPromise = client.getHealth(requestOptions);
   const instancePromise = client.getInstance(requestOptions);
-  const inventoryPromise = settlePromise(
-    wantInventory
-      ? loadOverviewInventory(client, options?.cache, signal)
-      : Promise.resolve<OverviewInventory>({
-          gaggleCount: previous!.gaggleCount,
-          workflowNames: previous!.workflowNames,
-        }),
-  );
-  const groupsPromise = settlePromise(
-    wantRuns
-      ? loadOverviewRunGroups(client, signal, previous?.groups)
-      : Promise.resolve(previous!.groups),
-  );
-
   const [health, instance] = await Promise.allSettled([
     healthPromise,
     instancePromise,
@@ -1145,6 +1130,19 @@ export async function loadOperationalOverview(
     },
   });
 
+  const inventoryPromise = settlePromise(
+    wantInventory
+      ? loadOverviewInventory(client, options?.cache, signal)
+      : Promise.resolve<OverviewInventory>({
+          gaggleCount: previous!.gaggleCount,
+          workflowNames: previous!.workflowNames,
+        }),
+  );
+  const groupsPromise = settlePromise(
+    wantRuns
+      ? loadOverviewRunGroups(client, signal, previous?.groups)
+      : Promise.resolve(previous!.groups),
+  );
   const [inventory, groups] = await Promise.all([
     inventoryPromise,
     groupsPromise,

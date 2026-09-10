@@ -188,8 +188,7 @@ function GaggleTopology({
 
       <DisclosureSection
         count={inventory.connections.length}
-        eyebrow="Connections"
-        title="Repository topology"
+        title="Repository connections"
       >
         <ConnectionTopology
           connections={inventory.connections}
@@ -215,7 +214,12 @@ function ConnectionTopology({
       aria-label={`${gaggleDisplayName} repository connections`}
       className={`gaggle-connection-topology${hasWorkflows ? "" : " without-workflows"}`}
     >
-      <h3>External connections</h3>
+      <h3>Repositories available to this gaggle</h3>
+      <p className="gaggle-connection-description">
+        {hasWorkflows
+          ? "These repositories are connected through the gaggle's configured workflows."
+          : "These repositories are configured for the gaggle even though it has no workflows."}
+      </p>
       <ul>
         {connections.map((connection) => {
           const identity = repositoryIdentity(connection);
@@ -282,7 +286,6 @@ function GaggleActivitySections({
       <DisclosureSection
         count={activity?.active.length}
         defaultOpen
-        eyebrow="Live"
         title="Active runs"
       >
         {!activity ? (
@@ -316,7 +319,6 @@ function GaggleActivitySections({
 
       <DisclosureSection
         count={activity?.recent.length}
-        eyebrow="History"
         title="Recent outcomes"
       >
         {!activity ? (
@@ -366,10 +368,7 @@ function GoobersPanel({
   return (
     <section className="content-section">
       <div className="section-heading">
-        <div>
-          <p className="section-kicker">Definitions</p>
-          <h2>Goobers</h2>
-        </div>
+        <h2>Goobers</h2>
         <span className="section-count">{goobers.length}</span>
       </div>
       <div className="gaggle-goober-panel-action">

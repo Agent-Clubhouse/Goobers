@@ -645,6 +645,9 @@ export class HttpDaemonClient implements DaemonClient {
       const cancel = () => {
         if (!finish()) return;
         if (shared!.subscribers.size === 0) {
+          if (this.sharedJSON.get(key) === shared) {
+            this.sharedJSON.delete(key);
+          }
           shared!.controller.abort();
         }
         reject(new RequestCancelledError());

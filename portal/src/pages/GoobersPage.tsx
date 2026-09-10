@@ -68,14 +68,11 @@ function GooberRoster({
     <>
       <header className="page-heading">
         <div>
-          <p className="page-kicker">Agent personas</p>
           <h1>Goobers</h1>
           <p>
             {filteredGaggle
               ? `Configured personas owned by ${filteredGaggle.displayName}.`
-              : standalone
-              ? "Every configured agent persona across gaggles, read from this instance."
-              : "Every configured agent persona across gaggles, read from the daemon."}
+              : "Goobers are the agent personas that do the actual work."}
           </p>
           {filteredGaggle && (
             <a className="text-link" href={routeHash({ page: "goobers" })}>
@@ -137,12 +134,16 @@ function GooberGroup({
         type="button"
       >
         <span>
-          <span className="section-kicker">Owning gaggle</span>
           <strong>{inventory.gaggle.displayName}</strong>
           <code>{inventory.gaggle.name}</code>
         </span>
-        <span className="section-count">
-          {inventory.goobers.length} {inventory.goobers.length === 1 ? "goober" : "goobers"}
+        <span className="goober-group-summary-meta">
+          <span className="section-count">
+            {inventory.goobers.length} {inventory.goobers.length === 1 ? "goober" : "goobers"}
+          </span>
+          <span aria-hidden="true" className="goober-group-chevron">
+            <Icon name="chevron" size={16} />
+          </span>
         </span>
       </button>
       {expanded && (
@@ -204,9 +205,17 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
         <div>
           <dt>Workflow ownership</dt>
           <dd>
-            {goober.workflows.length > 0
-              ? goober.workflows.map((workflow) => `${workflow.gaggle}/${workflow.name}`).join(", ")
-              : "None declared"}
+            {goober.workflows.length > 0 ? (
+              <ul className="goober-ownership-list">
+                {goober.workflows.map((workflow) => (
+                  <li key={`${workflow.gaggle}/${workflow.name}`}>
+                    {workflow.gaggle}/{workflow.name}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              "None declared"
+            )}
           </dd>
         </div>
       </dl>

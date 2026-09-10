@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -368,9 +369,42 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	if err != nil {
 		return SchedulerStatus{}, err
 	}
-	refill := make([]RefillOccupancyStatus, 0)
 	definitions := s.definitions.Load().inventory.definitions
-	for _, def := range definitions.Workflows {
+	status.RefillOccupancy = workflowRefillOccupancy(
+		definitions.Workflows,
+		activeCounts,
+		refillBlocked,
+	)
+
+	// Retention diagnostics: expose the effective policy and live loop counters.
+	if s.sources.Config != nil {
+		retention := RetentionStatus{
+			Window: s.sources.Config.ProjectionFullFidelityRetentionDays(),
+		}
+		if s.sources.RetentionStats != nil {
+			stats := s.sources.RetentionStats()
+			retention.AgedOut = stats.AgedOut
+			retention.Passes = stats.Passes
+			if !stats.LastPassAt.IsZero() {
+				at := stats.LastPassAt
+				retention.LastPassAt = &at
+			}
+		}
+		status.Retention = &retention
+	}
+	if s.sources.RetentionStats != nil {
+		status.Maintenance = maintenanceStatus(s.sources.RetentionStats())
+	}
+	return status, nil
+}
+
+func workflowRefillOccupancy(
+	definitions []apiv1.Workflow,
+	activeCounts map[localscheduler.WorkflowIdentity]int,
+	refillBlocked map[localscheduler.WorkflowIdentity]string,
+) []RefillOccupancyStatus {
+	refill := make([]RefillOccupancyStatus, 0)
+	for _, def := range definitions {
 		desired := def.Spec.Readiness.DesiredConcurrentRuns
 		if desired <= 0 {
 			continue
@@ -396,29 +430,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		}
 		return refill[i].Gaggle < refill[j].Gaggle
 	})
-	status.RefillOccupancy = refill
-
-	// Retention diagnostics: expose the effective policy and live loop counters.
-	if s.sources.Config != nil {
-		retention := RetentionStatus{
-			Window: s.sources.Config.ProjectionFullFidelityRetentionDays(),
-		}
-		if s.sources.RetentionStats != nil {
-			stats := s.sources.RetentionStats()
-			retention.AgedOut = stats.AgedOut
-			retention.Passes = stats.Passes
-			if !stats.LastPassAt.IsZero() {
-				lastPassAt := stats.LastPassAt
-				retention.LastPassAt = &lastPassAt
-			}
-		}
-		status.Retention = &retention
-	}
-	if s.sources.RetentionStats != nil {
-		status.Maintenance = maintenanceStatus(s.sources.RetentionStats())
-	}
-
-	return status, nil
+	return refill
 }
 
 func maintenanceStatus(stats readmodel.RetentionStats) *MaintenanceStatus {

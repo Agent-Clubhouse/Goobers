@@ -21,6 +21,7 @@ interface DataListProps {
   gridClassName?: string;
   maxRows?: number;
   overflow?: DataListOverflow;
+  showTrailingColumn?: boolean;
 }
 
 export function DataList({
@@ -30,6 +31,7 @@ export function DataList({
   gridClassName = "",
   maxRows = DEFAULT_MAX_ROWS,
   overflow,
+  showTrailingColumn = true,
 }: DataListProps) {
   const rows = Children.toArray(children);
   const cap = Math.max(0, maxRows);
@@ -43,7 +45,7 @@ export function DataList({
           {columns.map((column, index) => (
             <span key={`${column}-${index}`}>{column}</span>
           ))}
-          <span />
+          {showTrailingColumn && <span />}
         </div>
       )}
       {visible}

@@ -35,6 +35,11 @@ type TelemetryReader interface {
 	TelemetryImplementationOutcomes(context.Context, TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error)
 }
 
+type WorkItemReader interface {
+	WorkItems(context.Context, WorkItemListOptions) (WorkItemPage, error)
+	WorkItem(context.Context, string, string, string) (WorkItemDetail, error)
+}
+
 // TelemetryImplementationOutcomesRequest selects the terminal implementation
 // runs that claimed a backlog item. Gaggle is the containment key the pod
 // read is scoped by (decision 005 R4); Since bounds the window to the

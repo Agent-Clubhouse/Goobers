@@ -50,8 +50,7 @@ export function PortalShell({
       ? currentScope
       : undefined;
   const { config } = useCobrand();
-  const { admissionState, dataFreshness, freshness, lastSSEFailure, retryConnection } =
-    useLiveData();
+  const { admissionState, dataFreshness, freshness, lastSSEFailure } = useLiveData();
   const mainContent = useRef<HTMLElement>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
@@ -97,16 +96,6 @@ export function PortalShell({
               </span>
             </>
           )}
-          {freshness === "polling-fallback" ? (
-            <button
-              aria-label="Retry live updates"
-              className="reconnect-button"
-              onClick={retryConnection}
-              type="button"
-            >
-              Retry live updates
-            </button>
-          ) : null}
           <button
             aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
             className="theme-button"
@@ -198,23 +187,6 @@ export function PortalShell({
           id="portal-secondary-navigation"
         >
           <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
-
-          <div
-            className="sidebar-status"
-            title={describeConnectionTitle(freshness, lastSSEFailure)}
-          >
-            <div>
-              <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
-              <span>
-                <strong>{standalone ? "Standalone read-only" : "Daemon API"}</strong>
-                <small>
-                  {standalone
-                    ? "Daemon not running; reading this instance locally"
-                    : describeConnectionSummary(freshness)}
-                </small>
-              </span>
-            </div>
-          </div>
           <SupportFooter />
         </div>
       </aside>
@@ -294,14 +266,6 @@ const freshnessLabel: Record<LiveFreshness, string> = {
   "polling-fallback": "Polling fallback",
 };
 
-const freshnessCopy: Record<LiveFreshness, string> = {
-  connected: "Live updates connected",
-  reconnecting: "Reconnecting; showing stale data",
-  stale: "Refreshing a full snapshot",
-  offline: "Offline; showing stale data",
-  "polling-fallback": "SSE unavailable; polling",
-};
-
 function describeConnectionStatus(
   freshness: LiveFreshness,
   failure: LiveDataSSEFailure | undefined,
@@ -311,12 +275,6 @@ function describeConnectionStatus(
   }
   const causeChunk = failure.result ? `${failure.cause} (${failure.result})` : failure.cause;
   return `${freshnessLabel[freshness]} — ${causeChunk}`;
-}
-
-function describeConnectionSummary(
-  freshness: LiveFreshness,
-): string {
-  return freshnessCopy[freshness];
 }
 
 function describeConnectionTitle(
@@ -385,7 +343,9 @@ function dataFreshnessLabel(state: DataFreshness): string {
     case "current":
       return "Data current";
     case "lagging":
-      return `Data stale by ${formatLag(state.lagSeconds)}`;
+      return state.lagSeconds > 0
+        ? `Data stale by ${formatLag(state.lagSeconds)}`
+        : "Data degraded";
     case "partial":
       return `Partial — ${state.missing.map((entry) => entry.name).join(", ")}`;
     default:

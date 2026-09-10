@@ -3,6 +3,7 @@ import { Icon } from "./Icon";
 
 interface CopyCommandProps {
   command: string;
+  compact?: boolean;
   idleLabel: string;
   successLabel: string;
   failureLabel: string;
@@ -10,6 +11,7 @@ interface CopyCommandProps {
 
 export function CopyCommand({
   command,
+  compact = false,
   failureLabel,
   idleLabel,
   successLabel,
@@ -29,10 +31,10 @@ export function CopyCommand({
     status === "success" ? successLabel : status === "failure" ? `Retry ${idleLabel.toLowerCase()}` : idleLabel;
 
   return (
-    <span className={`copy-command copy-command-${status}`}>
+    <span className={`copy-command copy-command-${status}${compact ? " copy-command-compact" : ""}`}>
       <button
         aria-label={buttonLabel}
-        className="secondary-button copy-command-button"
+        className={compact ? "copy-command-button copy-command-button-compact" : "secondary-button copy-command-button"}
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -41,10 +43,14 @@ export function CopyCommand({
         type="button"
       >
         <Icon name={status === "success" ? "check" : "copy"} size={16} />
-        {status === "success" ? "Copied" : status === "failure" ? "Try again" : "Copy command"}
+        {status === "success" ? "Copied" : status === "failure" ? "Try again" : compact ? idleLabel : "Copy command"}
       </button>
       {status !== "idle" && (
-        <span aria-live="polite" className="copy-command-status" role="status">
+        <span
+          aria-live="polite"
+          className={compact ? "sr-only" : "copy-command-status"}
+          role="status"
+        >
           {status === "success" ? successLabel : failureLabel}
         </span>
       )}

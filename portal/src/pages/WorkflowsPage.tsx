@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { DaemonClient, RunSummary, WorkflowSummary } from "../api/types";
+import type { DaemonClient, RunSummary, WorkflowSummary, WorkflowTrigger } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { ScopePivot } from "../components/ScopePivot";
@@ -12,7 +12,7 @@ import {
 import { routeHash } from "../routing";
 import { CopyCommand } from "../ui/CopyCommand";
 import { Icon } from "../ui/Icon";
-import { DataList, DataRow } from "../ui/DataList";
+import { DataList } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 import { manualRunCommand } from "../manualRunCommand";
 
@@ -60,7 +60,6 @@ function WorkflowInventory({
     <>
       <header className="page-heading">
         <div>
-          <p className="page-kicker">Definitions</p>
           <h1>Workflows</h1>
           <p>
             {standalone
@@ -82,7 +81,8 @@ function WorkflowInventory({
         </div>
       ) : snapshot.loadingSections?.inventory && snapshot.inventories.length === 0 ? (
         <div className="inline-empty section-loading" role="status">
-          Workflow inventory is loading. The page will fill in as definitions arrive.
+          <span aria-hidden="true" className="loading-mark" />
+          <span>Loading</span>
         </div>
       ) : snapshot.inventories.length === 0 ? (
         <section className="empty-state">
@@ -122,57 +122,45 @@ function GaggleSection({
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <section aria-labelledby={headingId} className="gaggle-section">
-      <div className="gaggle-heading gaggle-inventory-heading">
+    <section aria-labelledby={headingId} className="goober-group workflow-gaggle-group">
+      <div className="workflow-gaggle-summary">
         <button
           aria-controls={contentId}
           aria-expanded={expanded}
-          className="gaggle-inventory-toggle"
+          className="goober-group-summary"
           onClick={() => setExpanded((current) => !current)}
           type="button"
         >
-          <div>
-            <p className="section-kicker">Gaggle</p>
-            <div className="gaggle-heading-line">
-              <h2 id={headingId}>{gaggle.displayName}</h2>
-              <span aria-hidden="true" className="gaggle-inventory-chevron">
-                <Icon name="chevron" size={16} />
-              </span>
-            </div>
-            <p>
+          <span>
+            <strong id={headingId}>{gaggle.displayName}</strong>
+            <code>
               {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
-            </p>
-          </div>
+            </code>
+          </span>
+          <span className="goober-group-summary-meta">
+            <span className="section-count">
+              {inventory.workflows.length}{" "}
+              {inventory.workflows.length === 1 ? "workflow" : "workflows"}
+            </span>
+            <span aria-hidden="true" className="goober-group-chevron">
+              <Icon name="chevron" size={16} />
+            </span>
+          </span>
         </button>
-        <dl>
-          <div>
-            <dt>Status</dt>
-            <dd>{gaggle.status}</dd>
-          </div>
-          <div>
-            <dt>Workflows</dt>
-            <dd>{gaggle.workflowCount}</dd>
-          </div>
-          <div>
-            <dt>Goobers</dt>
-            <dd>{gaggle.gooberCount}</dd>
-          </div>
-          <div>
-            <dt>Active runs</dt>
-            <dd>{gaggle.activeRunCount}</dd>
-          </div>
-        </dl>
-        <div className="gaggle-inventory-actions">
+        <div
+          aria-label={`${gaggle.displayName} destinations`}
+          className="workflow-gaggle-actions"
+          role="group"
+        >
           <a className="gaggle-detail-link" href={routeHash({ page: "gaggle", id: gaggle.name })}>
-            Open details
-            <Icon name="arrow" size={16} />
+            Details
           </a>
           <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
         </div>
       </div>
 
       {expanded && (
-        <div id={contentId}>
+        <div className="workflow-gaggle-content" id={contentId}>
           <div className="content-section gaggle-content">
             <div className="section-heading">
               <h3>Workflow inventory</h3>
@@ -191,8 +179,9 @@ function GaggleSection({
             ) : (
               <DataList
                 ariaLabel={`${gaggle.displayName} workflow definitions`}
-                columns={["Workflow", "Trigger", "Concurrency", "Last outcome"]}
+                columns={["Workflow", "Trigger(s)", "Concurrency", "Last outcome", "Actions"]}
                 gridClassName="workflow-grid"
+                showTrailingColumn={false}
               >
                 {inventory.workflows.map((workflow) => {
                   const outcome = latestWorkflowOutcome(
@@ -201,30 +190,15 @@ function GaggleSection({
                     workflow.identity.name,
                   );
                   return (
-                    <DataRow
-                      href={routeHash({
-                        page: "workflow",
-                        gaggle: workflow.identity.gaggle,
-                        id: workflow.identity.name,
-                      })}
-                      interactiveChildren
+                    <div
+                      className="data-row workflow-row"
                       key={`${workflow.identity.gaggle}/${workflow.identity.name}`}
-                      label={`Open workflow ${workflow.displayName} for gaggle ${gaggle.displayName}`}
                     >
                       <span className="row-primary">
-                        <span className="row-title row-title-with-pivot">
-                          <span className="row-title-text">{workflow.displayName}</span>
-                          <ScopePivot
-                            label={`${gaggle.displayName} / ${workflow.displayName}`}
-                            scope={{
-                              gaggle: workflow.identity.gaggle,
-                              workflow: workflow.identity.name,
-                            }}
-                          />
-                        </span>
+                        <span className="row-title">{workflow.displayName}</span>
                         <span className="row-subtitle">{workflow.purpose}</span>
                       </span>
-                      <span>{formatTriggers(workflow)}</span>
+                      <WorkflowTriggers workflow={workflow} />
                       <span>
                         {workflow.concurrency.activeRuns} active
                         {workflow.concurrency.desiredRuns !== undefined
@@ -248,18 +222,43 @@ function GaggleSection({
                         ) : (
                           <small>No recorded runs</small>
                         )}
+                      </span>
+                      <span
+                        aria-label={`${workflow.displayName} destinations`}
+                        className="workflow-row-actions"
+                        role="group"
+                      >
+                        <a
+                          className="scope-pivot-link"
+                          href={routeHash({
+                            page: "workflow",
+                            gaggle: workflow.identity.gaggle,
+                            id: workflow.identity.name,
+                          })}
+                        >
+                          <Icon name="workflow" size={13} />
+                          Details
+                        </a>
+                        <ScopePivot
+                          label={`${gaggle.displayName} / ${workflow.displayName}`}
+                          scope={{
+                            gaggle: workflow.identity.gaggle,
+                            workflow: workflow.identity.name,
+                          }}
+                        />
                         <CopyCommand
+                          compact
                           command={manualRunCommand(
                             workflow.identity.gaggle,
                             workflow.identity.name,
                             instanceRoot,
                           )}
                           failureLabel="Could not copy the manual run command. Select and copy the command from the workflow details."
-                          idleLabel="Copy manual run command"
+                          idleLabel="Copy run command"
                           successLabel="Manual run command copied to the clipboard."
                         />
                       </span>
-                    </DataRow>
+                    </div>
                   );
                 })}
               </DataList>
@@ -296,22 +295,70 @@ export function formatTriggers(workflow: WorkflowSummary): string {
   if (workflow.triggers.length === 0) {
     return "Manual";
   }
-  return workflow.triggers
-    .map((trigger) => {
-      switch (trigger.type) {
-        case "backlog-item":
-          return "Backlog item";
-        case "manual":
-          return "Manual";
-        case "schedule":
-          return trigger.schedule ? `Schedule · ${trigger.schedule}` : "Schedule";
-        case "signal":
-          return trigger.signal ? `Signal · ${trigger.signal}` : "Signal";
-        case "webhook":
-          return trigger.events?.length ? `Webhook · ${trigger.events.join("/")}` : "Webhook";
-      }
-    })
-    .join(", ");
+  return workflow.triggers.map(formatTriggerLabel).join("\n");
+}
+
+function WorkflowTriggers({ workflow }: { workflow: WorkflowSummary }) {
+  const triggers = workflow.triggers.length > 0 ? workflow.triggers : [{ type: "manual" } as const];
+  return (
+    <span className="workflow-trigger-list">
+      {triggers.map((trigger, index) => (
+        <span key={`${trigger.type}-${index}`}>{formatTriggerLabel(trigger)}</span>
+      ))}
+    </span>
+  );
+}
+
+function formatTriggerLabel(trigger: WorkflowTrigger): string {
+  switch (trigger.type) {
+    case "backlog-item":
+      return "Backlog item";
+    case "manual":
+      return "Manual";
+    case "schedule":
+      return trigger.schedule ? describeCron(trigger.schedule) : "Scheduled";
+    case "signal":
+      return trigger.signal ? `Signal · ${trigger.signal}` : "Signal";
+    case "webhook":
+      return trigger.events?.length ? `Webhook · ${trigger.events.join(", ")}` : "Webhook";
+  }
+}
+
+function describeCron(schedule: string): string {
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = schedule.trim().split(/\s+/);
+  if (!minute || !hour || !dayOfMonth || !month || !dayOfWeek) {
+    return "Scheduled";
+  }
+  if (/^\d+$/.test(minute) && /^\*\/\d+$/.test(hour) && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+    return `At ${Number(minute)} minutes past every ${Number(hour.slice(2))} hours`;
+  }
+  if (/^\d+$/.test(minute) && /^\d+(,\d+)+$/.test(hour) && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+    const times = hour
+      .split(",")
+      .map((value) => `${value.padStart(2, "0")}:${minute.padStart(2, "0")}`);
+    return `Daily at ${formatList(times)} scheduler time`;
+  }
+  if (/^\d+-\d+\/\d+$/.test(minute) && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+    const [range, interval] = minute.split("/");
+    const [start, end] = range.split("-");
+    return `Every ${Number(interval)} minutes from minute ${Number(start)} through ${Number(end)}`;
+  }
+  if (/^\*\/\d+$/.test(minute) && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+    return `Every ${Number(minute.slice(2))} minutes`;
+  }
+  if (/^\d+$/.test(minute) && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+    return `Hourly at minute ${Number(minute)}`;
+  }
+  if (/^\d+$/.test(minute) && /^\d+$/.test(hour) && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+    return `Daily at ${hour.padStart(2, "0")}:${minute.padStart(2, "0")} scheduler time`;
+  }
+  return "Scheduled";
+}
+
+function formatList(values: string[]): string {
+  if (values.length <= 1) return values[0] ?? "";
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(", ")}, and ${values.at(-1)}`;
 }
 
 function formatTimestamp(value: string): string {

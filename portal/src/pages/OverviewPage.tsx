@@ -166,27 +166,35 @@ function Overview({
         {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
         {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
         <h1>
-          {overview.loadingSections?.inventory
-            ? "Instance data is loading."
+          {overview.loadingSections?.inventory || overview.loadingSections?.runs
+            ? (
+              <span aria-label="Loading overview" className="overview-loading-title" role="status">
+                <span aria-hidden="true">.</span>
+                <span aria-hidden="true">.</span>
+                <span aria-hidden="true">.</span>
+              </span>
+            )
             : emptyInstance
               ? standalone
                 ? overview.health.ready
-                  ? "Instance is ready."
-                  : "Instance data is loading."
+                  ? "Instance is ready — Healthy."
+                  : "Instance is starting."
                 : !healthy
                   ? "Daemon is unhealthy."
                   : overview.health.ready
-                    ? "Daemon is ready."
+                    ? "Daemon is running — Healthy."
                     : "Daemon is starting."
-              : attentionHeading(activeAttention.length)}
+              : !healthy
+                ? "Daemon is unhealthy."
+                : activeAttention.length === 0
+                  ? standalone
+                    ? "Instance is ready — Healthy."
+                    : "Daemon is running — Healthy."
+                  : attentionHeading(activeAttention.length)}
         </h1>
-        <p>
-          {emptyInstance
-            ? "No gaggles are configured. Add gaggle definitions to begin observing workflows and runs."
-            : standalone
-              ? "Operational state read directly from this instance, ordered by what needs attention now."
-              : "Live operational state from the daemon, ordered by what needs attention now."}
-        </p>
+        {emptyInstance && (
+          <p>No gaggles are configured. Add gaggle definitions to begin observing workflows and runs.</p>
+        )}
         <dl className="instance-identity">
           <div>
             <dt>Instance name</dt>
@@ -246,12 +254,14 @@ function Overview({
       )}
       {(overview.loadingSections?.inventory || overview.loadingSections?.runs) && (
         <div className="inline-empty section-loading" role="status">
-          Showing the instance now.{" "}
+          <span aria-hidden="true" className="loading-mark" />
+          <span>
           {overview.loadingSections.inventory && overview.loadingSections.runs
-            ? "Inventory and run activity are still loading."
+            ? "Loading inventory and run activity"
             : overview.loadingSections.inventory
-              ? "Inventory is still loading."
-              : "Run activity is still loading."}
+              ? "Loading inventory"
+              : "Loading run activity"}
+          </span>
         </div>
       )}
 

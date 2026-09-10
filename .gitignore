@@ -58,6 +58,7 @@ __pycache__/
 *.pyc
 
 # Agent-local (do not commit)
+.playwright-cli/
 .mcp.json
 CLAUDE.md
 /config-sync

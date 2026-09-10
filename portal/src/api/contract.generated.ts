@@ -24,6 +24,8 @@ export const apiRoutes = {
   "telemetryStats": { method: "GET", path: "/api/v1/telemetry/stats", actionClass: "read-only-navigation" },
   "telemetryErrorSignatures": { method: "GET", path: "/api/v1/telemetry/error-signatures", actionClass: "read-only-navigation" },
   "telemetryErrors": { method: "GET", path: "/api/v1/telemetry/errors", actionClass: "read-only-navigation" },
+  "workItems": { method: "GET", path: "/api/v1/work-items", actionClass: "read-only-navigation" },
+  "workItemDetail": { method: "GET", path: "/api/v1/work-items/{provider}/{kind}/{id}", actionClass: "read-only-navigation" },
   "telemetryImplementationOutcomes": { method: "GET", path: "/api/v1/telemetry/implementation-outcomes", actionClass: "read-only-navigation" },
   "telemetryDefectAggregates": { method: "GET", path: "/api/v1/telemetry/defect-aggregates", actionClass: "read-only-navigation" },
   "events": { method: "GET", path: "/api/v1/events", actionClass: "read-only-navigation" },

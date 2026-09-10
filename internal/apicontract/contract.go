@@ -40,6 +40,8 @@ const (
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
+	WorkItemsPath                = V1Prefix + "/work-items"
+	WorkItemDetailPath           = WorkItemsPath + "/{provider}/{kind}/{id}"
 	// TelemetryImplementationOutcomesPath is the curation-evidence read
 	// (decision 005 R4 / finding 002 C3): the terminal implementation runs
 	// that claimed a backlog item, with the run's last error and gate verdict
@@ -254,6 +256,8 @@ const (
 	RouteTelemetryStats           RouteID = "telemetryStats"
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
+	RouteWorkItems                RouteID = "workItems"
+	RouteWorkItemDetail           RouteID = "workItemDetail"
 
 	RouteTelemetryImplementationOutcomes RouteID = "telemetryImplementationOutcomes"
 
@@ -391,14 +395,14 @@ const (
 var v1Routes = []Route{
 	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
-	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RoutePortalConfig, Method: http.MethodGet, Path: PortalConfigPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
-	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteWorkflowQueueEligibility, Method: http.MethodGet, Path: WorkflowQueueEligibilityPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkflowQueueEligibility, Method: http.MethodGet, Path: WorkflowQueueEligibilityPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunReveal, Method: http.MethodPost, Path: RunRevealPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
@@ -411,7 +415,9 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryCosts, Method: http.MethodGet, Path: TelemetryCostsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkItems, Method: http.MethodGet, Path: WorkItemsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkItemDetail, Method: http.MethodGet, Path: WorkItemDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	// The defect-aggregate route is classified with its telemetry siblings:
 	// answered from the same pre-aggregated rollup buckets, bounded by the
