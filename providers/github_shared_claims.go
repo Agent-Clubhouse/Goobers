@@ -47,7 +47,7 @@ func (s GitHubSharedClaimStore) endpoint(parts ...string) (string, error) {
 
 func sharedClaimRef(key string) string {
 	digest := sha256.Sum256([]byte(key))
-	return "refs/heads/goobers-shared-claims/" + hex.EncodeToString(digest[:])
+	return sharedRefPrefix + hex.EncodeToString(digest[:])
 }
 
 // Read verifies the protocol and item binding before returning a lease. The
