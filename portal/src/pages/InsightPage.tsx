@@ -12,7 +12,6 @@ import type {
 import { isMissingCostCapability } from "../api/errors";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
-import { ScopeStrip } from "../components/ScopeStrip";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
 import {
   type InsightCostRollupSnapshot,
@@ -32,7 +31,6 @@ import {
 } from "../costView";
 import {
   deriveInsightViewModel,
-  hasInsightScopeIdentity,
   type InsightCostTrendViewModel,
   type InsightScope,
   type InsightViewModel,
@@ -152,17 +150,6 @@ export function InsightPage({
         </label>
       </div>
 
-      {hasInsightScopeIdentity(requestedScope) && (
-        <ScopeStrip
-          ariaLabel="Insight scope"
-          clearHref={routeHash({
-            page: "insight",
-            filters: insightScopeRouteFilters({ kind: "instance" }, window),
-          })}
-          filters={errorScope}
-        />
-      )}
-
       {query.state.status === "stale" && query.state.error && (
         <SectionQueryStatus
           error
@@ -255,10 +242,7 @@ function InsightContent({
       )}
 
       {creditAssignment.length > 0 && (
-        <InsightReportSection
-          count={creditAssignment.length}
-          title="Highest-contributing nodes"
-        >
+        <InsightReportSection title="Highest-contributing nodes">
           <CreditAssignment credits={creditAssignment} filters={filters} />
         </InsightReportSection>
       )}
@@ -273,22 +257,12 @@ function InsightContent({
         </InsightReportSection>
       )}
 
-      <InsightReportSection
-        count={
-          errorSignatures.status === "ready" || errorSignatures.status === "stale"
-            ? errorSignatures.data.result.items.length
-            : undefined
-        }
-        title="Failure reasons"
-      >
+      <InsightReportSection title="Failure reasons">
         <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
       </InsightReportSection>
 
       {(hasOutcomes || stages.length > 0) && (
-        <InsightReportSection
-          count={stages.length}
-          title="Slowest stages"
-        >
+        <InsightReportSection title="Slowest stages">
           {stages.length === 0 ? (
             <p className="inline-empty">No stage duration samples in this scope.</p>
           ) : (
@@ -304,18 +278,15 @@ function InsightContent({
 
 function InsightReportSection({
   children,
-  count,
   title,
 }: {
   children: React.ReactNode;
-  count?: number;
   title: string;
 }) {
   return (
     <section className="content-section insight-report-section">
       <div className="section-heading">
         <h2>{title}</h2>
-        {count !== undefined && <span className="section-count">{count}</span>}
       </div>
       {children}
     </section>
@@ -393,7 +364,6 @@ function CurationHealth({
         <div>
           <h2>Ready-pool health</h2>
         </div>
-        <span className="section-count">{curation.runs} curation runs</span>
       </div>
       <dl className="curation-health">
         <div>
@@ -593,7 +563,6 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
     >
       <span className="insight-scope-label">
         <strong>{metric.label}</strong>
-        <small>{metric.unit}</small>
       </span>
       <a
         aria-label={`View terminal ${metric.unit} behind ${metric.label} for success rate ${formatRate(metric.successRate)}`}
@@ -893,18 +862,18 @@ export function CostTrend({
 
   return (
     <div className="usage-trend">
-      <SectionQueryStatus
-        error={costTrend.status === "stale" && Boolean(costTrend.error)}
-        loading={refreshing}
-        message={
-          costTrend.status === "stale" && costTrend.error
-            ? "Cost trend refresh failed. Showing the last successful read."
-            : refreshing
-              ? "Refreshing cost trend…"
-              : undefined
-        }
-        retry={retry}
-      />
+      {(refreshing || (costTrend.status === "stale" && Boolean(costTrend.error))) && (
+        <SectionQueryStatus
+          error={costTrend.status === "stale" && Boolean(costTrend.error)}
+          loading={refreshing}
+          message={
+            costTrend.status === "stale" && costTrend.error
+              ? "Cost trend refresh failed. Showing the last successful read."
+              : "Refreshing cost trend…"
+          }
+          retry={retry}
+        />
+      )}
       <div className="usage-trend-heading">
         <h3>Cost over time</h3>
       </div>
@@ -1198,8 +1167,7 @@ export function ExternalCostBreakdown({
   if (costs.status === "loading") {
     return (
       <section className="content-section cost-section-stable cost-section-attribution">
-        <ExternalCostHeading />
-        <SectionQueryStatus loading message="Loading attributed costs…" />
+        <ExternalCostHeading statusMessage="Loading attributed costs…" />
       </section>
     );
   }
@@ -1208,19 +1176,17 @@ export function ExternalCostBreakdown({
   }
   return (
     <section className="content-section cost-section-stable cost-section-attribution">
-      <ExternalCostHeading loadedAt={costs.data.loadedAt} />
-      <SectionQueryStatus
-        error={costs.status === "stale" && Boolean(costs.error)}
-        loading={refreshing}
-        message={
-          costs.status === "stale" && costs.error
-            ? `Attributed cost refresh failed. Showing data loaded ${formatTimestamp(costs.data.loadedAt)}.`
-            : refreshing
-              ? "Refreshing attributed costs…"
-              : undefined
-        }
-        retry={retry}
+      <ExternalCostHeading
+        loadedAt={costs.data.loadedAt}
+        statusMessage={refreshing ? "Refreshing attributed costs…" : undefined}
       />
+      {costs.status === "stale" && costs.error && (
+        <SectionQueryStatus
+          error
+          message={`Attributed cost refresh failed. Showing data loaded ${formatTimestamp(costs.data.loadedAt)}.`}
+          retry={retry}
+        />
+      )}
       {costs.data.boundedAllTime && (
         <p className="usage-description">
           “All time” cost attribution is bounded to the latest 90 days.
@@ -1230,8 +1196,8 @@ export function ExternalCostBreakdown({
         <p className="inline-empty">No pull request or issue cost was attributed in this window.</p>
       ) : (
         <>
-          <div className="external-cost-controls">
-            <label>
+          <div aria-label="Cost work item filters" className="filter-bar external-cost-controls" role="group">
+            <label className="filter-search external-cost-filter-field">
               <span>Filter</span>
               <input
                 onChange={(event) => setFilter(event.target.value)}
@@ -1240,7 +1206,7 @@ export function ExternalCostBreakdown({
                 value={filter}
               />
             </label>
-            <label>
+            <label className="filter-select external-cost-filter-field">
               <span>Type</span>
               <select
                 onChange={(event) => setKind(event.target.value as "all" | "pr" | "issue")}
@@ -1251,71 +1217,83 @@ export function ExternalCostBreakdown({
                 <option value="issue">Issues</option>
               </select>
             </label>
-            <span className="section-count">
-              {visibleRows.length} of {rows.length}
-            </span>
           </div>
           {visibleRows.length === 0 ? (
             <p className="inline-empty">No attributed costs match the current filters.</p>
           ) : (
             <div className="data-table-shell external-cost-table-wrap">
-              <table className="external-cost-table">
-                <thead className="data-table-header">
-                  <tr>
-                    <th aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+              <div className="external-cost-table" role="table">
+                <div className="data-table-header external-cost-grid external-cost-header" role="row">
+                    <span aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Work item", "work-item")}
-                    </th>
-                    <th aria-sort={sortKey === "provider" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                    </span>
+                    <span aria-sort={sortKey === "provider" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Provider", "provider")}
-                    </th>
-                    <th aria-sort={sortKey === "native" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                    </span>
+                    <span aria-sort={sortKey === "native" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Provider-native", "native")}
-                    </th>
-                    <th aria-sort={sortKey === "normalized" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                    </span>
+                    <span aria-sort={sortKey === "normalized" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Normalized estimate", "normalized")}
-                    </th>
-                    <th aria-sort={sortKey === "coverage" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
-                      {sortHeading("Coverage", "coverage")}
-                    </th>
-                    <th aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"}>
+                    </span>
+                    <span aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Runs / models", "runs")}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleRows.map((row) => (
-                    <tr key={row.key}>
-                      <td><strong>{row.label}</strong></td>
-                      <td>{row.provider}</td>
-                      <td className="external-cost-value">{row.native}</td>
-                      <td className="external-cost-value">{row.normalized}</td>
-                      <td className={row.lowerBound ? "cost-coverage-warning" : "usage-description"}>
-                        {row.coverage}
-                      </td>
-                      <td>
-                        {row.models.length > 0 && (
-                          <ul
-                            className="external-cost-models"
-                            aria-label={`${row.label} model breakdown`}
-                          >
-                            {row.models.map((model) => <li key={model}>{model}</li>)}
-                          </ul>
-                        )}
-                        {row.runs.length > 0 && (
-                          <button
-                            aria-label={`View ${row.runs.length} run${row.runs.length === 1 ? "" : "s"} for ${row.label}`}
-                            className="text-button external-cost-runs-button"
-                            onClick={() => setOpenRuns({ label: row.label, runs: row.runs })}
-                            type="button"
-                          >
-                            {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                    </span>
+                </div>
+                {visibleRows.map((row) => (
+                    <div className="external-cost-grid external-cost-row" key={row.key} role="row">
+                      <span className="work-item-identity external-cost-item" role="cell">
+                          {row.repository ? (
+                            <a
+                              className="data-table-link data-table-primary"
+                              href={routeHash({
+                                page: "work-items",
+                                provider: row.provider,
+                                repository: row.repository,
+                                kind: row.externalKind,
+                                id: row.externalId,
+                              })}
+                            >
+                              {row.label}
+                            </a>
+                          ) : (
+                            <strong className="data-table-primary">{row.label}</strong>
+                          )}
+                          <small className="data-table-meta">
+                            {row.provider} · {row.externalKind === "pr" ? "pull request" : "issue"}
+                          </small>
+                      </span>
+                      <span className="external-cost-provider" role="cell">{row.provider}</span>
+                      <span className="external-cost-values" role="cell">
+                        <strong className="data-table-number">{row.native}</strong>
+                        <strong className="data-table-number">{row.normalized}</strong>
+                        <small className={row.lowerBound ? "cost-coverage-warning" : "data-table-meta"}>
+                          {row.coverage}
+                        </small>
+                      </span>
+                      <span className="external-cost-runs" role="cell">
+                          {row.models.length > 0 && (
+                            <ul
+                              className="external-cost-models"
+                              aria-label={`${row.label} model breakdown`}
+                            >
+                              {row.models.map((model) => <li key={model}>{model}</li>)}
+                            </ul>
+                          )}
+                          {row.runs.length > 0 && (
+                            <button
+                              aria-label={`View ${row.runs.length} run${row.runs.length === 1 ? "" : "s"} for ${row.label}`}
+                              className="text-button external-cost-runs-button"
+                              onClick={() => setOpenRuns({ label: row.label, runs: row.runs })}
+                              type="button"
+                            >
+                              {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
+                            </button>
+                          )}
+                      </span>
+                    </div>
+                ))}
+              </div>
             </div>
           )}
           {openRuns && (
@@ -1353,15 +1331,24 @@ export function ExternalCostBreakdown({
   );
 }
 
-function ExternalCostHeading({ loadedAt }: { loadedAt?: string }) {
+function ExternalCostHeading({
+  loadedAt,
+  statusMessage,
+}: {
+  loadedAt?: string;
+  statusMessage?: string;
+}) {
   return (
     <div className="section-heading">
       <div>
         <h2>Cost by pull request and issue</h2>
       </div>
-      <span className="section-count">
-        Exact recorded usage{loadedAt ? ` · Loaded ${formatTimestamp(loadedAt)}` : ""}
-      </span>
+      <div className="section-heading-meta">
+        <span className="section-count">
+          Exact recorded usage{loadedAt ? ` · Loaded ${formatTimestamp(loadedAt)}` : ""}
+        </span>
+        {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
+      </div>
     </div>
   );
 }
@@ -1380,8 +1367,7 @@ export function InstanceCostRollup({
   if (costRollup.status === "loading") {
     return (
       <section className="content-section cost-section-stable">
-        <RollupHeading window={window} />
-        <SectionQueryStatus loading message="Loading instance spend…" />
+        <RollupHeading statusMessage="Loading instance spend…" window={window} />
       </section>
     );
   }
@@ -1401,24 +1387,17 @@ export function InstanceCostRollup({
 
   return (
     <section className="content-section cost-section-stable">
-      <RollupHeading window={window} />
-      <SectionQueryStatus
-        error={costRollup.status === "stale" && Boolean(costRollup.error)}
-        loading={refreshing}
-        message={
-          costRollup.status === "stale" && costRollup.error
-            ? "Instance spend refresh failed. Showing the last successful read."
-            : refreshing
-              ? "Refreshing instance spend…"
-              : undefined
-        }
-        retry={retry}
+      <RollupHeading
+        statusMessage={refreshing ? "Refreshing instance spend…" : undefined}
+        window={window}
       />
-      <div className="instance-spend-summary">
-        <p className="usage-description">
-          Gaggle detail for the selected instance scope.
-        </p>
-      </div>
+      {costRollup.status === "stale" && costRollup.error && (
+        <SectionQueryStatus
+          error
+          message="Instance spend refresh failed. Showing the last successful read."
+          retry={retry}
+        />
+      )}
       {rankedGaggles.length === 0 ? (
         <p className="inline-empty">No gaggle has a measured AI cost in this window.</p>
       ) : (
@@ -1438,11 +1417,20 @@ export function InstanceCostRollup({
   );
 }
 
-function RollupHeading({ window }: { window: InsightWindow }) {
+function RollupHeading({
+  statusMessage,
+  window,
+}: {
+  statusMessage?: string;
+  window: InsightWindow;
+}) {
   return (
     <div className="section-heading">
       <h2>Cost by gaggle</h2>
-      <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
+      <div className="section-heading-meta">
+        <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
+        {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
+      </div>
     </div>
   );
 }
@@ -1688,7 +1676,7 @@ function formatMeasuredCost(value: number | undefined): string {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
+    maximumFractionDigits: 2,
   }).format(value);
 }
 

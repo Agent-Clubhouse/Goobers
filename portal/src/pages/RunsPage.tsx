@@ -3,7 +3,6 @@ import { RunTiming } from "../components/RunTiming";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
-import { ScopeStrip } from "../components/ScopeStrip";
 import { useOperationalSnapshot } from "../operationalData";
 import {
   routeHash,
@@ -119,15 +118,6 @@ export function RunsPage({
               : "Every execution across workflows and gaggles, filtered and paginated by the daemon."}
         </p>
       </header>
-
-      {filters && (
-        <ScopeStrip
-          ariaLabel="Insight drill-through scope"
-          clearHref={routeHash({ page: "runs" })}
-          filters={filters}
-          suffix={formatPopulation(filters)}
-        />
-      )}
 
       <div aria-label="Filter runs" className="filter-bar" role="group">
         {FILTERS.map((option) => (
@@ -257,33 +247,6 @@ export function RunsPage({
   );
 }
 
-function formatPopulation(filters: RunRouteFilters): string {
-  switch (filters.population) {
-    case "measured":
-      return " · Duration-measured attempts";
-    case "token-measured":
-      return " · Token-measured attempts";
-    case "premium-measured":
-      return " · AI-credit-measured attempts";
-    case "cost-measured":
-      return " · Cost-measured attempts";
-    case "retry-waste":
-      return " · Superseded attempts";
-  }
-  switch (filters.outcome) {
-    case "terminal":
-      return " · Terminal outcomes";
-    case "success":
-      return " · Successful outcomes";
-    case "failure":
-      return " · Failed outcomes";
-    case "other":
-      return " · Other outcomes";
-    default:
-      return filters.population === "attempts" ? " · All attempts" : "";
-  }
-}
-
 function RunHistoryRow({ run }: { run: RunSummary }) {
   const workItem = run.operator?.issue;
 
@@ -293,7 +256,7 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
         <span className="row-title">
           {workItem ? (
             <>
-              <span className="mono">#{workItem.number}</span>
+              <span>#{workItem.number}</span>
               {workItem.title ? ` · ${workItem.title}` : ""}
             </>
           ) : (

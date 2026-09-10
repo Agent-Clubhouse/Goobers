@@ -1,6 +1,5 @@
 import type { DaemonClient } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
-import { ScopeStrip } from "../components/ScopeStrip";
 import {
   type InsightWindow,
   useInsightCostRollup,
@@ -11,7 +10,6 @@ import {
 import {
   deriveInsightCostTrendState,
   deriveInsightViewModel,
-  hasInsightScopeIdentity,
   type InsightScope,
   insightScopeApiParameters,
   insightScopeFromKey,
@@ -21,7 +19,7 @@ import {
   insightScopeOptions,
   insightScopeRouteFilters,
 } from "../insightScope";
-import { routeHash, type Navigate } from "../routing";
+import type { Navigate } from "../routing";
 import type { ScopeFilters } from "../scope";
 import {
   CostTrend,
@@ -107,17 +105,6 @@ export function CostPage({
           </select>
         </label>
       </div>
-
-      {hasInsightScopeIdentity(requestedScope) && (
-        <ScopeStrip
-          ariaLabel="Cost scope"
-          clearHref={routeHash({
-            page: "cost",
-            filters: insightScopeRouteFilters({ kind: "instance" }, window),
-          })}
-          filters={scope}
-        />
-      )}
 
       {query.state.status === "stale" && query.state.error && (
         <div className="insight-stale-error" role="alert">

@@ -41,6 +41,11 @@ describe("run detail", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(status, { selector: ".status-badge" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
+    expect(screen.queryByText("Structure")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Execution timeline" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Selected event details" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
@@ -429,6 +434,10 @@ describe("run detail", () => {
 
     const majorEvents = await screen.findByRole("button", { name: "Major events" });
     expect(majorEvents).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Key moments" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
     expect(screen.getByText("Unsupported schema v2-preview")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Select sequence 3:/ })).not.toBeInTheDocument();
 
@@ -459,13 +468,13 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "review, gate, Running at sequence 3" }),
     ).toHaveAttribute("aria-pressed", "true");
     let inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptOne)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
     inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 4")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 1 · Sequence 4")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictOne)).toBeInTheDocument();
 
@@ -493,13 +502,13 @@ describe("run detail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 10:/ }));
     inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 10")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 2 · Sequence 10")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptTwo)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 11:/ }));
     inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 11")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 2 · Sequence 11")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictTwo)).toBeInTheDocument();
 
@@ -554,7 +563,7 @@ describe("run detail", () => {
     detail.lastSeq = 3;
     renderRun(runId, new FixtureDaemonClient(fixtures));
 
-    expect(await screen.findByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    expect(await screen.findByText("Evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 1:/ }));
     fireEvent.click(
       screen.getByRole("button", {
@@ -563,7 +572,7 @@ describe("run detail", () => {
     );
     const transcript = screen.getByRole("button", { name: /^Select sequence 3:/ });
     fireEvent.click(transcript);
-    expect(screen.getByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    expect(screen.getByText("Evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
   });
 
   it("keeps replay and stage inspection in the fallback fullscreen workspace", async () => {
@@ -584,7 +593,7 @@ describe("run detail", () => {
     expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "fallback");
     expect(fullscreenRoot).toHaveAttribute("role", "dialog");
     const replayControls = within(fullscreenRoot).getByRole("region", {
-      name: "Replay controls",
+      name: "Execution timeline",
     });
     const scrubber = within(replayControls).getByRole("slider", {
       name: "Scrub replay timeline",
@@ -667,7 +676,7 @@ describe("run detail", () => {
       );
       expect(requestFullscreen).toHaveBeenCalledOnce();
       expect(
-        within(fullscreenRoot).getByRole("region", { name: "Replay controls" }),
+        within(fullscreenRoot).getByRole("region", { name: "Execution timeline" }),
       ).toBeInTheDocument();
 
       fireEvent.click(
@@ -1021,7 +1030,7 @@ describe("run detail", () => {
     renderRun("01JZ455ESCALATE");
 
     expect(await screen.findByText("Unsupported schema v2-preview")).toBeInTheDocument();
-    expect(screen.getByText("Type future.recorded")).toBeInTheDocument();
+    expect(screen.getAllByText("future.recorded")).not.toHaveLength(0);
     expect(screen.queryByText(/preserved but not rendered/)).not.toBeInTheDocument();
   });
 
@@ -1100,9 +1109,10 @@ describe("run detail", () => {
   it("exposes mobile-first ledger fields with expandable secondary detail", async () => {
     renderRun("01JZ441DAEMONAPI");
     const row = await screen.findByRole("button", { name: /^Select sequence 6:/ });
-    expect(within(row).getByText("Seq 6")).toBeInTheDocument();
+    expect(within(row).getByText("6")).toBeInTheDocument();
     expect(within(row).getByText("review")).toBeInTheDocument();
-    expect(within(row).getByText(/^Elapsed /)).toBeInTheDocument();
+    expect(document.querySelector(".event-ledger-table-header")).toHaveTextContent("Elapsed");
+    expect(row.querySelector(".ledger-time")).not.toBeEmptyDOMElement();
     expect(
       row.parentElement?.querySelector("details.ledger-mobile-detail"),
     ).not.toBeNull();

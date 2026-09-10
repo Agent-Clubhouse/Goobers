@@ -69,6 +69,14 @@ function client() {
           gaggle: "core",
           workflow: "merge-review",
           runStatus: "completed",
+        }, {
+          runId: "run-1",
+          sequence: 4,
+          operation: "comment",
+          occurredAt: "2026-09-01T11:00:00Z",
+          gaggle: "core",
+          workflow: "implementation",
+          runStatus: "completed",
         }],
       },
     },
@@ -143,7 +151,7 @@ describe("WorkItemsPage", () => {
       .not.toBeInTheDocument();
   });
 
-  it("shows the confirmed action timeline and provider link", async () => {
+  it("shows the confirmed action table and provider link", async () => {
     const navigate = vi.fn();
     render(
       <WorkItemsPage
@@ -168,6 +176,19 @@ describe("WorkItemsPage", () => {
     expect(relatedPullRequest).toHaveAttribute("href", "https://github.com/acme/app/pull/43");
     expect(relatedPullRequest.closest(".page-heading-actions")).not.toBeNull();
     expect(screen.queryByRole("heading", { name: "Related pull requests" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "View run" })).toHaveAttribute("href", "#/run/run-2");
+    expect(screen.getByRole("table", { name: "Action history for acme/app#42" })).toBeInTheDocument();
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "Action",
+      "Gaggle / workflow",
+      "Status",
+      "Time",
+      "Run",
+    ]);
+    expect(screen.getAllByRole("link", { name: "View run" })[0]).toHaveAttribute("href", "#/run/run-2");
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter actions by type" }), "comment");
+    expect(screen.queryByRole("cell", { name: /^Merge/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: /^Comment/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View run" })).toHaveAttribute("href", "#/run/run-1");
   });
 });

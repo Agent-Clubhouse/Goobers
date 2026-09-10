@@ -51,7 +51,6 @@ export function KeyMomentsDigest({
     <section aria-labelledby="key-moments-title" className="key-moments-digest">
       <div className="panel-heading-row">
         <div>
-          <p className="section-kicker">Digest</p>
           <h2 id="key-moments-title">Key moments</h2>
         </div>
         <span className="graph-legend">Ordered by significance</span>
@@ -86,7 +85,7 @@ export function KeyMomentsDigest({
                     {keyMomentLabel(kind)}
                   </span>
                   <span className="key-moment-copy">
-                    <span className="key-moment-meta mono">
+                    <span className="key-moment-meta">
                       Seq {event.seq} · {eventStage(event)} · Elapsed{" "}
                       {formatElapsed(runStartedAt, event.time)}
                     </span>

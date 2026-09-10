@@ -193,8 +193,8 @@ function WorkItemListView({
                 type="button"
               >
                 <span className="work-item-identity">
-                  <strong>{workItemLabel(item.repository, item.externalId)}</strong>
-                  <small>{item.provider} · {item.kind === "pr" ? "pull request" : "issue"}</small>
+                  <strong className="data-table-primary">{workItemLabel(item.repository, item.externalId)}</strong>
+                  <small className="data-table-meta">{item.provider} · {item.kind === "pr" ? "pull request" : "issue"}</small>
                 </span>
                 <span>
                   <strong>{humanizeOperation(item.lastOperation)}</strong>
@@ -236,6 +236,7 @@ function WorkItemDetailView({
   standalone: boolean;
 }) {
   const [state, setState] = useState<PageState<WorkItemDetail>>({ status: "loading" });
+  const [actionType, setActionType] = useState("all");
   const load = () => {
     const controller = new AbortController();
     setState({ status: "loading" });
@@ -254,6 +255,11 @@ function WorkItemDetailView({
     return <DaemonErrorState error={state.error} retry={load} standalone={standalone} />;
   }
   const item = state.data;
+  const actionTypes = [...new Set(item.actions.map((action) => action.operation))]
+    .sort((left, right) => humanizeOperation(left).localeCompare(humanizeOperation(right)));
+  const visibleActions = actionType === "all"
+    ? item.actions
+    : item.actions.filter((action) => action.operation === actionType);
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumbs">
@@ -311,23 +317,57 @@ function WorkItemDetailView({
         </div>
       </header>
       <section className="content-section">
-        <ol className="work-item-timeline">
-          {item.actions.map((action) => (
-            <li key={`${action.runId}:${action.sequence}`}>
-              <span className="work-item-timeline-mark" />
-              <div>
-                <strong>{humanizeOperation(action.operation)}</strong>
-                <p>
-                  {[action.gaggle, action.workflow].filter(Boolean).join(" / ") || "Workflow unavailable"}
-                  {action.runStatus ? ` · ${action.runStatus}` : ""}
-                </p>
-                <time dateTime={action.occurredAt}>{formatTimestamp(action.occurredAt)}</time>
+        <div aria-label="Work item action filters" className="filter-bar work-item-action-filters" role="group">
+          <label className="filter-select">
+            <span>Action type</span>
+            <select
+              aria-label="Filter actions by type"
+              onChange={(event) => setActionType(event.target.value)}
+              value={actionType}
+            >
+              <option value="all">All actions</option>
+              {actionTypes.map((operation) => (
+                <option key={operation || "provider-action"} value={operation}>
+                  {humanizeOperation(operation)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div
+          aria-label={`Action history for ${workItemLabel(repository, externalId)}`}
+          className="data-table-shell work-item-actions-table"
+          role="table"
+        >
+          <div className="data-table-header work-item-action-grid" role="row">
+            <span role="columnheader">Action</span>
+            <span role="columnheader">Gaggle / workflow</span>
+            <span role="columnheader">Status</span>
+            <span role="columnheader">Time</span>
+            <span role="columnheader">Run</span>
+          </div>
+          {visibleActions.map((action) => (
+            <div className="work-item-action-grid work-item-action-row" key={`${action.runId}:${action.sequence}`} role="row">
+              <span className="work-item-action-cell" role="cell">
+                <strong className="data-table-primary">{humanizeOperation(action.operation)}</strong>
+                <small className="data-table-meta">Sequence {action.sequence}</small>
+              </span>
+              <span className="work-item-action-cell" role="cell">
+                <strong>{action.gaggle || "Unknown gaggle"}</strong>
+                <small className="data-table-meta">{action.workflow || "Workflow unavailable"}</small>
+              </span>
+              <span role="cell">{action.runStatus ? humanizeOperation(action.runStatus) : "Unknown"}</span>
+              <time dateTime={action.occurredAt} role="cell">{formatTimestamp(action.occurredAt)}</time>
+              <span role="cell">
                 <a href={routeHash({ page: "run", id: action.runId })}>View run</a>
-              </div>
-            </li>
+              </span>
+            </div>
           ))}
-        </ol>
-        {item.truncated && <p className="data-overflow">Showing the 200 most recent actions.</p>}
+          {visibleActions.length === 0 && (
+            <p className="data-overflow" role="status">No actions match this type.</p>
+          )}
+          {item.truncated && <p className="data-overflow">Showing the 200 most recent actions.</p>}
+        </div>
       </section>
     </>
   );

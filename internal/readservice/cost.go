@@ -45,6 +45,8 @@ type TelemetryCostResult struct {
 // TelemetryCostAggregate is one external work item's measured usage.
 type TelemetryCostAggregate struct {
 	Provider               string                        `json:"provider"`
+	Repository             string                        `json:"repository,omitempty"`
+	URL                    string                        `json:"url,omitempty"`
 	ExternalKind           string                        `json:"externalKind"`
 	ExternalID             string                        `json:"externalId"`
 	TotalRuns              int                           `json:"totalRuns"`
@@ -188,7 +190,8 @@ func validateTelemetryCostRequest(req TelemetryCostRequest) error {
 
 func projectCostAggregate(source rollup.CostAggregate) TelemetryCostAggregate {
 	item := TelemetryCostAggregate{
-		Provider: source.Provider, ExternalKind: source.ExternalKind, ExternalID: source.ExternalID,
+		Provider: source.Provider, Repository: source.Repository, URL: source.URL,
+		ExternalKind: source.ExternalKind, ExternalID: source.ExternalID,
 		TotalRuns: source.TotalRuns, MeasuredRuns: source.MeasuredRuns,
 		TotalAttempts: source.TotalAttempts, MeasuredAttempts: source.MeasuredAttempts,
 		InputTokens: source.InputTokens, OutputTokens: source.OutputTokens,

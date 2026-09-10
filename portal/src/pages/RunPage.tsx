@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, ExternalRef, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
-import { KeyMomentsDigest } from "../components/KeyMomentsDigest";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
 import {
@@ -24,6 +23,7 @@ import {
   isFailureJournalEvent,
   isMajorJournalEvent,
   isInspectableEvidenceEvent,
+  keyMoments,
   eventStage,
   journalEntries,
   nodeOwner,
@@ -279,10 +279,6 @@ function RunDetailWorkspace({
 
       <header className="run-heading">
         <div className="run-heading-main">
-          <div className="run-title-line">
-            <StatusBadge stale={run.stale} status={run.phase} />
-            <span className="mono run-id" title={run.id}>{displayedRunId}</span>
-          </div>
           <div className="run-heading-title">
             <h1 aria-label={`Run ${run.id}`}>Run <span aria-hidden="true">{displayedRunId}</span></h1>
             <button
@@ -294,6 +290,7 @@ function RunDetailWorkspace({
             >
               <Icon name={runIdCopied ? "check" : "copy"} size={16} />
             </button>
+            <StatusBadge stale={run.stale} status={run.phase} />
           </div>
           <p className="run-identity-line">
             <span>
@@ -432,6 +429,7 @@ function RunDetailWorkspace({
               </span>
             }
             className="run-graph-panel"
+            eyebrow=""
           >
             {run.graphStatus === "pinned" && run.graph ? (
               <WorkflowTopologyGraph
@@ -457,45 +455,40 @@ function RunDetailWorkspace({
             )}
           </GraphFrame>
 
-          {events.length > 0 && (
-            <ReplayScrubber
-              events={events}
-              graph={run.graph}
-              onSeek={replaySeek}
-              runId={runId}
-              selectedSeq={selectedSeq}
-              terminal={run.finishedAt != null}
-              workflow={run.workflow}
-            />
-          )}
+          <div className="run-replay-inspector">
+            {events.length > 0 && (
+              <ReplayScrubber
+                events={events}
+                graph={run.graph}
+                onSeek={replaySeek}
+                runId={runId}
+                selectedSeq={selectedSeq}
+                terminal={run.finishedAt != null}
+                workflow={run.workflow}
+              />
+            )}
 
-          {run.graphStatus === "pinned" && run.graph && (
-            <RunStageInspector
-              client={client}
-              events={events}
-              inspectorRef={inspectorRef}
-              node={selectedNode}
-              onSelectAttempt={(isLatest) =>
-                setFollowingLatest(isLatest && selectedNodeId === latestNodeId)
-              }
-              workflow={run.workflow}
-              runId={runId}
-              selectedEvidence={selectedEvidence}
-              selectedEvidenceVisit={selectedEvidenceVisit}
-              selectedSeq={selectedSeq}
-            />
-          )}
+            {run.graphStatus === "pinned" && run.graph && (
+              <RunStageInspector
+                client={client}
+                events={events}
+                hideHeading
+                inspectorRef={inspectorRef}
+                node={selectedNode}
+                onSelectAttempt={(isLatest) =>
+                  setFollowingLatest(isLatest && selectedNodeId === latestNodeId)
+                }
+                workflow={run.workflow}
+                runId={runId}
+                selectedEvidence={selectedEvidence}
+                selectedEvidenceVisit={selectedEvidenceVisit}
+                selectedSeq={selectedSeq}
+              />
+            )}
+          </div>
         </div>
 
         <div className="run-journal-column">
-          <KeyMomentsDigest
-            client={client}
-            events={events}
-            onSelect={selectEvent}
-            runId={runId}
-            runStartedAt={run.startedAt}
-            selectedSeq={selectedSeq}
-          />
           <EventLedger
             events={events}
             onSelect={selectEvent}
@@ -519,7 +512,7 @@ function EventLedger({
   run: RunDetail;
   selectedSeq: number;
 }) {
-  const [view, setView] = useState<"major" | "all">("major");
+  const [view, setView] = useState<"key" | "major" | "all">("major");
   const [stageFilter, setStageFilter] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
@@ -535,10 +528,17 @@ function EventLedger({
   const visible = query
     ? stageFiltered.filter((event) => eventMatchesQuery(event, events, run.id, query))
     : stageFiltered;
+  const keyMomentIds = new Set(
+    keyMoments(visible).map(({ event }) => `${event.branch}-${event.seq}`),
+  );
   const grouped = journalEntries(visible, run.id);
   const rows: JournalEntry[] =
     view === "all"
       ? orderRunEvents(visible).map((event) => ({ kind: "event", event }))
+      : view === "key"
+        ? orderRunEvents(visible)
+            .filter((event) => keyMomentIds.has(`${event.branch}-${event.seq}`))
+            .map((event) => ({ kind: "event", event }))
       : grouped.flatMap((entry) =>
           entry.kind === "group" && expandedGroups.has(entry.id)
             ? [entry, ...entry.events.map((event) => ({ kind: "event" as const, event }))]
@@ -596,14 +596,52 @@ function EventLedger({
   return (
     <section aria-labelledby="event-ledger-title" className="event-ledger">
       <div className="panel-heading-row event-ledger-heading">
-        <div>
-          <p className="section-kicker">Journal</p>
-          <h2 id="event-ledger-title">Event ledger</h2>
-        </div>
-        <div className="journal-heading-actions">
-          <span className="graph-legend">Ordered by durable sequence</span>
-          <label className="journal-search">
-            <span className="sr-only">Search journal</span>
+        <h2 id="event-ledger-title">Event ledger</h2>
+        <span className="graph-legend">Ordered by durable sequence</span>
+      </div>
+      <div aria-label="Event ledger filters" className="filter-bar event-ledger-filter-bar">
+        <button
+          aria-describedby="journal-view-key-hint"
+          aria-pressed={view === "key"}
+          className={view === "key" ? "filter-button filter-button-active" : "filter-button"}
+          onClick={() => setView("key")}
+          title="Show decisions, escalations, and branch handoffs"
+          type="button"
+        >
+          Key moments
+        </button>
+        <span className="sr-only" id="journal-view-key-hint">
+          Shows decisions, escalations, and branch handoffs in durable sequence order
+        </span>
+        <button
+          aria-describedby="journal-view-major-hint"
+          aria-pressed={view === "major"}
+          className={view === "major" ? "filter-button filter-button-active" : "filter-button"}
+          onClick={() => setView("major")}
+          title="Show only stage/gate landmarks, hiding evidence and liveness noise"
+          type="button"
+        >
+          Major events
+        </button>
+        <span className="sr-only" id="journal-view-major-hint">
+          Shows only stage/gate landmarks, hiding evidence and liveness noise
+        </span>
+        <button
+          aria-describedby="journal-view-all-hint"
+          aria-pressed={view === "all"}
+          className={view === "all" ? "filter-button filter-button-active" : "filter-button"}
+          onClick={() => setView("all")}
+          title="Show every durable event of every kind"
+          type="button"
+        >
+          All events ({events.length})
+        </button>
+        <span className="sr-only" id="journal-view-all-hint">
+          Shows every durable event of every kind, independent of the stage filter
+        </span>
+        <div className="event-ledger-filter-fields">
+          <label className="filter-search event-ledger-filter-field">
+            <span>Search</span>
             <input
               onChange={(changeEvent) => setSearchQuery(changeEvent.target.value)}
               placeholder="Search events"
@@ -611,36 +649,8 @@ function EventLedger({
               value={searchQuery}
             />
           </label>
-          <div aria-label="Journal event kind" className="journal-view-control" role="group">
-            <button
-              aria-describedby="journal-view-major-hint"
-              aria-pressed={view === "major"}
-              className={view === "major" ? "journal-view-button journal-view-button-active" : "journal-view-button"}
-              onClick={() => setView("major")}
-              title="Show only stage/gate landmarks, hiding evidence and liveness noise"
-              type="button"
-            >
-              Major events
-            </button>
-            <span className="sr-only" id="journal-view-major-hint">
-              Shows only stage/gate landmarks, hiding evidence and liveness noise
-            </span>
-            <button
-              aria-describedby="journal-view-all-hint"
-              aria-pressed={view === "all"}
-              className={view === "all" ? "journal-view-button journal-view-button-active" : "journal-view-button"}
-              onClick={() => setView("all")}
-              title="Show every durable event of every kind"
-              type="button"
-            >
-              All events ({events.length})
-            </button>
-            <span className="sr-only" id="journal-view-all-hint">
-              Shows every durable event of every kind, independent of the stage filter
-            </span>
-          </div>
           {stages.length > 1 && (
-            <label className="journal-stage-filter">
+            <label className="filter-select event-ledger-filter-field">
               <span>Stage</span>
               <select
                 aria-label="Narrow the journal to one stage, independent of the event-kind toggle above"
@@ -673,7 +683,16 @@ function EventLedger({
           {query && <span>No events match “{searchQuery.trim()}”.</span>}
         </div>
       ) : (
-        <ol>
+        <div className="data-table-shell event-ledger-table">
+          <div aria-hidden="true" className="data-table-header event-ledger-table-header">
+            <span>Sequence</span>
+            <span>Stage</span>
+            <span>Type</span>
+            <span>Elapsed</span>
+            <span>Attempt #</span>
+            <span>Event</span>
+          </div>
+          <ol>
           {rows.map((entry, index) => {
             if (entry.kind === "group") {
               const expanded = expandedGroups.has(entry.id);
@@ -702,20 +721,19 @@ function EventLedger({
                     }}
                     type="button"
                   >
-                    <span className="ledger-seq mono">
-                      Seq {first.seq}
+                    <span className="ledger-seq">
+                      {first.seq}
                       {last.seq === first.seq ? "" : `–${last.seq}`}
                     </span>
-                    <span className="ledger-stage mono">{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</span>
-                    <span className="ledger-type mono">Supporting</span>
-                    <span className="ledger-time mono">{entry.events.length} records</span>
-                    <span className="ledger-attempt">{scope}</span>
+                    <span className="ledger-stage">{entry.nodeId ?? UNSCOPED_EVENT_STAGE}</span>
+                    <span className="ledger-type">Supporting</span>
+                    <span className="ledger-time">{entry.events.length} records</span>
+                    <span className="ledger-attempt">N/A</span>
                     <span className="ledger-copy">
                       <strong>
                         {expanded ? "Hide" : "Show"} supporting journal records
                       </strong>
                       <span>{ledgerGroupCategories(entry)}</span>
-                      {selected && <span className="selected-event-label">Contains selected event</span>}
                     </span>
                   </button>
                   <details className="ledger-mobile-detail">
@@ -769,53 +787,60 @@ function EventLedger({
                   }}
                   type="button"
                 >
-                  <span className="ledger-seq mono">Seq {event.seq}</span>
-                  <span className="ledger-stage mono">{eventStage(event)}</span>
-                  <span className="ledger-type mono">Type {event.type}</span>
-                  <span className="ledger-time mono">
-                    Elapsed {formatElapsed(run.startedAt, event.time)}
+                  <span className="ledger-seq">{event.seq}</span>
+                  <span className="ledger-stage">{eventStage(event)}</span>
+                  <span className="ledger-type">{event.type}</span>
+                  <span className="ledger-time">
+                    {formatElapsed(run.startedAt, event.time)}
                   </span>
                   <span className="ledger-attempt">
-                    {event.attempt ? `Attempt ${event.attempt}` : "No attempt"}
+                    {event.attempt ?? "N/A"}
                   </span>
                   <span className="ledger-copy">
                     <strong>{heading}</strong>
                     <span>{summary}</span>
-                    <span className="ledger-category">{ledgerCategoryLabel(event)}</span>
-                    {failed && (
-                      <span className="ledger-severity">
-                        <Icon name="alert" size={9} />
-                        Failed
-                      </span>
-                    )}
+                    <span
+                      className={failed ? "ledger-labels ledger-labels-failure" : "ledger-labels"}
+                    >
+                      <span className="ledger-category">{ledgerCategoryLabel(event)}</span>
+                      {failed && (
+                        <span className="ledger-severity">
+                          <Icon name="alert" size={9} />
+                          Failed
+                        </span>
+                      )}
+                    </span>
                     {!event.knownSchema && (
                       <span className="ledger-unknown">Unsupported schema {event.schema}</span>
                     )}
-                    {selected && <span className="selected-event-label">Selected event</span>}
                   </span>
                 </button>
                 <details className="ledger-mobile-detail">
                   <summary>More event details</summary>
                   <dl>
                     <div><dt>Type</dt><dd>{event.type}</dd></div>
-                    <div><dt>Attempt</dt><dd>{event.attempt ?? "None"}</dd></div>
+                    <div><dt>Attempt</dt><dd>{event.attempt ?? "N/A"}</dd></div>
                     <div><dt>Category</dt><dd>{ledgerCategoryLabel(event)}</dd></div>
                   </dl>
                 </details>
                 {event.externalRef?.url && (
-                  <a
-                    className="ledger-event-link"
-                    href={event.externalRef.url}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    Open linked {externalRefLabel(event.externalRef.kind)}
-                  </a>
+                  <div className="ledger-event-action-row">
+                    <a
+                      className="ledger-event-link"
+                      href={event.externalRef.url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      <Icon name="arrow" size={14} />
+                      Open linked {externalRefLabel(event.externalRef.kind)}
+                    </a>
+                  </div>
                 )}
               </li>
             );
           })}
-        </ol>
+          </ol>
+        </div>
       )}
     </section>
   );

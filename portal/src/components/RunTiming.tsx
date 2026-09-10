@@ -30,7 +30,7 @@ export function RunTiming({ run }: { run: RunSummary }) {
   const tick = useSyncExternalStore(run.terminal ? noSubscribe : subscribe, snapshot, snapshot);
   const baseline = useMemo(() => ({ at: Date.now(), duration: run.durationMillis }),
     [run.id, run.lastSeq, run.durationMillis]);
-  if (run.terminal) return <span className="mono">{formatDuration(run.durationMillis)}</span>;
+  if (run.terminal) return <span className="run-duration">{formatDuration(run.durationMillis)}</span>;
 
   // Extend the daemon's reported duration, not client-now minus server-start:
   // browser/daemon clock skew must not inflate either elapsed scope.

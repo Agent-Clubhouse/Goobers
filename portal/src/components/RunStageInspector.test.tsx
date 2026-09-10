@@ -163,13 +163,14 @@ describe("run stage inspector", () => {
     delete document.documentElement.dataset.theme;
   });
 
-  it("prompts to select a node when none is chosen", () => {
-    renderInspector(<RunStageInspector client={stubClient([])} node={undefined} runId="run-1" selectedSeq={9} />,
+  it("does not render an empty inspector when no stage is selected", () => {
+    renderInspector(
+      <RunStageInspector client={stubClient([])} node={undefined} runId="run-1" selectedSeq={9} />,
     );
-    expect(screen.getByText("Select a node")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
   });
 
-  it("labels the inspector with the run's workflow and the stage's owning goober (#2538)", async () => {
+  it("labels the inspector with the run's workflow and stage (#2538)", async () => {
     const ownedNode: WorkflowGraphNode = {
       id: "review",
       kind: "gate",
@@ -190,7 +191,7 @@ describe("run stage inspector", () => {
       screen.getByRole("complementary", { name: "implementation · review attempt inspector" }),
     ).toBeInTheDocument();
     expect(screen.getByText("implementation · gate")).toBeInTheDocument();
-    expect(screen.getByText("Owned by reviewer-goober")).toBeInTheDocument();
+    expect(screen.queryByText("Owned by reviewer-goober")).not.toBeInTheDocument();
   });
 
   it("omits workflow and owner chrome when neither is known", () => {
@@ -226,7 +227,7 @@ describe("run stage inspector", () => {
     const client = stubClient([attempt({ number: 1, status: "success", model: "auto" })]);
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
-    expect(await screen.findByText("model: auto")).toBeInTheDocument();
+    expect(await screen.findByText("auto", { selector: "code" })).toBeInTheDocument();
   });
 
   it("omits the model line when telemetry has not indexed one", async () => {
@@ -255,12 +256,15 @@ describe("run stage inspector", () => {
     ]);
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
-    expect(await screen.findByText("runner: linux-large")).toBeInTheDocument();
-    expect(screen.getByText("node: aks-linux-0001")).toBeInTheDocument();
-    expect(screen.getByText("pod: goobers-stage-review-4x2vq")).toBeInTheDocument();
-    expect(screen.getByText("queue wait: 9s")).toBeInTheDocument();
+    const placement = await screen.findByLabelText("Attempt placement");
+    expect(within(placement).getByText("linux-large", { selector: "code" })).toBeInTheDocument();
+    expect(within(placement).getByText("aks-linux-0001", { selector: "code" })).toBeInTheDocument();
+    expect(
+      within(placement).getByText("goobers-stage-review-4x2vq", { selector: "code" }),
+    ).toBeInTheDocument();
+    expect(within(placement).getByText("Queue wait 9s")).toBeInTheDocument();
     // The pod's hostname is redundant once a real node is known.
-    expect(screen.queryByText(/^host:/)).not.toBeInTheDocument();
+    expect(within(placement).queryByText("Host")).not.toBeInTheDocument();
   });
 
   it("labels a local attempt's hostname as a host, never as a node (#3515)", async () => {
@@ -273,8 +277,9 @@ describe("run stage inspector", () => {
     ]);
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
-    expect(await screen.findByText("host: build-box-07")).toBeInTheDocument();
-    expect(screen.queryByText(/^node:/)).not.toBeInTheDocument();
+    const placement = await screen.findByLabelText("Attempt placement");
+    expect(within(placement).getByText("build-box-07", { selector: "code" })).toBeInTheDocument();
+    expect(within(placement).queryByText("Node")).not.toBeInTheDocument();
   });
 
   it("omits the placement row for journals recorded before provenance existed", async () => {

@@ -1047,6 +1047,8 @@ export interface TelemetryCostRunAggregate {
 
 export interface TelemetryCostAggregate {
   provider: string;
+  repository?: string;
+  url?: string;
   externalKind: "pr" | "issue";
   externalId: string;
   totalRuns: number;
