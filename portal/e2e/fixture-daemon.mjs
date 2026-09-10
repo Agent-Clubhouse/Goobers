@@ -371,6 +371,28 @@ const responses = new Map([
       issues: [],
     },
   ],
+  [
+    "/api/v1/work-items",
+    {
+      items: [
+        {
+          provider: "github",
+          repository: "Agent-Clubhouse/Goobers",
+          kind: "pr",
+          externalId: "4800",
+          url: "https://github.com/Agent-Clubhouse/Goobers/pull/4800",
+          actionCount: 2,
+          lastOperation: "comment",
+          lastActionAt: "2026-09-10T08:02:00Z",
+          lastRunId: run.id,
+          gaggle: "core",
+          workflow: "implementation",
+          runStatus: "running",
+        },
+      ],
+      hasMore: false,
+    },
+  ],
   ["/api/v1/telemetry/stats", telemetryStats],
   ["/api/v1/telemetry/error-signatures", { items: [] }],
   [`/api/v1/runs/${run.id}`, runDetail],
