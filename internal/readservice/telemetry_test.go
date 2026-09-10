@@ -161,8 +161,11 @@ func TestTelemetryStatsProjectsAttributionCohortsFromRequest(t *testing.T) {
 	if len(result.AttributionCohorts) != 1 || result.AttributionCohorts[0].Workload != "main" {
 		t.Fatalf("attribution cohorts = %+v, want one v1/main cohort", result.AttributionCohorts)
 	}
-	if result.AttributionCohorts[0].TopContributingPaths[0].Evidence[0].JournalPath == "" {
-		t.Fatalf("status attribution evidence missing journal pointer: %+v", result.AttributionCohorts[0].TopContributingPaths[0].Evidence[0])
+	if len(result.AttributionCohorts[0].TopContributingPaths) != 1 {
+		t.Fatalf("top paths = %+v, want one aggregated path", result.AttributionCohorts[0].TopContributingPaths)
+	}
+	if result.AttributionCohorts[0].TopContributingPaths[0].Evidence != nil {
+		t.Fatalf("status attribution evidence = %+v, want no fabricated concrete links", result.AttributionCohorts[0].TopContributingPaths[0].Evidence)
 	}
 }
 
@@ -198,6 +201,9 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 	}
 	if cohort.EffectiveVersion == "" || len(cohort.TopContributingPaths) == 0 || len(cohort.CounterEvidence) == 0 {
 		t.Fatalf("stored attribution cohort missing real evidence: %+v", cohort)
+	}
+	if len(cohort.TopContributingPaths[0].Nodes) < 2 {
+		t.Fatalf("stored top path = %+v, want a root-prefixed contribution path", cohort.TopContributingPaths[0])
 	}
 	if got := cohort.TopContributingPaths[0].Evidence[0]; got.JournalSequence == 0 || got.ArtifactDigest == "" || got.JournalPath == "" {
 		t.Fatalf("stored contribution evidence = %+v, want exact journal/artifact link", got)
