@@ -20,41 +20,43 @@ import (
 )
 
 type fakeReader struct {
-	health       readservice.Health
-	costs        readservice.TelemetryCostResult
-	stats        readservice.TelemetryStatsResult
-	signatures   readservice.TelemetryErrorSignaturesResult
-	errors       readservice.TelemetryErrorsPage
-	outcomes     readservice.TelemetryImplementationOutcomesResult
-	telemetryErr error
-	costReq      readservice.TelemetryCostRequest
-	statsReq     readservice.TelemetryStatsRequest
-	signatureReq readservice.TelemetryErrorSignaturesRequest
-	errorsReq    readservice.TelemetryErrorsRequest
-	outcomesReq  readservice.TelemetryImplementationOutcomesRequest
-	runs         readservice.RunList
-	run          readservice.RunDetail
-	events       readservice.EventList
-	attempts     readservice.AttemptList
-	artifact     readservice.ArtifactContent
-	transcript   readservice.TranscriptContent
-	options      readservice.RunListOptions
-	runID        string
-	stage        string
-	digest       string
-	seq          uint64
-	instance     readservice.Instance
-	portalConfig readservice.PortalConfig
-	gaggles      readservice.GagglePage
-	goobers      readservice.GooberPage
-	workflows    readservice.WorkflowPage
-	connections  readservice.GaggleConnections
-	workflow     readservice.WorkflowDetail
-	err          error
-	called       int
-	lastGaggle   string
-	lastWorkflow string
-	lastPage     readservice.PageRequest
+	health         readservice.Health
+	costs          readservice.TelemetryCostResult
+	stats          readservice.TelemetryStatsResult
+	attribution    readservice.TelemetryAttributionResult
+	signatures     readservice.TelemetryErrorSignaturesResult
+	errors         readservice.TelemetryErrorsPage
+	outcomes       readservice.TelemetryImplementationOutcomesResult
+	telemetryErr   error
+	costReq        readservice.TelemetryCostRequest
+	statsReq       readservice.TelemetryStatsRequest
+	attributionReq readservice.TelemetryAttributionRequest
+	signatureReq   readservice.TelemetryErrorSignaturesRequest
+	errorsReq      readservice.TelemetryErrorsRequest
+	outcomesReq    readservice.TelemetryImplementationOutcomesRequest
+	runs           readservice.RunList
+	run            readservice.RunDetail
+	events         readservice.EventList
+	attempts       readservice.AttemptList
+	artifact       readservice.ArtifactContent
+	transcript     readservice.TranscriptContent
+	options        readservice.RunListOptions
+	runID          string
+	stage          string
+	digest         string
+	seq            uint64
+	instance       readservice.Instance
+	portalConfig   readservice.PortalConfig
+	gaggles        readservice.GagglePage
+	goobers        readservice.GooberPage
+	workflows      readservice.WorkflowPage
+	connections    readservice.GaggleConnections
+	workflow       readservice.WorkflowDetail
+	err            error
+	called         int
+	lastGaggle     string
+	lastWorkflow   string
+	lastPage       readservice.PageRequest
 }
 
 type fakeAuthenticator struct {
@@ -85,6 +87,11 @@ func (f *fakeReader) TelemetryCosts(_ context.Context, req readservice.Telemetry
 func (f *fakeReader) TelemetryStats(_ context.Context, req readservice.TelemetryStatsRequest) (readservice.TelemetryStatsResult, error) {
 	f.statsReq = req
 	return f.stats, f.telemetryErr
+}
+
+func (f *fakeReader) TelemetryAttribution(_ context.Context, req readservice.TelemetryAttributionRequest) (readservice.TelemetryAttributionResult, error) {
+	f.attributionReq = req
+	return f.attribution, f.telemetryErr
 }
 
 func (f *fakeReader) TelemetryErrorSignatures(_ context.Context, req readservice.TelemetryErrorSignaturesRequest) (readservice.TelemetryErrorSignaturesResult, error) {

@@ -49,10 +49,11 @@ type CohortAggregation struct {
 
 // AttributionObservation is one run's attribution record placed in a cohort.
 type AttributionObservation struct {
-	RunID            string      `json:"runId"`
-	EffectiveVersion string      `json:"effectiveVersion,omitempty"`
-	Workload         string      `json:"workload,omitempty"`
-	Attribution      Attribution `json:"attribution"`
+	RunID            string                    `json:"runId"`
+	EffectiveVersion string                    `json:"effectiveVersion,omitempty"`
+	Workload         string                    `json:"workload,omitempty"`
+	Attribution      Attribution               `json:"attribution"`
+	Evidence         []AttributionEvidenceLink `json:"evidence,omitempty"`
 }
 
 // AggregateAttributionEvidence summarizes repeated attribution evidence by cohort.
@@ -81,6 +82,9 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		byPath := map[string]*ContributingPath{}
 		for _, observation := range group {
 			for _, contribution := range observation.Attribution.Contributions {
+				if contribution.Kind == KindOutcome || contribution.Kind == KindRun {
+					continue
+				}
 				pathNodes := contributionPath(contribution)
 				if len(pathNodes) == 0 {
 					continue
@@ -93,26 +97,27 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				}
 				path.Share += contribution.Share
 				path.Confidence += contribution.Confidence
-				path.Evidence = append(path.Evidence, newAttributionEvidenceLink(
-					observation.RunID,
+				detail := fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence))
+				path.Evidence = append(path.Evidence, observationEvidence(
+					observation,
 					lastNode(pathNodes),
 					contribution.Stage,
-					fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence)),
+					detail,
 					"contribution",
-				))
+				)...)
 			}
 			for _, cause := range observation.Attribution.Causes {
 				for _, evidence := range cause.Evidence {
 					if strings.TrimSpace(evidence) == "" {
 						continue
 					}
-					aggregation.CounterEvidence = append(aggregation.CounterEvidence, newAttributionEvidenceLink(
-						observation.RunID,
+					aggregation.CounterEvidence = append(aggregation.CounterEvidence, observationEvidence(
+						observation,
 						cause.NodeID,
 						cause.Stage,
 						evidence,
 						string(cause.Class),
-					))
+					)...)
 				}
 			}
 		}
@@ -176,6 +181,26 @@ func contributionPath(contribution Contribution) []string {
 		return nil
 	}
 	return []string{contribution.NodeID}
+}
+
+func observationEvidence(observation AttributionObservation, nodeID, stage, detail, source string) []AttributionEvidenceLink {
+	var matches []AttributionEvidenceLink
+	for _, link := range observation.Evidence {
+		if link.Source != source || link.Detail != detail {
+			continue
+		}
+		if strings.TrimSpace(nodeID) != "" && link.NodeID != nodeID {
+			continue
+		}
+		if strings.TrimSpace(stage) != "" && link.Stage != stage {
+			continue
+		}
+		matches = append(matches, link)
+	}
+	if len(matches) > 0 {
+		return matches
+	}
+	return []AttributionEvidenceLink{newAttributionEvidenceLink(observation.RunID, nodeID, stage, detail, source)}
 }
 
 func newAttributionEvidenceLink(runID, nodeID, stage, detail, source string) AttributionEvidenceLink {

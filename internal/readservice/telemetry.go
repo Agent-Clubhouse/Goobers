@@ -122,6 +122,10 @@ type TelemetryTrendBucket struct {
 // TelemetryAttributionRequest describes a bounded set of attribution
 // observations to aggregate by EffectiveVersion and workload cohort.
 type TelemetryAttributionRequest struct {
+	Gaggle       string                               `json:"gaggle,omitempty"`
+	Workflow     string                               `json:"workflow,omitempty"`
+	Since        time.Time                            `json:"since,omitempty"`
+	Until        time.Time                            `json:"until,omitempty"`
 	Observations []creditgraph.AttributionObservation `json:"observations,omitempty"`
 }
 
@@ -151,6 +155,17 @@ func (s *Telemetry) TelemetryAttribution(ctx context.Context, req TelemetryAttri
 func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributionRequest) (TelemetryAttributionResult, error) {
 	if s == nil || s.telemetry == nil {
 		return TelemetryAttributionResult{}, ErrTelemetryUnavailable
+	}
+	if len(req.Observations) == 0 && s.sources.ReadModel != nil {
+		if invocations, ok := s.telemetry.store.(AgentInvocationReader); ok {
+			cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
+				Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+			})
+			if err != nil {
+				return TelemetryAttributionResult{}, err
+			}
+			return TelemetryAttributionResult{Cohorts: cohorts}, nil
+		}
 	}
 	return s.telemetry.TelemetryAttribution(ctx, req)
 }
@@ -1001,6 +1016,15 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 		}
 	}
 	result.PromotionCandidates = EligiblePromotionSignals(result.PromotionSignals)
+	if invocations, ok := s.telemetry.store.(AgentInvocationReader); ok {
+		cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
+			Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+		})
+		if err != nil {
+			return TelemetryStatsResult{}, err
+		}
+		result.AttributionCohorts = cohorts
+	}
 	if graph := getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow); graph != nil {
 		runtimeGraph, err := s.runtimeAnalyticsGraph(ctx, req, graph)
 		if err != nil {

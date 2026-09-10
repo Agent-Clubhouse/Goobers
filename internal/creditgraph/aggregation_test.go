@@ -128,17 +128,41 @@ func TestAggregateAttributionEvidenceLinksConcreteRunEvidence(t *testing.T) {
 		RunID:            "run-42",
 		EffectiveVersion: "v1",
 		Workload:         "main",
-		Attribution:      Attribution{Contributions: []Contribution{{NodeID: "node-a", Path: []string{"root", "node-a"}, Share: 0.5, Confidence: 0.8}}, Causes: []CauseFinding{{NodeID: "node-a", Stage: "plan", Evidence: []string{"intervention: retry succeeded"}}}},
+		Attribution:      Attribution{Contributions: []Contribution{{NodeID: "node-a", Path: []string{"root", "node-a"}, Share: 0.5, Confidence: 0.8}}, Causes: []CauseFinding{{NodeID: "node-a", Stage: "plan", Class: ClassBadToolResult, Evidence: []string{"intervention: retry succeeded"}}}},
+		Evidence: []AttributionEvidenceLink{
+			{
+				RunID:           "run-42",
+				NodeID:          "node-a",
+				Stage:           "plan",
+				Detail:          "share=0.500000, confidence=0.800000",
+				Source:          "contribution",
+				JournalSequence: 12,
+				JournalPath:     "gaggles/example/runs/run-42/events.jsonl",
+				ArtifactPath:    "spans/sha256/aa/bb",
+				ArtifactDigest:  "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+			{
+				RunID:           "run-42",
+				NodeID:          "node-a",
+				Stage:           "plan",
+				Detail:          "intervention: retry succeeded",
+				Source:          string(ClassBadToolResult),
+				JournalSequence: 14,
+				JournalPath:     "gaggles/example/runs/run-42/events.jsonl",
+				ArtifactPath:    "artifacts/sha256/cc/dd",
+				ArtifactDigest:  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			},
+		},
 	}}
 	got := AggregateAttributionEvidence(obs)
 	if len(got) != 1 || len(got[0].TopContributingPaths) != 1 {
 		t.Fatalf("cohorts = %+v, want 1 cohort with 1 path", got)
 	}
 	link := got[0].TopContributingPaths[0].Evidence[0]
-	if link.RunID != "run-42" || link.JournalPath == "" || link.ArtifactDigest == "" {
+	if link.RunID != "run-42" || link.JournalPath != "gaggles/example/runs/run-42/events.jsonl" || link.ArtifactDigest != "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || link.JournalSequence != 12 {
 		t.Fatalf("evidence link = %+v, want concrete run journal and artifact pointers", link)
 	}
-	if got[0].CounterEvidence[0].JournalPath == "" || got[0].CounterEvidence[0].ArtifactPath == "" {
+	if got[0].CounterEvidence[0].JournalPath != "gaggles/example/runs/run-42/events.jsonl" || got[0].CounterEvidence[0].ArtifactPath != "artifacts/sha256/cc/dd" {
 		t.Fatalf("counter evidence = %+v, want concrete references", got[0].CounterEvidence[0])
 	}
 }

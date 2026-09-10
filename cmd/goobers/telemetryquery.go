@@ -664,7 +664,6 @@ func detectCandidateFindingsWithCausalCredit(
 	}
 
 	filtered := make([]rollup.Finding, 0, len(findings))
-	var creditObservations []creditgraph.AttributionObservation
 	for _, finding := range findings {
 		if !aggregates.includes(finding.Kind) {
 			continue
@@ -677,13 +676,6 @@ func detectCandidateFindingsWithCausalCredit(
 			finding.FlaggedRuns = []rollup.JournalPointer{}
 		}
 		filtered = append(filtered, finding)
-	}
-	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
-		credits, creditErr := creditStore.CreditAssignment(context.Background(), readmodel.CreditOptions{Gaggle: gaggle, Workflow: workflowName, Since: since})
-		if creditErr != nil {
-			return candidateFindingsArtifact{}, fmt.Errorf("credit assignment: %w", creditErr)
-		}
-		creditObservations = syntheticCreditObservations(credits, gaggle, workflowName)
 	}
 	note := ""
 	if len(filtered) == 0 {
@@ -733,43 +725,16 @@ func detectCandidateFindingsWithCausalCredit(
 		})
 	}
 	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
-	if len(creditObservations) > 0 {
-		result.AttributionCohorts = readservice.AggregateAttributionObservations(creditObservations)
+	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
+		cohorts, err := readservice.StoredAttributionCohorts(context.Background(), root, creditStore, db, readservice.StoredAttributionQuery{
+			Gaggle: gaggle, Workflow: workflowName, Since: since,
+		})
+		if err != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("query attribution cohorts: %w", err)
+		}
+		result.AttributionCohorts = cohorts
 	}
 	return result, nil
-}
-
-func syntheticCreditObservations(credits []readmodel.NodeCredit, gaggle, workflow string) []creditgraph.AttributionObservation {
-	if len(credits) == 0 {
-		return nil
-	}
-	observations := make([]creditgraph.AttributionObservation, 0, len(credits))
-	for _, credit := range credits {
-		if credit.RoutedRuns <= 0 {
-			continue
-		}
-		failureShare := float64(credit.FailureRuns) / float64(credit.RoutedRuns)
-		observations = append(observations, creditgraph.AttributionObservation{
-			RunID:            fmt.Sprintf("synthetic-%s-%s-%s", gaggle, workflow, credit.Stage),
-			EffectiveVersion: workflow,
-			Workload:         gaggle,
-			Attribution: creditgraph.Attribution{Contributions: []creditgraph.Contribution{{
-				NodeID:     credit.Stage,
-				Path:       []string{credit.Kind, credit.Stage},
-				Stage:      credit.Stage,
-				Share:      failureShare,
-				Confidence: failureShare,
-			}}, Causes: []creditgraph.CauseFinding{{
-				NodeID:     credit.Stage,
-				Stage:      credit.Stage,
-				Class:      creditgraph.ClassBadToolResult,
-				Confidence: failureShare,
-				Summary:    "credit assignment rollup evidence",
-				Evidence:   []string{fmt.Sprintf("observed %d failing runs out of %d routed runs for %s/%s", credit.FailureRuns, credit.RoutedRuns, credit.Kind, credit.Stage)},
-			}}},
-		})
-	}
-	return observations
 }
 
 func candidateWorkflowGraph(root, gaggle, workflowName string) (*workflow.Graph, error) {
@@ -1030,6 +995,15 @@ func candidateFindingsFromPlane(
 			PromotionSource:   estimate.PromotionSource,
 		})
 	}
+	for _, cohort := range response.AttributionCohorts {
+		artifact.AttributionCohorts = append(artifact.AttributionCohorts, creditgraph.CohortAggregation{
+			EffectiveVersion:     cohort.EffectiveVersion,
+			Workload:             cohort.Workload,
+			RunCount:             cohort.RunCount,
+			TopContributingPaths: planeContributingPaths(cohort.TopContributingPaths),
+			CounterEvidence:      planeEvidenceLinks(cohort.CounterEvidence),
+		})
+	}
 	for _, signal := range response.PromotionSignals {
 		artifact.PromotionSignals = append(artifact.PromotionSignals, readservicePromotionSignal(signal))
 	}
@@ -1045,6 +1019,38 @@ func candidateFindingsFromPlane(
 		artifact.Note = strings.TrimSpace(artifact.Note + " (answer truncated at the plane's cardinality ceiling)")
 	}
 	return artifact
+}
+
+func planeContributingPaths(paths []telemetryclient.ContributingPath) []creditgraph.ContributingPath {
+	projected := make([]creditgraph.ContributingPath, 0, len(paths))
+	for _, path := range paths {
+		projected = append(projected, creditgraph.ContributingPath{
+			Nodes:      append([]string(nil), path.Nodes...),
+			Share:      path.Share,
+			Confidence: path.Confidence,
+			Evidence:   planeEvidenceLinks(path.Evidence),
+		})
+	}
+	return projected
+}
+
+func planeEvidenceLinks(links []telemetryclient.AttributionEvidenceLink) []creditgraph.AttributionEvidenceLink {
+	projected := make([]creditgraph.AttributionEvidenceLink, 0, len(links))
+	for _, link := range links {
+		projected = append(projected, creditgraph.AttributionEvidenceLink{
+			RunID:             link.RunID,
+			NodeID:            link.NodeID,
+			Stage:             link.Stage,
+			Detail:            link.Detail,
+			Source:            link.Source,
+			JournalSequence:   link.JournalSequence,
+			JournalPath:       link.JournalPath,
+			ArtifactPath:      link.ArtifactPath,
+			ArtifactDigest:    link.ArtifactDigest,
+			ArtifactMediaType: link.ArtifactMediaType,
+		})
+	}
+	return projected
 }
 
 // requireTelemetryQueryInstanceRoot refuses a local read whose root is not an
