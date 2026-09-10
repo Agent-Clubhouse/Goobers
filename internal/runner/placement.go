@@ -32,6 +32,12 @@ const (
 	// EnvPlacementImage is the container image reference the process runs
 	// under.
 	EnvPlacementImage = PlacementEnvNamespace + "IMAGE"
+	// EnvPlacementBuild names the Temporal build ID/version the currently
+	// executing worker is serving.
+	EnvPlacementBuild = PlacementEnvNamespace + "BUILD"
+	// EnvPlacementWorker names the exact worker identity string this process is
+	// reporting to Temporal (for example goobers-worker/<build>@<host>#<pid>).
+	EnvPlacementWorker = PlacementEnvNamespace + "WORKER"
 )
 
 // selfPlacement captures what THIS process knows about the substrate a stage
@@ -51,6 +57,8 @@ func selfPlacement() journal.Placement {
 		Node:  os.Getenv(EnvPlacementNode),
 		Pod:   os.Getenv(EnvPlacementPod),
 		Image: os.Getenv(EnvPlacementImage),
+		Build: os.Getenv(EnvPlacementBuild),
+		Worker: os.Getenv(EnvPlacementWorker),
 	}
 	if host, err := os.Hostname(); err == nil {
 		p.Host = host

@@ -33,6 +33,11 @@ var ErrAbandonedWork = errors.New("workerhost: drain timeout expired with activi
 // after a shutdown signal before abandoning them.
 const DefaultDrainTimeout = 30 * time.Second
 
+const (
+	placementBuildEnv = "GOOBERS_RUNNER_BUILD"
+	placementWorkerEnv = "GOOBERS_RUNNER_WORKER"
+)
+
 // Config describes one worker process.
 type Config struct {
 	// HostPort is the Temporal frontend address.
@@ -141,6 +146,25 @@ func (h *Host) Run(ctx context.Context) error {
 	if c != nil {
 		defer c.Close()
 	}
+
+	previousBuild, hadBuild := os.LookupEnv(placementBuildEnv)
+	previousWorker, hadWorker := os.LookupEnv(placementWorkerEnv)
+	if h.cfg.BuildVersion != "" {
+		_ = os.Setenv(placementBuildEnv, h.cfg.BuildVersion)
+		_ = os.Setenv(placementWorkerEnv, Identity(h.cfg.BuildVersion))
+	}
+	defer func() {
+		if hadBuild {
+			_ = os.Setenv(placementBuildEnv, previousBuild)
+		} else {
+			_ = os.Unsetenv(placementBuildEnv)
+		}
+		if hadWorker {
+			_ = os.Setenv(placementWorkerEnv, previousWorker)
+		} else {
+			_ = os.Unsetenv(placementWorkerEnv)
+		}
+	}()
 
 	opts := h.workerOptions()
 	started := make([]managedWorker, 0, len(h.cfg.TaskQueues))
