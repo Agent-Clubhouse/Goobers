@@ -414,6 +414,18 @@ func appendDiffMetadataChanges(changes []Change, before, after Document, behavio
 	if before.Start != after.Start {
 		changes = append(changes, Change{Path: "start", Before: before.Start, After: after.Start, Kind: DiffBehavioral, Explanation: "workflow entry point changed"})
 	}
+	if before.Compiler.Name != after.Compiler.Name {
+		changes = append(changes, Change{Path: "compiler.name", Before: before.Compiler.Name, After: after.Compiler.Name, Kind: DiffCosmetic, Explanation: "compiler implementation metadata changed without altering normalized workflow semantics"})
+	}
+	if before.Compiler.Version != after.Compiler.Version {
+		changes = append(changes, Change{Path: "compiler.version", Before: before.Compiler.Version, After: after.Compiler.Version, Kind: DiffCosmetic, Explanation: "compiler contract metadata changed without altering normalized workflow semantics"})
+	}
+	if before.Source.Name != after.Source.Name {
+		changes = append(changes, Change{Path: "source.name", Before: before.Source.Name, After: after.Source.Name, Kind: DiffCosmetic, Explanation: "source identity metadata changed without altering normalized workflow semantics"})
+	}
+	if before.Source.Version != after.Source.Version {
+		changes = append(changes, Change{Path: "source.version", Before: fmt.Sprintf("%d", before.Source.Version), After: fmt.Sprintf("%d", after.Source.Version), Kind: DiffCosmetic, Explanation: "source revision metadata changed without altering normalized workflow semantics"})
+	}
 	if before.Source.DSLVersion != after.Source.DSLVersion {
 		changes = append(changes, Change{Path: "source.dslVersion", Before: before.Source.DSLVersion, After: after.Source.DSLVersion, Kind: DiffCosmetic, Explanation: "source DSL version annotation changed without altering normalized behavior"})
 	}

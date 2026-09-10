@@ -392,6 +392,67 @@ func TestSemanticDiffClassifiesBehavioralChangesAcrossIRSurfaces(t *testing.T) {
 	}
 }
 
+func TestSemanticDiffClassifiesCompilerAndSourceIdentityMetadataAsCosmetic(t *testing.T) {
+	base := semanticDiffBehavioralBaseDefinition()
+	before, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		setup     func(*Document)
+		mutate    func(*Document)
+		wantPaths []string
+	}{
+		{
+			name: "compiler metadata",
+			mutate: func(doc *Document) {
+				doc.Compiler = Compiler{Name: "custom-compiler", Version: "workflow-ir/v2"}
+			},
+			wantPaths: []string{"compiler.name", "compiler.version"},
+		},
+		{
+			name: "source identity metadata",
+			setup: func(doc *Document) {
+				doc.SourceDefinition = nil
+			},
+			mutate: func(doc *Document) {
+				doc.Source.Name = "renamed-pipeline"
+				doc.Source.Version = 2
+			},
+			wantPaths: []string{"source.name", "source.version"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			baseline := before
+			if tc.setup != nil {
+				tc.setup(&baseline)
+			}
+			after := baseline
+			tc.mutate(&after)
+
+			diff, err := SemanticDiff(baseline, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff.Kind != DiffCosmetic {
+				t.Fatalf("SemanticDiff kind = %q, want %q; changes=%#v", diff.Kind, DiffCosmetic, diff.Changes)
+			}
+			if containsBehavioralChange(diff.Changes) {
+				t.Fatalf("SemanticDiff changes = %#v, want cosmetic-only changes", diff.Changes)
+			}
+			for _, wantPath := range tc.wantPaths {
+				if !containsChangePath(diff.Changes, wantPath) {
+					t.Fatalf("SemanticDiff changes = %#v, want path %q", diff.Changes, wantPath)
+				}
+			}
+		})
+	}
+}
+
 func semanticDiffBehavioralBaseDefinition() workflow.Definition {
 	return workflow.Definition{
 		Name: "semantic-surfaces", Version: 1,
@@ -442,6 +503,15 @@ func cloneDefinitionForTest(t *testing.T, def workflow.Definition) workflow.Defi
 func containsBehavioralChange(changes []Change) bool {
 	for _, change := range changes {
 		if change.Kind == DiffBehavioral {
+			return true
+		}
+	}
+	return false
+}
+
+func containsChangePath(changes []Change, want string) bool {
+	for _, change := range changes {
+		if change.Path == want {
 			return true
 		}
 	}
