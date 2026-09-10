@@ -69,29 +69,7 @@ func runWorkItems(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *externalID != "" {
-		item, err := reader.WorkItem(context.Background(), *provider, *repository, *kind, *externalID)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-		if *jsonOutput {
-			if err := json.NewEncoder(stdout).Encode(item); err != nil {
-				pf(stderr, "error: encode work item: %v\n", err)
-				return 2
-			}
-			return 0
-		}
-		fmt.Fprintf(stdout, "%s#%s (%s %s)\n", item.Repository, item.ExternalID, item.Provider, strings.ToUpper(item.Kind))
-		for _, action := range item.Actions {
-			fmt.Fprintf(stdout, "%s  %-18s  %s/%s  %s\n",
-				action.OccurredAt.Format("2006-01-02 15:04:05Z"),
-				action.Operation,
-				action.Gaggle,
-				action.Workflow,
-				action.RunID,
-			)
-		}
-		return 0
+		return writeWorkItem(reader, *provider, *repository, *kind, *externalID, *jsonOutput, stdout, stderr)
 	}
 
 	page, err := reader.WorkItems(context.Background(), readservice.WorkItemListOptions{
@@ -103,7 +81,42 @@ func runWorkItems(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if *jsonOutput {
+	return writeWorkItems(page, *jsonOutput, stdout, stderr)
+}
+
+func writeWorkItem(
+	reader workItemReader,
+	provider, repository, kind, externalID string,
+	jsonOutput bool,
+	stdout, stderr io.Writer,
+) int {
+	item, err := reader.WorkItem(context.Background(), provider, repository, kind, externalID)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(item); err != nil {
+			pf(stderr, "error: encode work item: %v\n", err)
+			return 2
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "%s#%s (%s %s)\n", item.Repository, item.ExternalID, item.Provider, strings.ToUpper(item.Kind))
+	for _, action := range item.Actions {
+		fmt.Fprintf(stdout, "%s  %-18s  %s/%s  %s\n",
+			action.OccurredAt.Format("2006-01-02 15:04:05Z"),
+			action.Operation,
+			action.Gaggle,
+			action.Workflow,
+			action.RunID,
+		)
+	}
+	return 0
+}
+
+func writeWorkItems(page readservice.WorkItemPage, jsonOutput bool, stdout, stderr io.Writer) int {
+	if jsonOutput {
 		if err := json.NewEncoder(stdout).Encode(page); err != nil {
 			pf(stderr, "error: encode work items: %v\n", err)
 			return 2

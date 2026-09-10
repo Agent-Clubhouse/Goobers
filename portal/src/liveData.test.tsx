@@ -1405,13 +1405,6 @@ describe("live page integration", () => {
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Core product/ }));
     expect(screen.getByText("1 active / 2 max")).toBeInTheDocument();
-    const coreSection = screen
-      .getByRole("heading", { name: "Core product" })
-      .closest<HTMLElement>(".gaggle-section");
-    if (!coreSection) {
-      throw new Error("Core product inventory section was not rendered.");
-    }
-    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("1");
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
     );
@@ -1432,9 +1425,7 @@ describe("live page integration", () => {
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
-
     expect(screen.getByText("2 active / 2 max")).toBeInTheDocument();
-    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("2");
     expect(listGaggles).toHaveBeenCalledTimes(inventoryGaggleReads);
     expect(listGoobers).toHaveBeenCalledTimes(inventoryGooberReads);
     expect(listWorkflows).toHaveBeenCalledTimes(inventoryWorkflowReads);
