@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard run signal workflow status stats cost trace escalations completion help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard run signal workflow status stats cost work-items trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -247,6 +247,13 @@ complete -c goobers -n '__fish_seen_subcommand_from cost' -l since -r -d 'Inclus
 complete -c goobers -n '__fish_seen_subcommand_from cost' -l until -r -d 'Exclusive RFC3339 run-start upper bound'
 complete -c goobers -n '__fish_seen_subcommand_from cost' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from cost' -l rebuild -d 'Rebuild telemetry before querying'
+complete -c goobers -n '__fish_seen_subcommand_from work-items' -l provider -r -d 'Filter by provider'
+complete -c goobers -n '__fish_seen_subcommand_from work-items' -l repository -r -d 'Filter by repository'
+complete -c goobers -n '__fish_seen_subcommand_from work-items' -l kind -r -a 'pr issue' -d 'Filter by work-item kind'
+complete -c goobers -n '__fish_seen_subcommand_from work-items' -l id -r -d 'Show one work item\'s action timeline'
+complete -c goobers -n '__fish_seen_subcommand_from work-items' -l limit -r -d 'Maximum work items'
+complete -c goobers -n '__fish_seen_subcommand_from work-items' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from work-items' -l rebuild -d 'Rebuild telemetry from run journals before querying'
 complete -c goobers -n '__fish_seen_subcommand_from features' -l json -d 'Emit a versioned feature-discovery envelope'
 complete -c goobers -n '__fish_seen_subcommand_from features' -l dsl-version -r -d 'Scope features to one DSL version'
 complete -c goobers -n '__fish_seen_subcommand_from features' -l used -d 'List only features referenced by the instance'
