@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
@@ -223,12 +224,29 @@ type trackedActivityInbound struct {
 	tracker *activityTracker
 }
 
+// The SDK panics if GetInfo runs outside a real activity context; unit tests
+// drive this interceptor directly with a background context.
+func currentActivityInfo(ctx context.Context) (_ activity.Info, ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	return activity.GetInfo(ctx), true
+}
+
 func (a *trackedActivityInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (interface{}, error) {
 	a.tracker.n.Add(1)
 	defer a.tracker.n.Add(-1)
 	identity := attemptidentity.Identity{
 		BuildID:        a.tracker.buildID,
 		WorkerIdentity: a.tracker.worker,
+	}
+	if info, ok := currentActivityInfo(ctx); ok {
+		identity.TaskQueue = info.TaskQueue
+		identity.ActivityID = info.ActivityID
+		identity.ActivityType = info.ActivityType.Name
+		identity.Attempt = info.Attempt
 	}
 	ctx = attemptidentity.WithContext(ctx, identity)
 	result, err := a.Next.ExecuteActivity(ctx, in)

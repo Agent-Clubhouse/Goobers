@@ -491,7 +491,9 @@ func addAttemptIdentity(ev *journal.Event, identity *attemptidentity.Identity) {
 	if identity.ActivityType != "" {
 		ev.Runner["activityType"] = identity.ActivityType
 	}
-	ev.Runner["activityAttempt"] = identity.Attempt
+	if identity.Attempt > 0 {
+		ev.Runner["activityAttempt"] = identity.Attempt
+	}
 }
 
 // stageFinishedEvent builds the stage.finished event, including the
