@@ -82,7 +82,7 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		byPath := map[string]*ContributingPath{}
 		for _, observation := range group {
 			for _, contribution := range observation.Attribution.Contributions {
-				if contribution.Kind == KindOutcome || contribution.Kind == KindRun {
+				if !surfaceContributionPath(contribution) {
 					continue
 				}
 				pathNodes := contributionPath(contribution)
@@ -136,7 +136,10 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		sort.Slice(paths, func(i, j int) bool {
 			if paths[i].Share == paths[j].Share {
 				if paths[i].Confidence == paths[j].Confidence {
-					return strings.Join(paths[i].Nodes, "/") < strings.Join(paths[j].Nodes, "/")
+					if len(paths[i].Nodes) == len(paths[j].Nodes) {
+						return strings.Join(paths[i].Nodes, "/") < strings.Join(paths[j].Nodes, "/")
+					}
+					return len(paths[i].Nodes) > len(paths[j].Nodes)
 				}
 				return paths[i].Confidence > paths[j].Confidence
 			}
@@ -163,6 +166,15 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 		return out[i].EffectiveVersion < out[j].EffectiveVersion
 	})
 	return out
+}
+
+func surfaceContributionPath(contribution Contribution) bool {
+	switch contribution.Kind {
+	case KindOutcome, KindRun, KindStage, KindSubagent, KindTool:
+		return false
+	default:
+		return true
+	}
 }
 
 func contributionPath(contribution Contribution) []string {
