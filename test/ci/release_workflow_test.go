@@ -87,6 +87,9 @@ var signingOrderCases = []signingOrderCase{
 			"codesign --force --options runtime --timestamp",
 			`codesign --verify --deep --strict "$WORKDIR/goobers"`,
 			`xcrun notarytool submit "$NOTARIZE_ZIP"`,
+			// #4269: signing/notarization alone never proves the
+			// binary actually runs on its target OS.
+			`"$WORKDIR/goobers" --version | grep --fixed-strings "$TAG"`,
 			"- name: Recompute SHA256SUMS",
 		},
 	},
@@ -100,6 +103,10 @@ var signingOrderCases = []signingOrderCase{
 			"if ($certificateOffset -eq 0 -or $certificateSize -eq 0)",
 			"$signature = Get-AuthenticodeSignature -FilePath $path",
 			"if ($signature.Status -ne 'Valid')",
+			// #4269: a valid Authenticode signature alone never proves
+			// the exe actually runs.
+			"- name: Execute signed goobers.exe",
+			"$version = & winsign\\goobers.exe --version",
 			"- name: Repackage signed archive",
 			"- name: Recompute SHA256SUMS",
 		},
@@ -166,6 +173,9 @@ func TestReleaseWorkflowSigningMarkersToleratePinBumps(t *testing.T) {
           if ($certificateOffset -eq 0 -or $certificateSize -eq 0) { throw 'unsigned' }
           $signature = Get-AuthenticodeSignature -FilePath $path
           if ($signature.Status -ne 'Valid') { throw 'invalid' }
+      - name: Execute signed goobers.exe
+        run: |
+          $version = & winsign\goobers.exe --version
       - name: Repackage signed archive
       - name: Recompute SHA256SUMS
 `
