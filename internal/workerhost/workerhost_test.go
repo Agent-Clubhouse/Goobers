@@ -91,6 +91,29 @@ func TestNewRequiresTaskQueues(t *testing.T) {
 // one worker per named queue, all under the versioned identity and the
 // configured drain window, stopped on context cancellation, clean exit when
 // nothing was in flight.
+func TestWorkerOptionsUseBuildIDVersioning(t *testing.T) {
+	h, err := New(Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "v9.9.9-test"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	opts := h.workerOptions()
+	if opts.BuildID != "v9.9.9-test" {
+		t.Fatalf("BuildID = %q, want %q", opts.BuildID, "v9.9.9-test")
+	}
+	if !opts.UseBuildIDForVersioning {
+		t.Fatal("UseBuildIDForVersioning was not enabled")
+	}
+	if opts.DeploymentOptions.Version.DeploymentName != "goobers" {
+		t.Fatalf("DeploymentOptions.Version.DeploymentName = %q, want %q", opts.DeploymentOptions.Version.DeploymentName, "goobers")
+	}
+	if opts.DeploymentOptions.Version.BuildID != "v9.9.9-test" {
+		t.Fatalf("DeploymentOptions.Version.BuildID = %q, want %q", opts.DeploymentOptions.Version.BuildID, "v9.9.9-test")
+	}
+	if opts.DeploymentOptions.DefaultVersioningBehavior != workflow.VersioningBehaviorPinned {
+		t.Fatalf("DefaultVersioningBehavior = %v, want %v", opts.DeploymentOptions.DefaultVersioningBehavior, workflow.VersioningBehaviorPinned)
+	}
+}
+
 func TestRunServesEveryQueueAndDrains(t *testing.T) {
 	fleet := &fakeFleet{}
 	h := newTestHost(t, Config{

@@ -113,16 +113,18 @@ func (h *Host) workerOptions() worker.Options {
 		WorkerStopTimeout: h.cfg.DrainTimeout,
 		Interceptors:      []interceptor.WorkerInterceptor{h.tracker},
 	}
-	if h.cfg.BuildVersion != "" {
-		opts.BuildID = h.cfg.BuildVersion
-		opts.DeploymentOptions = worker.DeploymentOptions{
-			UseVersioning: true,
-			Version: worker.WorkerDeploymentVersion{
-				DeploymentName: "goobers",
-				BuildID:        h.cfg.BuildVersion,
-			},
-			DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
-		}
+	if h.cfg.BuildVersion == "" {
+		return opts
+	}
+	opts.BuildID = h.cfg.BuildVersion
+	opts.UseBuildIDForVersioning = true
+	opts.DeploymentOptions = worker.DeploymentOptions{
+		UseVersioning: true,
+		Version: worker.WorkerDeploymentVersion{
+			DeploymentName: "goobers",
+			BuildID:        h.cfg.BuildVersion,
+		},
+		DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
 	}
 	return opts
 }
