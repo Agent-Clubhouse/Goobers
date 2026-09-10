@@ -19,7 +19,6 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'status'
         'stats'
         'cost'
-        'work-items'
         'trace'
         'escalations'
         'completion'
