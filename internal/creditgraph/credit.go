@@ -47,6 +47,7 @@ const (
 // inside a failing run scores positive and the failing stage scores negative.
 type Contribution struct {
 	NodeID      string     `json:"nodeId"`
+	Path        []string   `json:"path,omitempty"`
 	Kind        NodeKind   `json:"kind"`
 	Label       string     `json:"label,omitempty"`
 	Stage       string     `json:"stage,omitempty"`
