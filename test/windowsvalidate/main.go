@@ -291,11 +291,20 @@ func validateDaemonLifecycle(bin, outDir string) (string, error) {
 func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout time.Duration) (string, bool, error) {
 	addressPath := filepath.Join(instance.NewLayout(instanceRoot).SchedulerDir(), daemonAPIAddressFileName)
 	client := &http.Client{Timeout: 2 * time.Second}
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	poll := time.NewTicker(100 * time.Millisecond)
+	defer poll.Stop()
 
 	var lastErr error
 	for {
+		if ctx.Err() != nil {
+			if lastErr == nil {
+				lastErr = ctx.Err()
+			}
+			return "", false, fmt.Errorf("daemon API did not become ready within %s: %w", timeout, lastErr)
+		}
+
 		data, err := os.ReadFile(addressPath)
 		if err != nil {
 			lastErr = fmt.Errorf("read daemon API address: %w", err)
@@ -304,8 +313,15 @@ func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout t
 			if address == "" {
 				lastErr = fmt.Errorf("daemon API address is empty")
 			} else {
-				response, requestErr := client.Get("http://" + address + httpapi.ReadinessPath)
+				request, requestErr := http.NewRequestWithContext(
+					ctx,
+					http.MethodGet,
+					"http://"+address+httpapi.ReadinessPath,
+					nil,
+				)
 				if requestErr != nil {
+					lastErr = fmt.Errorf("create daemon readiness request at %s: %w", address, requestErr)
+				} else if response, requestErr := client.Do(request); requestErr != nil {
 					lastErr = fmt.Errorf("query daemon readiness at %s: %w", address, requestErr)
 				} else {
 					var readiness httpapi.ReadinessStatus
@@ -328,10 +344,16 @@ func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout t
 
 		select {
 		case err := <-waitErr:
+			if err == nil {
+				return "", true, fmt.Errorf("`goobers up` exited cleanly before its API became ready")
+			}
 			return "", true, fmt.Errorf("`goobers up` exited before its API became ready: %w", err)
-		case <-deadline.C:
+		case <-ctx.Done():
+			if lastErr == nil {
+				lastErr = ctx.Err()
+			}
 			return "", false, fmt.Errorf("daemon API did not become ready within %s: %w", timeout, lastErr)
-		case <-time.After(100 * time.Millisecond):
+		case <-poll.C:
 		}
 	}
 }

@@ -109,15 +109,68 @@ func TestWaitForDaemonReadinessWaitsForReadyProbe(t *testing.T) {
 }
 
 func TestWaitForDaemonReadinessReportsEarlyExit(t *testing.T) {
-	waitErr := make(chan error, 1)
-	waitErr <- errors.New("startup failed")
-
-	_, exited, err := waitForDaemonReadiness(t.TempDir(), waitErr, time.Second)
-	if !exited {
-		t.Fatal("process exit was not reported")
+	tests := []struct {
+		name    string
+		waitErr error
+		want    string
+	}{
+		{name: "failure", waitErr: errors.New("startup failed"), want: "startup failed"},
+		{name: "clean exit", want: "exited cleanly"},
 	}
-	if err == nil || !strings.Contains(err.Error(), "startup failed") {
-		t.Fatalf("error = %v, want startup failure", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			waitErr := make(chan error, 1)
+			waitErr <- test.waitErr
+
+			_, exited, err := waitForDaemonReadiness(t.TempDir(), waitErr, time.Second)
+			if !exited {
+				t.Fatal("process exit was not reported")
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestWaitForDaemonReadinessBoundsProbeByOverallTimeout(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	addressPath := filepath.Join(instance.NewLayout(root).SchedulerDir(), daemonAPIAddressFileName)
+	if err := os.MkdirAll(filepath.Dir(addressPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(addressPath, []byte(strings.TrimPrefix(server.URL, "http://")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const timeout = 100 * time.Millisecond
+	started := time.Now()
+	_, exited, err := waitForDaemonReadiness(root, make(chan error), timeout)
+	elapsed := time.Since(started)
+
+	if exited {
+		t.Fatal("process reported exited")
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not become ready") {
+		t.Fatalf("error = %v, want readiness timeout", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("readiness timeout took %s, want at most 1s", elapsed)
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("readiness request did not start")
 	}
 }
 
