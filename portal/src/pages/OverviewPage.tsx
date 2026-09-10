@@ -297,9 +297,7 @@ function Overview({
       {groups.attention.length > 0 && (
         <section className="content-section attention-section">
           <div className="section-heading">
-            <h2 className={activeAttention.length > 0 ? "attention-title" : undefined}>
-              Needs attention
-            </h2>
+            <h2>Needs attention</h2>
             <div className="attention-actions">
               {activeAttention.length > 0 && (
                 <label className="attention-select-all">

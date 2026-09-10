@@ -20,10 +20,6 @@
   margin-top: 28px;
 }
 
-.attention-title {
-  color: var(--danger);
-}
-
 .workflow-gaggle-summary {
   background: var(--surface);
   display: grid;
@@ -1489,10 +1485,13 @@ summary:focus-visible {
   border-color: var(--danger);
 }
 
-.attention-select {
+.attention-select[type="checkbox"] {
+  appearance: auto;
   cursor: pointer;
-  height: 16px;
-  width: 16px;
+  height: auto;
+  min-height: 0;
+  min-width: 0;
+  width: auto;
 }
 
 .attention-link-shell {
