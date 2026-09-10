@@ -72,21 +72,22 @@ type TelemetryImplementationOutcome struct {
 // TelemetryStatsRequest filters workflow/stage aggregates and selects optional
 // branch, model, and harness-version cohort dimensions.
 type TelemetryStatsRequest struct {
-	Workflow              string
-	Gaggle                string
-	Branch                *int
-	Model                 string
-	HarnessVersion        string
-	GroupByBranch         bool
-	GroupByModel          bool
-	GroupByHarnessVersion bool
-	Since                 time.Time
-	Until                 time.Time
-	TrendSince            time.Time
-	TrendUntil            time.Time
-	TrendBuckets          int
-	TrendPreviousSince    time.Time
-	TrendPreviousUntil    time.Time
+	Workflow                string
+	Gaggle                  string
+	Branch                  *int
+	Model                   string
+	HarnessVersion          string
+	GroupByBranch           bool
+	GroupByModel            bool
+	GroupByHarnessVersion   bool
+	AttributionObservations []creditgraph.AttributionObservation `json:"attributionObservations,omitempty"`
+	Since                   time.Time
+	Until                   time.Time
+	TrendSince              time.Time
+	TrendUntil              time.Time
+	TrendBuckets            int
+	TrendPreviousSince      time.Time
+	TrendPreviousUntil      time.Time
 }
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
@@ -520,12 +521,13 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 	}
 
 	result := TelemetryStatsResult{
-		Gaggles:          make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
-		Runs:             make([]TelemetryRunStats, 0, len(stats.Runs)),
-		Stages:           make([]TelemetryStageStats, 0, len(stats.Stages)),
-		Usage:            make([]TelemetryUsageStats, 0, len(stats.Usage)),
-		Models:           make([]TelemetryModelStats, 0, len(stats.Models)),
-		CreditAssignment: []NodeCredit{},
+		Gaggles:            make([]TelemetryGaggleStats, 0, len(stats.Gaggles)),
+		Runs:               make([]TelemetryRunStats, 0, len(stats.Runs)),
+		Stages:             make([]TelemetryStageStats, 0, len(stats.Stages)),
+		Usage:              make([]TelemetryUsageStats, 0, len(stats.Usage)),
+		Models:             make([]TelemetryModelStats, 0, len(stats.Models)),
+		CreditAssignment:   []NodeCredit{},
+		AttributionCohorts: AggregateAttributionObservations(req.AttributionObservations),
 		Curation: TelemetryCurationStats{
 			EverRecorded: stats.Curation.EverRecorded,
 			Runs:         stats.Curation.Runs,

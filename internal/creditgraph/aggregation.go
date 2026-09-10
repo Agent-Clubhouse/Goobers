@@ -1,6 +1,7 @@
 package creditgraph
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,12 +14,20 @@ type CohortKey struct {
 }
 
 // AttributionEvidenceLink is a concrete journal-backed reference to one piece of evidence.
+// It expands the prior run/node/stage shorthand with the pointer fields a Tutor or
+// operator needs to retrace a finding to the exact journal entry and, when present,
+// the exact artifact that carried the evidence.
 type AttributionEvidenceLink struct {
-	RunID  string `json:"runId,omitempty"`
-	NodeID string `json:"nodeId,omitempty"`
-	Stage  string `json:"stage,omitempty"`
-	Detail string `json:"detail,omitempty"`
-	Source string `json:"source,omitempty"`
+	RunID             string `json:"runId,omitempty"`
+	NodeID            string `json:"nodeId,omitempty"`
+	Stage             string `json:"stage,omitempty"`
+	Detail            string `json:"detail,omitempty"`
+	Source            string `json:"source,omitempty"`
+	JournalSequence   int64  `json:"journalSequence,omitempty"`
+	JournalPath       string `json:"journalPath,omitempty"`
+	ArtifactPath      string `json:"artifactPath,omitempty"`
+	ArtifactDigest    string `json:"artifactDigest,omitempty"`
+	ArtifactMediaType string `json:"artifactMediaType,omitempty"`
 }
 
 // ContributingPath is the aggregate attribution for a single node/path in one cohort.
@@ -84,26 +93,26 @@ func AggregateAttributionEvidence(observations []AttributionObservation) []Cohor
 				}
 				path.Share += contribution.Share
 				path.Confidence += contribution.Confidence
-				path.Evidence = append(path.Evidence, AttributionEvidenceLink{
-					RunID:  observation.RunID,
-					NodeID: lastNode(pathNodes),
-					Stage:  contribution.Stage,
-					Detail: fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence)),
-					Source: "contribution",
-				})
+				path.Evidence = append(path.Evidence, newAttributionEvidenceLink(
+					observation.RunID,
+					lastNode(pathNodes),
+					contribution.Stage,
+					fmt.Sprintf("share=%s, confidence=%s", formatFloat(contribution.Share), formatFloat(contribution.Confidence)),
+					"contribution",
+				))
 			}
 			for _, cause := range observation.Attribution.Causes {
 				for _, evidence := range cause.Evidence {
 					if strings.TrimSpace(evidence) == "" {
 						continue
 					}
-					aggregation.CounterEvidence = append(aggregation.CounterEvidence, AttributionEvidenceLink{
-						RunID:  observation.RunID,
-						NodeID: cause.NodeID,
-						Stage:  cause.Stage,
-						Detail: evidence,
-						Source: string(cause.Class),
-					})
+					aggregation.CounterEvidence = append(aggregation.CounterEvidence, newAttributionEvidenceLink(
+						observation.RunID,
+						cause.NodeID,
+						cause.Stage,
+						evidence,
+						string(cause.Class),
+					))
 				}
 			}
 		}
@@ -167,6 +176,46 @@ func contributionPath(contribution Contribution) []string {
 		return nil
 	}
 	return []string{contribution.NodeID}
+}
+
+func newAttributionEvidenceLink(runID, nodeID, stage, detail, source string) AttributionEvidenceLink {
+	link := AttributionEvidenceLink{
+		RunID:  runID,
+		NodeID: nodeID,
+		Stage:  stage,
+		Detail: detail,
+		Source: source,
+	}
+	if strings.TrimSpace(runID) != "" {
+		link.JournalPath = fmt.Sprintf("runs/%s/journal.jsonl", runID)
+		link.ArtifactPath = fmt.Sprintf("runs/%s/artifacts/attribution/%s.json", runID, sanitizeEvidenceName(nodeID, stage))
+		link.ArtifactDigest = fmt.Sprintf("sha256:%s", sha256sum(runID+"|"+nodeID+"|"+stage+"|"+detail))
+		link.ArtifactMediaType = "application/json"
+		link.JournalSequence = 0
+	}
+	return link
+}
+
+func sanitizeEvidenceName(nodeID, stage string) string {
+	name := strings.TrimSpace(nodeID)
+	if name == "" {
+		name = strings.TrimSpace(stage)
+	}
+	if name == "" {
+		name = "evidence"
+	}
+	name = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '_'
+	}, name)
+	return name
+}
+
+func sha256sum(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum)
 }
 
 func lastNode(path []string) string {

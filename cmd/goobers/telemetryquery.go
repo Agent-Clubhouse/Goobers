@@ -664,6 +664,7 @@ func detectCandidateFindingsWithCausalCredit(
 	}
 
 	filtered := make([]rollup.Finding, 0, len(findings))
+	var creditObservations []creditgraph.AttributionObservation
 	for _, finding := range findings {
 		if !aggregates.includes(finding.Kind) {
 			continue
@@ -676,6 +677,13 @@ func detectCandidateFindingsWithCausalCredit(
 			finding.FlaggedRuns = []rollup.JournalPointer{}
 		}
 		filtered = append(filtered, finding)
+	}
+	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
+		credits, creditErr := creditStore.CreditAssignment(context.Background(), readmodel.CreditOptions{Gaggle: gaggle, Workflow: workflowName, Since: since})
+		if creditErr != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("credit assignment: %w", creditErr)
+		}
+		creditObservations = syntheticCreditObservations(credits, gaggle, workflowName)
 	}
 	note := ""
 	if len(filtered) == 0 {
@@ -725,7 +733,43 @@ func detectCandidateFindingsWithCausalCredit(
 		})
 	}
 	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
+	if len(creditObservations) > 0 {
+		result.AttributionCohorts = readservice.AggregateAttributionObservations(creditObservations)
+	}
 	return result, nil
+}
+
+func syntheticCreditObservations(credits []readmodel.NodeCredit, gaggle, workflow string) []creditgraph.AttributionObservation {
+	if len(credits) == 0 {
+		return nil
+	}
+	observations := make([]creditgraph.AttributionObservation, 0, len(credits))
+	for _, credit := range credits {
+		if credit.RoutedRuns <= 0 {
+			continue
+		}
+		failureShare := float64(credit.FailureRuns) / float64(credit.RoutedRuns)
+		observations = append(observations, creditgraph.AttributionObservation{
+			RunID:            fmt.Sprintf("synthetic-%s-%s-%s", gaggle, workflow, credit.Stage),
+			EffectiveVersion: workflow,
+			Workload:         gaggle,
+			Attribution: creditgraph.Attribution{Contributions: []creditgraph.Contribution{{
+				NodeID:     credit.Stage,
+				Path:       []string{credit.Kind, credit.Stage},
+				Stage:      credit.Stage,
+				Share:      failureShare,
+				Confidence: failureShare,
+			}}, Causes: []creditgraph.CauseFinding{{
+				NodeID:     credit.Stage,
+				Stage:      credit.Stage,
+				Class:      creditgraph.ClassBadToolResult,
+				Confidence: failureShare,
+				Summary:    "credit assignment rollup evidence",
+				Evidence:   []string{fmt.Sprintf("observed %d failing runs out of %d routed runs for %s/%s", credit.FailureRuns, credit.RoutedRuns, credit.Kind, credit.Stage)},
+			}}},
+		})
+	}
+	return observations
 }
 
 func candidateWorkflowGraph(root, gaggle, workflowName string) (*workflow.Graph, error) {

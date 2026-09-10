@@ -135,6 +135,26 @@ func TestTelemetryAttributionAggregatesByEffectiveVersionAndWorkload(t *testing.
 	}
 }
 
+func TestTelemetryStatsProjectsAttributionCohortsFromRequest(t *testing.T) {
+	obs := []creditgraph.AttributionObservation{{
+		RunID:            "run-1",
+		EffectiveVersion: "v1",
+		Workload:         "main",
+		Attribution:      creditgraph.Attribution{Contributions: []creditgraph.Contribution{{NodeID: "node-a", Path: []string{"root", "node-a"}, Share: 0.8, Confidence: 0.9}}},
+	}}
+	service := &Telemetry{store: &fakeTelemetryStore{}}
+	result, err := service.TelemetryStats(context.Background(), TelemetryStatsRequest{AttributionObservations: obs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AttributionCohorts) != 1 || result.AttributionCohorts[0].Workload != "main" {
+		t.Fatalf("attribution cohorts = %+v, want one v1/main cohort", result.AttributionCohorts)
+	}
+	if result.AttributionCohorts[0].TopContributingPaths[0].Evidence[0].JournalPath == "" {
+		t.Fatalf("status attribution evidence missing journal pointer: %+v", result.AttributionCohorts[0].TopContributingPaths[0].Evidence[0])
+	}
+}
+
 func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
