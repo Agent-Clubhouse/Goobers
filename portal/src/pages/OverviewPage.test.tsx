@@ -138,7 +138,9 @@ describe("overview page", () => {
 
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "Connecting to daemon" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
     expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
 

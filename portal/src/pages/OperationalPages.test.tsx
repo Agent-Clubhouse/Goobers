@@ -97,7 +97,7 @@ describe("operational overview", () => {
     }
   });
 
-  it("groups canonical phases and places attention rows before aggregate counts", async () => {
+  it("groups canonical phases and places instance status before attention rows", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
@@ -110,7 +110,7 @@ describe("operational overview", () => {
       throw new Error("Attention section was not rendered.");
     }
 
-    expect(attentionSection.compareDocumentPosition(counts) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+    expect(counts.compareDocumentPosition(attentionSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     await expandAttentionRuns(user, attentionSection);
@@ -231,10 +231,12 @@ describe("operational overview", () => {
     const client = new RecoveringClient();
     render(<App client={client} />);
 
-    expect(screen.getByRole("heading", { name: "Connecting to daemon" })).toBeInTheDocument();
     expect(
       await screen.findByRole("heading", { name: "Couldn't load Goobers data" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText("The portal couldn't load data from the Goobers daemon. Reconnect to try again."),
     ).toBeInTheDocument();

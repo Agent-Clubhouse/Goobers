@@ -222,7 +222,9 @@ describe("portal foundation", () => {
     await user.click(screen.getByRole("button", { name: "Overview" }));
 
     expect(screen.getByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Connecting to daemon" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).not.toBeInTheDocument();
   });
 
   it("skips to main content without changing the active hash route", async () => {

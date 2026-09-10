@@ -66,10 +66,10 @@ export function PortalShell({
       <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
         Skip to main content
       </a>
-      <aside className="sidebar">
+      <header className="topbar">
         <button
           aria-label="Go to overview"
-          className="brand"
+          className="topbar-brand"
           onClick={() => navigate({ page: "overview" })}
           type="button"
         >
@@ -79,6 +79,45 @@ export function PortalShell({
             <small>{config.brand.tagline}</small>
           </span>
         </button>
+        <div className="topbar-actions">
+          {freshness === "polling-fallback" ? (
+            <PollingFallbackIndicator failure={lastSSEFailure} state={dataFreshness} />
+          ) : (
+            <>
+              <DataFreshnessIndicator state={dataFreshness} />
+              <span
+                aria-live="polite"
+                className={`freshness-status freshness-status-${freshness}`}
+                data-state={freshness}
+                role="status"
+                title={describeConnectionTitle(freshness, lastSSEFailure)}
+              >
+                <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
+                {connectionStatus}
+              </span>
+            </>
+          )}
+          {freshness === "polling-fallback" ? (
+            <button
+              aria-label="Retry live updates"
+              className="reconnect-button"
+              onClick={retryConnection}
+              type="button"
+            >
+              Retry live updates
+            </button>
+          ) : null}
+          <button
+            aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
+            className="theme-button"
+            onClick={toggleTheme}
+            type="button"
+          >
+            <Icon name={theme === "light" ? "moon" : "sun"} size={17} />
+          </button>
+        </div>
+      </header>
+      <aside className="sidebar">
         <button
           aria-controls="portal-secondary-navigation"
           aria-expanded={mobileMenuOpen}
@@ -181,65 +220,6 @@ export function PortalShell({
       </aside>
 
       <div className="portal-main">
-        <header className="topbar">
-          <div className="topbar-context">
-            <span className="scope-mark">{config.brand.scopeMark}</span>
-            <span>
-              <strong>{config.brand.name}</strong>
-              <small>operations workbench</small>
-            </span>
-          </div>
-          <div className="topbar-actions">
-            {/*
-              Two indicators, deliberately: how current the DATA is, and whether
-              the CONNECTION is up (#1928). Conflating them is why an operator
-              could not tell "slow" from "broken" — a stream can be perfectly
-              connected to a projector ten minutes behind, and can be
-              reconnecting over data current to the second.
-
-              The data indicator comes first because it answers the question the
-              user actually has. The connection indicator stays, because a
-              dropped stream means the next change will arrive late even if what
-              is on screen is current.
-            */}
-            {freshness === "polling-fallback" ? (
-              <PollingFallbackIndicator failure={lastSSEFailure} state={dataFreshness} />
-            ) : (
-              <>
-                <DataFreshnessIndicator state={dataFreshness} />
-                <span
-                  aria-live="polite"
-                  className={`freshness-status freshness-status-${freshness}`}
-                  data-state={freshness}
-                  role="status"
-                  title={describeConnectionTitle(freshness, lastSSEFailure)}
-                >
-                  <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
-                  {connectionStatus}
-                </span>
-              </>
-            )}
-            {freshness === "polling-fallback" ? (
-              <button
-                aria-label="Retry live updates"
-                className="reconnect-button"
-                onClick={retryConnection}
-                type="button"
-              >
-                Retry live updates
-              </button>
-            ) : null}
-            <button
-              aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
-              className="theme-button"
-              onClick={toggleTheme}
-              type="button"
-            >
-              <Icon name={theme === "light" ? "moon" : "sun"} size={17} />
-            </button>
-          </div>
-        </header>
-
         <main className="page-content" id="main-content" ref={mainContent} tabIndex={-1}>
           {admissionState && (
             <div className="admission-degraded" role="alert">

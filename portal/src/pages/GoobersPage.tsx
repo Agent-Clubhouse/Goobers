@@ -177,7 +177,7 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
         </span>
       </button>
 
-      <dl>
+      <dl className="goober-summary">
         <div>
           <dt>Harness</dt>
           <dd>{goober.harness}</dd>
@@ -221,10 +221,6 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
           {view === "fields" ? (
             <dl className="property-list">
               <div>
-                <dt>Persona</dt>
-                <dd>{goober.role}</dd>
-              </div>
-              <div>
                 <dt>Capabilities</dt>
                 <dd>
                   {goober.capabilities.length > 0 ? goober.capabilities.join(", ") : "None declared"}
@@ -241,12 +237,6 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
                         )
                         .join(", ")
                     : "None declared"}
-                </dd>
-              </div>
-              <div>
-                <dt>Provisioning</dt>
-                <dd>
-                  {gaggle.name}/{goober.name} · {goober.harness}
                 </dd>
               </div>
               <div>

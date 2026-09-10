@@ -158,8 +158,7 @@ function Overview({
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">{overview.instance.name}</p>
-        <p>Instance root: <code>{overview.instance.instanceRoot}</code> · Instance ID: <code>{overview.instance.rootIdentity?.id || "unavailable"}</code></p>
+        <p className="page-kicker">Instance overview</p>
         {overview.instance.rootIdentity?.decommissionedAt && (
           <p role="alert">Historical root; do not use. Decommissioned {overview.instance.rootIdentity.decommissionedAt}: {overview.instance.rootIdentity.decommissionReason}</p>
         )}
@@ -185,6 +184,20 @@ function Overview({
               ? "Operational state read directly from this instance, ordered by what needs attention now."
               : "Live operational state from the daemon, ordered by what needs attention now."}
         </p>
+        <dl className="instance-identity">
+          <div>
+            <dt>Instance name</dt>
+            <dd>{overview.instance.name}</dd>
+          </div>
+          <div>
+            <dt>Instance root</dt>
+            <dd><code>{overview.instance.instanceRoot}</code></dd>
+          </div>
+          <div>
+            <dt>Instance ID</dt>
+            <dd><code>{overview.instance.rootIdentity?.id || "unavailable"}</code></dd>
+          </div>
+        </dl>
       </header>
 
       {/* A section that failed to load must say so. Without this the page would
@@ -223,6 +236,8 @@ function Overview({
           {incompleteRunPhasesMessage(groups.incomplete)}
         </p>
       )}
+
+      <InstanceStrip overview={overview} standalone={standalone} />
 
       {groups.attention.length > 0 && (
         <section className="content-section attention-section">
@@ -428,8 +443,6 @@ function Overview({
         </section>
       )}
 
-      <InstanceStrip overview={overview} standalone={standalone} />
-
       {!inventoryLoaded ? null : emptyInstance ? (
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
@@ -585,7 +598,7 @@ function InstanceStrip({
       aria-label={standalone ? "Local instance status and counts" : "Daemon connection and instance counts"}
       className="instance-strip"
     >
-      <div>
+      <div className="instance-status">
         <span
           aria-hidden="true"
           className={healthy && overview.health.ready ? "live-mark" : "live-mark pending"}
