@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 import type { PortalConfig } from "./api/types";
 import { readStoredTheme, type Theme } from "./theme";
 
-export const portalConfigCacheKey = "goobers-portal-config";
+const portalConfigCacheKey = "goobers-portal-config";
 
 export const defaultPortalConfig: PortalConfig = {
   brand: {

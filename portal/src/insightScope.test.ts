@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { InsightScope } from "./insightScope";
 import {
   deriveInsightCostTrendState,
-  hasInsightScopeIdentity,
   insightScopeApiParameters,
   insightScopeFromKey,
   insightScopeFromRoute,
@@ -92,7 +91,5 @@ describe("Insight scope", () => {
         ],
       },
     });
-    expect(hasInsightScopeIdentity(workflow)).toBe(true);
-    expect(hasInsightScopeIdentity({ kind: "instance" })).toBe(false);
   });
 });

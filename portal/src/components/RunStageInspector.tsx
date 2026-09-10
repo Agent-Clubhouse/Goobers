@@ -451,12 +451,7 @@ function EvidenceDetail({
   );
 }
 
-// EvidencePayload renders whatever an inspectable evidence event (transcript
-// or artifact) carries, without assuming a graph node context — the shared
-// core EvidenceDetail wraps for the stage inspector and KeyMomentsDigest
-// reuses directly for its inline "state change and payload" preview (#2537),
-// so the two views never grow separate rendering logic for the same evidence.
-export function EvidencePayload({
+function EvidencePayload({
   client,
   event,
   runId,

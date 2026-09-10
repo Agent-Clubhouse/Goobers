@@ -203,10 +203,6 @@ export function insightScopeOption(scope: InsightScope): { key: string; label: s
   return { key: insightScopeKey(scope), label: insightScopeLabel(scope) };
 }
 
-export function hasInsightScopeIdentity(scope: InsightScope): boolean {
-  return scope.kind !== "instance";
-}
-
 export function deriveInsightViewModel(
   scope: InsightScope,
   snapshot: InsightSnapshot,
