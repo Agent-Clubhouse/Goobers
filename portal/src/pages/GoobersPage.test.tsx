@@ -76,7 +76,7 @@ describe("goobers roster page", () => {
       within(panel).queryByText("Implements claimed backlog items end to end."),
     ).not.toBeInTheDocument();
     expect(
-      within(panel).getByText("core/implementation/implement (agentic)"),
+      within(card).getByText(/core\/implementation\/implement \(agentic\)/),
     ).toBeInTheDocument();
 
     await userEvent.click(within(detail).getByRole("tab", { name: "Raw YAML" }));

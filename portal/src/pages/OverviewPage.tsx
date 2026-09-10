@@ -19,6 +19,7 @@ import { DataList, DataRow } from "../ui/DataList";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useFailureReasons, type FailureReasons } from "../overviewFailures";
+import { configurationWarningKey } from "../configurationWarnings";
 
 export function OverviewPage({
   client,
@@ -87,6 +88,14 @@ function Overview({
     groups.attention.length === 0 &&
     groups.recent.length === 0;
   const healthy = standalone || overview.health.healthy;
+  const activeConfigurationWarningCount =
+    configurationWarnings.state.status === "ready" ||
+    configurationWarnings.state.status === "stale"
+      ? configurationWarnings.state.data.filter(
+          (warning) =>
+            !configurationWarnings.dismissedWarningKeys.has(configurationWarningKey(warning)),
+        ).length
+      : 0;
 
   const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
   const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
@@ -216,6 +225,10 @@ function Overview({
             </dd>
           </div>
           <div>
+            <dt>Computer name</dt>
+            <dd><code>{overview.instance.computerName || "unavailable"}</code></dd>
+          </div>
+          <div>
             <dt>Instance root</dt>
             <dd><code>{overview.instance.instanceRoot}</code></dd>
           </div>
@@ -275,15 +288,18 @@ function Overview({
         </p>
       )}
 
-      <InstanceStrip overview={overview} standalone={standalone} />
+      <InstanceStrip
+        configurationWarningCount={activeConfigurationWarningCount}
+        overview={overview}
+        standalone={standalone}
+      />
 
       {groups.attention.length > 0 && (
         <section className="content-section attention-section">
           <div className="section-heading">
-            <div>
-              <p className="section-kicker section-kicker-danger">Attention</p>
-              <h2>Needs attention</h2>
-            </div>
+            <h2 className={activeAttention.length > 0 ? "attention-title" : undefined}>
+              Needs attention
+            </h2>
             <div className="attention-actions">
               {activeAttention.length > 0 && (
                 <label className="attention-select-all">
@@ -515,14 +531,12 @@ function Overview({
         <>
           <RunSection
             ariaLabel="Active runs"
-            kicker="Live"
             overview={overview}
             runs={groups.active}
             title="Active runs"
           />
           <RunSection
             ariaLabel="Recent outcomes"
-            kicker="History"
             overview={overview}
             runs={groups.recent}
             title="Recent outcomes"
@@ -620,9 +634,11 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
 }
 
 function InstanceStrip({
+  configurationWarningCount,
   overview,
   standalone,
 }: {
+  configurationWarningCount: number;
   overview: OperationalOverview;
   standalone: boolean;
 }) {
@@ -652,6 +668,21 @@ function InstanceStrip({
                 ? "Daemon ready"
                 : "Daemon starting"}
         </strong>
+        {configurationWarningCount > 0 && (
+          <button
+            className="instance-warning-link"
+            onClick={() =>
+              document.getElementById("instance-configuration-warnings")?.scrollIntoView({
+                behavior: "smooth",
+                block: "start",
+              })
+            }
+            type="button"
+          >
+            {configurationWarningCount} configuration{" "}
+            {configurationWarningCount === 1 ? "warning" : "warnings"}
+          </button>
+        )}
         {!standalone && tickAge !== null && lastTickAt !== null ? (
           <span>
             last scheduler tick {formatDuration(tickAge)} ago at{" "}
@@ -669,16 +700,12 @@ function InstanceStrip({
       {maintenance && renderMaintenanceStatus(maintenance)}
       <dl>
         <div>
-          <dt>Workflows</dt>
-          <dd>{overview.instance.counts.workflows}</dd>
+          <dt>Gaggles</dt>
+          <dd>{overview.instance.counts.gaggles}</dd>
         </div>
         <div>
           <dt>Active runs</dt>
           <dd>{overview.instance.counts.activeRuns}</dd>
-        </div>
-        <div>
-          <dt>Gaggles</dt>
-          <dd>{overview.instance.counts.gaggles}</dd>
         </div>
       </dl>
     </section>
@@ -687,13 +714,11 @@ function InstanceStrip({
 
 function RunSection({
   ariaLabel,
-  kicker,
   overview,
   runs,
   title,
 }: {
   ariaLabel: string;
-  kicker: string;
   overview: OperationalOverview;
   runs: RunSummary[];
   title: string;
@@ -702,10 +727,7 @@ function RunSection({
   return (
     <section className="content-section">
       <div className="section-heading">
-        <div>
-          <p className="section-kicker">{kicker}</p>
-          <h2>{title}</h2>
-        </div>
+        <h2>{title}</h2>
         <span className="section-count">{runs.length}</span>
       </div>
       {runs.length === 0 ? (

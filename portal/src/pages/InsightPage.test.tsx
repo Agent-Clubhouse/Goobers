@@ -58,7 +58,6 @@ describe("Insight page", () => {
     expect(screen.getByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Highest-contributing nodes" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Highest-contributing nodes/ }));
     expect(
       screen.getByRole("link", {
         name: "View runs behind core implementation review: 1 failures, 1 escalations, 2 wasted attempts",
@@ -70,8 +69,7 @@ describe("Insight page", () => {
     expect(screen.getByText("8 / 6")).toBeInTheDocument();
     expect(screen.getByText("In flight now")).toBeInTheDocument();
     expect(screen.getByText("1h 30m 0s average · 2 claimed")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Failure reasons/ }));
-    expect(screen.getByText("harness.crash")).toBeInTheDocument();
+    expect(await screen.findByText("harness.crash")).toBeInTheDocument();
     expect(screen.getAllByText("unknown").length).toBeGreaterThan(0);
     expect(
       screen.getByRole("link", {
@@ -94,13 +92,12 @@ describe("Insight page", () => {
       ),
     );
     expect(screen.getAllByText("50.0%").length).toBeGreaterThan(0);
-    await user.click(screen.getByRole("button", { name: /Slowest stages/ }));
     expect(screen.getAllByText("P50").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P95").length).toBeGreaterThan(0);
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
-      screen.getByRole("option", { name: "Stage · core / implementation / implement" }),
+      JSON.stringify(["stage", "core", "implementation", "implement"]),
     );
     expect(
       screen.getByRole("link", {
@@ -180,7 +177,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Selected-scope cost" }),
+      await screen.findByRole("heading", { name: "Cost summary" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("AI credits")).not.toBeInTheDocument();
     expect(
@@ -189,7 +186,7 @@ describe("Insight page", () => {
     const costLinks = screen.getAllByRole("link", { name: /^View AI cost runs behind/ });
     expect(costLinks).toHaveLength(1);
     expect(costLinks[0]).toHaveAccessibleName(
-      /Instance: 8 samples, P50 \$0\.80, P95 \$2\.50/,
+      /Instance: total Unmeasured, 8 samples, P50 \$0\.80, P95 \$2\.50/,
     );
 
     const costLink = screen.getByRole("link", {
@@ -209,43 +206,43 @@ describe("Insight page", () => {
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
-      screen.getByRole("option", { name: "Workflow · core / implementation" }),
+      JSON.stringify(["workflow", "core", "implementation"]),
     );
     expect(screen.getAllByRole("link", { name: /^View AI cost runs behind/ })).toHaveLength(1);
     expect(
       screen.getByRole("link", {
-        name: /View AI cost runs behind core \/ implementation: 8 samples, P50 \$0\.80, P95 \$2\.50/,
+        name: /View AI cost runs behind core \/ implementation: total .* 8 samples, P50 \$0\.80, P95 \$2\.50/,
       }),
     ).toBeInTheDocument();
     expect(costLink).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
-      screen.getByRole("option", { name: "Gaggle · core" }),
+      JSON.stringify(["gaggle", "core"]),
     );
     expect(
       screen.getByRole("link", {
-        name: /View AI cost runs behind core: 8 samples, P50 \$0\.80, P95 \$2\.50/,
+        name: /View AI cost runs behind core: total .* 8 samples, P50 \$0\.80, P95 \$2\.50/,
       }),
     ).toBeInTheDocument();
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
-      screen.getByRole("option", { name: "Stage · core / implementation / implement" }),
+      JSON.stringify(["stage", "core", "implementation", "implement"]),
     );
     expect(
       screen.getByRole("link", {
-        name: /View AI cost runs behind core \/ implementation \/ implement: 4 samples, P50 \$1\.25, P95 \$2\.50/,
+        name: /View AI cost runs behind core \/ implementation \/ implement: total .* 4 samples, P50 \$1\.25, P95 \$2\.50/,
       }),
     ).toHaveAttribute("href", expect.stringContaining("population=cost-measured"));
 
     await user.selectOptions(
       screen.getByLabelText("Scope"),
-      screen.getByRole("option", { name: "Stage · tools / implementation / implement" }),
+      JSON.stringify(["stage", "tools", "implementation", "implement"]),
     );
 
     const unmeasuredCost = screen.getByRole("link", {
-      name: /View AI cost runs behind tools \/ implementation \/ implement: Unmeasured/,
+      name: /View AI cost runs behind tools \/ implementation \/ implement: total Unmeasured, Unmeasured, P50 Unmeasured, P95 Unmeasured/,
     });
     expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(3);
     expect(screen.getByText("No retry waste")).toBeInTheDocument();
@@ -340,7 +337,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Selected-scope cost" }),
+      await screen.findByRole("heading", { name: "Cost summary" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -361,14 +358,14 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Selected-scope cost" }),
+      await screen.findByRole("heading", { name: "Cost summary" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
         "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Instance spend" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Cost by gaggle" })).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Cost by pull request and issue" }),
     ).toBeInTheDocument();
@@ -497,9 +494,7 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "Instance spend" })).toBeInTheDocument();
-    expect(screen.getByText("Total AI cost · all gaggles")).toBeInTheDocument();
-    expect(screen.getByText("$10.00")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Cost by gaggle" })).toBeInTheDocument();
     const coreLink = screen.getByRole("link", {
       name: /View instance spend for gaggle core: 8 samples, P50 \$0\.80, P95 \$2\.50/,
     });
@@ -509,17 +504,16 @@ describe("Insight page", () => {
     });
     expect(toolsLink.compareDocumentPosition(coreLink) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
-    // Selecting a narrower scope must not change the instance-wide rollup —
-    // it always reports across all gaggles regardless of the Scope dropdown.
+    // The all-gaggle breakdown is subordinate to the instance scope and leaves
+    // the page when the operator narrows to one gaggle.
     await user.selectOptions(
       screen.getByLabelText("Scope"),
-      screen.getByRole("option", { name: "Gaggle · core" }),
+      JSON.stringify(["gaggle", "core"]),
     );
-    expect(screen.getByText("$10.00")).toBeInTheDocument();
-    expect(coreLink).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Cost by gaggle" })).not.toBeInTheDocument();
   });
 
-  it("flags spend against a configured soft budget threshold", async () => {
+  it("shows total cost without a browser-local soft budget", async () => {
     window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     vi.spyOn(client, "getTelemetryStats").mockResolvedValue({
@@ -557,21 +551,10 @@ describe("Insight page", () => {
         implementationDemand: 0,
       },
     });
-    const user = userEvent.setup();
     render(<App client={client} />);
 
-    expect(await screen.findByText("$10.00")).toBeInTheDocument();
-    const budgetInput = screen.getByLabelText("Soft budget (USD)");
-
-    await user.type(budgetInput, "5");
-    await user.tab();
-    expect(await screen.findByText(/over by \$5\.00/)).toBeInTheDocument();
-
-    await user.clear(budgetInput);
-    await user.type(budgetInput, "50");
-    await user.tab();
-    expect(await screen.findByText("20% of budget")).toBeInTheDocument();
-    expect(screen.queryByText(/over by/)).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Cost" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Soft budget (USD)")).not.toBeInTheDocument();
   });
 
   it("drills into every matching run error while keeping the selected filters", async () => {
@@ -582,9 +565,8 @@ describe("Insight page", () => {
 
     await user.selectOptions(
       await screen.findByLabelText("Scope"),
-      screen.getByRole("option", { name: "Stage · core / implementation / implement" }),
+      JSON.stringify(["stage", "core", "implementation", "implement"]),
     );
-    await user.click(screen.getByRole("button", { name: /Failure reasons/ }));
     await user.click(
       screen.getByRole("link", { name: "View 2 matching errors for harness.crash" }),
     );
@@ -628,9 +610,7 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await user.click(
-      await screen.findByRole("button", { name: /Failure reasons/ }),
-    );
+    await screen.findByRole("heading", { name: "Failure reasons" });
     await user.click(
       screen.getByRole("link", {
         name: "View 1 matching error for scheduler.storage",
@@ -773,15 +753,9 @@ describe("Insight page", () => {
     window.location.hash = "#/insight?section=failures";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByRole("button", { name: /Failure reasons/ })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
+    expect(await screen.findByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
     expect(screen.getByText("harness.crash")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Slowest stages/ })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
+    expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
   });
 
   it("keeps identity and time scope across Runs, Insight, and Cost primary pivots", async () => {

@@ -200,16 +200,30 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
         </div>
         <div>
           <dt>Skills</dt>
-          <dd>{goober.skills.length > 0 ? goober.skills.join(", ") : "None declared"}</dd>
+          <dd>
+            {goober.skills.length > 0 ? (
+              <ul className="goober-field-list">
+                {goober.skills.map((skill) => <li key={skill}>{skill}</li>)}
+              </ul>
+            ) : "None declared"}
+          </dd>
         </div>
         <div>
-          <dt>Workflow ownership</dt>
+          <dt>Workflow / stage ownership</dt>
           <dd>
-            {goober.workflows.length > 0 ? (
+            {goober.workflows.length > 0 || goober.stages.length > 0 ? (
               <ul className="goober-ownership-list">
                 {goober.workflows.map((workflow) => (
                   <li key={`${workflow.gaggle}/${workflow.name}`}>
                     {workflow.gaggle}/{workflow.name}
+                  </li>
+                ))}
+                {goober.stages.map((stage) => (
+                  <li
+                    className="goober-stage-ownership"
+                    key={`${stage.workflow.gaggle}/${stage.workflow.name}/${stage.stage}`}
+                  >
+                    {stage.workflow.gaggle}/{stage.workflow.name}/{stage.stage} ({stage.kind})
                   </li>
                 ))}
               </ul>
@@ -247,20 +261,13 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
               <div>
                 <dt>Capabilities</dt>
                 <dd>
-                  {goober.capabilities.length > 0 ? goober.capabilities.join(", ") : "None declared"}
-                </dd>
-              </div>
-              <div>
-                <dt>Stage ownership</dt>
-                <dd>
-                  {goober.stages.length > 0
-                    ? goober.stages
-                        .map(
-                          (stage) =>
-                            `${stage.workflow.gaggle}/${stage.workflow.name}/${stage.stage} (${stage.kind})`,
-                        )
-                        .join(", ")
-                    : "None declared"}
+                  {goober.capabilities.length > 0 ? (
+                    <ul className="goober-field-list">
+                      {goober.capabilities.map((capability) => (
+                        <li key={capability}>{capability}</li>
+                      ))}
+                    </ul>
+                  ) : "None declared"}
                 </dd>
               </div>
               <div>

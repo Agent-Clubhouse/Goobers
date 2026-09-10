@@ -13,6 +13,7 @@ beforeEach(() => {
 describe("overview page", () => {
   it("shows durable root identity and warns for a historical root", async () => {
     const fixtures = populatedDaemonFixtures();
+    fixtures.instance.computerName = "MDB5";
     fixtures.instance.rootIdentity = {
       id: "0123456789abcdef0123456789abcdef",
       decommissionedAt: "2026-09-08T08:00:00Z",
@@ -21,6 +22,7 @@ describe("overview page", () => {
     render(<App client={new FixtureDaemonClient(fixtures)} />);
     expect(await screen.findByText("0123456789abcdef0123456789abcdef")).toBeInTheDocument();
     expect(screen.getByText(fixtures.instance.instanceRoot)).toBeInTheDocument();
+    expect(screen.getByText("MDB5")).toBeInTheDocument();
     expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent("migrated to replacement");
   });
 
@@ -110,7 +112,9 @@ describe("overview page", () => {
     await user.click(screen.getByRole("button", {
       name: "Dismiss all runs in #4449 Repeated implementation failure",
     }));
-    expect(await screen.findByRole("heading", { name: "No runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
+    ).toBeInTheDocument();
   });
 
   it("selects, deselects, dismisses, and restores all visible attention runs", async () => {
@@ -130,7 +134,9 @@ describe("overview page", () => {
 
     await user.click(selectAll);
     await user.click(screen.getByRole("button", { name: "Dismiss 2 selected" }));
-    expect(await screen.findByRole("heading", { name: "No runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", {
       name: "Select all visible attention runs",
     })).not.toBeInTheDocument();
@@ -155,9 +161,9 @@ describe("overview page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Instance data is loading." }),
+      await screen.findByRole("status", { name: "Loading overview" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Inventory and run activity are still loading/)).toBeInTheDocument();
+    expect(screen.getByText(/Loading inventory and run activity/)).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();

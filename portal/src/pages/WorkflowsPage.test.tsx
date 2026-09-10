@@ -18,9 +18,7 @@ describe("workflows page", () => {
       await userEvent.click(screen.getByRole("button", { name: new RegExp(gaggle) }));
       const inventory = screen.getByRole("region", { name: `${gaggle} workflow definitions` });
       expect(
-        within(inventory).getByRole("link", {
-          name: `Open workflow Implementation for gaggle ${gaggle}`,
-        }),
+        within(inventory).getByRole("link", { name: "Details" }),
       ).toBeInTheDocument();
     }
   });
@@ -40,11 +38,13 @@ describe("workflows page", () => {
     render(<App client={client} />);
 
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
-    expect(screen.getByText(/Workflow inventory is loading/)).toBeInTheDocument();
+    expect(screen.getAllByRole("status").some((status) => status.textContent === "Loading")).toBe(
+      true,
+    );
     expect(screen.queryByText("Core product")).not.toBeInTheDocument();
 
     releaseInventory();
-    expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Core product/ })).toBeInTheDocument();
   });
 
   it("uses compact persona summaries and collapses large gaggle inventories", async () => {
@@ -89,7 +89,7 @@ describe("workflows page", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
     fireEvent.click(
-      (await screen.findAllByRole("button", { name: "Copy manual run command" }))[0],
+      (await screen.findAllByRole("button", { name: "Copy run command" }))[0],
     );
 
     await waitFor(() =>
@@ -114,7 +114,7 @@ describe("workflows page", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
     fireEvent.click(
-      (await screen.findAllByRole("button", { name: "Copy manual run command" }))[0],
+      (await screen.findAllByRole("button", { name: "Copy run command" }))[0],
     );
 
     await waitFor(() =>
@@ -125,7 +125,7 @@ describe("workflows page", () => {
       ).toBeInTheDocument(),
     );
     expect(
-      screen.getByRole("button", { name: "Retry copy manual run command" }),
+      screen.getByRole("button", { name: "Retry copy run command" }),
     ).toBeInTheDocument();
     expect(window.location.hash).toBe("#/workflows");
   });

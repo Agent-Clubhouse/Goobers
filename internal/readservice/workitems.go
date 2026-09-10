@@ -2,7 +2,6 @@ package readservice
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
@@ -13,7 +12,8 @@ const MaxWorkItemsPageSize = 200
 
 type workItemStore interface {
 	WorkItems(context.Context, rollup.WorkItemQuery) ([]rollup.WorkItem, bool, error)
-	WorkItemActions(context.Context, string, string, string) ([]rollup.WorkItemAction, bool, error)
+	WorkItemActions(context.Context, string, string, string, string) ([]rollup.WorkItemAction, bool, error)
+	RelatedPullRequests(context.Context, string, string, string) ([]rollup.RelatedWorkItem, error)
 }
 
 type WorkItemListOptions struct {
@@ -29,6 +29,7 @@ type WorkItemPage struct {
 
 type WorkItemSummary struct {
 	Provider      string    `json:"provider"`
+	Repository    string    `json:"repository,omitempty"`
 	Kind          string    `json:"kind"`
 	ExternalID    string    `json:"externalId"`
 	URL           string    `json:"url,omitempty"`
@@ -42,12 +43,33 @@ type WorkItemSummary struct {
 }
 
 type WorkItemDetail struct {
-	Provider   string           `json:"provider"`
-	Kind       string           `json:"kind"`
-	ExternalID string           `json:"externalId"`
-	URL        string           `json:"url,omitempty"`
-	Actions    []WorkItemAction `json:"actions"`
-	Truncated  bool             `json:"truncated"`
+	Provider            string            `json:"provider"`
+	Repository          string            `json:"repository,omitempty"`
+	Kind                string            `json:"kind"`
+	ExternalID          string            `json:"externalId"`
+	URL                 string            `json:"url,omitempty"`
+	Cost                *WorkItemCost     `json:"cost,omitempty"`
+	RelatedPullRequests []RelatedWorkItem `json:"relatedPullRequests"`
+	Actions             []WorkItemAction  `json:"actions"`
+	Truncated           bool              `json:"truncated"`
+}
+
+type WorkItemCost struct {
+	CostUSD          *float64 `json:"costUSD,omitempty"`
+	NanoAIU          *int64   `json:"nanoAIU,omitempty"`
+	TotalRuns        int      `json:"totalRuns"`
+	MeasuredRuns     int      `json:"measuredRuns"`
+	TotalAttempts    int      `json:"totalAttempts"`
+	MeasuredAttempts int      `json:"measuredAttempts"`
+	LowerBound       bool     `json:"lowerBound"`
+}
+
+type RelatedWorkItem struct {
+	Provider   string `json:"provider"`
+	Repository string `json:"repository,omitempty"`
+	Kind       string `json:"kind"`
+	ExternalID string `json:"externalId"`
+	URL        string `json:"url,omitempty"`
 }
 
 type WorkItemAction struct {
@@ -88,7 +110,7 @@ func (s *Telemetry) WorkItems(ctx context.Context, options WorkItemListOptions) 
 	result := WorkItemPage{Items: make([]WorkItemSummary, 0, len(items)), HasMore: hasMore}
 	for _, item := range items {
 		result.Items = append(result.Items, WorkItemSummary{
-			Provider: item.Provider, Kind: item.Kind, ExternalID: item.ExternalID,
+			Provider: item.Provider, Repository: item.Repository, Kind: item.Kind, ExternalID: item.ExternalID,
 			URL: item.URL, ActionCount: item.ActionCount, LastOperation: item.LastOperation,
 			LastActionAt: item.LastActionAt, LastRunID: item.LastRunID, Gaggle: item.Gaggle,
 			Workflow: item.Workflow, RunStatus: item.RunStatus,
@@ -100,29 +122,32 @@ func (s *Telemetry) WorkItems(ctx context.Context, options WorkItemListOptions) 
 func (s *Telemetry) WorkItem(
 	ctx context.Context,
 	provider string,
+	repository string,
 	kind string,
 	externalID string,
 ) (WorkItemDetail, error) {
 	provider = strings.TrimSpace(provider)
+	repository = strings.Trim(strings.TrimSpace(repository), "/")
 	kind = strings.TrimSpace(kind)
 	externalID = strings.TrimSpace(externalID)
-	if provider == "" || externalID == "" || (kind != "pr" && kind != "issue") {
+	if provider == "" || repository == "" || externalID == "" || (kind != "pr" && kind != "issue") {
 		return WorkItemDetail{}, ErrInvalidTelemetryRequest
 	}
 	store, ok := s.store.(workItemStore)
 	if !ok {
 		return WorkItemDetail{}, ErrTelemetryUnavailable
 	}
-	actions, truncated, err := store.WorkItemActions(ctx, provider, kind, externalID)
+	actions, truncated, err := store.WorkItemActions(ctx, provider, repository, kind, externalID)
 	if err != nil {
 		return WorkItemDetail{}, err
 	}
 	if len(actions) == 0 {
-		return WorkItemDetail{}, errors.New("work item not found")
+		return WorkItemDetail{}, ErrWorkItemNotFound
 	}
 	result := WorkItemDetail{
-		Provider: provider, Kind: kind, ExternalID: externalID,
+		Provider: provider, Repository: repository, Kind: kind, ExternalID: externalID,
 		URL: actions[0].URL, Actions: make([]WorkItemAction, 0, len(actions)), Truncated: truncated,
+		RelatedPullRequests: []RelatedWorkItem{},
 	}
 	for _, action := range actions {
 		if result.URL == "" && action.URL != "" {
@@ -134,6 +159,39 @@ func (s *Telemetry) WorkItem(
 			Gaggle: action.Gaggle, Workflow: action.Workflow, RunStatus: action.RunStatus,
 		})
 	}
+	costs, err := s.store.CostAggregates(ctx, rollup.CostQuery{
+		Provider: provider, ExternalKind: kind, ExternalID: externalID,
+	})
+	if err != nil {
+		return WorkItemDetail{}, err
+	}
+	var aggregates []rollup.CostAggregate
+	if kind == "pr" {
+		aggregates = costs.PullRequests
+	} else {
+		aggregates = costs.Issues
+	}
+	if len(aggregates) == 1 {
+		cost := aggregates[0]
+		result.Cost = &WorkItemCost{
+			CostUSD: cost.CostUSD, NanoAIU: cost.NanoAIU,
+			TotalRuns: cost.TotalRuns, MeasuredRuns: cost.MeasuredRuns,
+			TotalAttempts: cost.TotalAttempts, MeasuredAttempts: cost.MeasuredAttempts,
+			LowerBound: cost.MeasuredRuns < cost.TotalRuns || cost.MeasuredAttempts < cost.TotalAttempts,
+		}
+	}
+	if kind == "issue" {
+		related, err := store.RelatedPullRequests(ctx, provider, repository, externalID)
+		if err != nil {
+			return WorkItemDetail{}, err
+		}
+		for _, item := range related {
+			result.RelatedPullRequests = append(result.RelatedPullRequests, RelatedWorkItem{
+				Provider: item.Provider, Repository: item.Repository, Kind: item.Kind,
+				ExternalID: item.ExternalID, URL: item.URL,
+			})
+		}
+	}
 	return result, nil
 }
 
@@ -144,9 +202,9 @@ func (s *Local) WorkItems(ctx context.Context, options WorkItemListOptions) (Wor
 	return s.telemetry.WorkItems(ctx, options)
 }
 
-func (s *Local) WorkItem(ctx context.Context, provider, kind, externalID string) (WorkItemDetail, error) {
+func (s *Local) WorkItem(ctx context.Context, provider, repository, kind, externalID string) (WorkItemDetail, error) {
 	if s.telemetry == nil {
 		return WorkItemDetail{}, ErrTelemetryUnavailable
 	}
-	return s.telemetry.WorkItem(ctx, provider, kind, externalID)
+	return s.telemetry.WorkItem(ctx, provider, repository, kind, externalID)
 }

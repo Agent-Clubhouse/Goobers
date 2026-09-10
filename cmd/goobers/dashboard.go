@@ -87,6 +87,31 @@ func (r standaloneDashboardReader) Health(ctx context.Context) (readservice.Heal
 	}, nil
 }
 
+func (r standaloneDashboardReader) WorkItems(
+	ctx context.Context,
+	options readservice.WorkItemListOptions,
+) (readservice.WorkItemPage, error) {
+	reader, ok := r.Reader.(readservice.WorkItemReader)
+	if !ok {
+		return readservice.WorkItemPage{}, readservice.ErrTelemetryUnavailable
+	}
+	return reader.WorkItems(ctx, options)
+}
+
+func (r standaloneDashboardReader) WorkItem(
+	ctx context.Context,
+	provider string,
+	repository string,
+	kind string,
+	externalID string,
+) (readservice.WorkItemDetail, error) {
+	reader, ok := r.Reader.(readservice.WorkItemReader)
+	if !ok {
+		return readservice.WorkItemDetail{}, readservice.ErrTelemetryUnavailable
+	}
+	return reader.WorkItem(ctx, provider, repository, kind, externalID)
+}
+
 func runDashboard(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
 	defer stop()

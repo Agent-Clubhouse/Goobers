@@ -26,12 +26,15 @@ type fakeReader struct {
 	signatures   readservice.TelemetryErrorSignaturesResult
 	errors       readservice.TelemetryErrorsPage
 	outcomes     readservice.TelemetryImplementationOutcomesResult
+	workItems    readservice.WorkItemPage
+	workItem     readservice.WorkItemDetail
 	telemetryErr error
 	costReq      readservice.TelemetryCostRequest
 	statsReq     readservice.TelemetryStatsRequest
 	signatureReq readservice.TelemetryErrorSignaturesRequest
 	errorsReq    readservice.TelemetryErrorsRequest
 	outcomesReq  readservice.TelemetryImplementationOutcomesRequest
+	workItemsReq readservice.WorkItemListOptions
 	runs         readservice.RunList
 	run          readservice.RunDetail
 	events       readservice.EventList
@@ -100,6 +103,19 @@ func (f *fakeReader) TelemetryErrors(_ context.Context, req readservice.Telemetr
 func (f *fakeReader) TelemetryImplementationOutcomes(_ context.Context, req readservice.TelemetryImplementationOutcomesRequest) (readservice.TelemetryImplementationOutcomesResult, error) {
 	f.outcomesReq = req
 	return f.outcomes, f.telemetryErr
+}
+
+func (f *fakeReader) WorkItems(_ context.Context, req readservice.WorkItemListOptions) (readservice.WorkItemPage, error) {
+	f.workItemsReq = req
+	return f.workItems, f.telemetryErr
+}
+
+func (f *fakeReader) WorkItem(_ context.Context, provider, repository, kind, externalID string) (readservice.WorkItemDetail, error) {
+	f.workItem.Provider = provider
+	f.workItem.Repository = repository
+	f.workItem.Kind = kind
+	f.workItem.ExternalID = externalID
+	return f.workItem, f.telemetryErr
 }
 
 func (f *fakeReader) ListRuns(_ context.Context, options readservice.RunListOptions) (readservice.RunList, error) {

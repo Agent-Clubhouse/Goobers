@@ -3,7 +3,13 @@ import { publishAdmissionState, publishReadState } from "./liveData";
 import { HttpDaemonClient } from "./api/httpClient";
 import { bindUIActions } from "./api/surfaceActions";
 import type { DaemonClient, PortalConfig, ValidationWarning } from "./api/types";
-import { applyThemeOverrides, CobrandContext, defaultPortalConfig } from "./cobrand";
+import {
+  applyThemeOverrides,
+  CobrandContext,
+  defaultPortalConfig,
+  readCachedPortalConfig,
+  writeCachedPortalConfig,
+} from "./cobrand";
 import {
   type ConfigurationWarningClient,
   type ConfigurationWarningSource,
@@ -25,6 +31,7 @@ import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
+import { WorkItemsPage } from "./pages/WorkItemsPage";
 import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { scopeIdentity } from "./scope";
@@ -33,7 +40,6 @@ import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
 
 const portalDiagnostics = createPortalDiagnostics();
-const PORTAL_CONFIG_CACHE_KEY = "goobers-portal-config";
 const daemonClient = new HttpDaemonClient({
   diagnostics: portalDiagnostics,
   onAdmissionState: publishAdmissionState,
@@ -293,7 +299,15 @@ function Portal({
           />
         )}
         {route.page === "runs" && (
-          <RunsPage client={client} filters={route.filters} standalone={standalone} />
+          <RunsPage
+            client={client}
+            filters={route.filters}
+            navigate={navigate}
+            standalone={standalone}
+          />
+        )}
+        {route.page === "work-items" && (
+          <WorkItemsPage client={client} navigate={navigate} route={route} standalone={standalone} />
         )}
         {route.page === "insight" && (
           <InsightPage
@@ -345,38 +359,5 @@ function Portal({
         )}
       </PortalShell>
     </CobrandContext.Provider>
-  );
-}
-
-function readCachedPortalConfig(): PortalConfig | undefined {
-  try {
-    const raw = window.sessionStorage.getItem(PORTAL_CONFIG_CACHE_KEY);
-    if (!raw) {
-      return undefined;
-    }
-    const value = JSON.parse(raw) as unknown;
-    return isPortalConfig(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeCachedPortalConfig(config: PortalConfig): void {
-  try {
-    window.sessionStorage.setItem(PORTAL_CONFIG_CACHE_KEY, JSON.stringify(config));
-  } catch {
-    // The cache only avoids a cold-brand flash; storage failure is harmless.
-  }
-}
-
-function isPortalConfig(value: unknown): value is PortalConfig {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "brand" in value &&
-    typeof value.brand === "object" &&
-    value.brand !== null &&
-    "name" in value.brand &&
-    typeof value.brand.name === "string"
   );
 }

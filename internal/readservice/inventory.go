@@ -73,6 +73,7 @@ type Instance struct {
 	SchemaVersion string                  `json:"schemaVersion"`
 	Name          string                  `json:"name"`
 	Environment   apiv1.Environment       `json:"environment"`
+	ComputerName  string                  `json:"computerName,omitempty"`
 	InstanceRoot  string                  `json:"instanceRoot"`
 	RootIdentity  *RootIdentity           `json:"rootIdentity,omitempty"`
 	Ready         bool                    `json:"ready"`
@@ -400,11 +401,13 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if s.sources.RetentionStats != nil {
 		maintenance = maintenanceStatus(s.sources.RetentionStats())
 	}
+	computerName, _ := os.Hostname()
 	return Instance{
 		APIVersion:    APIVersion,
 		SchemaVersion: SchemaVersion,
 		Name:          inventory.definitions.Manifest.Spec.Instance.Name,
 		Environment:   inventory.definitions.Manifest.Spec.Instance.Environment,
+		ComputerName:  computerName,
 		InstanceRoot:  s.sources.Layout.Root,
 		RootIdentity:  inspectRootIdentity(s.sources.Layout.Root),
 		Ready:         ready,

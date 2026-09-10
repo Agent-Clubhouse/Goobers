@@ -61,11 +61,7 @@ function WorkflowInventory({
       <header className="page-heading">
         <div>
           <h1>Workflows</h1>
-          <p>
-            {standalone
-              ? "Versioned processes and their provisioned workforce, read from this instance."
-              : "Versioned processes and their provisioned workforce, read from the daemon."}
-          </p>
+          <p>Versioned processes and their provisioned workforce.</p>
         </div>
       </header>
 
@@ -153,6 +149,7 @@ function GaggleSection({
           role="group"
         >
           <a className="gaggle-detail-link" href={routeHash({ page: "gaggle", id: gaggle.name })}>
+            <Icon name="workflow" size={13} />
             Details
           </a>
           <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
@@ -162,14 +159,6 @@ function GaggleSection({
       {expanded && (
         <div className="workflow-gaggle-content" id={contentId}>
           <div className="content-section gaggle-content">
-            <div className="section-heading">
-              <h3>Workflow inventory</h3>
-              <span className="section-count">{inventory.workflows.length}</span>
-            </div>
-            <p className="inline-empty">
-              Copying a manual-run command prepares it for your terminal; it does not start a
-              workflow.
-            </p>
             {inventory.workflows.length === 0 ? (
               <div className="inline-empty inline-empty-recovery">
                 <strong>No workflows are configured for this gaggle.</strong>
@@ -197,6 +186,17 @@ function GaggleSection({
                       <span className="row-primary">
                         <span className="row-title">{workflow.displayName}</span>
                         <span className="row-subtitle">{workflow.purpose}</span>
+                        <CopyCommand
+                          compact
+                          command={manualRunCommand(
+                            workflow.identity.gaggle,
+                            workflow.identity.name,
+                            instanceRoot,
+                          )}
+                          failureLabel="Could not copy the manual run command. Select and copy the command from the workflow details."
+                          idleLabel="Copy run command"
+                          successLabel="Manual run command copied to the clipboard."
+                        />
                       </span>
                       <WorkflowTriggers workflow={workflow} />
                       <span>
@@ -245,17 +245,6 @@ function GaggleSection({
                             gaggle: workflow.identity.gaggle,
                             workflow: workflow.identity.name,
                           }}
-                        />
-                        <CopyCommand
-                          compact
-                          command={manualRunCommand(
-                            workflow.identity.gaggle,
-                            workflow.identity.name,
-                            instanceRoot,
-                          )}
-                          failureLabel="Could not copy the manual run command. Select and copy the command from the workflow details."
-                          idleLabel="Copy run command"
-                          successLabel="Manual run command copied to the clipboard."
                         />
                       </span>
                     </div>

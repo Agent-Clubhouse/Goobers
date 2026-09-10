@@ -128,6 +128,7 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 		result, err := workItems.WorkItem(
 			request.Context(),
 			request.PathValue("provider"),
+			request.URL.Query().Get("repository"),
 			request.PathValue("kind"),
 			request.PathValue("id"),
 		)
@@ -475,6 +476,8 @@ func writeTelemetryReadError(w http.ResponseWriter, errorLog *log.Logger, projec
 		writeError(w, http.StatusBadRequest, "invalid_query", "telemetry query is invalid")
 	case errors.Is(err, readservice.ErrTelemetryUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "telemetry_unavailable", "telemetry is not enabled")
+	case errors.Is(err, readservice.ErrWorkItemNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "work item was not found")
 	default:
 		errorLog.Printf("telemetry %s read failed: %v", projection, err)
 		writeError(w, http.StatusInternalServerError, "read_error", "telemetry could not be read")

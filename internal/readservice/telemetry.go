@@ -24,6 +24,8 @@ var (
 	ErrTelemetryUnavailable = errors.New("telemetry is unavailable")
 	// ErrInvalidTelemetryRequest identifies invalid filters or cursors.
 	ErrInvalidTelemetryRequest = errors.New("invalid telemetry request")
+	// ErrWorkItemNotFound means no confirmed provider mutation exists for an item.
+	ErrWorkItemNotFound = errors.New("work item not found")
 )
 
 // TelemetryReader is the shared telemetry read boundary used by HTTP and CLI.
@@ -37,7 +39,7 @@ type TelemetryReader interface {
 
 type WorkItemReader interface {
 	WorkItems(context.Context, WorkItemListOptions) (WorkItemPage, error)
-	WorkItem(context.Context, string, string, string) (WorkItemDetail, error)
+	WorkItem(context.Context, string, string, string, string) (WorkItemDetail, error)
 }
 
 // TelemetryImplementationOutcomesRequest selects the terminal implementation

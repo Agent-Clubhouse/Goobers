@@ -22,7 +22,8 @@ export type IconName =
   | "previous"
   | "run"
   | "sun"
-  | "workflow";
+  | "workflow"
+  | "work-item";
 
 export interface IconProps {
   name: IconName;
@@ -176,6 +177,14 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="M7 6h10" />
         <path d="m6.5 8 4.2 8" />
         <path d="m17.5 8-4.2 8" />
+      </>
+    ),
+    "work-item": (
+      <>
+        <rect height="16" rx="2" width="16" x="4" y="4" />
+        <path d="M8 9h8" />
+        <path d="M8 13h5" />
+        <path d="m14 17 2 2 4-4" />
       </>
     ),
   };

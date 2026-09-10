@@ -10,6 +10,7 @@ export type Route =
   | { page: "errors"; filters: ErrorRouteFilters }
   | { page: "insight"; filters?: InsightRouteFilters }
   | { page: "cost"; filters?: ScopeFilters }
+  | { page: "work-items"; kind?: "pr" | "issue"; provider?: string; repository?: string; id?: string }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
 
@@ -38,6 +39,7 @@ export type PrimaryArea =
   | "workflows"
   | "goobers"
   | "runs"
+  | "work-items"
   | "insight"
   | "cost";
 
@@ -58,6 +60,24 @@ export function parseRoute(hash = window.location.hash): Route {
   }
   if (area === "run" && id) {
     return { page: "run", id };
+  }
+  if (area === "work-items") {
+    const segments = path.split("/");
+    const detailKind = segments[4] === "pr" || segments[4] === "issue" ? segments[4] : undefined;
+    if (first && second && segments[3] && detailKind && segments[5]) {
+      return {
+        page: "work-items",
+        provider: decodeURIComponent(first),
+        repository: `${decodeURIComponent(second)}/${decodeURIComponent(segments[3])}`,
+        kind: detailKind,
+        id: decodeURIComponent(segments[5]),
+      };
+    }
+    const filterKind = optionalQuery(search, "kind");
+    return {
+      page: "work-items",
+      kind: filterKind === "pr" || filterKind === "issue" ? filterKind : undefined,
+    };
   }
   if (area === "workflows") {
     return { page: "workflows" };
@@ -111,6 +131,17 @@ export function routeHash(route: Route): string {
   }
   if (route.page === "run") {
     return `#/run/${encodeURIComponent(route.id)}`;
+  }
+  if (route.page === "work-items") {
+    if (route.provider && route.repository && route.kind && route.id) {
+      const [owner, name] = route.repository.split("/", 2);
+      if (owner && name) {
+        return `#/work-items/${encodeURIComponent(route.provider)}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${route.kind}/${encodeURIComponent(route.id)}`;
+      }
+    }
+    const search = new URLSearchParams();
+    writeQuery(search, "kind", route.kind);
+    return `#/work-items${search.size > 0 ? `?${search.toString()}` : ""}`;
   }
   if (route.page === "goobers" && route.gaggle) {
     const search = new URLSearchParams({ gaggle: route.gaggle });

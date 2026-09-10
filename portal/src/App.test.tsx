@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { FixtureDaemonClient } from "./api/fixtureClient";
 import { defaultPortalConfig } from "./cobrand";
+import { bootstrapPortalTheme } from "./cobrand";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
@@ -25,6 +26,7 @@ beforeEach(() => {
     } satisfies Storage,
   });
   delete document.documentElement.dataset.theme;
+  document.getElementById("cobrand-theme")?.remove();
   document.querySelector('meta[name="goobers-dashboard-mode"]')?.remove();
 });
 
@@ -69,7 +71,25 @@ describe("portal foundation", () => {
     expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
   });
 
-  it("labels standalone read-only mode in the portal chrome", async () => {
+  it("applies cached cobrand colors before React renders", () => {
+    window.sessionStorage.setItem(
+      "goobers-portal-config",
+      JSON.stringify({
+        ...defaultPortalConfig,
+        theme: {
+          ...defaultPortalConfig.theme,
+          accentLight: "#123456",
+        },
+      }),
+    );
+
+    bootstrapPortalTheme();
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(document.getElementById("cobrand-theme")).toHaveTextContent("--accent: #123456");
+  });
+
+  it("uses local-instance copy in standalone mode", async () => {
     const mode = document.createElement("meta");
     mode.name = "goobers-dashboard-mode";
     mode.content = "standalone";
@@ -78,10 +98,8 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
-    expect(await screen.findByText("Standalone read-only")).toBeInTheDocument();
-    expect(screen.getByText("Daemon not running; reading this instance locally")).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "Instance is ready." }),
+      await screen.findByRole("heading", { name: "Instance is ready — Healthy." }),
     ).toBeInTheDocument();
     expect(screen.getByText("Local instance loaded")).toBeInTheDocument();
     await waitFor(() =>

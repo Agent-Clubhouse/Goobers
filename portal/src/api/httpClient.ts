@@ -48,6 +48,10 @@ import type {
   WorkflowDetail,
   QueueEligibilityView,
   WorkflowPage,
+  WorkItemDetail,
+  WorkItemKind,
+  WorkItemListOptions,
+  WorkItemPage,
   ReadState,
 } from "./types";
 
@@ -77,6 +81,8 @@ const clientRoutes = {
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
+  workItems: apiRoutes.workItems,
+  workItemDetail: apiRoutes.workItemDetail,
   // The telemetry read plane's curation evidence (decision 005 R4 / finding
   // 002 C3). A stage pod's `backlog-health --feedback` is the only consumer;
   // the portal has no surface for it yet, but the exhaustiveness check
@@ -567,6 +573,36 @@ export class HttpDaemonClient implements DaemonClient {
         cursor: request.cursor,
       },
       options,
+    );
+  }
+
+  listWorkItems(
+    request?: WorkItemListOptions,
+    options?: RequestOptions,
+  ): Promise<WorkItemPage> {
+    return this.getJSON(
+      clientRoutes.workItems,
+      request && {
+        provider: request.provider,
+        kind: request.kind,
+        limit: request.limit,
+      },
+      options,
+    );
+  }
+
+  getWorkItem(
+    provider: string,
+    repository: string,
+    kind: WorkItemKind,
+    externalId: string,
+    options?: RequestOptions,
+  ): Promise<WorkItemDetail> {
+    return this.getJSON(
+      clientRoutes.workItemDetail,
+      { repository },
+      options,
+      { provider, kind, id: externalId },
     );
   }
 
