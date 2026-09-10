@@ -37,7 +37,7 @@ var authorFacingSchemaRoots = map[string]bool{
 // undocumented path without expanding this issue into unrelated contract prose.
 var legacyUndocumentedSchemas = map[string]legacyUndocumented{
 	"agent-toolkit-manifest.schema.json": {30, "5e796d83e2044f720341082f13f69e2f241b23cc87d9ddc7365926948f4bc70f"},
-	"candidate-findings-v1.schema.json":  {9, "600935ca4f0646452c0d0970b304422d92b404ad6acb2304a81eaf98d89e1c39"},
+	"candidate-findings-v1.schema.json":  {0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
 	"diagnostics.schema.json":            {15, "a3f0cbff08fe67441b672c651d5a5d46f62ddeff43288288021a7ee9d6445362"},
 	"features.schema.json":               {9, "5a63e854710cf8efb3add20719ff1900bd99cf314d05e6abc17fa6fb0552a391"},
 	"journal-event.schema.json":          {11, "9db2f2e2a6a2686ddd5a06a4e3e3f32b538a4af4afac21b57d988eefeae10511"},
