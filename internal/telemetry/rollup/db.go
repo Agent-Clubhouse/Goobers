@@ -157,8 +157,12 @@ func OpenExistingReader(ctx context.Context, path string) (*DB, error) {
 	if uri == "" {
 		return nil, errors.New("rollup: existing database path is required")
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		return nil, fmt.Errorf("rollup: open existing %s: %w", path, err)
+	}
+	if info.Size() == 0 {
+		return nil, fmt.Errorf("rollup: open existing %s: %w", path, os.ErrNotExist)
 	}
 	sqlDB, err := sql.Open("sqlite", uri+existingReaderDSNParams)
 	if err != nil {

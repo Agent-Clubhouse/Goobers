@@ -573,14 +573,14 @@ func (s *Local) workflowsUnannotated(ctx context.Context, gaggle string, request
 	if err != nil {
 		return WorkflowPage{}, err
 	}
-	refill := map[localscheduler.WorkflowIdentity]RefillOccupancyStatus{}
-	var fallbacks map[localscheduler.WorkflowIdentity]readmodel.EngineFallback
-	if projected := s.projectedWorkflowSchedulerState(); projected != nil {
-		refill = refillOccupancyByWorkflow(
-			workflowRefillOccupancy(inventory.definitions.Workflows, active, projected.refillBlocked),
-		)
-		fallbacks = projected.engineFallbacks
+	projected, err := s.workflowSchedulerSnapshot(ctx)
+	if err != nil {
+		return WorkflowPage{}, err
 	}
+	refill := refillOccupancyByWorkflow(
+		workflowRefillOccupancy(inventory.definitions.Workflows, active, projected.refillBlocked),
+	)
+	fallbacks := projected.engineFallbacks
 	items := make([]WorkflowSummary, 0)
 	for i := range inventory.definitions.Workflows {
 		def := &inventory.definitions.Workflows[i]
@@ -665,14 +665,14 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 	if err != nil {
 		return WorkflowDetail{}, err
 	}
-	refill := map[localscheduler.WorkflowIdentity]RefillOccupancyStatus{}
-	var fallbacks map[localscheduler.WorkflowIdentity]readmodel.EngineFallback
-	if projected := s.projectedWorkflowSchedulerState(); projected != nil {
-		refill = refillOccupancyByWorkflow(
-			workflowRefillOccupancy(inventory.definitions.Workflows, active, projected.refillBlocked),
-		)
-		fallbacks = projected.engineFallbacks
+	projected, err := s.workflowSchedulerSnapshot(ctx)
+	if err != nil {
+		return WorkflowDetail{}, err
 	}
+	refill := refillOccupancyByWorkflow(
+		workflowRefillOccupancy(inventory.definitions.Workflows, active, projected.refillBlocked),
+	)
+	fallbacks := projected.engineFallbacks
 	detail := WorkflowDetail{
 		WorkflowSummary: s.workflowSummary(
 			inventory,

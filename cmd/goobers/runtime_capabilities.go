@@ -476,7 +476,7 @@ func init() {
 			withSynopsis(synopsisByID["cost"]).
 			withHelp("show bounded cost attribution by pull request or issue", costHelp).
 			withExamples("goobers cost", "goobers cost --pr 4398 --json", "goobers cost --issue 4398 --window 30d"),
-		coreCommand("work-items", apicontract.ActionReadOnlyNavigation, runWorkItems).
+		command("work-items", apicontract.ActionReadOnlyNavigation, runWorkItems).
 			withSynopsis(synopsisByID["work-items"]).
 			withHelp("list pull requests and issues changed by Goobers", workItemsHelp).
 			withExamples("goobers work-items", "goobers work-items --kind=pr --json", "goobers work-items --provider=github --kind=pr --id=4398"),

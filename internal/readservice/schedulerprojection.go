@@ -113,3 +113,21 @@ func (p *schedulerStateProjector) stopAndWait() error {
 func (s *Local) projectedWorkflowSchedulerState() *workflowSchedulerProjection {
 	return s.workflowSchedulerState.Load()
 }
+
+func (s *Local) workflowSchedulerSnapshot(ctx context.Context) (*workflowSchedulerProjection, error) {
+	if projected := s.projectedWorkflowSchedulerState(); projected != nil {
+		return projected, nil
+	}
+	state, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
+	if err != nil {
+		return nil, err
+	}
+	fallbacks := make(map[localscheduler.WorkflowIdentity]readmodel.EngineFallback, len(state.engineFallbacks.items))
+	for key, fallback := range state.engineFallbacks.items {
+		fallbacks[key] = fallback
+	}
+	return &workflowSchedulerProjection{
+		engineFallbacks: fallbacks,
+		refillBlocked:   maps.Clone(state.refillBlocked),
+	}, nil
+}
