@@ -244,6 +244,197 @@ func TestIRProvenanceAndSemanticDiff(t *testing.T) {
 	}
 }
 
+func TestSemanticDiffBehavioralFields(t *testing.T) {
+	baseDef := workflow.Definition{
+		Name: "complex-wf", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "task-a",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Requires: &apiv1.WorkflowRequirements{Capabilities: []string{"issues:write"}},
+			Tasks: []apiv1.Task{
+				{Name: "task-a", Type: apiv1.TaskDeterministic, Goal: "task a", Next: "gate-a", Inputs: map[string]string{"k": "v"}, TimeoutSeconds: 60},
+				{Name: "task-b", Type: apiv1.TaskAgentic, Goal: "task b", Goober: "ops", Next: workflow.TargetJoin},
+				{Name: "task-c", Type: apiv1.TaskAgentic, Goal: "task c", Goober: "ops", Next: workflow.TargetJoin},
+				{Name: "task-d", Type: apiv1.TaskDeterministic, Goal: "task d", Next: ""},
+			},
+			Gates: []apiv1.Gate{{
+				Name: "gate-a", Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "check-ready"},
+				Branches:  map[string]string{"ok": "par-a", "fail": "task-d"},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "par-a", FailurePolicy: apiv1.BranchContinueOnError, Join: "task-d",
+				Branches: []apiv1.Branch{{Name: "b1", Start: "task-b"}, {Name: "b2", Start: "task-c"}},
+			}},
+		},
+	}
+	baseDoc, err := Normalize(baseDef)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(d *Document)
+		path   string
+	}{
+		{
+			name: "triggers changed",
+			mutate: func(d *Document) {
+				d.Triggers = append(d.Triggers, apiv1.Trigger{Type: apiv1.TriggerSchedule, Schedule: "0 * * * *"})
+			},
+			path: "triggers",
+		},
+		{
+			name: "permissions changed",
+			mutate: func(d *Document) {
+				d.Permissions = append(d.Permissions, "repo:push")
+			},
+			path: "permissions",
+		},
+		{
+			name: "schemas changed",
+			mutate: func(d *Document) {
+				d.Schemas = append(d.Schemas, Schema{Name: "custom", Fields: map[string]string{"extra": "string"}})
+			},
+			path: "schemas",
+		},
+		{
+			name: "task goal changed",
+			mutate: func(d *Document) {
+				for i := range d.Nodes {
+					if d.Nodes[i].Name == "task-a" && d.Nodes[i].Task != nil {
+						task := *d.Nodes[i].Task
+						task.Goal = "updated task a goal"
+						d.Nodes[i].Task = &task
+					}
+				}
+			},
+			path: "nodes[task-a].task",
+		},
+		{
+			name: "task timeout changed",
+			mutate: func(d *Document) {
+				for i := range d.Nodes {
+					if d.Nodes[i].Name == "task-a" {
+						d.Nodes[i].Timeout = 300
+					}
+				}
+			},
+			path: "nodes[task-a].timeout",
+		},
+		{
+			name: "task retry changed",
+			mutate: func(d *Document) {
+				for i := range d.Nodes {
+					if d.Nodes[i].Name == "task-a" {
+						d.Nodes[i].Retry = &apiv1.RetryPolicy{MaxAttempts: 5}
+					}
+				}
+			},
+			path: "nodes[task-a].retry",
+		},
+		{
+			name: "task inputs changed",
+			mutate: func(d *Document) {
+				for i := range d.Nodes {
+					if d.Nodes[i].Name == "task-a" {
+						d.Nodes[i].Inputs = append(d.Nodes[i].Inputs, Port{Name: "new_input", Type: "string"})
+					}
+				}
+			},
+			path: "nodes[task-a].inputs",
+		},
+		{
+			name: "gate evaluator check changed",
+			mutate: func(d *Document) {
+				for i := range d.Nodes {
+					if d.Nodes[i].Name == "gate-a" && d.Nodes[i].Gate != nil {
+						gate := *d.Nodes[i].Gate
+						gate.Automated = &apiv1.AutomatedGate{Check: "different-check"}
+						d.Nodes[i].Gate = &gate
+					}
+				}
+			},
+			path: "nodes[gate-a].gate",
+		},
+		{
+			name: "parallel failure policy changed",
+			mutate: func(d *Document) {
+				for i := range d.Nodes {
+					if d.Nodes[i].Name == "par-a" && d.Nodes[i].Parallel != nil {
+						par := *d.Nodes[i].Parallel
+						par.FailurePolicy = apiv1.BranchFailFast
+						par.OnFailure = "task-d"
+						d.Nodes[i].Parallel = &par
+					}
+				}
+			},
+			path: "nodes[par-a].parallel",
+		},
+		{
+			name: "parallelism limits changed",
+			mutate: func(d *Document) {
+				for i := range d.Nodes {
+					if d.Nodes[i].Name == "par-a" {
+						d.Nodes[i].Parallelism = &Parallelism{Branches: 2, MaxConcurrent: 1, BranchTimeoutSecs: 120}
+					}
+				}
+			},
+			path: "nodes[par-a].parallelism",
+		},
+		{
+			name: "edge removed",
+			mutate: func(d *Document) {
+				d.Edges = d.Edges[:len(d.Edges)-1]
+			},
+			path: "edges",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := baseDoc
+			// Ensure clone of nodes slice so mutations don't alias
+			mutated.Nodes = make([]Node, len(baseDoc.Nodes))
+			copy(mutated.Nodes, baseDoc.Nodes)
+			mutated.Edges = make([]Edge, len(baseDoc.Edges))
+			copy(mutated.Edges, baseDoc.Edges)
+			mutated.Triggers = make([]apiv1.Trigger, len(baseDoc.Triggers))
+			copy(mutated.Triggers, baseDoc.Triggers)
+			mutated.Permissions = make([]string, len(baseDoc.Permissions))
+			copy(mutated.Permissions, baseDoc.Permissions)
+			mutated.Schemas = make([]Schema, len(baseDoc.Schemas))
+			copy(mutated.Schemas, baseDoc.Schemas)
+
+			tc.mutate(&mutated)
+
+			// Both have identical Source.Digest to verify diff works independently of digest
+			if mutated.Source.Digest != baseDoc.Source.Digest {
+				t.Fatalf("test setup corrupted Source.Digest: %s != %s", mutated.Source.Digest, baseDoc.Source.Digest)
+			}
+
+			diff, err := SemanticDiff(baseDoc, mutated)
+			if err != nil {
+				t.Fatalf("SemanticDiff failed: %v", err)
+			}
+			if diff.Kind != DiffBehavioral {
+				t.Fatalf("diff.Kind = %q, want %q for %s", diff.Kind, DiffBehavioral, tc.name)
+			}
+			found := false
+			for _, ch := range diff.Changes {
+				if strings.HasPrefix(ch.Path, tc.path) && ch.Kind == DiffBehavioral {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected behavioral change at path %q in changes: %#v", tc.path, diff.Changes)
+			}
+		})
+	}
+}
+
 func TestNormalizeReturnsImmutableSnapshot(t *testing.T) {
 	def := workflow.Definition{
 		Name: "snapshot", Version: 1,
