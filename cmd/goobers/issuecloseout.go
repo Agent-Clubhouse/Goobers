@@ -556,13 +556,17 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// back to goobers:ready (most visibly on a needs-remediation park). This
 	// run holds the authoritative ledger lease being released below, which is
 	// exactly LedgerAuthorized's precondition.
-	if _, err := provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-		Repository:       backlogRepo,
-		ID:               claim.ItemID,
-		RunID:            runID,
-		LedgerAuthorized: true,
-	}); err != nil {
-		pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
+	// The comment-epoch rule above is local-only. Shared release below
+	// reconciles the label from remote ownership after its CAS transition.
+	if claim.SharedDeadline.IsZero() {
+		if _, err := provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+			Repository:       backlogRepo,
+			ID:               claim.ItemID,
+			RunID:            runID,
+			LedgerAuthorized: true,
+		}); err != nil {
+			pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
+		}
 	}
 
 	// Release the lease now rather than waiting for it to expire — the run

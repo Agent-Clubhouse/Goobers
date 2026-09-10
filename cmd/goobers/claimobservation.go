@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -53,13 +54,21 @@ func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, it
 		return providers.ClaimResult{}, listErr
 	}
 	key := session.claimKey(item)
+	found := false
 	for _, entry := range entries {
-		if claimsclient.KeyForEntry(entry) == key && !entry.SharedDeadline.IsZero() {
+		if claimsclient.KeyForEntry(entry) != key {
+			continue
+		}
+		found = true
+		if !entry.SharedDeadline.IsZero() {
 			labels := providers.GitHubSharedClaimVisibility{Provider: session.env.ghIssueProvider, Repository: session.env.backlogRepo}
 			result, err := confirmSharedClaimVisibility(ctx, entry, stageSharedClaimResolver(session.env.layout), labels, session.env.stderr)
 			recordProviderClaimObservation(ctx, session.ledger, entry, session.env.backlogRepo, result, err, session.env.stderr)
 			return result, err
 		}
+	}
+	if !found {
+		return providers.ClaimResult{}, fmt.Errorf("claim confirmation requires an owned lease for item %s", item.ID)
 	}
 	result, err := session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
 		Repository: session.env.backlogRepo, ID: item.ID, RunID: session.runID,

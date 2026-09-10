@@ -13,6 +13,21 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// A missing or unreadable lease is not authority to end a legacy comment
+// epoch. Shared leases use their transition reconciler, never that election.
+func legacyClaimMarkerAllowed(ctx context.Context, ledger claimsclient.Ledger, key claimsclient.Key, runID string) (bool, error) {
+	entries, err := ledger.ForRunAll(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if claimsclient.KeyForEntry(entry) == key {
+			return entry.SharedDeadline.IsZero() && entry.SharedOwner == (sharedclaim.Owner{}), nil
+		}
+	}
+	return false, nil
+}
+
 func (r pinnedSharedClaimResolver) visibilityTransition(repo providers.RepositoryRef, store sharedclaim.Store, key string) func(context.Context) {
 	// Auxiliary PR, merge-lock, and decomposition reservations have no issue
 	// label. Never turn a synthetic key into a numeric issue by trimming it.

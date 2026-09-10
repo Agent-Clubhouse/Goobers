@@ -1341,7 +1341,7 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 	if err != nil {
 		return false, fmt.Errorf("read claim namespace: %w", err)
 	}
-	if current, held := listing.Lookup(session.claimKey(item)); held && current.RunID == holder {
+	if current, held := listing.Lookup(session.claimKey(item)); held && (current.RunID == holder || !current.SharedDeadline.IsZero()) {
 		return false, nil
 	}
 	surrendered := false
@@ -1379,11 +1379,18 @@ func (session *backlogClaimSession) forgetNewClaim(itemID string) {
 }
 
 func (session *backlogClaimSession) rollback(ctx context.Context, item providers.WorkItem) error {
-	_, providerErr := session.env.issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-		Repository: session.env.backlogRepo,
-		ID:         item.ID,
-		RunID:      session.runID,
-	})
+	legacy, err := legacyClaimMarkerAllowed(ctx, session.ledger, session.claimKey(item), session.runID)
+	if err != nil {
+		return err
+	}
+	var providerErr error
+	if legacy {
+		_, providerErr = session.env.issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+			Repository: session.env.backlogRepo,
+			ID:         item.ID,
+			RunID:      session.runID,
+		})
+	}
 	ledgerErr := session.releaseLedger(ctx, item)
 	return errors.Join(providerErr, ledgerErr)
 }
@@ -2801,6 +2808,24 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		if lerr != nil {
 			return fmt.Errorf("read this run's claims: %w", lerr)
 		}
+		if len(entries) == 0 {
+			return nil
+		}
+		// Shared release needs only coordination credentials. Do it before
+		// constructing the legacy issue writer; missing label credentials must
+		// not retain a successfully released shared lease.
+		var localEntries []claimsclient.Entry
+		for _, entry := range entries {
+			if entry.SharedDeadline.IsZero() {
+				localEntries = append(localEntries, entry)
+				continue
+			}
+			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); err != nil {
+				return fmt.Errorf("release shared claim %s: %w", entry.ItemID, err)
+			}
+			released = append(released, entry.ItemID)
+		}
+		entries = localEntries
 		if len(entries) == 0 {
 			return nil
 		}
