@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/learning"
@@ -29,15 +30,16 @@ import (
 const candidateFindingsSchemaVersion = "goobers.dev/candidate-findings/v1"
 
 type candidateFindingsArtifact struct {
-	Schema              string                        `json:"schema"`
-	Window              string                        `json:"window"`
-	Since               time.Time                     `json:"since"`
-	Findings            []rollup.Finding              `json:"findings"`
-	CausalCredit        []readmodel.CausalNodeCredit  `json:"causalCredit,omitempty"`
-	PromotionSignals    []readservice.PromotionSignal `json:"promotionSignals,omitempty"`
-	PromotionCandidates []readservice.PromotionSignal `json:"promotionCandidates"`
-	NoWork              bool                          `json:"noWork,omitempty"`
-	Note                string                        `json:"note,omitempty"`
+	Schema              string                          `json:"schema"`
+	Window              string                          `json:"window"`
+	Since               time.Time                       `json:"since"`
+	Findings            []rollup.Finding                `json:"findings"`
+	CausalCredit        []readmodel.CausalNodeCredit    `json:"causalCredit,omitempty"`
+	AttributionCohorts  []creditgraph.CohortAggregation `json:"attributionCohorts,omitempty"`
+	PromotionSignals    []readservice.PromotionSignal   `json:"promotionSignals,omitempty"`
+	PromotionCandidates []readservice.PromotionSignal   `json:"promotionCandidates"`
+	NoWork              bool                            `json:"noWork,omitempty"`
+	Note                string                          `json:"note,omitempty"`
 }
 
 const (
