@@ -47,14 +47,23 @@ func recordProviderClaimObservation(ctx context.Context, ledger claimsclient.Led
 // does not change the existing claim arbitration or rollback result.
 func (session *backlogClaimSession) confirmProviderClaim(ctx context.Context, item providers.WorkItem) (providers.ClaimResult, error) {
 	entries, listErr := session.ledger.ForRunAll(ctx, session.runID)
+	if listErr != nil {
+		// Without the ledger snapshot we cannot distinguish a shared lease
+		// from a legacy mirror. Never fall through to comment arbitration.
+		return providers.ClaimResult{}, listErr
+	}
+	key := session.claimKey(item)
+	for _, entry := range entries {
+		if claimsclient.KeyForEntry(entry) == key && !entry.SharedDeadline.IsZero() {
+			labels := providers.GitHubSharedClaimVisibility{Provider: session.env.ghIssueProvider, Repository: session.env.backlogRepo}
+			result, err := confirmSharedClaimVisibility(ctx, entry, stageSharedClaimResolver(session.env.layout), labels, session.env.stderr)
+			recordProviderClaimObservation(ctx, session.ledger, entry, session.env.backlogRepo, result, err, session.env.stderr)
+			return result, err
+		}
+	}
 	result, err := session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
 		Repository: session.env.backlogRepo, ID: item.ID, RunID: session.runID,
 	})
-	if listErr != nil {
-		pf(session.env.stderr, "warning: could not read lease for claim verification on item %s: %v\n", item.ID, listErr)
-		return result, err
-	}
-	key := session.claimKey(item)
 	for _, entry := range entries {
 		if claimsclient.KeyForEntry(entry) == key {
 			recordProviderClaimObservation(ctx, session.ledger, entry, session.env.backlogRepo, result, err, session.env.stderr)
