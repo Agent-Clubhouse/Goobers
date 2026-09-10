@@ -101,6 +101,21 @@ func TestDescriptionCoverage(t *testing.T) {
 	fmt.Print(report.String())
 }
 
+func TestCandidateFindingsDescriptionCoverageIsComplete(t *testing.T) {
+	data, err := FS.ReadFile(CandidateFindings)
+	if err != nil {
+		t.Fatalf("read %s: %v", CandidateFindings, err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("decode %s: %v", CandidateFindings, err)
+	}
+	coverage := measureDescriptionCoverage(schema)
+	if len(coverage.undocumented) != 0 {
+		t.Fatalf("%s has undocumented fields:\n%s", CandidateFindings, strings.Join(coverage.undocumented, "\n"))
+	}
+}
+
 func TestDescriptionCoverageIncludesConditionalOnlyFields(t *testing.T) {
 	for _, keyword := range []string{"if", "then", "else", "not"} {
 		t.Run(keyword, func(t *testing.T) {
