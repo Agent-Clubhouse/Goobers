@@ -34,6 +34,74 @@ type Document struct {
 	Nodes         []Node          `json:"nodes"`
 	Edges         []Edge          `json:"edges"`
 	Permissions   []string        `json:"permissions,omitempty"`
+	Provenance    *Provenance     `json:"provenance,omitempty"`
+}
+
+// Provenance records who or what created a workflow IR document, what source
+// material it came from, and how validation concluded.
+type Provenance struct {
+	Generator   string `json:"generator,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Tool        string `json:"tool,omitempty"`
+	Version     string `json:"version,omitempty"`
+	UserIntent  string `json:"userIntent,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
+	Validation  string `json:"validation,omitempty"`
+	ValidatedBy string `json:"validatedBy,omitempty"`
+	Decision    string `json:"decision,omitempty"`
+}
+
+// GenerationProvenance is the persisted, source-aware record of how a workflow
+// IR document was created and validated.
+type GenerationProvenance = Provenance
+
+// DiffKind classifies a semantic comparison between two IR documents.
+type DiffKind string
+
+const (
+	DiffNoChange   DiffKind = "no-change"
+	DiffCosmetic   DiffKind = "cosmetic"
+	DiffBehavioral DiffKind = "behavioral"
+)
+
+// Change captures the smallest material difference in a semantic diff.
+type Change struct {
+	Path        string   `json:"path"`
+	Before      string   `json:"before,omitempty"`
+	After       string   `json:"after,omitempty"`
+	Kind        DiffKind `json:"kind"`
+	Explanation string   `json:"explanation,omitempty"`
+}
+
+// Diff summarizes whether a pair of IR documents remains equivalent or changed in
+// behavior.
+type Diff struct {
+	Kind    DiffKind `json:"kind"`
+	Summary string   `json:"summary,omitempty"`
+	Changes []Change `json:"changes,omitempty"`
+}
+
+// Inspection summarizes a normalized IR document for authoring and tooling
+// clients without re-reading the source definition.
+type Inspection struct {
+	Start           string   `json:"start"`
+	TriggerTypes    []string `json:"triggerTypes,omitempty"`
+	Nodes           []string `json:"nodes,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
+	NodeCount       int      `json:"nodeCount"`
+	EdgeCount       int      `json:"edgeCount"`
+	PermissionCount int      `json:"permissionCount"`
+	SourceDigest    string   `json:"sourceDigest,omitempty"`
+}
+
+// Loss records where a round-trip from source->IR->source cannot retain an exact
+// source-level representation.
+type Loss struct {
+	Field       string `json:"field,omitempty"`
+	Before      string `json:"before,omitempty"`
+	After       string `json:"after,omitempty"`
+	Explanation string `json:"explanation"`
 }
 
 // Compiler identifies the implementation and contract version that produced a document.
@@ -198,6 +266,196 @@ func (d Document) Digest() (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// Capabilities returns the effective permission set declared by the normalized
+// document, ordered canonically for authoring and policy checks.
+func (d Document) Capabilities() []string {
+	seen := make(map[string]struct{}, len(d.Permissions))
+	out := make([]string, 0, len(d.Permissions))
+	for _, cap := range d.Permissions {
+		if cap == "" {
+			continue
+		}
+		if _, ok := seen[cap]; ok {
+			continue
+		}
+		seen[cap] = struct{}{}
+		out = append(out, cap)
+	}
+	for _, node := range d.Nodes {
+		if node.Task == nil {
+			continue
+		}
+		for _, cap := range node.Task.Capabilities {
+			if cap == "" {
+				continue
+			}
+			if _, ok := seen[cap]; ok {
+				continue
+			}
+			seen[cap] = struct{}{}
+			out = append(out, cap)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Inspect returns a compact, deterministic summary of the normalized IR graph.
+func (d Document) Inspect() Inspection {
+	triggerTypes := make([]string, 0, len(d.Triggers))
+	seenTriggers := make(map[string]struct{}, len(d.Triggers))
+	for _, trigger := range d.Triggers {
+		if _, ok := seenTriggers[string(trigger.Type)]; ok {
+			continue
+		}
+		seenTriggers[string(trigger.Type)] = struct{}{}
+		triggerTypes = append(triggerTypes, string(trigger.Type))
+	}
+	sort.Strings(triggerTypes)
+	nodes := make([]string, 0, len(d.Nodes))
+	for _, node := range d.Nodes {
+		nodes = append(nodes, node.Name)
+	}
+	sort.Strings(nodes)
+	caps := d.Capabilities()
+	return Inspection{
+		Start:           d.Start,
+		TriggerTypes:    triggerTypes,
+		Nodes:           nodes,
+		Capabilities:    caps,
+		NodeCount:       len(d.Nodes),
+		EdgeCount:       len(d.Edges),
+		PermissionCount: len(caps),
+		SourceDigest:    d.Source.Digest,
+	}
+}
+
+// SemanticDiff compares two IR documents and classifies whether any difference
+// is merely cosmetic or changes workflow behavior.
+func SemanticDiff(before, after Document) (Diff, error) {
+	if err := Validate(before); err != nil {
+		return Diff{}, fmt.Errorf("validate before document: %w", err)
+	}
+	if err := Validate(after); err != nil {
+		return Diff{}, fmt.Errorf("validate after document: %w", err)
+	}
+	return before.Diff(after)
+}
+
+// Diff compares the receiver to another normalized document and classifies the
+// change kind.
+func formatProvenance(p *Provenance) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return p.Generator + ":" + p.Model + ":" + p.Tool + ":" + p.Validation
+}
+
+func (d Document) Diff(other Document) (Diff, error) {
+	if err := Validate(d); err != nil {
+		return Diff{}, fmt.Errorf("validate document: %w", err)
+	}
+	if err := Validate(other); err != nil {
+		return Diff{}, fmt.Errorf("validate other document: %w", err)
+	}
+	changes := make([]Change, 0, 8)
+	if d.Source.Digest != other.Source.Digest {
+		changes = append(changes, Change{Path: "source.digest", Before: d.Source.Digest, After: other.Source.Digest, Kind: DiffBehavioral, Explanation: "source normalization digest changed"})
+	}
+	if d.Start != other.Start {
+		changes = append(changes, Change{Path: "start", Before: d.Start, After: other.Start, Kind: DiffBehavioral, Explanation: "workflow entry point changed"})
+	}
+	if d.Source.DSLVersion != other.Source.DSLVersion {
+		changes = append(changes, Change{Path: "source.dslVersion", Before: d.Source.DSLVersion, After: other.Source.DSLVersion, Kind: DiffCosmetic, Explanation: "source DSL version annotation changed without altering normalized behavior"})
+	}
+	if (d.Provenance == nil) != (other.Provenance == nil) || (d.Provenance != nil && other.Provenance != nil && *d.Provenance != *other.Provenance) {
+		changes = append(changes, Change{Path: "provenance", Before: formatProvenance(d.Provenance), After: formatProvenance(other.Provenance), Kind: DiffCosmetic, Explanation: "generation provenance changed without altering normalized workflow semantics"})
+	}
+	if len(d.Nodes) != len(other.Nodes) {
+		changes = append(changes, Change{Path: "nodes", Before: fmt.Sprintf("%d", len(d.Nodes)), After: fmt.Sprintf("%d", len(other.Nodes)), Kind: DiffBehavioral, Explanation: "node count changed"})
+	}
+	if len(d.Edges) != len(other.Edges) {
+		changes = append(changes, Change{Path: "edges", Before: fmt.Sprintf("%d", len(d.Edges)), After: fmt.Sprintf("%d", len(other.Edges)), Kind: DiffBehavioral, Explanation: "edge count changed"})
+	}
+	for i, node := range d.Nodes {
+		if i >= len(other.Nodes) {
+			break
+		}
+		otherNode := other.Nodes[i]
+		if node.Name != otherNode.Name || node.Kind != otherNode.Kind || node.SideEffect != otherNode.SideEffect {
+			changes = append(changes, Change{Path: "nodes[" + node.Name + "]", Before: node.Name + "/" + node.Kind + "/" + node.SideEffect, After: otherNode.Name + "/" + otherNode.Kind + "/" + otherNode.SideEffect, Kind: DiffBehavioral, Explanation: "node identity or execution class changed"})
+		}
+		if node.Task != nil && otherNode.Task != nil && node.Task.Goal != otherNode.Task.Goal {
+			changes = append(changes, Change{Path: "nodes[" + node.Name + "].task.goal", Before: node.Task.Goal, After: otherNode.Task.Goal, Kind: DiffBehavioral, Explanation: "task intent changed"})
+		}
+		if node.Gate != nil && otherNode.Gate != nil && node.Gate.Evaluator != otherNode.Gate.Evaluator {
+			changes = append(changes, Change{Path: "nodes[" + node.Name + "].gate.evaluator", Before: string(node.Gate.Evaluator), After: string(otherNode.Gate.Evaluator), Kind: DiffBehavioral, Explanation: "gate evaluator changed"})
+		}
+	}
+	for i, edge := range d.Edges {
+		if i >= len(other.Edges) {
+			break
+		}
+		otherEdge := other.Edges[i]
+		if edge.From != otherEdge.From || edge.To != otherEdge.To || edge.Condition != otherEdge.Condition {
+			changes = append(changes, Change{Path: "edges[" + fmt.Sprintf("%d", i) + "]", Before: edge.From + "->" + edge.To + "[" + edge.Condition + "]", After: otherEdge.From + "->" + otherEdge.To + "[" + otherEdge.Condition + "]", Kind: DiffBehavioral, Explanation: "transition behavior changed"})
+		}
+	}
+	if len(changes) == 0 {
+		return Diff{Kind: DiffNoChange, Summary: "normalized workflow IR is behaviorally equivalent"}, nil
+	}
+	hasBehavioral := false
+	for _, change := range changes {
+		if change.Kind == DiffBehavioral {
+			hasBehavioral = true
+			break
+		}
+	}
+	if hasBehavioral {
+		return Diff{Kind: DiffBehavioral, Summary: "normalized workflow IR differs in behavior", Changes: changes}, nil
+	}
+	return Diff{Kind: DiffCosmetic, Summary: "normalized workflow IR differs only in cosmetic metadata", Changes: changes}, nil
+}
+
+// ExplainLoss records the unavoidable information loss when a workflow source is
+// converted to canonical IR and back to a generated representation.
+func (d Document) ExplainLoss(source any) []Loss {
+	loss := make([]Loss, 0, 2)
+	switch src := source.(type) {
+	case workflow.Definition:
+		if src.Name != d.Source.Name {
+			loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.Source.Name, Explanation: "normalized IR preserves the semantic identity but not original source name aliasing"})
+		}
+		if src.DSLVersion != "" && src.DSLVersion != d.Source.DSLVersion {
+			loss = append(loss, Loss{Field: "source.dslVersion", Before: src.DSLVersion, After: d.Source.DSLVersion, Explanation: "canonical IR stores the effective DSL contract rather than the exact serial form"})
+		}
+		if len(src.Spec.Tasks) == 0 && len(d.Nodes) > 0 {
+			loss = append(loss, Loss{Field: "source.definition", Before: "workflow definition", After: "normalized IR", Explanation: "source-level ordering and formatting are intentionally discarded by canonical normalization"})
+		}
+	case apiv1.Workflow:
+		if src.Name != d.Source.Name {
+			loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.Source.Name, Explanation: "normalized IR preserves the semantic identity but not original source name aliasing"})
+		}
+		if src.DSLVersion != "" && src.DSLVersion != d.Source.DSLVersion {
+			loss = append(loss, Loss{Field: "source.dslVersion", Before: src.DSLVersion, After: d.Source.DSLVersion, Explanation: "canonical IR stores the effective DSL contract rather than the exact serial form"})
+		}
+	case nil:
+		return nil
+	}
+	if d.Provenance == nil && d.Source.Digest != "" {
+		loss = append(loss, Loss{Field: "provenance", Before: "", After: "recorded provenance", Explanation: "IR provenance is intentionally separate from the normalized content and may be absent until persisted"})
+	}
+	if len(loss) == 0 && d.Source.Digest != "" {
+		loss = append(loss, Loss{Field: "source.definition", Before: "raw source", After: "normalized IR", Explanation: "canonical IR intentionally discards source ordering, formatting, and implicit serialization details; only semantic structure and validation metadata survive"})
+	}
+	return loss
+}
+
+// RoundTripLoss is the package-level convenience wrapper used by authoring tools.
+func RoundTripLoss(source any, doc Document) []Loss {
+	return doc.ExplainLoss(source)
 }
 
 // Validate verifies the structural and version invariants of a Workflow IR document.

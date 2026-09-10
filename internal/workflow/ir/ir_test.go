@@ -152,6 +152,55 @@ func TestNormalizePreservesCanonicalGraphSemantics(t *testing.T) {
 	}
 }
 
+func TestIRProvenanceAndSemanticDiff(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks: []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build", Next: "gate"},
+				{Name: "deploy", Type: apiv1.TaskAgentic, Goal: "deploy", Goober: "ops", Capabilities: []string{"repo:push"}}},
+			Gates: []apiv1.Gate{{Name: "gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "ready"}, Branches: map[string]string{"ok": "deploy"}}},
+		},
+	}
+	first, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Provenance = &Provenance{Generator: "copilot", Model: "gpt-4o", Tool: "workflow-ir", UserIntent: "ship", Validation: "schema-check", Decision: "pass"}
+	inspect := first.Inspect()
+	if got := inspect.Start; got != "build" {
+		t.Fatalf("Inspect().Start = %q, want %q", got, "build")
+	}
+	if got := inspect.Capabilities; !reflect.DeepEqual(got, []string{"repo:push"}) {
+		t.Fatalf("Inspect().Capabilities = %#v, want %#v", got, []string{"repo:push"})
+	}
+	second, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := SemanticDiff(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff over same semantics with different provenance = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	other := second
+	other.Start = "deploy"
+	changed, err := SemanticDiff(first, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Kind != DiffBehavioral {
+		t.Fatalf("SemanticDiff on changed start = %q, want %q", changed.Kind, DiffBehavioral)
+	}
+	losses := first.ExplainLoss(base)
+	if len(losses) == 0 || !strings.Contains(losses[0].Explanation, "canonical") {
+		t.Fatalf("ExplainLoss(base) = %#v, want a loss explanation for canonicalization", losses)
+	}
+}
+
 func TestNormalizeReturnsImmutableSnapshot(t *testing.T) {
 	def := workflow.Definition{
 		Name: "snapshot", Version: 1,
