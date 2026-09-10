@@ -1791,31 +1791,17 @@ summary:focus-visible {
 .page-heading-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 16px;
   margin-top: 16px;
 }
 
-.page-heading-actions .primary-button,
-.page-heading-actions .secondary-button {
-  align-items: center;
-  display: inline-flex;
-  flex: 0 0 190px;
-  justify-content: center;
-  min-height: 44px;
-}
-
-.page-heading-actions .primary-button {
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  color: var(--accent-ink);
+.work-item-heading-link {
   font-size: var(--font-ui);
-  font-weight: 700;
-  padding: 8px 13px;
-  text-decoration: none;
+  gap: 6px;
 }
 
 .work-item-summary {
+  align-items: flex-start;
   display: flex;
   flex-wrap: wrap;
   gap: 28px;
@@ -1823,6 +1809,7 @@ summary:focus-visible {
 }
 
 .work-item-summary > span {
+  align-content: start;
   display: grid;
   gap: 4px;
 }

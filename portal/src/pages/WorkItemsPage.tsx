@@ -202,9 +202,21 @@ function WorkItemDetailView({
           </span>
         </div>
         <div className="page-heading-actions">
-          <a className="secondary-button" href={routeHash({ page: "work-items", kind })}>Back to Work Items</a>
+          <a
+            className="scope-pivot-link work-item-heading-link"
+            href={routeHash({ page: "work-items", kind })}
+          >
+            <Icon name="work-item" size={14} />
+            Back to Work Items
+          </a>
           {item.url && (
-            <a className="primary-button" href={item.url} rel="noreferrer" target="_blank">
+            <a
+              className="scope-pivot-link work-item-heading-link"
+              href={item.url}
+              rel="noreferrer"
+              target="_blank"
+            >
+              <Icon name="arrow" size={14} />
               Open {kind === "pr" ? "pull request" : "issue"}
             </a>
           )}
