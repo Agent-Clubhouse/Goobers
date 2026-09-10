@@ -244,6 +244,11 @@ func (c *TelemetryRetentionConfig) validate() error {
 	if c.MaxRuns < 0 {
 		return fmt.Errorf("telemetry.retention.maxRuns must not be negative")
 	}
+	switch c.FirstEnable {
+	case "", "gracePeriod", "immediate":
+	default:
+		return fmt.Errorf("telemetry.retention.firstEnable must be %q or %q, got %q", "gracePeriod", "immediate", c.FirstEnable)
+	}
 	return nil
 }
 

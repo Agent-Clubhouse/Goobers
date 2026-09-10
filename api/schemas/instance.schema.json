@@ -967,18 +967,24 @@
           ]
         },
         "retention": {
-          "description": "Bounds terminal run journals and their rollup rows. Automatic pruning is OPT-IN: with this block absent nothing is ever pruned, and `goobers telemetry prune --dry-run` can preview the same policy at any time.",
+          "description": "Bounds terminal run journals and their rollup rows. Automatic pruning is OPT-OUT (product policy decision per issue #3056/#4253, mirroring retention.projectionFullFidelityDays's precedent): it defaults on at the 90-day/500-run policy unless enabled is explicitly false. `goobers telemetry prune --dry-run` can preview the same policy at any time regardless of enabled.",
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": { "type": "boolean", "default": false, "description": "Lets the daemon prune automatically. False keeps the policy available to explicit prune commands only." },
+            "enabled": { "type": "boolean", "default": true, "description": "Lets the daemon prune automatically. Defaults to true; set explicitly to false to keep the policy available to explicit prune commands only." },
             "window": {
               "type": "string",
               "minLength": 1,
               "description": "Age beyond which terminal runs are prunable, as a Go duration or a whole number of days (90d). Empty uses 90 days.",
               "examples": ["90d"]
             },
-            "maxRuns": { "type": "integer", "minimum": 0, "description": "Maximum terminal runs retained regardless of age. Zero or omitted uses 500." }
+            "maxRuns": { "type": "integer", "minimum": 0, "description": "Maximum terminal runs retained regardless of age. Zero or omitted uses 500." },
+            "firstEnable": {
+              "type": "string",
+              "enum": ["gracePeriod", "immediate"],
+              "default": "gracePeriod",
+              "description": "Safe first-enable behavior (#3056 ruling) for the first pass where existing data already exceeds policy. gracePeriod (default) holds a 7-day dry run reporting what would be deleted before enforcement begins; immediate skips straight to enforcement."
+            }
           }
         }
       }

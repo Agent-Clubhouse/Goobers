@@ -54,7 +54,12 @@ func TestTelemetryPruneIsExplicitWhenAutomationDisabled(t *testing.T) {
 	}
 }
 
-func TestConfiguredTelemetryRetentionDefaultsOffThenPrunes(t *testing.T) {
+// TestConfiguredTelemetryRetentionOptOutStartsGraceWindowThenEnforces is
+// #4253/#3056's core acceptance test: automatic pruning is opt-out by
+// default, but the FIRST pass over data that already exceeds policy is a
+// dry run (the safe first-enable grace window) — nothing is deleted until
+// that window elapses.
+func TestConfiguredTelemetryRetentionOptOutStartsGraceWindowThenEnforces(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	root := initDeterministicDemo(t)
 	instanceLayout := instance.NewLayout(root)
@@ -70,27 +75,155 @@ func TestConfiguredTelemetryRetentionDefaultsOffThenPrunes(t *testing.T) {
 	}
 
 	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}
-	results, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 0 {
-		t.Fatalf("disabled automatic prune results = %#v", results)
-	}
-	if _, err := os.Stat(runDir); err != nil {
-		t.Fatalf("disabled automatic retention removed journal: %v", err)
-	}
 
-	config.Enabled = true
-	results, err = pruneConfiguredTelemetryRetention(instanceLayout, config, db, now)
+	results, dryRun, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, now)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !dryRun {
+		t.Fatal("first pass over pre-existing excess data must be a dry run (grace window)")
 	}
 	if len(results) != 1 || results[0].RunID != "automatic-old" {
-		t.Fatalf("enabled automatic prune results = %#v", results)
+		t.Fatalf("grace-window candidate results = %#v", results)
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("grace-window pass removed journal: %v", err)
+	}
+
+	// Still within the grace window a bit later: still a dry run.
+	results, dryRun, err = pruneConfiguredTelemetryRetention(instanceLayout, config, db, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dryRun || len(results) != 1 {
+		t.Fatalf("mid-grace pass = (results %#v, dryRun %v), want 1 candidate still dry run", results, dryRun)
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("mid-grace pass removed journal: %v", err)
+	}
+
+	// After the grace window elapses, enforcement begins for real.
+	afterGrace := now.Add(telemetryRetentionGraceWindow + time.Hour)
+	results, dryRun, err = pruneConfiguredTelemetryRetention(instanceLayout, config, db, afterGrace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dryRun {
+		t.Fatal("pass after the grace window elapsed must enforce for real")
+	}
+	if len(results) != 1 || results[0].RunID != "automatic-old" {
+		t.Fatalf("post-grace prune results = %#v", results)
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
-		t.Fatalf("enabled automatic retention left journal: %v", err)
+		t.Fatalf("post-grace enforcement left journal: %v", err)
+	}
+
+	state, ok, err := readTelemetryRetentionState(instanceLayout)
+	if err != nil || !ok {
+		t.Fatalf("readTelemetryRetentionState after enforcement: ok=%v err=%v", ok, err)
+	}
+	if state.LastPassDryRun || state.PrunedCount != 1 || !state.LastPassAt.Equal(afterGrace) {
+		t.Fatalf("state after enforcement = %+v, want dryRun=false prunedCount=1 lastPassAt=%s", state, afterGrace)
+	}
+}
+
+// TestConfiguredTelemetryRetentionNoCandidatesNeverStartsGraceWindow proves a
+// fresh instance with nothing yet to prune never starts (or gets stuck in) a
+// grace window it doesn't need — each pass stays a harmless dry run with zero
+// candidates until real data eventually exceeds policy.
+func TestConfiguredTelemetryRetentionNoCandidatesNeverStartsGraceWindow(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	instanceLayout := instance.NewLayout(root)
+	db, err := rollup.Open(instanceLayout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}
+	results, dryRun, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dryRun || len(results) != 0 {
+		t.Fatalf("empty-instance pass = (results %#v, dryRun %v), want 0 candidates, still dry run", results, dryRun)
+	}
+	state, ok, err := readTelemetryRetentionState(instanceLayout)
+	if err != nil || !ok {
+		t.Fatalf("readTelemetryRetentionState: ok=%v err=%v", ok, err)
+	}
+	if !state.EnforceAt.IsZero() {
+		t.Fatalf("state.EnforceAt = %s, want zero — no grace window should start with nothing to prune", state.EnforceAt)
+	}
+}
+
+// TestConfiguredTelemetryRetentionExplicitlyDisabledIsNoOp proves
+// telemetry.retention.enabled: false still fully disables automatic pruning
+// under the new opt-out default.
+func TestConfiguredTelemetryRetentionExplicitlyDisabledIsNoOp(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	instanceLayout := instance.NewLayout(root)
+	runLayout := instanceLayout.ForGaggle("example")
+	runDir := createTelemetryRetentionRun(t, runLayout, "kept", now.Add(-48*time.Hour))
+	db, err := rollup.Open(instanceLayout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
+		t.Fatal(err)
+	}
+
+	disabled := false
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500, Enabled: &disabled}
+	results, dryRun, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dryRun || len(results) != 0 {
+		t.Fatalf("explicitly disabled retention results = (%#v, dryRun %v), want none", results, dryRun)
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatalf("disabled retention removed journal: %v", err)
+	}
+	if _, ok, err := readTelemetryRetentionState(instanceLayout); err != nil || ok {
+		t.Fatalf("disabled retention must not record state: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestConfiguredTelemetryRetentionImmediateFirstEnableSkipsGraceWindow
+// proves the operator escape hatch (telemetry.retention.firstEnable:
+// immediate) enforces for real from the very first pass.
+func TestConfiguredTelemetryRetentionImmediateFirstEnableSkipsGraceWindow(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	instanceLayout := instance.NewLayout(root)
+	runLayout := instanceLayout.ForGaggle("example")
+	runDir := createTelemetryRetentionRun(t, runLayout, "automatic-old", now.Add(-48*time.Hour))
+	db, err := rollup.Open(instanceLayout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
+		t.Fatal(err)
+	}
+
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500, FirstEnable: "immediate"}
+	results, dryRun, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dryRun {
+		t.Fatal("firstEnable: immediate must skip the grace window even on the very first pass")
+	}
+	if len(results) != 1 || results[0].RunID != "automatic-old" {
+		t.Fatalf("immediate prune results = %#v", results)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("immediate enforcement left journal: %v", err)
 	}
 }
 
@@ -245,4 +378,53 @@ func createTelemetryRetentionRun(t *testing.T, layout instance.Layout, runID str
 		t.Fatal(err)
 	}
 	return run.Dir()
+}
+
+// TestReportTelemetryRetentionPolicySurfacesStatus is #4253's operator-
+// visibility acceptance guard: `goobers status` must show policy-in-force,
+// last-pass, and candidate-count without the caller needing to parse the
+// state file itself, and must stay silent when there is nothing to report
+// (retention disabled, or the daemon has never run a pass).
+func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+
+	var silent bytes.Buffer
+	reportTelemetryRetentionPolicy(layout, now, &silent)
+	if silent.Len() != 0 {
+		t.Fatalf("no state file yet: output = %q, want silence", silent.String())
+	}
+
+	graceState := telemetryRetentionState{
+		DetectedAt:     now.Add(-time.Hour),
+		EnforceAt:      now.Add(6 * 24 * time.Hour),
+		LastPassAt:     now.Add(-time.Minute),
+		LastPassDryRun: true,
+		CandidateCount: 3,
+	}
+	if err := writeTelemetryRetentionState(layout, graceState); err != nil {
+		t.Fatal(err)
+	}
+	var duringGrace bytes.Buffer
+	reportTelemetryRetentionPolicy(layout, now, &duringGrace)
+	if !strings.Contains(duringGrace.String(), "grace period active") ||
+		!strings.Contains(duringGrace.String(), "3 candidate") ||
+		strings.Contains(duringGrace.String(), "pruned") {
+		t.Fatalf("grace-period status = %q", duringGrace.String())
+	}
+
+	enforcedState := telemetryRetentionState{
+		LastPassAt:     now.Add(-time.Minute),
+		LastPassDryRun: false,
+		PrunedCount:    7,
+	}
+	if err := writeTelemetryRetentionState(layout, enforcedState); err != nil {
+		t.Fatal(err)
+	}
+	var enforced bytes.Buffer
+	reportTelemetryRetentionPolicy(layout, now, &enforced)
+	if !strings.Contains(enforced.String(), "policy in force") ||
+		!strings.Contains(enforced.String(), "pruned 7 run") {
+		t.Fatalf("enforced status = %q", enforced.String())
+	}
 }
