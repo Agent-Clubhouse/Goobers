@@ -17,8 +17,9 @@ import (
 // daemon claim clients. Provider credentials are supplied by the assembly, not
 // by an incoming claim request. Repository routing comes from the run pin.
 type pinnedSharedClaimResolver struct {
-	layout instance.Layout
-	store  func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error)
+	layout     instance.Layout
+	store      func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error)
+	visibility func(context.Context, providers.RepositoryRef) (sharedclaim.Visibility, error)
 }
 
 func (r pinnedSharedClaimResolver) Admission(ctx context.Context, key claimsclient.Key, runID, workflow string) (*claimsclient.SharedClaimBinding, error) {
@@ -127,5 +128,7 @@ func (r pinnedSharedClaimResolver) binding(ctx context.Context, key claimsclient
 	// URL in its record key would split one GitHub item into two leases when
 	// one instance spells the default host explicitly and another omits it.
 	// The owner token still binds the repository as well as the item.
-	return claimsclient.SharedClaimBinding{Store: store, RemoteKey: key.ExternalID, Owner: owner}, nil
+	binding := claimsclient.SharedClaimBinding{Store: store, RemoteKey: key.ExternalID, Owner: owner}
+	binding.AfterTransition = r.visibilityTransition(repo, store, key.ExternalID)
+	return binding, nil
 }

@@ -30,6 +30,17 @@ func localLifecycleSharedClaimResolver(layout instance.Layout) claimsclient.Shar
 		}
 		registry, _ := journal.DefaultScrubber()
 		return daemonSharedClaimStore(ctx, cfg, repo, registry, stores)
+	}, visibility: func(ctx context.Context, repo providers.RepositoryRef) (sharedclaim.Visibility, error) {
+		cfg, err := instance.LoadConfig(layout.ConfigFile())
+		if err != nil {
+			return nil, err
+		}
+		stores, err := secretstore.NewRegistry(cfg.SecretStores)
+		if err != nil {
+			return nil, err
+		}
+		registry, _ := journal.DefaultScrubber()
+		return daemonSharedClaimVisibility(ctx, cfg, repo, registry, stores)
 	}}
 }
 
@@ -38,10 +49,28 @@ func localLifecycleSharedClaimResolver(layout instance.Layout) claimsclient.Shar
 func daemonSharedClaimResolver(layout instance.Layout, cfg *instance.Config, registrar terminalSecretRegistry, stores credentials.StoreResolver) claimsclient.SharedClaimResolver {
 	return stageClaimResolver{pinnedSharedClaimResolver{layout: layout, store: func(ctx context.Context, repo providers.RepositoryRef) (sharedclaim.Store, error) {
 		return daemonSharedClaimStore(ctx, cfg, repo, registrar, stores)
+	}, visibility: func(ctx context.Context, repo providers.RepositoryRef) (sharedclaim.Visibility, error) {
+		return daemonSharedClaimVisibility(ctx, cfg, repo, registrar, stores)
 	}}}
 }
 
 func daemonSharedClaimStore(ctx context.Context, cfg *instance.Config, repo providers.RepositoryRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (sharedclaim.Store, error) {
+	provider, err := daemonSharedClaimProvider(ctx, cfg, repo, registrar, stores, capability.RepoPush)
+	if err != nil {
+		return nil, err
+	}
+	return scrubbedSharedClaimStore{store: providers.GitHubSharedClaimStore{Provider: provider, Repository: repo}, registrar: registrar}, nil
+}
+
+func daemonSharedClaimVisibility(ctx context.Context, cfg *instance.Config, repo providers.RepositoryRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (sharedclaim.Visibility, error) {
+	provider, err := daemonSharedClaimProvider(ctx, cfg, repo, registrar, stores, capability.GitHubIssuesWrite)
+	if err != nil {
+		return nil, err
+	}
+	return scrubbedSharedClaimVisibility{visibility: providers.GitHubSharedClaimVisibility{Provider: provider, Repository: repo}, registrar: registrar}, nil
+}
+
+func daemonSharedClaimProvider(ctx context.Context, cfg *instance.Config, repo providers.RepositoryRef, registrar terminalSecretRegistry, stores credentials.StoreResolver, requested capability.Capability) (*providers.GitHubProvider, error) {
 	if cfg == nil || repo.Provider != providers.ProviderGitHub {
 		return nil, fmt.Errorf("shared claim requires configured GitHub credentials")
 	}
@@ -67,15 +96,29 @@ func daemonSharedClaimStore(ctx context.Context, cfg *instance.Config, repo prov
 	if err != nil {
 		return nil, scrubTerminalError(registrar, err)
 	}
-	set, err := injector.Materialize(ctx, []string{string(capability.RepoPush)})
+	set, err := injector.Materialize(ctx, []string{string(requested)})
 	if err != nil {
 		return nil, scrubTerminalError(registrar, err)
 	}
-	provider := providers.NewGitHubProvider("", providers.WithTokenSource(set.For(string(capability.RepoPush))))
+	provider := providers.NewGitHubProvider("", providers.WithTokenSource(set.For(string(requested))))
 	if repo.URL != "" {
 		provider.BaseURL = repo.URL
 	}
-	return scrubbedSharedClaimStore{store: providers.GitHubSharedClaimStore{Provider: provider, Repository: repo}, registrar: registrar}, nil
+	return provider, nil
+}
+
+type scrubbedSharedClaimVisibility struct {
+	visibility sharedclaim.Visibility
+	registrar  terminalSecretRegistry
+}
+
+func (s scrubbedSharedClaimVisibility) ReadClaimed(ctx context.Context, key string) (bool, error) {
+	present, err := s.visibility.ReadClaimed(ctx, key)
+	return present, scrubTerminalError(s.registrar, err)
+}
+
+func (s scrubbedSharedClaimVisibility) SetClaimed(ctx context.Context, key string, present bool) error {
+	return scrubTerminalError(s.registrar, s.visibility.SetClaimed(ctx, key, present))
 }
 
 type scrubbedSharedClaimStore struct {

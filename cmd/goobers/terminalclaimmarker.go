@@ -192,6 +192,12 @@ func terminalClaimMarkerEntries(l instance.Layout, runID string) ([]localschedul
 				return fmt.Errorf("open claim ledger: %w", err)
 			}
 			for _, entry := range ledger.ForRunAll(runID) {
+				// Shared releases reconcile their label from remote authority
+				// after the coordination transition. Legacy breadcrumbs cannot
+				// authorize cleanup, particularly after a successor takes over.
+				if !entry.SharedDeadline.IsZero() {
+					continue
+				}
 				if strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
 					continue
 				}

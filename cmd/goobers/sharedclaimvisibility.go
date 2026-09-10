@@ -4,12 +4,34 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/providers"
 )
+
+func (r pinnedSharedClaimResolver) visibilityTransition(repo providers.RepositoryRef, store sharedclaim.Store, key string) func(context.Context) {
+	// Auxiliary PR, merge-lock, and decomposition reservations have no issue
+	// label. Never turn a synthetic key into a numeric issue by trimming it.
+	number, err := strconv.ParseUint(key, 10, 64)
+	if r.visibility == nil || err != nil || number == 0 || strconv.FormatUint(number, 10) != key {
+		return nil
+	}
+	return func(ctx context.Context) {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		labels, err := r.visibility(ctx, repo)
+		if err == nil {
+			err = sharedclaim.ReconcileVisibility(ctx, store, labels, key)
+		}
+		if err != nil {
+			pf(os.Stderr, "warning: shared claim label for item %s needs reconciliation: %v\n", key, err)
+		}
+	}
+}
 
 // Confirmation for shared runs never participates in the legacy comment
 // election. Labels mirror the provider lease, and a label failure cannot revoke

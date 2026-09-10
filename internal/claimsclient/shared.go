@@ -14,6 +14,10 @@ type SharedClaimBinding struct {
 	Store     sharedclaim.Store
 	RemoteKey string
 	Owner     sharedclaim.Owner
+	// AfterTransition repairs non-authoritative visibility, including after an
+	// uncertain remote ACK. It must be bounded, must not re-enter the claims
+	// lock, and must report its own errors without changing the claim result.
+	AfterTransition func(context.Context)
 }
 
 // SharedClaimResolver supplies the provider binding at the file-client seam.
@@ -39,6 +43,9 @@ func (s *fileSession) claimShared(ctx context.Context, key Key, runID, workflow 
 	if !ok {
 		return false, "", fmt.Errorf("claimsclient: shared admission is unavailable")
 	}
+	if binding.AfterTransition != nil {
+		defer binding.AfterTransition(ctx)
+	}
 	return ledger.ClaimSharedScoped(ctx, binding.Store, binding.RemoteKey, key, binding.Owner, workflow, ttl)
 }
 
@@ -56,6 +63,9 @@ func (s *fileSession) releaseShared(ctx context.Context, entry Entry) error {
 	ledger, ok := s.ledger.(sharedFileLedger)
 	if !ok {
 		return fmt.Errorf("claimsclient: shared release is unavailable")
+	}
+	if binding.AfterTransition != nil {
+		defer binding.AfterTransition(ctx)
 	}
 	return ledger.ReleaseCoordinatedShared(ctx, binding.Store, binding.RemoteKey, KeyForEntry(entry), entry.SharedOwner)
 }

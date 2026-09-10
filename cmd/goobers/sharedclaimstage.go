@@ -29,6 +29,17 @@ func stageSharedClaimResolver(layout instance.Layout) claimsclient.SharedClaimRe
 			return nil, err
 		}
 		return providers.GitHubSharedClaimStore{Provider: provider, Repository: repo}, nil
+	}, visibility: func(ctx context.Context, repo providers.RepositoryRef) (sharedclaim.Visibility, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		provider, err := newProviderForStageAs[*providers.GitHubProvider](layout.Root, repo, false,
+			withStageProviderCapability(capability.GitHubIssuesWrite))
+		if err != nil {
+			return nil, err
+		}
+		registry, _ := journal.DefaultScrubber()
+		return scrubbedSharedClaimVisibility{visibility: providers.GitHubSharedClaimVisibility{Provider: provider, Repository: repo}, registrar: registry}, nil
 	}}}
 }
 

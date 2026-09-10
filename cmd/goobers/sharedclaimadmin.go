@@ -27,5 +27,8 @@ func forceReleaseClaim(ctx context.Context, ledger *localscheduler.ClaimLedger, 
 	if binding.Owner != entry.SharedOwner {
 		return sharedclaim.ErrNotOwner
 	}
+	if binding.AfterTransition != nil {
+		defer binding.AfterTransition(ctx)
+	}
 	return ledger.ForceReleaseCoordinatedShared(ctx, binding.Store, binding.RemoteKey, claimsclient.KeyForEntry(entry), entry.SharedOwner, actor)
 }

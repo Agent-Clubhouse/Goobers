@@ -46,6 +46,40 @@ type sharedClientResolver struct {
 	releaseErr   error
 }
 
+func TestSharedVisibilityHookRunsAfterTransitionsIncludingLostACK(t *testing.T) {
+	store := &sharedClientStore{}
+	resolver := &sharedClientResolver{binding: SharedClaimBinding{Store: store, RemoteKey: "42", Owner: sharedclaim.Owner{Instance: "instance", Run: "run", Token: "token"}}}
+	var observations []sharedclaim.Owner
+	resolver.binding.AfterTransition = func(ctx context.Context) {
+		observed, err := store.Read(ctx, "42")
+		if err != nil {
+			t.Fatal(err)
+		}
+		observations = append(observations, observed.Record.Owner)
+	}
+	file, err := NewFile(FileConfig{LedgerPath: filepath.Join(t.TempDir(), "claims.json"), Shared: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := Key{Gaggle: "g", Provider: "github", ExternalID: "42"}
+	for range 2 {
+		if ok, _, err := file.ClaimScoped(t.Context(), key, "run", "implement", time.Minute); err != nil || !ok {
+			t.Fatalf("acquire/renew: %v %v", ok, err)
+		}
+	}
+	store.loseACK = true
+	if err := file.ReleaseScoped(t.Context(), key, "run"); err == nil {
+		t.Fatal("lost ACK reported as release success")
+	}
+	store.loseACK = false
+	if err := file.ReleaseScoped(t.Context(), key, "run"); err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 4 || observations[0] != resolver.binding.Owner || observations[1] != resolver.binding.Owner || observations[2] != (sharedclaim.Owner{}) || observations[3] != (sharedclaim.Owner{}) {
+		t.Fatalf("visibility did not observe transition results: %+v", observations)
+	}
+}
+
 func (r *sharedClientResolver) Admission(context.Context, Key, string, string) (*SharedClaimBinding, error) {
 	return &r.binding, r.admissionErr
 }

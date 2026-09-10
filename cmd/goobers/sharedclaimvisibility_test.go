@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,40 @@ import (
 	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestSharedVisibilityCredentialFailureDoesNotChangeLifecycle(t *testing.T) {
+	layout, _ := newPinnedClaimResolverRun(t, "shared")
+	store := &pinnedClaimTestStore{}
+	attempts := 0
+	resolver := pinnedSharedClaimResolver{layout: layout,
+		store: func(context.Context, providers.RepositoryRef) (sharedclaim.Store, error) { return store, nil },
+		visibility: func(context.Context, providers.RepositoryRef) (sharedclaim.Visibility, error) {
+			attempts++
+			return nil, errors.New("issue credential unavailable")
+		},
+	}
+	file, err := claimsclient.NewFile(claimsclient.FileConfig{LedgerPath: filepath.Join(layout.SchedulerDir(), "claims.json"), Shared: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := claimsclient.Key{Gaggle: "example", Provider: "github", ExternalID: "42"}
+	for range 2 {
+		if ok, _, err := file.ClaimScoped(t.Context(), key, "shared-run", "claim", time.Minute); err != nil || !ok {
+			t.Fatalf("acquire/renew depended on label credential: %v %v", ok, err)
+		}
+	}
+	if err := file.ReleaseScoped(t.Context(), key, "shared-run"); err != nil {
+		t.Fatalf("release depended on label credential: %v", err)
+	}
+	if attempts != 3 || store.record.Owner != (sharedclaim.Owner{}) {
+		t.Fatalf("lifecycle did not attempt independent visibility: %d %+v", attempts, store.record)
+	}
+	for _, key := range []string{"pr/42", "decomposition-target:42", "merge-lock/repo", "042", "0"} {
+		if resolver.visibilityTransition(providers.RepositoryRef{}, store, key) != nil {
+			t.Fatalf("synthetic/noncanonical key reached visibility: %q", key)
+		}
+	}
+}
 
 type sharedVisibilityLabels struct {
 	present bool
