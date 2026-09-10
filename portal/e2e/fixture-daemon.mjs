@@ -387,13 +387,16 @@ const contentTypes = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
 };
-const eventStreams = new Set();
+const eventStreams = new Map();
 let eventSequence = 0;
-const constrainedAdmission = {
-  active: 0,
-  peak: 0,
-  requests: 0,
-};
+const constrainedAdmissions = new Map();
+
+function admissionState(key) {
+  if (!constrainedAdmissions.has(key)) {
+    constrainedAdmissions.set(key, { active: 0, peak: 0, requests: 0 });
+  }
+  return constrainedAdmissions.get(key);
+}
 
 function sendJSON(response, value) {
   response.writeHead(200, { "Content-Type": "application/json" });
@@ -405,7 +408,7 @@ function sendError(response, status, code, message, headers = {}) {
   response.end(JSON.stringify({ error: { code, message } }));
 }
 
-function emitInvalidation() {
+function emitInvalidation(key) {
   eventSequence += 1;
   const cursor = `fixture:${eventSequence}`;
   const event = {
@@ -414,19 +417,20 @@ function emitInvalidation() {
     runIds: [run.id],
     workflows: [identity],
   };
-  for (const stream of eventStreams) {
+  for (const [stream, streamKey] of eventStreams) {
+    if (streamKey !== key) continue;
     stream.write(`id: ${cursor}\nevent: invalidate\ndata: ${JSON.stringify(event)}\n\n`);
   }
 }
 
-function serveEvents(response) {
+function serveEvents(response, key) {
   response.writeHead(200, {
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "Content-Type": "text/event-stream",
   });
   response.flushHeaders();
-  eventStreams.add(response);
+  eventStreams.set(response, key);
   response.on("close", () => eventStreams.delete(response));
 }
 
@@ -457,7 +461,11 @@ function serveStatic(pathname, mode, response) {
 
 createServer((request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+  // Keep constrained browser sessions independent of sibling tests' counters
+  // and SSE invalidations, including concurrent repeat-each invocations.
+  const admissionKey = request.headers["x-test-constrained-admission"] ?? "";
   if (url.pathname === "/api/v1/test/admission") {
+    const constrainedAdmission = admissionState(admissionKey);
     if (request.method === "POST") {
       constrainedAdmission.active = 0;
       constrainedAdmission.peak = 0;
@@ -469,7 +477,7 @@ createServer((request, response) => {
     return;
   }
   if (url.pathname === "/api/v1/events") {
-    serveEvents(response);
+    serveEvents(response, admissionKey);
     return;
   }
   if (url.pathname === "/api/v1/test/invalidate") {
@@ -478,13 +486,14 @@ createServer((request, response) => {
       response.end("method not allowed");
       return;
     }
-    if (eventStreams.size === 0) {
+    const connected = [...eventStreams.values()].filter((key) => key === admissionKey).length;
+    if (connected === 0) {
       response.writeHead(409);
       response.end("no event stream connected");
       return;
     }
-    emitInvalidation();
-    sendJSON(response, { delivered: eventStreams.size });
+    emitInvalidation(admissionKey);
+    sendJSON(response, { delivered: connected });
     return;
   }
   if (url.pathname === "/api/v1/runs") {
@@ -499,10 +508,11 @@ createServer((request, response) => {
   }
   const fixture = responses.get(url.pathname);
   if (fixture) {
-    if (request.headers["x-test-constrained-admission"] !== "1") {
+    if (!admissionKey) {
       sendJSON(response, fixture);
       return;
     }
+    const constrainedAdmission = admissionState(admissionKey);
     constrainedAdmission.requests += 1;
     if (constrainedAdmission.active >= 1) {
       sendError(
