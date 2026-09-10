@@ -48,6 +48,57 @@ func TestSelfUpdateCommandRoutesManualTarget(t *testing.T) {
 	}
 }
 
+// TestSelfUpdateCommandDefaultsProductRepositoryIndependentOfWorkloadRepo is
+// #4324's core regression: self-update must resolve the product release
+// from the canonical Goobers repository even when the instance's routed
+// workload repository (the repo a stage invocation operates on) is a
+// different, customer-owned repository.
+func TestSelfUpdateCommandDefaultsProductRepositoryIndependentOfWorkloadRepo(t *testing.T) {
+	root := selfUpdateTestInstance(t, "20m")
+	setSelfUpdateRepoRoute(t) // routes workload repo acme/goobers — must not leak into the product repo
+	resultFile := filepath.Join(t.TempDir(), "result.json")
+	t.Setenv(executor.InputEnvVar("resultFile"), resultFile)
+
+	var got selfupdate.PrepareOptions
+	prepare := func(_ context.Context, opts selfupdate.PrepareOptions) (selfupdate.PrepareResult, error) {
+		got = opts
+		return selfupdate.PrepareResult{Policy: opts.Policy, Target: "v1"}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runSelfUpdateWith([]string{root}, &stdout, &stderr, "self-update", prepare); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if got.Owner != selfupdate.DefaultProductOwner || got.Repository != selfupdate.DefaultProductRepository {
+		t.Fatalf("product repository = %s/%s, want the canonical %s/%s regardless of the routed workload repo acme/goobers",
+			got.Owner, got.Repository, selfupdate.DefaultProductOwner, selfupdate.DefaultProductRepository)
+	}
+}
+
+// TestSelfUpdateCommandProductRepositoryOverridable covers the "distinct,
+// explicit setting" acceptance criterion: a gaggle can still point
+// self-update at a different product release source via the owner/repository
+// stage inputs, independent of the workload-repo routing mechanism.
+func TestSelfUpdateCommandProductRepositoryOverridable(t *testing.T) {
+	root := selfUpdateTestInstance(t, "20m")
+	setSelfUpdateRepoRoute(t)
+	t.Setenv(executor.InputEnvVar("owner"), "mirror-org")
+	t.Setenv(executor.InputEnvVar("repository"), "goobers-mirror")
+	t.Setenv(executor.InputEnvVar("resultFile"), filepath.Join(t.TempDir(), "result.json"))
+
+	var got selfupdate.PrepareOptions
+	prepare := func(_ context.Context, opts selfupdate.PrepareOptions) (selfupdate.PrepareResult, error) {
+		got = opts
+		return selfupdate.PrepareResult{Policy: opts.Policy, Target: "v1"}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runSelfUpdateWith([]string{root}, &stdout, &stderr, "self-update", prepare); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if got.Owner != "mirror-org" || got.Repository != "goobers-mirror" {
+		t.Fatalf("product repository = %s/%s, want the explicit override mirror-org/goobers-mirror", got.Owner, got.Repository)
+	}
+}
+
 func TestSelfUpdateCommandRoutesPrereleaseOptIn(t *testing.T) {
 	root := selfUpdateTestInstance(t, "20m")
 	setSelfUpdateRepoRoute(t)
@@ -261,6 +312,42 @@ func TestResolveSelfUpdateEscalationTokenRejectsMissingOrInvalidCredential(t *te
 				t.Fatalf("error = %v, want error containing %q", err, test.want)
 			}
 		})
+	}
+}
+
+// TestSelfUpdateEscalatorTargetsWorkloadRepoNotProductRepo is #4324's
+// escalation-side regression: once the product release repository defaults
+// to the canonical Agent-Clubhouse/Goobers repository (which most instances
+// cannot file issues against), the rollback notification must still target
+// the instance's own configured workload repository rather than requiring
+// an exact match against the (now-unrelated) product release repository.
+func TestSelfUpdateEscalatorTargetsWorkloadRepoNotProductRepo(t *testing.T) {
+	root := t.TempDir()
+	raw := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n" +
+		"repos:\n  - provider: github\n    owner: acme\n    name: goobers\n" +
+		"    token:\n      env: REPO_TOKEN\n"
+	if err := os.WriteFile(instance.NewLayout(root).ConfigFile(), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := firstGitHubRepo(cfg)
+	if configured == nil || configured.Owner != "acme" || configured.Name != "goobers" {
+		t.Fatalf("firstGitHubRepo = %+v, want the configured acme/goobers workload repo", configured)
+	}
+}
+
+func TestSelfUpdateEscalatorRequiresConfiguredGitHubRepo(t *testing.T) {
+	root := selfUpdateTestInstance(t, "")
+	escalator := selfUpdateEscalator{root: root}
+	request := selfupdate.Request{Owner: selfupdate.DefaultProductOwner, Repository: selfupdate.DefaultProductRepository, Target: "v1.2.3"}
+
+	err := escalator.Escalate(context.Background(), request, "smoke check failed")
+	if err == nil || !strings.Contains(err.Error(), "requires a GitHub repository configured") {
+		t.Fatalf("error = %v, want a clear message that no GitHub repo is configured for the rollback notification", err)
 	}
 }
 

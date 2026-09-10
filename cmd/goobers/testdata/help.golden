@@ -2421,6 +2421,12 @@ on-main builds the configured branch. on-release resolves the newest stable
 release unless --include-prerelease is set, which considers all GitHub
 releases and only stages a target strictly newer than the running build.
 
+Releases are resolved from the canonical Goobers product repository
+(Agent-Clubhouse/Goobers) by default, independent of any workload
+repositories the instance is configured to operate on. Override the
+product release source with the owner/repository stage inputs (e.g. for
+a private release mirror).
+
 ### service
 Usage: goobers service <subcommand> [path]
 

@@ -35,6 +35,15 @@ const (
 	// PolicyOnMain tracks the configured product repository branch.
 	PolicyOnMain = "on-main"
 
+	// DefaultProductOwner is the GitHub organization that publishes tagged
+	// Goobers releases. This is the canonical product release source and is
+	// independent of any workload repository an instance is configured to
+	// operate on.
+	DefaultProductOwner = "Agent-Clubhouse"
+	// DefaultProductRepository is the GitHub repository that publishes
+	// tagged Goobers releases.
+	DefaultProductRepository = "Goobers"
+
 	requestSchema = "goobers.dev/self-update/v1"
 	// DefaultHealthTicks is the required number of clean heartbeat intervals.
 	DefaultHealthTicks = 3
@@ -255,13 +264,22 @@ func resolveRelease(ctx context.Context, opts PrepareOptions) (githubRelease, er
 	return resolveSingleRelease(ctx, opts, "/releases/latest", "")
 }
 
+// requestedVersionDescription describes, for error messages, the version the
+// caller asked self-update to resolve from the product release repository.
+func requestedVersionDescription(wantTag string) string {
+	if wantTag != "" {
+		return fmt.Sprintf("tag %q", wantTag)
+	}
+	return "latest stable release"
+}
+
 func resolveSingleRelease(ctx context.Context, opts PrepareOptions, suffix, wantTag string) (githubRelease, error) {
 	var release githubRelease
 	if err := githubJSON(ctx, opts, suffix, &release); err != nil {
-		return release, fmt.Errorf("query GitHub release: %w", err)
+		return release, fmt.Errorf("query GitHub release from product repository %s/%s (%s): %w", opts.Owner, opts.Repository, requestedVersionDescription(wantTag), err)
 	}
 	if release.TagName == "" || wantTag != "" && release.TagName != wantTag {
-		return release, fmt.Errorf("GitHub release returned unexpected tag %q", release.TagName)
+		return release, fmt.Errorf("product repository %s/%s returned unexpected tag %q (requested %s)", opts.Owner, opts.Repository, release.TagName, requestedVersionDescription(wantTag))
 	}
 	return release, nil
 }
@@ -269,10 +287,10 @@ func resolveSingleRelease(ctx context.Context, opts PrepareOptions, suffix, want
 func resolveNewestRelease(ctx context.Context, opts PrepareOptions) (githubRelease, error) {
 	var releases []githubRelease
 	if err := githubJSON(ctx, opts, "/releases", &releases); err != nil {
-		return githubRelease{}, fmt.Errorf("query GitHub releases: %w", err)
+		return githubRelease{}, fmt.Errorf("query GitHub releases from product repository %s/%s (newest release including pre-releases): %w", opts.Owner, opts.Repository, err)
 	}
 	if len(releases) == 0 {
-		return githubRelease{}, errors.New("GitHub release board is empty")
+		return githubRelease{}, fmt.Errorf("product repository %s/%s has no releases", opts.Owner, opts.Repository)
 	}
 	selected := githubRelease{}
 	for _, release := range releases {
@@ -292,7 +310,7 @@ func resolveNewestRelease(ctx context.Context, opts PrepareOptions) (githubRelea
 		}
 	}
 	if selected.TagName == "" {
-		return githubRelease{}, errors.New("GitHub releases does not contain a valid SemVer tag")
+		return githubRelease{}, fmt.Errorf("product repository %s/%s releases do not contain a valid SemVer tag", opts.Owner, opts.Repository)
 	}
 	return selected, nil
 }
