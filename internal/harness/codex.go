@@ -37,6 +37,7 @@ type CodexAdapter struct {
 	ModelCredential                func(context.Context) (string, error)
 }
 
+// Name returns the Codex harness identifier.
 func (c *CodexAdapter) Name() string { return "codex" }
 
 func (c *CodexAdapter) runner() ProcessRunner {
@@ -46,6 +47,7 @@ func (c *CodexAdapter) runner() ProcessRunner {
 	return ExecProcessRunner{}
 }
 
+// ValidateConfig validates Codex model and harness options.
 func (c *CodexAdapter) ValidateConfig(model string, options map[string]apiextensionsv1.JSON) error {
 	_, err := normalizeCodexConfig(model, options)
 	return err
@@ -79,6 +81,7 @@ func normalizeCodexConfig(model string, options map[string]apiextensionsv1.JSON)
 	return normalized, nil
 }
 
+// Preflight verifies the Codex CLI and its configured API key.
 func (c *CodexAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: codex: no command configured")
@@ -170,6 +173,7 @@ type preparedCodexInvocation struct {
 	cleanup func()
 }
 
+// Run executes one Codex-backed agentic invocation.
 func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
 	if err := validateStandardExecution(req); err != nil {
 		return Outcome{}, err

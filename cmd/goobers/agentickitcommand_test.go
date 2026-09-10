@@ -41,11 +41,13 @@ func TestWorkerKitCarriesSelectedHarnessCommandToPod(t *testing.T) {
 				case "override":
 					declared = []string{"/opt/fixture wrapper/launcher", "literal $(PATH)", "a b", "quote\"value", "$HOME; untouched"}
 				case "explicit-default":
-					declared = []string{"copilot"}
-					if selected == apiv1.HarnessClaudeCode {
+					switch selected {
+					case apiv1.HarnessClaudeCode:
 						declared = []string{"claude"}
-					} else if selected == apiv1.HarnessCodex {
+					case apiv1.HarnessCodex:
 						declared = []string{"codex"}
+					default:
+						declared = []string{"copilot"}
 					}
 				}
 				if len(declared) > 0 {
@@ -148,11 +150,13 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 		}
 		want := declared
 		if len(want) == 0 {
-			want = []string{"copilot"}
-			if selected == apiv1.HarnessClaudeCode {
+			switch selected {
+			case apiv1.HarnessClaudeCode:
 				want = []string{"claude"}
-			} else if selected == apiv1.HarnessCodex {
+			case apiv1.HarnessCodex:
 				want = []string{"codex"}
+			default:
+				want = []string{"copilot"}
 			}
 		}
 		if !slices.Equal(argv, want) {

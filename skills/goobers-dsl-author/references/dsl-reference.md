@@ -116,15 +116,12 @@ Provide:
 |---|---|---|
 | `copilot` | `copilot` | `COPILOT_GITHUB_TOKEN` |
 | `claude-code` | `claude` | `ANTHROPIC_API_KEY` |
-| `codex` | `codex` | `CODEX_API_KEY` |
 
 The harness credential is optional when its CLI already has an interactive
 sign-in. When a headless instance supplies `agent:model`, the runner maps that
 capability to the selected harness's environment variable above. Claude Code
-and Codex accept `effort` under `harnessOptions`; model names are validated
-where the selected CLI exposes a discoverable or stable catalogue. Codex
-goobers must currently use `tools: []`: Codex CLI has no general built-in-tool
-allowlist, so restrictive tool declarations fail closed.
+accepts `effort` under `harnessOptions`; Copilot and Claude Code model names are
+validated by their respective adapters.
 
 The `instructions` path is relative to the goober definition directory. Keep
 the role, scope, completion contract, and safety limits in that markdown file;
