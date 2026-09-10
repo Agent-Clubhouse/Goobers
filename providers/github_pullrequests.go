@@ -1568,6 +1568,63 @@ func (p *GitHubProvider) CancelPendingChecks(ctx context.Context, req CancelPend
 	return result, nil
 }
 
+// RerunFailedChecks mechanically retries every currently-failed GitHub
+// Actions workflow run at headSHA (#4750), reusing actionsRunsForRef to find
+// them by head commit rather than requiring a caller-supplied run id — ci-poll
+// only ever observes check state, not raw Actions run ids.
+//
+// GitHub's rerun-failed-jobs endpoint operates on one workflow run and reruns
+// EVERY failed job within it — there is no per-check selection. A head commit
+// can carry multiple independent workflow runs (one per triggered workflow
+// file), so a head with two failing workflows triggers two rerun calls, one
+// per run; this is the correct mechanical behavior for "retry what's red; not
+// a partial implementation of per-check retry.
+//
+// Requires the Actions:write permission, which provider:pr:write does not
+// grant today (see #4751) — this call 403s until that credential gap is
+// closed, same failure shape as any other provider write the token lacks
+// scope for.
+func (p *GitHubProvider) RerunFailedChecks(ctx context.Context, repo RepositoryRef, headSHA string) error {
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if headSHA == "" {
+		return fmt.Errorf("head sha is required")
+	}
+	runs, err := p.actionsRunsForRef(ctx, repo, headSHA)
+	if err != nil {
+		return fmt.Errorf("list actions runs for head %s: %w", headSHA, err)
+	}
+	var rerunErrs []error
+	for _, run := range runs {
+		// actionsRunsForRef's head_sha query param is advisory (server-side
+		// filtering), not a guarantee this client enforces itself — mirroring
+		// CancelPendingChecks's own re-check of run.HeadSHA before acting.
+		if run.HeadSHA != headSHA {
+			continue
+		}
+		if normalizeCheckRunState(run.Status, run.Conclusion) != CheckStateFailing {
+			continue
+		}
+		id := strconv.FormatInt(run.ID, 10)
+		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "runs", id, "rerun-failed-jobs")
+		if err != nil {
+			rerunErrs = append(rerunErrs, err)
+			continue
+		}
+		if err := p.do(ctx, http.MethodPost, endpoint, nil, nil); err != nil {
+			rerunErrs = append(rerunErrs, fmt.Errorf("rerun failed jobs for actions run %s: %w", id, err))
+			continue
+		}
+		p.recordExternalRef(ctx, ExternalRef{
+			Provider:  ProviderGitHub,
+			Ref:       fmt.Sprintf("%s/%s@%s", repo.Owner, repo.Name, headSHA),
+			Operation: "rerun-failed-jobs",
+		})
+	}
+	return errors.Join(rerunErrs...)
+}
+
 func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo RepositoryRef, checkRunID int64) ([]CheckAnnotation, error) {
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "check-runs", strconv.FormatInt(checkRunID, 10), "annotations")
 	if err != nil {
