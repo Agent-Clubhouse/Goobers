@@ -8,7 +8,8 @@
   "required": ["schema", "window", "since", "findings", "promotionCandidates"],
   "properties": {
     "schema": {
-      "const": "goobers.dev/candidate-findings/v1"
+      "const": "goobers.dev/candidate-findings/v1",
+      "description": "Immutable wire identifier for the candidate-findings artifact version."
     },
     "window": {
       "type": "string",
@@ -22,6 +23,7 @@
     },
     "findings": {
       "type": "array",
+      "description": "Deterministically selected telemetry anomalies proposed for follow-up work.",
       "items": {
         "$ref": "#/$defs/finding"
       }
@@ -84,10 +86,12 @@
       }
     },
     "noWork": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "Whether the query found no actionable telemetry candidates."
     },
     "note": {
-      "type": "string"
+      "type": "string",
+      "description": "Human-readable explanation accompanying a no-work result or candidate set."
     }
   },
   "$defs": {
@@ -98,6 +102,7 @@
       "properties": {
         "kind": {
           "type": "string",
+          "description": "Stable anomaly category detected by the telemetry query.",
           "enum": [
             "stage-failure-rate",
             "error-signature",
@@ -112,19 +117,23 @@
         },
         "subject": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Workflow, stage, gate, or error signature affected by the anomaly."
         },
         "metrics": {
           "type": "object",
+          "description": "Measured values that caused the candidate to be selected.",
           "additionalProperties": {
             "type": "number"
           }
         },
         "threshold": {
-          "type": "number"
+          "type": "number",
+          "description": "Configured comparison boundary that the measured value crossed."
         },
         "flagged_runs": {
           "type": "array",
+          "description": "Run-journal references that provide evidence for the anomaly.",
           "items": {
             "$ref": "#/$defs/journalPointer"
           }
@@ -206,43 +215,53 @@
       "properties": {
         "runId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Run carrying the linked attribution evidence."
         },
         "nodeId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Graph node the evidence link points back to."
         },
         "stage": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Stage whose journaled event or artifact carries the evidence."
         },
         "detail": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Human-readable attribution detail derived from the run-level credit analysis."
         },
         "source": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Attribution evidence class or contribution family this link represents."
         },
         "journalSequence": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "description": "Exact journal sequence number of the referenced event."
         },
         "journalPath": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Journal file containing the referenced event."
         },
         "artifactPath": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Journal-relative path of the exact artifact or span blob carrying the evidence, when one exists."
         },
         "artifactDigest": {
           "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Content digest of the exact artifact or span blob carrying the evidence, when one exists."
         },
         "artifactMediaType": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Recorded media type of the artifact or span blob carrying the evidence, when one exists."
         }
       }
     },
@@ -253,19 +272,23 @@
       "properties": {
         "nodes": {
           "type": "array",
+          "description": "Ordered path of graph nodes contributing to the cohorted attribution.",
           "items": {
             "type": "string",
             "minLength": 1
           }
         },
         "share": {
-          "type": "number"
+          "type": "number",
+          "description": "Mean attribution share of the repeated path across contributing runs."
         },
         "confidence": {
-          "type": "number"
+          "type": "number",
+          "description": "Mean confidence of the repeated path across contributing runs."
         },
         "evidence": {
           "type": "array",
+          "description": "Exact journal-backed links supporting one contributing path occurrence.",
           "items": {
             "$ref": "#/$defs/attributionEvidenceLink"
           }
@@ -279,24 +302,29 @@
       "properties": {
         "effectiveVersion": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Stable version-segmented cohort key derived from workflow/goober digests and run provenance."
         },
         "workload": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Workload bucket grouping runs that share the same trigger/work class."
         },
         "runCount": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "How many stored runs contributed attribution evidence to the cohort aggregate."
         },
         "topContributingPaths": {
           "type": "array",
+          "description": "Highest-share repeated attribution paths observed across the cohort's runs.",
           "items": {
             "$ref": "#/$defs/contributingPath"
           }
         },
         "counterEvidence": {
           "type": "array",
+          "description": "Exact journal-backed links to contradictory or retry-based counter-evidence observed in the cohort.",
           "items": {
             "$ref": "#/$defs/attributionEvidenceLink"
           }
