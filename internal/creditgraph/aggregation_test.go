@@ -122,3 +122,23 @@ func TestAggregateAttributionEvidenceGroupsByVersionAndWorkload(t *testing.T) {
 		t.Fatalf("cohort workloads = %q, %q, want main then worker", got[0].Workload, got[1].Workload)
 	}
 }
+
+func TestAggregateAttributionEvidenceLinksConcreteRunEvidence(t *testing.T) {
+	obs := []AttributionObservation{{
+		RunID:            "run-42",
+		EffectiveVersion: "v1",
+		Workload:         "main",
+		Attribution:      Attribution{Contributions: []Contribution{{NodeID: "node-a", Path: []string{"root", "node-a"}, Share: 0.5, Confidence: 0.8}}, Causes: []CauseFinding{{NodeID: "node-a", Stage: "plan", Evidence: []string{"intervention: retry succeeded"}}}},
+	}}
+	got := AggregateAttributionEvidence(obs)
+	if len(got) != 1 || len(got[0].TopContributingPaths) != 1 {
+		t.Fatalf("cohorts = %+v, want 1 cohort with 1 path", got)
+	}
+	link := got[0].TopContributingPaths[0].Evidence[0]
+	if link.RunID != "run-42" || link.JournalPath == "" || link.ArtifactDigest == "" {
+		t.Fatalf("evidence link = %+v, want concrete run journal and artifact pointers", link)
+	}
+	if got[0].CounterEvidence[0].JournalPath == "" || got[0].CounterEvidence[0].ArtifactPath == "" {
+		t.Fatalf("counter evidence = %+v, want concrete references", got[0].CounterEvidence[0])
+	}
+}
