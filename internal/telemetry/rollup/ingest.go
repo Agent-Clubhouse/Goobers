@@ -914,10 +914,19 @@ func classifyGateEvaluation(runID string, ev journalEvent) (string, string, stri
 	return classification, reason, string(evidence), nil
 }
 
-// schedulerCursor is the incremental-ingest watermark (#1411): how far into the
-// instance journal IngestSchedulerLog has read (byteOffset) and the highest
-// event seq it has applied (lastSeq).
+// schedulerCursor is the incremental-ingest watermark (#1411): how far into
+// the instance journal IngestSchedulerLog has read (byteOffset), the highest
+// event seq it has applied (lastSeq), and the generation byteOffset was
+// recorded against (generation — #3639). generation matters because
+// compaction (internal/journal.CompactInstanceEvents) never appends to or
+// truncates the file a byteOffset was measured in: it writes kept records to
+// a brand new generation file and atomically advances a pointer, so a stored
+// byteOffset only means anything against the SAME generation it was recorded
+// in. readInstanceEventsFrom uses generation to detect that the pointer has
+// moved since the last ingest and re-reads the new generation from its head
+// rather than reusing a byteOffset that now refers to unrelated content.
 type schedulerCursor struct {
+	generation int
 	byteOffset int64
 	lastSeq    uint64
 }
@@ -928,16 +937,24 @@ type schedulerCursor struct {
 // left, so the first incremental pass re-reads the journal head once but writes
 // nothing for events already stored (ON CONFLICT makes each a no-op), then
 // records the cursor so every later pass reads only the new tail.
+//
+// generation defaults to 0 on a store upgrading from before this column
+// existed (migration v27). That is deliberately not "trust it, it's probably
+// still generation 0": if the live instance has already compacted past
+// generation 0 by the time this runs, generation 0 will not match the
+// resolved current generation, so the very next ingest forces exactly the
+// one full re-read from the new generation's head needed to catch up on
+// whatever #3639 silently missed — safe because the insert is idempotent.
 func readSchedulerCursor(ctx context.Context, sqlDB *sql.DB) (schedulerCursor, error) {
 	var c schedulerCursor
-	err := sqlDB.QueryRowContext(ctx, `SELECT byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
-		Scan(&c.byteOffset, &c.lastSeq)
+	err := sqlDB.QueryRowContext(ctx, `SELECT generation, byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
+		Scan(&c.generation, &c.byteOffset, &c.lastSeq)
 	if err == sql.ErrNoRows {
 		var seed uint64
 		if err := sqlDB.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM scheduler_events`).Scan(&seed); err != nil {
 			return schedulerCursor{}, fmt.Errorf("rollup: seed scheduler cursor: %w", err)
 		}
-		return schedulerCursor{byteOffset: 0, lastSeq: seed}, nil
+		return schedulerCursor{generation: 0, byteOffset: 0, lastSeq: seed}, nil
 	}
 	if err != nil {
 		return schedulerCursor{}, fmt.Errorf("rollup: read scheduler cursor: %w", err)
@@ -945,12 +962,12 @@ func readSchedulerCursor(ctx context.Context, sqlDB *sql.DB) (schedulerCursor, e
 	return c, nil
 }
 
-func writeSchedulerCursor(ctx context.Context, tx *sql.Tx, byteOffset int64, lastSeq uint64) error {
+func writeSchedulerCursor(ctx context.Context, tx *sql.Tx, generation int, byteOffset int64, lastSeq uint64) error {
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO scheduler_ingest_cursor (id, byte_offset, last_seq)
-		VALUES (1, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET byte_offset = excluded.byte_offset, last_seq = excluded.last_seq`,
-		byteOffset, lastSeq); err != nil {
+		INSERT INTO scheduler_ingest_cursor (id, generation, byte_offset, last_seq)
+		VALUES (1, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET generation = excluded.generation, byte_offset = excluded.byte_offset, last_seq = excluded.last_seq`,
+		generation, byteOffset, lastSeq); err != nil {
 		return fmt.Errorf("rollup: write scheduler cursor: %w", err)
 	}
 	return nil
@@ -1056,7 +1073,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	events, newOffset, _, err := readInstanceEventsFrom(schedulerDir, cursor.byteOffset)
+	events, newGen, newOffset, _, err := readInstanceEventsFrom(schedulerDir, cursor.generation, cursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -1141,7 +1158,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 			return err
 		}
 	}
-	if err := writeSchedulerCursor(ctx, tx, newOffset, maxSeq); err != nil {
+	if err := writeSchedulerCursor(ctx, tx, newGen, newOffset, maxSeq); err != nil {
 		return err
 	}
 	if err := writeSpansCursor(ctx, tx, newSpanOffset); err != nil {
