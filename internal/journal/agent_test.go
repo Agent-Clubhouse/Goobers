@@ -296,6 +296,88 @@ func TestValidateAgentEventRejectsUnsupportedAndIncompleteEvents(t *testing.T) {
 	}
 }
 
+func TestValidateAgentProgressRejectsHiddenReasoningAndAcceptsStructuredProgress(t *testing.T) {
+	progress := AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      "run-1",
+		Stage:      "work",
+		Attempt:    1,
+		Sequence:   1,
+		Kind:       AgentProgressSummary,
+		Source:     AgentProgressSourceModel,
+		OccurredAt: time.Now(),
+		Summary:    "I inspected the failing test and will fix the parser.",
+		Plan:       []string{"Confirm the root cause", "Patch the parser"},
+		Evidence:   []AgentProgressEvidence{{Type: "tool", ID: "grep-1", Label: "test failure"}},
+	}
+	if err := validateAgentProgress(progress); err != nil {
+		t.Fatalf("validateAgentProgress accepted a valid progress record: %v", err)
+	}
+
+	bad := progress
+	bad.Summary = "Here is my private reasoning hidden in chain-of-thought"
+	if err := validateAgentProgress(bad); err == nil {
+		t.Fatal("validateAgentProgress accepted chain-of-thought content")
+	}
+
+	bad = progress
+	bad.NextAction = "I will think through the patch in a scratchpad"
+	if err := validateAgentProgress(bad); err == nil {
+		t.Fatal("validateAgentProgress accepted a scratchpad prompt")
+	}
+
+	event := Event{Type: EventAgentProgress, Progress: &progress}
+	if err := ValidateAgentEvent(event); err != nil {
+		t.Fatalf("ValidateAgentEvent rejected valid progress: %v", err)
+	}
+	if err := runAppendProgress(t, event); err != nil {
+		t.Fatalf("journal boundary rejected valid agent progress payload: %v", err)
+	}
+}
+
+func TestRunAppendAssignsAgentProgressSequenceFromDurableJournalOrder(t *testing.T) {
+	run, root := newRun(t)
+	t.Cleanup(func() { _ = run.Close() })
+	progress := AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      testIdentity().RunID,
+		Stage:      "work",
+		Attempt:    1,
+		Sequence:   0,
+		Kind:       AgentProgressSummary,
+		Source:     AgentProgressSourceModel,
+		OccurredAt: time.Time{},
+		Summary:    "Checkpoint summary",
+	}
+	if err := run.Append(Event{Type: EventAgentProgress, Progress: &progress}); err != nil {
+		t.Fatalf("Append progress: %v", err)
+	}
+	reader, err := OpenRead(filepath.Join(root, testIdentity().RunID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatalf("reader.Events: %v", err)
+	}
+	got := events[len(events)-1]
+	if got.Progress == nil || got.Progress.Sequence != got.Seq {
+		t.Fatalf("persisted progress sequence = %#v, event seq = %d", got.Progress, got.Seq)
+	}
+	if got.Progress.OccurredAt.IsZero() || got.Progress.UpdatedAt.IsZero() {
+		t.Fatalf("persisted progress timestamps = %#v", got.Progress)
+	}
+}
+
+func runAppendProgress(t *testing.T, event Event) error {
+	t.Helper()
+	run, _ := newRun(t)
+	defer func() { _ = run.Close() }()
+	return run.Append(event)
+}
+
 const agentSchemaV1 = "goobers.dev/journal/agent/v1"
 
 func agentLifecycleEvent(at time.Time, id, parentID, runID, stage string, attempt int, lifecycle AgentLifecycle, usage AgentUsage) Event {

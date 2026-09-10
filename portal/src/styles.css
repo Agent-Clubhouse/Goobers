@@ -6265,6 +6265,107 @@ code,
   overflow-wrap: anywhere;
 }
 
+.agent-progress-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  display: grid;
+  gap: 16px;
+  margin: 0 0 16px;
+  padding: 16px;
+}
+
+.agent-progress-list,
+.agent-progress-children {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-progress-children {
+  border-left: 2px solid var(--line);
+  margin-left: 8px;
+  padding-left: 12px;
+}
+
+.agent-progress-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.agent-progress-card-header {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.agent-progress-card-title,
+.agent-progress-card-meta,
+.agent-progress-card-summary,
+.agent-progress-degraded,
+.agent-progress-latest,
+.agent-progress-history {
+  margin: 0;
+}
+
+.agent-progress-card-title {
+  color: var(--text);
+}
+
+.agent-progress-card-meta,
+.agent-progress-degraded,
+.agent-progress-latest,
+.agent-progress-history small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-progress-card-summary {
+  color: var(--muted-strong);
+}
+
+.agent-progress-badge {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.agent-progress-badge-active {
+  color: var(--active);
+}
+
+.agent-progress-badge-success {
+  color: var(--success);
+}
+
+.agent-progress-badge-danger {
+  color: var(--danger);
+}
+
+.agent-progress-badge-warning {
+  color: var(--warning-ink);
+}
+
+.agent-progress-latest,
+.agent-progress-history {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-progress-history ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
 .run-detail-workspace {
   display: grid;
   gap: 16px;

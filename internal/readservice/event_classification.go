@@ -54,10 +54,12 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 
 	case journal.EventArtifactRecorded,
 		journal.EventSpanRecorded,
-		journal.EventInputSnapshot:
+		journal.EventInputSnapshot,
+		journal.EventAgentProgress:
 		return RunEventEvidence, false
 
 	case journal.EventStageHeartbeat,
+		journal.EventAgentLifecycle,
 		journal.EventProviderQuotaReset,
 		journal.EventPollShed,
 		journal.EventDaemonStarted,
@@ -71,6 +73,7 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		journal.EventRunnerPlacement,
 		journal.EventRunnerWorkspaceDelta,
 		journal.EventRunnerMutationRecovered,
+		journal.EventAgentMessage,
 		journal.EventClaimAcquired,
 		journal.EventClaimReleased,
 		journal.EventClaimForceReleased,

@@ -90,6 +90,7 @@ type OfflineRuns interface {
 	RunTelemetryStageAttempts(context.Context, string) ([]rollup.StageAttempt, error)
 	RunEscalation(context.Context, string) (*TraceEscalation, error)
 	RunTraceRepassCount(context.Context, string) (int, error)
+	RunAgentProgress(context.Context, string) ([]AgentProgressSummary, error)
 }
 
 // NewOfflineRuns constructs the in-process run reader used for historic CLI
@@ -257,9 +258,13 @@ type OperatorReview struct {
 type RunDetail struct {
 	ReadStateEnvelope
 	RunSummary
-	Graph       *workflow.Graph  `json:"graph,omitempty"`
-	GraphStatus string           `json:"graphStatus"`
-	Escalation  *EscalationCause `json:"escalation,omitempty"`
+	Graph       *workflow.Graph `json:"graph,omitempty"`
+	GraphStatus string          `json:"graphStatus"`
+	// AgentProgress is the current attempt-scoped nested-agent status surface
+	// for this run: current lifecycle-or-progress cards plus ordered structured
+	// history, with lifecycle-only degradation made explicit.
+	AgentProgress []AgentProgressSummary `json:"agentProgress,omitempty"`
+	Escalation    *EscalationCause       `json:"escalation,omitempty"`
 	// TerminalCause is the same projection as Escalation, computed for every
 	// non-completed terminal phase (#4246). Escalation stays escalated-only so
 	// consumers keyed on "this run escalated" keep their meaning.
@@ -370,47 +375,50 @@ type EventList struct {
 // populated for the schema this build owns; Raw retains an unknown event's
 // complete scrubbed JSON for forward-compatible inspection.
 type RunEvent struct {
-	Schema              string                  `json:"schema"`
-	Seq                 uint64                  `json:"seq"`
-	Type                journal.EventType       `json:"type"`
-	Branch              int                     `json:"branch"`
-	Time                time.Time               `json:"time"`
-	KnownSchema         bool                    `json:"knownSchema"`
-	Category            RunEventCategory        `json:"category"`
-	ReplayChapter       bool                    `json:"replayChapter"`
-	Stage               string                  `json:"stage,omitempty"`
-	Attempt             int                     `json:"attempt,omitempty"`
-	AttemptClass        string                  `json:"attemptClass,omitempty"`
-	Gate                string                  `json:"gate,omitempty"`
-	Verdict             string                  `json:"verdict,omitempty"`
-	Target              string                  `json:"target,omitempty"`
-	Escalated           bool                    `json:"escalated,omitempty"`
-	Status              string                  `json:"status,omitempty"`
-	Actor               string                  `json:"actor,omitempty"`
-	Action              string                  `json:"action,omitempty"`
-	Decision            string                  `json:"decision,omitempty"`
-	Rationale           string                  `json:"rationale,omitempty"`
-	Complete            bool                    `json:"complete,omitempty"`
-	InstructionAddendum string                  `json:"instructionAddendum,omitempty"`
-	WorkflowVersion     int                     `json:"workflowVersion,omitempty"`
-	WorkflowDigest      string                  `json:"workflowDigest,omitempty"`
-	Outputs             map[string]any          `json:"outputs,omitempty"`
-	Artifacts           []ArtifactMetadata      `json:"artifacts,omitempty"`
-	Artifact            *ArtifactMetadata       `json:"artifact,omitempty"`
-	Name                string                  `json:"name,omitempty"`
-	ExternalRef         *journal.ExternalRef    `json:"externalRef,omitempty"`
-	Error               *journal.ErrorDetail    `json:"error,omitempty"`
-	Redaction           *journal.RedactionInfo  `json:"redaction,omitempty"`
-	Runner              map[string]any          `json:"runner,omitempty"`
-	Workflow            string                  `json:"workflow,omitempty"`
-	RunID               string                  `json:"runId,omitempty"`
-	Reason              string                  `json:"reason,omitempty"`
-	Parallel            string                  `json:"parallel,omitempty"`
-	BranchName          string                  `json:"branchName,omitempty"`
-	BranchStatus        journal.BranchStatus    `json:"branchStatus,omitempty"`
-	Completeness        []journal.BranchOutcome `json:"completeness,omitempty"`
-	Raw                 json.RawMessage         `json:"raw,omitempty"`
-	JournalEvent        *journal.Event          `json:"-"`
+	Schema              string                       `json:"schema"`
+	Seq                 uint64                       `json:"seq"`
+	Type                journal.EventType            `json:"type"`
+	Branch              int                          `json:"branch"`
+	Time                time.Time                    `json:"time"`
+	KnownSchema         bool                         `json:"knownSchema"`
+	Category            RunEventCategory             `json:"category"`
+	ReplayChapter       bool                         `json:"replayChapter"`
+	Stage               string                       `json:"stage,omitempty"`
+	Attempt             int                          `json:"attempt,omitempty"`
+	AttemptClass        string                       `json:"attemptClass,omitempty"`
+	Gate                string                       `json:"gate,omitempty"`
+	Verdict             string                       `json:"verdict,omitempty"`
+	Target              string                       `json:"target,omitempty"`
+	Escalated           bool                         `json:"escalated,omitempty"`
+	Status              string                       `json:"status,omitempty"`
+	Actor               string                       `json:"actor,omitempty"`
+	Action              string                       `json:"action,omitempty"`
+	Decision            string                       `json:"decision,omitempty"`
+	Rationale           string                       `json:"rationale,omitempty"`
+	Complete            bool                         `json:"complete,omitempty"`
+	InstructionAddendum string                       `json:"instructionAddendum,omitempty"`
+	WorkflowVersion     int                          `json:"workflowVersion,omitempty"`
+	WorkflowDigest      string                       `json:"workflowDigest,omitempty"`
+	Outputs             map[string]any               `json:"outputs,omitempty"`
+	Artifacts           []ArtifactMetadata           `json:"artifacts,omitempty"`
+	Artifact            *ArtifactMetadata            `json:"artifact,omitempty"`
+	Agent               *journal.AgentProvenance     `json:"agent,omitempty"`
+	Progress            *journal.AgentProgress       `json:"progress,omitempty"`
+	PeerMessage         *journal.PeerMessageMetadata `json:"peerMessage,omitempty"`
+	Name                string                       `json:"name,omitempty"`
+	ExternalRef         *journal.ExternalRef         `json:"externalRef,omitempty"`
+	Error               *journal.ErrorDetail         `json:"error,omitempty"`
+	Redaction           *journal.RedactionInfo       `json:"redaction,omitempty"`
+	Runner              map[string]any               `json:"runner,omitempty"`
+	Workflow            string                       `json:"workflow,omitempty"`
+	RunID               string                       `json:"runId,omitempty"`
+	Reason              string                       `json:"reason,omitempty"`
+	Parallel            string                       `json:"parallel,omitempty"`
+	BranchName          string                       `json:"branchName,omitempty"`
+	BranchStatus        journal.BranchStatus         `json:"branchStatus,omitempty"`
+	Completeness        []journal.BranchOutcome      `json:"completeness,omitempty"`
+	Raw                 json.RawMessage              `json:"raw,omitempty"`
+	JournalEvent        *journal.Event               `json:"-"`
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -1177,10 +1185,12 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 		escalation = cause
 	}
 	transitions, transitionsStatus := readmodel.ProjectTransitions(recordEvents(run.records), graph)
+	agentProgress := summarizeAgentProgress(run.identity.RunID, run.records)
 	return RunDetail{
 		RunSummary:        summary,
 		Graph:             graph,
 		GraphStatus:       status,
+		AgentProgress:     agentProgress,
 		Escalation:        escalation,
 		TerminalCause:     cause,
 		Outcome:           runOutcome(summary, run.records),
@@ -2528,6 +2538,16 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.InstructionAddendum = event.InstructionAddendum
 	projected.WorkflowVersion = event.WorkflowVersion
 	projected.WorkflowDigest = event.WorkflowDigest
+	projected.Agent = event.Agent
+	if event.Progress != nil {
+		progress := *event.Progress
+		progress.Sequence = event.Seq
+		if progress.UpdatedAt.IsZero() {
+			progress.UpdatedAt = progress.OccurredAt
+		}
+		projected.Progress = &progress
+	}
+	projected.PeerMessage = event.PeerMessage
 	projected.Outputs = scalarOutputs(event.Outputs)
 	for _, ref := range event.Artifacts {
 		if metadata, ok := artifacts.match(
