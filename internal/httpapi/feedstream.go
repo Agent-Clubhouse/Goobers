@@ -295,7 +295,7 @@ func invalidationsFor(page readmodel.FeedPosition) []StreamEvent {
 	}
 	return []StreamEvent{{
 		ID:   cursor,
-		Type: "update",
+		Type: "invalidate",
 		Data: apicontract.Invalidation{
 			Cursor:    cursor,
 			Models:    models,

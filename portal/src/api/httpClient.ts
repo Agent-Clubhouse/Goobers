@@ -1242,8 +1242,9 @@ function parseUpdateEvent(event: RawServerEvent): DaemonUpdateEvent {
   if (event.type === "heartbeat") {
     return { type: "heartbeat", data: { cursor: data.cursor } };
   }
+  const eventType = event.type === "update" ? "invalidate" : event.type;
   if (
-    (event.type !== "snapshot" && event.type !== "invalidate") ||
+    (eventType !== "snapshot" && eventType !== "invalidate") ||
     !event.id ||
     event.id !== data.cursor ||
     !Array.isArray(data.models) ||
@@ -1256,7 +1257,7 @@ function parseUpdateEvent(event: RawServerEvent): DaemonUpdateEvent {
   const workflows = optionalWorkflowReferences(data.workflows);
   return {
     id: event.id,
-    type: event.type,
+    type: eventType,
     data: {
       cursor: data.cursor,
       models: [...new Set(data.models)],
