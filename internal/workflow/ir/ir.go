@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -25,16 +26,18 @@ const (
 
 // Document is the canonical, versioned representation of a workflow definition.
 type Document struct {
-	SchemaVersion string          `json:"schemaVersion"`
-	Compiler      Compiler        `json:"compiler"`
-	Source        Source          `json:"source"`
-	Triggers      []apiv1.Trigger `json:"triggers"`
-	Start         string          `json:"start"`
-	Schemas       []Schema        `json:"schemas,omitempty"`
-	Nodes         []Node          `json:"nodes"`
-	Edges         []Edge          `json:"edges"`
-	Permissions   []string        `json:"permissions,omitempty"`
-	Provenance    *Provenance     `json:"provenance,omitempty"`
+	SchemaVersion    string               `json:"schemaVersion"`
+	Compiler         Compiler             `json:"compiler"`
+	Source           Source               `json:"source"`
+	Triggers         []apiv1.Trigger      `json:"triggers"`
+	Start            string               `json:"start"`
+	Schemas          []Schema             `json:"schemas,omitempty"`
+	Nodes            []Node               `json:"nodes"`
+	Edges            []Edge               `json:"edges"`
+	Permissions      []string             `json:"permissions,omitempty"`
+	SourceDefinition *workflow.Definition `json:"sourceDefinition,omitempty"`
+	FeatureGates     []string             `json:"featureGates,omitempty"`
+	Provenance       *Provenance          `json:"provenance,omitempty"`
 }
 
 // Provenance records who or what created a workflow IR document, what source
@@ -170,19 +173,35 @@ type Edge struct {
 
 // Normalize converts a workflow definition into deterministic canonical IR.
 func Normalize(def workflow.Definition) (Document, error) {
+	return NormalizeWithMetadata(def, nil, nil)
+}
+
+// NormalizeWithMetadata converts a workflow definition into canonical IR and
+// persists the source and generation metadata alongside the normalized graph.
+func NormalizeWithMetadata(def workflow.Definition, provenance *Provenance, featureGates []string) (Document, error) {
 	digest, err := workflow.ComputeDigest(def)
 	if err != nil {
 		return Document{}, fmt.Errorf("digest workflow definition: %w", err)
 	}
+	source, err := cloneDefinition(def)
+	if err != nil {
+		return Document{}, fmt.Errorf("snapshot workflow definition: %w", err)
+	}
 	doc := Document{
-		SchemaVersion: SchemaVersion,
-		Compiler:      Compiler{Name: CompilerName, Version: CompilerVersion},
-		Source:        Source{Name: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Digest: digest},
-		Triggers:      cloneTriggers(def.Spec.Triggers),
-		Start:         def.Spec.Start,
-		Schemas:       []Schema{},
-		Nodes:         []Node{},
-		Edges:         []Edge{},
+		SchemaVersion:    SchemaVersion,
+		Compiler:         Compiler{Name: CompilerName, Version: CompilerVersion},
+		Source:           Source{Name: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Digest: digest},
+		Triggers:         cloneTriggers(def.Spec.Triggers),
+		Start:            def.Spec.Start,
+		Schemas:          []Schema{},
+		Nodes:            []Node{},
+		Edges:            []Edge{},
+		SourceDefinition: &source,
+		FeatureGates:     append([]string(nil), featureGates...),
+	}
+	if provenance != nil {
+		copy := *provenance
+		doc.Provenance = &copy
 	}
 	for _, task := range def.Spec.Tasks {
 		node := Node{Name: task.Name, Kind: string(task.Type), Task: cloneTask(task), SideEffect: sideEffect(task)}
@@ -253,6 +272,18 @@ func Normalize(def workflow.Definition) (Document, error) {
 		return Document{}, err
 	}
 	return doc, nil
+}
+
+func cloneDefinition(def workflow.Definition) (workflow.Definition, error) {
+	raw, err := json.Marshal(def)
+	if err != nil {
+		return workflow.Definition{}, err
+	}
+	var copy workflow.Definition
+	if err := json.Unmarshal(raw, &copy); err != nil {
+		return workflow.Definition{}, err
+	}
+	return copy, nil
 }
 
 // Digest validates the document and returns its canonical SHA-256 digest.
@@ -361,8 +392,9 @@ func (d Document) Diff(other Document) (Diff, error) {
 		return Diff{}, fmt.Errorf("validate other document: %w", err)
 	}
 	changes := make([]Change, 0, 8)
-	if d.Source.Digest != other.Source.Digest {
-		changes = append(changes, Change{Path: "source.digest", Before: d.Source.Digest, After: other.Source.Digest, Kind: DiffBehavioral, Explanation: "source normalization digest changed"})
+	behaviorChanged := semanticContentChanged(d, other)
+	if d.Source.Digest != other.Source.Digest && behaviorChanged {
+		changes = append(changes, Change{Path: "source.digest", Before: d.Source.Digest, After: other.Source.Digest, Kind: DiffBehavioral, Explanation: "source normalization digest changed with normalized workflow content"})
 	}
 	if d.Start != other.Start {
 		changes = append(changes, Change{Path: "start", Before: d.Start, After: other.Start, Kind: DiffBehavioral, Explanation: "workflow entry point changed"})
@@ -419,36 +451,46 @@ func (d Document) Diff(other Document) (Diff, error) {
 	return Diff{Kind: DiffCosmetic, Summary: "normalized workflow IR differs only in cosmetic metadata", Changes: changes}, nil
 }
 
+func semanticContentChanged(before, after Document) bool {
+	type semanticDocument struct {
+		Triggers    []apiv1.Trigger `json:"triggers"`
+		Start       string          `json:"start"`
+		Schemas     []Schema        `json:"schemas"`
+		Nodes       []Node          `json:"nodes"`
+		Edges       []Edge          `json:"edges"`
+		Permissions []string        `json:"permissions"`
+	}
+	left, _ := json.Marshal(semanticDocument{
+		Triggers: before.Triggers, Start: before.Start, Schemas: before.Schemas,
+		Nodes: before.Nodes, Edges: before.Edges, Permissions: before.Permissions,
+	})
+	right, _ := json.Marshal(semanticDocument{
+		Triggers: after.Triggers, Start: after.Start, Schemas: after.Schemas,
+		Nodes: after.Nodes, Edges: after.Edges, Permissions: after.Permissions,
+	})
+	return string(left) != string(right)
+}
+
 // ExplainLoss records the unavoidable information loss when a workflow source is
 // converted to canonical IR and back to a generated representation.
 func (d Document) ExplainLoss(source any) []Loss {
-	loss := make([]Loss, 0, 2)
+	loss := make([]Loss, 0, 1)
 	switch src := source.(type) {
 	case workflow.Definition:
-		if src.Name != d.Source.Name {
-			loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.Source.Name, Explanation: "normalized IR preserves the semantic identity but not original source name aliasing"})
-		}
-		if src.DSLVersion != "" && src.DSLVersion != d.Source.DSLVersion {
-			loss = append(loss, Loss{Field: "source.dslVersion", Before: src.DSLVersion, After: d.Source.DSLVersion, Explanation: "canonical IR stores the effective DSL contract rather than the exact serial form"})
-		}
-		if len(src.Spec.Tasks) == 0 && len(d.Nodes) > 0 {
-			loss = append(loss, Loss{Field: "source.definition", Before: "workflow definition", After: "normalized IR", Explanation: "source-level ordering and formatting are intentionally discarded by canonical normalization"})
+		digest, err := workflow.ComputeDigest(src)
+		if err != nil || digest != d.Source.Digest {
+			loss = append(loss, Loss{Field: "source.digest", Before: digest, After: d.Source.Digest, Explanation: "the persisted source does not match the IR source digest"})
+		} else if d.SourceDefinition == nil {
+			loss = append(loss, Loss{Field: "source.definition", Before: "workflow definition", After: "not persisted", Explanation: "the IR predates source-definition persistence, so exact round-trip fidelity cannot be established"})
+		} else if !reflect.DeepEqual(src, *d.SourceDefinition) {
+			loss = append(loss, Loss{Field: "source.definition", Before: "original workflow definition", After: "persisted workflow definition", Explanation: "the persisted source differs from the supplied definition"})
 		}
 	case apiv1.Workflow:
 		if src.Name != d.Source.Name {
-			loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.Source.Name, Explanation: "normalized IR preserves the semantic identity but not original source name aliasing"})
-		}
-		if src.DSLVersion != "" && src.DSLVersion != d.Source.DSLVersion {
-			loss = append(loss, Loss{Field: "source.dslVersion", Before: src.DSLVersion, After: d.Source.DSLVersion, Explanation: "canonical IR stores the effective DSL contract rather than the exact serial form"})
+			loss = append(loss, Loss{Field: "source.name", Before: src.Name, After: d.Source.Name, Explanation: "the supplied source does not identify the persisted IR source"})
 		}
 	case nil:
 		return nil
-	}
-	if d.Provenance == nil && d.Source.Digest != "" {
-		loss = append(loss, Loss{Field: "provenance", Before: "", After: "recorded provenance", Explanation: "IR provenance is intentionally separate from the normalized content and may be absent until persisted"})
-	}
-	if len(loss) == 0 && d.Source.Digest != "" {
-		loss = append(loss, Loss{Field: "source.definition", Before: "raw source", After: "normalized IR", Explanation: "canonical IR intentionally discards source ordering, formatting, and implicit serialization details; only semantic structure and validation metadata survive"})
 	}
 	return loss
 }

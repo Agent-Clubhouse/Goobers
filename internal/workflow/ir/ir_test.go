@@ -167,7 +167,17 @@ func TestIRProvenanceAndSemanticDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.Provenance = &Provenance{Generator: "copilot", Model: "gpt-4o", Tool: "workflow-ir", UserIntent: "ship", Validation: "schema-check", Decision: "pass"}
+	provenance := &Provenance{Generator: "copilot", Model: "gpt-4o", Tool: "workflow-ir", UserIntent: "ship", Validation: "schema-check", Decision: "pass"}
+	first, err = NormalizeWithMetadata(base, provenance, []string{"stable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SourceDefinition == nil || !reflect.DeepEqual(*first.SourceDefinition, base) {
+		t.Fatalf("source definition was not persisted: %#v", first.SourceDefinition)
+	}
+	if !reflect.DeepEqual(first.Provenance, provenance) || !reflect.DeepEqual(first.FeatureGates, []string{"stable"}) {
+		t.Fatalf("generation metadata was not persisted: provenance=%#v gates=%v", first.Provenance, first.FeatureGates)
+	}
 	inspect := first.Inspect()
 	if got := inspect.Start; got != "build" {
 		t.Fatalf("Inspect().Start = %q, want %q", got, "build")
@@ -195,9 +205,24 @@ func TestIRProvenanceAndSemanticDiff(t *testing.T) {
 	if changed.Kind != DiffBehavioral {
 		t.Fatalf("SemanticDiff on changed start = %q, want %q", changed.Kind, DiffBehavioral)
 	}
-	losses := first.ExplainLoss(base)
-	if len(losses) == 0 || !strings.Contains(losses[0].Explanation, "canonical") {
-		t.Fatalf("ExplainLoss(base) = %#v, want a loss explanation for canonicalization", losses)
+	if losses := first.ExplainLoss(base); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(base) = %#v, want no loss for persisted source", losses)
+	}
+	legacy := first
+	legacy.SourceDefinition = nil
+	losses := legacy.ExplainLoss(base)
+	if len(losses) != 1 || !strings.Contains(losses[0].Explanation, "predates") {
+		t.Fatalf("ExplainLoss(legacy) = %#v, want explicit persistence loss", losses)
+	}
+	cosmetic := first
+	cosmetic.Source.DSLVersion = "next"
+	cosmetic.Source.Digest = "sha256:source-changed-by-dsl-version"
+	diff, err = SemanticDiff(first, cosmetic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff on DSL-version-only metadata = %q, want %q", diff.Kind, DiffCosmetic)
 	}
 }
 
