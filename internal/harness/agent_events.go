@@ -350,6 +350,9 @@ func projectAgentEvents(data []byte, req RunRequest) []journal.Event {
 				event.Progress.Attempt = 1
 			}
 			event.Progress.Schema = "goobers.dev/journal/agent-progress/v1"
+			if event.Progress.Source == "" {
+				event.Progress.Source = journal.AgentProgressSourceModel
+			}
 			if event.Progress.Fidelity == "" {
 				event.Progress.Fidelity = journal.AgentFidelityFull
 			}

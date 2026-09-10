@@ -63,13 +63,14 @@ func TestProjectAgentEventsAcceptsOnlyNormalizedRecords(t *testing.T) {
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	payload := `{"type":"assistant.message","content":"not provenance"}
 {"type":"agent.lifecycle","agent":{"id":"worker","runId":"spoofed","stage":"spoofed","attempt":99,"lifecycle":"completed","startedAt":"` + now + `","updatedAt":"` + now + `","requestedModel":"requested","resolvedModel":"resolved","requestedReasoningEffort":"high","resolvedReasoningEffort":"medium"}}
+{"type":"agent.progress","progress":{"agentId":"worker","runId":"spoofed","stage":"spoofed","attempt":99,"sequence":17,"kind":"summary","occurredAt":"` + now + `","summary":"Checkpoint summary"}}
 {"type":"agent.lifecycle","agent":{"id":"invalid","lifecycle":"completed"}}`
 	events := projectAgentEvents([]byte(payload), RunRequest{
 		Attempt:  2,
 		Envelope: apiv1.InvocationEnvelope{RunID: "run-1", TaskID: "stage-1", Attempt: 2},
 	})
-	if len(events) != 1 || events[0].Agent == nil {
-		t.Fatalf("events = %#v, want one lifecycle event", events)
+	if len(events) != 2 || events[0].Agent == nil || events[1].Progress == nil {
+		t.Fatalf("events = %#v, want lifecycle and progress events", events)
 	}
 	agent := events[0].Agent
 	if agent.RunID != "run-1" || agent.Stage != "stage-1" || agent.Attempt != 2 ||
@@ -80,6 +81,13 @@ func TestProjectAgentEventsAcceptsOnlyNormalizedRecords(t *testing.T) {
 	}
 	if events[0].Agent.Fidelity != journal.AgentFidelityFull {
 		t.Fatalf("fidelity = %q, want full", events[0].Agent.Fidelity)
+	}
+	progress := events[1].Progress
+	if progress.RunID != "run-1" || progress.Stage != "stage-1" || progress.Attempt != 2 ||
+		progress.Schema != "goobers.dev/journal/agent-progress/v1" ||
+		progress.Source != journal.AgentProgressSourceModel ||
+		progress.Fidelity != journal.AgentFidelityFull {
+		t.Fatalf("progress = %#v, want invocation defaults with source label", progress)
 	}
 }
 

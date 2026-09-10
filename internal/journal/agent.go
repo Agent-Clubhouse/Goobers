@@ -87,6 +87,12 @@ const (
 	AgentProgressSummary    AgentProgressKind = "summary"
 )
 
+const (
+	maxAgentProgressRecordsPerInvocation = 64
+	agentProgressEmissionWindow          = time.Second
+	maxAgentProgressRecordsPerWindow     = 8
+)
+
 // AgentProgressSource classifies how an operator-readable status was emitted.
 type AgentProgressSource string
 
@@ -107,7 +113,7 @@ type AgentProgress struct {
 	Attempt    int                     `json:"attempt"`
 	Sequence   uint64                  `json:"sequence"`
 	Kind       AgentProgressKind       `json:"kind"`
-	Source     AgentProgressSource     `json:"source,omitempty"`
+	Source     AgentProgressSource     `json:"source"`
 	OccurredAt time.Time               `json:"occurredAt"`
 	UpdatedAt  time.Time               `json:"updatedAt,omitempty"`
 	Fidelity   string                  `json:"fidelity,omitempty"`
@@ -203,7 +209,7 @@ func validateAgentProgressEnums(progress AgentProgress) error {
 		return fmt.Errorf("journal: invalid nested-agent progress kind %q", progress.Kind)
 	}
 	switch progress.Source {
-	case "", AgentProgressSourceNative, AgentProgressSourceModel, AgentProgressSourceEvidence:
+	case AgentProgressSourceNative, AgentProgressSourceModel, AgentProgressSourceEvidence:
 	default:
 		return fmt.Errorf("journal: invalid nested-agent progress source %q", progress.Source)
 	}

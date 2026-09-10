@@ -651,13 +651,97 @@ func (r *Run) append(ev Event) error {
 	if ev.Branch == 0 {
 		ev.Branch = r.branch
 	}
-	stamped, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
+	stampTime := r.now()
+	if ev.Type == EventAgentProgress && ev.Progress != nil {
+		events, _, err := readEvents(filepath.Join(r.dir, fileEvents))
+		if err != nil {
+			return err
+		}
+		if err := validateAgentProgressEmission(events, *ev.Progress, stampTime); err != nil {
+			return err
+		}
+	}
+	stamped, err := appendEvent(r.events, &r.seq, r.scrubber, func() time.Time { return stampTime }, ev)
 	if err != nil {
 		r.appendErr = err
 	} else {
 		r.lastActivity = stamped.Time
 	}
 	return err
+}
+
+func validateAgentProgressEmission(events []Event, progress AgentProgress, stampTime time.Time) error {
+	count := 0
+	recent := 0
+	progressTime := effectiveAgentProgressTime(progress, stampTime)
+	if progressTime.After(stampTime) {
+		progressTime = stampTime
+	}
+	windowStart := progressTime.Add(-agentProgressEmissionWindow)
+	for _, event := range events {
+		if event.Type != EventAgentProgress || event.Progress == nil {
+			continue
+		}
+		if !sameAgentProgressInvocation(*event.Progress, progress, event, progress.RunID, progress.Stage, progress.Attempt) {
+			continue
+		}
+		count++
+		eventTime := effectiveAgentProgressTime(*event.Progress, event.Time)
+		if eventTime.After(event.Time) {
+			eventTime = event.Time
+		}
+		if !eventTime.Before(windowStart) && !eventTime.After(progressTime) {
+			recent++
+		}
+	}
+	if count >= maxAgentProgressRecordsPerInvocation {
+		return fmt.Errorf(
+			"journal: nested-agent progress retention limit reached for %q after %d records",
+			progress.AgentID,
+			maxAgentProgressRecordsPerInvocation,
+		)
+	}
+	if recent >= maxAgentProgressRecordsPerWindow {
+		return fmt.Errorf(
+			"journal: nested-agent progress emission for %q exceeded %d records per %s",
+			progress.AgentID,
+			maxAgentProgressRecordsPerWindow,
+			agentProgressEmissionWindow,
+		)
+	}
+	return nil
+}
+
+func sameAgentProgressInvocation(existing, pending AgentProgress, event Event, pendingRunID, pendingStage string, pendingAttempt int) bool {
+	existingRunID := firstNonEmptyString(existing.RunID, event.RunID)
+	existingStage := firstNonEmptyString(existing.Stage, event.Stage)
+	existingAttempt := existing.Attempt
+	if existingAttempt < 1 {
+		existingAttempt = event.Attempt
+	}
+	return existing.AgentID == pending.AgentID &&
+		existingRunID == pendingRunID &&
+		existingStage == pendingStage &&
+		existingAttempt == pendingAttempt
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func effectiveAgentProgressTime(progress AgentProgress, fallback time.Time) time.Time {
+	if !progress.UpdatedAt.IsZero() {
+		return progress.UpdatedAt
+	}
+	if !progress.OccurredAt.IsZero() {
+		return progress.OccurredAt
+	}
+	return fallback
 }
 
 // IfLastActivityBefore runs claim while holding the writer mutex only when no

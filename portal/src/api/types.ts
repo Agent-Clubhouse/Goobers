@@ -798,7 +798,7 @@ export interface AgentProgressRecord {
   attempt: number;
   sequence: number;
   kind: AgentProgressKind;
-  source?: AgentProgressSource;
+  source: AgentProgressSource;
   occurredAt: string;
   updatedAt?: string;
   fidelity?: "full" | "partial" | "none";

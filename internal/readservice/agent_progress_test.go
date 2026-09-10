@@ -141,6 +141,76 @@ func TestRunAgentProgressOrderingFidelityAndDegradation(t *testing.T) {
 	}
 }
 
+func TestRunAgentProgressPreservesNestedGrandchildren(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	const runID = "test-agent-progress-grandchildren"
+
+	j, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
+		StartedAt:       time.Now(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for _, event := range []journal.Event{
+		{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "coordinator-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Coordinator: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", ParentID: "coordinator-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Lifecycle: journal.AgentStarted, StartedAt: now.Add(time.Minute), UpdatedAt: now.Add(time.Minute),
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "leaf-1", ParentID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Leaf: true, Lifecycle: journal.AgentStarted, StartedAt: now.Add(2 * time.Minute), UpdatedAt: now.Add(2 * time.Minute),
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentProgress, Progress: &journal.AgentProgress{
+			Schema: "goobers.dev/journal/agent-progress/v1", AgentID: "leaf-1", RunID: runID,
+			Stage: "implement", Attempt: 1, Kind: journal.AgentProgressSummary,
+			Source: journal.AgentProgressSourceModel, OccurredAt: now.Add(3 * time.Minute),
+			Summary: "Leaf completed its analysis.",
+		}},
+	} {
+		if err := j.Append(event); err != nil {
+			t.Fatalf("Append %s: %v", event.Type, err)
+		}
+	}
+	_ = j.Close()
+
+	reads, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatalf("NewOfflineRuns: %v", err)
+	}
+	progress, err := reads.RunAgentProgress(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunAgentProgress: %v", err)
+	}
+	if len(progress) != 1 {
+		t.Fatalf("root summaries = %d, want 1", len(progress))
+	}
+	if len(progress[0].Children) != 1 {
+		t.Fatalf("coordinator children = %d, want 1", len(progress[0].Children))
+	}
+	if len(progress[0].Children[0].Children) != 1 {
+		t.Fatalf("worker grandchildren = %d, want 1", len(progress[0].Children[0].Children))
+	}
+	leaf := progress[0].Children[0].Children[0]
+	if leaf.AgentID != "leaf-1" || leaf.Latest == nil || leaf.Latest.Summary != "Leaf completed its analysis." {
+		t.Fatalf("leaf summary = %#v", leaf)
+	}
+}
+
 func TestRunAgentProgressPreservesAttemptScopedCurrentStatus(t *testing.T) {
 	root := t.TempDir()
 	layout := instance.NewLayout(root)

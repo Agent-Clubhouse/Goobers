@@ -654,8 +654,7 @@ function agentBadgeTone(summary: AgentProgressSummary): "active" | "success" | "
 }
 
 function agentProgressLabel(record: AgentProgressRecord): string {
-  const source = record.source ? ` · ${record.source}` : "";
-  return `${humanizeAgentProgressKind(record.kind)}${source}`;
+  return `${humanizeAgentProgressKind(record.kind)} · ${record.source || "unknown"}`;
 }
 
 function agentProgressSummary(record: AgentProgressRecord): string {

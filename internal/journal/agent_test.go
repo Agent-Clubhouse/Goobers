@@ -316,6 +316,12 @@ func TestValidateAgentProgressRejectsHiddenReasoningAndAcceptsStructuredProgress
 	}
 
 	bad := progress
+	bad.Source = ""
+	if err := validateAgentProgress(bad); err == nil {
+		t.Fatal("validateAgentProgress accepted progress without a source label")
+	}
+
+	bad = progress
 	bad.Summary = "Here is my private reasoning hidden in chain-of-thought"
 	if err := validateAgentProgress(bad); err == nil {
 		t.Fatal("validateAgentProgress accepted chain-of-thought content")
@@ -368,6 +374,77 @@ func TestRunAppendAssignsAgentProgressSequenceFromDurableJournalOrder(t *testing
 	}
 	if got.Progress.OccurredAt.IsZero() || got.Progress.UpdatedAt.IsZero() {
 		t.Fatalf("persisted progress timestamps = %#v", got.Progress)
+	}
+}
+
+func TestRunAppendRejectsAgentProgressThatExceedsEmissionRateBound(t *testing.T) {
+	run, _ := newRunWithClock(t, constClock())
+	t.Cleanup(func() { _ = run.Close() })
+
+	for i := 0; i < maxAgentProgressRecordsPerWindow; i++ {
+		progress := AgentProgress{
+			Schema:  "goobers.dev/journal/agent-progress/v1",
+			AgentID: "worker-1",
+			RunID:   testIdentity().RunID,
+			Stage:   "work",
+			Attempt: 1,
+			Kind:    AgentProgressSummary,
+			Source:  AgentProgressSourceModel,
+			Summary: "Checkpoint summary",
+		}
+		if err := run.Append(Event{Type: EventAgentProgress, Progress: &progress}); err != nil {
+			t.Fatalf("Append progress %d: %v", i, err)
+		}
+	}
+	progress := AgentProgress{
+		Schema:  "goobers.dev/journal/agent-progress/v1",
+		AgentID: "worker-1",
+		RunID:   testIdentity().RunID,
+		Stage:   "work",
+		Attempt: 1,
+		Kind:    AgentProgressSummary,
+		Source:  AgentProgressSourceModel,
+		Summary: "Checkpoint summary",
+	}
+	if err := run.Append(Event{Type: EventAgentProgress, Progress: &progress}); err == nil ||
+		!strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("overflow Append error = %v, want rate-limit rejection", err)
+	}
+}
+
+func TestRunAppendRejectsAgentProgressBeyondRetentionLimit(t *testing.T) {
+	run, _ := newRun(t)
+	t.Cleanup(func() { _ = run.Close() })
+
+	for i := 0; i < maxAgentProgressRecordsPerInvocation; i++ {
+		progress := AgentProgress{
+			Schema:  "goobers.dev/journal/agent-progress/v1",
+			AgentID: "worker-1",
+			RunID:   testIdentity().RunID,
+			Stage:   "work",
+			Attempt: 1,
+			Kind:    AgentProgressProgress,
+			Source:  AgentProgressSourceModel,
+			Summary: "Progress " + string(rune('A'+(i%26))),
+		}
+		if err := run.Append(Event{Type: EventAgentProgress, Progress: &progress}); err != nil {
+			t.Fatalf("Append progress %d: %v", i, err)
+		}
+	}
+
+	overflow := AgentProgress{
+		Schema:  "goobers.dev/journal/agent-progress/v1",
+		AgentID: "worker-1",
+		RunID:   testIdentity().RunID,
+		Stage:   "work",
+		Attempt: 1,
+		Kind:    AgentProgressSummary,
+		Source:  AgentProgressSourceModel,
+		Summary: "Overflow progress",
+	}
+	if err := run.Append(Event{Type: EventAgentProgress, Progress: &overflow}); err == nil ||
+		!strings.Contains(err.Error(), "retention limit reached") {
+		t.Fatalf("overflow Append error = %v, want retention limit rejection", err)
 	}
 }
 

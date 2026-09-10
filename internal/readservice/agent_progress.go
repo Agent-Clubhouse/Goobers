@@ -235,43 +235,67 @@ func collectAgentProgressRoots(
 	metaOrder []progressKey,
 	summaries map[progressKey]*AgentProgressSummary,
 ) []AgentProgressSummary {
+	children := make(map[progressKey][]progressKey)
 	for _, key := range metaOrder {
-		appendAgentProgressChild(key, summaries)
+		noteAgentProgressChild(key, summaries, children)
 	}
 	var roots []AgentProgressSummary
 	for _, key := range metaOrder {
-		if root, ok := agentProgressRoot(key, summaries); ok {
-			roots = append(roots, root)
+		if agentProgressHasParent(key, summaries) {
+			continue
+		}
+		if root := buildAgentProgressTree(key, summaries, children); root != nil {
+			roots = append(roots, *root)
 		}
 	}
 	return roots
 }
 
-func appendAgentProgressChild(key progressKey, summaries map[progressKey]*AgentProgressSummary) {
+func noteAgentProgressChild(
+	key progressKey,
+	summaries map[progressKey]*AgentProgressSummary,
+	children map[progressKey][]progressKey,
+) {
 	summary := summaries[key]
 	if summary == nil || summary.ParentID == "" {
 		return
 	}
 	parentKey := progressKey{stage: summary.Stage, agentID: summary.ParentID, attempt: summary.Attempt}
-	parent := summaries[parentKey]
-	if parent != nil {
-		parent.Children = append(parent.Children, *summary)
+	if summaries[parentKey] != nil {
+		children[parentKey] = append(children[parentKey], key)
 	}
 }
 
-func agentProgressRoot(
+func agentProgressHasParent(
 	key progressKey,
 	summaries map[progressKey]*AgentProgressSummary,
-) (AgentProgressSummary, bool) {
+) bool {
 	summary := summaries[key]
 	if summary == nil {
-		return AgentProgressSummary{}, false
+		return false
 	}
 	parentKey := progressKey{stage: summary.Stage, agentID: summary.ParentID, attempt: summary.Attempt}
-	if summary.ParentID != "" && summaries[parentKey] != nil {
-		return AgentProgressSummary{}, false
+	return summary.ParentID != "" && summaries[parentKey] != nil
+}
+
+func buildAgentProgressTree(
+	key progressKey,
+	summaries map[progressKey]*AgentProgressSummary,
+	children map[progressKey][]progressKey,
+) *AgentProgressSummary {
+	summary := summaries[key]
+	if summary == nil {
+		return nil
 	}
-	return *summary, true
+	copy := *summary
+	copy.Children = make([]AgentProgressSummary, 0, len(children[key]))
+	for _, childKey := range children[key] {
+		child := buildAgentProgressTree(childKey, summaries, children)
+		if child != nil {
+			copy.Children = append(copy.Children, *child)
+		}
+	}
+	return &copy
 }
 
 func summarizeCurrentStatus(lifecycle *AgentLifecycleStatus, latest *journal.AgentProgress, fidelity string) *AgentCurrentStatus {

@@ -477,7 +477,7 @@
     "agentProgress": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "agentId", "runId", "stage", "attempt", "sequence", "kind", "occurredAt"],
+      "required": ["schema", "agentId", "runId", "stage", "attempt", "sequence", "kind", "source", "occurredAt"],
       "properties": {
         "schema": { "description": "Versioned schema identifier for the agent progress record.", "const": "goobers.dev/journal/agent-progress/v1" },
         "agentId": { "description": "Stable identifier for the agent invocation whose progress is reported.", "type": "string", "minLength": 1 },
