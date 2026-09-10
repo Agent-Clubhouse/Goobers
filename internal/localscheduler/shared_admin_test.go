@@ -74,3 +74,32 @@ func TestSharedAdministrativeReleaseRevokesBeforeUncertainCleanup(t *testing.T) 
 		t.Fatal("stale administrative request removed a successor")
 	}
 }
+
+func TestSharedRevocationSurvivesOrdinaryHistoryRetention(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	ledger, err := OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &admissionStore{}
+	key := ClaimKey{Gaggle: "g", Provider: "github", ExternalID: "42"}
+	owner := sharedclaim.Owner{Instance: "instance", Run: "paused-run", Token: "owner"}
+	if ok, _, err := ledger.ClaimSharedScoped(t.Context(), store, "42", key, owner, "work", time.Minute); err != nil || !ok {
+		t.Fatalf("seed: %v %v", ok, err)
+	}
+	if err := ledger.ForceReleaseCoordinatedShared(t.Context(), store, "42", key, owner, "cli"); err != nil {
+		t.Fatal(err)
+	}
+	ledger.now = func() time.Time { return time.Now().Add(2 * claimHistoryTTL) }
+	if err := ledger.persist(); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err = OpenClaimLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := store.writes
+	if ok, _, err := ledger.ClaimSharedScoped(t.Context(), store, "42", key, owner, "work", time.Minute); err == nil || ok || store.writes != writes {
+		t.Fatalf("history retention restored revoked authority: %v %v writes=%d", ok, err, store.writes)
+	}
+}

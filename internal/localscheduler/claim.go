@@ -944,6 +944,17 @@ func (l *ClaimLedger) retainedHistory(now time.Time) map[string]map[string]Claim
 				}
 			}
 			if !newest.After(cutoff) {
+				// Revocation is an enduring denial for this run incarnation,
+				// not ordinary historical display data. Forgetting it could
+				// let a still-open, long-paused run reacquire after retention.
+				for key, entry := range history {
+					if entry.SharedRevoked {
+						if retained[runID] == nil {
+							retained[runID] = make(map[string]ClaimEntry)
+						}
+						retained[runID][key] = entry
+					}
+				}
 				continue
 			}
 		}

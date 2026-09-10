@@ -50,6 +50,8 @@ conservative acknowledged deadline, reserving one second for HTTP Date precision
 The execution monitor does not extend a known deadline while a claims read is
 stalled. Administrative release durably revokes local execution before attempting
 remote cleanup, even when provider credentials are unavailable.
+Released administrative revocations are retained beyond ordinary claim-history
+expiry so a long-paused run cannot regain authority merely through retention.
 
 Execution snapshots have a one-second read watchdog, including before the first
 claim is observed. A stalled read cancels shared execution rather than leaving
