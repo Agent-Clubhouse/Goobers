@@ -518,6 +518,16 @@ describe("Insight page", () => {
     expect(screen.queryByLabelText("Soft budget (USD)")).not.toBeInTheDocument();
   });
 
+  it("keeps a selected Cost workflow visible without a gaggle aggregate row", async () => {
+    window.location.hash = "#/cost?gaggle=core&workflow=implementation";
+    const fixtures = populatedDaemonFixtures();
+    fixtures.telemetryStats.gaggles = [];
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(await screen.findByRole("heading", { name: "Cost" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Scope")).toHaveDisplayValue("Workflow · implementation");
+  });
+
   it("drills into every matching run error while keeping the selected filters", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listTelemetryErrors = vi.spyOn(client, "listTelemetryErrors");

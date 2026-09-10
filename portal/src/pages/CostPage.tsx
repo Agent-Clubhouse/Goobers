@@ -165,25 +165,25 @@ function CostScopeSelect({
     scope: insightScopeFromKey(option.key),
   }));
   const instance = parsed.find(({ scope }) => scope.kind === "instance");
-  const gaggles = parsed
-    .filter(({ scope }) => scope.kind === "gaggle")
-    .map(({ scope }) => scope)
-    .filter((scope): scope is Extract<InsightScope, { kind: "gaggle" }> => scope.kind === "gaggle");
+  const gaggles = [...new Set(
+    parsed
+      .flatMap(({ scope }) => scope.kind === "instance" ? [] : [scope.gaggle]),
+  )].sort((left, right) => left.localeCompare(right));
 
   return (
     <select aria-label="Scope" onChange={(event) => onChange(event.target.value)} value={value}>
       {instance && <option value={instance.key}>Instance</option>}
       {gaggles.map((gaggle) => {
         const gaggleOption = parsed.find(
-          ({ scope }) => scope.kind === "gaggle" && scope.gaggle === gaggle.gaggle,
+          ({ scope }) => scope.kind === "gaggle" && scope.gaggle === gaggle,
         );
         const descendants = parsed.filter(
-          ({ scope }) => scope.kind !== "instance" && scope.gaggle === gaggle.gaggle,
+          ({ scope }) => scope.kind !== "instance" && scope.gaggle === gaggle,
         );
         return (
-          <optgroup key={gaggle.gaggle} label={gaggle.gaggle}>
+          <optgroup key={gaggle} label={gaggle}>
             {gaggleOption && (
-              <option value={gaggleOption.key}>All {gaggle.gaggle}</option>
+              <option value={gaggleOption.key}>All {gaggle}</option>
             )}
             {descendants
               .filter(({ scope }) => scope.kind === "workflow")

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const port = 4173;
+const port = Number(process.env.PORTAL_E2E_PORT ?? 4173);
 const distRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../internal/portalassets/dist");
 const page = { limit: 100, total: 1, hasMore: false, nextCursor: "" };
 const identity = { gaggle: "core", name: "implementation" };
