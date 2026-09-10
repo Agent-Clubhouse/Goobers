@@ -55,7 +55,7 @@ func TestWaitForInitialActiveRunSample(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("sampler did not start")
 			}
-			if _, _, err := service.activeRunCountsWithAge(); !errors.Is(err, ErrActiveCountsUnavailable) {
+			if _, _, err := service.activeRunCountsWithAge(context.Background()); !errors.Is(err, ErrActiveCountsUnavailable) {
 				t.Fatalf("request path with held sample=%v", err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -81,7 +81,7 @@ func TestWaitForInitialActiveRunSample(t *testing.T) {
 				if reader.calls.Load() != 1 {
 					t.Fatal("wait triggered another sample")
 				}
-				if _, _, err := service.activeRunCountsWithAge(); !errors.Is(err, ErrActiveCountsUnavailable) {
+				if _, _, err := service.activeRunCountsWithAge(context.Background()); !errors.Is(err, ErrActiveCountsUnavailable) {
 					t.Fatalf("wait published count: %v", err)
 				}
 				ctx = context.Background()
@@ -98,7 +98,7 @@ func TestWaitForInitialActiveRunSample(t *testing.T) {
 				t.Fatal("initial result not published")
 			}
 			if reader.failure == nil {
-				counts, err := service.activeRunCounts()
+				counts, err := service.activeRunCounts(context.Background())
 				if err != nil || len(counts) != 1 {
 					t.Fatalf("sample=%v err=%v", counts, err)
 				}
@@ -109,5 +109,49 @@ func TestWaitForInitialActiveRunSample(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type cancellationCountReader struct {
+	readmodel.Reader
+	entered chan struct{}
+}
+
+func (r *cancellationCountReader) ActiveRunCounts(ctx context.Context) ([]readmodel.WorkflowCount, error) {
+	close(r.entered)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestInstanceCancellationReachesProjectedActiveRunCount(t *testing.T) {
+	reader := &cancellationCountReader{entered: make(chan struct{})}
+	service, err := NewLocal(LocalSources{
+		Layout:      instance.NewLayout(t.TempDir()),
+		Definitions: testDefinitions(),
+		ReadModel:   reader,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.Instance(ctx)
+		result <- err
+	}()
+	select {
+	case <-reader.entered:
+	case <-time.After(time.Second):
+		t.Fatal("projected active-run query did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Instance() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Instance() did not return after request cancellation")
 	}
 }

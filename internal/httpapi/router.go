@@ -520,8 +520,9 @@ type Router struct {
 	// admission bounds concurrency per cost class (#1926). Lazily created so
 	// every existing Router construction keeps working without threading a
 	// constructor argument through each one.
-	admissionOnce sync.Once
-	admission     *admissionController
+	admissionOnce  sync.Once
+	admission      *admissionController
+	aggregateReads aggregateFlightGroup
 }
 
 // ensureAdmission creates the controller on first use.
@@ -789,6 +790,14 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 		writeError(w, http.StatusForbidden, "forbidden", "request is not authorized")
 		return
 	}
+	if route.Method == http.MethodGet && route.Cost == apicontract.CostAggregate {
+		r.serveAggregate(route, handler, w, request)
+		return
+	}
+	r.serveAdmitted(route, handler, w, request)
+}
+
+func (r *Router) serveAdmitted(route apicontract.Route, handler http.HandlerFunc, w http.ResponseWriter, request *http.Request) {
 	// Admission control (#1926). Applied AFTER auth for the same reason the
 	// budget is — an unauthenticated request must not consume a slot — and
 	// BEFORE the budget, because a refused request should not have started

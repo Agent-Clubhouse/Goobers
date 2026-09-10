@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/version"
 )
 
 // defaultFleetEnrolled checks the real Fleet file storage. Errors other than
@@ -67,11 +68,19 @@ type Health struct {
 	ReadStateEnvelope
 	APIVersion       string                  `json:"apiVersion"`
 	SchemaVersion    string                  `json:"schemaVersion"`
+	Build            BuildMetadata           `json:"build"`
 	Ready            bool                    `json:"ready"`
 	Healthy          bool                    `json:"healthy"`
 	Instance         InstanceIdentity        `json:"instance"`
 	Freshness        Freshness               `json:"freshness"`
 	DefinitionReload *DefinitionReloadStatus `json:"definitionReload,omitempty"`
+}
+
+// BuildMetadata identifies the exact daemon binary serving the response.
+type BuildMetadata struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Date    string `json:"date"`
 }
 
 // InstanceIdentity is the canonical identity provisioned by the manifest.
@@ -326,12 +335,18 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 		lastTickAgeMillis = &ageMillis
 	}
 
+	build := version.Get()
 	return Health{
 		DefinitionReload: s.definitionReloadSnapshot(),
 		APIVersion:       APIVersion,
 		SchemaVersion:    SchemaVersion,
-		Ready:            s.ready(),
-		Healthy:          healthy,
+		Build: BuildMetadata{
+			Version: build.Version,
+			Commit:  build.Commit,
+			Date:    build.Date,
+		},
+		Ready:   s.ready(),
+		Healthy: healthy,
 		Instance: InstanceIdentity{
 			Name:        ref.Name,
 			Environment: ref.Environment,

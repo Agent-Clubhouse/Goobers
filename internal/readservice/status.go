@@ -364,7 +364,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	for _, key := range projected.refusalOrder {
 		status.RefusedWorkflows = append(status.RefusedWorkflows, projected.refusals[key])
 	}
-	activeCounts, err := s.activeRunCounts()
+	activeCounts, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return SchedulerStatus{}, err
 	}

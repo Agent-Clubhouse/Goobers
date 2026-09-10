@@ -368,7 +368,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		return Instance{}, err
 	}
 	inventory := s.definitions.Load().inventory
-	active, err := s.activeRunCounts()
+	active, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return Instance{}, err
 	}
@@ -434,7 +434,7 @@ func (s *Local) gagglesUnannotated(ctx context.Context, request PageRequest) (Ga
 		return GagglePage{}, err
 	}
 	inventory := s.definitions.Load().inventory
-	active, err := s.activeRunCounts()
+	active, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return GagglePage{}, err
 	}
@@ -566,7 +566,7 @@ func (s *Local) workflowsUnannotated(ctx context.Context, gaggle string, request
 	if !hasGaggle(inventory, gaggle) {
 		return WorkflowPage{}, fmt.Errorf("%w: gaggle %q", ErrNotFound, gaggle)
 	}
-	active, err := s.activeRunCounts()
+	active, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return WorkflowPage{}, err
 	}
@@ -651,7 +651,7 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 	if def == nil {
 		return WorkflowDetail{}, fmt.Errorf("%w: workflow %q in gaggle %q", ErrNotFound, name, gaggle)
 	}
-	active, err := s.activeRunCounts()
+	active, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return WorkflowDetail{}, err
 	}
@@ -686,18 +686,21 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 // design that kept the walk as the no-sample fallback and "so preserved the exact
 // failure on a cold daemon": a fallback taken only when the cache is cold is
 // taken exactly when the instance is busiest.
-func (s *Local) activeRunCounts() (map[localscheduler.WorkflowIdentity]int, error) {
-	counts, _, err := s.activeRunCountsWithAge()
+func (s *Local) activeRunCounts(ctx context.Context) (map[localscheduler.WorkflowIdentity]int, error) {
+	counts, _, err := s.activeRunCountsWithAge(ctx)
 	return counts, err
 }
 
 // activeRunCountsWithAge additionally reports how stale the sample is, so a
 // caller can render "as of N ago" rather than implying the number is current.
-func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
+func (s *Local) activeRunCountsWithAge(ctx context.Context) (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	sampler := s.activeSampler.Load()
 	if sampler == nil {
 		if s.readModelReads && s.sources.ReadModel != nil {
-			counts, err := s.projectedActiveRunCounts(context.Background())
+			counts, err := s.projectedActiveRunCounts(ctx)
 			return counts, 0, err
 		}
 		// A one-shot construction without a projection pays for the authoritative

@@ -310,6 +310,7 @@ func newWireFixtures() wireFixtures {
 			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},
 			APIVersion:       readservice.APIVersion,
 			SchemaVersion:    readservice.SchemaVersion,
+			Build:            readservice.BuildMetadata{Version: "v1.2.3", Commit: "abc1234", Date: "2026-07-18T12:00:00Z"},
 			Ready:            true,
 			Healthy:          true,
 			Instance: readservice.InstanceIdentity{

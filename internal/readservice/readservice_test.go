@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -28,6 +29,12 @@ func testDefinitions() *instance.ConfigSet {
 }
 
 func TestLocalHealthProjectsIdentityReadinessAndFreshness(t *testing.T) {
+	oldVersion, oldCommit, oldDate := version.Version, version.Commit, version.Date
+	version.Version, version.Commit, version.Date = "v9.8.7", "abc1234", "2026-09-10T01:02:03Z"
+	t.Cleanup(func() {
+		version.Version, version.Commit, version.Date = oldVersion, oldCommit, oldDate
+	})
+
 	l := instance.NewLayout(t.TempDir())
 	eventTime := time.Date(2026, 7, 16, 10, 0, 0, 0, time.FixedZone("test", -7*60*60))
 	log, _, err := journal.OpenInstanceLog(l.SchedulerDir(), journal.WithClock(func() time.Time { return eventTime }))
@@ -60,6 +67,9 @@ func TestLocalHealthProjectsIdentityReadinessAndFreshness(t *testing.T) {
 	}
 	if got.APIVersion != APIVersion || got.SchemaVersion != SchemaVersion {
 		t.Fatalf("versions = %q/%q", got.APIVersion, got.SchemaVersion)
+	}
+	if got.Build != (BuildMetadata{Version: "v9.8.7", Commit: "abc1234", Date: "2026-09-10T01:02:03Z"}) {
+		t.Fatalf("build = %+v", got.Build)
 	}
 	if !got.Ready {
 		t.Fatal("health should report ready")

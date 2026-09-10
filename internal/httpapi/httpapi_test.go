@@ -188,6 +188,7 @@ func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	reader := &fakeReader{health: readservice.Health{
 		APIVersion:    readservice.APIVersion,
 		SchemaVersion: readservice.SchemaVersion,
+		Build:         readservice.BuildMetadata{Version: "v1.2.3", Commit: "abc1234", Date: "2026-09-10T01:02:03Z"},
 		Ready:         true,
 		Instance:      readservice.InstanceIdentity{Name: "example"},
 	}}
@@ -208,7 +209,8 @@ func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatal(err)
 	}
-	if reader.called != 1 || !health.Ready || health.Instance.Name != "example" {
+	if reader.called != 1 || !health.Ready || health.Instance.Name != "example" ||
+		health.Build != reader.health.Build {
 		t.Fatalf("reader called %d times, health = %+v", reader.called, health)
 	}
 }

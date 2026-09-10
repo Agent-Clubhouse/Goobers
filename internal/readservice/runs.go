@@ -740,7 +740,7 @@ func (s *Local) workflowRunActivity(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	counts, err := s.activeRunCounts()
+	counts, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return nil, err
 	}
