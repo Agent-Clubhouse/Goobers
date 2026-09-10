@@ -34,7 +34,7 @@ var ErrAbandonedWork = errors.New("workerhost: drain timeout expired with activi
 const DefaultDrainTimeout = 30 * time.Second
 
 const (
-	placementBuildEnv = "GOOBERS_RUNNER_BUILD"
+	placementBuildEnv  = "GOOBERS_RUNNER_BUILD"
 	placementWorkerEnv = "GOOBERS_RUNNER_WORKER"
 )
 
@@ -173,6 +173,7 @@ func (h *Host) Run(ctx context.Context) error {
 		// later queues accepting work and multiply the process drain window.
 		var draining sync.WaitGroup
 		for _, w := range started {
+			w := w
 			draining.Add(1)
 			go func() {
 				defer draining.Done()

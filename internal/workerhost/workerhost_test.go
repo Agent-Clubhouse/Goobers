@@ -191,8 +191,61 @@ func TestWorkerOptionsSkipVersioningWhenBuildVersionUnset(t *testing.T) {
 	if opts.BuildID != "" {
 		t.Fatalf("BuildID = %q, want empty when no build version is configured", opts.BuildID)
 	}
+	if opts.UseBuildIDForVersioning {
+		t.Fatal("UseBuildIDForVersioning = true, want false when no build version is configured")
+	}
 	if opts.DeploymentOptions.UseVersioning {
 		t.Fatal("DeploymentOptions.UseVersioning = true, want false when no build version is configured")
+	}
+}
+
+func TestRunSetsAndRestoresPlacementEnv(t *testing.T) {
+	originalBuild, hadBuild := os.LookupEnv(placementBuildEnv)
+	originalWorker, hadWorker := os.LookupEnv(placementWorkerEnv)
+	defer func() {
+		if hadBuild {
+			_ = os.Setenv(placementBuildEnv, originalBuild)
+		} else {
+			_ = os.Unsetenv(placementBuildEnv)
+		}
+		if hadWorker {
+			_ = os.Setenv(placementWorkerEnv, originalWorker)
+		} else {
+			_ = os.Unsetenv(placementWorkerEnv)
+		}
+	}()
+
+	fleet := &fakeFleet{}
+	h := newTestHost(t, Config{TaskQueues: []string{"goobers-engine"}, BuildVersion: "v9.9.9-test"}, fleet)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- h.Run(ctx) }()
+
+	waitFor(t, func() bool {
+		fleet.mu.Lock()
+		defer fleet.mu.Unlock()
+		return len(fleet.workers) == 1 && fleet.workers[0].isStarted()
+	})
+
+	if got := os.Getenv(placementBuildEnv); got != "v9.9.9-test" {
+		t.Fatalf("GOOBERS_RUNNER_BUILD = %q, want %q", got, "v9.9.9-test")
+	}
+	wantWorker := Identity("v9.9.9-test")
+	if got := os.Getenv(placementWorkerEnv); got != wantWorker {
+		t.Fatalf("GOOBERS_RUNNER_WORKER = %q, want %q", got, wantWorker)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := os.Getenv(placementBuildEnv); got != originalBuild {
+		t.Fatalf("restored GOOBERS_RUNNER_BUILD = %q, want %q", got, originalBuild)
+	}
+	if got := os.Getenv(placementWorkerEnv); got != originalWorker {
+		t.Fatalf("restored GOOBERS_RUNNER_WORKER = %q, want %q", got, originalWorker)
 	}
 }
 
