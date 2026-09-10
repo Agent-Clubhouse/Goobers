@@ -651,21 +651,7 @@ func parallelEquivalent(a, b *apiv1.Parallel) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	cloneA := a.DeepCopy()
-	cloneB := b.DeepCopy()
-	sort.Slice(cloneA.Branches, func(i, j int) bool {
-		if cloneA.Branches[i].Name != cloneA.Branches[j].Name {
-			return cloneA.Branches[i].Name < cloneA.Branches[j].Name
-		}
-		return cloneA.Branches[i].Start < cloneA.Branches[j].Start
-	})
-	sort.Slice(cloneB.Branches, func(i, j int) bool {
-		if cloneB.Branches[i].Name != cloneB.Branches[j].Name {
-			return cloneB.Branches[i].Name < cloneB.Branches[j].Name
-		}
-		return cloneB.Branches[i].Start < cloneB.Branches[j].Start
-	})
-	return reflect.DeepEqual(cloneA, cloneB)
+	return reflect.DeepEqual(a, b)
 }
 
 func canonicalSchema(s Schema) string {

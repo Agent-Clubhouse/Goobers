@@ -458,18 +458,17 @@ func TestSemanticDiffIgnoresOrderOnlyChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	reordered := baseDoc
+	reordered.Nodes = make([]Node, len(baseDoc.Nodes))
+	copy(reordered.Nodes, baseDoc.Nodes)
 	reordered.Triggers = []apiv1.Trigger{baseDoc.Triggers[1], baseDoc.Triggers[0]}
+	reordered.Edges = make([]Edge, len(baseDoc.Edges))
+	copy(reordered.Edges, baseDoc.Edges)
 	for i := range reordered.Nodes {
 		if reordered.Nodes[i].Name == "task-a" && reordered.Nodes[i].Task != nil {
 			task := *reordered.Nodes[i].Task
 			task.Capabilities = []string{"repo:push", "issues:write"}
 			task.ExpectedOutputs = []string{"result", "summary"}
 			reordered.Nodes[i].Task = &task
-		}
-		if reordered.Nodes[i].Name == "fanout" && reordered.Nodes[i].Parallel != nil {
-			parallel := *reordered.Nodes[i].Parallel
-			parallel.Branches = []apiv1.Branch{parallel.Branches[1], parallel.Branches[0]}
-			reordered.Nodes[i].Parallel = &parallel
 		}
 	}
 	reordered.Edges = make([]Edge, len(baseDoc.Edges))
@@ -483,6 +482,46 @@ func TestSemanticDiffIgnoresOrderOnlyChanges(t *testing.T) {
 	}
 	if diff.Kind == DiffBehavioral {
 		t.Fatalf("order-only semantic changes were misclassified as behavioral: %#v", diff.Changes)
+	}
+}
+
+func TestSemanticDiffTreatsParallelBranchReorderAsBehavioral(t *testing.T) {
+	def := workflow.Definition{
+		Name: "fanout-order", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "task-a",
+			Tasks: []apiv1.Task{
+				{Name: "task-a", Type: apiv1.TaskDeterministic, Goal: "task a", Next: "fanout"},
+				{Name: "task-b", Type: apiv1.TaskDeterministic, Goal: "task b", Next: workflow.TargetJoin},
+				{Name: "task-c", Type: apiv1.TaskDeterministic, Goal: "task c", Next: workflow.TargetJoin},
+				{Name: "task-d", Type: apiv1.TaskDeterministic, Goal: "task d"},
+			},
+			Parallels: []apiv1.Parallel{{
+				Name: "fanout", FailurePolicy: apiv1.BranchContinueOnError, Join: "task-d",
+				Branches: []apiv1.Branch{{Name: "left", Start: "task-b"}, {Name: "right", Start: "task-c"}},
+			}},
+		},
+	}
+	baseDoc, err := Normalize(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered := baseDoc
+	reordered.Nodes = make([]Node, len(baseDoc.Nodes))
+	copy(reordered.Nodes, baseDoc.Nodes)
+	for i := range reordered.Nodes {
+		if reordered.Nodes[i].Name == "fanout" && reordered.Nodes[i].Parallel != nil {
+			parallel := *reordered.Nodes[i].Parallel
+			parallel.Branches = []apiv1.Branch{parallel.Branches[1], parallel.Branches[0]}
+			reordered.Nodes[i].Parallel = &parallel
+		}
+	}
+	diff, err := SemanticDiff(baseDoc, reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffBehavioral {
+		t.Fatalf("parallel branch reorder should be behavioral; diff=%#v", diff)
 	}
 }
 
