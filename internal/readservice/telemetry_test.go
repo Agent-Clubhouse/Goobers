@@ -205,11 +205,172 @@ func TestLocalTelemetryStatsProjectsStoredAttributionCohorts(t *testing.T) {
 	if len(cohort.TopContributingPaths[0].Nodes) < 2 {
 		t.Fatalf("stored top path = %+v, want a root-prefixed contribution path", cohort.TopContributingPaths[0])
 	}
-	if got := cohort.TopContributingPaths[0].Evidence[0]; got.JournalSequence == 0 || got.ArtifactDigest == "" || got.JournalPath == "" {
-		t.Fatalf("stored contribution evidence = %+v, want exact journal/artifact link", got)
+	foundExactPathEvidence := false
+	for _, path := range cohort.TopContributingPaths {
+		for _, got := range path.Evidence {
+			if got.JournalSequence == 0 || got.JournalPath == "" {
+				t.Fatalf("stored contribution evidence = %+v, want exact journal link", got)
+			}
+			if got.ArtifactDigest != "" {
+				foundExactPathEvidence = true
+			}
+		}
+	}
+	if !foundExactPathEvidence {
+		t.Fatalf("top paths = %+v, want at least one exact artifact-backed span link", cohort.TopContributingPaths)
 	}
 	if got := cohort.CounterEvidence[0]; got.JournalSequence == 0 || got.JournalPath == "" {
 		t.Fatalf("stored counter evidence = %+v, want exact journal link", got)
+	}
+}
+
+func TestBuildAttributionEvidenceUsesExactSpanForSpanScopedNodes(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runID := "stored-attribution-multi-span"
+	startedAt := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		WorkflowDigest:  "sha256:workflow",
+		GooberDigest:    "sha256:goober",
+		Gaggle:          "core",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+		StartedAt:       startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	now := startedAt.Add(time.Minute)
+	if err := run.Append(journal.Event{
+		Type:  journal.EventStageStarted,
+		Stage: "implement", Attempt: 1,
+		Time: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventAgentLifecycle,
+		Stage: "implement",
+		Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1",
+			ID:     "root", RunID: runID, Stage: "implement", Attempt: 1,
+			ResolvedModel: "gpt-5.4", Lifecycle: journal.AgentFailed,
+			StartedAt: now, UpdatedAt: now,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstSpan := []byte(strings.Join([]string{
+		`{"role":"assistant","model":"gpt-5.4","tool_call":{"id":"call-1","name":"bash"}}`,
+		`{"role":"tool","tool_call":{"id":"call-1","success":false}}`,
+	}, "\n"))
+	firstRef, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, firstSpan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: "implement",
+		Runner: map[string]any{
+			creditgraph.SpanProvenanceKeyKind:    creditgraph.SpanProvenanceAnnotation,
+			creditgraph.SpanProvenanceKeyAgentID: "root",
+			creditgraph.SpanProvenanceKeyDigest:  firstRef.Digest,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondSpan := []byte(strings.Join([]string{
+		`{"role":"assistant","model":"gpt-5.4","tool_call":{"id":"call-2","name":"edit"}}`,
+		`{"role":"tool","tool_call":{"id":"call-2","success":false}}`,
+	}, "\n"))
+	secondRef, err := run.RecordSpanWithSchema("implement", "copilot.transcript", telemetry.GenAIEventSchema, secondSpan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: "implement",
+		Runner: map[string]any{
+			creditgraph.SpanProvenanceKeyKind:    creditgraph.SpanProvenanceAnnotation,
+			creditgraph.SpanProvenanceKeyAgentID: "root",
+			creditgraph.SpanProvenanceKeyDigest:  secondRef.Digest,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1,
+		Status: string(apiv1.ResultFailure), Time: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Verdict: "fail", Target: "@abort",
+		Time: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir, records, graph, _, err := storedAttributionGraph(root, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := buildAttributionEventIndex(root, runDir, records)
+
+	var secondSpanSeq int64
+	for _, record := range records {
+		if record.Event.Type == journal.EventSpanRecorded && record.Event.Ref != nil && record.Event.Ref.Digest == secondRef.Digest {
+			secondSpanSeq = int64(record.Event.Seq)
+			break
+		}
+	}
+	if secondSpanSeq == 0 {
+		t.Fatalf("missing recorded span event for digest %q", secondRef.Digest)
+	}
+
+	var secondResult creditgraph.Node
+	found := false
+	for _, node := range graph.NodesOfKind(creditgraph.KindToolResult) {
+		if nodeSpanDigest(node.ID) == secondRef.Digest {
+			secondResult = node
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing tool result node for span %q", secondRef.Digest)
+	}
+
+	link, ok := evidenceLinkForNode(index, secondResult, "implement", "tool result failed", string(creditgraph.ClassBadToolResult))
+	if !ok {
+		t.Fatalf("missing exact evidence for node %+v", secondResult)
+	}
+	if link.JournalSequence != secondSpanSeq || link.ArtifactDigest != secondRef.Digest {
+		t.Fatalf("evidence link = %+v, want exact second span seq %d digest %q", link, secondSpanSeq, secondRef.Digest)
+	}
+}
+
+func TestBuildAttributionEvidenceSkipsNodesWithoutExactRecordedEvidence(t *testing.T) {
+	root, _, runID := seedStoredAttributionRun(t)
+	runDir, records, graph, attribution, err := storedAttributionGraph(root, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := buildAttributionEvidence(root, runDir, records, graph, attribution)
+	for _, link := range evidence {
+		if link.NodeID == "tool:bash" {
+			t.Fatalf("tool node evidence = %+v, want shared tool nodes omitted without exact evidence", link)
+		}
+		if link.JournalSequence == 0 {
+			t.Fatalf("evidence link = %+v, want exact journal sequence only", link)
+		}
 	}
 }
 
@@ -556,6 +717,48 @@ func seedStoredAttributionRun(t *testing.T) (string, *readmodel.Store, string) {
 		t.Fatal(err)
 	}
 	return root, store, runID
+}
+
+func storedAttributionGraph(root, runID string) (string, []journal.EventRecord, *creditgraph.Graph, creditgraph.Attribution, error) {
+	layout := instance.NewLayout(root)
+	runDir, err := layout.FindRunDir(runID)
+	if err != nil {
+		return "", nil, nil, creditgraph.Attribution{}, err
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		return "", nil, nil, creditgraph.Attribution{}, err
+	}
+	records, err := reader.EventRecords()
+	if err != nil {
+		return "", nil, nil, creditgraph.Attribution{}, err
+	}
+	events := make([]journal.Event, len(records))
+	for i := range records {
+		events[i] = records[i].Event
+	}
+	spanData := map[string][]byte{}
+	for _, event := range events {
+		if event.Type != journal.EventSpanRecorded || event.Ref == nil || event.DataSchema != telemetry.GenAIEventSchema {
+			continue
+		}
+		data, err := reader.SpanBytes(*event.Ref)
+		if err != nil {
+			return "", nil, nil, creditgraph.Attribution{}, err
+		}
+		spanData[event.Ref.Digest] = data
+	}
+	graph, err := creditgraph.Build(creditgraph.Input{
+		RunID:    runID,
+		Gaggle:   "core",
+		Workflow: "implementation",
+		Events:   events,
+		SpanData: spanData,
+	})
+	if err != nil {
+		return "", nil, nil, creditgraph.Attribution{}, err
+	}
+	return runDir, records, graph, creditgraph.Attribute(graph), nil
 }
 
 func TestTelemetryStatsTrendEmptyUsageSerializesAsArrays(t *testing.T) {

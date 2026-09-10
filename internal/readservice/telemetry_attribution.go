@@ -239,7 +239,8 @@ type attributionEventIndex struct {
 	stageTries  map[string]map[int]journal.Event
 	artifactBy  map[string]journal.Event
 	spanBy      map[string]journal.Event
-	gateEvent   *journal.Event
+	agentByID   map[string]journal.Event
+	gateByID    map[string]journal.Event
 }
 
 func buildAttributionEvidence(
@@ -253,13 +254,15 @@ func buildAttributionEvidence(
 	evidence := make([]creditgraph.AttributionEvidenceLink, 0, len(attribution.Contributions)+len(attribution.Causes))
 	for _, contribution := range attribution.Contributions {
 		node, _ := graph.Node(contribution.NodeID)
-		evidence = append(evidence, evidenceLinkForNode(
+		if link, ok := evidenceLinkForNode(
 			index,
 			node,
 			contribution.Stage,
 			fmt.Sprintf("share=%s, confidence=%s", formatAttributionValue(contribution.Share), formatAttributionValue(contribution.Confidence)),
 			"contribution",
-		))
+		); ok {
+			evidence = append(evidence, link)
+		}
 	}
 	for _, cause := range attribution.Causes {
 		node, _ := graph.Node(cause.NodeID)
@@ -268,7 +271,9 @@ func buildAttributionEvidence(
 				evidence = append(evidence, matches...)
 				continue
 			}
-			evidence = append(evidence, evidenceLinkForNode(index, node, cause.Stage, detail, string(cause.Class)))
+			if link, ok := evidenceLinkForNode(index, node, cause.Stage, detail, string(cause.Class)); ok {
+				evidence = append(evidence, link)
+			}
 		}
 	}
 	return evidence
@@ -286,6 +291,8 @@ func buildAttributionEventIndex(root, runDir string, records []journal.EventReco
 		stageTries:  map[string]map[int]journal.Event{},
 		artifactBy:  map[string]journal.Event{},
 		spanBy:      map[string]journal.Event{},
+		agentByID:   map[string]journal.Event{},
+		gateByID:    map[string]journal.Event{},
 	}
 	for _, record := range records {
 		event := record.Event
@@ -293,15 +300,17 @@ func buildAttributionEventIndex(root, runDir string, records []journal.EventReco
 		case journal.EventRunFinished:
 			index.runEvent = cloneEvent(event)
 		case journal.EventGateEvaluated, journal.EventGateOverridden:
-			if index.gateEvent == nil {
-				index.gateEvent = cloneEvent(event)
-			}
+			index.gateByID[evaluatorNodeID(event)] = event
 		case journal.EventStageFinished:
 			index.stageEvents[stageAttemptKey(event.Stage, event.Attempt)] = event
 			if index.stageTries[event.Stage] == nil {
 				index.stageTries[event.Stage] = map[int]journal.Event{}
 			}
 			index.stageTries[event.Stage][event.Attempt] = event
+		case journal.EventAgentLifecycle:
+			if event.Agent != nil && strings.TrimSpace(event.Agent.ID) != "" {
+				index.agentByID[event.Agent.ID] = event
+			}
 		case journal.EventStageStarted:
 			key := stageAttemptKey(event.Stage, event.Attempt)
 			if _, exists := index.stageEvents[key]; !exists {
@@ -358,29 +367,21 @@ func interventionEvidenceLinks(index attributionEventIndex, node creditgraph.Nod
 	return links
 }
 
-func evidenceLinkForNode(index attributionEventIndex, node creditgraph.Node, stage, detail, source string) creditgraph.AttributionEvidenceLink {
-	if event, ok := eventForNode(index, node, stage); ok {
-		return exactEvidenceLink(index, event, node.ID, stage, detail, source)
+func evidenceLinkForNode(index attributionEventIndex, node creditgraph.Node, stage, detail, source string) (creditgraph.AttributionEvidenceLink, bool) {
+	if event, ok := eventForNode(index, node); ok {
+		return exactEvidenceLink(index, event, node.ID, stage, detail, source), true
 	}
-	return creditgraph.AttributionEvidenceLink{
-		RunID:       index.runID,
-		NodeID:      node.ID,
-		Stage:       stage,
-		Detail:      detail,
-		Source:      source,
-		JournalPath: index.journalPath,
-	}
+	return creditgraph.AttributionEvidenceLink{}, false
 }
 
-func eventForNode(index attributionEventIndex, node creditgraph.Node, stage string) (journal.Event, bool) {
+func eventForNode(index attributionEventIndex, node creditgraph.Node) (journal.Event, bool) {
+	return exactNodeEvent(index, node)
+}
+
+func exactNodeEvent(index attributionEventIndex, node creditgraph.Node) (journal.Event, bool) {
 	switch node.Kind {
 	case creditgraph.KindEvidence:
-		if digest := node.Attributes["digest"]; digest != "" {
-			if event, ok := index.artifactBy[digest]; ok {
-				return event, true
-			}
-		}
-		if event, ok := index.artifactBy[stageAttemptKey(node.Stage, node.Attempt)]; ok {
+		if event, ok := index.artifactBy[artifactKey(node.Stage, node.Attempt, node.Label, node.Attributes["digest"])]; ok {
 			return event, true
 		}
 	case creditgraph.KindStage:
@@ -392,30 +393,23 @@ func eventForNode(index attributionEventIndex, node creditgraph.Node, stage stri
 			return *index.runEvent, true
 		}
 	case creditgraph.KindEvaluator:
-		if index.gateEvent != nil {
-			return *index.gateEvent, true
-		}
-	default:
-		if event, ok := eventByStage(index, node.Stage, node.Attempt); ok {
+		if event, ok := index.gateByID[node.ID]; ok {
 			return event, true
 		}
-	}
-	if event, ok := eventByStage(index, stage, node.Attempt); ok {
-		return event, true
-	}
-	return journal.Event{}, false
-}
-
-func eventByStage(index attributionEventIndex, stage string, attempt int) (journal.Event, bool) {
-	if digest := strings.TrimSpace(stage); digest != "" {
-		if event, ok := index.spanBy[stageAttemptKey(stage, attempt)]; ok {
+	case creditgraph.KindSubagent:
+		if event, ok := index.agentByID[node.Label]; ok {
 			return event, true
 		}
-		if event, ok := index.artifactBy[stageAttemptKey(stage, attempt)]; ok {
-			return event, true
+	case creditgraph.KindModelInvocation, creditgraph.KindToolCall, creditgraph.KindToolResult:
+		if digest := nodeSpanDigest(node.ID); digest != "" {
+			if event, ok := index.spanBy[digest]; ok {
+				return event, true
+			}
 		}
-		if event, ok := index.stageEvents[stageAttemptKey(stage, attempt)]; ok {
-			return event, true
+		if agentID := lifecycleAgentID(node); agentID != "" {
+			if event, ok := index.agentByID[agentID]; ok {
+				return event, true
+			}
 		}
 	}
 	return journal.Event{}, false
@@ -435,15 +429,37 @@ func exactEvidenceLink(index attributionEventIndex, event journal.Event, nodeID,
 		link.ArtifactPath = event.Ref.Path
 		link.ArtifactDigest = event.Ref.Digest
 		link.ArtifactMediaType = event.Ref.MediaType
-	} else if artifact, ok := index.artifactBy[stageAttemptKey(event.Stage, event.Attempt)]; ok && artifact.Ref != nil {
-		link.ArtifactPath = artifact.Ref.Path
-		link.ArtifactDigest = artifact.Ref.Digest
-		link.ArtifactMediaType = artifact.Ref.MediaType
 	}
 	if link.Stage == "" {
 		link.Stage = event.Stage
 	}
 	return link
+}
+
+func evaluatorNodeID(event journal.Event) string {
+	return fmt.Sprintf("evaluator:%s#%d", event.Gate, event.Seq)
+}
+
+func nodeSpanDigest(nodeID string) string {
+	hash := strings.LastIndex(nodeID, "#")
+	if hash <= 0 {
+		return ""
+	}
+	at := strings.LastIndex(nodeID[:hash], "@")
+	if at <= 0 || at+1 >= hash {
+		return ""
+	}
+	return nodeID[at+1 : hash]
+}
+
+func lifecycleAgentID(node creditgraph.Node) string {
+	if strings.HasPrefix(node.ID, "model:") {
+		return strings.TrimPrefix(node.ID, "model:")
+	}
+	if strings.HasPrefix(node.ID, "subagent:") {
+		return strings.TrimPrefix(node.ID, "subagent:")
+	}
+	return ""
 }
 
 func stageOrEventStage(stage, eventStage string) string {
