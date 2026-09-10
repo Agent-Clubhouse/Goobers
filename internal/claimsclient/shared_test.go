@@ -46,6 +46,30 @@ type sharedClientResolver struct {
 	releaseErr   error
 }
 
+func TestSharedRetryRegistrationFailurePreventsRemoteTransition(t *testing.T) {
+	store := &sharedClientStore{}
+	failure := errors.New("retry registration unavailable")
+	callbackCalls := 0
+	resolver := &sharedClientResolver{binding: SharedClaimBinding{Store: store, RemoteKey: "42", Owner: sharedclaim.Owner{Instance: "instance", Run: "run", Token: "token"},
+		BeforeTransition: func(context.Context) error { return failure }, AfterTransition: func(context.Context) { callbackCalls++ }}}
+	file, err := NewFile(FileConfig{LedgerPath: filepath.Join(t.TempDir(), "claims.json"), Shared: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := Key{Gaggle: "g", Provider: "github", ExternalID: "42"}
+	if ok, _, err := file.ClaimScoped(t.Context(), key, "run", "implement", time.Minute); ok || !errors.Is(err, failure) || store.writes != 0 || callbackCalls != 0 {
+		t.Fatalf("unregistered acquisition reached provider: %v %v %d", ok, err, store.writes)
+	}
+	resolver.binding.BeforeTransition = nil
+	if ok, _, err := file.ClaimScoped(t.Context(), key, "run", "implement", time.Minute); err != nil || !ok {
+		t.Fatalf("seed: %v %v", ok, err)
+	}
+	resolver.binding.BeforeTransition = func(context.Context) error { return failure }
+	if err := file.ReleaseScoped(t.Context(), key, "run"); !errors.Is(err, failure) || store.writes != 1 || callbackCalls != 1 {
+		t.Fatalf("unregistered release reached provider: %v %d", err, store.writes)
+	}
+}
+
 func TestSharedVisibilityHookRunsAfterTransitionsIncludingLostACK(t *testing.T) {
 	store := &sharedClientStore{}
 	resolver := &sharedClientResolver{binding: SharedClaimBinding{Store: store, RemoteKey: "42", Owner: sharedclaim.Owner{Instance: "instance", Run: "run", Token: "token"}}}

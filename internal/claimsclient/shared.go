@@ -14,6 +14,9 @@ type SharedClaimBinding struct {
 	Store     sharedclaim.Store
 	RemoteKey string
 	Owner     sharedclaim.Owner
+	// BeforeTransition durably registers retry custody before a remote write
+	// can outlive this process. Failure must prevent the remote transition.
+	BeforeTransition func(context.Context) error
 	// AfterTransition repairs non-authoritative visibility, including after an
 	// uncertain remote ACK. It must be bounded, must not re-enter the claims
 	// lock, and must report its own errors without changing the claim result.
@@ -43,6 +46,11 @@ func (s *fileSession) claimShared(ctx context.Context, key Key, runID, workflow 
 	if !ok {
 		return false, "", fmt.Errorf("claimsclient: shared admission is unavailable")
 	}
+	if binding.BeforeTransition != nil {
+		if err := binding.BeforeTransition(ctx); err != nil {
+			return false, "", err
+		}
+	}
 	if binding.AfterTransition != nil {
 		defer binding.AfterTransition(ctx)
 	}
@@ -63,6 +71,11 @@ func (s *fileSession) releaseShared(ctx context.Context, entry Entry) error {
 	ledger, ok := s.ledger.(sharedFileLedger)
 	if !ok {
 		return fmt.Errorf("claimsclient: shared release is unavailable")
+	}
+	if binding.BeforeTransition != nil {
+		if err := binding.BeforeTransition(ctx); err != nil {
+			return err
+		}
 	}
 	if binding.AfterTransition != nil {
 		defer binding.AfterTransition(ctx)

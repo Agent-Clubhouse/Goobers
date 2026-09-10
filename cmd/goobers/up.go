@@ -1461,6 +1461,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}()
 
 	stalledTicker := time.NewTicker(stalledRunSweepInterval)
+	sharedVisibilityDone := startSharedVisibilityReconciler(ctx, l, setup.InstanceLog)
 	stalledTickerDone := make(chan struct{})
 	go func() {
 		defer close(stalledTickerDone)
@@ -1819,6 +1820,7 @@ daemonLoop:
 	// sched.Run returns would race the writes below on the shared io.Writer
 	// (stdout/stderr are not safe for concurrent use).
 	<-claimTickerDone
+	<-sharedVisibilityDone
 	<-stalledTickerDone
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone

@@ -130,5 +130,8 @@ func (r pinnedSharedClaimResolver) binding(ctx context.Context, key claimsclient
 	// The owner token still binds the repository as well as the item.
 	binding := claimsclient.SharedClaimBinding{Store: store, RemoteKey: key.ExternalID, Owner: owner}
 	binding.AfterTransition = r.visibilityTransition(repo, store, key.ExternalID)
+	if binding.AfterTransition != nil {
+		binding.BeforeTransition = func(ctx context.Context) error { return registerSharedVisibilityRepository(ctx, r.layout, repo) }
+	}
 	return binding, nil
 }
