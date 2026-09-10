@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,9 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // newStaleTerminalRun hand-constructs a run whose event log durably shows
@@ -403,6 +406,62 @@ func TestResumeScanRecordsIntakeWatermarkForTerminalRun(t *testing.T) {
 	if marker.SourceSeq != wantSeq {
 		t.Fatalf("marker.SourceSeq = %d, want %d (the run's highest journal sequence)", marker.SourceSeq, wantSeq)
 	}
+}
+
+func TestResumeScanDefersTerminalCleanupWithoutBlockingStartup(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "terminal-cleanup-deferred"
+	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseCompleted, "local-ci")
+
+	manager, err := worktree.NewManager(l.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferredRunner, err := runner.New(runner.Config{
+		Worktrees: manager,
+		RunsDir:   l.RunsDir(),
+		FinalizeTerminal: func(string, journal.RunPhase) error {
+			return fmt.Errorf("%w: retained recovery evidence is not ready", worktree.ErrCleanupDeferred)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = setup.Shutdown(context.Background()) }()
+
+	var released []string
+	resumed, warned, err := resumeInterruptedRuns(
+		context.Background(), l, deferredRunner, setup.Machines, setup.GooberDigests, setup.RepoRefs,
+		setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks,
+		func(runID, workflow string) { released = append(released, runID+":"+workflow) }, &wg,
+	)
+	if err != nil {
+		t.Fatalf("deferred terminal cleanup blocked startup: %v", err)
+	}
+	if len(resumed) != 0 || len(warned) != 0 {
+		t.Fatalf("resumed=%v warned=%v, want neither for terminal run", resumed, warned)
+	}
+	if len(released) != 1 || released[0] != runID+":default-implement" {
+		t.Fatalf("released = %v, want terminal run slot released once", released)
+	}
+
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.RunID == runID && event.Error != nil && event.Error.Code == "terminal_cleanup_deferred" {
+			return
+		}
+	}
+	t.Fatal("deferred terminal cleanup was not journaled")
 }
 
 // TestRunAbortRecordsIntakeWatermark is #2191's acceptance scenario:

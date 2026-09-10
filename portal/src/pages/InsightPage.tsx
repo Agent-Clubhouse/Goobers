@@ -9,19 +9,19 @@ import type {
   TelemetryStatsOptions,
   TelemetryUsageStats,
 } from "../api/types";
+import { isMissingCostCapability } from "../api/errors";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { DisclosureSection } from "../components/DisclosureSection";
 import { ScopeStrip } from "../components/ScopeStrip";
+import { SectionQueryStatus } from "../components/SectionQueryStatus";
 import {
   type InsightCostRollupSnapshot,
   type InsightErrorSignaturesSnapshot,
   type InsightExternalCostSnapshot,
   type InsightGaggleSpend,
   type InsightWindow,
-  useInsightCostRollup,
-  useInsightCostTrend,
   useInsightErrorSignatures,
-  useInsightExternalCosts,
   useInsightStats,
 } from "../insightData";
 import {
@@ -32,7 +32,6 @@ import {
   type ExternalCostSortKey,
 } from "../costView";
 import {
-  deriveInsightCostTrendState,
   deriveInsightViewModel,
   hasInsightScopeIdentity,
   type InsightCostTrendViewModel,
@@ -48,17 +47,25 @@ import {
   insightScopeRouteFilters,
   type OutcomeMetric,
 } from "../insightScope";
-import { routeHash, type ErrorRouteFilters, type Navigate, type RunRouteFilters } from "../routing";
-import type { ScopeFilters } from "../scope";
+import {
+  routeHash,
+  type ErrorRouteFilters,
+  type InsightRouteFilters,
+  type InsightSection,
+  type Navigate,
+  type RunRouteFilters,
+} from "../routing";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
-const WINDOWS: readonly { label: string; value: InsightWindow }[] = [
+export const INSIGHT_WINDOWS: readonly { label: string; value: InsightWindow }[] = [
   { label: "Last 24 hours", value: "24h" },
   { label: "Last 7 days", value: "7d" },
   { label: "Last 30 days", value: "30d" },
   { label: "All time", value: "all" },
 ];
+
+const INITIAL_DETAIL_ROWS = 5;
 
 export function InsightPage({
   client,
@@ -67,41 +74,33 @@ export function InsightPage({
   standalone,
 }: {
   client: DaemonClient;
-  filters?: ScopeFilters;
+  filters?: InsightRouteFilters;
   navigate: Navigate;
   standalone: boolean;
 }) {
   const window = filters?.window ?? "7d";
   const requestedScope = insightScopeFromRoute(filters);
+  const activeSection = filters?.section;
+  const routeFilters = (scope: InsightScope, nextWindow: InsightWindow, section = activeSection) => ({
+    ...insightScopeRouteFilters(scope, nextWindow),
+    section,
+  });
   const setScope = (nextScope: InsightScope) =>
-    navigate({ page: "insight", filters: insightScopeRouteFilters(nextScope, window) });
+    navigate({ page: "insight", filters: routeFilters(nextScope, window) });
   const setWindow = (nextWindow: InsightWindow) =>
-    navigate({ page: "insight", filters: insightScopeRouteFilters(requestedScope, nextWindow) });
+    navigate({ page: "insight", filters: routeFilters(requestedScope, nextWindow) });
+  const setSection = (section: InsightSection | undefined) =>
+    navigate({ page: "insight", filters: routeFilters(requestedScope, window, section) });
   const errorScope = insightScopeApiParameters(requestedScope);
-  // Keep the daemon's CostAggregate ceiling unchanged; these five page loads
-  // take turns instead of competing with one another.
   const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
-  const statsSettled = query.state.status !== "loading";
   const errorSignatures = useInsightErrorSignatures(
     client,
     window,
     errorScope.gaggle,
     errorScope.workflow,
     errorScope.stage,
-    statsSettled,
+    query.state.status !== "loading",
   );
-  const errorsSettled = errorSignatures.state.status !== "loading";
-  const costTrend = useInsightCostTrend(
-    client,
-    window,
-    errorScope.gaggle,
-    errorScope.workflow,
-    errorsSettled,
-  );
-  const trendSettled = costTrend.state.status !== "loading";
-  const costRollup = useInsightCostRollup(client, window, trendSettled);
-  const costRollupSettled = costRollup.state.status !== "loading";
-  const externalCosts = useInsightExternalCosts(client, window, costRollupSettled);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -112,22 +111,12 @@ export function InsightPage({
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
-  if (
-    errorSignatures.state.status === "loading" ||
-    costTrend.state.status === "loading" ||
-    costRollup.state.status === "loading" ||
-    externalCosts.state.status === "loading"
-  ) {
-    return <DaemonLoadingState standalone={standalone} />;
-  }
   const snapshot = query.state.data;
   const availableScopes = insightScopeOptions(snapshot.stats);
   const scopes = availableScopes.some((option) => option.key === insightScopeKey(requestedScope))
     ? availableScopes
     : [...availableScopes, insightScopeOption(requestedScope)];
   const view = deriveInsightViewModel(requestedScope, snapshot);
-  const costTrendView = deriveInsightCostTrendState(requestedScope, costTrend.state);
-
   return (
     <>
       <header className="page-heading">
@@ -161,7 +150,7 @@ export function InsightPage({
             onChange={(event) => setWindow(event.target.value as InsightWindow)}
             value={window}
           >
-            {WINDOWS.map((option) => (
+            {INSIGHT_WINDOWS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -182,20 +171,18 @@ export function InsightPage({
       )}
 
       {query.state.status === "stale" && query.state.error && (
-        <div className="insight-stale-error" role="alert">
-          Telemetry refresh failed. Showing the last successful snapshot for this window.
-        </div>
+        <SectionQueryStatus
+          error
+          message="Telemetry refresh failed. Showing the last successful snapshot for this window."
+          retry={query.retry}
+        />
       )}
 
       <InsightContent
-        costRollup={costRollup.state}
-        costRollupRetry={costRollup.retry}
-        costTrend={costTrendView}
-        costTrendRetry={costTrend.retry}
+        activeSection={activeSection}
         errorSignatures={errorSignatures.state}
         errorSignaturesRetry={errorSignatures.retry}
-        externalCosts={externalCosts.state}
-        externalCostsRetry={externalCosts.retry}
+        onSectionChange={setSection}
         view={view}
       />
     </>
@@ -203,28 +190,19 @@ export function InsightPage({
 }
 
 function InsightContent({
-  costRollup,
-  costRollupRetry,
-  costTrend,
-  costTrendRetry,
+  activeSection,
   errorSignatures,
   errorSignaturesRetry,
-  externalCosts,
-  externalCostsRetry,
+  onSectionChange,
   view,
 }: {
-  costRollup: QueryState<InsightCostRollupSnapshot>;
-  costRollupRetry: () => void;
-  costTrend: QueryState<InsightCostTrendViewModel>;
-  costTrendRetry: () => void;
+  activeSection?: InsightSection;
   errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
   errorSignaturesRetry: () => void;
-  externalCosts: QueryState<InsightExternalCostSnapshot>;
-  externalCostsRetry: () => void;
+  onSectionChange: (section: InsightSection | undefined) => void;
   view: InsightViewModel;
 }) {
-  const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage, window } =
-    view;
+  const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage } = view;
   const hasOutcomes = Boolean(summary) || breakdown.length > 0;
   const hasFailureReasons =
     (errorSignatures.status === "ready" || errorSignatures.status === "stale") &&
@@ -245,9 +223,6 @@ function InsightContent({
 
   return (
     <>
-      <InstanceCostRollup costRollup={costRollup} retry={costRollupRetry} window={window} />
-      <ExternalCostBreakdown costs={externalCosts} retry={externalCostsRetry} />
-
       {isEmpty ? (
         <section className="empty-state insight-empty">
           <span className="insight-empty-icon">
@@ -294,49 +269,60 @@ function InsightContent({
       )}
 
       {creditAssignment.length > 0 && (
-        <CreditAssignment credits={creditAssignment} filters={filters} />
+        <DisclosureSection
+          count={creditAssignment.length}
+          eyebrow="Exceptions"
+          onOpenChange={(open) => onSectionChange(open ? "contributors" : undefined)}
+          open={activeSection === "contributors"}
+          title="Highest-contributing nodes"
+        >
+          <CreditAssignment credits={creditAssignment} filters={filters} />
+        </DisclosureSection>
       )}
 
       {usage && (
-        <section className="content-section">
-          <div className="section-heading">
-            <div>
-              <p className="section-kicker">AI usage</p>
-              <h2>Cost and tokens</h2>
-            </div>
-            <span className="section-count">Selected scope rollup</span>
-          </div>
+        <DisclosureSection
+          eyebrow="AI usage"
+          onOpenChange={(open) => onSectionChange(open ? "usage" : undefined)}
+          open={activeSection === "usage"}
+          title="Tokens and retry waste"
+        >
           <p className="usage-description">
             Attempt measurements are aggregated for the selected scope. Runners that do not
             report usage remain unmeasured.
           </p>
-          <UsageAnalytics filters={filters} usage={usage} />
-          <CostTrend
-            costTrend={costTrend}
-            currentUsage={usage}
-            retry={costTrendRetry}
-            window={window}
-          />
-        </section>
+          <UsageAnalytics filters={filters} mode="insight" usage={usage} />
+        </DisclosureSection>
       )}
 
-      <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
+      <DisclosureSection
+        count={
+          errorSignatures.status === "ready" || errorSignatures.status === "stale"
+            ? errorSignatures.data.result.items.length
+            : undefined
+        }
+        eyebrow="Failures"
+        onOpenChange={(open) => onSectionChange(open ? "failures" : undefined)}
+        open={activeSection === "failures"}
+        title="Failure reasons"
+      >
+        <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
+      </DisclosureSection>
 
       {(hasOutcomes || stages.length > 0) && (
-        <section className="content-section">
-          <div className="section-heading">
-            <div>
-              <p className="section-kicker">Latency</p>
-              <h2>Slowest stages</h2>
-            </div>
-            <span className="section-count">Ordered by P95 duration</span>
-          </div>
+        <DisclosureSection
+          count={stages.length}
+          eyebrow="Latency"
+          onOpenChange={(open) => onSectionChange(open ? "latency" : undefined)}
+          open={activeSection === "latency"}
+          title="Slowest stages"
+        >
           {stages.length === 0 ? (
             <p className="inline-empty">No stage duration samples in this scope.</p>
           ) : (
             <StageDistributions filters={filters} stages={stages} />
           )}
-        </section>
+        </DisclosureSection>
       )}
         </>
       )}
@@ -351,15 +337,11 @@ function CreditAssignment({
   credits: NodeCredit[];
   filters: TelemetryStatsOptions;
 }) {
+  const [showAll, setShowAll] = useState(false);
+  const visibleCredits = showAll ? credits : credits.slice(0, INITIAL_DETAIL_ROWS);
   return (
-    <section className="content-section">
-      <div className="section-heading">
-        <div>
-          <p className="section-kicker">Credit assignment</p>
-          <h2>Highest-contributing nodes</h2>
-        </div>
-        <span className="section-count">Failure, escalation, and retry waste</span>
-      </div>
+    <>
+      <p className="usage-description">Failure, escalation, and retry-waste contributors.</p>
       <div className="insight-outcomes">
         <div aria-hidden="true" className="credit-assignment-row credit-assignment-header">
           <span>Node</span>
@@ -368,7 +350,7 @@ function CreditAssignment({
           <span>Escalations</span>
           <span>Retry waste</span>
         </div>
-        {credits.map((credit) => (
+        {visibleCredits.map((credit) => (
           <a
             aria-label={`View runs behind ${credit.gaggle} ${credit.workflow} ${credit.stage}: ${credit.failureRuns} failures, ${credit.escalationRuns} escalations, ${credit.retryWasteAttempts} wasted attempts`}
             className="credit-assignment-row credit-assignment-link"
@@ -396,7 +378,12 @@ function CreditAssignment({
           </a>
         ))}
       </div>
-    </section>
+      {credits.length > INITIAL_DETAIL_ROWS && (
+        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
+          {showAll ? "Show fewer contributors" : `View all ${credits.length} contributors`}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -495,62 +482,63 @@ function FailureReasonBreakdown({
 }) {
   const snapshot = state.status === "ready" || state.status === "stale" ? state.data : undefined;
   return (
-    <section className="content-section">
-      <div className="section-heading">
-        <div>
-          <p className="section-kicker">Failures</p>
-          <h2>Failure reasons</h2>
-        </div>
-        <span className="section-count">Grouped by code + coarse class</span>
-      </div>
+    <>
       <p className="error-signature-description">
-        Error class is a coarse telemetry label and may be unknown.
+        Grouped by code and coarse class. Error class may be unknown.
       </p>
       {state.status === "loading" ? (
-        <p className="inline-empty">Loading failure reasons…</p>
+        <SectionQueryStatus loading message="Loading failure reasons…" />
       ) : state.status === "error" ? (
-        <div className="inline-empty insight-inline-error" role="alert">
-          <span>Failure reasons could not be loaded.</span>
-          <button className="text-button" onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
+        <SectionQueryStatus error message="Failure reasons could not be loaded." retry={retry} />
       ) : (
         <>
           {state.status === "stale" && state.error && (
-            <div className="insight-inline-error" role="alert">
-              <span>
-                Failure reasons could not be refreshed. Showing the last successful breakdown.
-              </span>
-              <button className="text-button" onClick={retry} type="button">
-                Retry
-              </button>
-            </div>
+            <SectionQueryStatus
+              error
+              message="Failure reasons could not be refreshed. Showing the last successful breakdown."
+              retry={retry}
+            />
           )}
           {snapshot && snapshot.result.items.length > 0 ? (
-            <div className="error-signatures">
-              <div aria-hidden="true" className="error-signature-header">
-                <span>Code</span>
-                <span>Coarse class</span>
-                <span>Count</span>
-                <span>Last seen</span>
-                <span>Matching example</span>
-                <span />
-              </div>
-              {snapshot.result.items.map((signature) => (
-                <FailureReasonRow
-                  filters={snapshot.filters}
-                  key={`${signature.code}:${signature.errorClass}`}
-                  signature={signature}
-                />
-              ))}
-            </div>
+            <FailureReasonRows snapshot={snapshot} />
           ) : (
             <p className="inline-empty">No coded failures in this scope and time window.</p>
           )}
         </>
       )}
-    </section>
+    </>
+  );
+}
+
+function FailureReasonRows({ snapshot }: { snapshot: InsightErrorSignaturesSnapshot }) {
+  const [showAll, setShowAll] = useState(false);
+  const items = snapshot.result.items;
+  const visibleItems = showAll ? items : items.slice(0, INITIAL_DETAIL_ROWS);
+  return (
+    <>
+      <div className="error-signatures">
+        <div aria-hidden="true" className="error-signature-header">
+          <span>Code</span>
+          <span>Coarse class</span>
+          <span>Count</span>
+          <span>Last seen</span>
+          <span>Matching example</span>
+          <span />
+        </div>
+        {visibleItems.map((signature) => (
+          <FailureReasonRow
+            filters={snapshot.filters}
+            key={`${signature.code}:${signature.errorClass}`}
+            signature={signature}
+          />
+        ))}
+      </div>
+      {items.length > INITIAL_DETAIL_ROWS && (
+        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
+          {showAll ? "Show fewer failure reasons" : `View all ${items.length} failure reasons`}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -662,11 +650,13 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
   );
 }
 
-function UsageAnalytics({
+export function UsageAnalytics({
   filters,
+  mode,
   usage,
 }: {
   filters: TelemetryStatsOptions;
+  mode: "cost" | "insight";
   usage: TelemetryUsageStats;
 }) {
   const label = usageMetricLabel(usage);
@@ -704,11 +694,10 @@ function UsageAnalytics({
     ),
   });
   return (
-    <div className="usage-analytics">
+    <div className="usage-analytics usage-analytics-split">
       <div aria-hidden="true" className="usage-header">
         <span>Scope</span>
-        <span>Tokens</span>
-        <span>AI cost</span>
+        <span>{mode === "insight" ? "Tokens" : "AI cost"}</span>
         <span>Retry waste</span>
       </div>
       <div className="usage-row">
@@ -719,25 +708,28 @@ function UsageAnalytics({
             {usage.totalAttempts === 1 ? "attempt" : "attempts"}
           </small>
         </span>
-        <UsagePercentiles
-          ariaLabel={`View token usage runs behind ${label}: ${formatSamples(usage.tokenSamples)}, P50 ${formatMeasuredTokens(usage.p50Tokens)}, P95 ${formatMeasuredTokens(usage.p95Tokens)}`}
-          formatter={formatMeasuredTokens}
-          href={tokenHref}
-          label="Tokens"
-          p50={usage.p50Tokens}
-          p95={usage.p95Tokens}
-          samples={usage.tokenSamples}
-        />
-        <UsagePercentiles
-          ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
-          formatter={formatMeasuredCost}
-          href={costHref}
-          label="AI cost"
-          p50={usage.p50CostUSD}
-          p95={usage.p95CostUSD}
-          samples={usage.costSamples}
-        />
-        <RetryWasteMetric href={wasteHref} label={label} usage={usage} />
+        {mode === "insight" ? (
+          <UsagePercentiles
+            ariaLabel={`View token usage runs behind ${label}: ${formatSamples(usage.tokenSamples)}, P50 ${formatMeasuredTokens(usage.p50Tokens)}, P95 ${formatMeasuredTokens(usage.p95Tokens)}`}
+            formatter={formatMeasuredTokens}
+            href={tokenHref}
+            label="Tokens"
+            p50={usage.p50Tokens}
+            p95={usage.p95Tokens}
+            samples={usage.tokenSamples}
+          />
+        ) : (
+          <UsagePercentiles
+            ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+            formatter={formatMeasuredCost}
+            href={costHref}
+            label="AI cost"
+            p50={usage.p50CostUSD}
+            p95={usage.p95CostUSD}
+            samples={usage.costSamples}
+          />
+        )}
+        <RetryWasteMetric href={wasteHref} includeCost={mode === "cost"} label={label} usage={usage} />
       </div>
     </div>
   );
@@ -782,17 +774,23 @@ function UsagePercentiles({
 
 function RetryWasteMetric({
   href,
+  includeCost,
   label,
   usage,
 }: {
   href: string;
+  includeCost: boolean;
   label: string;
   usage: TelemetryUsageStats;
 }) {
   const description =
     usage.retryWasteAttempts === 0
       ? "no superseded attempts"
-      : `${usage.retryWasteAttempts} superseded ${usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}, ${formatMeasuredTokens(usage.retryWasteTokens)}, ${formatMeasuredCost(usage.retryWasteCostUSD)}`;
+      : [
+          `${usage.retryWasteAttempts} superseded ${usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}`,
+          formatMeasuredTokens(usage.retryWasteTokens),
+          ...(includeCost ? [formatMeasuredCost(usage.retryWasteCostUSD)] : []),
+        ].join(", ");
   return (
     <a
       aria-label={`View retry-waste runs behind ${label}: ${description}`}
@@ -820,24 +818,28 @@ function RetryWasteMetric({
             <small>Tokens</small>
             <strong>{formatMeasuredTokens(usage.retryWasteTokens)}</strong>
           </span>
-          <span>
-            <small>Cost</small>
-            <strong>{formatMeasuredCost(usage.retryWasteCostUSD)}</strong>
-          </span>
+          {includeCost && (
+            <span>
+              <small>Cost</small>
+              <strong>{formatMeasuredCost(usage.retryWasteCostUSD)}</strong>
+            </span>
+          )}
         </span>
       )}
     </a>
   );
 }
 
-function CostTrend({
+export function CostTrend({
   costTrend,
   currentUsage,
+  refreshing,
   retry,
   window,
 }: {
   costTrend: QueryState<InsightCostTrendViewModel>;
   currentUsage: TelemetryUsageStats;
+  refreshing: boolean;
   retry: () => void;
   window: InsightWindow;
 }) {
@@ -849,16 +851,24 @@ function CostTrend({
     );
   }
   if (costTrend.status === "loading") {
-    return <p className="usage-trend-note">Loading cost trend…</p>;
+    return (
+      <div className="usage-trend">
+        <SectionQueryStatus loading message="Loading cost trend…" />
+      </div>
+    );
   }
   if (costTrend.status === "error") {
+    const unavailable = isMissingCostCapability(costTrend.error);
     return (
-      <div className="insight-inline-error">
-        <span>Unable to load the cost trend.</span>
-        <button onClick={retry} type="button">
-          Retry
-        </button>
-      </div>
+      <SectionQueryStatus
+        error
+        message={
+          unavailable
+            ? "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section."
+            : "Unable to load the cost trend."
+        }
+        retry={unavailable ? undefined : retry}
+      />
     );
   }
   if (costTrend.status !== "ready" && costTrend.status !== "stale") {
@@ -870,14 +880,18 @@ function CostTrend({
 
   return (
     <div className="usage-trend">
-      {costTrend.status === "stale" && costTrend.error && (
-        <div className="insight-inline-error">
-          <span>Cost trend refresh failed. Showing the last successful read.</span>
-          <button onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
-      )}
+      <SectionQueryStatus
+        error={costTrend.status === "stale" && Boolean(costTrend.error)}
+        loading={refreshing}
+        message={
+          costTrend.status === "stale" && costTrend.error
+            ? "Cost trend refresh failed. Showing the last successful read."
+            : refreshing
+              ? "Refreshing cost trend…"
+              : undefined
+        }
+        retry={retry}
+      />
       <div className="usage-trend-heading">
         <p className="section-kicker">Trend</p>
         <h3>Cost over time</h3>
@@ -1047,11 +1061,13 @@ function writeStoredThreshold(value: number | undefined): void {
   }
 }
 
-function ExternalCostBreakdown({
+export function ExternalCostBreakdown({
   costs,
+  refreshing,
   retry,
 }: {
   costs: QueryState<InsightExternalCostSnapshot>;
+  refreshing: boolean;
   retry: () => void;
 }) {
   const [filter, setFilter] = useState("");
@@ -1071,13 +1087,27 @@ function ExternalCostBreakdown({
   );
 
   if (costs.status === "error") {
+    const unavailable = isMissingCostCapability(costs.error);
     return (
-      <section className="content-section">
+      <section className="content-section cost-section-stable cost-section-attribution">
         <ExternalCostHeading />
-        <div className="insight-inline-error">
-          <span>Unable to load pull request and issue costs.</span>
-          <button onClick={retry} type="button">Retry</button>
-        </div>
+        <SectionQueryStatus
+          error
+          message={
+            unavailable
+              ? "Attributed costs are not supported by this daemon. Upgrade Goobers to enable pull request and issue cost reporting."
+              : "Unable to load pull request and issue costs."
+          }
+          retry={unavailable ? undefined : retry}
+        />
+      </section>
+    );
+  }
+  if (costs.status === "loading") {
+    return (
+      <section className="content-section cost-section-stable cost-section-attribution">
+        <ExternalCostHeading />
+        <SectionQueryStatus loading message="Loading attributed costs…" />
       </section>
     );
   }
@@ -1085,17 +1115,20 @@ function ExternalCostBreakdown({
     return null;
   }
   return (
-    <section className="content-section">
+    <section className="content-section cost-section-stable cost-section-attribution">
       <ExternalCostHeading loadedAt={costs.data.loadedAt} />
-      {costs.status === "stale" && costs.error && (
-        <div className="insight-inline-error">
-          <span>
-            Attributed cost refresh failed. Showing data loaded{" "}
-            {formatTimestamp(costs.data.loadedAt)}.
-          </span>
-          <button onClick={retry} type="button">Retry</button>
-        </div>
-      )}
+      <SectionQueryStatus
+        error={costs.status === "stale" && Boolean(costs.error)}
+        loading={refreshing}
+        message={
+          costs.status === "stale" && costs.error
+            ? `Attributed cost refresh failed. Showing data loaded ${formatTimestamp(costs.data.loadedAt)}.`
+            : refreshing
+              ? "Refreshing attributed costs…"
+              : undefined
+        }
+        retry={retry}
+      />
       {costs.data.boundedAllTime && (
         <p className="usage-description">
           “All time” cost attribution is bounded to the latest 90 days.
@@ -1231,12 +1264,14 @@ function useBudgetThreshold(): [number | undefined, (value: number | undefined) 
   return [threshold, setThreshold];
 }
 
-function InstanceCostRollup({
+export function InstanceCostRollup({
   costRollup,
+  refreshing,
   retry,
   window,
 }: {
   costRollup: QueryState<InsightCostRollupSnapshot>;
+  refreshing: boolean;
   retry: () => void;
   window: InsightWindow;
 }) {
@@ -1244,22 +1279,17 @@ function InstanceCostRollup({
 
   if (costRollup.status === "loading") {
     return (
-      <section className="content-section">
+      <section className="content-section cost-section-stable">
         <RollupHeading window={window} />
-        <p className="inline-empty">Loading instance spend…</p>
+        <SectionQueryStatus loading message="Loading instance spend…" />
       </section>
     );
   }
   if (costRollup.status === "error") {
     return (
-      <section className="content-section">
+      <section className="content-section cost-section-stable">
         <RollupHeading window={window} />
-        <div className="insight-inline-error">
-          <span>Unable to load instance spend.</span>
-          <button onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
+        <SectionQueryStatus error message="Unable to load instance spend." retry={retry} />
       </section>
     );
   }
@@ -1271,16 +1301,20 @@ function InstanceCostRollup({
   const total = data.totalCostSamples === 0 ? undefined : data.totalCostUSD;
 
   return (
-    <section className="content-section">
+    <section className="content-section cost-section-stable">
       <RollupHeading window={window} />
-      {costRollup.status === "stale" && costRollup.error && (
-        <div className="insight-inline-error">
-          <span>Instance spend refresh failed. Showing the last successful read.</span>
-          <button onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
-      )}
+      <SectionQueryStatus
+        error={costRollup.status === "stale" && Boolean(costRollup.error)}
+        loading={refreshing}
+        message={
+          costRollup.status === "stale" && costRollup.error
+            ? "Instance spend refresh failed. Showing the last successful read."
+            : refreshing
+              ? "Refreshing instance spend…"
+              : undefined
+        }
+        retry={retry}
+      />
       <div className="instance-spend-summary">
         <div className="instance-spend-total">
           <small>Total AI cost · all gaggles</small>
@@ -1423,22 +1457,47 @@ function StageDistributions({
   filters: TelemetryStatsOptions;
   stages: TelemetryStageStats[];
 }) {
+  const [showAll, setShowAll] = useState(false);
   const scaleMax = Math.max(...stages.map((stage) => stage.maxDurationMs ?? 0), 1);
+  const visibleStages = showAll ? stages : stages.slice(0, INITIAL_DETAIL_ROWS);
   return (
-    <div className="stage-distributions">
-      <div className="distribution-legend">
-        <span>
-          <i className="distribution-mark distribution-mark-p50" /> P50
-        </span>
-        <span>
-          <i className="distribution-mark distribution-mark-p95" /> P95
-        </span>
-        <span className="distribution-scale">
-          Scale 0 to {formatDuration(scaleMax)}
-        </span>
+    <>
+      <div className="stage-distributions">
+        <div className="distribution-legend">
+          <span>
+            <i className="distribution-mark distribution-mark-p50" /> P50
+          </span>
+          <span>
+            <i className="distribution-mark distribution-mark-p95" /> P95
+          </span>
+          <span className="distribution-scale">
+            Scale 0 to {formatDuration(scaleMax)}
+          </span>
+        </div>
+        {visibleStages.map((stage) => (
+          <StageDistributionRow filters={filters} key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`} scaleMax={scaleMax} stage={stage} />
+        ))}
       </div>
-      {stages.map((stage) => (
-        <a
+      {stages.length > INITIAL_DETAIL_ROWS && (
+        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
+          {showAll ? "Show fewer stages" : `View all ${stages.length} stages`}
+        </button>
+      )}
+    </>
+  );
+}
+
+function StageDistributionRow({
+  filters,
+  scaleMax,
+  stage,
+}: {
+  filters: TelemetryStatsOptions;
+  scaleMax: number;
+  stage: TelemetryStageStats;
+}) {
+  return (
+    <a
           aria-label={`View runs behind ${stage.gaggle} ${stage.workflow} ${stage.stage}: ${stage.durationSamples} samples, P50 ${formatMeasuredDuration(stage.p50DurationMs)}, P95 ${formatMeasuredDuration(stage.p95DurationMs)}, minimum ${formatMeasuredDuration(stage.minDurationMs)}, average ${formatMeasuredDuration(stage.avgDurationMs)}, maximum ${formatMeasuredDuration(stage.maxDurationMs)}${stage.stuckAbortedAttempts > 0 ? `, ${stage.stuckAbortedAttempts} stuck-aborted attempts excluded` : ""}`}
           className="stage-distribution-row"
           href={routeHash({
@@ -1452,7 +1511,6 @@ function StageDistributions({
               "measured",
             ),
           })}
-          key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`}
         >
           <span className="distribution-name">
             <strong>{stage.stage}</strong>
@@ -1493,9 +1551,7 @@ function StageDistributions({
             </span>
           </span>
           <Icon name="chevron" size={15} />
-        </a>
-      ))}
-    </div>
+    </a>
   );
 }
 

@@ -100,6 +100,23 @@ const run = {
   noWork: false,
 };
 
+const completedRun = {
+  ...run,
+  id: "01JZE2ECOMPLETEDRUNWITHALONGIDENTIFIER",
+  trigger: {
+    kind: "item",
+    ref: "refs/heads/users/jeffstei/a-very-long-portal-layout-verification-branch",
+  },
+  phase: "completed",
+  terminal: true,
+  currentStage: undefined,
+  startedAt: "2026-08-17T06:00:00Z",
+  finishedAt: "2026-08-17T06:03:00Z",
+  durationMillis: 180_000,
+  lastActivityAt: "2026-08-17T06:03:00Z",
+  lastSeq: 9,
+};
+
 const runDetail = {
   ...run,
   graph: workflowGraph,
@@ -215,6 +232,18 @@ const responses = new Map([
       status: "ready",
       concurrency: { activeRuns: 1, maxConcurrentRuns: 2 },
       counts: { gaggles: 1, goobers: 1, workflows: 1, activeRuns: 1 },
+      maintenance: {
+        kind: "retention-sweep",
+        state: "running",
+        trigger: "periodic",
+        startedAt: "2026-09-09T18:10:00Z",
+        lastProgressAt: "2026-09-09T19:15:00Z",
+        currentPhase: "projection-retention-with-a-long-but-coherent-phase-name",
+        candidates: 23,
+        removed: 12,
+        failures: 0,
+        lastResult: "running",
+      },
       warnings: [],
     },
   ],
@@ -236,7 +265,12 @@ const responses = new Map([
         accentInkLight: null,
         accentInkDark: null,
       },
-      support: { docsUrl: null, issuesUrl: null, chatUrl: null, links: [] },
+      support: {
+        docsUrl: "https://example.test/docs",
+        issuesUrl: "https://example.test/support",
+        chatUrl: null,
+        links: [],
+      },
       capabilities: { revealRun: true },
     },
   ],
@@ -355,10 +389,20 @@ const contentTypes = {
 };
 const eventStreams = new Set();
 let eventSequence = 0;
+const constrainedAdmission = {
+  active: 0,
+  peak: 0,
+  requests: 0,
+};
 
 function sendJSON(response, value) {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify(value));
+}
+
+function sendError(response, status, code, message, headers = {}) {
+  response.writeHead(status, { "Content-Type": "application/json", ...headers });
+  response.end(JSON.stringify({ error: { code, message } }));
 }
 
 function emitInvalidation() {
@@ -413,6 +457,17 @@ function serveStatic(pathname, mode, response) {
 
 createServer((request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+  if (url.pathname === "/api/v1/test/admission") {
+    if (request.method === "POST") {
+      constrainedAdmission.active = 0;
+      constrainedAdmission.peak = 0;
+      constrainedAdmission.requests = 0;
+      sendJSON(response, { reset: true });
+      return;
+    }
+    sendJSON(response, constrainedAdmission);
+    return;
+  }
   if (url.pathname === "/api/v1/events") {
     serveEvents(response);
     return;
@@ -435,7 +490,7 @@ createServer((request, response) => {
   if (url.pathname === "/api/v1/runs") {
     const phase = url.searchParams.get("phase");
     sendJSON(response, {
-      runs: phase && phase !== "running" ? [] : [run],
+      runs: phase === "completed" ? [completedRun] : phase && phase !== "running" ? [] : [run],
       ...(url.searchParams.get("latestPerWorkflow") === "true"
         ? { workflowActivity: [{ ...identity, activeRuns: 1 }] }
         : {}),
@@ -444,7 +499,30 @@ createServer((request, response) => {
   }
   const fixture = responses.get(url.pathname);
   if (fixture) {
-    sendJSON(response, fixture);
+    if (request.headers["x-test-constrained-admission"] !== "1") {
+      sendJSON(response, fixture);
+      return;
+    }
+    constrainedAdmission.requests += 1;
+    if (constrainedAdmission.active >= 1) {
+      sendError(
+        response,
+        503,
+        "class_saturated",
+        "too many concurrent bounded requests; retry shortly",
+        { "Retry-After": "0" },
+      );
+      return;
+    }
+    constrainedAdmission.active += 1;
+    constrainedAdmission.peak = Math.max(
+      constrainedAdmission.peak,
+      constrainedAdmission.active,
+    );
+    setTimeout(() => {
+      constrainedAdmission.active -= 1;
+      sendJSON(response, fixture);
+    }, 40);
     return;
   }
   serveStatic(url.pathname, url.searchParams.get("mode"), response);

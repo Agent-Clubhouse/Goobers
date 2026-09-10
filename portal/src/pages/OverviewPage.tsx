@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RunTiming } from "../components/RunTiming";
 import type { DaemonClient, MaintenanceStatus, RunSummary } from "../api/types";
 import { useAttentionCollapsed } from "../attentionCollapse";
@@ -53,6 +53,7 @@ export function OverviewPage({
       configurationWarnings={configurationWarnings}
       failureReasons={failureReasons}
       overview={query.state.data}
+      retry={query.retry}
       standalone={standalone}
     />
   );
@@ -62,16 +63,20 @@ function Overview({
   configurationWarnings,
   failureReasons,
   overview,
+  retry,
   standalone,
 }: {
   configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
   failureReasons: FailureReasons;
   overview: OperationalOverview;
+  retry: () => void;
   standalone: boolean;
 }) {
   const groups = overview.groups;
-  const emptyInstance = overview.gaggleCount === 0;
-  const emptyWorkflows = !emptyInstance && overview.instance.counts.workflows === 0;
+  const inventoryLoaded = !overview.sectionErrors?.inventory;
+  const emptyInstance = inventoryLoaded && overview.gaggleCount === 0;
+  const emptyWorkflows =
+    inventoryLoaded && !emptyInstance && overview.instance.counts.workflows === 0;
   const emptyRuns =
     !emptyInstance &&
     !emptyWorkflows &&
@@ -85,13 +90,22 @@ function Overview({
   const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
   const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
   const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedAttentionGroups, setExpandedAttentionGroups] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [showDismissed, setShowDismissed] = useState(false);
   const activeAttention = groups.attention.filter((run) => !dismissedRunIds.has(run.id));
   const dismissedAttention = groups.attention.filter((run) => dismissedRunIds.has(run.id));
+  const attentionGroups = useMemo(
+    () => groupAttentionRuns(activeAttention, overview, failureReasons),
+    [activeAttention, failureReasons, overview],
+  );
   const activeAttentionIds = new Set(activeAttention.map((run) => run.id));
   const visibleSelectedRunIds = [...selectedRunIds].filter((runId) =>
     activeAttentionIds.has(runId),
   );
+  const allVisibleSelected =
+    activeAttention.length > 0 && visibleSelectedRunIds.length === activeAttention.length;
 
   const toggleSelected = (runId: string) => {
     setSelectedRunIds((current) => {
@@ -110,6 +124,32 @@ function Overview({
       const next = new Set(current);
       for (const runId of runIds) {
         next.delete(runId);
+      }
+      return next;
+    });
+  };
+  const toggleAllVisible = () => {
+    setSelectedRunIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) {
+        for (const run of activeAttention) {
+          next.delete(run.id);
+        }
+      } else {
+        for (const run of activeAttention) {
+          next.add(run.id);
+        }
+      }
+      return next;
+    });
+  };
+  const toggleGroupExpanded = (key: string) => {
+    setExpandedAttentionGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
       }
       return next;
     });
@@ -150,12 +190,28 @@ function Overview({
       {/* A section that failed to load must say so. Without this the page would
           render an empty run list identically to a genuinely idle instance,
           which is a worse failure than the blank page it replaced (#1709). */}
-      {overview.sectionErrors && (
-        <p className="inline-empty" role="alert">
-          {overview.sectionErrors.runs
-            ? "Run activity could not be read just now, so the run groups below may be incomplete or out of date. Everything else on this page is current."
-            : "The gaggle and workflow inventory could not be read just now, so names and counts may be out of date. Everything else on this page is current."}
-        </p>
+      {overview.sectionErrors?.inventory && (
+        <div className="inline-empty section-error" role="alert">
+          <span>
+            The gaggle and workflow inventory could not be read just now. Inventory-backed names
+            and empty-state guidance are unavailable until it loads; daemon health, counts, and run
+            data below remain current.
+          </span>
+          <button className="text-button" onClick={retry} type="button">
+            Retry inventory
+          </button>
+        </div>
+      )}
+      {overview.sectionErrors?.runs && (
+        <div className="inline-empty section-error" role="alert">
+          <span>
+            Run activity could not be read just now, so the run groups below may be incomplete or
+            out of date. Everything else on this page is current.
+          </span>
+          <button className="text-button" onClick={retry} type="button">
+            Retry run activity
+          </button>
+        </div>
       )}
 
       {/* A phase that failed while its siblings succeeded is the same trap one
@@ -176,6 +232,20 @@ function Overview({
               <h2>Needs attention</h2>
             </div>
             <div className="attention-actions">
+              {activeAttention.length > 0 && (
+                <label className="attention-select-all">
+                  <SelectionCheckbox
+                    ariaLabel="Select all visible attention runs"
+                    checked={allVisibleSelected}
+                    indeterminate={
+                      visibleSelectedRunIds.length > 0 &&
+                      visibleSelectedRunIds.length < activeAttention.length
+                    }
+                    onChange={toggleAllVisible}
+                  />
+                  Select all
+                </label>
+              )}
               {visibleSelectedRunIds.length > 0 && (
                 <button
                   className="text-button"
@@ -218,59 +288,107 @@ function Overview({
               <p className="inline-empty">Nothing needs attention right now.</p>
             ) : (
               <div className="attention-list">
-                {activeAttention.map((run) => {
-                  const reason = run.phase === "failed" ? failureReasons.get(run.id) : undefined;
-                  const selected = selectedRunIds.has(run.id);
+                {attentionGroups.map((group) => {
+                  const selectedCount = group.runs.filter((run) =>
+                    selectedRunIds.has(run.id),
+                  ).length;
+                  const expanded = expandedAttentionGroups.has(group.key);
                   return (
-                    <div className="attention-row" key={run.id}>
-                      <input
-                        aria-label={`Select run ${run.id} for bulk actions`}
-                        checked={selected}
-                        className="attention-select"
-                        onChange={() => toggleSelected(run.id)}
-                        type="checkbox"
-                      />
-                      <div className="attention-link-shell data-row-stretched">
-                        <a
-                          aria-label={`Open run ${run.id}`}
-                          className="data-row-stretch-link"
-                          href={routeHash({ page: "run", id: run.id })}
+                    <div className="attention-group" key={group.key}>
+                      <div className="attention-row attention-group-summary">
+                        <SelectionCheckbox
+                          ariaLabel={`Select all ${group.runs.length} runs in ${group.label}`}
+                          checked={selectedCount === group.runs.length}
+                          indeterminate={selectedCount > 0 && selectedCount < group.runs.length}
+                          onChange={() => {
+                            const shouldSelect = selectedCount !== group.runs.length;
+                            setSelectedRunIds((current) => {
+                              const next = new Set(current);
+                              for (const run of group.runs) {
+                                if (shouldSelect) {
+                                  next.add(run.id);
+                                } else {
+                                  next.delete(run.id);
+                                }
+                              }
+                              return next;
+                            });
+                          }}
                         />
                         <span className="attention-icon">
                           <Icon name="alert" />
                         </span>
                         <span className="attention-copy">
-                          <strong>{runLabel(run)}</strong>
-                          <span>
-                            {run.phase === "escalated"
-                              ? "Run escalated and needs human review."
-                              : reason
-                                ? `${reason.code || "failed"} · ${reason.message}`
-                                : "Run failed and needs investigation."}
+                          <strong title={group.label}>{group.label}</strong>
+                          <span title={group.diagnosis}>
+                            {group.runs.length} {group.runs.length === 1 ? "run" : "runs"} ·{" "}
+                            {group.diagnosis}
                           </span>
                         </span>
                         <span className="attention-meta">
-                          <span className="attention-workflow">
-                            {workflowDisplayName(overview, run)}
+                          <span title={group.context}>{group.context}</span>
+                          <time dateTime={group.latest.lastActivityAt}>
+                            Latest {formatTimestamp(group.latest.lastActivityAt)}
+                          </time>
+                        </span>
+                        <button
+                          aria-controls={`attention-group-${group.domId}`}
+                          aria-expanded={expanded}
+                          className="attention-expand"
+                          onClick={() => toggleGroupExpanded(group.key)}
+                          type="button"
+                        >
+                          {expanded ? "Hide runs" : "Show runs"}
+                        </button>
+                        <button
+                          aria-label={`Dismiss all runs in ${group.label}`}
+                          className="attention-dismiss"
+                          onClick={() => dismissRuns(group.runs.map((run) => run.id))}
+                          type="button"
+                        >
+                          Dismiss group
+                        </button>
+                      </div>
+                      <div
+                        className="attention-group-runs"
+                        hidden={!expanded}
+                        id={`attention-group-${group.domId}`}
+                      >
+                        {group.runs.map((run) => (
+                          <div className="attention-run-row" key={run.id}>
+                            <input
+                              aria-label={`Select run ${run.id} for bulk actions`}
+                              checked={selectedRunIds.has(run.id)}
+                              className="attention-select"
+                              onChange={() => toggleSelected(run.id)}
+                              type="checkbox"
+                            />
+                            <a
+                              className="attention-run-link"
+                              href={routeHash({ page: "run", id: run.id })}
+                              title={run.id}
+                            >
+                              <strong>{run.id}</strong>
+                              <span>{attentionDiagnosis(run, failureReasons)}</span>
+                            </a>
                             <ScopePivot
                               label={workflowDisplayName(overview, run)}
                               scope={{ gaggle: run.gaggle, workflow: run.workflow }}
                             />
-                          </span>
-                          <time dateTime={run.finishedAt ?? run.startedAt}>
-                            {formatTimestamp(run.finishedAt ?? run.startedAt)}
-                          </time>
-                        </span>
-                        <Icon name="arrow" />
+                            <time dateTime={run.lastActivityAt}>
+                              {formatTimestamp(run.lastActivityAt)}
+                            </time>
+                            <button
+                              aria-label={`Dismiss run ${run.id}`}
+                              className="attention-dismiss"
+                              onClick={() => dismissRuns([run.id])}
+                              type="button"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                      <button
-                        aria-label={`Dismiss run ${run.id}`}
-                        className="attention-dismiss"
-                        onClick={() => dismissRuns([run.id])}
-                        type="button"
-                      >
-                        Dismiss
-                      </button>
                     </div>
                   );
                 })}
@@ -312,7 +430,7 @@ function Overview({
 
       <InstanceStrip overview={overview} standalone={standalone} />
 
-      {emptyInstance ? (
+      {!inventoryLoaded ? null : emptyInstance ? (
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
@@ -368,10 +486,10 @@ function Overview({
 
 function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
   const hasLastCompletedSweep = Boolean(maintenance.lastCompletedAt || maintenance.lastResult);
-  const phase = maintenance.currentPhase ? ` · ${maintenance.currentPhase}` : "";
-  const triggerLabel = maintenance.trigger ? ` · ${maintenance.trigger} trigger` : "";
+  const phase = maintenance.currentPhase;
+  const triggerLabel = maintenance.trigger ? `${maintenance.trigger} trigger` : "";
   const lastProgressLabel = maintenance.lastProgressAt
-    ? ` · last progress ${formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago`
+    ? `last progress ${formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago`
     : "";
 
   switch (maintenance.state) {
@@ -381,17 +499,11 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
           <strong>Retention sweep running</strong>
           {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.startedAt && (
-            <span>
-              {" "}
-              for {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.startedAt)))}
-            </span>
+            <span>running for {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.startedAt)))}</span>
           )}
           {lastProgressLabel && <span>{lastProgressLabel}</span>}
           {phase && <span>{phase}</span>}
-          <span>
-            {" "}
-            · {maintenance.removed} removed, {maintenance.candidates} candidates
-          </span>
+          <span>{maintenance.removed} removed, {maintenance.candidates} candidates</span>
         </div>
       );
     case "failed":
@@ -399,12 +511,9 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
         <div className="maintenance-indicator maintenance-indicator-error" role="alert">
           <strong>Retention sweep failed</strong>
           {triggerLabel && <span>{triggerLabel}</span>}
-          {maintenance.errorSummary && <span> · {maintenance.errorSummary}</span>}
+          {maintenance.errorSummary && <span>{maintenance.errorSummary}</span>}
           {maintenance.lastProgressAt && (
-            <span>
-              {" "}
-              · last progress {formatTimestamp(maintenance.lastProgressAt)}
-            </span>
+            <span>last progress {formatTimestamp(maintenance.lastProgressAt)}</span>
           )}
         </div>
       );
@@ -414,17 +523,11 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
           <strong>Retention sweep completed</strong>
           {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.lastCompletedAt && (
-            <span>
-              {" "}
-              · latest at {formatTimestamp(maintenance.lastCompletedAt)}
-            </span>
+            <span>latest at {formatTimestamp(maintenance.lastCompletedAt)}</span>
           )}
           {lastProgressLabel && <span>{lastProgressLabel}</span>}
           {phase && <span>{phase}</span>}
-          <span>
-            {" "}
-            · {maintenance.removed} removed, {maintenance.candidates} candidates
-          </span>
+          <span>{maintenance.removed} removed, {maintenance.candidates} candidates</span>
         </div>
       );
     case "cancelled":
@@ -433,10 +536,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
           <strong>Retention sweep cancelled</strong>
           {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.lastCompletedAt && (
-            <span>
-              {" "}
-              · latest at {formatTimestamp(maintenance.lastCompletedAt)}
-            </span>
+            <span>latest at {formatTimestamp(maintenance.lastCompletedAt)}</span>
           )}
         </div>
       );
@@ -446,10 +546,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
           <strong>Retention sweep queued</strong>
           {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.lastCompletedAt && (
-            <span>
-              {" "}
-              · last completed at {formatTimestamp(maintenance.lastCompletedAt)}
-            </span>
+            <span>last completed at {formatTimestamp(maintenance.lastCompletedAt)}</span>
           )}
         </div>
       );
@@ -462,10 +559,7 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
           <strong>No retention sweep running</strong>
           {triggerLabel && <span>{triggerLabel}</span>}
           {maintenance.lastCompletedAt && (
-            <span>
-              {" "}
-              · last completed at {formatTimestamp(maintenance.lastCompletedAt)}
-            </span>
+            <span>last completed at {formatTimestamp(maintenance.lastCompletedAt)}</span>
           )}
         </div>
       );
@@ -583,11 +677,11 @@ function RunSection({
               label={`Open run ${run.id}`}
             >
               <span className="row-primary">
-                <span className="row-title">{runLabel(run)}</span>
-                <span className="row-subtitle">
+                <span className="row-title" title={runLabel(run)}>{runLabel(run)}</span>
+                <span className="row-subtitle" title={runContextSubtitle(overview, run, active)}>
                   {active && run.operator
                     ? operatorSubtitle(run)
-                    : `${run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}${run.id}`}
+                    : runContextSubtitle(overview, run, active)}
                 </span>
                 {active && operatorContext(run) ? (
                   <span className="row-subtitle">{operatorContext(run)}</span>
@@ -632,7 +726,123 @@ function runLabel(run: RunSummary): string {
   if (run.operator?.issue) {
     return `#${run.operator.issue.number}${run.operator.issue.title ? ` ${run.operator.issue.title}` : ""}`;
   }
-  return `${run.workflow} · ${run.id}`;
+  return run.id;
+}
+
+function runContextSubtitle(
+  overview: OperationalOverview,
+  run: RunSummary,
+  active: boolean,
+): string {
+  if (active && run.operator) {
+    return operatorSubtitle(run);
+  }
+  const context = workflowDisplayName(overview, run);
+  const ref =
+    run.trigger.ref && run.trigger.ref !== run.id && run.trigger.ref !== run.workflow
+      ? ` · ${run.trigger.kind} ${run.trigger.ref}`
+      : "";
+  return `${context}${ref}`;
+}
+
+interface AttentionGroup {
+  key: string;
+  domId: string;
+  label: string;
+  context: string;
+  diagnosis: string;
+  latest: RunSummary;
+  runs: RunSummary[];
+}
+
+function groupAttentionRuns(
+  runs: RunSummary[],
+  overview: OperationalOverview,
+  failureReasons: FailureReasons,
+): AttentionGroup[] {
+  const grouped = new Map<string, AttentionGroup>();
+  for (const run of runs) {
+    const issue = run.operator?.issue;
+    const category = attentionCategory(run, failureReasons);
+    const key = issue
+      ? `issue:${issue.number}`
+      : `workflow:${run.gaggle}/${run.workflow}/${category}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.runs.push(run);
+      continue;
+    }
+    grouped.set(key, {
+      key,
+      domId: key.replace(/[^a-zA-Z0-9_-]/g, "-"),
+      label: issue
+        ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
+        : `${workflowDisplayName(overview, run)} · ${attentionCategoryLabel(run, failureReasons)}`,
+      context: issue
+        ? workflowDisplayName(overview, run)
+        : `${run.gaggle} / ${run.workflow}`,
+      diagnosis: attentionDiagnosis(run, failureReasons),
+      latest: run,
+      runs: [run],
+    });
+  }
+  return [...grouped.values()];
+}
+
+function attentionCategory(run: RunSummary, failureReasons: FailureReasons): string {
+  if (run.phase === "escalated") {
+    return `escalated:${run.terminalReason ?? "review"}`;
+  }
+  const reason = failureReasons.get(run.id);
+  return `failed:${reason?.code ?? run.operator?.latestError?.code ?? run.terminalReason ?? "unknown"}`;
+}
+
+function attentionCategoryLabel(run: RunSummary, failureReasons: FailureReasons): string {
+  if (run.phase === "escalated") {
+    return "Escalated for review";
+  }
+  const reason = failureReasons.get(run.id);
+  return reason?.code ?? run.operator?.latestError?.code ?? "Failed";
+}
+
+function attentionDiagnosis(run: RunSummary, failureReasons: FailureReasons): string {
+  if (run.phase === "escalated") {
+    return run.terminalReason ?? "Escalated and needs human review.";
+  }
+  const reason = failureReasons.get(run.id);
+  if (reason) {
+    return `${reason.code || "failed"}${reason.message ? ` · ${reason.message}` : ""}`;
+  }
+  return run.terminalReason ?? "Failed and needs investigation.";
+}
+
+function SelectionCheckbox({
+  ariaLabel,
+  checked,
+  indeterminate,
+  onChange,
+}: {
+  ariaLabel: string;
+  checked: boolean;
+  indeterminate: boolean;
+  onChange: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.indeterminate = indeterminate;
+    }
+  }, [indeterminate]);
+  return (
+    <input
+      aria-label={ariaLabel}
+      checked={checked}
+      className="attention-select"
+      onChange={onChange}
+      ref={ref}
+      type="checkbox"
+    />
+  );
 }
 
 function operatorSubtitle(run: RunSummary): string {

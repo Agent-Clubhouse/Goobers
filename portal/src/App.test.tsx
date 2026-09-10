@@ -111,7 +111,7 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await user.click(await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }));
+    await openAttentionRun(user, "01JZ402DASHBOARD");
 
     expect(await screen.findByRole("heading", { name: "Loading run" })).toBeInTheDocument();
     expect(
@@ -124,9 +124,7 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     renderLiveApp();
 
-    await user.click(
-      await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
-    );
+    await openAttentionRun(user, "01JZ402DASHBOARD");
     expect(
       await screen.findByRole("heading", { name: "Run 01JZ402DASHBOARD" }),
     ).toBeInTheDocument();
@@ -140,9 +138,7 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     renderLiveApp();
 
-    await user.click(
-      await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
-    );
+    await openAttentionRun(user, "01JZ402DASHBOARD");
     expect(
       await screen.findByText("sha256:core", { selector: ".run-graph-pin .mono" }),
     ).toBeInTheDocument();
@@ -168,6 +164,7 @@ describe("portal foundation", () => {
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
     { hash: "#/insight", heading: "Insight" },
+    { hash: "#/cost", heading: "Cost" },
   ])("renders the $hash shell route from daemon fixtures", async ({ hash, heading }) => {
     window.location.hash = hash;
     renderLiveApp();
@@ -292,5 +289,16 @@ describe("portal foundation", () => {
 
   function renderLiveApp() {
     return render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+  }
+
+  async function openAttentionRun(
+    user: ReturnType<typeof userEvent.setup>,
+    runId: string,
+  ): Promise<void> {
+    const expanders = await screen.findAllByRole("button", { name: "Show runs" });
+    for (const expander of expanders) {
+      await user.click(expander);
+    }
+    await user.click(screen.getByRole("link", { name: new RegExp(runId) }));
   }
 });

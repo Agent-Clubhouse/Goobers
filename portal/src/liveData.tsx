@@ -15,6 +15,7 @@ import type {
   ModelInvalidation,
   UpdateModel,
   ReadState,
+  AdmissionDegradedState,
 } from "./api/types";
 import { SessionDataCache } from "./dataCache";
 import type { PortalDiagnostics } from "./portalDiagnostics";
@@ -37,6 +38,7 @@ export interface LiveDataSSEFailure {
 }
 
 export interface LiveDataConfig {
+  pollingEnabled?: boolean;
   invalidationWindowMs: number;
   reconnectBaseDelayMs: number;
   reconnectMaxDelayMs: number;
@@ -110,6 +112,7 @@ export interface LiveDataScope {
 }
 
 export interface LiveDataDependencies {
+  cursorScope?: string;
   diagnostics?: PortalDiagnostics;
   // Injected so a test (or a future caller) can observe cache behaviour; the
   // controller owns a session-scoped default when none is supplied.
@@ -151,6 +154,7 @@ interface LiveDataContextValue {
   lastSSEFailure?: LiveDataSSEFailure;
   /** How current the data is. Independent of `freshness`. */
   dataFreshness: DataFreshness;
+  admissionState?: AdmissionDegradedState;
   /** Called by the HTTP client for every response carrying a readState. */
   reportReadState: (state: ReadState) => void;
   isFresh: () => boolean;
@@ -170,20 +174,23 @@ export function LiveDataProvider({
   client,
   config,
   diagnostics,
+  cursorScope,
 }: {
   children: ReactNode;
   client: DaemonClient;
   config?: Partial<LiveDataConfig>;
   diagnostics?: PortalDiagnostics;
+  cursorScope?: string;
 }) {
   const cache = useMemo(() => new SessionDataCache(), [client]);
   const controller = useMemo(
     () =>
-      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics, cache }),
+      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics, cache, cursorScope }),
     [
       cache,
       client,
       config?.failuresBeforePolling,
+      config?.pollingEnabled,
       config?.invalidationWindowMs,
       config?.pollingIntervalMs,
       config?.reconnectBaseDelayMs,
@@ -194,6 +201,7 @@ export function LiveDataProvider({
       config?.refreshMaxDelayMs,
       config?.maxPendingInvalidations,
       diagnostics,
+      cursorScope,
     ],
   );
   const [freshness, setFreshness] = useState<LiveFreshness>(() => controller.freshness);
@@ -201,6 +209,7 @@ export function LiveDataProvider({
     () => controller.lastSSEFailure,
   );
   const [dataFreshness, setDataFreshness] = useState<DataFreshness>({ kind: "unknown" });
+  const [admissionState, setAdmissionState] = useState<AdmissionDegradedState | undefined>();
 
   const reportReadState = useCallback((state: ReadState) => {
     setDataFreshness(deriveDataFreshness(state));
@@ -210,6 +219,7 @@ export function LiveDataProvider({
   // and torn down with the provider — a stale sink would keep a dead
   // component's setState alive across a provider swap.
   useLayoutEffect(() => setReadStateSink(reportReadState), [reportReadState]);
+  useLayoutEffect(() => setAdmissionStateSink(setAdmissionState), []);
 
   useLayoutEffect(() => {
     const unsubscribe = controller.subscribeState((nextFreshness, failure) => {
@@ -229,13 +239,14 @@ export function LiveDataProvider({
       freshness,
       lastSSEFailure,
       dataFreshness,
+      admissionState,
       reportReadState,
       isFresh: controller.isFresh,
       refresh: controller.refresh,
       retryConnection: controller.retryConnection,
       subscribe: controller.subscribe,
     }),
-    [cache, controller, dataFreshness, freshness, lastSSEFailure, reportReadState],
+    [admissionState, cache, controller, dataFreshness, freshness, lastSSEFailure, reportReadState],
   );
 
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
@@ -299,6 +310,7 @@ export class LiveDataController {
   private lastNotifiedSSEFailure: LiveDataSSEFailure | undefined;
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly cache: SessionDataCache;
+  private readonly cursorStorageKey: string;
   private skipNextSnapshotRefresh = false;
   private started = false;
   freshness: LiveFreshness = "reconnecting";
@@ -309,6 +321,9 @@ export class LiveDataController {
     private readonly dependencies: LiveDataDependencies = {},
   ) {
     this.cache = dependencies.cache ?? new SessionDataCache();
+    this.cursorStorageKey = dependencies.cursorScope === undefined
+      ? CURSOR_STORAGE_KEY
+      : `${CURSOR_STORAGE_KEY}:${encodeURIComponent(dependencies.cursorScope)}`;
   }
 
   readonly isFresh = (): boolean => this.freshness === "connected";
@@ -329,7 +344,7 @@ export class LiveDataController {
     this.seenEventIds.clear();
     this.seenEventOrder.length = 0;
     this.lastSSEFailure = undefined;
-    window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
+    window.sessionStorage.removeItem(this.cursorStorageKey);
     this.closeConnection("manual-retry");
     this.setFreshness("reconnecting");
     this.connect("manual-retry");
@@ -374,7 +389,7 @@ export class LiveDataController {
     this.started = true;
     this.invalidationsPaused =
       !navigator.onLine || document.visibilityState === "hidden";
-    this.cursor = window.sessionStorage.getItem(CURSOR_STORAGE_KEY) ?? undefined;
+    this.cursor = window.sessionStorage.getItem(this.cursorStorageKey) ?? undefined;
     window.addEventListener("online", this.onOnline);
     window.addEventListener("offline", this.onOffline);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -637,7 +652,7 @@ export class LiveDataController {
       this.dependencies.diagnostics?.recordSSE({ event: "reconnect", cause: "epoch-changed" });
       this.rememberEvent(event.id);
       this.cursor = event.id;
-      window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
+      window.sessionStorage.setItem(this.cursorStorageKey, event.id);
       // Everything, not just what the event names: the rebuild may have changed
       // any of it, and the event's entity list describes one transition rather
       // than the generation gap.
@@ -651,7 +666,7 @@ export class LiveDataController {
     }
     this.rememberEvent(event.id);
     this.cursor = event.id;
-    window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
+    window.sessionStorage.setItem(this.cursorStorageKey, event.id);
     if (event.type === "snapshot" && this.skipNextSnapshotRefresh) {
       this.skipNextSnapshotRefresh = false;
       return;
@@ -713,7 +728,7 @@ export class LiveDataController {
     this.cursor = undefined;
     this.seenEventIds.clear();
     this.seenEventOrder.length = 0;
-    window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
+    window.sessionStorage.removeItem(this.cursorStorageKey);
     this.failureCount = 0;
     this.setFreshness("stale");
     this.scheduleReconnect(0, "stale-cursor");
@@ -728,7 +743,7 @@ export class LiveDataController {
       return;
     }
     this.failureCount += 1;
-    if (this.failureCount >= this.config.failuresBeforePolling) {
+    if (this.config.pollingEnabled !== false && this.failureCount >= this.config.failuresBeforePolling) {
       this.startPollingFallback();
     } else {
       this.setFreshness("reconnecting");
@@ -1161,6 +1176,7 @@ function parseCursor(cursor: string | undefined):
  * standalone build, reports are simply dropped.
  */
 let readStateSink: ((state: ReadState) => void) | undefined;
+let admissionStateSink: ((state: AdmissionDegradedState | undefined) => void) | undefined;
 
 /** Registers the provider's reporter. Returns an unregister function. */
 export function setReadStateSink(sink: (state: ReadState) => void): () => void {
@@ -1175,6 +1191,21 @@ export function setReadStateSink(sink: (state: ReadState) => void): () => void {
 /** Called by the HTTP client for every response carrying a readState. */
 export function publishReadState(state: ReadState): void {
   readStateSink?.(state);
+}
+
+function setAdmissionStateSink(
+  sink: (state: AdmissionDegradedState | undefined) => void,
+): () => void {
+  admissionStateSink = sink;
+  return () => {
+    if (admissionStateSink === sink) {
+      admissionStateSink = undefined;
+    }
+  };
+}
+
+export function publishAdmissionState(state: AdmissionDegradedState | undefined): void {
+  admissionStateSink?.(state);
 }
 
 export function deriveDataFreshness(state: ReadState): DataFreshness {

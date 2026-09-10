@@ -1,11 +1,13 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
-import { populatedDaemonFixtures } from "../test/daemonFixtures";
+import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
 
 beforeEach(() => {
   window.location.hash = "#/overview";
+  window.localStorage.clear();
 });
 
 describe("overview page", () => {
@@ -44,6 +46,132 @@ describe("overview page", () => {
       active.getByText(
         "Error provider.rate_limit: quota exhausted · Review needs-changes: Show operator context. · Blockers: provider quota is exhausted",
       ),
+    ).toBeInTheDocument();
+  });
+
+  it("groups repeated attention runs by linked issue and expands direct run links", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const repeated = fixtures.runs.runs.filter(
+      (run) => run.phase === "failed" || run.phase === "escalated",
+    );
+    for (const run of repeated) {
+      run.operator = {
+        issue: { number: "4449", title: "Repeated implementation failure" },
+        liveness: "finished",
+        trajectory: "blocked",
+        claim: { leaseStatus: "released", providerMarker: "verified" },
+        potentialBlockers: [],
+      };
+    }
+    const user = userEvent.setup();
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(await screen.findByText("#4449 Repeated implementation failure")).toBeInTheDocument();
+    expect(screen.getByText(/2 runs ·/)).toBeInTheDocument();
+    expect(
+      screen.queryByText("implementation · 01JZ402DASHBOARD"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show runs" }));
+    expect(
+      screen.getByRole("link", { name: /01JZ402DASHBOARD/ }),
+    ).toHaveAttribute("href", "#/run/01JZ402DASHBOARD");
+    expect(
+      screen.getByRole("link", { name: /01JZ400FAILED/ }),
+    ).toHaveAttribute("href", "#/run/01JZ400FAILED");
+
+    const groupSelection = screen.getByRole("checkbox", {
+      name: "Select all 2 runs in #4449 Repeated implementation failure",
+    });
+    await user.click(groupSelection);
+    expect(screen.getByRole("button", { name: "Dismiss 2 selected" })).toBeInTheDocument();
+    await user.click(groupSelection);
+    expect(screen.queryByRole("button", { name: /Dismiss \d+ selected/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Dismiss run 01JZ402DASHBOARD" }));
+    expect(await screen.findByRole("heading", { name: "One run needs attention." })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", {
+      name: "Dismiss all runs in #4449 Repeated implementation failure",
+    }));
+    expect(await screen.findByRole("heading", { name: "No runs need attention." })).toBeInTheDocument();
+  });
+
+  it("selects, deselects, dismisses, and restores all visible attention runs", async () => {
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const selectAll = await screen.findByRole("checkbox", {
+      name: "Select all visible attention runs",
+    });
+    await user.click(selectAll);
+    expect(selectAll).toBeChecked();
+    expect(screen.getByRole("button", { name: "Dismiss 2 selected" })).toBeInTheDocument();
+
+    await user.click(selectAll);
+    expect(selectAll).not.toBeChecked();
+    expect(screen.queryByRole("button", { name: /Dismiss \d+ selected/ })).not.toBeInTheDocument();
+
+    await user.click(selectAll);
+    await user.click(screen.getByRole("button", { name: "Dismiss 2 selected" }));
+    expect(await screen.findByRole("heading", { name: "No runs need attention." })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", {
+      name: "Select all visible attention runs",
+    })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show dismissed (2)" }));
+    await user.click(screen.getByRole("button", { name: "Restore all" }));
+    expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+  });
+
+  it("keeps the initial progress state until an empty inventory successfully loads", async () => {
+    const client = new FixtureDaemonClient(emptyDaemonFixtures());
+    const realListGaggles = client.listGaggles.bind(client);
+    let releaseInventory: () => void = () => {};
+    const inventoryGate = new Promise<void>((resolve) => {
+      releaseInventory = resolve;
+    });
+    vi.spyOn(client, "listGaggles").mockImplementation(async (...args) => {
+      await inventoryGate;
+      return realListGaggles(...args);
+    });
+
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Connecting to daemon" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
+    expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
+
+    act(() => releaseInventory());
+    expect(
+      await screen.findByRole("heading", { name: "No gaggles configured" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows retryable partial inventory failure without empty-instance recovery guidance", async () => {
+    const client = new FixtureDaemonClient(emptyDaemonFixtures());
+    const realListGaggles = client.listGaggles.bind(client);
+    let failInventory = true;
+    vi.spyOn(client, "listGaggles").mockImplementation((...args) => {
+      if (failInventory) {
+        return Promise.reject(new Error("inventory temporarily unavailable"));
+      }
+      return realListGaggles(...args);
+    });
+    const user = userEvent.setup();
+
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /inventory could not be read just now/i,
+    );
+    expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
+    expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
+
+    failInventory = false;
+    await user.click(screen.getByRole("button", { name: "Retry inventory" }));
+    expect(
+      await screen.findByRole("heading", { name: "No gaggles configured" }),
     ).toBeInTheDocument();
   });
 
@@ -112,9 +240,10 @@ describe("overview page", () => {
     };
 
     render(<App client={new FixtureDaemonClient(failed)} />);
-    expect(await screen.findByText("Retention sweep failed")).toBeInTheDocument();
-    expect(screen.getByText(/periodic trigger/i)).toBeInTheDocument();
-    expect(screen.getByText(/git remote timed out/i)).toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Retention sweep failed");
+    expect(alert).toHaveTextContent("git remote timed out");
+    expect(alert).toHaveTextContent(/periodic trigger/i);
   });
 
   it("renders a cancelled retention sweep status", async () => {

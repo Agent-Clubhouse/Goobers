@@ -2,7 +2,7 @@ import { routeHash } from "../routing";
 import type { ScopeFilters } from "../scope";
 import { Icon } from "../ui/Icon";
 
-// The single, discoverable "view this gaggle/workflow's Runs / Insight"
+// The single, discoverable "view this gaggle/workflow's Runs / Insight / Cost"
 // affordance (#2529) — every place a gaggle or workflow name/badge is
 // rendered gets one of these instead of scoping only being reachable via
 // URL params passed at Insight drill-through time. `since`/`until`/`window`
@@ -34,6 +34,14 @@ export function ScopePivot({
       >
         <Icon name="insight" size={13} />
         Insight
+      </a>
+      <a
+        aria-label={`View ${label} in Cost`}
+        className="scope-pivot-link"
+        href={routeHash({ page: "cost", filters: scope })}
+      >
+        <Icon name="cost" size={13} />
+        Cost
       </a>
     </span>
   );

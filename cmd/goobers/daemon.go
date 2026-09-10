@@ -1640,8 +1640,9 @@ func (s *trackedStarter) RegisterDispatch() func() {
 // duplicate-driver bug rather than a redundant safety net.
 //
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
-// terminal-run cleanup fails; claim cleanup fails closed rather than silently
-// leaving a known terminal owner in the ledger.
+// terminal-run cleanup fails. A deferred durable handoff is journaled and
+// retried later without blocking daemon readiness; all other cleanup failures
+// remain fatal.
 func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	resumed, warned, _, err = resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
 	return resumed, warned, err
@@ -1711,7 +1712,20 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 						}
 					}
 					if finalizeErr != nil {
-						return resumed, warned, reattached, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
+						if !errors.Is(finalizeErr, worktree.ErrCleanupDeferred) {
+							return resumed, warned, reattached, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
+						}
+						if log != nil {
+							if err := log.Append(journal.Event{
+								Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+								Error: &journal.ErrorDetail{
+									Code:    "terminal_cleanup_deferred",
+									Message: fmt.Sprintf("terminal cleanup deferred for retry: %v", finalizeErr),
+								},
+							}); err != nil {
+								return resumed, warned, reattached, fmt.Errorf("journal deferred terminal cleanup for run %q: %w", id.RunID, err)
+							}
+						}
 					}
 					// #2190: a run that resumed here and was already terminal
 					// took a different path than a normal terminal run's

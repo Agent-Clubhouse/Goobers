@@ -337,6 +337,13 @@ describe("replay scrubber", () => {
     }
   });
 
+  it("keeps replay controls at WCAG target sizes in the shared stylesheet", () => {
+    expect(styles).toMatch(/\.speed-button\s*\{[^}]*min-height:\s*24px/s);
+    expect(styles).toMatch(/\.speed-button\s*\{[^}]*min-width:\s*24px/s);
+    expect(styles).toMatch(/\.journal-view-button\s*\{[^}]*min-height:\s*24px/s);
+    expect(styles).toMatch(/\.journal-stage-filter select\s*\{[^}]*min-height:\s*24px/s);
+  });
+
   it("discloses and exposes each compressed idle period for inspection", () => {
     render(
       <Harness

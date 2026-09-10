@@ -92,6 +92,29 @@ function errorLinks(): HTMLElement[] {
 }
 
 describe("errors history pagination under live events", () => {
+  it("groups repeated actionable failures and expands their occurrences", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const repeated = manyErrors(3).map((item) => ({
+      ...item,
+      message: "Harness exited before producing a result envelope.",
+    }));
+    fixtures.telemetryErrors = { items: repeated };
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const history = await screen.findByRole("region", { name: "Matching error history" });
+    expect(within(history).getAllByRole("article")).toHaveLength(1);
+    expect(within(history).getByText("3 occurrences loaded")).toBeInTheDocument();
+
+    await user.click(
+      within(history).getByRole("button", { name: "Show 3 individual occurrences" }),
+    );
+    expect(
+      within(history).getByRole("list", { name: "Individual occurrences for harness.crash" }),
+    ).toBeInTheDocument();
+    expect(within(history).getAllByRole("link")).toHaveLength(4);
+  });
+
   // #2308: mirrors #1713 (runsHistory.ts) — a live run event was clobbering
   // paged-in error rows because useErrorHistory's only refresh path reset
   // pagination unconditionally, and that same path was reused for live

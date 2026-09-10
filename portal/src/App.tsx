@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { publishReadState } from "./liveData";
+import { publishAdmissionState, publishReadState } from "./liveData";
 import { HttpDaemonClient } from "./api/httpClient";
 import { bindUIActions } from "./api/surfaceActions";
 import type { DaemonClient, PortalConfig, ValidationWarning } from "./api/types";
@@ -9,7 +9,7 @@ import {
   type ConfigurationWarningSource,
   useConfigurationWarnings,
 } from "./configurationWarnings";
-import { LiveDataProvider } from "./liveData";
+import { LiveDataProvider, type LiveDataConfig } from "./liveData";
 import {
   createPortalDiagnostics,
   type PortalDiagnostics,
@@ -18,6 +18,7 @@ import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
 import { GettingStartedPage } from "./pages/GettingStartedPage";
 import { GoobersPage } from "./pages/GoobersPage";
+import { CostPage } from "./pages/CostPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
@@ -34,6 +35,7 @@ import { useTheme } from "./theme";
 const portalDiagnostics = createPortalDiagnostics();
 const daemonClient = new HttpDaemonClient({
   diagnostics: portalDiagnostics,
+  onAdmissionState: publishAdmissionState,
   onReadState: publishReadState,
 });
 const noWarnings: readonly ValidationWarning[] = [];
@@ -46,19 +48,23 @@ export function App({
   client = daemonClient,
   warningClient = client,
   diagnostics = portalDiagnostics,
+  mode = dashboardMode(),
+  cursorScope,
+  liveDataConfig,
 }: {
   client?: DaemonClient;
   warningClient?: ConfigurationWarningClient;
   diagnostics?: PortalDiagnostics;
+  mode?: DashboardMode;
+  cursorScope?: string;
+  liveDataConfig?: Partial<LiveDataConfig>;
 } = {}) {
-  const mode = dashboardMode();
-
   if (mode === "getting-started") {
     return <GettingStartedApplication />;
   }
 
   return (
-    <LiveDataProvider client={client} diagnostics={diagnostics}>
+    <LiveDataProvider client={client} diagnostics={diagnostics} cursorScope={cursorScope} config={liveDataConfig}>
       <Portal client={client} mode={mode} warningClient={warningClient} />
     </LiveDataProvider>
   );
@@ -202,13 +208,20 @@ function Portal({
     revealRun: (runId: string) => client.revealRun(runId),
   });
 
-  // The gaggle/workflow/stage identity behind the current route, independent
-  // of any page-specific refinement (outcome, population, window). Carried
-  // forward by the primary-nav Runs/Insight buttons so switching views does
-  // not reset an active scope back to "all" (#2528 acceptance criterion 4).
+  // Shared identity and time window carried by the Runs / Insight / Cost
+  // workspace pivots. Outcome and population remain page-specific refinements.
   const currentScope =
-    (route.page === "runs" || route.page === "insight" || route.page === "errors") && route.filters
-      ? scopeIdentity(route.filters)
+    (route.page === "runs" ||
+      route.page === "insight" ||
+      route.page === "cost" ||
+      route.page === "errors") &&
+    route.filters
+      ? {
+          ...scopeIdentity(route.filters),
+          since: route.filters.since,
+          until: route.filters.until,
+          window: route.filters.window,
+        }
       : {};
 
   let warningSource: ConfigurationWarningSource = { kind: "none" };
@@ -249,7 +262,13 @@ function Portal({
           />
         )}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
-        {route.page === "goobers" && <GoobersPage client={client} standalone={standalone} />}
+        {route.page === "goobers" && (
+          <GoobersPage
+            client={client}
+            gaggleName={route.gaggle}
+            standalone={standalone}
+          />
+        )}
         {route.page === "gaggle" && (
           <GagglePage
             client={client}
@@ -263,6 +282,14 @@ function Portal({
         )}
         {route.page === "insight" && (
           <InsightPage
+            client={client}
+            filters={route.filters}
+            navigate={navigate}
+            standalone={standalone}
+          />
+        )}
+        {route.page === "cost" && (
+          <CostPage
             client={client}
             filters={route.filters}
             navigate={navigate}

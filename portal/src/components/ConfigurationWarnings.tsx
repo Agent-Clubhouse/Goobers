@@ -1,6 +1,8 @@
+import { useId, useState } from "react";
 import type { QueryState } from "../api/queryState";
 import { QueryStateBoundary } from "../api/queryState";
 import type { ValidationWarning } from "../api/types";
+import { SectionQueryStatus } from "./SectionQueryStatus";
 import {
   configurationWarningKey,
   sortConfigurationWarnings,
@@ -24,17 +26,11 @@ function WarningReadError({
   stale?: boolean;
 }) {
   return (
-    <div className="configuration-warning-error" role="alert">
-      <span>
-        <strong>
-          {stale ? "Configuration warnings may be stale" : "Configuration warnings unavailable"}
-        </strong>
-        <small>{error.message}</small>
-      </span>
-      <button className="text-button" onClick={onRefresh} type="button">
-        Try again
-      </button>
-    </div>
+    <SectionQueryStatus
+      error
+      message={`${stale ? "Configuration warnings may be stale" : "Configuration warnings unavailable"}: ${error.message}`}
+      retry={onRefresh}
+    />
   );
 }
 
@@ -60,31 +56,90 @@ function WarningList({
     );
   }
 
-  const groups: Array<{ scope: string; warnings: ValidationWarning[] }> = [];
+  const groups: Array<{
+    key: string;
+    remediation: string;
+    scope: string;
+    warnings: ValidationWarning[];
+  }> = [];
   for (const warning of visibleWarnings) {
+    const remediation = warningRemediation(warning);
+    const key = `${warning.scope}\u0000${remediation}`;
     const current = groups.at(-1);
-    if (current?.scope === warning.scope) {
+    if (current?.key === key) {
       current.warnings.push(warning);
     } else {
-      groups.push({ scope: warning.scope, warnings: [warning] });
+      groups.push({ key, remediation, scope: warning.scope, warnings: [warning] });
     }
   }
 
   return (
     <div className="configuration-warning-groups">
       {groups.map((group) => (
-        <section
-          aria-label={`${group.scope} configuration warnings`}
-          className="configuration-warning-group"
-          key={group.scope}
+        <WarningGroup group={group} key={group.key} onDismiss={onDismiss} />
+      ))}
+    </div>
+  );
+}
+
+function WarningGroup({
+  group,
+  onDismiss,
+}: {
+  group: {
+    remediation: string;
+    scope: string;
+    warnings: ValidationWarning[];
+  };
+  onDismiss: (warning: ValidationWarning) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const contentId = useId();
+  const remediationId = useId();
+
+  return (
+    <section
+      aria-label={`${group.scope} configuration warnings`}
+      className="configuration-warning-group"
+    >
+      <header>
+        <button
+          aria-controls={contentId}
+          aria-expanded={expanded}
+          className="configuration-warning-group-toggle"
+          onClick={() => setExpanded((current) => !current)}
+          type="button"
         >
-          <header>
+          <span>
             <strong>Scope</strong>
             <code>{group.scope}</code>
-          </header>
+          </span>
+          <span className="configuration-warning-group-count">
+            {group.warnings.length} {group.warnings.length === 1 ? "warning" : "warnings"}
+          </span>
+        </button>
+        <button
+          aria-label={`Dismiss all ${group.warnings.length} ${
+            group.warnings.length === 1 ? "warning" : "warnings"
+          } for ${group.scope}`}
+          className="configuration-warning-dismiss"
+          onClick={() => group.warnings.forEach(onDismiss)}
+          type="button"
+        >
+          Dismiss group
+        </button>
+      </header>
+      {expanded && (
+        <div className="configuration-warning-group-content" id={contentId}>
+          <p className="configuration-warning-remediation" id={remediationId}>
+            <strong>Shared remediation</strong>
+            Update the referenced definition under <code>config/</code>, then run{" "}
+            <code>goobers validate</code> before reloading. The portal is read-only.
+          </p>
           <div className="configuration-warning-list">
             {group.warnings.map((warning) => (
               <article
+                aria-describedby={remediationId}
                 className="configuration-warning"
                 data-testid="configuration-warning"
                 key={configurationWarningKey(warning)}
@@ -94,11 +149,6 @@ function WarningList({
                   <span className="warning-severity">{warning.severity}</span>
                 </div>
                 <p>{warning.explanation}</p>
-                <p className="configuration-warning-remediation">
-                  <strong>Remediation</strong>
-                  Update the referenced definition under <code>config/</code>, then run{" "}
-                  <code>goobers validate</code> before reloading. The portal is read-only.
-                </p>
                 <button
                   aria-label={`Dismiss ${warning.code} warning for ${warning.scope}`}
                   className="configuration-warning-dismiss"
@@ -110,10 +160,14 @@ function WarningList({
               </article>
             ))}
           </div>
-        </section>
-      ))}
-    </div>
+        </div>
+      )}
+    </section>
   );
+}
+
+function warningRemediation(_warning: ValidationWarning): string {
+  return "config-validate";
 }
 
 export function ConfigurationWarnings({
@@ -124,8 +178,13 @@ export function ConfigurationWarnings({
   state,
 }: ConfigurationWarningsProps) {
   const titleId = `${context}-configuration-warnings`;
+  const refreshing = state.status === "stale" && !state.error;
   const activeWarningCount =
-    state.status === "ready" || state.status === "stale" ? state.data.length : undefined;
+    state.status === "ready" || state.status === "stale"
+      ? state.data.filter(
+          (warning) => !dismissedWarningKeys.has(configurationWarningKey(warning)),
+        ).length
+      : undefined;
 
   return (
     <section
@@ -146,8 +205,14 @@ export function ConfigurationWarnings({
             <span className="section-count">
               {activeWarningCount} active {activeWarningCount === 1 ? "warning" : "warnings"}
             </span>
-            <button className="text-button" onClick={onRefresh} type="button">
-              Refresh warnings
+            <button
+              aria-label={refreshing ? "Refreshing warnings" : "Refresh warnings"}
+              className="text-button"
+              disabled={refreshing}
+              onClick={onRefresh}
+              type="button"
+            >
+              {refreshing ? "Refreshing…" : "Refresh warnings"}
             </button>
           </div>
         )}
@@ -165,13 +230,7 @@ export function ConfigurationWarnings({
         }
         error={(error) => <WarningReadError error={error} onRefresh={onRefresh} />}
         loading={
-          <div
-            aria-live="polite"
-            className="configuration-warning-loading"
-            role="status"
-          >
-            Loading configuration warnings
-          </div>
+          <SectionQueryStatus loading message="Loading configuration warnings…" />
         }
         stale={(warnings, error) => (
           <>

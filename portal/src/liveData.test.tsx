@@ -53,6 +53,45 @@ afterEach(() => {
 });
 
 describe("LiveDataController", () => {
+  it("keeps reconnecting without polling when the host disables polling", async () => {
+    const client = new ScriptedClient([
+      () => Promise.reject(new Error("stream offline")),
+      () => Promise.reject(new Error("stream offline")),
+      () => Promise.reject(new Error("stream offline")),
+    ]);
+    const controller = new LiveDataController(client, {
+      ...testConfig, pollingEnabled: false, failuresBeforePolling: 1,
+    });
+    const refresh = vi.fn();
+    controller.subscribe(["instance"], refresh);
+    refresh.mockClear();
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(350);
+    expect(controller.freshness).toBe("reconnecting");
+    expect(refresh).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
+  it("uses only the host's scoped cursor rather than another instance's cursor", async () => {
+    window.sessionStorage.setItem("goobers-live-event-cursor", "legacy:10");
+    window.sessionStorage.setItem("goobers-live-event-cursor:other", "other:20");
+    window.sessionStorage.setItem("goobers-live-event-cursor:mine", "mine:30");
+    const seen: Array<string | undefined> = [];
+    const client = new ScriptedClient([
+      (request) => {
+        seen.push(request?.cursor);
+        return Promise.resolve(new ControlledEventStream());
+      },
+    ]);
+    const controller = new LiveDataController(client, testConfig, { cursorScope: "mine" });
+    controller.start();
+    await settle();
+    expect(seen).toEqual(["mine:30"]);
+    controller.stop();
+    expect(window.sessionStorage.getItem("goobers-live-event-cursor:other")).toBe("other:20");
+  });
+
   it("invalidates the exact cached resources named by an SSE event", async () => {
     const stream = new ControlledEventStream();
     const client = new ScriptedClient([() => Promise.resolve(stream)]);

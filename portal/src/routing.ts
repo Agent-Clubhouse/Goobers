@@ -4,11 +4,12 @@ import { hasScopeFilters, type ScopeFilters } from "./scope";
 export type Route =
   | { page: "overview" }
   | { page: "workflows" }
-  | { page: "goobers" }
+  | { page: "goobers"; gaggle?: string }
   | { page: "gaggle"; id: string }
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
-  | { page: "insight"; filters?: ScopeFilters }
+  | { page: "insight"; filters?: InsightRouteFilters }
+  | { page: "cost"; filters?: ScopeFilters }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
 
@@ -16,6 +17,12 @@ export type Route =
 // (#2528) — kept as named aliases so call sites read in terms of the view
 // they're for, without three parallel field-by-field type declarations.
 export type RunRouteFilters = ScopeFilters;
+
+export type InsightSection = "contributors" | "usage" | "failures" | "latency";
+
+export interface InsightRouteFilters extends ScopeFilters {
+  section?: InsightSection;
+}
 
 export interface ErrorRouteFilters extends ScopeFilters {
   code?: string;
@@ -27,7 +34,8 @@ export type PrimaryArea =
   | "workflows"
   | "goobers"
   | "runs"
-  | "insight";
+  | "insight"
+  | "cost";
 
 export function parseRoute(hash = window.location.hash): Route {
   const fragment = hash.replace(/^#\/?/, "");
@@ -51,7 +59,8 @@ export function parseRoute(hash = window.location.hash): Route {
     return { page: "workflows" };
   }
   if (area === "goobers") {
-    return { page: "goobers" };
+    const gaggle = optionalQuery(search, "gaggle");
+    return gaggle ? { page: "goobers", gaggle } : { page: "goobers" };
   }
   if (area === "runs") {
     const filters = parseScopeFilters(search);
@@ -68,8 +77,17 @@ export function parseRoute(hash = window.location.hash): Route {
     };
   }
   if (area === "insight") {
+    const filters = {
+      ...parseScopeFilters(search),
+      section: insightSectionQuery(search),
+    };
+    return hasScopeFilters(filters) || filters.section
+      ? { page: "insight", filters }
+      : { page: "insight" };
+  }
+  if (area === "cost") {
     const filters = parseScopeFilters(search);
-    return hasScopeFilters(filters) ? { page: "insight", filters } : { page: "insight" };
+    return hasScopeFilters(filters) ? { page: "cost", filters } : { page: "cost" };
   }
   return { page: "overview" };
 }
@@ -87,6 +105,10 @@ export function routeHash(route: Route): string {
   if (route.page === "run") {
     return `#/run/${encodeURIComponent(route.id)}`;
   }
+  if (route.page === "goobers" && route.gaggle) {
+    const search = new URLSearchParams({ gaggle: route.gaggle });
+    return `#/goobers?${search.toString()}`;
+  }
   if (route.page === "runs" && route.filters) {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
@@ -102,11 +124,14 @@ export function routeHash(route: Route): string {
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/errors${suffix}`;
   }
-  if (route.page === "insight" && route.filters) {
+  if ((route.page === "insight" || route.page === "cost") && route.filters) {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
+    if (route.page === "insight") {
+      writeQuery(search, "section", route.filters.section);
+    }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return `#/insight${suffix}`;
+    return `#/${route.page}${suffix}`;
   }
   return `#/${route.page}`;
 }
@@ -153,6 +178,16 @@ function populationQuery(search: URLSearchParams): ScopeFilters["population"] {
   value === "premium-measured" ||
   value === "cost-measured" ||
     value === "retry-waste"
+    ? value
+    : undefined;
+}
+
+function insightSectionQuery(search: URLSearchParams): InsightSection | undefined {
+  const value = optionalQuery(search, "section");
+  return value === "contributors" ||
+    value === "usage" ||
+    value === "failures" ||
+    value === "latency"
     ? value
     : undefined;
 }

@@ -36,7 +36,7 @@ export function DaemonErrorState({
           </p>
         </div>
         <button className="reconnect-button" onClick={retry} type="button">
-          {standalone ? "Reload" : "Try again"}
+          {standalone ? "Reload" : "Retry"}
         </button>
       </section>
     );

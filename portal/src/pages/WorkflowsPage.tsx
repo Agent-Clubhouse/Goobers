@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { DaemonClient, Goober, RunSummary, WorkflowSummary } from "../api/types";
+import type { DaemonClient, RunSummary, WorkflowSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { ScopePivot } from "../components/ScopePivot";
@@ -10,6 +10,7 @@ import {
   useOperationalSnapshot,
 } from "../operationalData";
 import { routeHash } from "../routing";
+import { CopyCommand } from "../ui/CopyCommand";
 import { Icon } from "../ui/Icon";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -97,28 +98,32 @@ function GaggleSection({
 }) {
   const { gaggle } = inventory;
   const headingId = `gaggle-${gaggle.name}`;
+  const contentId = `${headingId}-inventory`;
+  const [expanded, setExpanded] = useState(inventory.workflows.length <= 3);
 
   return (
     <section aria-labelledby={headingId} className="gaggle-section">
-      <div className="gaggle-heading">
-        <div>
-          <p className="section-kicker">Gaggle</p>
-          <div className="gaggle-heading-line">
-            <h2 id={headingId}>
-              <a
-                className="gaggle-detail-link"
-                href={routeHash({ page: "gaggle", id: gaggle.name })}
-              >
-                {gaggle.displayName}
-                <Icon name="arrow" size={16} />
-              </a>
-            </h2>
-            <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
+      <div className="gaggle-heading gaggle-inventory-heading">
+        <button
+          aria-controls={contentId}
+          aria-expanded={expanded}
+          className="gaggle-inventory-toggle"
+          onClick={() => setExpanded((current) => !current)}
+          type="button"
+        >
+          <div>
+            <p className="section-kicker">Gaggle</p>
+            <div className="gaggle-heading-line">
+              <h2 id={headingId}>{gaggle.displayName}</h2>
+              <span aria-hidden="true" className="gaggle-inventory-chevron">
+                <Icon name="chevron" size={16} />
+              </span>
+            </div>
+            <p>
+              {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
+            </p>
           </div>
-          <p>
-            {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
-          </p>
-        </div>
+        </button>
         <dl>
           <div>
             <dt>Status</dt>
@@ -139,185 +144,132 @@ function GaggleSection({
         </dl>
       </div>
 
-      <div className="content-section gaggle-content">
-        <div className="section-heading">
-          <h3>Workflow inventory</h3>
-          <span className="section-count">{inventory.workflows.length}</span>
-        </div>
-        <p className="inline-empty">
-          Copying a manual-run command prepares it for your terminal; it does not start a workflow.
-        </p>
-        {inventory.workflows.length === 0 ? (
-          <div className="inline-empty inline-empty-recovery">
-            <strong>No workflows are configured for this gaggle.</strong>
-            <span>Add a workflow definition, then validate the instance.</span>
-            <RecoveryCommand command="goobers validate <instance>" />
-          </div>
-        ) : (
-          <DataList
-            ariaLabel={`${gaggle.displayName} workflow definitions`}
-            columns={["Workflow", "Trigger", "Concurrency", "Last outcome"]}
-            gridClassName="workflow-grid"
-          >
-            {inventory.workflows.map((workflow) => {
-              const outcome = latestWorkflowOutcome(
-                runs,
-                workflow.identity.gaggle,
-                workflow.identity.name,
-              );
-              return (
-                <DataRow
-                  href={routeHash({
-                    page: "workflow",
-                    gaggle: workflow.identity.gaggle,
-                    id: workflow.identity.name,
-                  })}
-                  interactiveChildren
-                  key={`${workflow.identity.gaggle}/${workflow.identity.name}`}
-                  label={`Open workflow ${workflow.displayName} for gaggle ${gaggle.displayName}`}
-                >
-                  <span className="row-primary">
-                    <span className="row-title row-title-with-pivot">
-                      <span className="row-title-text">{workflow.displayName}</span>
-                      <ScopePivot
-                        label={`${gaggle.displayName} / ${workflow.displayName}`}
-                        scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
-                      />
-                    </span>
-                    <span className="row-subtitle">{workflow.purpose}</span>
-                  </span>
-                  <span>{formatTriggers(workflow)}</span>
-                  <span>
-                    {workflow.concurrency.activeRuns} active
-                    {workflow.concurrency.desiredRuns !== undefined
-                      ? ` / ${workflow.concurrency.desiredRuns} desired`
-                      : ""}{" "}
-                    / {workflow.concurrency.maxConcurrentRuns} max
-                    {workflow.concurrency.admissionBlocked && (
-                      <small>Blocked: {workflow.concurrency.blockingCondition}</small>
-                    )}
-                  </span>
-                  <span className="outcome-cell">
-                    {outcome ? (
-                      <>
-                        <StatusBadge status={outcome.phase} />
-                        <small>
-                          <time dateTime={outcome.finishedAt ?? outcome.startedAt}>
-                            {formatTimestamp(outcome.finishedAt ?? outcome.startedAt)}
-                          </time>
-                        </small>
-                      </>
-                    ) : (
-                      <small>No recorded runs</small>
-                    )}
-                    <CopyManualRunCommand
-                      command={manualRunCommand(
-                        workflow.identity.gaggle,
-                        workflow.identity.name,
-                        instanceRoot,
-                      )}
-                    />
-                  </span>
-                </DataRow>
-              );
-            })}
-          </DataList>
-        )}
+      <div className="gaggle-inventory-actions">
+        <a className="gaggle-detail-link" href={routeHash({ page: "gaggle", id: gaggle.name })}>
+          Open gaggle details
+          <Icon name="arrow" size={16} />
+        </a>
+        <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
       </div>
 
-      <div className="content-section gaggle-content">
-        <div className="section-heading">
-          <h3>Provisioned goobers</h3>
-          <span className="section-count">{inventory.goobers.length}</span>
-        </div>
-        {inventory.goobers.length === 0 ? (
-          <p className="inline-empty">No goobers are provisioned for this gaggle.</p>
-        ) : (
-          <div aria-label={`${gaggle.displayName} provisioned goobers`} className="goober-roster">
-            {inventory.goobers.map((goober) => (
-              <GooberCard goober={goober} key={goober.name} />
-            ))}
+      {expanded && (
+        <div id={contentId}>
+          <div className="content-section gaggle-content">
+            <div className="section-heading">
+              <h3>Workflow inventory</h3>
+              <span className="section-count">{inventory.workflows.length}</span>
+            </div>
+            <p className="inline-empty">
+              Copying a manual-run command prepares it for your terminal; it does not start a
+              workflow.
+            </p>
+            {inventory.workflows.length === 0 ? (
+              <div className="inline-empty inline-empty-recovery">
+                <strong>No workflows are configured for this gaggle.</strong>
+                <span>Add a workflow definition, then validate the instance.</span>
+                <RecoveryCommand command="goobers validate <instance>" />
+              </div>
+            ) : (
+              <DataList
+                ariaLabel={`${gaggle.displayName} workflow definitions`}
+                columns={["Workflow", "Trigger", "Concurrency", "Last outcome"]}
+                gridClassName="workflow-grid"
+              >
+                {inventory.workflows.map((workflow) => {
+                  const outcome = latestWorkflowOutcome(
+                    runs,
+                    workflow.identity.gaggle,
+                    workflow.identity.name,
+                  );
+                  return (
+                    <DataRow
+                      href={routeHash({
+                        page: "workflow",
+                        gaggle: workflow.identity.gaggle,
+                        id: workflow.identity.name,
+                      })}
+                      interactiveChildren
+                      key={`${workflow.identity.gaggle}/${workflow.identity.name}`}
+                      label={`Open workflow ${workflow.displayName} for gaggle ${gaggle.displayName}`}
+                    >
+                      <span className="row-primary">
+                        <span className="row-title row-title-with-pivot">
+                          <span className="row-title-text">{workflow.displayName}</span>
+                          <ScopePivot
+                            label={`${gaggle.displayName} / ${workflow.displayName}`}
+                            scope={{
+                              gaggle: workflow.identity.gaggle,
+                              workflow: workflow.identity.name,
+                            }}
+                          />
+                        </span>
+                        <span className="row-subtitle">{workflow.purpose}</span>
+                      </span>
+                      <span>{formatTriggers(workflow)}</span>
+                      <span>
+                        {workflow.concurrency.activeRuns} active
+                        {workflow.concurrency.desiredRuns !== undefined
+                          ? ` / ${workflow.concurrency.desiredRuns} desired`
+                          : ""}{" "}
+                        / {workflow.concurrency.maxConcurrentRuns} max
+                        {workflow.concurrency.admissionBlocked && (
+                          <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+                        )}
+                      </span>
+                      <span className="outcome-cell">
+                        {outcome ? (
+                          <>
+                            <StatusBadge status={outcome.phase} />
+                            <small>
+                              <time dateTime={outcome.finishedAt ?? outcome.startedAt}>
+                                {formatTimestamp(outcome.finishedAt ?? outcome.startedAt)}
+                              </time>
+                            </small>
+                          </>
+                        ) : (
+                          <small>No recorded runs</small>
+                        )}
+                        <CopyCommand
+                          command={manualRunCommand(
+                            workflow.identity.gaggle,
+                            workflow.identity.name,
+                            instanceRoot,
+                          )}
+                          failureLabel="Could not copy the manual run command. Select and copy the command from the workflow details."
+                          idleLabel="Copy manual run command"
+                          successLabel="Manual run command copied to the clipboard."
+                        />
+                      </span>
+                    </DataRow>
+                  );
+                })}
+              </DataList>
+            )}
           </div>
-        )}
-      </div>
+
+          <div className="content-section gaggle-content">
+            <div className="section-heading">
+              <h3>Goober summary</h3>
+              <span className="section-count">{inventory.goobers.length}</span>
+            </div>
+            {inventory.goobers.length === 0 ? (
+              <p className="inline-empty">No goobers are provisioned for this gaggle.</p>
+            ) : (
+              <div className="gaggle-goober-summary">
+                <p>
+                  {inventory.goobers.length} configured{" "}
+                  {inventory.goobers.length === 1 ? "persona" : "personas"} ·{" "}
+                  {inventory.goobers.map((goober) => goober.displayName).join(", ")}
+                </p>
+                <a href={routeHash({ page: "goobers", gaggle: gaggle.name })}>
+                  View {gaggle.displayName} Goobers
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </section>
-  );
-}
-
-function CopyManualRunCommand({ command }: { command: string }) {
-  const [status, setStatus] = useState<"idle" | "success" | "failure">("idle");
-
-  async function copyCommand() {
-    try {
-      await navigator.clipboard.writeText(command);
-      setStatus("success");
-    } catch {
-      setStatus("failure");
-    }
-  }
-
-  return (
-    <span className="manual-run-copy">
-      <button
-        aria-label={status === "success" ? "Manual run command copied" : "Copy manual run command"}
-        className="secondary-button"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void copyCommand();
-        }}
-        type="button"
-      >
-        {status === "success" ? "Copied" : "Copy command"}
-      </button>
-      <span aria-live="polite" className="sr-only">
-        {status === "success"
-          ? "Manual run command copied to the clipboard."
-          : status === "failure"
-            ? "Could not copy the manual run command. Copy the command from the workflow row."
-            : ""}
-      </span>
-    </span>
-  );
-}
-
-function GooberCard({ goober }: { goober: Goober }) {
-  return (
-    <article className="goober-card">
-      <header>
-        <div>
-          <h4>{goober.displayName}</h4>
-          <p>{goober.role}</p>
-        </div>
-        <span className="definition-status">{goober.status}</span>
-      </header>
-      <dl>
-        <DefinitionList label="Skills" values={goober.skills} />
-        <DefinitionList label="Capabilities" values={goober.capabilities} />
-        <DefinitionList
-          label="Workflow ownership"
-          values={goober.workflows.map(
-            (workflow) => `${workflow.gaggle} / ${workflow.name}`,
-          )}
-        />
-        <DefinitionList
-          label="Stage ownership"
-          values={goober.stages.map(
-            (stage) =>
-              `${stage.workflow.gaggle} / ${stage.workflow.name} / ${stage.stage} (${stage.kind})`,
-          )}
-        />
-      </dl>
-    </article>
-  );
-}
-
-function DefinitionList({ label, values }: { label: string; values: string[] }) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>{values.length > 0 ? values.join(", ") : "None declared"}</dd>
-    </div>
   );
 }
 
