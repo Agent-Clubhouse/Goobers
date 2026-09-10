@@ -328,7 +328,7 @@ func waitForDaemonReadiness(instanceRoot string, waitErr <-chan error, timeout t
 
 		select {
 		case err := <-waitErr:
-			return "", true, fmt.Errorf("`goobers up` exited before its API became ready: %v", err)
+			return "", true, fmt.Errorf("`goobers up` exited before its API became ready: %w", err)
 		case <-deadline.C:
 			return "", false, fmt.Errorf("daemon API did not become ready within %s: %w", timeout, lastErr)
 		case <-time.After(100 * time.Millisecond):

@@ -78,7 +78,9 @@ func TestWaitForDaemonReadinessWaitsForReadyProbe(t *testing.T) {
 			status = http.StatusOK
 		}
 		response.WriteHeader(status)
-		fmt.Fprintf(response, `{"ready":%t}`, ready)
+		if _, err := fmt.Fprintf(response, `{"ready":%t}`, ready); err != nil {
+			t.Errorf("write readiness response: %v", err)
+		}
 	}))
 	defer server.Close()
 
