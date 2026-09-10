@@ -129,15 +129,39 @@ func sweepMigrationBackups(l instance.Layout, setup *schedulerSetup, now time.Ti
 	return nil
 }
 
+// retentionNow is the clock the retention sweep reads. Var, not a direct
+// time.Now call, for the same reason journalGraceAge below is a var: the
+// first-enable grace window (#4253) and the default 7-day worktree age bound
+// are both week-scale, and a test cannot wait them out.
+var retentionNow = time.Now
+
+// worktreeRetentionStateFile records the first-enable grace window for
+// retained worktrees and merged run branches (#4253).
+const worktreeRetentionStateFile = "worktree-retention-state.json"
+
+const worktreeRetentionStateSchema = "goobers.dev/worktree-retention-state/v1"
+
 func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *schedulerSetup, stdout, stderr io.Writer) error {
 	cfg := setup.Config.Retention
-	if !cfg.Enabled && !cfg.DryRun {
+	if !cfg.EnabledEffective() && !cfg.DryRun {
 		return nil
 	}
 	maxAge, err := cfg.RetainedWorktreeMaxAgeDuration()
 	if err != nil {
 		return err
 	}
+
+	// Retention is opt-out as of #4253, so most instances reach this code
+	// without ever having asked for it. The grace window is what makes that
+	// safe: the first pass to find real candidates reports them and starts a
+	// week-long clock, and only passes after that clock actually delete.
+	// cfg.DryRun is the operator's own override and wins over the window.
+	state, _, err := readRetentionGraceState(l, worktreeRetentionStateFile)
+	if err != nil {
+		return err
+	}
+	now := retentionNow()
+	dryRun := cfg.DryRun || retentionPassIsDryRun(state, cfg.ImmediateFirstEnable(), now)
 
 	managers, runsByRoot, err := retentionManagers(l, setup)
 	if err != nil {
@@ -148,7 +172,8 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 		return err
 	}
 	results, warnings, err := worktree.PruneRetained(ctx, managers, worktree.RetentionOptions{
-		Delete:           cfg.Enabled && !cfg.DryRun,
+		Now:              now,
+		Delete:           !dryRun,
 		MaxRetainedBytes: cfg.MaxRetainedWorktreeBytes,
 		MaxAge:           maxAge,
 		IsTerminalFailure: func(root, worktreeID, ownerRunID string) (bool, error) {
@@ -185,8 +210,15 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 			pf(stdout, "retention deleted rule=%s kind=%s %s reclaimedBytes=%d\n", result.Rule, result.Kind, target, result.BytesReclaimed)
 		}
 	}
-	recoveryErr := retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, stdout, stderr)
-	return errors.Join(recoveryErr, reapConfiguredRecovery(ctx, l, cfg, stdout, stderr))
+	state = recordRetentionPass(state, dryRun, cfg.ImmediateFirstEnable(), len(results), now)
+	stateErr := writeRetentionGraceState(l, worktreeRetentionStateFile, worktreeRetentionStateSchema, state)
+	if dryRun && !cfg.DryRun && len(results) > 0 && !state.EnforceAt.IsZero() {
+		pf(stdout, "retention holding a first-enable grace window: %d candidate(s) reported, enforcement begins %s (set retention.firstEnable: immediate to skip)\n",
+			len(results), state.EnforceAt.UTC().Format(time.RFC3339))
+	}
+
+	recoveryErr := retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr)
+	return errors.Join(stateErr, recoveryErr, reapConfiguredRecovery(ctx, l, cfg, dryRun, stdout, stderr))
 }
 
 func retentionManagers(l instance.Layout, setup *schedulerSetup) ([]*worktree.Manager, map[string]string, error) {

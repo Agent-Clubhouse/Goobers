@@ -21,7 +21,21 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func TestPruneConfiguredRetentionDefaultsOffThenDryRunsAndDeletes(t *testing.T) {
+// TestPruneConfiguredRetentionDefaultsOnAndHoldsAGraceWindow pins #4253's
+// flip end to end on a stock instance — one whose instance.yaml says nothing
+// at all about retention.
+//
+// It replaces TestPruneConfiguredRetentionDefaultsOffThenDryRunsAndDeletes,
+// whose first phase asserted the opposite policy (a stock config prunes
+// nothing). That assertion was rewritten because the policy changed, not
+// nudged until it passed.
+//
+// The four phases are the whole contract: a stock instance with nothing old
+// enough does nothing and starts no clock; once something crosses the default
+// age bound it is reported and the grace clock starts; once that clock
+// elapses the same candidate is actually deleted; and an explicit opt-out
+// stops the pass before any of it.
+func TestPruneConfiguredRetentionDefaultsOnAndHoldsAGraceWindow(t *testing.T) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
 	const runID = "retention-failure"
@@ -36,50 +50,131 @@ func TestPruneConfiguredRetentionDefaultsOffThenDryRunsAndDeletes(t *testing.T) 
 	if err := wt.Remove(context.Background(), worktree.RemoveOptions{Keep: true}); err != nil {
 		t.Fatalf("keep worktree: %v", err)
 	}
+	// A stock instance: no retention block at all.
 	setup := &schedulerSetup{
 		Config:          &instance.Config{},
 		LegacyWorktrees: manager,
 	}
 
+	start := time.Now()
+	clock := start
+	restore := retentionNow
+	retentionNow = func() time.Time { return clock }
+	t.Cleanup(func() { retentionNow = restore })
+
 	var stdout, stderr bytes.Buffer
-	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
-		t.Fatalf("disabled prune: %v", err)
-	}
-	if stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Fatalf("disabled retention output: stdout=%q stderr=%q", stdout.String(), stderr.String())
-	}
-	if _, err := os.Stat(wt.Path); err != nil {
-		t.Fatalf("default retention removed worktree: %v", err)
-	}
-
-	setup.Config.Retention = instance.RetentionConfig{DryRun: true, MaxRetainedWorktreeBytes: 1}
-	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
-		t.Fatalf("dry-run prune: %v", err)
-	}
-	if got := stdout.String(); !strings.Contains(got, "retention candidate rule=storage-cap kind=worktree") {
-		t.Fatalf("dry-run output = %q", got)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("dry-run stderr = %q", stderr.String())
-	}
-	if _, err := os.Stat(wt.Path); err != nil {
-		t.Fatalf("dry-run removed worktree: %v", err)
+	prune := func(phase string) string {
+		t.Helper()
+		stdout.Reset()
+		stderr.Reset()
+		if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
+			t.Fatalf("%s prune: %v", phase, err)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("%s stderr = %q", phase, stderr.String())
+		}
+		return stdout.String()
 	}
 
-	stdout.Reset()
-	setup.Config.Retention = instance.RetentionConfig{Enabled: true, MaxRetainedWorktreeBytes: 1}
-	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
-		t.Fatalf("enabled prune: %v", err)
+	// 1. The pass runs on a stock config, but the worktree is newer than the
+	//    default age bound, so there is nothing to report and no clock to
+	//    start. This is the case that must not become chatty: almost every
+	//    instance is here almost all of the time.
+	if got := prune("fresh"); got != "" {
+		t.Fatalf("stock retention acted on a worktree inside the age bound: %q", got)
 	}
-	if got := stdout.String(); !strings.Contains(got, "retention deleted rule=storage-cap kind=worktree") ||
-		!strings.Contains(got, "reclaimedBytes=") {
-		t.Fatalf("delete output = %q", got)
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("fresh pass removed worktree: %v", err)
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("delete stderr = %q", stderr.String())
+	if state, ok, err := readRetentionGraceState(layout, worktreeRetentionStateFile); err != nil || !ok {
+		t.Fatalf("fresh pass recorded no state: ok=%v err=%v", ok, err)
+	} else if !state.EnforceAt.IsZero() {
+		t.Fatalf("fresh pass started a grace window with no candidates: %+v", state)
+	}
+
+	// 2. Past the default bound the worktree becomes a candidate. The first
+	//    such pass reports it and starts the grace clock — it must not delete.
+	clock = start.Add(instance.DefaultRetainedWorktreeMaxAge + time.Hour)
+	got := prune("aged")
+	if !strings.Contains(got, "retention candidate rule=max-age kind=worktree") &&
+		!strings.Contains(got, "retention candidate") {
+		t.Fatalf("aged pass reported no candidate: %q", got)
+	}
+	if !strings.Contains(got, "first-enable grace window") {
+		t.Fatalf("aged pass did not announce its grace window: %q", got)
+	}
+	if strings.Contains(got, "retention deleted") {
+		t.Fatalf("aged pass deleted inside the grace window: %q", got)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("grace-window pass removed worktree: %v", err)
+	}
+	state, _, err := readRetentionGraceState(layout, worktreeRetentionStateFile)
+	if err != nil {
+		t.Fatalf("read grace state: %v", err)
+	}
+	if state.EnforceAt.IsZero() || !state.LastPassDryRun || state.CandidateCount == 0 {
+		t.Fatalf("grace window not started: %+v", state)
+	}
+
+	// 3. A pass inside the window still only reports.
+	clock = state.EnforceAt.Add(-time.Minute)
+	if got := prune("inside window"); strings.Contains(got, "retention deleted") {
+		t.Fatalf("pass inside the grace window deleted: %q", got)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("pass inside the window removed worktree: %v", err)
+	}
+
+	// 4. Once the window elapses, the same candidate is actually reclaimed.
+	clock = state.EnforceAt.Add(time.Minute)
+	if got := prune("enforcing"); !strings.Contains(got, "retention deleted") {
+		t.Fatalf("pass after the grace window did not delete: %q", got)
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
-		t.Fatalf("enabled retention left worktree: %v", err)
+		t.Fatalf("pass after the grace window left worktree: %v", err)
+	}
+}
+
+// TestPruneConfiguredRetentionExplicitOptOutDoesNothing keeps the escape hatch
+// honest: #4253 flipped the default, it did not remove the ability to say no.
+func TestPruneConfiguredRetentionExplicitOptOutDoesNothing(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	const runID = "retention-optout"
+	createTerminalRun(t, layout, runID)
+	manager, repo := commandWorktreeFixture(t, layout)
+	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: repo, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.Remove(context.Background(), worktree.RemoveOptions{Keep: true}); err != nil {
+		t.Fatalf("keep worktree: %v", err)
+	}
+	setup := &schedulerSetup{
+		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: boolPtr(false)}},
+		LegacyWorktrees: manager,
+	}
+
+	restore := retentionNow
+	// Far past every bound: an opted-out instance must still do nothing.
+	retentionNow = func() time.Time { return time.Now().Add(100 * 24 * time.Hour) }
+	t.Cleanup(func() { retentionNow = restore })
+
+	var stdout, stderr bytes.Buffer
+	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
+		t.Fatalf("opted-out prune: %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("opted-out retention produced output: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("opted-out retention removed worktree: %v", err)
+	}
+	if _, ok, err := readRetentionGraceState(layout, worktreeRetentionStateFile); err != nil || ok {
+		t.Fatalf("opted-out retention wrote grace state: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -95,7 +190,7 @@ func TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow(t *
 	layout := instance.NewLayout(root)
 	manager, repo := commandWorktreeFixture(t, layout)
 	setup := &schedulerSetup{
-		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: true}},
+		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: boolPtr(true), FirstEnable: "immediate"}},
 		LegacyWorktrees: manager,
 	}
 
@@ -239,7 +334,7 @@ func TestPruneConfiguredRetentionProtectsPausedRunReboundBranchOnRestart(t *test
 	}
 
 	setup := &schedulerSetup{
-		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: true}},
+		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: boolPtr(true), FirstEnable: "immediate"}},
 		LegacyWorktrees: manager,
 		Machines: map[localscheduler.WorkflowIdentity]*workflow.Machine{
 			{Gaggle: "example", Workflow: machine.Def.Name}: machine,
@@ -331,7 +426,7 @@ func TestSweepWorktreeRetentionPrunesConfiguredRetention(t *testing.T) {
 	ctx := context.Background()
 	manager, repo := commandWorktreeFixture(t, layout)
 	setup := &schedulerSetup{
-		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: true, MaxRetainedWorktreeBytes: 1}},
+		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: boolPtr(true), MaxRetainedWorktreeBytes: 1, FirstEnable: "immediate"}},
 		LegacyWorktrees: manager,
 	}
 
@@ -353,5 +448,57 @@ func TestSweepWorktreeRetentionPrunesConfiguredRetention(t *testing.T) {
 
 	if _, err := os.Stat(retained.Path); !os.IsNotExist(err) {
 		t.Fatalf("sweepWorktreeRetention did not prune the retained worktree: stat err = %v", err)
+	}
+}
+
+// boolPtr builds the tri-state RetentionConfig.Enabled / TelemetryRetentionConfig.Enabled
+// values, where nil means "unset, take the opt-out default" (#4253).
+func boolPtr(v bool) *bool { return &v }
+
+// TestReportWorktreeRetentionPolicySurfacesTheGraceWindow covers #4253's
+// operator-visibility half. The flip makes most instances run a retention
+// policy nobody configured; if the grace window is invisible, an operator has
+// no chance to object before it starts deleting.
+func TestReportWorktreeRetentionPolicySurfacesTheGraceWindow(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	now := time.Now()
+
+	// Nothing recorded yet: silent, like the telemetry surface.
+	var stdout bytes.Buffer
+	reportWorktreeRetentionPolicy(layout, now, &stdout)
+	if stdout.Len() != 0 {
+		t.Fatalf("reported with no state: %q", stdout.String())
+	}
+
+	enforceAt := now.Add(48 * time.Hour)
+	write := func(state retentionGraceState) {
+		t.Helper()
+		if err := writeRetentionGraceState(layout, worktreeRetentionStateFile, worktreeRetentionStateSchema, state); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+	}
+
+	write(retentionGraceState{LastPassAt: now.Add(-time.Minute), LastPassDryRun: true, EnforceAt: enforceAt, CandidateCount: 3})
+	stdout.Reset()
+	reportWorktreeRetentionPolicy(layout, now, &stdout)
+	got := stdout.String()
+	for _, want := range []string{"grace period active until", enforceAt.UTC().Format(time.RFC3339), "3 candidate(s)", "nothing deleted yet"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("grace-window line missing %q: %q", want, got)
+		}
+	}
+
+	write(retentionGraceState{LastPassAt: now.Add(-time.Minute), LastPassDryRun: true})
+	stdout.Reset()
+	reportWorktreeRetentionPolicy(layout, now, &stdout)
+	if got := stdout.String(); !strings.Contains(got, "policy in force, no candidates") {
+		t.Errorf("quiet line = %q", got)
+	}
+
+	write(retentionGraceState{LastPassAt: now.Add(-time.Minute), PrunedCount: 7})
+	stdout.Reset()
+	reportWorktreeRetentionPolicy(layout, now, &stdout)
+	if got := stdout.String(); !strings.Contains(got, "pruned 7 item(s)") {
+		t.Errorf("enforcing line = %q", got)
 	}
 }

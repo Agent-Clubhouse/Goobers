@@ -1396,6 +1396,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			reportFleetEnrollment(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 			reportTelemetryRetentionPolicy(l, now, stdout)
+			reportWorktreeRetentionPolicy(l, now, stdout)
 			reportAVExclusionReadiness(l, stdout, realAVExclusionDeps())
 			return 1
 		}
@@ -1406,6 +1407,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 		reportFleetEnrollment(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 		reportTelemetryRetentionPolicy(l, now, stdout)
+		reportWorktreeRetentionPolicy(l, now, stdout)
 		reportAVExclusionReadiness(l, stdout, realAVExclusionDeps())
 		return 0
 	}
@@ -1453,6 +1455,33 @@ func reportTelemetryRetentionPolicy(l instance.Layout, now time.Time, stdout io.
 		pf(stdout, "telemetry retention: policy in force, no candidates as of last pass %s ago\n", lastPassAgo)
 	default:
 		pf(stdout, "telemetry retention: policy in force, last pass %s ago pruned %d run(s)\n", lastPassAgo, state.PrunedCount)
+	}
+}
+
+// reportWorktreeRetentionPolicy is the operator-facing half of #4253's flip.
+// Worktree/branch pruning became opt-out, so most instances now run a policy
+// nobody typed — and, on the first upgrade, hold a week-long grace window
+// during which candidates are reported and nothing is deleted. An operator who
+// cannot see that window has no way to object before it elapses, which was the
+// original complaint in #4253: nothing surfaced retention to an operator at all.
+//
+// Silent when no pass has ever recorded state — retention explicitly disabled
+// (retention.enabled: false), or the sweep has not run yet — matching
+// reportTelemetryRetentionPolicy's convention.
+func reportWorktreeRetentionPolicy(l instance.Layout, now time.Time, stdout io.Writer) {
+	state, ok, err := readRetentionGraceState(l, worktreeRetentionStateFile)
+	if err != nil || !ok {
+		return
+	}
+	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
+	switch {
+	case state.LastPassDryRun && !state.EnforceAt.IsZero():
+		pf(stdout, "worktree retention: grace period active until %s (%d candidate(s) as of last pass %s ago) — nothing deleted yet\n",
+			state.EnforceAt.UTC().Format(time.RFC3339), state.CandidateCount, lastPassAgo)
+	case state.LastPassDryRun:
+		pf(stdout, "worktree retention: policy in force, no candidates as of last pass %s ago\n", lastPassAgo)
+	default:
+		pf(stdout, "worktree retention: policy in force, last pass %s ago pruned %d item(s)\n", lastPassAgo, state.PrunedCount)
 	}
 }
 

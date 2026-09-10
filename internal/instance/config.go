@@ -55,6 +55,13 @@ const (
 	DefaultTelemetryRetentionWindow   = 90 * 24 * time.Hour
 	DefaultTelemetryRetentionMaxRuns  = 500
 	DefaultProjectionFullFidelityDays = 90
+	// DefaultRetainedWorktreeMaxAge bounds retained terminal-failure worktrees
+	// on a stock instance (#4253). A retained worktree exists so an operator
+	// can inspect a failure; a week is long enough to do that and short enough
+	// that an unattended instance does not accrete them forever. Applies
+	// whenever retention.retainedWorktreeMaxAge is omitted; set it to "0s" to
+	// turn the age rule off explicitly.
+	DefaultRetainedWorktreeMaxAge = 168 * time.Hour
 	// LargeRepoDefaultStageTimeout is the preset's deterministic-stage deadline.
 	LargeRepoDefaultStageTimeout = "4h"
 	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
@@ -1479,13 +1486,33 @@ func (c RunConditions) RunControls() apiv1.RunControls {
 	}
 }
 
-// RetentionConfig controls opt-in pruning of retained failure worktrees and
-// merged local run branches. Both Enabled and DryRun default to false.
+// RetentionConfig controls pruning of retained failure worktrees and merged
+// local run branches. Pruning is OPT-OUT (#4253, implementing the #3056
+// ruling), matching telemetry.retention: an instance that says nothing about
+// retention still bounds its own disk, because the alternative measured on the
+// live instance was ~240 MB/day of unbounded growth. DryRun still defaults to
+// false and remains an operator preview knob, independent of the safe
+// first-enable grace window below.
 type RetentionConfig struct {
-	Enabled                  bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	DryRun                   bool   `json:"dryRun,omitempty" yaml:"dryRun,omitempty"`
-	MaxRetainedWorktreeBytes int64  `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
-	RetainedWorktreeMaxAge   string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// Enabled defaults to true (opt-out) — nil and unset are the same as true.
+	// Set explicitly to false to keep automatic pruning off.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// DryRun forces every pass to report candidates and delete nothing,
+	// regardless of the grace window. This is the operator's own preview
+	// switch; FirstEnable governs the automatic one.
+	DryRun                   bool  `json:"dryRun,omitempty" yaml:"dryRun,omitempty"`
+	MaxRetainedWorktreeBytes int64 `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
+	// RetainedWorktreeMaxAge bounds retained failure worktrees by age.
+	// Omitted means DefaultRetainedWorktreeMaxAge — the opt-out default, not
+	// "no age rule". An explicit "0s" turns the age rule off.
+	RetainedWorktreeMaxAge string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// FirstEnable mirrors TelemetryRetentionConfig.FirstEnable: the default
+	// ("" / "gracePeriod") holds a 7-day dry-run window the first time a pass
+	// finds real candidates — report what would be deleted, delete nothing —
+	// so an instance that has been accruing worktrees under the old opt-in
+	// default does not lose them all on the first sweep after an upgrade.
+	// "immediate" skips straight to enforcement.
+	FirstEnable string `json:"firstEnable,omitempty" yaml:"firstEnable,omitempty"`
 	// ProjectionFullFidelityDays bounds how much history stays INDIVIDUALLY
 	// LISTABLE in the portal read model (#1932, §11.4). This is a product
 	// policy decision (issue #3056) to age out runs beyond full-fidelity
@@ -1577,18 +1604,31 @@ func (c *Config) ProjectionFullFidelityRetentionDays() int {
 	return c.Retention.ProjectionFullFidelityDaysEffective()
 }
 
-// RetainedWorktreeMaxAgeDuration resolves the optional retention window.
-// Zero disables age-based pruning.
+// EnabledEffective reports whether automatic worktree/branch retention
+// pruning runs (defaults to true — see Enabled's doc comment).
+func (c RetentionConfig) EnabledEffective() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// ImmediateFirstEnable reports whether FirstEnable opted out of the safe
+// first-enable grace window.
+func (c RetentionConfig) ImmediateFirstEnable() bool {
+	return c.FirstEnable == "immediate"
+}
+
+// RetainedWorktreeMaxAgeDuration resolves the retention window. An omitted
+// value means DefaultRetainedWorktreeMaxAge (#4253's opt-out default); an
+// explicit "0s" disables age-based pruning and returns zero.
 func (c RetentionConfig) RetainedWorktreeMaxAgeDuration() (time.Duration, error) {
 	if c.RetainedWorktreeMaxAge == "" {
-		return 0, nil
+		return DefaultRetainedWorktreeMaxAge, nil
 	}
 	window, err := time.ParseDuration(c.RetainedWorktreeMaxAge)
 	if err != nil {
 		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge %q: %w", c.RetainedWorktreeMaxAge, err)
 	}
-	if window <= 0 {
-		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge must be positive, got %s", window)
+	if window < 0 {
+		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge must not be negative, got %s", window)
 	}
 	return window, nil
 }

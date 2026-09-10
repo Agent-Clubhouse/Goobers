@@ -149,7 +149,7 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 	if mode == "conflict" {
 		recoveryCLIGit(t, mirror, "update-ref", ref, base)
 	}
-	setup := &schedulerSetup{Config: &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "team", Name: "repo"}}, Retention: instance.RetentionConfig{Enabled: true, DryRun: mode == "dry-run" || mode == "landed-dry-run"}}, LegacyWorktrees: manager}
+	setup := &schedulerSetup{Config: &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "team", Name: "repo"}}, Retention: instance.RetentionConfig{Enabled: boolPtr(true), DryRun: mode == "dry-run" || mode == "landed-dry-run", FirstEnable: "immediate"}}, LegacyWorktrees: manager}
 	var stdout, stderr bytes.Buffer
 	err = pruneConfiguredRetention(ctx, layout, setup, &stdout, &stderr)
 	if (err != nil) != (mode == "conflict" || mode == "landed-missing-object" || pinned && mode == "busy") {
