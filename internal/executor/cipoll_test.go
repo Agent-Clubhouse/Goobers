@@ -937,6 +937,45 @@ func TestCIPollExecutor_RetryRerunErrorFallsThroughToOrdinaryFailure(t *testing.
 	}
 }
 
+// TestCIPollExecutor_RetryTimeoutMidBackoffReportsTypedTimeout is mega-puffin's
+// case 3 from the #4750 design clarification, given a standalone test per QA
+// (cosmic-llama)'s review of PR #4754: a context deadline expiring during the
+// post-rerun backoff sleep must report the same typed "timeout" sentinel
+// ci-poll already produces for a plain pending-poll timeout — the retry
+// feature doesn't get to override it with a "failing" outcome just because
+// the last observed check state before the deadline was failing.
+func TestCIPollExecutor_RetryTimeoutMidBackoffReportsTypedTimeout(t *testing.T) {
+	poller := &rerunningPoller{
+		fakePoller: fakePoller{results: []providers.CheckState{providers.CheckStateFailing}},
+		headSHA:    "cafe1234",
+	}
+	exec, err := NewCIPollExecutor(poller, newFakeRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No Sleep override: the real timer races the real context deadline below,
+	// exactly like TestCIPollExecutor_ContextDeadlineReturnsTypedTimeout.
+
+	cfg := cfgFor("o", "r", "42")
+	cfg.RetryFailedChecksMaxAttempts = 1
+	cfg.RetryFailedChecksBackoff = time.Hour
+	cfg.Timeout = 10 * time.Millisecond
+
+	result, err := exec.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if poller.rerunCalls != 1 {
+		t.Fatalf("rerun calls = %d, want exactly 1 (the rerun itself must still fire before the backoff sleep times out)", poller.rerunCalls)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "poll_timeout" {
+		t.Fatalf("result = %+v, want the typed poll_timeout failure, not a retry-specific outcome", result)
+	}
+	if result.Outputs[OutputCIStatus] != CIStatusTimeout {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], CIStatusTimeout)
+	}
+}
+
 // TestCIPollExecutor_RetryRequiresRerunnerCapability proves a poller that does
 // not implement CIFailureRerunner (ADO/Gitea today) falls straight through to
 // the plain failing outcome even with retries configured, exactly as if the
