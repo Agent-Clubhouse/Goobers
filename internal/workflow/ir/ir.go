@@ -197,7 +197,7 @@ func NormalizeWithMetadata(def workflow.Definition, provenance *Provenance, feat
 		Nodes:            []Node{},
 		Edges:            []Edge{},
 		SourceDefinition: &source,
-		FeatureGates:     append([]string(nil), featureGates...),
+		FeatureGates:     canonicalizeFeatureGates(featureGates),
 	}
 	if provenance != nil {
 		copy := *provenance
@@ -829,6 +829,12 @@ func unique(values []string) []string {
 		}
 	}
 	return out
+}
+
+func canonicalizeFeatureGates(values []string) []string {
+	canonical := unique(append([]string(nil), values...))
+	sort.Strings(canonical)
+	return canonical
 }
 
 func validatePorts(node string, ports []Port) error {

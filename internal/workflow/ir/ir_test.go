@@ -153,6 +153,45 @@ func TestNormalizePreservesCanonicalGraphSemantics(t *testing.T) {
 	}
 }
 
+func TestNormalizeWithMetadataCanonicalizesFeatureGatesForDigest(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks: []apiv1.Task{
+				{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build"},
+			},
+		},
+	}
+	first, err := NormalizeWithMetadata(base, nil, []string{"stable", "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NormalizeWithMetadata(base, nil, []string{"alpha", "stable", "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"alpha", "stable"}
+	if !reflect.DeepEqual(first.FeatureGates, want) {
+		t.Fatalf("first.FeatureGates = %#v, want %#v", first.FeatureGates, want)
+	}
+	if !reflect.DeepEqual(second.FeatureGates, want) {
+		t.Fatalf("second.FeatureGates = %#v, want %#v", second.FeatureGates, want)
+	}
+	firstDigest, err := first.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := second.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("Digest changed for reordered feature gates: %s != %s", firstDigest, secondDigest)
+	}
+}
+
 func TestIRProvenanceAndSemanticDiff(t *testing.T) {
 	base := workflow.Definition{
 		Name: "pipeline", Version: 1,
