@@ -169,6 +169,111 @@ func TestGenerateRecognizesBreakingChangeFooters(t *testing.T) {
 	}
 }
 
+// TestGenerateFailsWhenCuratedCommitCountDisagreesWithRange is #4272's
+// regression: a curated note authored against a failed release attempt's
+// commit (v0.4.0-beta.2 at the review's own reproduction: curated for 58
+// commits/20 fix, but the tag that actually shipped one commit later has 59
+// commits/21 fix) must fail generation loudly, not ship a stale claim
+// unnoticed.
+func TestGenerateFailsWhenCuratedCommitCountDisagreesWithRange(t *testing.T) {
+	git := fakeGit{
+		command("rev-parse", "--verify", "refs/tags/v0.4.0-beta.2^{commit}"): {output: "release"},
+		command("rev-list", "--count", "v0.4.0-beta.1..v0.4.0-beta.2"):       {output: "59"},
+	}
+	readFile := func(string) ([]byte, error) {
+		return []byte("58 commits since v0.4.0-beta.1 (20 fix, 6 refactor, docs/CLI/misc), no BREAKING CHANGE footers."), nil
+	}
+
+	_, err := generate("v0.4.0-beta.2", git, readFile)
+	if err == nil {
+		t.Fatal("generate should fail when the curated commit count disagrees with the real range")
+	}
+	for _, want := range []string{"claims 58 commits", "reports 59"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// TestGenerateFailsWhenCuratedKindCountDisagreesWithRange covers the
+// narrower case where the total commit count happens to match but a
+// per-type breakdown does not — still evidence the curated note was written
+// against a different commit.
+func TestGenerateFailsWhenCuratedKindCountDisagreesWithRange(t *testing.T) {
+	git := fakeGit{
+		command("rev-parse", "--verify", "refs/tags/v0.4.0-beta.2^{commit}"): {output: "release"},
+		command("rev-list", "--count", "v0.4.0-beta.1..v0.4.0-beta.2"):       {output: "59"},
+		command("log", "--format=%s", "v0.4.0-beta.1..v0.4.0-beta.2"): {
+			output: strings.Repeat("fix: patch\n", 21) + strings.Repeat("refactor: tidy\n", 6) + strings.Repeat("docs: update\n", 32),
+		},
+	}
+	readFile := func(string) ([]byte, error) {
+		return []byte("59 commits since v0.4.0-beta.1 (20 fix, 6 refactor, docs/CLI/misc), no BREAKING CHANGE footers."), nil
+	}
+
+	_, err := generate("v0.4.0-beta.2", git, readFile)
+	if err == nil {
+		t.Fatal("generate should fail when a curated per-type count disagrees with the real range")
+	}
+	for _, want := range []string{`20 "fix"`, "has 21"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// TestGenerateAcceptsCuratedCommitCountMatchingRange is the positive
+// counterpart: a curated note whose stated counts match the real range must
+// not be rejected.
+func TestGenerateAcceptsCuratedCommitCountMatchingRange(t *testing.T) {
+	git := fakeGit{
+		command("rev-parse", "--verify", "refs/tags/v1.3.0^{commit}"): {output: "release"},
+		command("rev-list", "--count", "v1.2.0..v1.3.0"):              {output: "5"},
+		command("log", "--format=%s", "v1.2.0..v1.3.0"): {
+			output: "fix: patch\nfix: another\nfix: yet another\ndocs: update\ndocs: more\n",
+		},
+		command("rev-list", "--parents", "-n", "1", "v1.3.0"): {output: "release parent"},
+		command("tag", "--merged", "v1.3.0^", "--sort=-version:refname", "--list", "v*"): {
+			output: "v1.2.0",
+		},
+		command("log", "--first-parent", "--format="+gitLogFormat, "v1.2.0..v1.3.0"): {output: ""},
+	}
+	readFile := func(string) ([]byte, error) {
+		return []byte("5 commits since v1.2.0 (3 fix, 2 docs), no BREAKING CHANGE footers."), nil
+	}
+
+	got, err := generate("v1.3.0", git, readFile)
+	if err != nil {
+		t.Fatalf("generate should accept a curated note whose counts match the real range: %v", err)
+	}
+	if !strings.Contains(got, "5 commits since v1.2.0") {
+		t.Errorf("notes missing the curated claim:\n%s", got)
+	}
+}
+
+// TestGenerateSkipsCommitCountValidationWithoutAClaim covers current
+// practice: a curated note (a prose "Highlights" list) that states no
+// commit count has nothing to validate, and must not issue any extra git
+// calls — fakeGit fails loudly on an unexpected command, so this also
+// proves no rev-list/log call is made.
+func TestGenerateSkipsCommitCountValidationWithoutAClaim(t *testing.T) {
+	git := fakeGit{
+		command("rev-parse", "--verify", "refs/tags/v1.2.0^{commit}"): {output: "release"},
+		command("rev-list", "--parents", "-n", "1", "v1.2.0"):         {output: "release parent"},
+		command("tag", "--merged", "v1.2.0^", "--sort=-version:refname", "--list", "v*"): {
+			output: "v1.1.0",
+		},
+		command("log", "--first-parent", "--format="+gitLogFormat, "v1.1.0..v1.2.0"): {output: ""},
+	}
+	readFile := func(string) ([]byte, error) {
+		return []byte("## Highlights\n\n- Ships the new thing.\n"), nil
+	}
+
+	if _, err := generate("v1.2.0", git, readFile); err != nil {
+		t.Fatalf("generate should not validate counts absent a claim: %v", err)
+	}
+}
+
 func TestGenerateRejectsInvalidTagBeforeGit(t *testing.T) {
 	for _, tag := range []string{"", "1.2.3", "v1.2", "v01.2.3", "v1.2.3-", "v1.2.3-01", "v1.2.3+build"} {
 		t.Run(tag, func(t *testing.T) {
