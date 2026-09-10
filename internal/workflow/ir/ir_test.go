@@ -275,6 +275,9 @@ func TestExplainLossHandlesPointerAndUnsupportedSources(t *testing.T) {
 	if losses := doc.ExplainLoss(nilDefinition); len(losses) != 1 || !strings.Contains(losses[0].Explanation, "nil *workflow.Definition") {
 		t.Fatalf("ExplainLoss(nil *workflow.Definition) = %#v, want explicit nil-pointer loss", losses)
 	}
+	if losses := doc.ExplainLoss(nil); len(losses) != 1 || !strings.Contains(losses[0].Explanation, "nil source") {
+		t.Fatalf("ExplainLoss(nil) = %#v, want explicit nil-source loss", losses)
+	}
 	if losses := doc.ExplainLoss("pipeline"); len(losses) != 1 || !strings.Contains(losses[0].Explanation, "unsupported source type string") {
 		t.Fatalf("ExplainLoss(string) = %#v, want explicit unsupported-source loss", losses)
 	}

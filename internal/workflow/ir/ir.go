@@ -551,7 +551,7 @@ func (d Document) ExplainLoss(source any) []Loss {
 		}
 		return d.explainWorkflowLoss(*src)
 	case nil:
-		return nil
+		return typedNilSourceLoss("source")
 	default:
 		return unsupportedSourceLoss(source)
 	}
