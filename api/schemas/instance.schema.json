@@ -155,7 +155,7 @@
       }
     },
     "retention": {
-      "description": "Opt-in pruning of retained failure worktrees and merged local run branches, plus the portal projection window. Distinct from telemetry.retention, which bounds journals and rollups.",
+      "description": "Pruning of retained failure worktrees and merged local run branches, plus the portal projection window. Pruning is opt-out. Distinct from telemetry.retention, which bounds journals and rollups.",
       "$ref": "#/$defs/retention"
     },
     "notifications": {
@@ -1056,21 +1056,28 @@
       }
     },
     "retention": {
-      "description": "Opt-in cleanup of on-disk run remains and the portal's listable history window.",
+      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning of retained failure worktrees and merged run branches is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h worktree age bound and a safe first-enable grace window, unless enabled is explicitly false.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
-          "default": false,
-          "description": "Enables pruning of retained terminal-failure worktrees and merged local run branches. It requires at least one of maxRetainedWorktreeBytes or retainedWorktreeMaxAge — enabling retention with no limits would prune nothing. Active runs are never candidates."
+          "default": true,
+          "description": "Lets the daemon prune retained terminal-failure worktrees and merged local run branches. Defaults to true (#4253); set explicitly to false to keep automatic pruning off. Active runs are never candidates."
         },
         "dryRun": { "type": "boolean", "default": false, "description": "Reports the deterministic candidate set without deleting anything." },
         "maxRetainedWorktreeBytes": { "type": "integer", "minimum": 0, "description": "Byte ceiling for retained failure worktrees; the oldest are removed first once exceeded. Zero or omitted disables the size rule." },
         "retainedWorktreeMaxAge": {
-          "description": "Age beyond which a retained failure worktree is prunable. Empty disables the age rule.",
+          "description": "Age beyond which a retained failure worktree is prunable. Omitted uses 168h (7 days); an explicit \"0s\" turns the age rule off, which then requires maxRetainedWorktreeBytes to be set or retention would prune nothing.",
           "$ref": "#/$defs/duration",
-          "examples": ["168h"]
+          "default": "168h",
+          "examples": ["168h", "0s"]
+        },
+        "firstEnable": {
+          "type": "string",
+          "enum": ["gracePeriod", "immediate"],
+          "default": "gracePeriod",
+          "description": "Safe first-enable behavior (#3056 ruling) for the first pass that finds candidates exceeding policy. gracePeriod (default) holds a 7-day dry run reporting what would be deleted before enforcement begins; immediate skips straight to enforcement. Independent of dryRun, which is the operator's own permanent preview switch."
         },
         "projectionFullFidelityDays": {
           "type": "integer",

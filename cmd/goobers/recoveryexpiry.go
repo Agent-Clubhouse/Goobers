@@ -18,7 +18,12 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, stdout, stderr io.Writer) error {
+// dryRun is the retention pass's resolved decision (operator retention.dryRun
+// or an unelapsed first-enable grace window, #4253). Retiring a snapshot
+// deletes its refs, so it has to observe the same window the worktree sweep
+// does — otherwise a grace period that only reports worktrees would still be
+// destroying recovery snapshots underneath it.
+func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, dryRun bool, stdout, stderr io.Writer) error {
 	root := filepath.Join(layout.Root, "recovery")
 	entries, err := recovery.ReadInventory(ctx, root, 128)
 	if err != nil {
@@ -33,7 +38,7 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	}
 	var failures error
 	for _, entry := range entries {
-		err := retireExpiredRecoveryEntry(ctx, root, setup, managers, runsByRoot, entry, operatorEvents, stdout)
+		err := retireExpiredRecoveryEntry(ctx, root, setup, managers, runsByRoot, entry, operatorEvents, dryRun, stdout)
 		if err != nil {
 			pf(stderr, "warning: recovery retention failed run=%q ref=%q: %v\n", entry.Record.RunID, entry.Record.Ref, err)
 			failures = errors.Join(failures, err)
@@ -42,7 +47,7 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	return failures
 }
 
-func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, operatorEvents []journal.Event, stdout io.Writer) error {
+func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, operatorEvents []journal.Event, dryRun bool, stdout io.Writer) error {
 	manager, runDir, err := recoveryRetentionOwner(entry.Record.RunID, managers, runsByRoot)
 	if err != nil {
 		return err
@@ -86,7 +91,7 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 					return err
 				}
 			}
-			if setup.Config.Retention.DryRun {
+			if dryRun {
 				pf(stdout, "retention candidate kind=recovery rule=recovery-policy run=%q ref=%q\n", record.RunID, record.Ref)
 				return nil
 			}

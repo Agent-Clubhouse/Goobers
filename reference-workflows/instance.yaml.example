@@ -71,15 +71,24 @@ telemetry:
 runConditions:
   maxParallelRuns: 2
   claimsLockTimeout: 30s
-# Retention pruning is opt-in. `dryRun: true` reports deterministic candidates
-# without deleting anything. With `enabled: true` and dryRun omitted/false,
-# retained terminal-failure worktrees exceeding either configured limit are
-# removed oldest-first, and merged local run branches are cleaned up. Active
-# runs are never candidates. A zero/omitted byte cap or empty age disables that
-# worktree rule.
+# Retention pruning is OPT-OUT (#4253): with no retention block at all, the
+# daemon prunes retained terminal-failure worktrees older than 168h and cleans
+# up merged local run branches, because an unattended instance that prunes
+# nothing accretes disk without bound. Active runs are never candidates.
+#
+# The first pass that finds real candidates only REPORTS them and starts a
+# 7-day grace window; deletion begins after that window elapses. Set
+# `firstEnable: immediate` to skip the window, or `dryRun: true` to report
+# candidates forever and never delete.
+#
+# Set `enabled: false` to turn automatic pruning off entirely. An omitted
+# `retainedWorktreeMaxAge` means the 168h default, not "no age rule" — say
+# `retainedWorktreeMaxAge: 0s` to turn the age rule off, in which case
+# `maxRetainedWorktreeBytes` has to carry the bound on its own.
 # retention:
-#   dryRun: true
-#   enabled: false
+#   enabled: true
+#   dryRun: false
+#   firstEnable: gracePeriod
 #   maxRetainedWorktreeBytes: 10737418240
 #   retainedWorktreeMaxAge: 168h
 # Optional runner block. `capabilities` are the toolchains/platform properties

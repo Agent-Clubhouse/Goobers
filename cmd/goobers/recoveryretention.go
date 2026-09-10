@@ -12,11 +12,15 @@ import (
 // Invoked by the same startup/periodic retention sweep and exclusion gate as
 // retained worktrees. Only already-committed retirements are handled here;
 // active recovery records require their separate run/policy eligibility check.
-func reapConfiguredRecovery(ctx context.Context, layout instance.Layout, cfg instance.RetentionConfig, stdout, stderr io.Writer) error {
-	if !cfg.Enabled && !cfg.DryRun {
+// dryRun is the caller's already-resolved decision, which folds in the
+// operator's retention.dryRun and the first-enable grace window (#4253) — this
+// reaper must not re-derive it, or a retirement would be deleted during a
+// window that is still only reporting worktrees.
+func reapConfiguredRecovery(ctx context.Context, layout instance.Layout, cfg instance.RetentionConfig, dryRun bool, stdout, stderr io.Writer) error {
+	if !cfg.EnabledEffective() && !cfg.DryRun {
 		return nil
 	}
-	results, err := recovery.ReapRetired(ctx, filepath.Join(layout.Root, "recovery"), 128, cfg.Enabled && !cfg.DryRun)
+	results, err := recovery.ReapRetired(ctx, filepath.Join(layout.Root, "recovery"), 128, !dryRun)
 	for _, result := range results {
 		switch {
 		case result.Err != nil:

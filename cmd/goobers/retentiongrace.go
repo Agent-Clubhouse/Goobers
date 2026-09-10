@@ -1,0 +1,111 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+)
+
+// retentionGraceWindow is how long a retention policy reports what it would
+// delete before it deletes anything, the first time it finds real candidates
+// (#3056's safe first-enable, #4253). It matches the telemetry side's window:
+// an operator who upgrades into an opt-out default gets a week to see the
+// candidate list and object before anything is removed.
+const retentionGraceWindow = 7 * 24 * time.Hour
+
+// retentionGraceState records where a retention policy is in its first-enable
+// grace window, and what its last pass did. It is derived, not authoritative:
+// deleting the file restarts grace detection from the next pass, exactly as on
+// a fresh instance.
+//
+// The shape mirrors telemetryRetentionState deliberately. That one predates
+// this file and still carries its own copy; this is the reusable form, and the
+// telemetry side can adopt it without a behavior change.
+type retentionGraceState struct {
+	Schema string `json:"schema"`
+	// DetectedAt/EnforceAt stay zero until the first pass that actually finds
+	// data exceeding policy starts the window; EnforceAt is when real deletion
+	// begins (DetectedAt + retentionGraceWindow).
+	DetectedAt     time.Time `json:"detectedAt,omitempty"`
+	EnforceAt      time.Time `json:"enforceAt,omitempty"`
+	LastPassAt     time.Time `json:"lastPassAt"`
+	LastPassDryRun bool      `json:"lastPassDryRun"`
+	CandidateCount int       `json:"candidateCount"`
+	PrunedCount    int       `json:"prunedCount"`
+}
+
+func retentionGraceStatePath(layout instance.Layout, file string) string {
+	return filepath.Join(layout.SchedulerDir(), file)
+}
+
+// readRetentionGraceState returns ok=false (zero state, nil error) when no
+// pass has ever recorded one — a fresh instance, or one that predates the file.
+func readRetentionGraceState(layout instance.Layout, file string) (state retentionGraceState, ok bool, err error) {
+	data, err := os.ReadFile(retentionGraceStatePath(layout, file))
+	if os.IsNotExist(err) {
+		return retentionGraceState{}, false, nil
+	}
+	if err != nil {
+		return retentionGraceState{}, false, fmt.Errorf("retention: read state %s: %w", file, err)
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return retentionGraceState{}, false, fmt.Errorf("retention: decode state %s: %w", file, err)
+	}
+	return state, true, nil
+}
+
+func writeRetentionGraceState(layout instance.Layout, file, schema string, state retentionGraceState) error {
+	state.Schema = schema
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("retention: encode state %s: %w", file, err)
+	}
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		return fmt.Errorf("retention: create scheduler dir: %w", err)
+	}
+	if err := journal.WriteFileAtomic(retentionGraceStatePath(layout, file), data, 0o644); err != nil {
+		return fmt.Errorf("retention: write state %s: %w", file, err)
+	}
+	return nil
+}
+
+// retentionPassIsDryRun decides whether this pass reports or deletes.
+//
+// It keys off EnforceAt rather than "does a state file exist". The state file
+// is written on every pass, including a dry pass that found zero candidates,
+// so gating on file existence lets one harmless empty pass permanently satisfy
+// the "first pass" check — and the next pass to find real candidates, however
+// much later, then enforces with no grace period at all. That was the bug
+// #4801 fixed on the telemetry side; this side is built with it already fixed.
+//
+// An instance with nothing to prune therefore stays harmlessly dry forever
+// (a real pass would do nothing differently), and only starts the window the
+// first time it finds real candidates.
+func retentionPassIsDryRun(state retentionGraceState, immediate bool, now time.Time) bool {
+	if immediate {
+		return false
+	}
+	withinGrace := !state.EnforceAt.IsZero() && now.Before(state.EnforceAt)
+	return withinGrace || state.EnforceAt.IsZero()
+}
+
+// recordRetentionPass advances the grace window and the last-pass record.
+// Starting the window is what a dry pass that found real candidates does.
+func recordRetentionPass(state retentionGraceState, dryRun, immediate bool, candidates int, now time.Time) retentionGraceState {
+	if dryRun && !immediate && state.EnforceAt.IsZero() && candidates > 0 {
+		state.DetectedAt = now
+		state.EnforceAt = now.Add(retentionGraceWindow)
+	}
+	state.LastPassAt = now
+	state.LastPassDryRun = dryRun
+	state.CandidateCount = candidates
+	if !dryRun {
+		state.PrunedCount = candidates
+	}
+	return state
+}
