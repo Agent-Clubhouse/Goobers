@@ -325,10 +325,18 @@ export interface ConfigAuthoringErrorEnvelope {
 
 export interface Health extends ContractVersion {
 	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+  build?: BuildMetadata;
+  readState?: ReadState;
   ready: boolean;
   healthy: boolean;
   instance: InstanceIdentity;
   freshness: Freshness;
+}
+
+export interface BuildMetadata {
+  version: string;
+  commit: string;
+  date: string;
 }
 
 export interface InstanceIdentity {
@@ -346,7 +354,9 @@ export interface Freshness {
 
 export interface Instance extends ContractVersion {
   name: string;
+  version?: string;
   environment: Environment;
+  computerName?: string;
   instanceRoot: string;
   rootIdentity?: {
     id?: string;
@@ -1037,6 +1047,8 @@ export interface TelemetryCostRunAggregate {
 
 export interface TelemetryCostAggregate {
   provider: string;
+  repository?: string;
+  url?: string;
   externalKind: "pr" | "issue";
   externalId: string;
   totalRuns: number;
@@ -1376,6 +1388,75 @@ export interface PortalConfig {
   };
 }
 
+export type WorkItemKind = "pr" | "issue";
+
+export interface WorkItemListOptions {
+  provider?: string;
+  kind?: WorkItemKind;
+  limit?: number;
+}
+
+export interface WorkItemSummary {
+  provider: string;
+  repository?: string;
+  kind: WorkItemKind;
+  externalId: string;
+  url?: string;
+  actionCount: number;
+  lastOperation: string;
+  lastActionAt: string;
+  lastRunId: string;
+  gaggle?: string;
+  workflow?: string;
+  runStatus?: string;
+}
+
+export interface WorkItemPage {
+  items: WorkItemSummary[];
+  hasMore: boolean;
+}
+
+export interface WorkItemAction {
+  runId: string;
+  sequence: number;
+  url?: string;
+  operation: string;
+  occurredAt: string;
+  gaggle?: string;
+  workflow?: string;
+  runStatus?: string;
+}
+
+export interface WorkItemDetail {
+  provider: string;
+  repository?: string;
+  kind: WorkItemKind;
+  externalId: string;
+  url?: string;
+  cost?: WorkItemCost;
+  relatedPullRequests: RelatedWorkItem[];
+  actions: WorkItemAction[];
+  truncated: boolean;
+}
+
+export interface WorkItemCost {
+  costUSD?: number;
+  nanoAIU?: number;
+  totalRuns: number;
+  measuredRuns: number;
+  totalAttempts: number;
+  measuredAttempts: number;
+  lowerBound: boolean;
+}
+
+export interface RelatedWorkItem {
+  provider: string;
+  repository?: string;
+  kind: WorkItemKind;
+  externalId: string;
+  url?: string;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -1413,6 +1494,17 @@ export interface DaemonClient {
     request?: TelemetryErrorsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryErrorsPage>;
+  listWorkItems(
+    request?: WorkItemListOptions,
+    options?: RequestOptions,
+  ): Promise<WorkItemPage>;
+  getWorkItem(
+    provider: string,
+    repository: string,
+    kind: WorkItemKind,
+    externalId: string,
+    options?: RequestOptions,
+  ): Promise<WorkItemDetail>;
 }
 
 /**

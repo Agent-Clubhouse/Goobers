@@ -47,6 +47,8 @@ type RunCostAttribution struct {
 // request. Nil measures are unmeasured; pointers to zero are measured zeroes.
 type CostAggregate struct {
 	Provider               string
+	Repository             string
+	URL                    string
 	ExternalKind           string
 	ExternalID             string
 	TotalRuns              int
@@ -223,15 +225,70 @@ func (db *DB) CostAggregates(ctx context.Context, query CostQuery) (CostResult, 
 			return CostResult{}, err
 		}
 		if query.ExternalKind == "" || query.ExternalKind == CostExternalKindPR {
-			result.PullRequests = append(result.PullRequests,
-				filterCostAggregates(pullRequestCostAggregates(provider, runs), query.ExternalID)...)
+			aggregates := filterCostAggregates(pullRequestCostAggregates(provider, runs), query.ExternalID)
+			if err := db.enrichCostWorkItemIdentities(ctx, provider, aggregates); err != nil {
+				return CostResult{}, err
+			}
+			result.PullRequests = append(result.PullRequests, aggregates...)
 		}
 		if query.ExternalKind == "" || query.ExternalKind == CostExternalKindIssue {
-			result.Issues = append(result.Issues,
-				filterCostAggregates(issueCostAggregates(provider, runs), query.ExternalID)...)
+			aggregates := filterCostAggregates(issueCostAggregates(provider, runs), query.ExternalID)
+			if err := db.enrichCostWorkItemIdentities(ctx, provider, aggregates); err != nil {
+				return CostResult{}, err
+			}
+			result.Issues = append(result.Issues, aggregates...)
 		}
 	}
 	return result, nil
+}
+
+func (db *DB) enrichCostWorkItemIdentities(ctx context.Context, provider string, aggregates []CostAggregate) error {
+	if len(aggregates) == 0 {
+		return nil
+	}
+	rows, err := db.readDB().QueryContext(ctx, `
+		WITH normalized AS (
+			SELECT
+				kind,
+				external_id,
+				CASE
+					WHEN instr(COALESCE(url, ''), '#') > 0
+						THEN substr(url, 1, instr(url, '#') - 1)
+					ELSE COALESCE(url, '')
+				END AS canonical_url
+			FROM provider_mutations
+			WHERE provider = ? AND kind IN ('pr', 'issue')
+		)
+		SELECT kind, external_id,
+		       CASE
+			       WHEN COUNT(DISTINCT lower(canonical_url)) = 1 THEN MAX(canonical_url)
+			       ELSE ''
+		       END
+		FROM normalized
+		WHERE canonical_url <> ''
+		GROUP BY kind, external_id`, provider)
+	if err != nil {
+		return fmt.Errorf("rollup: query cost work item identities: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	identities := make(map[string]string)
+	for rows.Next() {
+		var kind, externalID, itemURL string
+		if err := rows.Scan(&kind, &externalID, &itemURL); err != nil {
+			return fmt.Errorf("rollup: scan cost work item identity: %w", err)
+		}
+		identities[kind+"\x00"+externalID] = itemURL
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rollup: iterate cost work item identities: %w", err)
+	}
+	for index := range aggregates {
+		itemURL := identities[aggregates[index].ExternalKind+"\x00"+aggregates[index].ExternalID]
+		aggregates[index].URL = itemURL
+		aggregates[index].Repository = workItemRepository(provider, itemURL)
+	}
+	return nil
 }
 
 func (db *DB) costProviders(ctx context.Context, provider string, since, until time.Time) ([]string, error) {

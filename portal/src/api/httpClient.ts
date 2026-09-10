@@ -48,6 +48,10 @@ import type {
   WorkflowDetail,
   QueueEligibilityView,
   WorkflowPage,
+  WorkItemDetail,
+  WorkItemKind,
+  WorkItemListOptions,
+  WorkItemPage,
   ReadState,
 } from "./types";
 
@@ -77,6 +81,8 @@ const clientRoutes = {
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
+  workItems: apiRoutes.workItems,
+  workItemDetail: apiRoutes.workItemDetail,
   // The telemetry read plane's curation evidence (decision 005 R4 / finding
   // 002 C3). A stage pod's `backlog-health --feedback` is the only consumer;
   // the portal has no surface for it yet, but the exhaustiveness check
@@ -181,6 +187,7 @@ export interface HttpDaemonClientConfig {
   fetch?: typeof fetch;
   diagnostics?: PortalDiagnostics;
   maxConcurrentRequests?: number;
+  admissionMaxRetries?: number;
   admissionRetryBaseMs?: number;
   admissionRetryMaxMs?: number;
   onAdmissionState?: (state: AdmissionDegradedState | undefined) => void;
@@ -215,7 +222,9 @@ export class HttpDaemonClient implements DaemonClient {
     this.diagnostics = config.diagnostics;
     this.onReadState = config.onReadState;
     this.requests = new RequestCoordinator({
+      diagnostics: config.diagnostics,
       maxConcurrent: config.maxConcurrentRequests ?? 2,
+      maxRetries: config.admissionMaxRetries ?? 1,
       retryBaseMs: config.admissionRetryBaseMs ?? 1_000,
       retryMaxMs: config.admissionRetryMaxMs ?? 30_000,
       onAdmissionState: config.onAdmissionState,
@@ -243,10 +252,7 @@ export class HttpDaemonClient implements DaemonClient {
       controller.abort();
     };
     options?.signal?.addEventListener("abort", cancel, { once: true });
-    const timer = globalThis.setTimeout(() => {
-      abortKind = "timeout";
-      controller.abort();
-    }, this.timeoutMs);
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     const requestUrl = this.url(clientRoutes.events);
     const trace = this.diagnostics?.startRequest({
       endpoint: requestUrl,
@@ -570,6 +576,36 @@ export class HttpDaemonClient implements DaemonClient {
     );
   }
 
+  listWorkItems(
+    request?: WorkItemListOptions,
+    options?: RequestOptions,
+  ): Promise<WorkItemPage> {
+    return this.getJSON(
+      clientRoutes.workItems,
+      request && {
+        provider: request.provider,
+        kind: request.kind,
+        limit: request.limit,
+      },
+      options,
+    );
+  }
+
+  getWorkItem(
+    provider: string,
+    repository: string,
+    kind: WorkItemKind,
+    externalId: string,
+    options?: RequestOptions,
+  ): Promise<WorkItemDetail> {
+    return this.getJSON(
+      clientRoutes.workItemDetail,
+      { repository },
+      options,
+      { provider, kind, id: externalId },
+    );
+  }
+
   private async getJSON<T>(
     route: ApiRoute,
     query?: Record<string, QueryValue>,
@@ -607,6 +643,15 @@ export class HttpDaemonClient implements DaemonClient {
       return Promise.reject(new RequestCancelledError());
     }
     let shared = this.sharedJSON.get(key);
+    if (shared) {
+      this.diagnostics?.recordRequestQueue?.({
+        endpoint: key,
+        event: "coalesced",
+        inFlight: 0,
+        queueDepth: shared.subscribers.size,
+        requestClass: requestClassFor(key),
+      });
+    }
     if (!shared) {
       const controller = new AbortController();
       const promise = load(controller.signal);
@@ -636,6 +681,9 @@ export class HttpDaemonClient implements DaemonClient {
       const cancel = () => {
         if (!finish()) return;
         if (shared!.subscribers.size === 0) {
+          if (this.sharedJSON.get(key) === shared) {
+            this.sharedJSON.delete(key);
+          }
           shared!.controller.abort();
         }
         reject(new RequestCancelledError());
@@ -695,10 +743,7 @@ export class HttpDaemonClient implements DaemonClient {
       controller.abort();
     };
     options?.signal?.addEventListener("abort", cancel, { once: true });
-    const timer = globalThis.setTimeout(() => {
-      abortKind = "timeout";
-      controller.abort();
-    }, this.timeoutMs);
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     const requestUrl = this.url(route, query, pathParameters);
     const trace = this.diagnostics?.startRequest({
       endpoint: requestUrl,
@@ -707,19 +752,29 @@ export class HttpDaemonClient implements DaemonClient {
     let responseStatus: number | undefined;
 
     try {
-      const response = await this.requests.run(requestUrl, controller.signal, async () => {
-        const next = await this.fetch(requestUrl, {
-          method: route.method,
-          headers: { Accept: accept },
-          signal: controller.signal,
-        });
-        responseStatus = next.status;
-        if (!next.ok) {
-          throw await apiError(next);
+      return await this.requests.run(requestUrl, controller.signal, async () => {
+        timer = globalThis.setTimeout(() => {
+          abortKind = "timeout";
+          controller.abort();
+        }, this.timeoutMs);
+        try {
+          const next = await this.fetch(requestUrl, {
+            method: route.method,
+            headers: { Accept: accept },
+            signal: controller.signal,
+          });
+          responseStatus = next.status;
+          if (!next.ok) {
+            throw await apiError(next);
+          }
+          return await read(next);
+        } finally {
+          if (timer !== undefined) {
+            globalThis.clearTimeout(timer);
+            timer = undefined;
+          }
         }
-        return next;
       });
-      return await read(response);
     } catch (error) {
       if (abortKind === "cancelled" || options?.signal?.aborted) {
         throw new RequestCancelledError({ cause: error });
@@ -732,7 +787,9 @@ export class HttpDaemonClient implements DaemonClient {
       }
       throw new DaemonUnavailableError({ cause: error });
     } finally {
-      globalThis.clearTimeout(timer);
+      if (timer !== undefined) {
+        globalThis.clearTimeout(timer);
+      }
       options?.signal?.removeEventListener("abort", cancel);
       trace?.finish(responseStatus ?? diagnosticStatus(abortKind));
     }
@@ -809,6 +866,8 @@ interface SharedJSONRequest {
 
 interface CoordinatedRequest<T> {
   endpoint: string;
+  requestClass: RequestClass;
+  queuedAt: number;
   signal: AbortSignal;
   attempt: () => Promise<T>;
   resolve: (value: T) => void;
@@ -818,8 +877,12 @@ interface CoordinatedRequest<T> {
   cancel: () => void;
 }
 
+type RequestClass = "aggregate" | "interactive";
+
 interface RequestCoordinatorConfig {
+  diagnostics?: PortalDiagnostics;
   maxConcurrent: number;
+  maxRetries: number;
   retryBaseMs: number;
   retryMaxMs: number;
   onAdmissionState?: (state: AdmissionDegradedState | undefined) => void;
@@ -827,14 +890,18 @@ interface RequestCoordinatorConfig {
 
 class RequestCoordinator {
   private active = 0;
-  private blockedUntil = 0;
-  private blockTimer: ReturnType<typeof setTimeout> | undefined;
-  private degraded = false;
+  private readonly blockedUntil = new Map<RequestClass, number>();
+  private readonly blockTimers = new Map<RequestClass, ReturnType<typeof setTimeout>>();
+  private readonly degraded = new Set<RequestClass>();
+  private readonly probes = new Set<RequestClass>();
   private readonly queue: CoordinatedRequest<unknown>[] = [];
 
   constructor(private readonly config: RequestCoordinatorConfig) {
     if (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1) {
       throw new RangeError("Maximum concurrent daemon requests must be a positive integer.");
+    }
+    if (!Number.isInteger(config.maxRetries) || config.maxRetries < 0) {
+      throw new RangeError("Maximum admission retries must be a non-negative integer.");
     }
   }
 
@@ -845,6 +912,8 @@ class RequestCoordinator {
     return new Promise<T>((resolve, reject) => {
       const request: CoordinatedRequest<T> = {
         endpoint,
+        requestClass: requestClassFor(endpoint),
+        queuedAt: performance.now(),
         signal,
         attempt,
         resolve,
@@ -859,28 +928,60 @@ class RequestCoordinator {
       };
       signal.addEventListener("abort", request.cancel, { once: true });
       this.queue.push(request as CoordinatedRequest<unknown>);
+      this.config.diagnostics?.recordRequestQueue?.({
+        endpoint,
+        event: "queued",
+        inFlight: this.active,
+        queueDepth: this.queue.length,
+        requestClass: request.requestClass,
+      });
       this.drain();
     });
   }
 
   private drain(): void {
-    const delay = this.blockedUntil - Date.now();
-    if (delay > 0) {
-      if (this.blockTimer === undefined) {
-        this.blockTimer = setTimeout(() => {
-          this.blockTimer = undefined;
-          this.drain();
-        }, delay);
-      }
-      return;
-    }
     while (this.active < this.config.maxConcurrent) {
-      const request = this.queue.shift();
-      if (!request) return;
+      const index = this.queue.findIndex((candidate) => this.canStart(candidate));
+      if (index < 0) return;
+      const [request] = this.queue.splice(index, 1);
       if (request.cancelled || request.signal.aborted) continue;
+      if (this.degraded.has(request.requestClass)) {
+        this.probes.add(request.requestClass);
+      }
       this.active += 1;
+      this.config.diagnostics?.recordRequestQueue?.({
+        endpoint: request.endpoint,
+        event: "started",
+        inFlight: this.active,
+        queueDepth: this.queue.length,
+        queueWaitMs: Math.max(0, performance.now() - request.queuedAt),
+        requestClass: request.requestClass,
+      });
       void this.start(request);
     }
+  }
+
+  private canStart(request: CoordinatedRequest<unknown>): boolean {
+    if (request.cancelled || request.signal.aborted) {
+      return true;
+    }
+    const deadline = this.blockedUntil.get(request.requestClass) ?? 0;
+    if (deadline > Date.now()) {
+      this.armBlockTimer(request.requestClass, deadline);
+      return false;
+    }
+    return !this.probes.has(request.requestClass);
+  }
+
+  private armBlockTimer(requestClass: RequestClass, deadline: number): void {
+    if (this.blockTimers.has(requestClass)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.blockTimers.delete(requestClass);
+      this.drain();
+    }, Math.max(0, deadline - Date.now()));
+    this.blockTimers.set(requestClass, timer);
   }
 
   private async start(request: CoordinatedRequest<unknown>): Promise<void> {
@@ -889,8 +990,8 @@ class RequestCoordinator {
       if (!request.cancelled) {
         request.signal.removeEventListener("abort", request.cancel);
         request.resolve(value);
-        if (this.degraded) {
-          this.degraded = false;
+        if (this.degraded.delete(request.requestClass)) {
+          this.blockedUntil.delete(request.requestClass);
           this.config.onAdmissionState?.(undefined);
         }
       }
@@ -901,23 +1002,49 @@ class RequestCoordinator {
           this.config.retryBaseMs * 2 ** Math.max(0, request.failures - 1),
           this.config.retryMaxMs,
         );
-        const delay = Math.max(error.retryAfterMs ?? 0, exponential);
-        this.blockedUntil = Math.max(this.blockedUntil, Date.now() + delay);
-        this.degraded = true;
+        const requiredDelay = Math.max(error.retryAfterMs ?? 0, exponential);
+        const delay = requiredDelay + Math.floor(requiredDelay * 0.1 * Math.random());
+        const deadline = Math.max(
+          this.blockedUntil.get(request.requestClass) ?? 0,
+          Date.now() + delay,
+        );
+        this.blockedUntil.set(request.requestClass, deadline);
+        this.degraded.add(request.requestClass);
         this.config.onAdmissionState?.({
           endpoint: request.endpoint,
-          retryAt: new Date(this.blockedUntil).toISOString(),
+          retryAt: new Date(deadline).toISOString(),
         });
-        this.queue.unshift(request);
+        this.config.diagnostics?.recordRequestQueue?.({
+          endpoint: request.endpoint,
+          event: "backoff",
+          inFlight: this.active,
+          queueDepth: this.queue.length,
+          requestClass: request.requestClass,
+          retryAt: new Date(deadline).toISOString(),
+        });
+        if (request.failures > this.config.maxRetries) {
+          request.signal.removeEventListener("abort", request.cancel);
+          request.reject(error);
+        } else {
+          this.queue.unshift(request);
+        }
       } else if (!request.cancelled) {
         request.signal.removeEventListener("abort", request.cancel);
         request.reject(error);
       }
     } finally {
+      this.probes.delete(request.requestClass);
       this.active -= 1;
       this.drain();
     }
   }
+}
+
+function requestClassFor(endpoint: string): RequestClass {
+  const path = endpoint.split("?", 1)[0].toLowerCase();
+  return path.includes("/telemetry/") || path.endsWith("/runs")
+    ? "aggregate"
+    : "interactive";
 }
 
 function isApiErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
@@ -1115,8 +1242,9 @@ function parseUpdateEvent(event: RawServerEvent): DaemonUpdateEvent {
   if (event.type === "heartbeat") {
     return { type: "heartbeat", data: { cursor: data.cursor } };
   }
+  const eventType = event.type === "update" ? "invalidate" : event.type;
   if (
-    (event.type !== "snapshot" && event.type !== "invalidate") ||
+    (eventType !== "snapshot" && eventType !== "invalidate") ||
     !event.id ||
     event.id !== data.cursor ||
     !Array.isArray(data.models) ||
@@ -1129,7 +1257,7 @@ function parseUpdateEvent(event: RawServerEvent): DaemonUpdateEvent {
   const workflows = optionalWorkflowReferences(data.workflows);
   return {
     id: event.id,
-    type: event.type,
+    type: eventType,
     data: {
       cursor: data.cursor,
       models: [...new Set(data.models)],

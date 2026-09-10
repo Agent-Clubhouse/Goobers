@@ -188,6 +188,7 @@ var coreCommandIndexDescriptions = map[string]string{
 	"up":            "Start the local daemon.",
 	"validate":      "Validate an instance or configuration source.",
 	"version":       "Show build version information.",
+	"work-items":    "List pull requests and issues changed by Goobers.",
 	"workflow show": "Show a workflow as a text DAG.",
 }
 

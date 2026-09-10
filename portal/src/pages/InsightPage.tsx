@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
@@ -12,8 +12,6 @@ import type {
 import { isMissingCostCapability } from "../api/errors";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
-import { DisclosureSection } from "../components/DisclosureSection";
-import { ScopeStrip } from "../components/ScopeStrip";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
 import {
   type InsightCostRollupSnapshot,
@@ -33,7 +31,6 @@ import {
 } from "../costView";
 import {
   deriveInsightViewModel,
-  hasInsightScopeIdentity,
   type InsightCostTrendViewModel,
   type InsightScope,
   type InsightViewModel,
@@ -51,7 +48,6 @@ import {
   routeHash,
   type ErrorRouteFilters,
   type InsightRouteFilters,
-  type InsightSection,
   type Navigate,
   type RunRouteFilters,
 } from "../routing";
@@ -80,17 +76,12 @@ export function InsightPage({
 }) {
   const window = filters?.window ?? "7d";
   const requestedScope = insightScopeFromRoute(filters);
-  const activeSection = filters?.section;
-  const routeFilters = (scope: InsightScope, nextWindow: InsightWindow, section = activeSection) => ({
-    ...insightScopeRouteFilters(scope, nextWindow),
-    section,
-  });
+  const routeFilters = (scope: InsightScope, nextWindow: InsightWindow) =>
+    insightScopeRouteFilters(scope, nextWindow);
   const setScope = (nextScope: InsightScope) =>
     navigate({ page: "insight", filters: routeFilters(nextScope, window) });
   const setWindow = (nextWindow: InsightWindow) =>
     navigate({ page: "insight", filters: routeFilters(requestedScope, nextWindow) });
-  const setSection = (section: InsightSection | undefined) =>
-    navigate({ page: "insight", filters: routeFilters(requestedScope, window, section) });
   const errorScope = insightScopeApiParameters(requestedScope);
   const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
   const errorSignatures = useInsightErrorSignatures(
@@ -159,17 +150,6 @@ export function InsightPage({
         </label>
       </div>
 
-      {hasInsightScopeIdentity(requestedScope) && (
-        <ScopeStrip
-          ariaLabel="Insight scope"
-          clearHref={routeHash({
-            page: "insight",
-            filters: insightScopeRouteFilters({ kind: "instance" }, window),
-          })}
-          filters={errorScope}
-        />
-      )}
-
       {query.state.status === "stale" && query.state.error && (
         <SectionQueryStatus
           error
@@ -179,10 +159,8 @@ export function InsightPage({
       )}
 
       <InsightContent
-        activeSection={activeSection}
         errorSignatures={errorSignatures.state}
         errorSignaturesRetry={errorSignatures.retry}
-        onSectionChange={setSection}
         view={view}
       />
     </>
@@ -190,16 +168,12 @@ export function InsightPage({
 }
 
 function InsightContent({
-  activeSection,
   errorSignatures,
   errorSignaturesRetry,
-  onSectionChange,
   view,
 }: {
-  activeSection?: InsightSection;
   errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
   errorSignaturesRetry: () => void;
-  onSectionChange: (section: InsightSection | undefined) => void;
   view: InsightViewModel;
 }) {
   const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage } = view;
@@ -239,13 +213,12 @@ function InsightContent({
         <section className="content-section">
           <div className="section-heading">
             <div>
-              <p className="section-kicker">Outcomes</p>
               <h2>Success and failure</h2>
             </div>
             <span className="section-count">Terminal outcomes exclude other states</span>
           </div>
-          <div className="insight-outcomes">
-            <div aria-hidden="true" className="insight-outcome-header">
+          <div className="data-table-shell insight-outcomes">
+            <div aria-hidden="true" className="data-table-header insight-outcome-header">
               <span>Scope</span>
               <span>Success rate</span>
               <span>Succeeded</span>
@@ -269,64 +242,54 @@ function InsightContent({
       )}
 
       {creditAssignment.length > 0 && (
-        <DisclosureSection
-          count={creditAssignment.length}
-          eyebrow="Exceptions"
-          onOpenChange={(open) => onSectionChange(open ? "contributors" : undefined)}
-          open={activeSection === "contributors"}
-          title="Highest-contributing nodes"
-        >
+        <InsightReportSection title="Highest-contributing nodes">
           <CreditAssignment credits={creditAssignment} filters={filters} />
-        </DisclosureSection>
+        </InsightReportSection>
       )}
 
       {usage && (
-        <DisclosureSection
-          eyebrow="AI usage"
-          onOpenChange={(open) => onSectionChange(open ? "usage" : undefined)}
-          open={activeSection === "usage"}
-          title="Tokens and retry waste"
-        >
+        <InsightReportSection title="Tokens and retry waste">
           <p className="usage-description">
             Attempt measurements are aggregated for the selected scope. Runners that do not
             report usage remain unmeasured.
           </p>
           <UsageAnalytics filters={filters} mode="insight" usage={usage} />
-        </DisclosureSection>
+        </InsightReportSection>
       )}
 
-      <DisclosureSection
-        count={
-          errorSignatures.status === "ready" || errorSignatures.status === "stale"
-            ? errorSignatures.data.result.items.length
-            : undefined
-        }
-        eyebrow="Failures"
-        onOpenChange={(open) => onSectionChange(open ? "failures" : undefined)}
-        open={activeSection === "failures"}
-        title="Failure reasons"
-      >
+      <InsightReportSection title="Failure reasons">
         <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
-      </DisclosureSection>
+      </InsightReportSection>
 
       {(hasOutcomes || stages.length > 0) && (
-        <DisclosureSection
-          count={stages.length}
-          eyebrow="Latency"
-          onOpenChange={(open) => onSectionChange(open ? "latency" : undefined)}
-          open={activeSection === "latency"}
-          title="Slowest stages"
-        >
+        <InsightReportSection title="Slowest stages">
           {stages.length === 0 ? (
             <p className="inline-empty">No stage duration samples in this scope.</p>
           ) : (
             <StageDistributions filters={filters} stages={stages} />
           )}
-        </DisclosureSection>
+        </InsightReportSection>
       )}
         </>
       )}
     </>
+  );
+}
+
+function InsightReportSection({
+  children,
+  title,
+}: {
+  children: React.ReactNode;
+  title: string;
+}) {
+  return (
+    <section className="content-section insight-report-section">
+      <div className="section-heading">
+        <h2>{title}</h2>
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -342,8 +305,8 @@ function CreditAssignment({
   return (
     <>
       <p className="usage-description">Failure, escalation, and retry-waste contributors.</p>
-      <div className="insight-outcomes">
-        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header">
+      <div className="data-table-shell insight-outcomes">
+        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header data-table-header">
           <span>Node</span>
           <span>Failure share</span>
           <span>Failures</span>
@@ -377,12 +340,12 @@ function CreditAssignment({
             <strong>{credit.retryWasteAttempts}</strong>
           </a>
         ))}
+        {credits.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer contributors" : `View all ${credits.length} contributors`}
+          </button>
+        )}
       </div>
-      {credits.length > INITIAL_DETAIL_ROWS && (
-        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
-          {showAll ? "Show fewer contributors" : `View all ${credits.length} contributors`}
-        </button>
-      )}
     </>
   );
 }
@@ -399,10 +362,8 @@ function CurationHealth({
     <section className="content-section">
       <div className="section-heading">
         <div>
-          <p className="section-kicker">Backlog</p>
           <h2>Ready-pool health</h2>
         </div>
-        <span className="section-count">{curation.runs} curation runs</span>
       </div>
       <dl className="curation-health">
         <div>
@@ -483,9 +444,6 @@ function FailureReasonBreakdown({
   const snapshot = state.status === "ready" || state.status === "stale" ? state.data : undefined;
   return (
     <>
-      <p className="error-signature-description">
-        Grouped by code and coarse class. Error class may be unknown.
-      </p>
       {state.status === "loading" ? (
         <SectionQueryStatus loading message="Loading failure reasons…" />
       ) : state.status === "error" ? (
@@ -516,8 +474,8 @@ function FailureReasonRows({ snapshot }: { snapshot: InsightErrorSignaturesSnaps
   const visibleItems = showAll ? items : items.slice(0, INITIAL_DETAIL_ROWS);
   return (
     <>
-      <div className="error-signatures">
-        <div aria-hidden="true" className="error-signature-header">
+      <div className="data-table-shell error-signatures">
+        <div aria-hidden="true" className="data-table-header error-signature-header">
           <span>Code</span>
           <span>Coarse class</span>
           <span>Count</span>
@@ -532,12 +490,12 @@ function FailureReasonRows({ snapshot }: { snapshot: InsightErrorSignaturesSnaps
             signature={signature}
           />
         ))}
+        {items.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer failure reasons" : `View all ${items.length} failure reasons`}
+          </button>
+        )}
       </div>
-      {items.length > INITIAL_DETAIL_ROWS && (
-        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
-          {showAll ? "Show fewer failure reasons" : `View all ${items.length} failure reasons`}
-        </button>
-      )}
     </>
   );
 }
@@ -605,7 +563,6 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
     >
       <span className="insight-scope-label">
         <strong>{metric.label}</strong>
-        <small>{metric.unit}</small>
       </span>
       <a
         aria-label={`View terminal ${metric.unit} behind ${metric.label} for success rate ${formatRate(metric.successRate)}`}
@@ -694,8 +651,8 @@ export function UsageAnalytics({
     ),
   });
   return (
-    <div className="usage-analytics usage-analytics-split">
-      <div aria-hidden="true" className="usage-header">
+    <div className="data-table-shell usage-analytics usage-analytics-split">
+      <div aria-hidden="true" className="data-table-header usage-header">
         <span>Scope</span>
         <span>{mode === "insight" ? "Tokens" : "AI cost"}</span>
         <span>Retry waste</span>
@@ -720,16 +677,21 @@ export function UsageAnalytics({
           />
         ) : (
           <UsagePercentiles
-            ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+            ariaLabel={`View AI cost runs behind ${label}: total ${formatMeasuredCost(usage.costUSD)}, ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
             formatter={formatMeasuredCost}
-            href={costHref}
             label="AI cost"
             p50={usage.p50CostUSD}
             p95={usage.p95CostUSD}
             samples={usage.costSamples}
+            total={usage.costUSD}
           />
         )}
-        <RetryWasteMetric href={wasteHref} includeCost={mode === "cost"} label={label} usage={usage} />
+        <RetryWasteMetric
+          href={mode === "insight" ? wasteHref : undefined}
+          includeCost={mode === "cost"}
+          label={label}
+          usage={usage}
+        />
       </div>
     </div>
   );
@@ -743,22 +705,30 @@ function UsagePercentiles({
   p50,
   p95,
   samples,
+  total,
 }: {
   ariaLabel: string;
   formatter: (value: number | undefined) => string;
-  href: string;
+  href?: string;
   label: string;
   p50?: number;
   p95?: number;
   samples: number;
+  total?: number;
 }) {
-  return (
-    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>
+  const content = (
+    <>
       <span className="usage-metric-heading">
         <strong>{label}</strong>
         <small>{formatSamples(samples)}</small>
       </span>
-      <span className="usage-percentiles">
+      <span className={`usage-percentiles${total !== undefined ? " usage-percentiles-with-total" : ""}`}>
+        {total !== undefined && (
+          <span>
+            <small>Total</small>
+            <strong>{formatter(total)}</strong>
+          </span>
+        )}
         <span>
           <small>P50</small>
           <strong>{formatter(p50)}</strong>
@@ -768,7 +738,12 @@ function UsagePercentiles({
           <strong>{formatter(p95)}</strong>
         </span>
       </span>
-    </a>
+    </>
+  );
+  return href ? (
+    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>{content}</a>
+  ) : (
+    <div className="usage-metric-link usage-metric-static">{content}</div>
   );
 }
 
@@ -778,7 +753,7 @@ function RetryWasteMetric({
   label,
   usage,
 }: {
-  href: string;
+  href?: string;
   includeCost: boolean;
   label: string;
   usage: TelemetryUsageStats;
@@ -791,12 +766,8 @@ function RetryWasteMetric({
           formatMeasuredTokens(usage.retryWasteTokens),
           ...(includeCost ? [formatMeasuredCost(usage.retryWasteCostUSD)] : []),
         ].join(", ");
-  return (
-    <a
-      aria-label={`View retry-waste runs behind ${label}: ${description}`}
-      className="usage-metric-link usage-waste-link"
-      href={href}
-    >
+  const content = (
+    <>
       <span className="usage-metric-heading">
         <strong>Retry waste</strong>
         <small>
@@ -826,7 +797,18 @@ function RetryWasteMetric({
           )}
         </span>
       )}
+    </>
+  );
+  return href ? (
+    <a
+      aria-label={`View retry-waste runs behind ${label}: ${description}`}
+      className="usage-metric-link usage-waste-link"
+      href={href}
+    >
+      {content}
     </a>
+  ) : (
+    <div className="usage-metric-link usage-metric-static usage-waste-link">{content}</div>
   );
 }
 
@@ -880,20 +862,19 @@ export function CostTrend({
 
   return (
     <div className="usage-trend">
-      <SectionQueryStatus
-        error={costTrend.status === "stale" && Boolean(costTrend.error)}
-        loading={refreshing}
-        message={
-          costTrend.status === "stale" && costTrend.error
-            ? "Cost trend refresh failed. Showing the last successful read."
-            : refreshing
-              ? "Refreshing cost trend…"
-              : undefined
-        }
-        retry={retry}
-      />
+      {(refreshing || (costTrend.status === "stale" && Boolean(costTrend.error))) && (
+        <SectionQueryStatus
+          error={costTrend.status === "stale" && Boolean(costTrend.error)}
+          loading={refreshing}
+          message={
+            costTrend.status === "stale" && costTrend.error
+              ? "Cost trend refresh failed. Showing the last successful read."
+              : "Refreshing cost trend…"
+          }
+          retry={retry}
+        />
+      )}
       <div className="usage-trend-heading">
-        <p className="section-kicker">Trend</p>
         <h3>Cost over time</h3>
       </div>
       {hasSamples ? (
@@ -913,30 +894,123 @@ function CostTrendSparkline({
   points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[];
   window: InsightWindow;
 }) {
+  const width = 720;
+  const height = 220;
+  const margin = { top: 14, right: 18, bottom: 42, left: 64 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
   const scaleMax = Math.max(...points.map((point) => point.usage?.p95CostUSD ?? 0), 0.0001);
+  const chartPoints = points.map((point, index) => {
+    const x =
+      margin.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
+    const p50 = point.usage?.p50CostUSD ?? 0;
+    const p95 = Math.max(p50, point.usage?.p95CostUSD ?? 0);
+    return {
+      ...point,
+      p50,
+      p95,
+      x,
+      p50Y: margin.top + plotHeight - (p50 / scaleMax) * plotHeight,
+      p95Y: margin.top + plotHeight - (p95 / scaleMax) * plotHeight,
+    };
+  });
+  const baseline = margin.top + plotHeight;
+  const p50Area = areaPath(
+    chartPoints.map((point) => [point.x, point.p50Y]),
+    baseline,
+  );
+  const spreadArea = bandPath(
+    chartPoints.map((point) => [point.x, point.p95Y]),
+    chartPoints.map((point) => [point.x, point.p50Y]),
+  );
+  const p50Line = linePath(chartPoints.map((point) => [point.x, point.p50Y]));
+  const p95Line = linePath(chartPoints.map((point) => [point.x, point.p95Y]));
+  const xTickIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  const yTicks = [scaleMax, scaleMax / 2, 0];
+
   return (
-    <div className="usage-trend-sparkline" role="img" aria-label={sparklineAriaLabel(points)}>
-      {points.map((point) => {
-        const p50 = point.usage?.p50CostUSD;
-        const p95 = point.usage?.p95CostUSD;
-        const p50Height = `${Math.min(100, ((p50 ?? 0) / scaleMax) * 100)}%`;
-        const p95Height = `${Math.min(100, ((p95 ?? 0) / scaleMax) * 100)}%`;
-        return (
-          <span
-            className="usage-trend-bar"
-            key={point.since}
-            title={`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(p50)}, P95 ${formatMeasuredCost(p95)}`}
-          >
-            <span className="usage-trend-bar-track">
-              <span className="usage-trend-bar-p95" style={{ height: p95Height }} />
-              <span className="usage-trend-bar-p50" style={{ height: p50Height }} />
-            </span>
-            <small>{formatBucketTick(point.since, window)}</small>
-          </span>
-        );
-      })}
+    <div className="usage-trend-chart">
+      <svg
+        aria-label={sparklineAriaLabel(points)}
+        className="usage-trend-chart-plot"
+        role="img"
+        viewBox={`0 0 ${width} ${height}`}
+      >
+        <title>{sparklineAriaLabel(points)}</title>
+        {yTicks.map((tick) => {
+          const y = margin.top + plotHeight - (tick / scaleMax) * plotHeight;
+          return (
+            <g className="usage-trend-gridline" key={tick}>
+              <line x1={margin.left} x2={width - margin.right} y1={y} y2={y} />
+              <text x={margin.left - 10} y={y + 4}>
+                {formatMeasuredCost(tick)}
+              </text>
+            </g>
+          );
+        })}
+        <path className="usage-trend-area usage-trend-area-p50" d={p50Area} />
+        <path className="usage-trend-area usage-trend-area-spread" d={spreadArea} />
+        <path className="usage-trend-line usage-trend-line-p50" d={p50Line} />
+        <path className="usage-trend-line usage-trend-line-p95" d={p95Line} />
+        {chartPoints.map((point) => (
+          <g key={point.since}>
+            <circle className="usage-trend-point usage-trend-point-p50" cx={point.x} cy={point.p50Y} r="3">
+              <title>{`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(point.p50)}`}</title>
+            </circle>
+            <circle className="usage-trend-point usage-trend-point-p95" cx={point.x} cy={point.p95Y} r="3">
+              <title>{`${formatBucketLabel(point.since, point.until)}: P95 ${formatMeasuredCost(point.p95)}`}</title>
+            </circle>
+          </g>
+        ))}
+        <line
+          className="usage-trend-axis"
+          x1={margin.left}
+          x2={width - margin.right}
+          y1={baseline}
+          y2={baseline}
+        />
+        {xTickIndexes.map((index) => {
+          const point = chartPoints[index];
+          return point ? (
+            <text
+              className="usage-trend-x-label"
+              key={point.since}
+              textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}
+              x={point.x}
+              y={height - 15}
+            >
+              {formatBucketTick(point.since, window)}
+            </text>
+          ) : null;
+        })}
+      </svg>
+      <div className="usage-trend-legend" aria-hidden="true">
+        <span><i className="usage-trend-key usage-trend-key-p50" />P50 cost</span>
+        <span><i className="usage-trend-key usage-trend-key-spread" />P50–P95 spread</span>
+      </div>
     </div>
   );
+}
+
+function linePath(points: [number, number][]): string {
+  return points.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`).join(" ");
+}
+
+function areaPath(points: [number, number][], baseline: number): string {
+  if (points.length === 0) {
+    return "";
+  }
+  return `${linePath(points)} L ${points.at(-1)![0]} ${baseline} L ${points[0][0]} ${baseline} Z`;
+}
+
+function bandPath(upper: [number, number][], lower: [number, number][]): string {
+  if (upper.length === 0) {
+    return "";
+  }
+  return `${linePath(upper)} ${[...lower]
+    .reverse()
+    .map(([x, y]) => `L ${x} ${y}`)
+    .join(" ")} Z`;
 }
 
 function sparklineAriaLabel(
@@ -1027,40 +1101,6 @@ function DeltaBadge({
   return <span className={`usage-trend-delta usage-trend-delta-${direction}`}>{label}</span>;
 }
 
-const BUDGET_THRESHOLD_STORAGE_KEY = "goobers-insight-budget-threshold-usd";
-
-/**
- * The daemon has no budget-config endpoint (#2533 is portal-only), so the
- * soft threshold an operator sets is a local browser preference, not shared
- * instance state. Reads/writes are wrapped in try/catch (matching how
- * unavailable storage is handled elsewhere, e.g. private-browsing quota
- * errors) so a storage failure degrades to "no threshold set" instead of
- * crashing the page.
- */
-function readStoredThreshold(): number | undefined {
-  try {
-    const stored = window.localStorage.getItem(BUDGET_THRESHOLD_STORAGE_KEY);
-    const parsed = stored ? Number(stored) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeStoredThreshold(value: number | undefined): void {
-  try {
-    if (value === undefined) {
-      window.localStorage.removeItem(BUDGET_THRESHOLD_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(BUDGET_THRESHOLD_STORAGE_KEY, String(value));
-    }
-  } catch {
-    // Storage unavailable (private browsing, quota) — the in-memory state
-    // set alongside this call still drives the UI for the rest of the
-    // session; it just won't survive a reload.
-  }
-}
-
 export function ExternalCostBreakdown({
   costs,
   refreshing,
@@ -1074,6 +1114,7 @@ export function ExternalCostBreakdown({
   const [kind, setKind] = useState<"all" | "pr" | "issue">("all");
   const [sortKey, setSortKey] = useState<ExternalCostSortKey>("native");
   const [sortDirection, setSortDirection] = useState<ExternalCostSortDirection>("desc");
+  const [openRuns, setOpenRuns] = useState<{ label: string; runs: string[] }>();
   const rows = useMemo(
     () =>
       costs.status === "ready" || costs.status === "stale"
@@ -1084,6 +1125,26 @@ export function ExternalCostBreakdown({
   const visibleRows = useMemo(
     () => sortExternalCostRows(filterExternalCostRows(rows, filter, kind), sortKey, sortDirection),
     [filter, kind, rows, sortDirection, sortKey],
+  );
+  const selectSort = (nextSortKey: ExternalCostSortKey) => {
+    if (nextSortKey === sortKey) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setSortKey(nextSortKey);
+    setSortDirection(
+      nextSortKey === "work-item" || nextSortKey === "provider" ? "asc" : "desc",
+    );
+  };
+  const sortHeading = (label: string, key: ExternalCostSortKey) => (
+    <button
+      className="external-cost-sort-heading"
+      onClick={() => selectSort(key)}
+      type="button"
+    >
+      {label}
+      {sortKey === key && <span aria-hidden="true">{sortDirection === "asc" ? "↑" : "↓"}</span>}
+    </button>
   );
 
   if (costs.status === "error") {
@@ -1106,8 +1167,7 @@ export function ExternalCostBreakdown({
   if (costs.status === "loading") {
     return (
       <section className="content-section cost-section-stable cost-section-attribution">
-        <ExternalCostHeading />
-        <SectionQueryStatus loading message="Loading attributed costs…" />
+        <ExternalCostHeading statusMessage="Loading attributed costs…" />
       </section>
     );
   }
@@ -1116,19 +1176,17 @@ export function ExternalCostBreakdown({
   }
   return (
     <section className="content-section cost-section-stable cost-section-attribution">
-      <ExternalCostHeading loadedAt={costs.data.loadedAt} />
-      <SectionQueryStatus
-        error={costs.status === "stale" && Boolean(costs.error)}
-        loading={refreshing}
-        message={
-          costs.status === "stale" && costs.error
-            ? `Attributed cost refresh failed. Showing data loaded ${formatTimestamp(costs.data.loadedAt)}.`
-            : refreshing
-              ? "Refreshing attributed costs…"
-              : undefined
-        }
-        retry={retry}
+      <ExternalCostHeading
+        loadedAt={costs.data.loadedAt}
+        statusMessage={refreshing ? "Refreshing attributed costs…" : undefined}
       />
+      {costs.status === "stale" && costs.error && (
+        <SectionQueryStatus
+          error
+          message={`Attributed cost refresh failed. Showing data loaded ${formatTimestamp(costs.data.loadedAt)}.`}
+          retry={retry}
+        />
+      )}
       {costs.data.boundedAllTime && (
         <p className="usage-description">
           “All time” cost attribution is bounded to the latest 90 days.
@@ -1138,8 +1196,8 @@ export function ExternalCostBreakdown({
         <p className="inline-empty">No pull request or issue cost was attributed in this window.</p>
       ) : (
         <>
-          <div className="external-cost-controls">
-            <label>
+          <div aria-label="Cost work item filters" className="filter-bar external-cost-controls" role="group">
+            <label className="filter-search external-cost-filter-field">
               <span>Filter</span>
               <input
                 onChange={(event) => setFilter(event.target.value)}
@@ -1148,7 +1206,7 @@ export function ExternalCostBreakdown({
                 value={filter}
               />
             </label>
-            <label>
+            <label className="filter-select external-cost-filter-field">
               <span>Type</span>
               <select
                 onChange={(event) => setKind(event.target.value as "all" | "pr" | "issue")}
@@ -1159,80 +1217,112 @@ export function ExternalCostBreakdown({
                 <option value="issue">Issues</option>
               </select>
             </label>
-            <label>
-              <span>Sort by</span>
-              <select
-                onChange={(event) => setSortKey(event.target.value as ExternalCostSortKey)}
-                value={sortKey}
-              >
-                <option value="work-item">Work item</option>
-                <option value="provider">Provider</option>
-                <option value="native">Provider-native cost</option>
-                <option value="normalized">Normalized estimate</option>
-                <option value="coverage">Coverage</option>
-                <option value="runs">Run count</option>
-              </select>
-            </label>
-            <button
-              className="secondary-button external-cost-sort-direction"
-              onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}
-              type="button"
-            >
-              {sortDirection === "asc" ? "Ascending" : "Descending"}
-            </button>
-            <span className="section-count">
-              {visibleRows.length} of {rows.length}
-            </span>
           </div>
           {visibleRows.length === 0 ? (
             <p className="inline-empty">No attributed costs match the current filters.</p>
           ) : (
-            <div className="external-cost-table-wrap">
-              <table className="external-cost-table">
-                <thead>
-                  <tr>
-                    <th>Work item</th>
-                    <th>Provider</th>
-                    <th>Provider-native</th>
-                    <th>Normalized estimate</th>
-                    <th>Coverage</th>
-                    <th>Details</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleRows.map((row) => (
-                    <tr key={row.key}>
-                      <td><strong>{row.label}</strong></td>
-                      <td>{row.provider}</td>
-                      <td className="external-cost-value">{row.native}</td>
-                      <td className="external-cost-value">{row.normalized}</td>
-                      <td className={row.lowerBound ? "cost-coverage-warning" : "usage-description"}>
-                        {row.coverage}
-                      </td>
-                      <td>
-                        {row.models.length > 0 && (
-                          <ul
-                            className="external-cost-models"
-                            aria-label={`${row.label} model breakdown`}
-                          >
-                            {row.models.map((model) => <li key={model}>{model}</li>)}
-                          </ul>
-                        )}
-                        {row.runs.length > 0 && (
-                          <details className="external-cost-runs">
-                            <summary>
-                              {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
-                            </summary>
-                            <ul aria-label={`${row.label} run breakdown`}>
-                              {row.runs.map((run) => <li key={run}>{run}</li>)}
+            <div className="data-table-shell external-cost-table-wrap">
+              <div className="external-cost-table" role="table">
+                <div className="data-table-header external-cost-grid external-cost-header" role="row">
+                    <span aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Work item", "work-item")}
+                    </span>
+                    <span aria-sort={sortKey === "provider" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Provider", "provider")}
+                    </span>
+                    <span aria-sort={sortKey === "native" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Provider-native", "native")}
+                    </span>
+                    <span aria-sort={sortKey === "normalized" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Normalized estimate", "normalized")}
+                    </span>
+                    <span aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Runs / models", "runs")}
+                    </span>
+                </div>
+                {visibleRows.map((row) => (
+                    <div className="external-cost-grid external-cost-row" key={row.key} role="row">
+                      <span className="work-item-identity external-cost-item" role="cell">
+                          {row.repository ? (
+                            <a
+                              className="data-table-link data-table-primary"
+                              href={routeHash({
+                                page: "work-items",
+                                provider: row.provider,
+                                repository: row.repository,
+                                kind: row.externalKind,
+                                id: row.externalId,
+                              })}
+                            >
+                              {row.label}
+                            </a>
+                          ) : (
+                            <strong className="data-table-primary">{row.label}</strong>
+                          )}
+                          <small className="data-table-meta">
+                            {row.provider} · {row.externalKind === "pr" ? "pull request" : "issue"}
+                          </small>
+                      </span>
+                      <span className="external-cost-provider" role="cell">{row.provider}</span>
+                      <span className="external-cost-values" role="cell">
+                        <strong className="data-table-number">{row.native}</strong>
+                        <strong className="data-table-number">{row.normalized}</strong>
+                        <small className={row.lowerBound ? "cost-coverage-warning" : "data-table-meta"}>
+                          {row.coverage}
+                        </small>
+                      </span>
+                      <span className="external-cost-runs" role="cell">
+                          {row.models.length > 0 && (
+                            <ul
+                              className="external-cost-models"
+                              aria-label={`${row.label} model breakdown`}
+                            >
+                              {row.models.map((model) => <li key={model}>{model}</li>)}
                             </ul>
-                          </details>
-                        )}
-                      </td>
-                    </tr>
+                          )}
+                          {row.runs.length > 0 && (
+                            <button
+                              aria-label={`View ${row.runs.length} run${row.runs.length === 1 ? "" : "s"} for ${row.label}`}
+                              className="text-button external-cost-runs-button"
+                              onClick={() => setOpenRuns({ label: row.label, runs: row.runs })}
+                              type="button"
+                            >
+                              {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
+                            </button>
+                          )}
+                      </span>
+                    </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {openRuns && (
+            <div className="artifact-dialog-backdrop">
+              <section
+                aria-labelledby="external-cost-runs-title"
+                aria-modal="true"
+                className="artifact-dialog external-cost-runs-dialog"
+                role="dialog"
+              >
+                <header>
+                  <h2 id="external-cost-runs-title">{openRuns.label} runs</h2>
+                  <button
+                    aria-label="Close run list"
+                    className="dialog-close"
+                    onClick={() => setOpenRuns(undefined)}
+                    type="button"
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                </header>
+                <ul aria-label={`${openRuns.label} run breakdown`}>
+                  {openRuns.runs.map((run) => (
+                    <li key={run}>
+                      <a href={routeHash({ page: "run", id: run })}>{run}</a>
+                    </li>
                   ))}
-                </tbody>
-              </table>
+                </ul>
+              </section>
             </div>
           )}
         </>
@@ -1241,27 +1331,26 @@ export function ExternalCostBreakdown({
   );
 }
 
-function ExternalCostHeading({ loadedAt }: { loadedAt?: string }) {
+function ExternalCostHeading({
+  loadedAt,
+  statusMessage,
+}: {
+  loadedAt?: string;
+  statusMessage?: string;
+}) {
   return (
     <div className="section-heading">
       <div>
-        <p className="section-kicker">Attribution</p>
         <h2>Cost by pull request and issue</h2>
       </div>
-      <span className="section-count">
-        Exact recorded usage{loadedAt ? ` · Loaded ${formatTimestamp(loadedAt)}` : ""}
-      </span>
+      <div className="section-heading-meta">
+        <span className="section-count">
+          Exact recorded usage{loadedAt ? ` · Loaded ${formatTimestamp(loadedAt)}` : ""}
+        </span>
+        {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
+      </div>
     </div>
   );
-}
-
-function useBudgetThreshold(): [number | undefined, (value: number | undefined) => void] {
-  const [threshold, setThresholdState] = useState<number | undefined>(readStoredThreshold);
-  const setThreshold = useCallback((value: number | undefined) => {
-    setThresholdState(value);
-    writeStoredThreshold(value);
-  }, []);
-  return [threshold, setThreshold];
 }
 
 export function InstanceCostRollup({
@@ -1275,13 +1364,10 @@ export function InstanceCostRollup({
   retry: () => void;
   window: InsightWindow;
 }) {
-  const [threshold, setThreshold] = useBudgetThreshold();
-
   if (costRollup.status === "loading") {
     return (
       <section className="content-section cost-section-stable">
-        <RollupHeading window={window} />
-        <SectionQueryStatus loading message="Loading instance spend…" />
+        <RollupHeading statusMessage="Loading instance spend…" window={window} />
       </section>
     );
   }
@@ -1298,35 +1384,25 @@ export function InstanceCostRollup({
   }
   const data = costRollup.data;
   const rankedGaggles = data.byGaggle.filter((entry) => (entry.usage?.costSamples ?? 0) > 0);
-  const total = data.totalCostSamples === 0 ? undefined : data.totalCostUSD;
 
   return (
     <section className="content-section cost-section-stable">
-      <RollupHeading window={window} />
-      <SectionQueryStatus
-        error={costRollup.status === "stale" && Boolean(costRollup.error)}
-        loading={refreshing}
-        message={
-          costRollup.status === "stale" && costRollup.error
-            ? "Instance spend refresh failed. Showing the last successful read."
-            : refreshing
-              ? "Refreshing instance spend…"
-              : undefined
-        }
-        retry={retry}
+      <RollupHeading
+        statusMessage={refreshing ? "Refreshing instance spend…" : undefined}
+        window={window}
       />
-      <div className="instance-spend-summary">
-        <div className="instance-spend-total">
-          <small>Total AI cost · all gaggles</small>
-          <strong>{data.totalCostSamples === 0 ? "Unmeasured" : formatMeasuredCost(total)}</strong>
-        </div>
-        <BudgetThreshold onChange={setThreshold} threshold={threshold} total={total} />
-      </div>
+      {costRollup.status === "stale" && costRollup.error && (
+        <SectionQueryStatus
+          error
+          message="Instance spend refresh failed. Showing the last successful read."
+          retry={retry}
+        />
+      )}
       {rankedGaggles.length === 0 ? (
         <p className="inline-empty">No gaggle has a measured AI cost in this window.</p>
       ) : (
-        <div className="gaggle-spend-table">
-          <div aria-hidden="true" className="gaggle-spend-header">
+        <div className="data-table-shell gaggle-spend-table">
+          <div aria-hidden="true" className="data-table-header gaggle-spend-header">
             <span>Gaggle</span>
             <span>P50 cost</span>
             <span>P95 cost</span>
@@ -1341,14 +1417,20 @@ export function InstanceCostRollup({
   );
 }
 
-function RollupHeading({ window }: { window: InsightWindow }) {
+function RollupHeading({
+  statusMessage,
+  window,
+}: {
+  statusMessage?: string;
+  window: InsightWindow;
+}) {
   return (
     <div className="section-heading">
-      <div>
-        <p className="section-kicker">AI usage</p>
-        <h2>Instance spend</h2>
+      <h2>Cost by gaggle</h2>
+      <div className="section-heading-meta">
+        <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
+        {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
       </div>
-      <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
     </div>
   );
 }
@@ -1388,68 +1470,6 @@ function GaggleSpendRow({
   );
 }
 
-function BudgetThreshold({
-  onChange,
-  threshold,
-  total,
-}: {
-  onChange: (value: number | undefined) => void;
-  threshold: number | undefined;
-  total: number | undefined;
-}) {
-  const [draft, setDraft] = useState(() => (threshold === undefined ? "" : String(threshold)));
-
-  const commit = () => {
-    const parsed = Number(draft);
-    onChange(draft.trim() !== "" && Number.isFinite(parsed) && parsed > 0 ? parsed : undefined);
-  };
-
-  const status = budgetStatus(total, threshold);
-
-  return (
-    <div className="budget-threshold">
-      <label>
-        <small>Soft budget (USD)</small>
-        <input
-          inputMode="decimal"
-          onBlur={commit}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              commit();
-              event.currentTarget.blur();
-            }
-          }}
-          placeholder="Not set"
-          type="number"
-          value={draft}
-        />
-      </label>
-      {status && (
-        <span className={`budget-status budget-status-${status.kind}`} role="status">
-          {status.label}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function budgetStatus(
-  total: number | undefined,
-  threshold: number | undefined,
-): { kind: "under" | "over"; label: string } | undefined {
-  if (threshold === undefined || total === undefined) {
-    return undefined;
-  }
-  const ratio = total / threshold;
-  return ratio >= 1
-    ? {
-        kind: "over",
-        label: `${(ratio * 100).toFixed(0)}% of budget — over by ${formatMeasuredCost(total - threshold)}`,
-      }
-    : { kind: "under", label: `${(ratio * 100).toFixed(0)}% of budget` };
-}
-
 function StageDistributions({
   filters,
   stages,
@@ -1462,8 +1482,8 @@ function StageDistributions({
   const visibleStages = showAll ? stages : stages.slice(0, INITIAL_DETAIL_ROWS);
   return (
     <>
-      <div className="stage-distributions">
-        <div className="distribution-legend">
+      <div className="data-table-shell stage-distributions">
+        <div className="data-table-header distribution-legend">
           <span>
             <i className="distribution-mark distribution-mark-p50" /> P50
           </span>
@@ -1477,12 +1497,12 @@ function StageDistributions({
         {visibleStages.map((stage) => (
           <StageDistributionRow filters={filters} key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`} scaleMax={scaleMax} stage={stage} />
         ))}
+        {stages.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer stages" : `View all ${stages.length} stages`}
+          </button>
+        )}
       </div>
-      {stages.length > INITIAL_DETAIL_ROWS && (
-        <button className="secondary-button detail-list-toggle" onClick={() => setShowAll((value) => !value)} type="button">
-          {showAll ? "Show fewer stages" : `View all ${stages.length} stages`}
-        </button>
-      )}
     </>
   );
 }
@@ -1656,7 +1676,7 @@ function formatMeasuredCost(value: number | undefined): string {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
+    maximumFractionDigits: 2,
   }).format(value);
 }
 

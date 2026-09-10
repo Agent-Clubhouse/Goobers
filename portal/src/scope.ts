@@ -37,16 +37,6 @@ export function hasScopeIdentity(filters: ScopeFilters): boolean {
   return Boolean(filters.gaggle || filters.workflow || filters.stage);
 }
 
-export function scopeLabel(filters: ScopeFilters): string {
-  if (filters.stage) {
-    return `${filters.gaggle ?? "All gaggles"} / ${filters.workflow ?? "All workflows"} / ${filters.stage}`;
-  }
-  if (filters.workflow) {
-    return `${filters.gaggle ?? "All gaggles"} / ${filters.workflow}`;
-  }
-  return filters.gaggle ? `Gaggle: ${filters.gaggle}` : "Instance";
-}
-
 export function scopeWindowLabel(filters: ScopeFilters): string {
   if (filters.since && filters.until) {
     return ` from ${formatTimestamp(filters.since)} to ${formatTimestamp(filters.until)}`;

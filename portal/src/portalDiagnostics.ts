@@ -13,9 +13,20 @@ export interface PortalSSEEvent {
   delayMs?: number;
 }
 
+export interface PortalRequestQueueEvent {
+  endpoint: string;
+  event: "queued" | "started" | "coalesced" | "backoff";
+  inFlight: number;
+  queueDepth: number;
+  requestClass: "aggregate" | "interactive";
+  queueWaitMs?: number;
+  retryAt?: string;
+}
+
 export interface PortalDiagnostics {
   startRequest(request: { endpoint: string; method: string }): PortalRequestTrace;
   recordSSE(event: PortalSSEEvent): void;
+  recordRequestQueue?(event: PortalRequestQueueEvent): void;
 }
 
 interface PortalDiagnosticsOptions {
@@ -107,6 +118,14 @@ class ConsolePortalDiagnostics implements PortalDiagnostics {
   recordSSE(event: PortalSSEEvent): void {
     this.debug(LOG_PREFIX, {
       type: "sse",
+      timestamp: this.timestamp(),
+      ...event,
+    });
+  }
+
+  recordRequestQueue(event: PortalRequestQueueEvent): void {
+    this.debug(LOG_PREFIX, {
+      type: "request-queue",
       timestamp: this.timestamp(),
       ...event,
     });

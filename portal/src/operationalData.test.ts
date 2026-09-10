@@ -147,6 +147,22 @@ describe("loadOperationalSnapshot", () => {
     expect(listWorkflows).toHaveBeenCalledTimes(expected.workflows);
     expect(listRuns).toHaveBeenCalledTimes(expected.runs);
   });
+
+  it("does not publish loading sections over a retained snapshot during refresh", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const previous = await loadOperationalSnapshot(client);
+    const partials: typeof previous[] = [];
+
+    await loadOperationalSnapshot(client, undefined, {
+      previous,
+      models: new Set(["run"]),
+      onPartial: (partial) => partials.push(partial),
+    });
+
+    expect(partials).toHaveLength(1);
+    expect(partials[0]?.loadingSections).toBeUndefined();
+    expect(partials[0]?.runs).toEqual(previous.runs);
+  });
 });
 
 describe("loadOperationalOverview", () => {
@@ -189,6 +205,22 @@ describe("loadOperationalOverview", () => {
     // ...but the bounded run groups are still refetched without pagination.
     expect(listRuns).toHaveBeenCalled();
     expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
+  });
+
+  it("does not publish loading sections over a retained overview during refresh", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const previous = await loadOperationalOverview(client);
+    const partials: typeof previous[] = [];
+
+    await loadOperationalOverview(client, undefined, {
+      previous,
+      models: new Set(["run"]),
+      onPartial: (partial) => partials.push(partial),
+    });
+
+    expect(partials).toHaveLength(1);
+    expect(partials[0]?.loadingSections).toBeUndefined();
+    expect(partials[0]?.groups).toEqual(previous.groups);
   });
 
   // The #1708 incident shape: /api/v1/runs hung while health, instance and the

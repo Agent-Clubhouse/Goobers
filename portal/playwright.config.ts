@@ -1,12 +1,15 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const port = process.env.PORTAL_E2E_PORT ?? "4173";
+const baseURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: "./e2e",
   outputDir: "./node_modules/.cache/playwright-results",
   fullyParallel: true,
   timeout: 20_000,
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL,
     trace: "retain-on-failure",
   },
   projects: [
@@ -17,7 +20,7 @@ export default defineConfig({
   ],
   webServer: {
     command: "npm run build && node e2e/fixture-daemon.mjs",
-    url: "http://127.0.0.1:4173",
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
   },
 });

@@ -17,7 +17,7 @@ export function GraphFrame({
     <div className={`graph-panel ${className}`.trim()}>
       <div className="panel-heading-row">
         <div>
-          <p className="section-kicker">{eyebrow}</p>
+          {eyebrow && <p className="section-kicker">{eyebrow}</p>}
           <h2>{title}</h2>
         </div>
         {action}

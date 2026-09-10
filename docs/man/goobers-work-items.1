@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORK ITEMS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers work-items \- list pull requests and issues changed by Goobers
+.SH SYNOPSIS
+\fBgoobers work-items\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers work-items [--provider=<name>] [--repository=<owner/name>] [--kind=<pr|issue>] [--id=<id>] [--limit=<n>] [--json] [--rebuild] [path]
+
+List pull requests and issues changed by recorded provider mutations. Use
+--id with --provider, --repository, and --kind to show one item.
+Exit codes: 0 = OK, 2 = usage, query, or I/O error.
+.fi
+.SH EXAMPLES
+.nf
+goobers work-items
+goobers work-items --kind=pr --json
+goobers work-items --provider=github --kind=pr --id=4398
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

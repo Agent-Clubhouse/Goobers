@@ -20,7 +20,8 @@ import (
 // strictly worse than refusing: same outcome for the caller, plus the server
 // held a connection and a goroutine for it.
 //
-// Overflow is therefore a FAST 503 with Retry-After.
+// Aggregate overflow is therefore a FAST 429 with Retry-After. Other classes
+// retain the existing 503 contract.
 //
 // # Why per class rather than one global pool
 //
@@ -107,13 +108,18 @@ func (a *admissionController) inFlight(class apicontract.CostClass) int {
 	return 0
 }
 
-// writeAdmissionRefusal sends the fast 503.
+// writeAdmissionRefusal sends aggregate saturation as 429 and preserves the
+// existing 503 response for every other class.
 //
 // Retry-After is short: the class is saturated, not broken, and slots free as
 // in-flight requests finish. A long value would make a transient burst look like
 // an outage to a client that backs off on it.
 func writeAdmissionRefusal(w http.ResponseWriter, class apicontract.CostClass) {
 	w.Header().Set(HeaderRetryAfterSeconds, "1")
-	writeError(w, http.StatusServiceUnavailable, "class_saturated",
+	status := http.StatusServiceUnavailable
+	if class == apicontract.CostAggregate {
+		status = http.StatusTooManyRequests
+	}
+	writeError(w, status, "class_saturated",
 		"too many concurrent "+string(class)+" requests; retry shortly")
 }

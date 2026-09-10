@@ -130,6 +130,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
+| [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
 | [`goobers workspace`](#goobers-workspace) | explicitly recover pinned repository workspaces |
 | [`goobers workspace reset`](#goobers-workspace-reset) | tear down and re-materialize a pinned repository workspace |
@@ -4559,6 +4560,26 @@ Exit codes: 0 = OK, 2 = usage error.
 ~~~console
 $ goobers versions
 $ goobers versions --json
+~~~
+
+## `goobers work-items`
+
+list pull requests and issues changed by Goobers
+
+~~~text
+Usage: goobers work-items [--provider=<name>] [--repository=<owner/name>] [--kind=<pr|issue>] [--id=<id>] [--limit=<n>] [--json] [--rebuild] [path]
+
+List pull requests and issues changed by recorded provider mutations. Use
+--id with --provider, --repository, and --kind to show one item.
+Exit codes: 0 = OK, 2 = usage, query, or I/O error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers work-items
+$ goobers work-items --kind=pr --json
+$ goobers work-items --provider=github --kind=pr --id=4398
 ~~~
 
 ## `goobers worker`

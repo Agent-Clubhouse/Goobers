@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const port = 4173;
+const port = Number(process.env.PORTAL_E2E_PORT ?? 4173);
 const distRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../internal/portalassets/dist");
 const page = { limit: 100, total: 1, hasMore: false, nextCursor: "" };
 const identity = { gaggle: "core", name: "implementation" };
@@ -369,6 +369,28 @@ const responses = new Map([
       until: "2026-08-17T08:00:00Z",
       pullRequests: [],
       issues: [],
+    },
+  ],
+  [
+    "/api/v1/work-items",
+    {
+      items: [
+        {
+          provider: "github",
+          repository: "Agent-Clubhouse/Goobers",
+          kind: "pr",
+          externalId: "4800",
+          url: "https://github.com/Agent-Clubhouse/Goobers/pull/4800",
+          actionCount: 2,
+          lastOperation: "comment",
+          lastActionAt: "2026-09-10T08:02:00Z",
+          lastRunId: run.id,
+          gaggle: "core",
+          workflow: "implementation",
+          runStatus: "running",
+        },
+      ],
+      hasMore: false,
     },
   ],
   ["/api/v1/telemetry/stats", telemetryStats],

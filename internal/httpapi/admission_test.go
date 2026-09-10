@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -155,12 +156,27 @@ func TestRefusalCarriesRetryAfter(t *testing.T) {
 	response := httptest.NewRecorder()
 	writeAdmissionRefusal(response, apicontract.CostAggregate)
 
-	if response.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", response.Code)
+	if response.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429", response.Code)
 	}
-	if response.Header().Get(HeaderRetryAfterSeconds) == "" {
+	retryAfter := response.Header().Get(HeaderRetryAfterSeconds)
+	if retryAfter == "" {
 		t.Error("no Retry-After on an admission refusal; a client cannot tell a saturated " +
 			"class from a dead server")
+	} else if seconds, err := strconv.Atoi(retryAfter); err != nil || seconds < 1 {
+		t.Errorf("Retry-After = %q, want a positive standards-compatible delay-seconds value", retryAfter)
+	}
+	if code := errorCode(t, response); code != "class_saturated" {
+		t.Errorf("code = %q, want class_saturated", code)
+	}
+}
+
+func TestNonAggregateRefusalRetainsServiceUnavailable(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeAdmissionRefusal(response, apicontract.CostBounded)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", response.Code)
 	}
 	if code := errorCode(t, response); code != "class_saturated" {
 		t.Errorf("code = %q, want class_saturated", code)

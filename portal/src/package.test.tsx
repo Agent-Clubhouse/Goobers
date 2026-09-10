@@ -8,7 +8,7 @@ describe("PortalWorkbench", () => {
   it("renders the existing workbench with an explicit injected client", async () => {
     window.location.hash = "#/overview";
     render(<PortalWorkbench client={new FixtureDaemonClient(emptyDaemonFixtures())} scope="user:instance" />);
-    expect(await screen.findByRole("heading", { name: "Daemon is ready." })).toBeInTheDocument();
+    expect(await screen.findByText("Daemon ready")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
   });
 

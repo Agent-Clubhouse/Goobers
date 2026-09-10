@@ -492,6 +492,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "until", takesArg: true, desc: "Include errors at or before this RFC3339 timestamp"},
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
 	},
+	"work-items": {
+		{name: "provider", takesArg: true, desc: "Filter by provider"},
+		{name: "repository", takesArg: true, desc: "Filter by repository"},
+		{name: "kind", takesArg: true, values: []string{"pr", "issue"}, desc: "Filter by work-item kind"},
+		{name: "id", takesArg: true, desc: "Show one work item's action timeline"},
+		{name: "limit", takesArg: true, desc: "Maximum work items"},
+		{name: "json", desc: "Emit JSON"},
+		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
+	},
 	"telemetry prune-orphans": {
 		{name: "delete", desc: "Delete eligible orphan directories (opt-in; default dry-run)"},
 		{name: "min-age", takesArg: true, desc: "Minimum inactivity age (at least 24h)"},

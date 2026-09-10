@@ -169,6 +169,7 @@ Advanced operator commands:
   speech            preflight and test local speech notifications
   telemetry         query, export, prune, or compact run telemetry
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
+  work-items        List pull requests and issues changed by Goobers.
   worker            host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
   workspace         explicitly recover pinned repository workspaces
 
@@ -2856,6 +2857,13 @@ history[] (level, sinceVersion)),
 platforms[] (os, arch, tier), and host — machine-readable for scripts.
 
 Exit codes: 0 = OK, 2 = usage error.
+
+### work-items
+Usage: goobers work-items [--provider=<name>] [--repository=<owner/name>] [--kind=<pr|issue>] [--id=<id>] [--limit=<n>] [--json] [--rebuild] [path]
+
+List pull requests and issues changed by recorded provider mutations. Use
+--id with --provider, --repository, and --kind to show one item.
+Exit codes: 0 = OK, 2 = usage, query, or I/O error.
 
 ### worker
 Usage: goobers worker [--task-queue <queue>]... [flags]

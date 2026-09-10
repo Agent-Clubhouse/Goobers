@@ -44,7 +44,7 @@ describe("operational overview", () => {
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Daemon is ready." }),
+      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
     ).toBeInTheDocument();
     expect(screen.getByText(/No gaggles are configured/)).toBeInTheDocument();
     // The guided walkthrough leads as the recommended newcomer path, with the
@@ -83,9 +83,11 @@ describe("operational overview", () => {
 
     try {
       await act(async () => vi.advanceTimersByTimeAsync(0));
-      expect(screen.getByRole("heading", { name: "Daemon is ready." })).toBeInTheDocument();
+      expect(
+        screen.getByRole("heading", { name: "Daemon is running — Healthy." }),
+      ).toBeInTheDocument();
 
-      await act(async () => vi.advanceTimersByTimeAsync(5_000));
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
 
       expect(screen.getByRole("heading", { name: "Daemon is unhealthy." })).toBeInTheDocument();
       expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
@@ -97,7 +99,7 @@ describe("operational overview", () => {
     }
   });
 
-  it("groups canonical phases and places attention rows before aggregate counts", async () => {
+  it("groups canonical phases and places instance status before attention rows", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
@@ -110,7 +112,7 @@ describe("operational overview", () => {
       throw new Error("Attention section was not rendered.");
     }
 
-    expect(attentionSection.compareDocumentPosition(counts) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+    expect(counts.compareDocumentPosition(attentionSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     await expandAttentionRuns(user, attentionSection);
@@ -134,7 +136,7 @@ describe("operational overview", () => {
       within(recent).getByRole("link", { name: "Open run 01JZ300ABORTED" }),
     ).toBeInTheDocument();
     expect(within(recent).queryByText("Failed")).not.toBeInTheDocument();
-    expect(within(counts).getAllByText("2", { selector: "dd" })).toHaveLength(2);
+    expect(within(counts).getAllByText("2", { selector: "dd" })).toHaveLength(1);
     expect(within(counts).getByText("1", { selector: "dd" })).toBeInTheDocument();
   });
 
@@ -231,10 +233,12 @@ describe("operational overview", () => {
     const client = new RecoveringClient();
     render(<App client={client} />);
 
-    expect(screen.getByRole("heading", { name: "Connecting to daemon" })).toBeInTheDocument();
     expect(
       await screen.findByRole("heading", { name: "Couldn't load Goobers data" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText("The portal couldn't load data from the Goobers daemon. Reconnect to try again."),
     ).toBeInTheDocument();
@@ -263,9 +267,10 @@ describe("workflow and gaggle inventory", () => {
 
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
-    expect(
-      await screen.findByText("Webhook · pull_request/synchronize, Schedule · * * * * *"),
-    ).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
+    expect(screen.getByText("Webhook · pull_request, synchronize")).toBeInTheDocument();
+    expect(screen.getByText("Scheduled")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Developer tools/ }));
     expect(screen.getByText("Webhook")).toBeInTheDocument();
     expect(screen.queryByText(/^, Schedule/)).not.toBeInTheDocument();
   });
@@ -274,8 +279,10 @@ describe("workflow and gaggle inventory", () => {
     window.location.hash = "#/workflows";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Developer tools" })).toBeInTheDocument();
+    const coreToggle = await screen.findByRole("button", { name: /Core product/ });
+    const toolsToggle = screen.getByRole("button", { name: /Developer tools/ });
+    await userEvent.click(coreToggle);
+    await userEvent.click(toolsToggle);
     expect(screen.getByText(/1 configured persona · Core implementer/)).toBeInTheDocument();
     expect(screen.getByText(/1 configured persona · Tools implementer/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View Core product Goobers" })).toHaveAttribute(
@@ -287,24 +294,20 @@ describe("workflow and gaggle inventory", () => {
       "#/goobers?gaggle=tools",
     );
 
-    const coreLink = screen.getByRole("link", {
-      name: "Open workflow Implementation for gaggle Core product",
-    });
-    const toolsLink = screen.getByRole("link", {
-      name: "Open workflow Implementation for gaggle Developer tools",
-    });
-    expect(coreLink).toHaveAttribute("href", "#/workflow/core/implementation");
-    expect(toolsLink).toHaveAttribute("href", "#/workflow/tools/implementation");
-    const coreSection = screen.getByRole("heading", { name: "Core product" }).closest("section");
-    const toolsSection = screen.getByRole("heading", { name: "Developer tools" }).closest("section");
+    const coreSection = coreToggle.closest("section");
+    const toolsSection = toolsToggle.closest("section");
     if (!coreSection || !toolsSection) {
       throw new Error("Gaggle inventory sections were not rendered.");
     }
-    expect(within(coreSection).getByRole("link", { name: "Open gaggle details" })).toHaveAttribute(
+    const coreLink = within(coreSection).getAllByRole("link", { name: "Details" })[1];
+    const toolsLink = within(toolsSection).getAllByRole("link", { name: "Details" })[1];
+    expect(coreLink).toHaveAttribute("href", "#/workflow/core/implementation");
+    expect(toolsLink).toHaveAttribute("href", "#/workflow/tools/implementation");
+    expect(within(coreSection).getAllByRole("link", { name: "Details" })[0]).toHaveAttribute(
       "href",
       "#/gaggle/core",
     );
-    expect(within(toolsSection).getByRole("link", { name: "Open gaggle details" })).toHaveAttribute(
+    expect(within(toolsSection).getAllByRole("link", { name: "Details" })[0]).toHaveAttribute(
       "href",
       "#/gaggle/tools",
     );
@@ -322,15 +325,16 @@ describe("workflow and gaggle inventory", () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    await screen.findByRole("heading", { name: "Core product" });
+    const coreToggle = await screen.findByRole("button", { name: /Core product/ });
+    await user.click(coreToggle);
 
     // The gaggle-detail link keeps its bare display name as its accessible
     // name — the pivot links carry distinct names so this stays unique.
-    const coreSection = screen.getByRole("heading", { name: "Core product" }).closest("section");
+    const coreSection = coreToggle.closest("section");
     if (!coreSection) {
       throw new Error("Core product inventory section was not rendered.");
     }
-    expect(within(coreSection).getByRole("link", { name: "Open gaggle details" })).toHaveAttribute(
+    expect(within(coreSection).getAllByRole("link", { name: "Details" })[0]).toHaveAttribute(
       "href",
       "#/gaggle/core",
     );
@@ -353,9 +357,8 @@ describe("workflow and gaggle inventory", () => {
       screen.getByRole("link", { name: "View Core product / Implementation in Runs" }),
     );
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Insight drill-through scope")).toHaveTextContent(
-      "core / implementation",
-    );
+    expect(screen.getByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
+    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
   });
 
   it("renders the ready-empty workflow state", async () => {
@@ -381,6 +384,7 @@ describe("workflow and gaggle inventory", () => {
     window.location.hash = "#/workflows";
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
     expect(
       await screen.findByText("No workflows are configured for this gaggle."),
     ).toBeInTheDocument();
@@ -402,7 +406,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByRole("group", { name: "implementation execution graph" }),
     ).toHaveAttribute("data-preview", "true");
-    await userEvent.click(screen.getByRole("button", { name: /Repository topology/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Repository connections/ }));
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });
@@ -443,7 +447,9 @@ describe("workflow and gaggle inventory", () => {
 
     await user.click(pivotLink);
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Insight scope")).toHaveTextContent("core / implementation");
+    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
     // The card's own detail link is untouched by the pivot click.
     expect(openWorkflowLink).toHaveAttribute("href", "#/workflow/core/implementation");
   });
@@ -469,7 +475,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       screen.queryByRole("tablist", { name: "Core product workflows" }),
     ).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Repository topology/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Repository connections/ }));
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });

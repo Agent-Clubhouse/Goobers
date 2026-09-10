@@ -162,6 +162,9 @@ _goobers_completion()
         cost)
             flags+=" --pr --issue --provider --window --since --until --json --rebuild"
             ;;
+        work-items)
+            flags+=" --provider --repository --kind --id --limit --json --rebuild"
+            ;;
         features)
             flags+=" --json --dsl-version --used"
             ;;

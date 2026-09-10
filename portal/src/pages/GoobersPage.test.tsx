@@ -16,7 +16,7 @@ describe("goobers roster page", () => {
     expect(window.location.hash).toBe("#/goobers");
     expect(screen.getByText("Core implementer")).toBeInTheDocument();
     expect(screen.getByText("Tools implementer")).toBeInTheDocument();
-    expect(screen.getByText("2 goobers")).toBeInTheDocument();
+    expect(screen.queryByText("2 goobers")).not.toBeInTheDocument();
     expect(
       screen.getByRole("region", { name: "Core product goober personas" }),
     ).toBeInTheDocument();
@@ -65,11 +65,18 @@ describe("goobers roster page", () => {
     if (!(panel instanceof HTMLElement)) {
       throw new Error("Expanded Goober detail panel was not rendered.");
     }
+    const card = toggle.closest("article");
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("Expanded Goober card was not rendered.");
+    }
     expect(
-      within(panel).getByText("Implements claimed backlog items end to end."),
+      within(card).getByText("Implements claimed backlog items end to end."),
     ).toBeInTheDocument();
     expect(
-      within(panel).getByText("core/implementation/implement (agentic)"),
+      within(panel).queryByText("Implements claimed backlog items end to end."),
+    ).not.toBeInTheDocument();
+    expect(
+      within(card).getByText(/core\/implementation\/implement \(agentic\)/),
     ).toBeInTheDocument();
 
     await userEvent.click(within(detail).getByRole("tab", { name: "Raw YAML" }));

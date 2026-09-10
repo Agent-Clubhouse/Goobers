@@ -4,10 +4,13 @@ package configmirror
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // MoveFileEx replacement refuses an existing target with open handles even
@@ -16,6 +19,13 @@ import (
 // Unsupported filesystems fail closed; removing the old name first would
 // introduce a missing-snapshot window and is not an acceptable fallback.
 func replaceSnapshot(source, destination string) (result error) {
+	// Initial publication has no reader to preserve and uses the retried,
+	// write-through rename path rather than FileRenameInfoEx.
+	if _, err := os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
+		return durability.ReplaceFile(source, destination)
+	} else if err != nil {
+		return err
+	}
 	sourcePath, err := windows.UTF16PtrFromString(source)
 	if err != nil {
 		return err

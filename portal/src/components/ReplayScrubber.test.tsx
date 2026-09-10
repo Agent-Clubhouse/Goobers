@@ -213,7 +213,7 @@ describe("replay scrubber", () => {
       }),
     ).toBeInTheDocument();
 
-    const scope = screen.getByRole("group", { name: "Workflow, stage, and goober" });
+    const scope = screen.getByRole("group", { name: "Workflow, stage kind, and goober" });
     expect(within(scope).getByText("implementation")).toBeInTheDocument();
     expect(within(scope).getByText("implement")).toBeInTheDocument();
     expect(within(scope).getByText("builder-goober")).toBeInTheDocument();

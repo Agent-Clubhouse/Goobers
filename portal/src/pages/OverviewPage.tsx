@@ -19,6 +19,7 @@ import { DataList, DataRow } from "../ui/DataList";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useFailureReasons, type FailureReasons } from "../overviewFailures";
+import { configurationWarningKey } from "../configurationWarnings";
 
 export function OverviewPage({
   client,
@@ -73,7 +74,8 @@ function Overview({
   standalone: boolean;
 }) {
   const groups = overview.groups;
-  const inventoryLoaded = !overview.sectionErrors?.inventory;
+  const inventoryLoaded =
+    !overview.loadingSections?.inventory && !overview.sectionErrors?.inventory;
   const emptyInstance = inventoryLoaded && overview.gaggleCount === 0;
   const emptyWorkflows =
     inventoryLoaded && !emptyInstance && overview.instance.counts.workflows === 0;
@@ -86,6 +88,14 @@ function Overview({
     groups.attention.length === 0 &&
     groups.recent.length === 0;
   const healthy = standalone || overview.health.healthy;
+  const activeConfigurationWarningCount =
+    configurationWarnings.state.status === "ready" ||
+    configurationWarnings.state.status === "stale"
+      ? configurationWarnings.state.data.filter(
+          (warning) =>
+            !configurationWarnings.dismissedWarningKeys.has(configurationWarningKey(warning)),
+        ).length
+      : 0;
 
   const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
   const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
@@ -158,33 +168,75 @@ function Overview({
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">{overview.instance.name}</p>
-        <p>Instance root: <code>{overview.instance.instanceRoot}</code> · Instance ID: <code>{overview.instance.rootIdentity?.id || "unavailable"}</code></p>
+        <p className="page-kicker">Instance overview</p>
         {overview.instance.rootIdentity?.decommissionedAt && (
           <p role="alert">Historical root; do not use. Decommissioned {overview.instance.rootIdentity.decommissionedAt}: {overview.instance.rootIdentity.decommissionReason}</p>
         )}
         {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
         {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
         <h1>
-          {emptyInstance
-            ? standalone
-              ? overview.health.ready
-                ? "Instance is ready."
-                : "Instance data is loading."
-            : !healthy
-              ? "Daemon is unhealthy."
-              : overview.health.ready
-                ? "Daemon is ready."
-                : "Daemon is starting."
-            : attentionHeading(activeAttention.length)}
+          {overview.loadingSections?.inventory || overview.loadingSections?.runs
+            ? (
+              <span aria-label="Loading overview" className="overview-loading-title" role="status">
+                <span aria-hidden="true">.</span>
+                <span aria-hidden="true">.</span>
+                <span aria-hidden="true">.</span>
+              </span>
+            )
+            : emptyInstance
+              ? standalone
+                ? overview.health.ready
+                  ? "Instance is ready — Healthy."
+                  : "Instance is starting."
+                : !healthy
+                  ? "Daemon is unhealthy."
+                  : overview.health.ready
+                    ? "Daemon is running — Healthy."
+                    : "Daemon is starting."
+              : !healthy
+                ? "Daemon is unhealthy."
+                : activeAttention.length === 0
+                  ? standalone
+                    ? "Instance is ready — Healthy."
+                    : "Daemon is running — Healthy."
+                  : attentionHeading(activeAttention.length)}
         </h1>
-        <p>
-          {emptyInstance
-            ? "No gaggles are configured. Add gaggle definitions to begin observing workflows and runs."
-            : standalone
-              ? "Operational state read directly from this instance, ordered by what needs attention now."
-              : "Live operational state from the daemon, ordered by what needs attention now."}
-        </p>
+        {emptyInstance && (
+          <p>No gaggles are configured. Add gaggle definitions to begin observing workflows and runs.</p>
+        )}
+        <dl className="instance-identity">
+          <div>
+            <dt>Instance name</dt>
+            <dd>{overview.instance.name}</dd>
+          </div>
+          <div>
+            <dt>Version</dt>
+            <dd>
+              {overview.health.build ? (
+                <span title={`Commit ${overview.health.build.commit} · Built ${overview.health.build.date}`}>
+                  {overview.health.build.version}
+                  {overview.health.build.commit
+                    ? ` · ${overview.health.build.commit.slice(0, 7)}`
+                    : ""}
+                </span>
+              ) : (
+                "Unavailable"
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt>Computer name</dt>
+            <dd><code>{overview.instance.computerName || "unavailable"}</code></dd>
+          </div>
+          <div>
+            <dt>Instance root</dt>
+            <dd><code>{overview.instance.instanceRoot}</code></dd>
+          </div>
+          <div>
+            <dt>Instance ID</dt>
+            <dd><code>{overview.instance.rootIdentity?.id || "unavailable"}</code></dd>
+          </div>
+        </dl>
       </header>
 
       {/* A section that failed to load must say so. Without this the page would
@@ -213,6 +265,18 @@ function Overview({
           </button>
         </div>
       )}
+      {(overview.loadingSections?.inventory || overview.loadingSections?.runs) && (
+        <div className="inline-empty section-loading" role="status">
+          <span aria-hidden="true" className="loading-mark" />
+          <span>
+          {overview.loadingSections.inventory && overview.loadingSections.runs
+            ? "Loading inventory and run activity"
+            : overview.loadingSections.inventory
+              ? "Loading inventory"
+              : "Loading run activity"}
+          </span>
+        </div>
+      )}
 
       {/* A phase that failed while its siblings succeeded is the same trap one
           level down: the surviving groups are real, but the failed phase's
@@ -224,13 +288,16 @@ function Overview({
         </p>
       )}
 
+      <InstanceStrip
+        configurationWarningCount={activeConfigurationWarningCount}
+        overview={overview}
+        standalone={standalone}
+      />
+
       {groups.attention.length > 0 && (
         <section className="content-section attention-section">
           <div className="section-heading">
-            <div>
-              <p className="section-kicker section-kicker-danger">Attention</p>
-              <h2>Needs attention</h2>
-            </div>
+            <h2>Needs attention</h2>
             <div className="attention-actions">
               {activeAttention.length > 0 && (
                 <label className="attention-select-all">
@@ -428,8 +495,6 @@ function Overview({
         </section>
       )}
 
-      <InstanceStrip overview={overview} standalone={standalone} />
-
       {!inventoryLoaded ? null : emptyInstance ? (
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
@@ -464,14 +529,12 @@ function Overview({
         <>
           <RunSection
             ariaLabel="Active runs"
-            kicker="Live"
             overview={overview}
             runs={groups.active}
             title="Active runs"
           />
           <RunSection
             ariaLabel="Recent outcomes"
-            kicker="History"
             overview={overview}
             runs={groups.recent}
             title="Recent outcomes"
@@ -569,9 +632,11 @@ function renderMaintenanceStatus(maintenance: MaintenanceStatus) {
 }
 
 function InstanceStrip({
+  configurationWarningCount,
   overview,
   standalone,
 }: {
+  configurationWarningCount: number;
   overview: OperationalOverview;
   standalone: boolean;
 }) {
@@ -585,7 +650,7 @@ function InstanceStrip({
       aria-label={standalone ? "Local instance status and counts" : "Daemon connection and instance counts"}
       className="instance-strip"
     >
-      <div>
+      <div className="instance-status">
         <span
           aria-hidden="true"
           className={healthy && overview.health.ready ? "live-mark" : "live-mark pending"}
@@ -601,6 +666,21 @@ function InstanceStrip({
                 ? "Daemon ready"
                 : "Daemon starting"}
         </strong>
+        {configurationWarningCount > 0 && (
+          <button
+            className="instance-warning-link"
+            onClick={() =>
+              document.getElementById("instance-configuration-warnings")?.scrollIntoView({
+                behavior: "smooth",
+                block: "start",
+              })
+            }
+            type="button"
+          >
+            {configurationWarningCount} configuration{" "}
+            {configurationWarningCount === 1 ? "warning" : "warnings"}
+          </button>
+        )}
         {!standalone && tickAge !== null && lastTickAt !== null ? (
           <span>
             last scheduler tick {formatDuration(tickAge)} ago at{" "}
@@ -618,16 +698,12 @@ function InstanceStrip({
       {maintenance && renderMaintenanceStatus(maintenance)}
       <dl>
         <div>
-          <dt>Workflows</dt>
-          <dd>{overview.instance.counts.workflows}</dd>
+          <dt>Gaggles</dt>
+          <dd>{overview.instance.counts.gaggles}</dd>
         </div>
         <div>
           <dt>Active runs</dt>
           <dd>{overview.instance.counts.activeRuns}</dd>
-        </div>
-        <div>
-          <dt>Gaggles</dt>
-          <dd>{overview.instance.counts.gaggles}</dd>
         </div>
       </dl>
     </section>
@@ -636,13 +712,11 @@ function InstanceStrip({
 
 function RunSection({
   ariaLabel,
-  kicker,
   overview,
   runs,
   title,
 }: {
   ariaLabel: string;
-  kicker: string;
   overview: OperationalOverview;
   runs: RunSummary[];
   title: string;
@@ -651,10 +725,7 @@ function RunSection({
   return (
     <section className="content-section">
       <div className="section-heading">
-        <div>
-          <p className="section-kicker">{kicker}</p>
-          <h2>{title}</h2>
-        </div>
+        <h2>{title}</h2>
         <span className="section-count">{runs.length}</span>
       </div>
       {runs.length === 0 ? (
@@ -690,11 +761,17 @@ function RunSection({
               {active ? (
                 <>
                   <span className="row-workflow">
-                    {workflowDisplayName(overview, run)}
-                    <ScopePivot
-                      label={workflowDisplayName(overview, run)}
-                      scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-                    />
+                    <span>{run.gaggle} / {workflowDisplayName(overview, run)}</span>
+                    <a
+                      className="workflow-detail-link"
+                      href={routeHash({
+                        page: "workflow",
+                        gaggle: run.gaggle,
+                        id: run.workflow,
+                      })}
+                    >
+                      Open workflow
+                    </a>
                   </span>
                   <span className="stage-progress">
                     <span aria-hidden="true" className="stage-progress-mark" />
@@ -705,11 +782,17 @@ function RunSection({
                 <>
                   <StatusBadge status={run.phase} />
                   <span className="row-workflow">
-                    {workflowDisplayName(overview, run)}
-                    <ScopePivot
-                      label={workflowDisplayName(overview, run)}
-                      scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-                    />
+                    <span>{run.gaggle} / {workflowDisplayName(overview, run)}</span>
+                    <a
+                      className="workflow-detail-link"
+                      href={routeHash({
+                        page: "workflow",
+                        gaggle: run.gaggle,
+                        id: run.workflow,
+                      })}
+                    >
+                      Open workflow
+                    </a>
                   </span>
                 </>
               )}

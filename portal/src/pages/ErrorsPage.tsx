@@ -7,7 +7,6 @@ import type {
 } from "../api/types";
 import { ScopedRequests, type ScopedRequest } from "../api/scopedRequest";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
-import { ScopeStrip } from "../components/ScopeStrip";
 import { dataCacheKey, type DataCacheDependency } from "../dataCache";
 import { useLiveData } from "../liveData";
 import { routeHash, type ErrorRouteFilters } from "../routing";
@@ -67,13 +66,6 @@ export function ErrorsPage({
           {scopeWindowLabel(filters)}.
         </p>
       </header>
-
-      <ScopeStrip
-        ariaLabel="Failure reason drill-through scope"
-        clearHref={routeHash({ page: "insight" })}
-        clearLabel="Back to Insight"
-        filters={filters}
-      />
 
       {query.state.status === "stale" && query.state.error && (
         <div className="insight-inline-error" role="alert">

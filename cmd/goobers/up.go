@@ -694,11 +694,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// The daemon is the only construction that is long-lived enough for a
 	// background sample to be warm, so it is the only one that starts it.
 	stopActiveSampler := reads.StartActiveRunSampler(0)
-	defer func() {
-		if err := stopActiveSampler(); err != nil {
-			pf(stderr, "error: stop active-run sampler: %v\n", err)
-		}
-	}()
+	defer stopReadServiceWorker(stopActiveSampler, "active-run sampler", stderr)
+	stopSchedulerProjector := reads.StartSchedulerStateProjector(0)
+	defer stopReadServiceWorker(stopSchedulerProjector, "scheduler-state projector", stderr)
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
@@ -2061,6 +2059,12 @@ func daemonMemoryGate(rc instance.RunConditions) localscheduler.MemoryGate {
 		return nil
 	}
 	return localscheduler.NewCgroupMemoryGate(highWater)
+}
+
+func stopReadServiceWorker(stop func() error, name string, stderr io.Writer) {
+	if err := stop(); err != nil {
+		pf(stderr, "error: stop %s: %v\n", name, err)
+	}
 }
 
 func publishDaemonAPIAddress(path, address string) error {

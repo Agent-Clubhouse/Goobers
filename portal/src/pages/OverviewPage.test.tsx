@@ -13,6 +13,7 @@ beforeEach(() => {
 describe("overview page", () => {
   it("shows durable root identity and warns for a historical root", async () => {
     const fixtures = populatedDaemonFixtures();
+    fixtures.instance.computerName = "MDB5";
     fixtures.instance.rootIdentity = {
       id: "0123456789abcdef0123456789abcdef",
       decommissionedAt: "2026-09-08T08:00:00Z",
@@ -21,7 +22,24 @@ describe("overview page", () => {
     render(<App client={new FixtureDaemonClient(fixtures)} />);
     expect(await screen.findByText("0123456789abcdef0123456789abcdef")).toBeInTheDocument();
     expect(screen.getByText(fixtures.instance.instanceRoot)).toBeInTheDocument();
+    expect(screen.getByText("MDB5")).toBeInTheDocument();
     expect(screen.getByText(/Historical root; do not use/)).toHaveTextContent("migrated to replacement");
+  });
+
+  it("shows the authoritative daemon binary version from health metadata", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health.build = {
+      version: "v1.2.3",
+      commit: "abcdef0123456789",
+      date: "2026-09-10T00:00:00Z",
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    expect(await screen.findByText("v1.2.3 · abcdef0")).toHaveAttribute(
+      "title",
+      "Commit abcdef0123456789 · Built 2026-09-10T00:00:00Z",
+    );
   });
 
   it("renders fixture-driven attention, active, and recent run groups", async () => {
@@ -94,7 +112,9 @@ describe("overview page", () => {
     await user.click(screen.getByRole("button", {
       name: "Dismiss all runs in #4449 Repeated implementation failure",
     }));
-    expect(await screen.findByRole("heading", { name: "No runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
+    ).toBeInTheDocument();
   });
 
   it("selects, deselects, dismisses, and restores all visible attention runs", async () => {
@@ -114,7 +134,9 @@ describe("overview page", () => {
 
     await user.click(selectAll);
     await user.click(screen.getByRole("button", { name: "Dismiss 2 selected" }));
-    expect(await screen.findByRole("heading", { name: "No runs need attention." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", {
       name: "Select all visible attention runs",
     })).not.toBeInTheDocument();
@@ -124,7 +146,7 @@ describe("overview page", () => {
     expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
   });
 
-  it("keeps the initial progress state until an empty inventory successfully loads", async () => {
+  it("renders instance identity while an empty inventory is still loading", async () => {
     const client = new FixtureDaemonClient(emptyDaemonFixtures());
     const realListGaggles = client.listGaggles.bind(client);
     let releaseInventory: () => void = () => {};
@@ -138,7 +160,13 @@ describe("overview page", () => {
 
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "Connecting to daemon" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("status", { name: "Loading overview" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Loading inventory and run activity/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "No gaggles configured" })).not.toBeInTheDocument();
     expect(screen.queryByText("goobers init --guided")).not.toBeInTheDocument();
 

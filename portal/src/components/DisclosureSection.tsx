@@ -13,7 +13,7 @@ export function DisclosureSection({
   children: React.ReactNode;
   count?: number;
   defaultOpen?: boolean;
-  eyebrow: string;
+  eyebrow?: string;
   onOpenChange?: (open: boolean) => void;
   open?: boolean;
   title: string;
@@ -40,7 +40,7 @@ export function DisclosureSection({
           type="button"
         >
           <span>
-            <span className="section-kicker">{eyebrow}</span>
+            {eyebrow && <span className="section-kicker">{eyebrow}</span>}
             <span className="disclosure-section-title" id={headingId} role="heading" aria-level={2}>
               {title}
             </span>

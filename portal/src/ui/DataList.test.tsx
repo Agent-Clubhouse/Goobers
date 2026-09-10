@@ -25,8 +25,15 @@ describe("DataList", () => {
   });
 
   it("renders every row and no overflow affordance when under the cap", () => {
-    render(<DataList ariaLabel="Run history">{rows(3)}</DataList>);
+    render(
+      <DataList ariaLabel="Run history" columns={["Run"]}>
+        {rows(3)}
+      </DataList>,
+    );
 
+    const region = screen.getByRole("region", { name: "Run history" });
+    expect(region).toHaveClass("data-table-shell");
+    expect(region.firstElementChild).toHaveClass("data-table-header");
     expect(screen.getAllByRole("link")).toHaveLength(3);
     expect(screen.queryByText(/Showing/)).not.toBeInTheDocument();
   });

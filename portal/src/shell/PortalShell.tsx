@@ -50,8 +50,7 @@ export function PortalShell({
       ? currentScope
       : undefined;
   const { config } = useCobrand();
-  const { admissionState, dataFreshness, freshness, lastSSEFailure, retryConnection } =
-    useLiveData();
+  const { admissionState, dataFreshness, freshness, lastSSEFailure } = useLiveData();
   const mainContent = useRef<HTMLElement>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
@@ -66,10 +65,10 @@ export function PortalShell({
       <a className="skip-link" href="#main-content" onClick={skipToMainContent}>
         Skip to main content
       </a>
-      <aside className="sidebar">
+      <header className="topbar">
         <button
           aria-label="Go to overview"
-          className="brand"
+          className="topbar-brand"
           onClick={() => navigate({ page: "overview" })}
           type="button"
         >
@@ -79,6 +78,35 @@ export function PortalShell({
             <small>{config.brand.tagline}</small>
           </span>
         </button>
+        <div className="topbar-actions">
+          {freshness === "polling-fallback" ? (
+            <PollingFallbackIndicator failure={lastSSEFailure} state={dataFreshness} />
+          ) : (
+            <>
+              <DataFreshnessIndicator state={dataFreshness} />
+              <span
+                aria-live="polite"
+                className={`freshness-status freshness-status-${freshness}`}
+                data-state={freshness}
+                role="status"
+                title={describeConnectionTitle(freshness, lastSSEFailure)}
+              >
+                <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
+                {connectionStatus}
+              </span>
+            </>
+          )}
+          <button
+            aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
+            className="theme-button"
+            onClick={toggleTheme}
+            type="button"
+          >
+            <Icon name={theme === "light" ? "moon" : "sun"} size={17} />
+          </button>
+        </div>
+      </header>
+      <aside className="sidebar">
         <button
           aria-controls="portal-secondary-navigation"
           aria-expanded={mobileMenuOpen}
@@ -133,6 +161,16 @@ export function PortalShell({
             <span className="nav-label">Runs</span>
           </button>
           <button
+            aria-current={activeArea === "work-items" ? "page" : undefined}
+            aria-label="Work Items"
+            className={activeArea === "work-items" ? "nav-item nav-item-active" : "nav-item"}
+            onClick={() => navigate({ page: "work-items" })}
+            type="button"
+          >
+            <Icon name="work-item" />
+            <span className="nav-label">Work Items</span>
+          </button>
+          <button
             aria-current={activeArea === "insight" ? "page" : undefined}
             aria-label="Insight"
             className={activeArea === "insight" ? "nav-item nav-item-active" : "nav-item"}
@@ -159,93 +197,17 @@ export function PortalShell({
           id="portal-secondary-navigation"
         >
           <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />
-
-          <div
-            className="sidebar-status"
-            title={describeConnectionTitle(freshness, lastSSEFailure)}
-          >
-            <div>
-              <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
-              <span>
-                <strong>{standalone ? "Standalone read-only" : "Daemon API"}</strong>
-                <small>
-                  {standalone
-                    ? "Daemon not running; reading this instance locally"
-                    : describeConnectionSummary(freshness)}
-                </small>
-              </span>
-            </div>
-          </div>
           <SupportFooter />
         </div>
       </aside>
 
       <div className="portal-main">
-        <header className="topbar">
-          <div className="topbar-context">
-            <span className="scope-mark">{config.brand.scopeMark}</span>
-            <span>
-              <strong>{config.brand.name}</strong>
-              <small>operations workbench</small>
-            </span>
-          </div>
-          <div className="topbar-actions">
-            {/*
-              Two indicators, deliberately: how current the DATA is, and whether
-              the CONNECTION is up (#1928). Conflating them is why an operator
-              could not tell "slow" from "broken" — a stream can be perfectly
-              connected to a projector ten minutes behind, and can be
-              reconnecting over data current to the second.
-
-              The data indicator comes first because it answers the question the
-              user actually has. The connection indicator stays, because a
-              dropped stream means the next change will arrive late even if what
-              is on screen is current.
-            */}
-            {freshness === "polling-fallback" ? (
-              <PollingFallbackIndicator failure={lastSSEFailure} state={dataFreshness} />
-            ) : (
-              <>
-                <DataFreshnessIndicator state={dataFreshness} />
-                <span
-                  aria-live="polite"
-                  className={`freshness-status freshness-status-${freshness}`}
-                  data-state={freshness}
-                  role="status"
-                  title={describeConnectionTitle(freshness, lastSSEFailure)}
-                >
-                  <span aria-hidden="true" className={`live-mark live-mark-${freshness}`} />
-                  {connectionStatus}
-                </span>
-              </>
-            )}
-            {freshness === "polling-fallback" ? (
-              <button
-                aria-label="Retry live updates"
-                className="reconnect-button"
-                onClick={retryConnection}
-                type="button"
-              >
-                Retry live updates
-              </button>
-            ) : null}
-            <button
-              aria-label={`Use ${theme === "light" ? "dark" : "light"} theme`}
-              className="theme-button"
-              onClick={toggleTheme}
-              type="button"
-            >
-              <Icon name={theme === "light" ? "moon" : "sun"} size={17} />
-            </button>
-          </div>
-        </header>
-
         <main className="page-content" id="main-content" ref={mainContent} tabIndex={-1}>
           {admissionState && (
             <div className="admission-degraded" role="alert">
               <strong>Daemon is busy.</strong>{" "}
-              Requests are queued and retrying automatically. Wait for capacity or navigate away
-              to cancel work for this view.
+              Live refresh is backing off automatically. New navigation requests are not held
+              behind unlimited retries.
             </div>
           )}
           {children}
@@ -314,14 +276,6 @@ const freshnessLabel: Record<LiveFreshness, string> = {
   "polling-fallback": "Polling fallback",
 };
 
-const freshnessCopy: Record<LiveFreshness, string> = {
-  connected: "Live updates connected",
-  reconnecting: "Reconnecting; showing stale data",
-  stale: "Refreshing a full snapshot",
-  offline: "Offline; showing stale data",
-  "polling-fallback": "SSE unavailable; polling",
-};
-
 function describeConnectionStatus(
   freshness: LiveFreshness,
   failure: LiveDataSSEFailure | undefined,
@@ -331,12 +285,6 @@ function describeConnectionStatus(
   }
   const causeChunk = failure.result ? `${failure.cause} (${failure.result})` : failure.cause;
   return `${freshnessLabel[freshness]} — ${causeChunk}`;
-}
-
-function describeConnectionSummary(
-  freshness: LiveFreshness,
-): string {
-  return freshnessCopy[freshness];
 }
 
 function describeConnectionTitle(
@@ -405,7 +353,9 @@ function dataFreshnessLabel(state: DataFreshness): string {
     case "current":
       return "Data current";
     case "lagging":
-      return `Data stale by ${formatLag(state.lagSeconds)}`;
+      return state.lagSeconds > 0
+        ? `Data stale by ${formatLag(state.lagSeconds)}`
+        : "Data degraded";
     case "partial":
       return `Partial — ${state.missing.map((entry) => entry.name).join(", ")}`;
     default:

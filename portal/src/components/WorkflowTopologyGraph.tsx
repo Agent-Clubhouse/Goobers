@@ -118,7 +118,7 @@ export function WorkflowTopologyGraph({
     width: FALLBACK_VIEWPORT_WIDTH,
     height: FALLBACK_VIEWPORT_HEIGHT,
   });
-  const [fitActive, setFitActive] = useState(preview);
+  const [fitActive, setFitActive] = useState(true);
   const [zoom, setZoom] = useState(1);
   const zoomRef = useRef(zoom);
   const [dragging, setDragging] = useState(false);

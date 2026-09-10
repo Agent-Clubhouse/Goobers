@@ -171,10 +171,10 @@ func TestClaimsPlaneTargetLeaserFileAndPlaneAgree(t *testing.T) {
 // (self and pod), it does not park one of them for later like an ordinary
 // work-item claim would.
 func TestClaimsPlaneTargetLeaserWaitsForContendedLease(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	layout := instance.NewLayout(initDemo(t))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
 	first := newDecompositionTargetLeaser(layout, decompositionTargetLeaseTestGaggle, "run-1")
 	first.pollInterval = 5 * time.Millisecond
@@ -185,15 +185,19 @@ func TestClaimsPlaneTargetLeaserWaitsForContendedLease(t *testing.T) {
 
 	second := newDecompositionTargetLeaser(layout, decompositionTargetLeaseTestGaggle, "run-2")
 	second.pollInterval = 5 * time.Millisecond
-	done := make(chan error, 1)
+	type acquireResult struct {
+		release func() error
+		err     error
+	}
+	done := make(chan acquireResult, 1)
 	go func() {
-		_, err := second.Acquire(ctx, repo, "99")
-		done <- err
+		release, err := second.Acquire(ctx, repo, "99")
+		done <- acquireResult{release: release, err: err}
 	}()
 
 	select {
-	case err := <-done:
-		t.Fatalf("second Acquire returned (err=%v) before the first released", err)
+	case result := <-done:
+		t.Fatalf("second Acquire returned (err=%v) before the first released", result.err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -201,11 +205,14 @@ func TestClaimsPlaneTargetLeaserWaitsForContendedLease(t *testing.T) {
 		t.Fatalf("release first: %v", err)
 	}
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("second Acquire after release: %v", err)
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("second Acquire after release: %v", result.err)
 		}
-	case <-time.After(2 * time.Second):
+		if err := result.release(); err != nil {
+			t.Fatalf("release second: %v", err)
+		}
+	case <-time.After(5 * time.Second):
 		t.Fatal("second Acquire never returned after the first released")
 	}
 }

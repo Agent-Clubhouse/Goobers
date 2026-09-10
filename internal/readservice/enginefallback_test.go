@@ -105,6 +105,7 @@ func TestEngineFallbackWorkflowAPISurfacesAndReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	(&schedulerStateProjector{service: service}).refresh(ctx)
 	detail, err := service.Workflow(ctx, "alpha", "deploy")
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +129,7 @@ func TestEngineFallbackWorkflowAPISurfacesAndReload(t *testing.T) {
 	if err := log.Append(journal.Event{Type: journal.EventConfigReloaded}); err != nil {
 		t.Fatal(err)
 	}
+	(&schedulerStateProjector{service: service}).refresh(ctx)
 	detail, err = service.Workflow(ctx, "alpha", "deploy")
 	if err != nil {
 		t.Fatal(err)

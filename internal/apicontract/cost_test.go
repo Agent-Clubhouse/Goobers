@@ -146,6 +146,27 @@ func TestTelemetryCostsUsesAggregateBudget(t *testing.T) {
 	}
 }
 
+func TestNavigationReadsUseBoundedCost(t *testing.T) {
+	for _, id := range []RouteID{
+		RouteInstance,
+		RouteGaggles,
+		RouteGaggleGoobers,
+		RouteGaggleWorkflows,
+		RouteGaggleConnections,
+		RouteWorkflowDetail,
+		RouteWorkflowQueueEligibility,
+		RouteTelemetryErrors,
+	} {
+		route, ok := V1Route(id)
+		if !ok {
+			t.Fatalf("%s route is not in the V1 contract", id)
+		}
+		if route.Cost != CostBounded || route.Budget != BoundedBudget {
+			t.Errorf("%s route = cost %q budget %s", id, route.Cost, route.Budget)
+		}
+	}
+}
+
 // TestOnlyOneStreamRoute pins the assumption the zero-budget exemption rests on.
 //
 // The exemption is safe because exactly one route is a stream and it is the SSE

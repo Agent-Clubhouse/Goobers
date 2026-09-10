@@ -87,7 +87,7 @@ describe("gaggle view summary (#2531)", () => {
       "aria-expanded",
       "false",
     );
-    expect(screen.getByRole("button", { name: /Repository topology/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /Repository connections/ })).toHaveAttribute(
       "aria-expanded",
       "false",
     );

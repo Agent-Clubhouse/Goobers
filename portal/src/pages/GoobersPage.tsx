@@ -30,6 +30,8 @@ export function GoobersPage({
   return (
     <GooberRoster
       gaggleName={gaggleName}
+      inventoryError={query.state.status === "stale" ? query.state.error : undefined}
+      retry={query.retry}
       snapshot={query.state.data}
       standalone={standalone}
     />
@@ -43,10 +45,14 @@ interface RosterEntry {
 
 function GooberRoster({
   gaggleName,
+  inventoryError,
+  retry,
   snapshot,
   standalone,
 }: {
   gaggleName?: string;
+  inventoryError?: Error;
+  retry: () => void;
   snapshot: OperationalSnapshot;
   standalone: boolean;
 }) {
@@ -60,16 +66,13 @@ function GooberRoster({
 
   return (
     <>
-      <header className="page-heading page-heading-row">
+      <header className="page-heading">
         <div>
-          <p className="page-kicker">Agent personas</p>
           <h1>Goobers</h1>
           <p>
             {filteredGaggle
               ? `Configured personas owned by ${filteredGaggle.displayName}.`
-              : standalone
-              ? "Every configured agent persona across gaggles, read from this instance."
-              : "Every configured agent persona across gaggles, read from the daemon."}
+              : "Goobers are the agent personas that do the actual work."}
           </p>
           {filteredGaggle && (
             <a className="text-link" href={routeHash({ page: "goobers" })}>
@@ -77,13 +80,23 @@ function GooberRoster({
             </a>
           )}
         </div>
-        <div className="scope-chip">
-          <span className="scope-mark">G</span>
-          {entries.length} {entries.length === 1 ? "goober" : "goobers"}
-        </div>
       </header>
 
-      {entries.length === 0 ? (
+      {inventoryError && entries.length === 0 ? (
+        <div className="run-stale-state run-stale-state-error" role="alert">
+          <span>
+            <strong>Goober inventory is unavailable</strong>
+            <small>{inventoryError.message}</small>
+          </span>
+          <button className="text-button" onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      ) : snapshot.loadingSections?.inventory && entries.length === 0 ? (
+        <div className="inline-empty section-loading" role="status">
+          Goober inventory is loading. The roster will fill in as definitions arrive.
+        </div>
+      ) : entries.length === 0 ? (
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
@@ -121,12 +134,16 @@ function GooberGroup({
         type="button"
       >
         <span>
-          <span className="section-kicker">Owning gaggle</span>
           <strong>{inventory.gaggle.displayName}</strong>
           <code>{inventory.gaggle.name}</code>
         </span>
-        <span className="section-count">
-          {inventory.goobers.length} {inventory.goobers.length === 1 ? "goober" : "goobers"}
+        <span className="goober-group-summary-meta">
+          <span className="section-count">
+            {inventory.goobers.length} {inventory.goobers.length === 1 ? "goober" : "goobers"}
+          </span>
+          <span aria-hidden="true" className="goober-group-chevron">
+            <Icon name="chevron" size={16} />
+          </span>
         </span>
       </button>
       {expanded && (
@@ -170,28 +187,49 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
           <code className="goober-identity">{gaggle.name}/{goober.name}</code>
         </span>
         <span className="goober-card-toggle-meta">
-          <span className="definition-status">{goober.status}</span>
           <span aria-hidden="true" className="goober-card-chevron">
             <Icon name="chevron" size={14} />
           </span>
         </span>
       </button>
 
-      <dl>
+      <dl className="goober-summary">
         <div>
           <dt>Harness</dt>
           <dd>{goober.harness}</dd>
         </div>
         <div>
           <dt>Skills</dt>
-          <dd>{goober.skills.length > 0 ? goober.skills.join(", ") : "None declared"}</dd>
+          <dd>
+            {goober.skills.length > 0 ? (
+              <ul className="goober-field-list">
+                {goober.skills.map((skill) => <li key={skill}>{skill}</li>)}
+              </ul>
+            ) : "None declared"}
+          </dd>
         </div>
         <div>
-          <dt>Workflow ownership</dt>
+          <dt>Workflow / stage ownership</dt>
           <dd>
-            {goober.workflows.length > 0
-              ? goober.workflows.map((workflow) => `${workflow.gaggle}/${workflow.name}`).join(", ")
-              : "None declared"}
+            {goober.workflows.length > 0 || goober.stages.length > 0 ? (
+              <ul className="goober-ownership-list">
+                {goober.workflows.map((workflow) => (
+                  <li key={`${workflow.gaggle}/${workflow.name}`}>
+                    {workflow.gaggle}/{workflow.name}
+                  </li>
+                ))}
+                {goober.stages.map((stage) => (
+                  <li
+                    className="goober-stage-ownership"
+                    key={`${stage.workflow.gaggle}/${stage.workflow.name}/${stage.stage}`}
+                  >
+                    {stage.workflow.gaggle}/{stage.workflow.name}/{stage.stage} ({stage.kind})
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              "None declared"
+            )}
           </dd>
         </div>
       </dl>
@@ -221,32 +259,15 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
           {view === "fields" ? (
             <dl className="property-list">
               <div>
-                <dt>Persona</dt>
-                <dd>{goober.role}</dd>
-              </div>
-              <div>
                 <dt>Capabilities</dt>
                 <dd>
-                  {goober.capabilities.length > 0 ? goober.capabilities.join(", ") : "None declared"}
-                </dd>
-              </div>
-              <div>
-                <dt>Stage ownership</dt>
-                <dd>
-                  {goober.stages.length > 0
-                    ? goober.stages
-                        .map(
-                          (stage) =>
-                            `${stage.workflow.gaggle}/${stage.workflow.name}/${stage.stage} (${stage.kind})`,
-                        )
-                        .join(", ")
-                    : "None declared"}
-                </dd>
-              </div>
-              <div>
-                <dt>Provisioning</dt>
-                <dd>
-                  {gaggle.name}/{goober.name} · {goober.harness}
+                  {goober.capabilities.length > 0 ? (
+                    <ul className="goober-field-list">
+                      {goober.capabilities.map((capability) => (
+                        <li key={capability}>{capability}</li>
+                      ))}
+                    </ul>
+                  ) : "None declared"}
                 </dd>
               </div>
               <div>

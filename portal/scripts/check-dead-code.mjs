@@ -56,7 +56,7 @@ const exemptions = [
 const testOnlyExports = {
   "src/api/errors.ts": ["UnsupportedApiVersionError", "UnsupportedSchemaVersionError"],
   "src/api/contract.generated.ts": ["configAuthoringErrorCodes", "configAuthoringRoutes"],
-  "src/api/queryFamily.ts": ["emptyStats", "positionOf", "comparePosition"],
+  "src/api/queryFamily.ts": ["emptyStats", "comparePosition"],
   "src/api/surfaceActions.ts": ["uiSurfaceActions"],
   "src/attentionCollapse.ts": [
     "attentionCollapsedStorageKey",
@@ -97,7 +97,7 @@ const testOnlyExports = {
   "src/runDetailData.ts": ["loadRunDetail", "isVerdictArtifact"],
   "src/runsHistory.ts": ["RUNS_PAGE_SIZE"],
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
-  "src/theme.ts": ["themeStorageKey", "readStoredTheme", "persistTheme"],
+  "src/theme.ts": ["themeStorageKey", "persistTheme"],
   "src/ui/Inspector.tsx": ["InspectorHeading"],
   "src/workflowDetailData.ts": ["loadWorkflowDetail"],
 };

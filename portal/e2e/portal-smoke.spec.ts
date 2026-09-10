@@ -11,7 +11,7 @@ interface RouteCase {
 // Keyed by `Route["page"]` so the e2e typecheck fails the moment the routing
 // union gains a page that has no browser-level smoke coverage here (#4225).
 const ROUTES: Record<Route["page"], RouteCase> = {
-  overview: { path: "/#/overview", heading: "No runs need attention." },
+  overview: { path: "/#/overview", heading: "Active runs" },
   workflows: { path: "/#/workflows", heading: "Workflows" },
   goobers: { path: "/#/goobers", heading: "Goobers" },
   gaggle: { path: "/#/gaggle/core", heading: "Core product" },
@@ -19,12 +19,13 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   errors: { path: "/#/errors", heading: "Matching errors" },
   insight: { path: "/#/insight", heading: "Insight" },
   cost: { path: "/#/cost", heading: "Cost" },
+  "work-items": { path: "/#/work-items", heading: "Work Items" },
   workflow: { path: "/#/workflow/core/implementation", heading: "Implementation" },
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
 };
 
 const PRIMARY_ROUTES = [
-  ["Overview", "/#/overview", "No runs need attention."],
+  ["Overview", "/#/overview", "Active runs"],
   ["Workflows", "/#/workflows", "Workflows"],
   ["Goobers", "/#/goobers", "Goobers"],
   ["Runs", "/#/runs", "Runs"],
@@ -92,12 +93,12 @@ test("loads Overview and Workflows and processes an SSE invalidation", async ({ 
   });
 
   await page.goto("/#/overview");
-  await expect(page.getByRole("heading", { name: "No runs need attention." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Active runs" })).toBeVisible();
   await eventsConnected;
 
   await page.goto("/#/workflows");
   await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Core product" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Core product/ })).toBeVisible();
   await expect.poll(() => workflowRunReads).toBeGreaterThanOrEqual(1);
   const invalidation = await page.request.post("/api/v1/test/invalidate");
   expect(invalidation.ok()).toBe(true);
@@ -120,7 +121,6 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
       name: "Daemon connection and instance counts",
     });
     await expect(status).toContainText("Retention sweep running");
-    await expect(status).toContainText("Workflows1");
     await expect(status).toContainText("Active runs1");
     await expect(status).toContainText("Gaggles1");
 
@@ -204,10 +204,10 @@ test("bounds route reads when daemon admission is constrained", async ({ page },
 test("keeps the shared shell deliberate and accessible at 320px", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 800 });
   await page.goto("/#/overview");
-  await expect(page.getByRole("heading", { name: "No runs need attention." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Active runs" })).toBeVisible();
 
   const primary = page.getByRole("navigation", { name: "Primary" });
-  for (const name of ["Overview", "Workflows", "Goobers", "Runs", "Insight", "Cost"]) {
+  for (const name of ["Overview", "Workflows", "Goobers", "Runs", "Work Items", "Insight", "Cost"]) {
     await expect(primary.getByRole("button", { name })).toBeVisible();
   }
   await expect(primary.getByRole("button", { name: "Overview" })).toHaveAttribute(
@@ -220,8 +220,9 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
   });
   await more.click();
   await expect(page.getByRole("navigation", { name: "Gaggles" })).toBeVisible();
-  await expect(page.getByText("Daemon API", { exact: true })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Support" })).toBeVisible();
+  const support = page.getByRole("navigation", { name: "Support" });
+  await expect(support).toBeVisible();
+  await expect(support.getByRole("link", { name: "Docs" })).toBeVisible();
 
   await primary.getByRole("button", { name: "Cost" }).click();
   await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
@@ -273,8 +274,11 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
     "#/cost?gaggle=core&workflow=implementation",
   );
   await costPivot.click();
+  await expect(page).toHaveURL(/#\/cost\?gaggle=core&workflow=implementation$/);
   await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Cost scope")).toContainText("core / implementation");
+  await expect(page.getByLabel("Scope")).toHaveValue(
+    JSON.stringify(["workflow", "core", "implementation"]),
+  );
 });
 
 test("shows one coherent polling fallback status with diagnostics out of primary copy", async ({
@@ -287,5 +291,5 @@ test("shows one coherent polling fallback status with diagnostics out of primary
   await expect(status).toBeVisible({ timeout: 10_000 });
   await expect(status).not.toContainText("stream-error");
   await expect(status).toHaveAttribute("title", /stream-error.*\/api\/v1\/events/);
-  await expect(page.getByRole("button", { name: "Retry live updates" })).toBeVisible();
+  await expect(page.locator('[data-state="polling-fallback"]')).toHaveCount(1);
 });

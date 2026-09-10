@@ -66,6 +66,27 @@ describe("QueryFamily", () => {
     expect(family.stats.peakQueued).toBe(1);
   });
 
+  it("settles each request only after the refresh pass it requested completes", async () => {
+    const { loader, settleOldest } = deferredLoader();
+    const family = new QueryFamily(loader);
+    let initialSettled = false;
+    let queuedSettled = false;
+
+    void family.request("initial").then(() => {
+      initialSettled = true;
+    });
+    void family.request("event").then(() => {
+      queuedSettled = true;
+    });
+
+    await settleOldest();
+    expect(initialSettled).toBe(true);
+    expect(queuedSettled).toBe(false);
+
+    await settleOldest();
+    expect(queuedSettled).toBe(true);
+  });
+
   it("sustains 100 events/s for 60s without a single event-driven abort", async () => {
     // The acceptance criterion, run as fast as the event loop allows rather
     // than in real time: 6,000 events against a loader with latency, asserting

@@ -1,6 +1,8 @@
 import { createContext, useContext } from "react";
 import type { PortalConfig } from "./api/types";
-import type { Theme } from "./theme";
+import { readStoredTheme, type Theme } from "./theme";
+
+const portalConfigCacheKey = "goobers-portal-config";
 
 export const defaultPortalConfig: PortalConfig = {
   brand: {
@@ -74,4 +76,46 @@ export function applyThemeOverrides(config: PortalConfig, theme: Theme): void {
   }
   el.textContent = css;
   void theme;
+}
+
+export function bootstrapPortalTheme(): void {
+  const theme = readStoredTheme();
+  document.documentElement.dataset.theme = theme;
+  const config = readCachedPortalConfig();
+  if (config) {
+    applyThemeOverrides(config, theme);
+  }
+}
+
+export function readCachedPortalConfig(): PortalConfig | undefined {
+  try {
+    const raw = window.sessionStorage.getItem(portalConfigCacheKey);
+    if (!raw) {
+      return undefined;
+    }
+    const value = JSON.parse(raw) as unknown;
+    return isPortalConfig(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeCachedPortalConfig(config: PortalConfig): void {
+  try {
+    window.sessionStorage.setItem(portalConfigCacheKey, JSON.stringify(config));
+  } catch {
+    // The cache only avoids a cold-brand flash; storage failure is harmless.
+  }
+}
+
+function isPortalConfig(value: unknown): value is PortalConfig {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "brand" in value &&
+    typeof value.brand === "object" &&
+    value.brand !== null &&
+    "name" in value.brand &&
+    typeof value.brand.name === "string"
+  );
 }

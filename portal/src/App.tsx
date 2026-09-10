@@ -1,9 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { publishAdmissionState, publishReadState } from "./liveData";
 import { HttpDaemonClient } from "./api/httpClient";
 import { bindUIActions } from "./api/surfaceActions";
 import type { DaemonClient, PortalConfig, ValidationWarning } from "./api/types";
-import { applyThemeOverrides, CobrandContext, defaultPortalConfig } from "./cobrand";
+import {
+  applyThemeOverrides,
+  CobrandContext,
+  defaultPortalConfig,
+  readCachedPortalConfig,
+  writeCachedPortalConfig,
+} from "./cobrand";
 import {
   type ConfigurationWarningClient,
   type ConfigurationWarningSource,
@@ -25,6 +31,7 @@ import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
+import { WorkItemsPage } from "./pages/WorkItemsPage";
 import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { scopeIdentity } from "./scope";
@@ -122,8 +129,9 @@ function Portal({
   const standalone = mode !== "daemon";
   const { theme, toggleTheme } = useTheme();
   const [route, setRoute] = useState<Route>(() => parseRoute());
-  const [config, setConfig] = useState<PortalConfig>(defaultPortalConfig);
-  const [loading, setLoading] = useState(true);
+  const cachedConfig = useMemo(readCachedPortalConfig, []);
+  const [config, setConfig] = useState<PortalConfig>(cachedConfig ?? defaultPortalConfig);
+  const [loading, setLoading] = useState(cachedConfig === undefined);
   const initialRoute = useRef(true);
 
   useEffect(() => {
@@ -132,22 +140,32 @@ function Portal({
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (initialRoute.current) {
       initialRoute.current = false;
       return;
+    }
+    const scrollPane = document.querySelector<HTMLElement>(".portal-main");
+    if (typeof scrollPane?.scrollTo === "function") {
+      scrollPane.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    } else if (scrollPane) {
+      scrollPane.scrollTop = 0;
+      scrollPane.scrollLeft = 0;
     }
     document.getElementById("main-content")?.focus();
   }, [route]);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    if (!cachedConfig) {
+      setLoading(true);
+    }
     void client
       .getPortalConfig()
       .then((nextConfig) => {
         if (cancelled) return;
         setConfig(nextConfig);
+        writeCachedPortalConfig(nextConfig);
       })
       .catch(() => {
         if (cancelled) return;
@@ -160,9 +178,12 @@ function Portal({
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [cachedConfig, client]);
 
   useEffect(() => {
+    if (loading) {
+      return;
+    }
     applyThemeOverrides(config, theme);
     document.title = config.brand.name;
 
@@ -180,7 +201,7 @@ function Portal({
     if (icon?.dataset.cobrand === "true") {
       icon.remove();
     }
-  }, [config, theme]);
+  }, [config, loading, theme]);
 
   // approve/override/rerun (HITL-7/#469): registered now so the UI surface
   // participates in the CLI/API/UI runtime-mutation parity check alongside
@@ -278,7 +299,15 @@ function Portal({
           />
         )}
         {route.page === "runs" && (
-          <RunsPage client={client} filters={route.filters} standalone={standalone} />
+          <RunsPage
+            client={client}
+            filters={route.filters}
+            navigate={navigate}
+            standalone={standalone}
+          />
+        )}
+        {route.page === "work-items" && (
+          <WorkItemsPage client={client} navigate={navigate} route={route} standalone={standalone} />
         )}
         {route.page === "insight" && (
           <InsightPage

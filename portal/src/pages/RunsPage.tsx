@@ -3,27 +3,42 @@ import { RunTiming } from "../components/RunTiming";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
-import { ScopeStrip } from "../components/ScopeStrip";
-import { routeHash, type RunRouteFilters } from "../routing";
+import { useOperationalSnapshot } from "../operationalData";
+import {
+  routeHash,
+  type Navigate,
+  type RunRouteFilters,
+  type RunStatusFilter,
+} from "../routing";
 import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
 import { formatTimestamp } from "../runDetailData";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
-const FILTERS: readonly RunsFilter[] = ["all", "active", "attention", "complete"];
+const FILTERS: readonly RunsFilter[] = ["active", "attention", "complete", "all"];
 const NARROW_RUNS_PAGE_SIZE = 20;
 
 export function RunsPage({
   client,
   filters,
+  navigate,
   standalone,
 }: {
   client: DaemonClient;
   filters?: RunRouteFilters;
+  navigate: Navigate;
   standalone: boolean;
 }) {
-  const [filter, setFilter] = useState<RunsFilter>("all");
+  const analyticalScope = Boolean(
+    filters?.since ||
+    filters?.until ||
+    filters?.outcome ||
+    filters?.population ||
+    filters?.stage,
+  );
+  const filter = filters?.status ?? (analyticalScope ? "all" : "active");
+  const inventoryQuery = useOperationalSnapshot(client);
   // Hides routine no-work schedule ticks by default (#2188): a run whose only
   // stage reported no eligible work, on an instance ticking every ~60s, would
   // otherwise bury the runs an operator actually came here to find. The
@@ -36,6 +51,47 @@ export function RunsPage({
       ? NARROW_RUNS_PAGE_SIZE
       : undefined;
   const query = useRunsHistory(client, filter, scope, pageSize);
+  const inventories =
+    inventoryQuery.state.status === "ready" || inventoryQuery.state.status === "stale"
+      ? inventoryQuery.state.data.inventories
+      : [];
+  const gaggleOptions = inventories.map(({ gaggle }) => ({
+    name: gaggle.name,
+    label: gaggle.displayName || gaggle.name,
+  }));
+  const workflowOptions = inventories
+    .filter(({ gaggle }) => !filters?.gaggle || gaggle.name === filters.gaggle)
+    .flatMap(({ gaggle, workflows }) =>
+      workflows.map((workflow) => ({
+        gaggle: gaggle.name,
+        name: workflow.identity.name,
+        label: workflow.displayName || workflow.identity.name,
+      })),
+    );
+
+  const updateFilters = (updates: Partial<RunRouteFilters>) => {
+    const next = { ...filters, ...updates };
+    navigate({
+      page: "runs",
+      filters: Object.values(next).some(Boolean) ? next : undefined,
+    });
+  };
+  const setStatus = (status: RunStatusFilter) => {
+    updateFilters({ status: status === "active" ? undefined : status });
+  };
+  const setGaggle = (gaggle: string) => {
+    updateFilters({
+      gaggle: gaggle || undefined,
+      workflow: undefined,
+    });
+  };
+  const setWorkflow = (value: string) => {
+    const [gaggle, workflow] = value ? JSON.parse(value) as [string, string] : ["", ""];
+    updateFilters({
+      gaggle: workflow ? gaggle : filters?.gaggle,
+      workflow: workflow || undefined,
+    });
+  };
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -63,36 +119,66 @@ export function RunsPage({
         </p>
       </header>
 
-      {filters && (
-        <ScopeStrip
-          ariaLabel="Insight drill-through scope"
-          clearHref={routeHash({ page: "runs" })}
-          filters={filters}
-          suffix={formatPopulation(filters)}
-        />
-      )}
-
       <div aria-label="Filter runs" className="filter-bar" role="group">
         {FILTERS.map((option) => (
           <button
             aria-pressed={filter === option}
             className={filter === option ? "filter-button filter-button-active" : "filter-button"}
             key={option}
-            onClick={() => setFilter(option)}
+            onClick={() => setStatus(option)}
             type="button"
           >
             {option === "all" ? "All runs" : option}
           </button>
         ))}
-        <label className="filter-toggle">
-          <input
-            aria-label="Show no-work runs"
-            checked={showNoWork}
-            onChange={(event) => setShowNoWork(event.target.checked)}
-            type="checkbox"
-          />
-          Show no-work runs
-        </label>
+        <div className="run-filter-fields">
+          <label className="filter-select run-filter-field">
+            <span>Gaggle</span>
+            <select
+              aria-label="Filter by gaggle"
+              onChange={(event) => setGaggle(event.target.value)}
+              value={filters?.gaggle ?? ""}
+            >
+              <option value="">All gaggles</option>
+              {gaggleOptions.map((gaggle) => (
+                <option key={gaggle.name} value={gaggle.name}>
+                  {gaggle.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-select run-filter-field">
+            <span>Workflow</span>
+            <select
+              aria-label="Filter by workflow"
+              onChange={(event) => setWorkflow(event.target.value)}
+              value={
+                filters?.workflow
+                  ? JSON.stringify([filters.gaggle ?? "", filters.workflow])
+                  : ""
+              }
+            >
+              <option value="">All workflows</option>
+              {workflowOptions.map((workflow) => (
+                <option
+                  key={`${workflow.gaggle}/${workflow.name}`}
+                  value={JSON.stringify([workflow.gaggle, workflow.name])}
+                >
+                  {filters?.gaggle ? workflow.label : `${workflow.gaggle} / ${workflow.label}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-toggle run-filter-field">
+            <input
+              aria-label="Show no-work runs"
+              checked={showNoWork}
+              onChange={(event) => setShowNoWork(event.target.checked)}
+              type="checkbox"
+            />
+            Show no-work runs
+          </label>
+        </div>
       </div>
 
       {query.state.status === "stale" && query.state.error && (
@@ -115,9 +201,8 @@ export function RunsPage({
               <span>Clear the current filters to return to the complete run history.</span>
               <a
                 className="text-button"
-                href={routeHash({ page: "runs" })}
+                href={routeHash({ page: "runs", filters: { status: "all" } })}
                 onClick={() => {
-                  setFilter("all");
                   setShowNoWork(true);
                 }}
               >
@@ -162,41 +247,26 @@ export function RunsPage({
   );
 }
 
-function formatPopulation(filters: RunRouteFilters): string {
-  switch (filters.population) {
-    case "measured":
-      return " · Duration-measured attempts";
-    case "token-measured":
-      return " · Token-measured attempts";
-    case "premium-measured":
-      return " · AI-credit-measured attempts";
-    case "cost-measured":
-      return " · Cost-measured attempts";
-    case "retry-waste":
-      return " · Superseded attempts";
-  }
-  switch (filters.outcome) {
-    case "terminal":
-      return " · Terminal outcomes";
-    case "success":
-      return " · Successful outcomes";
-    case "failure":
-      return " · Failed outcomes";
-    case "other":
-      return " · Other outcomes";
-    default:
-      return filters.population === "attempts" ? " · All attempts" : "";
-  }
-}
-
 function RunHistoryRow({ run }: { run: RunSummary }) {
+  const workItem = run.operator?.issue;
+
   return (
     <DataRow href={routeHash({ page: "run", id: run.id })} label={`Open run ${run.id}`}>
       <span className="row-primary">
-        <span className="row-title mono">{run.id}</span>
+        <span className="row-title">
+          {workItem ? (
+            <>
+              <span>#{workItem.number}</span>
+              {workItem.title ? ` · ${workItem.title}` : ""}
+            </>
+          ) : (
+            <span className="mono">{run.id}</span>
+          )}
+        </span>
         <span className="row-subtitle">
           {run.gaggle} / {run.workflow}
           {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
+          {workItem ? <span className="mono"> · {run.id}</span> : null}
         </span>
       </span>
       <StatusBadge stale={run.stale} status={run.phase} />

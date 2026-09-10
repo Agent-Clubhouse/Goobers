@@ -132,6 +132,11 @@ export const goWireFixtures = {
   "health": {
     "apiVersion": "v1",
     "schemaVersion": "v1",
+    "build": {
+      "version": "v1.2.3",
+      "commit": "abc1234",
+      "date": "2026-07-18T12:00:00Z"
+    },
     "ready": true,
     "healthy": true,
     "instance": {

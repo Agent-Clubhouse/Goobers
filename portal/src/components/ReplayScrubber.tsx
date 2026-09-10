@@ -247,11 +247,17 @@ export function ReplayScrubber({
   };
 
   const heading = eventHeading(currentPoint.event);
-  const summary = eventSummary(currentPoint.event, undefined, runId);
+  const summary = eventSummary(currentPoint.event, undefined, runId).replace(
+    / Select this event to inspect (?:the artifact|the evidence)\.$/,
+    "",
+  );
   const currentStageId = eventNodeId(currentPoint.event, runId);
   const currentStageLabel = timeline.stageSegments.find(
     (segment) => segment.stageId === currentStageId,
   )?.label;
+  const currentStageKind = graph?.nodes.find(
+    (node) => node.id === currentStageId,
+  )?.kind;
   const currentOwner = nodeOwner(graph, currentStageId);
   const currentChapterPosition = selectedChapter
     ? timeline.chapters.indexOf(selectedChapter) + 1
@@ -266,39 +272,10 @@ export function ReplayScrubber({
   );
 
   return (
-    <section aria-label="Replay controls" className="playback-panel">
-      <div aria-live="polite" className="playback-summary">
-        <span
-          aria-hidden="true"
-          className={`event-mark event-mark-${selectedChapter?.kind ?? "raw"}`}
-        >
-          {selectedChapter ? chapterPresentation[selectedChapter.kind].glyph : "·"}
-        </span>
-        <div className="playback-now">
-          <span>
-            {currentChapterPosition
-              ? `Chapter ${currentChapterPosition} of ${timeline.chapters.length}`
-              : `Raw event ${position + 1} of ${ordered.length}`}
-            {" · "}Sequence {currentPoint.event.seq}
-          </span>
-          {(workflow || currentStageLabel) && (
-            <span aria-label="Workflow, stage, and goober" className="playback-scope" role="group">
-              {workflow && <span className="playback-workflow">{workflow}</span>}
-              {workflow && currentStageLabel && <span aria-hidden="true">·</span>}
-              {currentStageLabel && <span className="playback-stage">{currentStageLabel}</span>}
-              {currentOwner && <span className="playback-owner">{currentOwner}</span>}
-            </span>
-          )}
-          <strong>{heading}</strong>
-          <span>{summary}</span>
-        </div>
-        <span className="playback-position">
-          {formatReplayClock(currentPoint.realOffsetMs)} /{" "}
-          {formatReplayClock(timeline.realDurationMs)}
-        </span>
-      </div>
-
-      <div className="replay-timeline" ref={timelineRef}>
+    <>
+      <section aria-labelledby="execution-timeline-title" className="execution-timeline-panel">
+        <h2 id="execution-timeline-title">Execution timeline</h2>
+        <div className="replay-timeline" ref={timelineRef}>
         <div aria-hidden="true" className="replay-track">
           <span
             className="replay-track-progress"
@@ -486,62 +463,68 @@ export function ReplayScrubber({
           className="replay-playhead"
           style={{ left: `${currentPoint.percent}%` }}
         />
-      </div>
-
-      <div className="playback-controls">
-        <div aria-label="Replay transport" className="playback-transport" role="group">
-          <button
-            aria-label="Previous chapter"
-            className="step-button chapter-step-button"
-            disabled={!previousChapter}
-            onClick={() => seekChapter(previousChapter)}
-            title="Previous major chapter"
-            type="button"
-          >
-            <Icon name="previous" size={15} />
-          </button>
-          <button
-            aria-label="Previous raw event"
-            className="step-button"
-            disabled={position <= 0}
-            onClick={() => stepEvent(-1)}
-            title="Previous durable event"
-            type="button"
-          >
-            <span aria-hidden="true">←</span>
-          </button>
-          <button
-            aria-label={playing ? "Pause replay" : "Play replay"}
-            aria-pressed={playing}
-            className="play-button"
-            onClick={togglePlay}
-            type="button"
-          >
-            <Icon name={playing ? "pause" : "play"} size={16} />
-          </button>
-          <button
-            aria-label="Next raw event"
-            className="step-button"
-            disabled={atEnd}
-            onClick={() => stepEvent(1)}
-            title="Next durable event"
-            type="button"
-          >
-            <span aria-hidden="true">→</span>
-          </button>
-          <button
-            aria-label="Next chapter"
-            className="step-button chapter-step-button"
-            disabled={!nextChapter}
-            onClick={() => seekChapter(nextChapter)}
-            title="Next major chapter"
-            type="button"
-          >
-            <Icon name="next" size={15} />
-          </button>
         </div>
-        <div className="playback-options">
-          <details className="chapter-legend">
+
+        <div className="playback-controls">
+          <div className="playback-transport-row">
+            <div aria-label="Replay transport" className="playback-transport" role="group">
+              <button
+                aria-label="Previous chapter"
+                className="step-button chapter-step-button"
+                disabled={!previousChapter}
+                onClick={() => seekChapter(previousChapter)}
+                title="Previous major chapter"
+                type="button"
+              >
+                <Icon name="previous" size={15} />
+              </button>
+              <button
+                aria-label="Previous raw event"
+                className="step-button"
+                disabled={position <= 0}
+                onClick={() => stepEvent(-1)}
+                title="Previous durable event"
+                type="button"
+              >
+                <span aria-hidden="true">←</span>
+              </button>
+              <button
+                aria-label={playing ? "Pause replay" : "Play replay"}
+                aria-pressed={playing}
+                className="play-button"
+                onClick={togglePlay}
+                type="button"
+              >
+                <Icon name={playing ? "pause" : "play"} size={16} />
+              </button>
+              <button
+                aria-label="Next raw event"
+                className="step-button"
+                disabled={atEnd}
+                onClick={() => stepEvent(1)}
+                title="Next durable event"
+                type="button"
+              >
+                <span aria-hidden="true">→</span>
+              </button>
+              <button
+                aria-label="Next chapter"
+                className="step-button chapter-step-button"
+                disabled={!nextChapter}
+                onClick={() => seekChapter(nextChapter)}
+                title="Next major chapter"
+                type="button"
+              >
+                <Icon name="next" size={15} />
+              </button>
+            </div>
+            <span className="playback-position">
+              {formatReplayClock(currentPoint.realOffsetMs)} /{" "}
+              {formatReplayClock(timeline.realDurationMs)}
+            </span>
+          </div>
+          <div className="playback-options">
+            <details className="chapter-legend">
             <summary>Chapter key</summary>
             <ul aria-label="Chapter marker key" className="chapter-legend-list">
               {Object.entries(chapterPresentation).map(([kind, presentation]) => (
@@ -553,39 +536,66 @@ export function ReplayScrubber({
                 </li>
               ))}
             </ul>
-          </details>
-          <div aria-label="Playback speed" className="speed-control" role="group">
-            {replaySpeeds.map((option) => (
-              <button
-                aria-label={`Set playback speed to ${option}×`}
-                aria-pressed={speed === option}
-                className={
-                  speed === option
-                    ? "speed-button speed-button-active"
-                    : "speed-button"
-                }
-                key={option}
-                onClick={() => setSpeed(option)}
-                type="button"
-              >
-                {option}×
-              </button>
-            ))}
+            </details>
+            <div aria-label="Playback speed" className="speed-control" role="group">
+              {replaySpeeds.map((option) => (
+                <button
+                  aria-label={`Set playback speed to ${option}×`}
+                  aria-pressed={speed === option}
+                  className={
+                    speed === option
+                      ? "speed-button speed-button-active"
+                      : "speed-button"
+                  }
+                  key={option}
+                  onClick={() => setSpeed(option)}
+                  type="button"
+                >
+                  {option}×
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="idle-compression-status">
-        <Icon name="clock" size={14} />
-        <strong>Idle compression on</strong>
-        <span>
-          {timeline.idleGaps.length === 0
-            ? "No long idle gaps in this run."
-            : `${timeline.idleGaps.length} long ${
-                timeline.idleGaps.length === 1 ? "gap" : "gaps"
-              } · ${formatReplayDuration(totalIdleTime)} shown as ${formatReplayDuration(compressedIdleTime)}. Focus a hatched band to inspect it.`}
-        </span>
-      </div>
-    </section>
+        <div className="idle-compression-status">
+          <Icon name="clock" size={14} />
+          <strong>Idle compression on</strong>
+          <span>
+            {timeline.idleGaps.length === 0
+              ? "No long idle gaps in this run."
+              : `${timeline.idleGaps.length} long ${
+                  timeline.idleGaps.length === 1 ? "gap" : "gaps"
+                } · ${formatReplayDuration(totalIdleTime)} shown as ${formatReplayDuration(compressedIdleTime)}. Focus a hatched band to inspect it.`}
+          </span>
+        </div>
+      </section>
+
+      <section aria-label="Selected replay event" className="playback-panel playback-details-panel">
+        <h2 className="playback-details-title">Selected event details</h2>
+        <div aria-live="polite" className="playback-summary">
+          <div className="playback-now">
+            <span>
+              {currentChapterPosition
+                ? `Chapter ${currentChapterPosition} of ${timeline.chapters.length}`
+                : `Raw event ${position + 1} of ${ordered.length}`}
+              {" · "}Sequence {currentPoint.event.seq}
+            </span>
+            {(workflow || currentStageLabel) && (
+              <span aria-label="Workflow, stage kind, and goober" className="playback-scope" role="group">
+                {workflow && <span className="playback-workflow">{workflow}</span>}
+                {workflow && currentStageLabel && <span aria-hidden="true">·</span>}
+                {currentStageLabel && <span className="playback-stage">{currentStageLabel}</span>}
+                {currentStageKind && <span aria-hidden="true">·</span>}
+                {currentStageKind && <span className="playback-kind">{currentStageKind}</span>}
+                {currentOwner && <span className="playback-owner">{currentOwner}</span>}
+              </span>
+            )}
+            <strong>{heading}</strong>
+            <span>{summary}</span>
+          </div>
+        </div>
+      </section>
+    </>
   );
 }

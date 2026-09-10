@@ -7,6 +7,7 @@ import type {
 export interface ExternalCostRow {
   key: string;
   label: string;
+  repository?: string;
   externalKind: "pr" | "issue";
   externalId: string;
   provider: string;
@@ -26,7 +27,6 @@ export type ExternalCostSortKey =
   | "provider"
   | "native"
   | "normalized"
-  | "coverage"
   | "runs";
 
 export type ExternalCostSortDirection = "asc" | "desc";
@@ -82,7 +82,10 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
   const coverage = aggregate.coverage;
   return {
     key: `${aggregate.provider}:${aggregate.externalKind}:${aggregate.externalId}`,
-    label: `${kind} #${aggregate.externalId}`,
+    label: aggregate.repository
+      ? `${aggregate.repository}#${aggregate.externalId}`
+      : `${kind} #${aggregate.externalId}`,
+    repository: aggregate.repository,
     externalKind: aggregate.externalKind,
     externalId: aggregate.externalId,
     provider: aggregate.provider,
@@ -100,10 +103,7 @@ function externalCostRow(aggregate: TelemetryCostAggregate): ExternalCostRow {
       (model) =>
         `${model.model}: ${formatAmounts(model.nativeTotals, "unmeasured")} · ${model.measuredAttempts}/${model.usageAttempts} attempts`,
     ),
-    runs: aggregate.runs.map(
-      (run) =>
-        `${run.runId}: ${formatAmounts(run.nativeTotals, "unmeasured")} · ${run.measuredAttempts}/${run.usageAttempts} attempts`,
-    ),
+    runs: aggregate.runs.map((run) => run.runId),
   };
 }
 
@@ -124,8 +124,6 @@ function compareExternalCostRows(
       return compareOptionalNumbers(left.nativeValue, right.nativeValue);
     case "normalized":
       return compareOptionalNumbers(left.normalizedValue, right.normalizedValue);
-    case "coverage":
-      return left.coverageRatio - right.coverageRatio || left.label.localeCompare(right.label);
     case "runs":
       return left.runs.length - right.runs.length || left.label.localeCompare(right.label);
   }
@@ -174,23 +172,27 @@ function formatAmount(amount: TelemetryCostAmount): string {
   let value: string;
   switch (amount.unit) {
     case "aiCredits":
-      value = `${formatNumber(amount.value)} AI credits`;
+      value = `${formatWholeNumber(amount.value)} AIC`;
       break;
     case "usd":
       value = new Intl.NumberFormat("en-US", {
         style: "currency",
         currency: "USD",
         minimumFractionDigits: 2,
-        maximumFractionDigits: 4,
+        maximumFractionDigits: 2,
       }).format(amount.value);
       break;
     case "premiumRequests":
       value = `${formatNumber(amount.value)} premium requests`;
       break;
   }
-  return amount.estimated ? `${value} estimated` : value;
+  return value;
 }
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value);
+}
+
+function formatWholeNumber(value: number): string {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
 }

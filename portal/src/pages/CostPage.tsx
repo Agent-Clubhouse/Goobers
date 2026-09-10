@@ -1,6 +1,5 @@
 import type { DaemonClient } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
-import { ScopeStrip } from "../components/ScopeStrip";
 import {
   type InsightWindow,
   useInsightCostRollup,
@@ -11,7 +10,6 @@ import {
 import {
   deriveInsightCostTrendState,
   deriveInsightViewModel,
-  hasInsightScopeIdentity,
   type InsightScope,
   insightScopeApiParameters,
   insightScopeFromKey,
@@ -21,7 +19,7 @@ import {
   insightScopeOptions,
   insightScopeRouteFilters,
 } from "../insightScope";
-import { routeHash, type Navigate } from "../routing";
+import type { Navigate } from "../routing";
 import type { ScopeFilters } from "../scope";
 import {
   CostTrend,
@@ -76,7 +74,6 @@ export function CostPage({
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">Telemetry</p>
         <h1>Cost</h1>
         <p>
           Instance spend, selected-scope AI cost, retry waste, and attributed pull request and
@@ -87,17 +84,11 @@ export function CostPage({
       <div className="insight-controls" aria-label="Cost filters">
         <label>
           <span>Scope</span>
-          <select
-            aria-label="Scope"
-            onChange={(event) => setScope(insightScopeFromKey(event.target.value))}
+          <CostScopeSelect
+            onChange={(key) => setScope(insightScopeFromKey(key))}
+            scopes={scopes}
             value={insightScopeKey(requestedScope)}
-          >
-            {scopes.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label>
           <span>Time window</span>
@@ -115,37 +106,16 @@ export function CostPage({
         </label>
       </div>
 
-      {hasInsightScopeIdentity(requestedScope) && (
-        <ScopeStrip
-          ariaLabel="Cost scope"
-          clearHref={routeHash({
-            page: "cost",
-            filters: insightScopeRouteFilters({ kind: "instance" }, window),
-          })}
-          filters={scope}
-        />
-      )}
-
       {query.state.status === "stale" && query.state.error && (
         <div className="insight-stale-error" role="alert">
           Cost telemetry refresh failed. Showing the last successful snapshot for this window.
         </div>
       )}
 
-      <InstanceCostRollup
-        costRollup={costRollup.state}
-        refreshing={costRollup.refreshing}
-        retry={costRollup.retry}
-        window={window}
-      />
-
       {view.usage && (
         <section className="content-section">
           <div className="section-heading">
-            <div>
-              <p className="section-kicker">AI usage</p>
-              <h2>Selected-scope cost</h2>
-            </div>
+            <h2>Cost summary</h2>
             <span className="section-count">Measured attempts only</span>
           </div>
           <p className="usage-description">
@@ -163,11 +133,81 @@ export function CostPage({
         </section>
       )}
 
+      {requestedScope.kind === "instance" && (
+        <InstanceCostRollup
+          costRollup={costRollup.state}
+          refreshing={costRollup.refreshing}
+          retry={costRollup.retry}
+          window={window}
+        />
+      )}
+
       <ExternalCostBreakdown
         costs={externalCosts.state}
         refreshing={externalCosts.refreshing}
         retry={externalCosts.retry}
       />
     </>
+  );
+}
+
+function CostScopeSelect({
+  onChange,
+  scopes,
+  value,
+}: {
+  onChange: (value: string) => void;
+  scopes: { key: string; label: string }[];
+  value: string;
+}) {
+  const parsed = scopes.map((option) => ({
+    ...option,
+    scope: insightScopeFromKey(option.key),
+  }));
+  const instance = parsed.find(({ scope }) => scope.kind === "instance");
+  const gaggles = [...new Set(
+    parsed
+      .flatMap(({ scope }) => scope.kind === "instance" ? [] : [scope.gaggle]),
+  )].sort((left, right) => left.localeCompare(right));
+
+  return (
+    <select aria-label="Scope" onChange={(event) => onChange(event.target.value)} value={value}>
+      {instance && <option value={instance.key}>Instance</option>}
+      {gaggles.map((gaggle) => {
+        const gaggleOption = parsed.find(
+          ({ scope }) => scope.kind === "gaggle" && scope.gaggle === gaggle,
+        );
+        const descendants = parsed.filter(
+          ({ scope }) => scope.kind !== "instance" && scope.gaggle === gaggle,
+        );
+        return (
+          <optgroup key={gaggle} label={gaggle}>
+            {gaggleOption && (
+              <option value={gaggleOption.key}>All {gaggle}</option>
+            )}
+            {descendants
+              .filter(({ scope }) => scope.kind === "workflow")
+              .map(({ key, scope }) => {
+                if (scope.kind !== "workflow") return null;
+                return (
+                  <option key={key} value={key}>
+                    Workflow · {scope.workflow}
+                  </option>
+                );
+              })}
+            {descendants
+              .filter(({ scope }) => scope.kind === "stage")
+              .map(({ key, scope }) => {
+                if (scope.kind !== "stage") return null;
+                return (
+                  <option key={key} value={key}>
+                    Stage · {scope.workflow} / {scope.stage}
+                  </option>
+                );
+              })}
+          </optgroup>
+        );
+      })}
+    </select>
   );
 }

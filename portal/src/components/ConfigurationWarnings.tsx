@@ -192,19 +192,13 @@ export function ConfigurationWarnings({
       className={`content-section configuration-warning-section configuration-warning-section-${context}`}
     >
       <div className="section-heading configuration-warning-heading">
-        <div>
-          <p className="section-kicker">Configuration</p>
-          <h2 id={titleId}>Configuration warnings</h2>
-          <p>
-            Advisory config-as-code findings for {context === "workflow" ? "this workflow" : "this instance"}.
-            Run failures and daemon errors remain separate.
-          </p>
-        </div>
+        <h2 id={titleId}>Configuration warnings</h2>
         {activeWarningCount !== undefined && (
           <div className="configuration-warning-actions">
             <span className="section-count">
               {activeWarningCount} active {activeWarningCount === 1 ? "warning" : "warnings"}
             </span>
+            <span aria-hidden="true">|</span>
             <button
               aria-label={refreshing ? "Refreshing warnings" : "Refresh warnings"}
               className="text-button"
@@ -212,7 +206,7 @@ export function ConfigurationWarnings({
               onClick={onRefresh}
               type="button"
             >
-              {refreshing ? "Refreshing…" : "Refresh warnings"}
+              {refreshing ? "Refreshing…" : "Refresh"}
             </button>
           </div>
         )}
