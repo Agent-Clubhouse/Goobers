@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -107,6 +108,31 @@ func (f *fakeTelemetryStore) Errors(_ context.Context, req rollup.ErrorsRequest)
 		end = len(f.errors)
 	}
 	return f.errors[start:end], nil
+}
+
+func TestTelemetryAttributionAggregatesByEffectiveVersionAndWorkload(t *testing.T) {
+	service := &Telemetry{}
+	obs := []creditgraph.AttributionObservation{
+		{RunID: "run-1", EffectiveVersion: "v1", Workload: "main", Attribution: creditgraph.Attribution{Contributions: []creditgraph.Contribution{{NodeID: "node-a", Path: []string{"root", "node-a"}, Share: 0.8, Confidence: 0.9}}}},
+		{RunID: "run-2", EffectiveVersion: "v1", Workload: "worker", Attribution: creditgraph.Attribution{Contributions: []creditgraph.Contribution{{NodeID: "node-b", Path: []string{"root", "node-b"}, Share: 0.7, Confidence: 0.8}}}},
+		{RunID: "run-3", EffectiveVersion: "v2", Workload: "main", Attribution: creditgraph.Attribution{Contributions: []creditgraph.Contribution{{NodeID: "node-c", Path: []string{"root", "node-c"}, Share: 0.6, Confidence: 0.7}}}},
+	}
+	got, err := service.TelemetryAttribution(context.Background(), TelemetryAttributionRequest{Observations: obs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cohorts) != 3 {
+		t.Fatalf("cohorts = %d, want 3", len(got.Cohorts))
+	}
+	if got.Cohorts[0].EffectiveVersion != "v1" || got.Cohorts[0].Workload != "main" {
+		t.Fatalf("first cohort = %+v, want v1/main", got.Cohorts[0])
+	}
+	if got.Cohorts[1].EffectiveVersion != "v1" || got.Cohorts[1].Workload != "worker" {
+		t.Fatalf("second cohort = %+v, want v1/worker", got.Cohorts[1])
+	}
+	if len(got.Cohorts[0].TopContributingPaths) != 1 || got.Cohorts[0].TopContributingPaths[0].Nodes[0] != "root" {
+		t.Fatalf("main cohort paths = %+v, want root-prefixed path", got.Cohorts[0].TopContributingPaths)
+	}
 }
 
 func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {

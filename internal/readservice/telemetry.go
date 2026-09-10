@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -30,6 +31,7 @@ var (
 type TelemetryReader interface {
 	TelemetryCosts(context.Context, TelemetryCostRequest) (TelemetryCostResult, error)
 	TelemetryStats(context.Context, TelemetryStatsRequest) (TelemetryStatsResult, error)
+	TelemetryAttribution(context.Context, TelemetryAttributionRequest) (TelemetryAttributionResult, error)
 	TelemetryErrorSignatures(context.Context, TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error)
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
 	TelemetryImplementationOutcomes(context.Context, TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error)
@@ -89,15 +91,16 @@ type TelemetryStatsRequest struct {
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Gaggles          []TelemetryGaggleStats       `json:"gaggles"`
-	Runs             []TelemetryRunStats          `json:"runs"`
-	Stages           []TelemetryStageStats        `json:"stages"`
-	Usage            []TelemetryUsageStats        `json:"usage"`
-	Models           []TelemetryModelStats        `json:"models"`
-	CreditAssignment []NodeCredit                 `json:"creditAssignment"`
-	CausalCredit     []readmodel.CausalNodeCredit `json:"causalCredit"`
-	GraphAnalytics   *readmodel.GraphAnalytics    `json:"graphAnalytics,omitempty"`
-	PromotionSignals []PromotionSignal            `json:"promotionSignals,omitempty"`
+	Gaggles            []TelemetryGaggleStats          `json:"gaggles"`
+	Runs               []TelemetryRunStats             `json:"runs"`
+	Stages             []TelemetryStageStats           `json:"stages"`
+	Usage              []TelemetryUsageStats           `json:"usage"`
+	Models             []TelemetryModelStats           `json:"models"`
+	CreditAssignment   []NodeCredit                    `json:"creditAssignment"`
+	AttributionCohorts []creditgraph.CohortAggregation `json:"attributionCohorts,omitempty"`
+	CausalCredit       []readmodel.CausalNodeCredit    `json:"causalCredit"`
+	GraphAnalytics     *readmodel.GraphAnalytics       `json:"graphAnalytics,omitempty"`
+	PromotionSignals   []PromotionSignal               `json:"promotionSignals,omitempty"`
 	// PromotionCandidates is the machine-filtered input for automated
 	// promotion. Correlational fallbacks remain visible in PromotionSignals
 	// but never cross this boundary.
@@ -113,6 +116,42 @@ type TelemetryTrendBucket struct {
 	Since string                `json:"since"`
 	Until string                `json:"until"`
 	Usage []TelemetryUsageStats `json:"usage"`
+}
+
+// TelemetryAttributionRequest describes a bounded set of attribution
+// observations to aggregate by EffectiveVersion and workload cohort.
+type TelemetryAttributionRequest struct {
+	Observations []creditgraph.AttributionObservation `json:"observations,omitempty"`
+}
+
+// TelemetryAttributionResult is the cohorted, path-preserving view over one
+// attribution evidence set.
+type TelemetryAttributionResult struct {
+	Cohorts []creditgraph.CohortAggregation `json:"cohorts,omitempty"`
+}
+
+// AggregateAttributionObservations exposes the cohort aggregation to status and
+// connector consumers without forcing them to import the internal graph package.
+func AggregateAttributionObservations(observations []creditgraph.AttributionObservation) []creditgraph.CohortAggregation {
+	return creditgraph.AggregateAttributionEvidence(observations)
+}
+
+// TelemetryAttribution aggregates attribution observations into the cohorted
+// view the operators and Tutor connectors need.
+func (s *Telemetry) TelemetryAttribution(ctx context.Context, req TelemetryAttributionRequest) (TelemetryAttributionResult, error) {
+	if err := ctx.Err(); err != nil {
+		return TelemetryAttributionResult{}, err
+	}
+	return TelemetryAttributionResult{Cohorts: AggregateAttributionObservations(req.Observations)}, nil
+}
+
+// TelemetryAttribution aggregates attribution observations into the cohorted
+// view for local read-service callers.
+func (s *Local) TelemetryAttribution(ctx context.Context, req TelemetryAttributionRequest) (TelemetryAttributionResult, error) {
+	if s == nil || s.telemetry == nil {
+		return TelemetryAttributionResult{}, ErrTelemetryUnavailable
+	}
+	return s.telemetry.TelemetryAttribution(ctx, req)
 }
 
 // PromotionSignal is the bounded evidence interface for automated promotion.
