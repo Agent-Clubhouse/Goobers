@@ -1024,61 +1024,79 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 		}
 	}
 	result.PromotionCandidates = EligiblePromotionSignals(result.PromotionSignals)
-	if invocations, ok := s.telemetry.store.(AgentInvocationReader); ok {
-		cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
-			Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
-		})
-		if err != nil {
-			return TelemetryStatsResult{}, err
-		}
-		result.AttributionCohorts = cohorts
+	if err := s.attachStoredAttributionCohorts(ctx, req, &result); err != nil {
+		return TelemetryStatsResult{}, err
 	}
-	if graph := getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow); graph != nil {
-		runtimeGraph, err := s.runtimeAnalyticsGraph(ctx, req, graph)
-		if err != nil {
-			return TelemetryStatsResult{}, err
-		}
-		analyticsGraph := readmodel.AnalyticsGraph{
-			Nodes: make([]readmodel.AnalyticsNode, 0, len(runtimeGraph.Nodes)),
-			Edges: make([]readmodel.AnalyticsEdge, 0, len(runtimeGraph.Edges)),
-		}
-		failureByNode, trustedFailure, creditNodes := normalizedPromotionFailure(
-			result.CreditAssignment, result.PromotionCandidates,
-		)
-		latencyByNode := make(map[string]float64, len(result.Stages))
-		for _, stage := range result.Stages {
-			if stage.Workflow == req.Workflow && stage.AvgDurationMs != nil {
-				latencyByNode[stage.Stage] = *stage.AvgDurationMs
-			}
-		}
-		for _, node := range runtimeGraph.Nodes {
-			analyticsGraph.Nodes = append(analyticsGraph.Nodes, readmodel.AnalyticsNode{
-				ID: node.ID, Failure: failureByNode[node.ID], Latency: latencyByNode[node.ID],
-			})
-		}
-		for _, edge := range runtimeGraph.Edges {
-			analyticsGraph.Edges = append(analyticsGraph.Edges, readmodel.AnalyticsEdge{
-				Source: edge.Source, Target: edge.Target,
-			})
-		}
-		analytics, err := readmodel.AnalyzeGraph(analyticsGraph)
-		if err != nil {
-			return TelemetryStatsResult{}, err
-		}
-		if len(trustedFailure) == 0 {
-			analytics.Centrality = nil
-			analytics.CriticalPath = readmodel.CriticalPath{}
-			analytics.Confidence = "untrusted"
-			analytics.Caveat = "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available"
-		} else if !sameAnalyticsNodes(trustedFailure, creditNodes) {
-			analytics.Confidence = "partial"
-			analytics.Caveat = "centrality uses only promotion-eligible causal weights; correlational fallbacks are excluded"
-		} else {
-			analytics.Confidence = "bounded"
-		}
-		result.GraphAnalytics = &analytics
+	if err := s.attachGraphAnalytics(ctx, req, &result); err != nil {
+		return TelemetryStatsResult{}, err
 	}
 	return result, nil
+}
+
+func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req TelemetryStatsRequest, result *TelemetryStatsResult) error {
+	invocations, ok := s.telemetry.store.(AgentInvocationReader)
+	if !ok {
+		return nil
+	}
+	cohorts, err := StoredAttributionCohorts(ctx, s.sources.Layout.Root, s.sources.ReadModel, invocations, StoredAttributionQuery{
+		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since, Until: req.Until,
+	})
+	if err != nil {
+		return err
+	}
+	result.AttributionCohorts = cohorts
+	return nil
+}
+
+func (s *Local) attachGraphAnalytics(ctx context.Context, req TelemetryStatsRequest, result *TelemetryStatsResult) error {
+	graph := getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow)
+	if graph == nil {
+		return nil
+	}
+	runtimeGraph, err := s.runtimeAnalyticsGraph(ctx, req, graph)
+	if err != nil {
+		return err
+	}
+	analyticsGraph := readmodel.AnalyticsGraph{
+		Nodes: make([]readmodel.AnalyticsNode, 0, len(runtimeGraph.Nodes)),
+		Edges: make([]readmodel.AnalyticsEdge, 0, len(runtimeGraph.Edges)),
+	}
+	failureByNode, trustedFailure, creditNodes := normalizedPromotionFailure(
+		result.CreditAssignment, result.PromotionCandidates,
+	)
+	latencyByNode := make(map[string]float64, len(result.Stages))
+	for _, stage := range result.Stages {
+		if stage.Workflow == req.Workflow && stage.AvgDurationMs != nil {
+			latencyByNode[stage.Stage] = *stage.AvgDurationMs
+		}
+	}
+	for _, node := range runtimeGraph.Nodes {
+		analyticsGraph.Nodes = append(analyticsGraph.Nodes, readmodel.AnalyticsNode{
+			ID: node.ID, Failure: failureByNode[node.ID], Latency: latencyByNode[node.ID],
+		})
+	}
+	for _, edge := range runtimeGraph.Edges {
+		analyticsGraph.Edges = append(analyticsGraph.Edges, readmodel.AnalyticsEdge{
+			Source: edge.Source, Target: edge.Target,
+		})
+	}
+	analytics, err := readmodel.AnalyzeGraph(analyticsGraph)
+	if err != nil {
+		return err
+	}
+	if len(trustedFailure) == 0 {
+		analytics.Centrality = nil
+		analytics.CriticalPath = readmodel.CriticalPath{}
+		analytics.Confidence = "untrusted"
+		analytics.Caveat = "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available"
+	} else if !sameAnalyticsNodes(trustedFailure, creditNodes) {
+		analytics.Confidence = "partial"
+		analytics.Caveat = "centrality uses only promotion-eligible causal weights; correlational fallbacks are excluded"
+	} else {
+		analytics.Confidence = "bounded"
+	}
+	result.GraphAnalytics = &analytics
+	return nil
 }
 
 // normalizedPromotionFailure reconciles identity-level credits with the
