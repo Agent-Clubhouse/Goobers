@@ -209,6 +209,11 @@ func validateSupportMatrixEvolution(
 		if previous.EffectiveIn != "" && candidate.EffectiveIn != previous.EffectiveIn {
 			return fmt.Errorf("released DSL version %q effectiveIn correction must not change", previous.Version)
 		}
+		if previous.Retraction != nil {
+			if candidate.Retraction == nil || *candidate.Retraction != *previous.Retraction {
+				return fmt.Errorf("released DSL version %q retraction must not change", previous.Version)
+			}
+		}
 	}
 
 	for _, candidate := range current.Versions() {
@@ -416,20 +421,71 @@ func validateVersionHistory(version Version) (versionLifecycle, error) {
 	return lifecycle, nil
 }
 
+// validateEffectiveIn checks a declared EffectiveIn correction. EffectiveIn
+// exists to say a level took effect BEFORE the release its History transition
+// names — anything else (equal to or after that date) corrects nothing, so it
+// is refused outright rather than accepted as a no-op. A correction that
+// genuinely predates its published transition is only valid alongside a
+// matching Retraction (#4708): the declared, auditable exception that lets
+// the append-only evolution guard honor the discrepancy instead of refusing
+// it, without opening a general license to bypass support windows or rewrite
+// history — validateRetraction ties it to exactly the commitment it
+// withdraws.
 func validateEffectiveIn(version Version) error {
 	if version.EffectiveIn == "" {
 		return nil
 	}
-	if _, err := parseSupportReleaseVersion(version.EffectiveIn, false); err != nil {
+	effective, err := parseSupportReleaseVersion(version.EffectiveIn, false)
+	if err != nil {
 		return fmt.Errorf("invalid effectiveIn version %q: %w", version.EffectiveIn, err)
 	}
 	last := version.History[len(version.History)-1]
-	// This exception records a behavior already shipped in beta.1/beta.2.
-	// Never let an arbitrary new effectiveIn bypass the support windows or
-	// rewrite their history: new transitions must follow the normal rules.
-	if version.Version != CurrentDSLVersion || version.Level != LevelUnsupported ||
-		version.EffectiveIn != "v0.4.0" || last.Level != LevelUnsupported || last.SinceVersion != "v0.5.0" {
-		return fmt.Errorf("effectiveIn is reserved for the published DSL 1.4 early-removal correction (v0.4.0 actual, v0.5.0 promised)")
+	lastRelease, err := parseSupportReleaseVersion(last.SinceVersion, len(version.History) == 1)
+	if err != nil {
+		return fmt.Errorf("invalid lifecycle version %q: %w", last.SinceVersion, err)
+	}
+	if compareReleaseVersions(effective, lastRelease) >= 0 {
+		return fmt.Errorf(
+			"effectiveIn %q must be earlier than the published transition %q it corrects",
+			version.EffectiveIn, last.SinceVersion,
+		)
+	}
+	if version.Retraction == nil {
+		return fmt.Errorf(
+			"effectiveIn %q before the published transition %q requires a declared retraction (#4708)",
+			version.EffectiveIn, last.SinceVersion,
+		)
+	}
+	return validateRetraction(version.Version, version.EffectiveIn, last.SinceVersion, version.Retraction)
+}
+
+// validateRetraction checks a declared Retraction actually withdraws
+// something that was genuinely published, performed by the same release
+// EffectiveIn names, and carries the audit-trail rationale #4708 requires.
+// Requiring an exact match on the withdrawn commitment (rather than merely
+// requiring a Retraction to be present) is what keeps a retraction from
+// being usable to excuse an ordinary early drop that was never promised in
+// the first place — the declaration must match the record it withdraws.
+func validateRetraction(version, effectiveIn, published string, retraction *Retraction) error {
+	retracted := strings.TrimSpace(retraction.UnsupportedAfter)
+	if retracted != published {
+		return fmt.Errorf(
+			"DSL version %q retraction names unsupported-after release %q but %q was published",
+			version, retracted, published,
+		)
+	}
+	release := strings.TrimSpace(retraction.Release)
+	if release != effectiveIn {
+		return fmt.Errorf(
+			"DSL version %q retraction release %q does not match effectiveIn %q",
+			version, release, effectiveIn,
+		)
+	}
+	if _, err := parseSupportReleaseVersion(release, false); err != nil {
+		return fmt.Errorf("DSL version %q retraction has invalid release %q: %w", version, release, err)
+	}
+	if strings.TrimSpace(retraction.Rationale) == "" {
+		return fmt.Errorf("DSL version %q retraction must declare a rationale", version)
 	}
 	return nil
 }

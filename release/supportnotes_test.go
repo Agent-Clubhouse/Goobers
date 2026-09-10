@@ -47,6 +47,49 @@ func TestRenderSupportDeltaIncludesMigrationPaths(t *testing.T) {
 	}
 }
 
+func TestRenderSupportDeltaSurfacesRetraction(t *testing.T) {
+	previous := supportSnapshot{
+		SchemaVersion: supportSnapshotSchemaVersion,
+		Release:       "v0.4.0-beta.3",
+		Versions: []supportmatrix.Version{
+			{Version: "1.4", Level: supportmatrix.LevelUnsupported, EffectiveIn: "v0.4.0", Replacement: "2.0"},
+		},
+	}
+	current := supportSnapshot{
+		SchemaVersion: supportSnapshotSchemaVersion,
+		Release:       "v0.4.0",
+		Versions: []supportmatrix.Version{
+			{
+				Version:     "1.4",
+				Level:       supportmatrix.LevelUnsupported,
+				EffectiveIn: "v0.4.0",
+				Replacement: "2.0",
+				Retraction: &supportmatrix.Retraction{
+					UnsupportedAfter: "v0.5.0",
+					Release:          "v0.4.0",
+					Rationale:        "the interpreter was already removed before the promised date",
+				},
+			},
+		},
+	}
+
+	notes, err := renderSupportDelta(current, &previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"### Retracted commitments",
+		"DSL `1.4`",
+		"unsupported-after `v0.5.0`",
+		"retracted in `v0.4.0`",
+		"the interpreter was already removed before the promised date",
+	} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("release notes missing %q:\n%s", want, notes)
+		}
+	}
+}
+
 func TestSupportMatrixDeltaRequiresMigrationTarget(t *testing.T) {
 	previous := supportSnapshot{
 		SchemaVersion: supportSnapshotSchemaVersion,

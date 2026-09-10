@@ -23,6 +23,12 @@ type supportSnapshot struct {
 type supportDelta struct {
 	NewlyDeprecated  []supportmatrix.Version
 	NewlyUnsupported []supportmatrix.Version
+	// NewlyRetracted lists versions whose Retraction (#4708) first appears in
+	// this release — a previously published unsupportedAfter commitment
+	// deliberately withdrawn, surfaced here so a consumer of the release
+	// notes sees the commitment changed and why, not just the matrix's raw
+	// diff.
+	NewlyRetracted []supportmatrix.Version
 }
 
 // checkSupportMatrixForRelease refuses to package a tagged release whose
@@ -151,12 +157,17 @@ func validateSupportSnapshot(snapshot supportSnapshot) error {
 
 func supportMatrixDelta(previous, current supportSnapshot) (supportDelta, error) {
 	previousLevels := make(map[string]supportmatrix.Level, len(previous.Versions))
+	previousRetractions := make(map[string]*supportmatrix.Retraction, len(previous.Versions))
 	for _, version := range previous.Versions {
 		previousLevels[version.Version] = version.Level
+		previousRetractions[version.Version] = version.Retraction
 	}
 
 	var delta supportDelta
 	for _, version := range current.Versions {
+		if version.Retraction != nil && previousRetractions[version.Version] == nil {
+			delta.NewlyRetracted = append(delta.NewlyRetracted, version)
+		}
 		if previousLevels[version.Version] == version.Level {
 			continue
 		}
@@ -188,13 +199,31 @@ func renderSupportDelta(current supportSnapshot, previous *supportSnapshot) (str
 		return "", err
 	}
 	fmt.Fprintf(&b, "Compared with `%s`.\n\n", previous.Release)
-	if len(delta.NewlyDeprecated) == 0 && len(delta.NewlyUnsupported) == 0 {
+	if len(delta.NewlyDeprecated) == 0 && len(delta.NewlyUnsupported) == 0 && len(delta.NewlyRetracted) == 0 {
 		b.WriteString("No DSL versions became deprecated or unsupported in this release.\n")
 		return b.String(), nil
 	}
 	writeSupportChanges(&b, "Newly deprecated", delta.NewlyDeprecated)
 	writeSupportChanges(&b, "Newly unsupported", delta.NewlyUnsupported)
+	writeRetractionChanges(&b, delta.NewlyRetracted)
 	return b.String(), nil
+}
+
+// writeRetractionChanges surfaces a declared retraction (#4708) in the
+// release notes: the withdrawn commitment and why, so a consumer of the
+// support-matrix delta sees the promise changed rather than only inferring
+// it from an unexplained effectiveIn value in the raw snapshot.
+func writeRetractionChanges(b *strings.Builder, versions []supportmatrix.Version) {
+	if len(versions) == 0 {
+		return
+	}
+	b.WriteString("### Retracted commitments\n\n")
+	for _, version := range versions {
+		r := version.Retraction
+		fmt.Fprintf(b, "- DSL `%s`: the unsupported-after `%s` published for this version is retracted in `%s`. %s\n",
+			version.Version, r.UnsupportedAfter, r.Release, r.Rationale)
+	}
+	b.WriteString("\n")
 }
 
 func writeSupportChanges(b *strings.Builder, heading string, versions []supportmatrix.Version) {
