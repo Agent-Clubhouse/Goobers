@@ -116,6 +116,8 @@ placeholder; the runner dispatches by `inputs.kind` and does not shell out.
 | `pollMaxIntervalSeconds` | no | `2m` | Maximum backoff interval, as a Go duration string. |
 | `pollTimeoutSeconds` | no | `30m` | Overall poll timeout, bounded below the task's wall-clock limit. |
 | `humanPolicyConfigurationIds` | no | all policies gate | Comma-separated provider policy identifiers that require human action and therefore do not drive the fixable-CI branch. |
+| `retryFailedChecksMaxAttempts` | no | `0` (disabled) | GitHub only. A positive integer count opts in to mechanically rerunning the pull request's currently-failing checks (via GitHub's rerun-failed-jobs API) up to this many times before reporting a terminal `failing` outcome — reduces repass churn on flaky checks. Reruns every failed job in each failed workflow run at the PR's head commit; GitHub's API has no per-check selection. Requires the credential behind `provider:pr:write` to also carry Actions: Read and write, which it does not by default — see [#4751](https://github.com/Agent-Clubhouse/Goobers/issues/4751). |
+| `retryFailedChecksBackoffSeconds` | no | matches the effective `pollIntervalSeconds` | Go duration string; how long to wait after triggering a rerun before re-polling. Only meaningful when `retryFailedChecksMaxAttempts` is set. |
 
 Required capability: `provider:pr:write`.
 

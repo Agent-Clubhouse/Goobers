@@ -320,6 +320,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		if seams != nil {
 			seams.recoveryEmitter = emitter
 			seams.checkpointEmitter = emitter
+			seams.executionFence = remoteSharedExecutionFence(*daemonAPI, func(runID string) (string, error) {
+				return workerExecutionBearer(emitter, runID)
+			})
 		}
 		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
 // writeplanes.go implements the daemon write API's claims, trigger, and HITL
@@ -84,16 +85,19 @@ type ClaimResponse struct {
 // same reason internal/dispatcher restates MintedCredential: this package is
 // the server, and the ledger package has no business depending on it.
 type ClaimEntry struct {
-	Verification ClaimVerification `json:"verification"`
-	ItemID       string            `json:"itemId"`
-	Gaggle       string            `json:"gaggle,omitempty"`
-	Provider     string            `json:"provider,omitempty"`
-	ExternalID   string            `json:"externalId,omitempty"`
-	RunID        string            `json:"runId"`
-	Workflow     string            `json:"workflow"`
-	ClaimedAt    time.Time         `json:"claimedAt"`
-	ExpiresAt    time.Time         `json:"expiresAt"`
-	ReleasedAt   *time.Time        `json:"releasedAt,omitempty"`
+	Verification   ClaimVerification `json:"verification"`
+	ItemID         string            `json:"itemId"`
+	Gaggle         string            `json:"gaggle,omitempty"`
+	Provider       string            `json:"provider,omitempty"`
+	ExternalID     string            `json:"externalId,omitempty"`
+	RunID          string            `json:"runId"`
+	Workflow       string            `json:"workflow"`
+	ClaimedAt      time.Time         `json:"claimedAt"`
+	ExpiresAt      time.Time         `json:"expiresAt"`
+	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
+	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
+	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
 }
 
 // ClaimVerification mirrors the ledger's bounded, lease-specific provider
@@ -126,6 +130,9 @@ type ClaimListRequest struct {
 	// Scope is ClaimListScopeRun or ClaimListScopeNamespace.
 	Scope          string `json:"scope"`
 	IncludeHistory bool   `json:"includeHistory,omitempty"`
+	// Execution requests the trusted pinned policy alongside own-run leases.
+	// It is read-only and may not be combined with a namespace listing.
+	Execution bool `json:"execution,omitempty"`
 	// PodScoped is set by the route, never decoded from the body: the caller
 	// is a pod principal, so a namespace listing must be confined to the
 	// gaggle the caller's run belongs to (the service verifies RunID lives
@@ -135,8 +142,10 @@ type ClaimListRequest struct {
 
 // ClaimListResponse is the ledger slice the list route answers with.
 type ClaimListResponse struct {
-	Entries []ClaimEntry `json:"entries"`
-	History []ClaimEntry `json:"history,omitempty"`
+	Entries         []ClaimEntry `json:"entries"`
+	History         []ClaimEntry `json:"history,omitempty"`
+	ClaimVisibility string       `json:"claimVisibility,omitempty"`
+	ObservedAt      time.Time    `json:"observedAt,omitzero"`
 }
 
 // ClaimRecoverRequest asks the daemon to run its own stale-claim recovery

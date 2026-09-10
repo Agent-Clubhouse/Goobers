@@ -27,6 +27,10 @@ type FileConfig struct {
 	// Open overrides the ledger open (tests inject fault-injecting ledgers);
 	// nil opens localscheduler.OpenClaimLedger.
 	Open func(path string, opts ...localscheduler.LedgerOption) (FileLedger, error)
+	// Shared resolves the trusted workflow policy and repository binding.
+	// Nil retains the local-only assembly; shared-enabled assemblies must
+	// install this resolver for every claim, including nested Locked calls.
+	Shared SharedClaimResolver
 }
 
 // FileLedger is the slice of *localscheduler.ClaimLedger the file backend
@@ -165,25 +169,39 @@ func (s *fileSession) Locked(_ context.Context, _ string, fn func(Ledger) error)
 	return fn(s)
 }
 
-func (s *fileSession) ClaimScoped(_ context.Context, key Key, runID, workflow string, lease time.Duration) (bool, string, error) {
+func (s *fileSession) ClaimScoped(ctx context.Context, key Key, runID, workflow string, lease time.Duration) (bool, string, error) {
+	if s.file.cfg.Shared != nil {
+		binding, err := s.file.cfg.Shared.Admission(ctx, key, runID, workflow)
+		if err != nil {
+			return false, "", err
+		}
+		if binding != nil {
+			return s.claimShared(ctx, key, runID, workflow, lease, *binding)
+		}
+	}
 	if key.Gaggle == "" && key.Provider == "" {
 		return s.ledger.Claim(key.ExternalID, runID, workflow, lease)
 	}
 	return s.ledger.ClaimScoped(key, runID, workflow, lease)
 }
 
-func (s *fileSession) ReleaseScoped(_ context.Context, key Key, runID string) error {
+func (s *fileSession) ReleaseScoped(ctx context.Context, key Key, runID string) error {
+	for _, entry := range s.ledger.ForRunAll(runID) {
+		if KeyForEntry(entry) == key && !entry.SharedDeadline.IsZero() {
+			return s.releaseShared(ctx, entry)
+		}
+	}
 	if key.Gaggle == "" && key.Provider == "" {
 		return s.ledger.Release(key.ExternalID, runID)
 	}
 	return s.ledger.ReleaseScoped(key, runID)
 }
 
-func (s *fileSession) ReleaseAllForRun(_ context.Context, runID string) ([]Entry, error) {
+func (s *fileSession) ReleaseAllForRun(ctx context.Context, runID string) ([]Entry, error) {
 	entries := s.ledger.ForRunAll(runID)
 	released := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		if err := s.ledger.ReleaseEntry(entry, runID); err != nil {
+		if err := s.releaseEntry(ctx, entry, runID); err != nil {
 			return released, fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
 		}
 		released = append(released, reportEntry(entry))

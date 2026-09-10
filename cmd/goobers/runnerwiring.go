@@ -89,6 +89,7 @@ func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(contex
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
 type runnerCompositionInput struct {
+	ExecutionFence       executionFenceStart
 	Layout               instance.Layout
 	Config               *instance.Config
 	Goobers              map[string]apiv1.GooberSpec
@@ -109,6 +110,10 @@ var runnerLookPath = exec.LookPath
 
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
+	executionFence := input.ExecutionFence
+	if executionFence == nil {
+		executionFence = localSharedExecutionFence(l)
+	}
 	cfg := input.Config
 	goobers := input.Goobers
 	instructionsByGoober := input.InstructionsByGoober
@@ -286,21 +291,29 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		RecoveryEvents: recoveryRunEvents(l),
 		RunControls:    cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
-			return buildDeterministicExecutor(deterministicExecutorInput{
+			exec, err := buildDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
 				InstanceRoot: instanceRoot, SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
 				ScratchDir: deterministicScratchDir,
 			})
+			if err != nil {
+				return nil, err
+			}
+			return claimFencedDeterministic{Deterministic: exec, start: executionFence}, nil
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
-			return buildAgenticExecutor(agenticExecutorInput{
+			exec, err := buildAgenticExecutor(agenticExecutorInput{
 				GooberName: gooberName, Goobers: goobers, Instructions: instructionsByGoober, Assets: assetsByGoober,
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 			})
+			if err != nil {
+				return nil, err
+			}
+			return claimFencedGoober{Goober: exec, start: executionFence}, nil
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		// Placement provenance is recorded only once this instance declares a

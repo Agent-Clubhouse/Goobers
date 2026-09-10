@@ -47,6 +47,49 @@ func TestRenderSupportDeltaIncludesMigrationPaths(t *testing.T) {
 	}
 }
 
+func TestRenderSupportDeltaSurfacesRetraction(t *testing.T) {
+	previous := supportSnapshot{
+		SchemaVersion: supportSnapshotSchemaVersion,
+		Release:       "v0.4.0-beta.3",
+		Versions: []supportmatrix.Version{
+			{Version: "1.4", Level: supportmatrix.LevelUnsupported, EffectiveIn: "v0.4.0", Replacement: "2.0"},
+		},
+	}
+	current := supportSnapshot{
+		SchemaVersion: supportSnapshotSchemaVersion,
+		Release:       "v0.4.0",
+		Versions: []supportmatrix.Version{
+			{
+				Version:     "1.4",
+				Level:       supportmatrix.LevelUnsupported,
+				EffectiveIn: "v0.4.0",
+				Replacement: "2.0",
+				Retraction: &supportmatrix.Retraction{
+					UnsupportedAfter: "v0.5.0",
+					Release:          "v0.4.0",
+					Rationale:        "the interpreter was already removed before the promised date",
+				},
+			},
+		},
+	}
+
+	notes, err := renderSupportDelta(current, &previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"### Retracted commitments",
+		"DSL `1.4`",
+		"unsupported-after `v0.5.0`",
+		"retracted in `v0.4.0`",
+		"the interpreter was already removed before the promised date",
+	} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("release notes missing %q:\n%s", want, notes)
+		}
+	}
+}
+
 func TestSupportMatrixDeltaRequiresMigrationTarget(t *testing.T) {
 	previous := supportSnapshot{
 		SchemaVersion: supportSnapshotSchemaVersion,
@@ -85,6 +128,54 @@ func TestRenderSupportDeltaHandlesFirstAndUnchangedRelease(t *testing.T) {
 	}
 	if !strings.Contains(unchanged, "No DSL versions became deprecated or unsupported") {
 		t.Fatalf("unchanged release notes:\n%s", unchanged)
+	}
+}
+
+// TestCheckSupportMatrixForReleaseIndependentOfCheckoutTopology is #4709's
+// regression fixture: the release-level check's outcome must not vary with
+// how many commits a checkout sits past whichever tag git describe finds
+// nearest. #4663 reported the concrete failure mode — a checkout hundreds of
+// commits past a stale stable tag (v0.3.3) spuriously failed against that
+// tag's release line, even though nobody was cutting v0.3.3. Every "ahead of
+// a tag" shape git describe can produce is skipped identically regardless of
+// which tag it names; only an exact tag (final or prerelease, optionally
+// -dirty) is actually checked.
+func TestCheckSupportMatrixForReleaseIndependentOfCheckoutTopology(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version string
+		skipped bool
+	}{
+		{"many commits past an old stable tag (#4663)", "v0.3.3-526-g9aa3996e", true},
+		{"a few commits past a prerelease tag", "v0.4.0-beta.2-176-g53dd3c50d", true},
+		{"a few commits past a stable tag, dirty tree", "v0.3.3-1-gabc1234-dirty", true},
+		{"exactly on a stable tag", "v0.4.0", false},
+		{"exactly on a prerelease tag", "v0.4.0-rc.1", false},
+		{"exactly on a stable tag, dirty tree", "v0.4.0-dirty", false},
+		{"no tags reachable at all", "9aa3996e", true}, // no "v" prefix either way
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// This only asserts the CLASSIFICATION is shape-driven (does the
+			// version look like "ahead of a tag" or "exactly on one"), not
+			// git-state-driven; checkSupportMatrixForRelease's actual
+			// pass/fail for a checked version still depends on the compiled
+			// matrix, asserted separately by TestCheckSupportMatrixForRelease.
+			var skipped bool
+			if !strings.HasPrefix(tc.version, "v") {
+				skipped = true
+			} else {
+				skipped = gitDescribeAheadOfTagSuffix.MatchString(tc.version)
+			}
+			if skipped != tc.skipped {
+				t.Fatalf("classification of %q = skipped:%t, want skipped:%t", tc.version, skipped, tc.skipped)
+			}
+		})
+	}
+
+	// The concrete #4663 repro: this must never fail again, regardless of
+	// which tag the checkout happens to be nearest.
+	if err := checkSupportMatrixForRelease("v0.3.3-526-g9aa3996e"); err != nil {
+		t.Fatalf("checkSupportMatrixForRelease(v0.3.3-526-g9aa3996e) = %v, want nil (#4663)", err)
 	}
 }
 

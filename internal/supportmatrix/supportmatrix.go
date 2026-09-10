@@ -54,6 +54,20 @@ const (
 	// later, separate lock ceremony staged under ValidateSupportPolicy's
 	// append-only rules.
 	V3DSLVersion = "3.0"
+
+	// NextPlannedRelease is the next planned stable release line this repo
+	// intends to cut (#4709). TestDSLMatrixAgainstNextPlannedRelease asserts
+	// ValidateSupportPolicyForRelease and the evolution rules against it on
+	// every PR, in ordinary `go test` — independent of `git describe`'s
+	// output, whose value depends on how many commits a checkout sits past
+	// whichever tag happens to be nearest (#4663: an untagged checkout
+	// several hundred commits past an old stable tag spuriously fired the
+	// release-level check against that stale tag, not against any release
+	// actually being cut). A PR that writes a lifecycle transition
+	// unshippable in this declared version fails on that PR, not at tag
+	// time. Reviewed and bumped like any other change; documented in
+	// docs/guides/releases.md.
+	NextPlannedRelease = "v0.4.0"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.
@@ -62,13 +76,41 @@ type SupportTransition struct {
 	SinceVersion string `json:"sinceVersion"`
 }
 
+// Retraction records a deliberate, auditable withdrawal of a previously
+// published support-lifecycle commitment (#4708) — the declared exception
+// that lets EffectiveIn correct the level to one that took effect BEFORE its
+// published History transition, without the append-only evolution guard
+// refusing it and without silently editing the promise it withdraws. History
+// still names what was published; Retraction is the recorded reason it no
+// longer binds.
+type Retraction struct {
+	// UnsupportedAfter is the previously published unsupported-after release
+	// being withdrawn. Must equal exactly the version's own last published
+	// lifecycle transition (or UnsupportedAfter field) — a retraction naming
+	// any other value is refused, so it cannot be used to excuse an ordinary
+	// early drop that was never actually promised.
+	UnsupportedAfter string `json:"unsupportedAfter"`
+	// Release is the release that performs the retraction — the same
+	// release EffectiveIn names as when the corrected level actually took
+	// effect.
+	Release string `json:"release"`
+	// Rationale explains, for the audit trail, why the commitment is
+	// withdrawn rather than honored or the release renumbered.
+	Rationale string `json:"rationale"`
+}
+
 // VersionSupport describes the host's lifecycle contract for one DSL version.
 type VersionSupport struct {
 	Level Level `json:"level"`
 	// EffectiveIn records when the current level actually took effect when
 	// correcting an already-published mismatch with the policy history.
 	// History remains the append-only record of the published support promise.
-	EffectiveIn      string              `json:"effectiveIn,omitempty"`
+	EffectiveIn string `json:"effectiveIn,omitempty"`
+	// Retraction justifies an EffectiveIn correction that predates its
+	// published History transition (#4708). Required whenever EffectiveIn is
+	// earlier than the transition it corrects; validateRetraction refuses one
+	// that does not name what was actually published.
+	Retraction       *Retraction         `json:"retraction,omitempty"`
 	UnsupportedAfter string              `json:"unsupportedAfter,omitempty"`
 	Replacement      string              `json:"replacement,omitempty"`
 	History          []SupportTransition `json:"history"`
@@ -82,6 +124,7 @@ type Version struct {
 	Version          string              `json:"version"`
 	Level            Level               `json:"level"`
 	EffectiveIn      string              `json:"effectiveIn,omitempty"`
+	Retraction       *Retraction         `json:"retraction,omitempty"`
 	UnsupportedAfter string              `json:"unsupportedAfter,omitempty"`
 	Replacement      string              `json:"replacement,omitempty"`
 	History          []SupportTransition `json:"history"`
@@ -98,14 +141,25 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 	// edge survives as the recovery path DVL030 names.
 	//
 	// The beta binaries removed 1.4 on the v0.4.0 line, EARLIER than the
-	// published v0.5.0 support promise (#4271). Preserve that promise in the
+	// published v0.5.0 support promise. Preserve that promise in the
 	// append-only history and report the actual enforcement in effectiveIn.
-	// This is a correction of a shipped policy breach, not a new permission
-	// to shorten support windows; supportpolicy.go limits the exception to
-	// this exact historical transition.
+	// The v0.5.0 unsupported-after promise is deliberately RETRACTED rather
+	// than renumbering the release or restoring the interpreter (operator
+	// ruling on #4271, 2026-09-09). Retraction is the recorded, auditable
+	// exception validateEffectiveIn requires for an effectiveIn correction
+	// that predates its published transition — see supportpolicy.go.
 	CurrentDSLVersion: {
 		Level:       LevelUnsupported,
 		EffectiveIn: "v0.4.0",
+		Retraction: &Retraction{
+			UnsupportedAfter: "v0.5.0",
+			Release:          "v0.4.0",
+			Rationale: "DSL 1.4's interpreter was removed on 2026-08-22 (#3507), before " +
+				"the published v0.5.0 unsupported-after promise; all v0.4.0-beta.* " +
+				"releases already shipped without it. Retracted rather than " +
+				"renumbering the release to v0.5.0 or restoring the removed " +
+				"interpreter (#4271, #4708).",
+		},
 		Replacement: NextDSLVersion,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
@@ -151,6 +205,7 @@ func (m SupportMatrix) Versions() []Version {
 			Version:          version,
 			Level:            support.Level,
 			EffectiveIn:      support.EffectiveIn,
+			Retraction:       cloneRetraction(support.Retraction),
 			UnsupportedAfter: support.UnsupportedAfter,
 			Replacement:      support.Replacement,
 			History:          slices.Clone(support.History),
@@ -204,7 +259,18 @@ func GetDSL() SupportMatrix {
 
 func cloneVersionSupport(support VersionSupport) VersionSupport {
 	support.History = slices.Clone(support.History)
+	support.Retraction = cloneRetraction(support.Retraction)
 	return support
+}
+
+// cloneRetraction returns a defensive copy of retraction so a caller cannot
+// mutate the package's declaration through an aliased pointer.
+func cloneRetraction(retraction *Retraction) *Retraction {
+	if retraction == nil {
+		return nil
+	}
+	clone := *retraction
+	return &clone
 }
 
 // CompareDSLVersions orders two DSL version strings by numeric major then

@@ -66,7 +66,7 @@ func TestClaimsPlaneTargetLeaserDistinctKeyPreservesParentClaimOnPublishFailure(
 	// it — confirmed by temporarily reintroducing that exact bug.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	layout := instance.NewLayout(t.TempDir())
+	layout := instance.NewLayout(initDemo(t))
 	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestClaimsPlaneTargetLeaserFileAndPlaneAgree(t *testing.T) {
 
 	// SELF: no claims-plane environment, so openStageClaimLedger selects the
 	// instance's own file-backed ledger.
-	fileLayout := instance.NewLayout(t.TempDir())
+	fileLayout := instance.NewLayout(initDemo(t))
 	release := run(t, fileLayout, "self-run")
 	if err := release(); err != nil {
 		t.Fatalf("file-backed release: %v", err)
@@ -173,7 +173,7 @@ func TestClaimsPlaneTargetLeaserFileAndPlaneAgree(t *testing.T) {
 func TestClaimsPlaneTargetLeaserWaitsForContendedLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	layout := instance.NewLayout(t.TempDir())
+	layout := instance.NewLayout(initDemo(t))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
 
 	first := newDecompositionTargetLeaser(layout, decompositionTargetLeaseTestGaggle, "run-1")
@@ -215,7 +215,7 @@ func TestClaimsPlaneTargetLeaserWaitsForContendedLease(t *testing.T) {
 // still expires and becomes acquirable, with no manual claims.json cleanup.
 func TestClaimsPlaneTargetLeaserRecoversExpiredLease(t *testing.T) {
 	ctx := context.Background()
-	layout := instance.NewLayout(t.TempDir())
+	layout := instance.NewLayout(initDemo(t))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
 
 	crashed := newDecompositionTargetLeaser(layout, decompositionTargetLeaseTestGaggle, "crashed-run")

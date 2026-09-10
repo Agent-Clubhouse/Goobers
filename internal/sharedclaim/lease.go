@@ -1,0 +1,185 @@
+// Package sharedclaim implements the owner-scoped lease transitions used by
+// opt-in cross-instance admission. Local visibility markers are not inputs.
+package sharedclaim
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var (
+	// ErrHeld means another owner still holds the shared admission lease.
+	ErrHeld = errors.New("shared claim is held by another owner")
+	// ErrConflict means the observed revision changed before the transition.
+	ErrConflict = errors.New("shared claim revision changed")
+	// ErrNotOwner refuses release by a different claim incarnation.
+	ErrNotOwner = errors.New("shared claim owner does not match")
+)
+
+// Owner includes an incarnation token persisted with the local lease. A reused
+// run ID must not authorize an old process to release a newly acquired claim.
+type Owner struct {
+	Instance string `json:"instance"`
+	Run      string `json:"run"`
+	Token    string `json:"token"`
+}
+
+// Record is a shared coordination record, never a human-facing local mirror.
+// An empty owner is a released tombstone: release advances rather than deletes
+// the revision so a delayed writer cannot succeed against a recreated record.
+type Record struct {
+	Version   int       `json:"version"`
+	Owner     Owner     `json:"owner"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// Observation binds a record to its provider revision and provider clock.
+// An absent record has an empty Revision. Provider time, not the worker clock,
+// decides whether another instance's lease has expired.
+type Observation struct {
+	Record   Record
+	Revision string
+	Now      time.Time
+}
+
+// Store must atomically compare the exact observed revision before writing.
+// CompareAndSwap returns ErrConflict on contention, never an unconditional
+// overwrite. A lost response is an error; callers may retry with the same Owner.
+type Store interface {
+	Read(context.Context, string) (Observation, error)
+	CompareAndSwap(context.Context, string, string, Record) error
+}
+
+// Acquire establishes or renews one incarnation. It does not itself admit a
+// run: the caller must also establish its local ledger lease before execution.
+func Acquire(ctx context.Context, store Store, key string, owner Owner, ttl time.Duration) error {
+	if store == nil || !validKey(key) || !validOwner(owner) || ttl <= 0 || ttl > 24*time.Hour {
+		return fmt.Errorf("invalid shared claim acquisition")
+	}
+	observed, err := store.Read(ctx, key)
+	if err != nil {
+		return err
+	}
+	if err := validateObservation(observed); err != nil {
+		return err
+	}
+	if observed.Record.Owner != (Owner{}) && observed.Record.Owner != owner && observed.Now.Before(observed.Record.ExpiresAt) {
+		return ErrHeld
+	}
+	expires := observed.Now.Add(ttl)
+	// An older renewal request may arrive after a newer, longer one. Never
+	// shorten the same incarnation's lease: its local owner may still rely on
+	// the previously acknowledged deadline.
+	if observed.Record.Owner == owner && observed.Record.ExpiresAt.After(expires) {
+		expires = observed.Record.ExpiresAt
+	}
+	return store.CompareAndSwap(ctx, key, observed.Revision, Record{Version: 1, Owner: owner, ExpiresAt: expires})
+}
+
+// AcquireUntil returns a conservative local admission deadline. Callers must
+// bound their local lease and execution by this deadline, not by a fresh TTL
+// starting after the provider acknowledges the write. The provider clock must
+// advance at the same rate as the local clock; its absolute offset may differ.
+// One second is reserved for the precision of GitHub's HTTP Date clock.
+// An expired acknowledgment is not admission, even if the remote write landed.
+func AcquireUntil(ctx context.Context, store Store, key string, owner Owner, ttl time.Duration) (time.Time, error) {
+	return acquireUntil(ctx, store, key, owner, ttl, time.Now)
+}
+
+func acquireUntil(ctx context.Context, store Store, key string, owner Owner, ttl time.Duration, now func() time.Time) (time.Time, error) {
+	if ttl <= time.Second {
+		return time.Time{}, fmt.Errorf("shared claim TTL must exceed provider clock precision")
+	}
+	deadline := now().Add(ttl - time.Second)
+	if err := Acquire(ctx, store, key, owner, ttl); err != nil {
+		return time.Time{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	if !now().Before(deadline) {
+		return time.Time{}, fmt.Errorf("shared claim acknowledgment arrived after local admission deadline")
+	}
+	return deadline, nil
+}
+
+// Release clears only this incarnation. It retains a versioned tombstone and
+// never treats another owner's lease as successfully released.
+func Release(ctx context.Context, store Store, key string, owner Owner) error {
+	if store == nil || !validKey(key) || !validOwner(owner) {
+		return fmt.Errorf("invalid shared claim release")
+	}
+	observed, err := store.Read(ctx, key)
+	if err != nil {
+		return err
+	}
+	if err := validateObservation(observed); err != nil {
+		return err
+	}
+	if observed.Record.Owner == (Owner{}) {
+		return nil
+	}
+	if observed.Record.Owner != owner {
+		return ErrNotOwner
+	}
+	return store.CompareAndSwap(ctx, key, observed.Revision, Record{Version: 1})
+}
+
+// ConfirmOwnerGone is read-only evidence for retiring stale local custody.
+// It does not release the current remote owner. In particular, Release still
+// refuses a successor; callers must explicitly choose local reconciliation.
+func ConfirmOwnerGone(ctx context.Context, store Store, key string, owner Owner) error {
+	if store == nil || !validKey(key) || !validOwner(owner) {
+		return fmt.Errorf("invalid shared custody reconciliation")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	observed, err := store.Read(ctx, key)
+	if err != nil {
+		return err
+	}
+	if err := validateObservation(observed); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if observed.Record.Owner == owner {
+		return ErrConflict
+	}
+	return nil
+}
+
+func validOwner(owner Owner) bool {
+	return validIdentityText(owner.Instance, 256) && validIdentityText(owner.Run, 256) && validIdentityText(owner.Token, 256)
+}
+
+func validateObservation(observed Observation) error {
+	if observed.Now.IsZero() {
+		return fmt.Errorf("shared claim has no provider clock")
+	}
+	if observed.Revision == "" {
+		if observed.Record != (Record{}) {
+			return fmt.Errorf("unversioned shared claim record")
+		}
+		return nil
+	}
+	return validateRecord(observed.Record)
+}
+
+func validateRecord(record Record) error {
+	if record.Version != 1 {
+		return fmt.Errorf("unsupported shared claim record")
+	}
+	if record.Owner == (Owner{}) {
+		if !record.ExpiresAt.IsZero() {
+			return fmt.Errorf("released shared claim retains a deadline")
+		}
+	} else if !validOwner(record.Owner) || record.ExpiresAt.IsZero() {
+		return fmt.Errorf("invalid shared claim ownership")
+	}
+	return nil
+}

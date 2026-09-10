@@ -199,8 +199,13 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 
 		// Provider-visible marker: best-effort mirror of the ledger's
 		// (already authoritative) decision, same discipline as backlog-query.
-		if _, cerr := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: item.ID, RunID: runID}); cerr != nil {
-			pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", item.ID, cerr)
+		legacy, markerErr := legacyClaimMarkerAllowed(ctx, ledger, key, runID)
+		if markerErr != nil {
+			pf(stderr, "warning: could not verify marker mode for %s: %v\n", item.ID, markerErr)
+		} else if legacy {
+			if _, cerr := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: item.ID, RunID: runID}); cerr != nil {
+				pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", item.ID, cerr)
+			}
 		}
 
 		pf(stdout, "selected parent %s from source run %s (%s)\n", item.ID, candidate.SourceRunID, candidate.ErrorCode)

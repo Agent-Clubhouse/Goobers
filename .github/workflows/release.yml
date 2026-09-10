@@ -266,6 +266,12 @@ jobs:
               --team-id "$APPLE_TEAM_ID" \
               --wait --timeout 20m
 
+            # Signing and notarization only prove the binary's bytes are
+            # trusted, not that it runs (#4269) — the arm64 runner image
+            # carries Rosetta 2 preinstalled, so amd64 executes natively
+            # under translation the same as on a real Intel Mac.
+            "$WORKDIR/goobers" --version | grep --fixed-strings "$TAG"
+
             rm -f "$ARCHIVE"
             tar -czf "$ARCHIVE" -C "$WORKDIR" $(ls -A "$WORKDIR")
             rm -rf "$WORKDIR" "$NOTARIZE_ZIP"
@@ -381,6 +387,17 @@ jobs:
           $signature = Get-AuthenticodeSignature -FilePath $path
           if ($signature.Status -ne 'Valid') {
             throw "Authenticode signature is not valid: $($signature.Status) ($($signature.StatusMessage))"
+          }
+
+      # A valid Authenticode signature only proves the exe's bytes are
+      # trusted, not that it runs (#4269).
+      - name: Execute signed goobers.exe
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = & winsign\goobers.exe --version
+          if ($version -notmatch [regex]::Escape($env:TAG)) {
+            throw "goobers.exe --version output ($version) does not contain tag $env:TAG"
           }
 
       # bash on the windows-latest image has no `zip`; Compress-Archive is

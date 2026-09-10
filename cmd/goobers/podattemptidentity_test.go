@@ -134,6 +134,9 @@ func TestRepassedPodArtifactsRetainNewContentAndLogicalAttempt(t *testing.T) {
 func TestDispatchExecUsesPhysicalSurrenderOrdinal(t *testing.T) {
 	var path, token string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveLocalExecutionPolicy(w, r) {
+			return
+		}
 		path = r.URL.Path
 		token = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
