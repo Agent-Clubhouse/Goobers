@@ -37,8 +37,10 @@ const (
 	TelemetryErrorSignaturesPath = apicontract.TelemetryErrorSignaturesPath
 	// TelemetryErrorsPath exposes paginated recent telemetry errors.
 	TelemetryErrorsPath = apicontract.TelemetryErrorsPath
-	WorkItemsPath       = apicontract.WorkItemsPath
-	WorkItemDetailPath  = apicontract.WorkItemDetailPath
+	// WorkItemsPath exposes the recorded work-item action index.
+	WorkItemsPath = apicontract.WorkItemsPath
+	// WorkItemDetailPath exposes one work item's action history and cost.
+	WorkItemDetailPath = apicontract.WorkItemDetailPath
 	// RunsPath is the run history endpoint.
 	RunsPath = apicontract.RunsPath
 	// InstancePath is the instance inventory endpoint.

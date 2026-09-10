@@ -9,14 +9,17 @@ import (
 	"time"
 )
 
+// MaxWorkItemActions bounds work-item list and action-history queries.
 const MaxWorkItemActions = 200
 
+// WorkItemQuery filters and bounds a work-item rollup query.
 type WorkItemQuery struct {
 	Provider string
 	Kind     string
 	Limit    int
 }
 
+// WorkItem summarizes recorded provider mutations for one external work item.
 type WorkItem struct {
 	Provider      string
 	Repository    string
@@ -32,6 +35,7 @@ type WorkItem struct {
 	RunStatus     string
 }
 
+// RelatedWorkItem identifies a work item associated through shared runs.
 type RelatedWorkItem struct {
 	Provider   string
 	Repository string
@@ -40,6 +44,7 @@ type RelatedWorkItem struct {
 	URL        string
 }
 
+// WorkItemAction is one provider mutation associated with a work item.
 type WorkItemAction struct {
 	RunID      string
 	Seq        uint64
@@ -51,6 +56,7 @@ type WorkItemAction struct {
 	RunStatus  string
 }
 
+// WorkItems returns bounded work-item summaries and whether additional items exist.
 func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, bool, error) {
 	limit := query.Limit
 	if limit <= 0 || limit > MaxWorkItemActions {
@@ -154,6 +160,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 	return items, hasMore, nil
 }
 
+// WorkItemActions returns bounded action history for one repository-qualified work item.
 func (db *DB) WorkItemActions(
 	ctx context.Context,
 	provider string,
@@ -250,6 +257,7 @@ func (db *DB) WorkItemActions(
 	return actions, hasMore, nil
 }
 
+// RelatedPullRequests returns pull requests attributed to runs that also acted on an issue.
 func (db *DB) RelatedPullRequests(
 	ctx context.Context,
 	provider string,

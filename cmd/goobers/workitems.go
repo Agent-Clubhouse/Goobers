@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"strings"
 
@@ -102,9 +101,9 @@ func writeWorkItem(
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "%s#%s (%s %s)\n", item.Repository, item.ExternalID, item.Provider, strings.ToUpper(item.Kind))
+	pf(stdout, "%s#%s (%s %s)\n", item.Repository, item.ExternalID, item.Provider, strings.ToUpper(item.Kind))
 	for _, action := range item.Actions {
-		fmt.Fprintf(stdout, "%s  %-18s  %s/%s  %s\n",
+		pf(stdout, "%s  %-18s  %s/%s  %s\n",
 			action.OccurredAt.Format("2006-01-02 15:04:05Z"),
 			action.Operation,
 			action.Gaggle,
@@ -128,7 +127,7 @@ func writeWorkItems(page readservice.WorkItemPage, jsonOutput bool, stdout, stde
 		return 0
 	}
 	for _, item := range page.Items {
-		fmt.Fprintf(stdout, "%-6s %-10s %-12s %-18s %s\n",
+		pf(stdout, "%-6s %-10s %-12s %-18s %s\n",
 			strings.ToUpper(item.Kind),
 			item.Provider,
 			"#"+item.ExternalID,

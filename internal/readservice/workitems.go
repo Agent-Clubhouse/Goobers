@@ -8,6 +8,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
+// MaxWorkItemsPageSize bounds one work-item list response.
 const MaxWorkItemsPageSize = 200
 
 type workItemStore interface {
@@ -16,17 +17,20 @@ type workItemStore interface {
 	RelatedPullRequests(context.Context, string, string, string) ([]rollup.RelatedWorkItem, error)
 }
 
+// WorkItemListOptions filters and bounds a work-item list query.
 type WorkItemListOptions struct {
 	Provider string
 	Kind     string
 	Limit    int
 }
 
+// WorkItemPage is one bounded page of work-item summaries.
 type WorkItemPage struct {
 	Items   []WorkItemSummary `json:"items"`
 	HasMore bool              `json:"hasMore"`
 }
 
+// WorkItemSummary describes the latest recorded action for one external work item.
 type WorkItemSummary struct {
 	Provider      string    `json:"provider"`
 	Repository    string    `json:"repository,omitempty"`
@@ -42,6 +46,7 @@ type WorkItemSummary struct {
 	RunStatus     string    `json:"runStatus,omitempty"`
 }
 
+// WorkItemDetail describes one work item's action history, cost, and related pull requests.
 type WorkItemDetail struct {
 	Provider            string            `json:"provider"`
 	Repository          string            `json:"repository,omitempty"`
@@ -54,6 +59,7 @@ type WorkItemDetail struct {
 	Truncated           bool              `json:"truncated"`
 }
 
+// WorkItemCost summarizes attributed provider-native and normalized cost.
 type WorkItemCost struct {
 	CostUSD          *float64 `json:"costUSD,omitempty"`
 	NanoAIU          *int64   `json:"nanoAIU,omitempty"`
@@ -64,6 +70,7 @@ type WorkItemCost struct {
 	LowerBound       bool     `json:"lowerBound"`
 }
 
+// RelatedWorkItem identifies a work item associated through shared runs.
 type RelatedWorkItem struct {
 	Provider   string `json:"provider"`
 	Repository string `json:"repository,omitempty"`
@@ -72,6 +79,7 @@ type RelatedWorkItem struct {
 	URL        string `json:"url,omitempty"`
 }
 
+// WorkItemAction is one recorded provider mutation associated with a work item.
 type WorkItemAction struct {
 	RunID      string    `json:"runId"`
 	Sequence   uint64    `json:"sequence"`
@@ -83,6 +91,7 @@ type WorkItemAction struct {
 	RunStatus  string    `json:"runStatus,omitempty"`
 }
 
+// WorkItems returns bounded work-item summaries from telemetry.
 func (s *Telemetry) WorkItems(ctx context.Context, options WorkItemListOptions) (WorkItemPage, error) {
 	options.Provider = strings.TrimSpace(options.Provider)
 	options.Kind = strings.TrimSpace(options.Kind)
@@ -119,6 +128,7 @@ func (s *Telemetry) WorkItems(ctx context.Context, options WorkItemListOptions) 
 	return result, nil
 }
 
+// WorkItem returns one work item's action history and related telemetry.
 func (s *Telemetry) WorkItem(
 	ctx context.Context,
 	provider string,
@@ -195,6 +205,7 @@ func (s *Telemetry) WorkItem(
 	return result, nil
 }
 
+// WorkItems returns bounded work-item summaries for the local instance.
 func (s *Local) WorkItems(ctx context.Context, options WorkItemListOptions) (WorkItemPage, error) {
 	if s.telemetry == nil {
 		return WorkItemPage{}, ErrTelemetryUnavailable
@@ -202,6 +213,7 @@ func (s *Local) WorkItems(ctx context.Context, options WorkItemListOptions) (Wor
 	return s.telemetry.WorkItems(ctx, options)
 }
 
+// WorkItem returns one local work item's action history and related telemetry.
 func (s *Local) WorkItem(ctx context.Context, provider, repository, kind, externalID string) (WorkItemDetail, error) {
 	if s.telemetry == nil {
 		return WorkItemDetail{}, ErrTelemetryUnavailable

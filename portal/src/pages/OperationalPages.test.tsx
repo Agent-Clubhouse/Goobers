@@ -357,9 +357,8 @@ describe("workflow and gaggle inventory", () => {
       screen.getByRole("link", { name: "View Core product / Implementation in Runs" }),
     );
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Insight drill-through scope")).toHaveTextContent(
-      "core / implementation",
-    );
+    expect(screen.getByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
+    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
   });
 
   it("renders the ready-empty workflow state", async () => {
@@ -448,7 +447,9 @@ describe("workflow and gaggle inventory", () => {
 
     await user.click(pivotLink);
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Insight scope")).toHaveTextContent("core / implementation");
+    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
     // The card's own detail link is untouched by the pivot click.
     expect(openWorkflowLink).toHaveAttribute("href", "#/workflow/core/implementation");
   });

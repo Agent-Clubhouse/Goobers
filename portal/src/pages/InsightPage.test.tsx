@@ -152,7 +152,8 @@ describe("Insight page", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByText("core / implementation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
+    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
     await waitFor(() =>
       expect(listRuns).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -234,17 +235,17 @@ describe("Insight page", () => {
     const table = screen.getByRole("table");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
-    expect(screen.getAllByText("2.5 AI credits").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("$0.025 estimated").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("3 AIC").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$0.03").length).toBeGreaterThan(0);
     expect(screen.getAllByText("$0.42").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("42 AI credits estimated").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("42 AIC").length).toBeGreaterThan(0);
     expect(
       screen.getByText("Lower bound: 2 of 3 runs and 3 of 4 attempts measured."),
     ).toBeInTheDocument();
     expect(
       screen.getByText("Complete coverage: 2 runs and 2 attempts measured."),
     ).toBeInTheDocument();
-    expect(screen.getByText("gpt-5.6-sol: 2.5 AI credits · 3/3 attempts")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5.6-sol: 3 AIC · 3/3 attempts")).toBeInTheDocument();
     expect(screen.getByText("claude-sonnet: $0.42 · 2/2 attempts")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View 1 run for PR #4398" }));
     expect(screen.getByRole("dialog", { name: "PR #4398 runs" })).toBeInTheDocument();
@@ -257,11 +258,17 @@ describe("Insight page", () => {
     let rows = within(table).getAllByRole("row").slice(1);
     expect(rows[0]).toHaveTextContent("PR #4398");
     const nativeSort = screen.getByRole("button", { name: /Provider-native/ });
-    expect(nativeSort.closest("th")).toHaveAttribute("aria-sort", "descending");
+    expect(nativeSort.closest('[role="columnheader"]')).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
     await user.click(nativeSort);
     rows = within(table).getAllByRole("row").slice(1);
     expect(rows[0]).toHaveTextContent("Issue #4398");
-    expect(nativeSort.closest("th")).toHaveAttribute("aria-sort", "ascending");
+    expect(nativeSort.closest('[role="columnheader"]')).toHaveAttribute(
+      "aria-sort",
+      "ascending",
+    );
 
     await user.selectOptions(screen.getByRole("combobox", { name: "Type" }), "pr");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
@@ -271,7 +278,6 @@ describe("Insight page", () => {
     await user.type(screen.getByRole("searchbox", { name: "Filter" }), "claude-sonnet");
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
     expect(screen.queryByText("PR #4398")).not.toBeInTheDocument();
-    expect(screen.getByText("1 of 2")).toBeInTheDocument();
 
     expect(getTelemetryCosts).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -545,7 +551,7 @@ describe("Insight page", () => {
     );
 
     const errorsHash = window.location.hash;
-    await user.click(screen.getByRole("link", { name: "Back to Insight" }));
+    await user.click(screen.getByRole("button", { name: "Insight" }));
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
     const callsBeforeRevisit = listTelemetryErrors.mock.calls.length;
     listTelemetryErrors.mockImplementation(() => new Promise(() => {}));
@@ -698,10 +704,7 @@ describe("Insight page", () => {
       "Workflow · core / implementation",
     );
     expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");
-    expect(screen.getByRole("link", { name: "Clear filters" })).toHaveAttribute(
-      "href",
-      "#/insight?window=24h",
-    );
+    expect(window.location.hash).toBe("#/insight?gaggle=core&workflow=implementation&window=24h");
   });
 
   it("opens a focused detail section from a shareable URL", async () => {
@@ -722,7 +725,8 @@ describe("Insight page", () => {
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByText("core / implementation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
+    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
     expect(window.location.hash).toContain("window=24h");
 
     await user.click(screen.getByRole("button", { name: "Cost" }));

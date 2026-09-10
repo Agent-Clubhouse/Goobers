@@ -347,7 +347,9 @@ describe("workflow detail page", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Insight scope")).toHaveTextContent("core / implementation");
+    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+      "Workflow · core / implementation",
+    );
   });
 
   it("keeps the graph available across dark and light themes", async () => {

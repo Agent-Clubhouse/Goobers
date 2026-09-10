@@ -37,6 +37,7 @@ type TelemetryReader interface {
 	TelemetryImplementationOutcomes(context.Context, TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error)
 }
 
+// WorkItemReader exposes work-item summaries and action history.
 type WorkItemReader interface {
 	WorkItems(context.Context, WorkItemListOptions) (WorkItemPage, error)
 	WorkItem(context.Context, string, string, string, string) (WorkItemDetail, error)

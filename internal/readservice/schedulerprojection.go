@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/readmodel"
 )
 
+// ErrSchedulerProjectorStopTimeout means the background scheduler projection did not stop promptly.
 var ErrSchedulerProjectorStopTimeout = errors.New("readservice: scheduler-state projector shutdown timed out")
 
 const (
@@ -35,6 +36,7 @@ type schedulerStateProjector struct {
 	cancel    context.CancelFunc
 }
 
+// StartSchedulerStateProjector starts periodic scheduler-state projection and returns its stop function.
 func (s *Local) StartSchedulerStateProjector(interval time.Duration) func() error {
 	if interval <= 0 {
 		interval = defaultSchedulerProjectionInterval

@@ -241,7 +241,8 @@ describe("runs history page", () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByText("core / implementation")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
+    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
 
@@ -251,7 +252,8 @@ describe("runs history page", () => {
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
-    expect(await screen.findByText("core / implementation")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
+    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
   });
 
   it("surfaces a daemon error with an explicit reconnect affordance", async () => {
