@@ -405,9 +405,20 @@ func curatedNote(tag string, git gitClient, readFile func(string) ([]byte, error
 		return "", fmt.Errorf("inspect release tag %s: %w", tag, err)
 	}
 	if objectType == "tag" {
-		message, err := git.output("for-each-ref", "--format=%(contents)", "refs/tags/"+tag)
+		// %(contents) includes the full signature block on a signed
+		// annotated tag; %(contents:subject) and %(contents:body) exist
+		// specifically to exclude it (#4830). \x1e delimits the two fields
+		// so an empty body is distinguishable from a one-line message.
+		raw, err := git.output("for-each-ref", "--format=%(contents:subject)\x1e%(contents:body)", "refs/tags/"+tag)
 		if err != nil {
 			return "", fmt.Errorf("read annotated tag %s: %w", tag, err)
+		}
+		subject, body, _ := strings.Cut(raw, "\x1e")
+		subject = strings.TrimSpace(subject)
+		body = strings.TrimSpace(body)
+		message := subject
+		if body != "" {
+			message = subject + "\n\n" + body
 		}
 		if message = strings.TrimSpace(message); message != "" {
 			return message, nil
