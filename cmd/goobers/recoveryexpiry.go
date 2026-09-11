@@ -25,7 +25,7 @@ import (
 // destroying recovery snapshots underneath it.
 func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, dryRun bool, stdout, stderr io.Writer) error {
 	root := filepath.Join(layout.Root, "recovery")
-	entries, err := recovery.ReadInventory(ctx, root, 128)
+	entries, err := recovery.ReadInventory(ctx, root, setup.Config.Retention.RecoveryEffective().MaxSnapshotsEffective())
 	if err != nil {
 		return err
 	}
@@ -77,12 +77,17 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 	if err != nil {
 		return err
 	}
+	recoveryCfg := setup.Config.Retention.RecoveryEffective()
+	retainWindow, err := recoveryCfg.RetainWindowEffective()
+	if err != nil {
+		return err
+	}
 	_, err = journal.WithIdleRunReader(ctx, runDir, func(reader *journal.Reader) error {
 		record, err := recovery.ReadRetainedRecord(entry.RecordPath)
 		if err != nil {
 			return err
 		}
-		eligible, err := recoveryRetirementEligible(reader, record, time.Now().UTC(), operatorEvents)
+		eligible, err := recoveryRetirementEligible(reader, record, time.Now().UTC(), operatorEvents, retainWindow)
 		if err != nil {
 			return err
 		}
@@ -111,7 +116,7 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 		}
 		found, err := manager.WithRecoveryRepositories(ctx, url, func(repositories []string) error {
 			if !eligible {
-				eligible, err = verifyRecoveryLandingRepositories(ctx, repositories, record, landed)
+				eligible, err = verifyRecoveryLandingRepositories(ctx, repositories, record, landed, recoveryCfg.MaxArchiveBytesEffective())
 				if err != nil || !eligible {
 					return err
 				}
@@ -141,11 +146,11 @@ func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedul
 // A receiving commit may exist only in the pinned clone, not the mirror (or
 // vice versa). One complete content proof suffices; an absent object in another
 // managed copy must not hide that proof. Cleanup still checks every owned ref.
-func verifyRecoveryLandingRepositories(ctx context.Context, repositories []string, record recovery.Record, landed []recovery.LandedHead) (bool, error) {
+func verifyRecoveryLandingRepositories(ctx context.Context, repositories []string, record recovery.Record, landed []recovery.LandedHead, maxArchiveBytes int64) (bool, error) {
 	var failures error
 	for _, repository := range repositories {
 		for _, head := range landed {
-			verified, err := recovery.VerifyLandedRestoration(ctx, repository, record, head, 512<<20)
+			verified, err := recovery.VerifyLandedRestoration(ctx, repository, record, head, maxArchiveBytes)
 			if err != nil {
 				failures = errors.Join(failures, err)
 				continue
@@ -185,7 +190,7 @@ func recoveryRetentionOwner(runID string, managers []*worktree.Manager, runsByRo
 	return owner, runDir, nil
 }
 
-func recoveryRetirementEligible(reader *journal.Reader, record recovery.Record, now time.Time, operatorEvents []journal.Event) (bool, error) {
+func recoveryRetirementEligible(reader *journal.Reader, record recovery.Record, now time.Time, operatorEvents []journal.Event, retainWindow time.Duration) (bool, error) {
 	identity, err := reader.Identity()
 	if err != nil {
 		return false, err
@@ -212,7 +217,7 @@ func recoveryRetirementEligible(reader *journal.Reader, record recovery.Record, 
 	}
 	// Stage capture may be older than terminal renewal. Never prune in the
 	// terminal window just because renewal has not yet acknowledged its sidecar.
-	return !now.Before(record.RetainUntil) && !now.Before(finished.Add(30*24*time.Hour)), nil
+	return !now.Before(record.RetainUntil) && !now.Before(finished.Add(retainWindow)), nil
 }
 
 func recoveryRetentionCloneURL(cfg *instance.Config, key string) (string, error) {

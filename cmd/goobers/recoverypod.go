@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/providers"
@@ -64,10 +65,15 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	}
 	publisher := recovery.HTTPArchivePublisher{BaseURL: endpoint, Token: token, RunID: runID}
 	now := time.Now().UTC()
+	// The pod has no instance config access (no instance root, only routed
+	// env vars), so it falls back to the shared opt-out defaults rather than a
+	// raw literal (#4823). The host-side acknowledgement in
+	// recoverypublication.go applies the operator's real configured limits.
 	request := recovery.RetentionRequest{
 		Repository: repository, RepositoryKey: repo.CanonicalKey(), RunID: runID, BaseRef: base,
-		IdentityTime: now, RetainUntil: now.Add(30 * 24 * time.Hour),
-		InventoryRoot: inventory, CleanupRoots: []string{repository}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20, SkipEmpty: true,
+		IdentityTime: now, RetainUntil: now.Add(instance.DefaultRecoverySnapshotRetainWindow),
+		InventoryRoot: inventory, CleanupRoots: []string{repository},
+		MaxSnapshots: instance.DefaultRecoverySnapshotMaxCount, MaxArchiveBytes: instance.DefaultRecoverySnapshotMaxArchiveBytes, SkipEmpty: true,
 		AcknowledgeArchive: func(ctx context.Context, record recovery.Record, archive string) error {
 			return publisher.PublishArchive(ctx, claims[0].ItemID, record, archive)
 		},

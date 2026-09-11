@@ -18,8 +18,31 @@ func (m *Manager) WithRecoveryRepositories(ctx context.Context, repoURL string, 
 	if visit == nil {
 		return false, fmt.Errorf("recovery repositories require visitor")
 	}
+	key := repoKey(repoURL)
+	lock := m.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.withRecoveryRepositoriesLocked(ctx, key, repoURL, visit)
+}
+
+// WithRecoveryRepositoriesLocked behaves like WithRecoveryRepositories, for a
+// caller that already holds this manager's lock for repoURL's repository key
+// — specifically, a cleanup guard callback, which the worktree teardown path
+// (worktree.go) always invokes with that lock already held (#4823). Calling
+// WithRecoveryRepositories itself from such a callback deadlocks on Go's
+// non-reentrant sync.Mutex; this lets the callback retire another entry for
+// the SAME repository without releasing and re-acquiring the lock it is
+// already inside. It must never be called except from inside that lock.
+func (m *Manager) WithRecoveryRepositoriesLocked(ctx context.Context, repoURL string, visit func([]string) error) (bool, error) {
+	if visit == nil {
+		return false, fmt.Errorf("recovery repositories require visitor")
+	}
+	return m.withRecoveryRepositoriesLocked(ctx, repoKey(repoURL), repoURL, visit)
+}
+
+func (m *Manager) withRecoveryRepositoriesLocked(ctx context.Context, key, repoURL string, visit func([]string) error) (bool, error) {
 	var found bool
-	entered, err := m.WithExistingMirror(ctx, repoURL, func(mirror string) error {
+	entered, err := m.withExistingMirrorLocked(ctx, key, func(mirror string) error {
 		var err error
 		found, err = m.withPinnedRecoveryRepository(ctx, repoURL, []string{mirror}, visit)
 		return err

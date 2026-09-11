@@ -21,12 +21,32 @@ var ErrInventoryFull = errors.New("recovery inventory is full")
 // its archive and bound record. root must already exist privately outside all
 // cleanup roots. Failed reservations count toward maxSnapshots until explicitly
 // reconciled, bounding crash/retry debris as well as successful records. Each
-// archive is bounded by maxArchiveBytes; this helper never evicts old records.
+// archive is bounded by maxArchiveBytes. This helper never evicts old records;
+// see PublishToInventoryWithEviction for a caller that can (#4823).
 func PublishToInventory(ctx context.Context, repository, root string, cleanupRoots []string, prepared Record, maxSnapshots int, maxArchiveBytes int64) (Record, string, error) {
-	return publishToInventory(ctx, repository, root, cleanupRoots, prepared, maxSnapshots, maxArchiveBytes, nil)
+	return publishToInventory(ctx, repository, root, cleanupRoots, prepared, maxSnapshots, maxArchiveBytes, nil, nil)
 }
 
-func publishToInventory(ctx context.Context, repository, root string, cleanupRoots []string, prepared Record, maxSnapshots int, maxArchiveBytes int64, beforePublish func() error) (Record, string, error) {
+// EvictFunc attempts to free at least one inventory slot when reservation
+// finds the inventory full, and reports whether it freed anything. It is
+// tried only under actual capacity pressure — never speculatively — so it can
+// safely bypass the periodic retention sweep's dry-run/first-enable/retain-
+// window gating (#4823 AC4): those gate a background policy decision, while
+// this is the one thing standing between the caller and ErrInventoryFull. A
+// false/error report only costs the caller the reservation it already faced;
+// it never causes data loss, since the source is preserved either way.
+type EvictFunc func(ctx context.Context, root string, limit int) (bool, error)
+
+// PublishToInventoryWithEviction behaves like PublishToInventory, but when
+// the inventory is full it first reaps any already-retired-but-unreaped
+// entries (cheap, no external context needed) and then, if still full, gives
+// evict one chance to retire something before failing (#4823). evict may be
+// nil, in which case only the reap step runs.
+func PublishToInventoryWithEviction(ctx context.Context, repository, root string, cleanupRoots []string, prepared Record, maxSnapshots int, maxArchiveBytes int64, evict EvictFunc) (Record, string, error) {
+	return publishToInventory(ctx, repository, root, cleanupRoots, prepared, maxSnapshots, maxArchiveBytes, nil, evict)
+}
+
+func publishToInventory(ctx context.Context, repository, root string, cleanupRoots []string, prepared Record, maxSnapshots int, maxArchiveBytes int64, beforePublish func() error, evict EvictFunc) (Record, string, error) {
 	if err := prepared.validateSnapshot(); err != nil {
 		return Record{}, "", err
 	}
@@ -36,12 +56,16 @@ func publishToInventory(ctx context.Context, repository, root string, cleanupRoo
 	if err := requireIndependentArchive(root, append([]string{repository}, cleanupRoots...), len(cleanupRoots) > 0); err != nil {
 		return Record{}, "", err
 	}
-	handle, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
-	if err != nil {
-		return Record{}, "", err
+	name := inventoryDirectoryName(prepared)
+	directory, err := lockedReserveSnapshotDirectory(root, name, maxSnapshots)
+	if errors.Is(err, ErrInventoryFull) {
+		if freed, evictErr := reclaimInventoryCapacity(ctx, root, maxSnapshots, evict); evictErr == nil && freed {
+			if err := ctx.Err(); err != nil {
+				return Record{}, "", err
+			}
+			directory, err = lockedReserveSnapshotDirectory(root, name, maxSnapshots)
+		}
 	}
-	defer func() { _ = handle.Release() }()
-	directory, err := reserveSnapshotDirectory(root, inventoryDirectoryName(prepared), maxSnapshots)
 	if err != nil {
 		return Record{}, "", err
 	}
@@ -55,6 +79,55 @@ func publishToInventory(ctx context.Context, repository, root string, cleanupRoo
 		return Record{}, "", err
 	}
 	return published, filepath.Join(directory, RecordFileName), nil
+}
+
+// lockedReserveSnapshotDirectory holds the inventory lock only across the
+// reservation attempt itself, so a subsequent eviction attempt (which
+// acquires the same lock through RetireSnapshot/ReapRetired) never deadlocks
+// against it.
+func lockedReserveSnapshotDirectory(root, name string, limit int) (string, error) {
+	handle, err := platformlock.TryAcquire(filepath.Join(root, ".inventory.lock"))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = handle.Release() }()
+	return reserveSnapshotDirectory(root, name, limit)
+}
+
+// reclaimInventoryCapacity always attempts the in-package reap of already
+// retired-but-unremoved entries first, then the caller-supplied evict hook,
+// which knows how to retire a terminal-and-landed entry on the spot (#4823).
+func reclaimInventoryCapacity(ctx context.Context, root string, limit int, evict EvictFunc) (bool, error) {
+	reaped, reapErr := ReapRetired(ctx, root, limit, true)
+	freed := false
+	for _, result := range reaped {
+		if result.Deleted {
+			freed = true
+		}
+	}
+	if evict == nil {
+		return freed, reapErr
+	}
+	if err := ctx.Err(); err != nil {
+		return freed, errors.Join(reapErr, err)
+	}
+	evictedMore, err := evict(ctx, root, limit)
+	if err != nil {
+		return freed, errors.Join(reapErr, err)
+	}
+	if evictedMore {
+		// evict() only retires (renames to the .retired- prefix); it does not
+		// delete files. A retired entry still counts toward capacity until
+		// reaped, so the slot it just freed is not real until this runs.
+		second, secondErr := ReapRetired(ctx, root, limit, true)
+		for _, result := range second {
+			if result.Deleted {
+				freed = true
+			}
+		}
+		reapErr = errors.Join(reapErr, secondErr)
+	}
+	return freed || evictedMore, reapErr
 }
 
 func inventoryDirectoryName(record Record) string {

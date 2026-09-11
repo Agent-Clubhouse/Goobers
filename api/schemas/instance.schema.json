@@ -1084,6 +1084,31 @@
           "minimum": 0,
           "default": 90,
           "description": "How many days of history stay INDIVIDUALLY LISTABLE in the portal. Defaults to 90 days (product policy decision per issue #3056 for unattended operation: opt-out with safe first-enable semantics). Set to 0 or negative to disable retention (UNBOUNDED — never a zero-day window). Independent of journal retention: the journal is the source of truth, this is only about what the derived projection lists, so aging a run out removes no evidence."
+        },
+        "recovery": {
+          "description": "Bounds the recovery-snapshot inventory that a worktree cleanup captures into before destroying a worktree (#4823). Omitted fields keep the pre-#4823 defaults: 128 snapshots, 512 MiB per archive, a 30-day retain-until floor.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxSnapshots": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 128,
+              "description": "Inventory entry cap. Omitted or zero uses the default of 128."
+            },
+            "maxArchiveBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 536870912,
+              "description": "Byte ceiling for a single captured recovery bundle. Omitted or zero uses the default of 512 MiB."
+            },
+            "retainWindow": {
+              "description": "How long a snapshot is protected from retirement purely by age, regardless of landing proof. Omitted uses 30 days.",
+              "$ref": "#/$defs/duration",
+              "default": "720h",
+              "examples": ["720h"]
+            }
+          }
         }
       }
     },

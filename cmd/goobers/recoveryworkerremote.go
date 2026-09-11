@@ -20,11 +20,12 @@ func (w *workerSeams) installRemoteRecoveryGuard(manager *worktree.Manager) erro
 		return nil
 	}
 	return manager.SetCleanupGuard("recovery", func(ctx context.Context, target worktree.CleanupTarget) error {
-		return w.publishWorkerRecovery(ctx, manager.Root, target)
+		return w.publishWorkerRecovery(ctx, manager, target)
 	})
 }
 
-func (w *workerSeams) publishWorkerRecovery(ctx context.Context, cleanupRoot string, target worktree.CleanupTarget) error {
+func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktree.Manager, target worktree.CleanupTarget) error {
+	cleanupRoot := manager.Root
 	if target.OwnerRunID == "" || target.Gaggle == "" || target.CreatedAt.IsZero() {
 		return fmt.Errorf("worker recovery requires durable run and gaggle ownership")
 	}
@@ -52,6 +53,16 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, cleanupRoot str
 	if err != nil {
 		return err
 	}
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return err
+	}
+	recoveryCfg := cfg.Retention.RecoveryEffective()
+	retainWindow, err := recoveryCfg.RetainWindowEffective()
+	if err != nil {
+		return err
+	}
+	evict := recoveryEvictFunc(layout, cfg, manager, key)
 	root, err := prepareRecoveryInventory(w.root)
 	if err != nil {
 		return err
@@ -59,8 +70,10 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, cleanupRoot str
 	publisher := recovery.HTTPArchivePublisher{BaseURL: emitter.BaseURL, Token: token, RunID: target.OwnerRunID, Client: emitter.Client}
 	request := recovery.RetentionRequest{
 		Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID, BaseRef: recoveryCleanupBaseRef(target),
-		IdentityTime: target.CreatedAt, RetainUntil: target.CreatedAt.Add(30 * 24 * time.Hour),
-		InventoryRoot: root, CleanupRoots: []string{cleanupRoot}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20, SkipEmpty: true,
+		IdentityTime: target.CreatedAt, RetainUntil: target.CreatedAt.Add(retainWindow),
+		InventoryRoot: root, CleanupRoots: []string{cleanupRoot},
+		MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(), SkipEmpty: true,
+		EvictFull: evict,
 		AcknowledgeArchive: func(ctx context.Context, record recovery.Record, archive string) error {
 			return publisher.PublishArchive(ctx, claims[0].ItemID, record, archive)
 		},

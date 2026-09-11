@@ -62,6 +62,15 @@ const (
 	// whenever retention.retainedWorktreeMaxAge is omitted; set it to "0s" to
 	// turn the age rule off explicitly.
 	DefaultRetainedWorktreeMaxAge = 168 * time.Hour
+	// DefaultRecoverySnapshotMaxCount and DefaultRecoverySnapshotMaxArchiveBytes
+	// are the recovery inventory's opt-out defaults (#4823), matching the
+	// literals every call site hard-coded before this config surface existed:
+	// 128 snapshots, 512 MiB archive bound apiece.
+	DefaultRecoverySnapshotMaxCount        = 128
+	DefaultRecoverySnapshotMaxArchiveBytes = 512 << 20
+	// DefaultRecoverySnapshotRetainWindow mirrors the 30-day floor every
+	// recovery capture site applied inline before #4823.
+	DefaultRecoverySnapshotRetainWindow = 30 * 24 * time.Hour
 	// LargeRepoDefaultStageTimeout is the preset's deterministic-stage deadline.
 	LargeRepoDefaultStageTimeout = "4h"
 	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
@@ -1539,6 +1548,71 @@ type RetentionConfig struct {
 	// projectionFullFidelityDaysSet records whether the field was present at
 	// decode time, so an omitted value can differ from an explicit zero.
 	projectionFullFidelityDaysSet bool `json:"-" yaml:"-"`
+	// Recovery bounds the recovery-snapshot inventory (#4823). Omitted fields
+	// keep the pre-#4823 hard-coded behavior (128 snapshots, 512 MiB, 30 days).
+	// A pointer, matching Telemetry.Retention: encoding/json's omitempty does
+	// not treat a zero-value struct as empty, so a plain (non-pointer) field
+	// here would always render "recovery: {}" into every scaffolded and
+	// re-marshaled instance.yaml.
+	Recovery *RecoverySnapshotConfig `json:"recovery,omitempty" yaml:"recovery,omitempty"`
+}
+
+// RecoveryEffective resolves the configured recovery-snapshot policy,
+// including an omitted section.
+func (c RetentionConfig) RecoveryEffective() RecoverySnapshotConfig {
+	if c.Recovery == nil {
+		return RecoverySnapshotConfig{}
+	}
+	return *c.Recovery
+}
+
+// RecoverySnapshotConfig bounds the recovery inventory that
+// cmd/goobers/recovery*.go captures into before a worktree may be destroyed
+// (#4823). Before this type existed, MaxSnapshots/MaxArchiveBytes/the 30-day
+// retain-until floor were literals repeated at six call sites, un-tunable
+// without a code change.
+type RecoverySnapshotConfig struct {
+	// MaxSnapshots bounds inventory entries. Omitted or zero means
+	// DefaultRecoverySnapshotMaxCount.
+	MaxSnapshots int `json:"maxSnapshots,omitempty" yaml:"maxSnapshots,omitempty"`
+	// MaxArchiveBytes bounds a single captured bundle. Omitted or zero means
+	// DefaultRecoverySnapshotMaxArchiveBytes.
+	MaxArchiveBytes int64 `json:"maxArchiveBytes,omitempty" yaml:"maxArchiveBytes,omitempty"`
+	// RetainWindow bounds how long a snapshot is protected from retirement
+	// purely by age, regardless of landing proof. Omitted means
+	// DefaultRecoverySnapshotRetainWindow (30 days).
+	RetainWindow string `json:"retainWindow,omitempty" yaml:"retainWindow,omitempty"`
+}
+
+// MaxSnapshotsEffective resolves the configured inventory cap.
+func (c RecoverySnapshotConfig) MaxSnapshotsEffective() int {
+	if c.MaxSnapshots > 0 {
+		return c.MaxSnapshots
+	}
+	return DefaultRecoverySnapshotMaxCount
+}
+
+// MaxArchiveBytesEffective resolves the configured per-snapshot archive bound.
+func (c RecoverySnapshotConfig) MaxArchiveBytesEffective() int64 {
+	if c.MaxArchiveBytes > 0 {
+		return c.MaxArchiveBytes
+	}
+	return DefaultRecoverySnapshotMaxArchiveBytes
+}
+
+// RetainWindowEffective resolves the configured retain-until floor.
+func (c RecoverySnapshotConfig) RetainWindowEffective() (time.Duration, error) {
+	if c.RetainWindow == "" {
+		return DefaultRecoverySnapshotRetainWindow, nil
+	}
+	window, err := time.ParseDuration(c.RetainWindow)
+	if err != nil {
+		return 0, fmt.Errorf("retention.recovery.retainWindow %q: %w", c.RetainWindow, err)
+	}
+	if window <= 0 {
+		return 0, fmt.Errorf("retention.recovery.retainWindow must be positive, got %s", window)
+	}
+	return window, nil
 }
 
 // MarshalJSON preserves an explicitly configured zero projection window, which

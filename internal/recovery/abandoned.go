@@ -86,7 +86,7 @@ func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, 
 		prepared = prior
 		break
 	}
-	_, path, err := PublishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes)
+	_, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
 	if err != nil {
 		return Record{}, "", err
 	}
