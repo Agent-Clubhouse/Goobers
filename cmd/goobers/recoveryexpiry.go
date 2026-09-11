@@ -36,6 +36,10 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	if err != nil {
 		return err
 	}
+	entries, err = prioritizeAbandonedRecovery(entries, operatorEvents)
+	if err != nil {
+		return err
+	}
 	var failures error
 	for _, entry := range entries {
 		err := retireExpiredRecoveryEntry(ctx, root, setup, managers, runsByRoot, entry, operatorEvents, dryRun, stdout)
@@ -45,6 +49,27 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 		}
 	}
 	return failures
+}
+
+func prioritizeAbandonedRecovery(entries []recovery.InventoryEntry, operatorEvents []journal.Event) ([]recovery.InventoryEntry, error) {
+	prioritized := make([]recovery.InventoryEntry, 0, len(entries))
+	remaining := make([]recovery.InventoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		current, err := recovery.ReadRetainedRecord(entry.RecordPath)
+		if err != nil {
+			return nil, err
+		}
+		abandoned, err := recovery.ExplicitlyAbandoned(operatorEvents, current)
+		if err != nil {
+			return nil, err
+		}
+		if abandoned {
+			prioritized = append(prioritized, entry)
+		} else {
+			remaining = append(remaining, entry)
+		}
+	}
+	return append(prioritized, remaining...), nil
 }
 
 func retireExpiredRecoveryEntry(ctx context.Context, root string, setup *schedulerSetup, managers []*worktree.Manager, runsByRoot map[string]string, entry recovery.InventoryEntry, operatorEvents []journal.Event, dryRun bool, stdout io.Writer) error {

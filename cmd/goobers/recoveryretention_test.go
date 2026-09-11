@@ -8,9 +8,55 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/recovery"
+	"github.com/goobers/goobers/providers"
 )
+
+func TestPrioritizeAbandonedRecoveryUsesRenewedRecord(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
+	now := time.Now().UTC()
+	seedRecoverySelection(t, layout, repo, "ordinary", "1", now.Add(-time.Hour), now.Add(time.Hour), true)
+	abandonedPath := seedRecoverySelection(t, layout, repo, "abandoned", "2", now.Add(-time.Hour), now.Add(time.Hour), true)
+	renewed, err := recovery.RenewRetention(context.Background(), abandonedPath, now.Add(2*time.Hour), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := recovery.AbandonedEvent(renewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(event); err != nil {
+		_ = log.Close()
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := recovery.ReadInventory(context.Background(), filepath.Join(layout.Root, "recovery"), 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err = prioritizeAbandonedRecovery(entries, events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].RecordPath != abandonedPath {
+		t.Fatalf("abandoned recovery was not prioritized: %#v", entries)
+	}
+}
 
 func TestConfiguredRetentionReapsInterruptedRecoveryRetirement(t *testing.T) {
 	for _, mode := range []string{"disabled", "dry-run", "enabled-dry-run", "delete", "failure"} {
