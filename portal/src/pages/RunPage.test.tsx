@@ -145,11 +145,17 @@ describe("run detail", () => {
 
     expect(await screen.findByRole("heading", { name: "Current status" })).toBeInTheDocument();
     expect(screen.getByText("coordinator-1")).toBeInTheDocument();
+    expect(
+      screen.getByText("stage implement · attempt 1 · status source lifecycle · fidelity none"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Waiting")).toBeInTheDocument();
     expect(
       screen.getByText("structured progress unavailable (degraded to tool/transcript activity)"),
     ).toBeInTheDocument();
     expect(screen.getByText("worker-1")).toBeInTheDocument();
+    expect(
+      screen.getByText("stage implement · attempt 1 · status source progress · fidelity full"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Decision · model")).toBeInTheDocument();
     expect(screen.getByText("Patch the parser branch.")).toBeInTheDocument();
     expect(screen.getAllByText("Evidence: failing test").length).toBeGreaterThan(0);
@@ -211,8 +217,12 @@ describe("run detail", () => {
     renderRun("01JZ441DAEMONAPI", new FixtureDaemonClient(fixtures));
 
     await screen.findByRole("heading", { name: "Current status" });
-    expect(screen.getByText("stage implement · attempt 1 · fidelity full")).toBeInTheDocument();
-    expect(screen.getByText("stage implement · attempt 2 · fidelity none")).toBeInTheDocument();
+    expect(
+      screen.getByText("stage implement · attempt 1 · status source progress · fidelity full"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("stage implement · attempt 2 · status source lifecycle · fidelity none"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Attempt one final status.")).toBeInTheDocument();
     expect(
       screen.getByText("Running without structured progress; showing lifecycle-only status."),
