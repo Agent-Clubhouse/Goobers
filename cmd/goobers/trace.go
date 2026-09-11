@@ -834,11 +834,7 @@ func renderLatestAgentProgress(stdout io.Writer, progress *journal.AgentProgress
 	if progress == nil {
 		return
 	}
-	sourceStr := ""
-	if progress.Source != "" {
-		sourceStr = " source=" + string(progress.Source)
-	}
-	pf(stdout, "%s  latest [%s seq=%d%s]:\n", indent, progress.Kind, progress.Sequence, sourceStr)
+	pf(stdout, "%s  latest [%s seq=%d source=%s]:\n", indent, progress.Kind, progress.Sequence, progress.Source)
 	renderAgentProgressField(stdout, indent, "summary", progress.Summary)
 	renderAgentProgressList(stdout, indent, "plan", progress.Plan)
 	renderAgentProgressList(stdout, indent, "progress", progress.Progress)

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -96,6 +97,14 @@ const (
 	AgentProgressSourceEvidence AgentProgressSource = "evidence"
 )
 
+const (
+	AgentProgressRateLimitWindow = time.Minute
+	AgentProgressRateLimitMax    = 32
+	AgentProgressRetainedHistory = 64
+)
+
+var ErrAgentProgressRateLimited = errors.New("journal: nested-agent progress emission rate exceeded")
+
 // AgentProgress is a bounded, resumable, operator-readable status update for a
 // single agent invocation. It intentionally omits hidden chain-of-thought and
 // only describes observable facts or explicit summaries the model chose to emit.
@@ -107,7 +116,7 @@ type AgentProgress struct {
 	Attempt    int                     `json:"attempt"`
 	Sequence   uint64                  `json:"sequence"`
 	Kind       AgentProgressKind       `json:"kind"`
-	Source     AgentProgressSource     `json:"source,omitempty"`
+	Source     AgentProgressSource     `json:"source"`
 	OccurredAt time.Time               `json:"occurredAt"`
 	UpdatedAt  time.Time               `json:"updatedAt,omitempty"`
 	Fidelity   string                  `json:"fidelity,omitempty"`
@@ -203,7 +212,7 @@ func validateAgentProgressEnums(progress AgentProgress) error {
 		return fmt.Errorf("journal: invalid nested-agent progress kind %q", progress.Kind)
 	}
 	switch progress.Source {
-	case "", AgentProgressSourceNative, AgentProgressSourceModel, AgentProgressSourceEvidence:
+	case AgentProgressSourceNative, AgentProgressSourceModel, AgentProgressSourceEvidence:
 	default:
 		return fmt.Errorf("journal: invalid nested-agent progress source %q", progress.Source)
 	}
@@ -258,6 +267,54 @@ func containsPrivateReasoning(v string) bool {
 	return strings.Contains(l, "chain-of-thought") || strings.Contains(l, "chain of thought") ||
 		strings.Contains(l, "private reasoning") || strings.Contains(l, "hidden reasoning") ||
 		strings.Contains(l, "scratchpad") || strings.Contains(l, "inner monologue")
+}
+
+func validateAgentProgressRate(events []Event, progress AgentProgress, fallback time.Time) error {
+	candidate := agentProgressObservedAt(progress, fallback)
+	windowStart := candidate.Add(-AgentProgressRateLimitWindow)
+	count := 0
+	for _, event := range latestPodAgentEvents(events) {
+		if event.Type != EventAgentProgress || event.Progress == nil {
+			continue
+		}
+		if !sameAgentProgressAttempt(*event.Progress, progress) {
+			continue
+		}
+		if agentProgressObservedAt(*event.Progress, event.Time).Before(windowStart) {
+			continue
+		}
+		count++
+		if count >= AgentProgressRateLimitMax {
+			return fmt.Errorf(
+				"%w for %q attempt %d stage %q: max %d updates per %s",
+				ErrAgentProgressRateLimited,
+				progress.AgentID,
+				progress.Attempt,
+				progress.Stage,
+				AgentProgressRateLimitMax,
+				AgentProgressRateLimitWindow,
+			)
+		}
+	}
+	return nil
+}
+
+func agentProgressObservedAt(progress AgentProgress, fallback time.Time) time.Time {
+	switch {
+	case !progress.UpdatedAt.IsZero():
+		return progress.UpdatedAt
+	case !progress.OccurredAt.IsZero():
+		return progress.OccurredAt
+	default:
+		return fallback
+	}
+}
+
+func sameAgentProgressAttempt(left, right AgentProgress) bool {
+	return left.AgentID == right.AgentID &&
+		left.RunID == right.RunID &&
+		left.Stage == right.Stage &&
+		left.Attempt == right.Attempt
 }
 
 // ScrubAgentEvent applies the same byte-level policy used by the journal

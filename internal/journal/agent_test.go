@@ -2,6 +2,8 @@ package journal
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,6 +338,23 @@ func TestValidateAgentProgressRejectsHiddenReasoningAndAcceptsStructuredProgress
 	}
 }
 
+func TestValidateAgentProgressRejectsMissingSource(t *testing.T) {
+	progress := AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      "run-1",
+		Stage:      "work",
+		Attempt:    1,
+		Sequence:   1,
+		Kind:       AgentProgressSummary,
+		OccurredAt: time.Now(),
+		Summary:    "Checkpoint summary",
+	}
+	if err := validateAgentProgress(progress); err == nil {
+		t.Fatal("validateAgentProgress accepted a progress record without a source")
+	}
+}
+
 func TestRunAppendAssignsAgentProgressSequenceFromDurableJournalOrder(t *testing.T) {
 	run, root := newRun(t)
 	t.Cleanup(func() { _ = run.Close() })
@@ -368,6 +387,58 @@ func TestRunAppendAssignsAgentProgressSequenceFromDurableJournalOrder(t *testing
 	}
 	if got.Progress.OccurredAt.IsZero() || got.Progress.UpdatedAt.IsZero() {
 		t.Fatalf("persisted progress timestamps = %#v", got.Progress)
+	}
+}
+
+func TestRunAppendRateLimitsAgentProgressPerAttempt(t *testing.T) {
+	run, _ := newRun(t)
+	t.Cleanup(func() { _ = run.Close() })
+	start := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < AgentProgressRateLimitMax; i++ {
+		progress := AgentProgress{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      testIdentity().RunID,
+			Stage:      "work",
+			Attempt:    1,
+			Kind:       AgentProgressProgress,
+			Source:     AgentProgressSourceModel,
+			OccurredAt: start.Add(time.Duration(i) * time.Second),
+			Progress:   []string{fmt.Sprintf("step-%d", i)},
+		}
+		if err := run.Append(Event{Type: EventAgentProgress, Progress: &progress}); err != nil {
+			t.Fatalf("Append progress %d: %v", i, err)
+		}
+	}
+
+	limited := AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      testIdentity().RunID,
+		Stage:      "work",
+		Attempt:    1,
+		Kind:       AgentProgressProgress,
+		Source:     AgentProgressSourceModel,
+		OccurredAt: start.Add(45 * time.Second),
+		Progress:   []string{"over limit"},
+	}
+	if err := run.Append(Event{Type: EventAgentProgress, Progress: &limited}); !errors.Is(err, ErrAgentProgressRateLimited) {
+		t.Fatalf("Append over-limit progress err = %v, want %v", err, ErrAgentProgressRateLimited)
+	}
+
+	afterWindow := AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      testIdentity().RunID,
+		Stage:      "work",
+		Attempt:    1,
+		Kind:       AgentProgressProgress,
+		Source:     AgentProgressSourceModel,
+		OccurredAt: start.Add(AgentProgressRateLimitWindow + time.Second),
+		Progress:   []string{"allowed again"},
+	}
+	if err := run.Append(Event{Type: EventAgentProgress, Progress: &afterWindow}); err != nil {
+		t.Fatalf("Append after rate window: %v", err)
 	}
 }
 

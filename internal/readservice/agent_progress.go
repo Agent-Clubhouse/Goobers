@@ -175,6 +175,7 @@ func buildAgentProgressSummary(
 	sort.Slice(history, func(i, j int) bool {
 		return history[i].Sequence < history[j].Sequence
 	})
+	history = retainRecentAgentProgress(history)
 	summary := &AgentProgressSummary{
 		AgentID:  key.agentID,
 		RunID:    runID,
@@ -235,28 +236,47 @@ func collectAgentProgressRoots(
 	metaOrder []progressKey,
 	summaries map[progressKey]*AgentProgressSummary,
 ) []AgentProgressSummary {
+	children := make(map[progressKey][]progressKey)
 	for _, key := range metaOrder {
-		appendAgentProgressChild(key, summaries)
+		summary := summaries[key]
+		if summary == nil || summary.ParentID == "" {
+			continue
+		}
+		parentKey := progressKey{stage: summary.Stage, agentID: summary.ParentID, attempt: summary.Attempt}
+		if summaries[parentKey] != nil {
+			children[parentKey] = append(children[parentKey], key)
+		}
 	}
 	var roots []AgentProgressSummary
 	for _, key := range metaOrder {
-		if root, ok := agentProgressRoot(key, summaries); ok {
-			roots = append(roots, root)
+		if _, ok := agentProgressRoot(key, summaries); ok {
+			roots = append(roots, materializeAgentProgressSummary(key, summaries, children, make(map[progressKey]bool)))
 		}
 	}
 	return roots
 }
 
-func appendAgentProgressChild(key progressKey, summaries map[progressKey]*AgentProgressSummary) {
+func materializeAgentProgressSummary(
+	key progressKey,
+	summaries map[progressKey]*AgentProgressSummary,
+	children map[progressKey][]progressKey,
+	visiting map[progressKey]bool,
+) AgentProgressSummary {
 	summary := summaries[key]
-	if summary == nil || summary.ParentID == "" {
-		return
+	if summary == nil {
+		return AgentProgressSummary{}
 	}
-	parentKey := progressKey{stage: summary.Stage, agentID: summary.ParentID, attempt: summary.Attempt}
-	parent := summaries[parentKey]
-	if parent != nil {
-		parent.Children = append(parent.Children, *summary)
+	copy := *summary
+	copy.Children = nil
+	if visiting[key] {
+		return copy
 	}
+	visiting[key] = true
+	for _, childKey := range children[key] {
+		copy.Children = append(copy.Children, materializeAgentProgressSummary(childKey, summaries, children, visiting))
+	}
+	delete(visiting, key)
+	return copy
 }
 
 func agentProgressRoot(
@@ -272,6 +292,14 @@ func agentProgressRoot(
 		return AgentProgressSummary{}, false
 	}
 	return *summary, true
+}
+
+func retainRecentAgentProgress(history []journal.AgentProgress) []journal.AgentProgress {
+	if len(history) <= journal.AgentProgressRetainedHistory {
+		return history
+	}
+	start := len(history) - journal.AgentProgressRetainedHistory
+	return append([]journal.AgentProgress(nil), history[start:]...)
 }
 
 func summarizeCurrentStatus(lifecycle *AgentLifecycleStatus, latest *journal.AgentProgress, fidelity string) *AgentCurrentStatus {
