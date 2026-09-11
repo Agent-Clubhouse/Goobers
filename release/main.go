@@ -50,7 +50,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := checkSupportMatrixForRelease(opts.version); err != nil {
+	if err := checkReleasePreflight(opts.version); err != nil {
 		return err
 	}
 	if opts.imageArtifacts != "" {
