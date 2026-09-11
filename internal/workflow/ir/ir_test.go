@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -152,6 +154,428 @@ func TestNormalizePreservesCanonicalGraphSemantics(t *testing.T) {
 	}
 }
 
+func TestNormalizeWithMetadataCanonicalizesFeatureGatesForDigest(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks: []apiv1.Task{
+				{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build"},
+			},
+		},
+	}
+	first, err := NormalizeWithMetadata(base, nil, []string{"stable", "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NormalizeWithMetadata(base, nil, []string{"alpha", "stable", "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"alpha", "stable"}
+	if !reflect.DeepEqual(first.FeatureGates, want) {
+		t.Fatalf("first.FeatureGates = %#v, want %#v", first.FeatureGates, want)
+	}
+	if !reflect.DeepEqual(second.FeatureGates, want) {
+		t.Fatalf("second.FeatureGates = %#v, want %#v", second.FeatureGates, want)
+	}
+	firstDigest, err := first.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := second.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("Digest changed for reordered feature gates: %s != %s", firstDigest, secondDigest)
+	}
+}
+
+func TestIRProvenanceAndSemanticDiff(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks: []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build", Next: "gate"},
+				{Name: "deploy", Type: apiv1.TaskAgentic, Goal: "deploy", Goober: "ops", Capabilities: []string{"repo:push"}}},
+			Gates: []apiv1.Gate{{Name: "gate", Evaluator: apiv1.EvaluatorAutomated, Automated: &apiv1.AutomatedGate{Check: "ready"}, Branches: map[string]string{"ok": "deploy"}}},
+		},
+	}
+	first, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenance := &Provenance{Generator: "copilot", Model: "gpt-4o", Tool: "workflow-ir", UserIntent: "ship", Validation: "schema-check", Decision: "pass"}
+	first, err = NormalizeWithMetadata(base, provenance, []string{"stable"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SourceDefinition == nil || !reflect.DeepEqual(*first.SourceDefinition, base) {
+		t.Fatalf("source definition was not persisted: %#v", first.SourceDefinition)
+	}
+	if !reflect.DeepEqual(first.Provenance, provenance) || !reflect.DeepEqual(first.FeatureGates, []string{"stable"}) {
+		t.Fatalf("generation metadata was not persisted: provenance=%#v gates=%v", first.Provenance, first.FeatureGates)
+	}
+	inspect := first.Inspect()
+	if got := inspect.Start; got != "build" {
+		t.Fatalf("Inspect().Start = %q, want %q", got, "build")
+	}
+	if got := inspect.Capabilities; !reflect.DeepEqual(got, []string{"repo:push"}) {
+		t.Fatalf("Inspect().Capabilities = %#v, want %#v", got, []string{"repo:push"})
+	}
+	second, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := SemanticDiff(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff over same semantics with different provenance = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	other := second
+	other.Start = "deploy"
+	changed, err := SemanticDiff(first, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Kind != DiffBehavioral {
+		t.Fatalf("SemanticDiff on changed start = %q, want %q", changed.Kind, DiffBehavioral)
+	}
+	if losses := first.ExplainLoss(base); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(base) = %#v, want no loss for persisted source", losses)
+	}
+	legacy := first
+	legacy.SourceDefinition = nil
+	losses := legacy.ExplainLoss(base)
+	if len(losses) != 1 || !strings.Contains(losses[0].Explanation, "predates") {
+		t.Fatalf("ExplainLoss(legacy) = %#v, want explicit persistence loss", losses)
+	}
+	cosmeticDef := base
+	cosmeticDef.DSLVersion = "next"
+	cosmetic, err := Normalize(cosmeticDef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err = SemanticDiff(first, cosmetic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff on DSL-version-only metadata = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	featureOnly := first
+	featureOnly.FeatureGates = []string{"alpha"}
+	diff, err = SemanticDiff(first, featureOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff on feature-gate-only metadata = %q, want %q", diff.Kind, DiffCosmetic)
+	}
+	workflowSource := apiv1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "pipeline"}, DSLVersion: base.DSLVersion, Spec: base.Spec}
+	if losses := first.ExplainLoss(workflowSource); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(apiv1.Workflow same definition) = %#v, want no loss", losses)
+	}
+	workflowSource.Spec.Tasks[0].Goal = "different-goal"
+	if losses := first.ExplainLoss(workflowSource); len(losses) == 0 || !strings.Contains(losses[0].Explanation, "differs") {
+		t.Fatalf("ExplainLoss(apiv1.Workflow changed spec) = %#v, want explicit fidelity loss", losses)
+	}
+}
+
+func TestNormalizeWithMetadataPreservesExplicitEmptySourceFields(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks: []apiv1.Task{{
+				Name: "build", Type: apiv1.TaskDeterministic, Goal: "build",
+				Inputs:          map[string]string{},
+				ContextFrom:     []string{},
+				ExpectedOutputs: []string{},
+			}},
+			Requires: &apiv1.WorkflowRequirements{Capabilities: []string{}},
+		},
+	}
+	doc, err := NormalizeWithMetadata(base, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.SourceDefinition == nil {
+		t.Fatal("source definition was not persisted")
+	}
+	persisted := doc.SourceDefinition.Spec.Tasks[0]
+	if persisted.Inputs == nil || persisted.ContextFrom == nil || persisted.ExpectedOutputs == nil {
+		t.Fatalf("persisted source lost explicit empty fields: %#v", persisted)
+	}
+	if doc.SourceDefinition.Spec.Requires == nil || doc.SourceDefinition.Spec.Requires.Capabilities == nil {
+		t.Fatalf("persisted source lost explicit empty requires capabilities: %#v", doc.SourceDefinition.Spec.Requires)
+	}
+	if !reflect.DeepEqual(*doc.SourceDefinition, base) {
+		t.Fatalf("persisted source definition = %#v, want %#v", *doc.SourceDefinition, base)
+	}
+	if losses := doc.ExplainLoss(base); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(base) = %#v, want no loss for explicit empty source fields", losses)
+	}
+
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal persisted source definition: %v", err)
+	}
+	var roundTrip Document
+	if err := json.Unmarshal(raw, &roundTrip); err != nil {
+		t.Fatalf("unmarshal persisted source definition: %v", err)
+	}
+	if err := Validate(roundTrip); err != nil {
+		t.Fatalf("Validate(roundTrip) error = %v", err)
+	}
+	if roundTrip.SourceDefinition == nil {
+		t.Fatal("round-trip source definition was not persisted")
+	}
+	persisted = roundTrip.SourceDefinition.Spec.Tasks[0]
+	if persisted.Inputs == nil || persisted.ContextFrom == nil || persisted.ExpectedOutputs == nil {
+		t.Fatalf("round-trip source lost explicit empty fields: %#v", persisted)
+	}
+	if roundTrip.SourceDefinition.Spec.Requires == nil || roundTrip.SourceDefinition.Spec.Requires.Capabilities == nil {
+		t.Fatalf("round-trip source lost explicit empty requires capabilities: %#v", roundTrip.SourceDefinition.Spec.Requires)
+	}
+	if !reflect.DeepEqual(*roundTrip.SourceDefinition, base) {
+		t.Fatalf("round-trip source definition = %#v, want %#v", *roundTrip.SourceDefinition, base)
+	}
+	if losses := roundTrip.ExplainLoss(base); len(losses) != 0 {
+		t.Fatalf("roundTrip.ExplainLoss(base) = %#v, want no loss for explicit empty source fields", losses)
+	}
+}
+
+func TestExplainLossHandlesPointerAndUnsupportedSources(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks:    []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build"}},
+		},
+	}
+	doc, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if losses := doc.ExplainLoss(&base); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(*workflow.Definition) = %#v, want no loss", losses)
+	}
+	workflowSource := &apiv1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "pipeline"},
+		DSLVersion: base.DSLVersion,
+		Spec:       base.Spec,
+	}
+	if losses := doc.ExplainLoss(workflowSource); len(losses) != 0 {
+		t.Fatalf("ExplainLoss(*apiv1.Workflow) = %#v, want no loss", losses)
+	}
+	var nilDefinition *workflow.Definition
+	if losses := doc.ExplainLoss(nilDefinition); len(losses) != 1 || !strings.Contains(losses[0].Explanation, "nil *workflow.Definition") {
+		t.Fatalf("ExplainLoss(nil *workflow.Definition) = %#v, want explicit nil-pointer loss", losses)
+	}
+	if losses := doc.ExplainLoss(nil); len(losses) != 1 || !strings.Contains(losses[0].Explanation, "nil source") {
+		t.Fatalf("ExplainLoss(nil) = %#v, want explicit nil-source loss", losses)
+	}
+	if losses := doc.ExplainLoss("pipeline"); len(losses) != 1 || !strings.Contains(losses[0].Explanation, "unsupported source type string") {
+		t.Fatalf("ExplainLoss(string) = %#v, want explicit unsupported-source loss", losses)
+	}
+}
+
+func TestSemanticDiffClassifiesBehavioralChangesAcrossIRSurfaces(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*workflow.Definition)
+	}{
+		{
+			name: "permissions",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Requires.Capabilities = []string{"issues.write"}
+			},
+		},
+		{
+			name: "triggers",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Triggers[0].Selector["label"] = "blocked"
+			},
+		},
+		{
+			name: "task payload",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Tasks[0].Retry.MaxAttempts = 3
+			},
+		},
+		{
+			name: "gate payload",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Gates[0].Automated.Params["status"] = "green"
+			},
+		},
+		{
+			name: "schemas",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Tasks[0].ExpectedOutputs = []string{"artifact"}
+			},
+		},
+		{
+			name: "parallel settings",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Parallels[0].MaxConcurrentBranches = 2
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeDef := semanticDiffBehavioralBaseDefinition()
+			before, err := Normalize(beforeDef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterDef := cloneDefinitionForTest(t, beforeDef)
+			tc.mutate(&afterDef)
+			after, err := Normalize(afterDef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			diff, err := SemanticDiff(before, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff.Kind != DiffBehavioral {
+				t.Fatalf("SemanticDiff kind = %q, want %q; changes=%#v", diff.Kind, DiffBehavioral, diff.Changes)
+			}
+			if !containsBehavioralChange(diff.Changes) {
+				t.Fatalf("SemanticDiff changes = %#v, want at least one behavioral change", diff.Changes)
+			}
+		})
+	}
+}
+
+func TestSemanticDiffClassifiesCompilerAndSourceIdentityMetadataAsCosmetic(t *testing.T) {
+	base := semanticDiffBehavioralBaseDefinition()
+	before, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		setup     func(*Document)
+		mutate    func(*Document)
+		wantPaths []string
+	}{
+		{
+			name: "compiler metadata",
+			mutate: func(doc *Document) {
+				doc.Compiler = Compiler{Name: "custom-compiler", Version: "workflow-ir/v2"}
+			},
+			wantPaths: []string{"compiler.name", "compiler.version"},
+		},
+		{
+			name: "source identity metadata",
+			setup: func(doc *Document) {
+				doc.SourceDefinition = nil
+			},
+			mutate: func(doc *Document) {
+				doc.Source.Name = "renamed-pipeline"
+				doc.Source.Version = 2
+			},
+			wantPaths: []string{"source.name", "source.version"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			baseline := before
+			if tc.setup != nil {
+				tc.setup(&baseline)
+			}
+			after := baseline
+			tc.mutate(&after)
+
+			diff, err := SemanticDiff(baseline, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff.Kind != DiffCosmetic {
+				t.Fatalf("SemanticDiff kind = %q, want %q; changes=%#v", diff.Kind, DiffCosmetic, diff.Changes)
+			}
+			if containsBehavioralChange(diff.Changes) {
+				t.Fatalf("SemanticDiff changes = %#v, want cosmetic-only changes", diff.Changes)
+			}
+			for _, wantPath := range tc.wantPaths {
+				if !containsChangePath(diff.Changes, wantPath) {
+					t.Fatalf("SemanticDiff changes = %#v, want path %q", diff.Changes, wantPath)
+				}
+			}
+		})
+	}
+}
+
+func semanticDiffBehavioralBaseDefinition() workflow.Definition {
+	return workflow.Definition{
+		Name: "semantic-surfaces", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "prepare",
+			Triggers: []apiv1.Trigger{{
+				Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"label": "ready"},
+			}},
+			Requires: &apiv1.WorkflowRequirements{Capabilities: []string{"repo:read"}},
+			Tasks: []apiv1.Task{
+				{
+					Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "prepare", Next: "gate",
+					ExpectedOutputs: []string{"result"}, Retry: &apiv1.RetryPolicy{MaxAttempts: 1},
+				},
+				{Name: "scan-a", Type: apiv1.TaskDeterministic, Goal: "scan a", Next: workflow.TargetJoin},
+				{Name: "scan-b", Type: apiv1.TaskDeterministic, Goal: "scan b", Next: workflow.TargetJoin},
+				{Name: "publish", Type: apiv1.TaskAgentic, Goal: "publish", Goober: "ops", Capabilities: []string{"repo:push"}},
+			},
+			Gates: []apiv1.Gate{{
+				Name: "gate", Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{
+					Check: "ready", Params: map[string]string{"status": "ok"},
+				},
+				Branches: map[string]string{"approved": "fanout"},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fanout", FailurePolicy: apiv1.BranchContinueOnError, Join: "publish",
+				MaxConcurrentBranches: 1,
+				Branches:              []apiv1.Branch{{Name: "left", Start: "scan-a"}, {Name: "right", Start: "scan-b"}},
+			}},
+		},
+	}
+}
+
+func cloneDefinitionForTest(t *testing.T, def workflow.Definition) workflow.Definition {
+	t.Helper()
+	return cloneDefinition(def)
+}
+
+func containsBehavioralChange(changes []Change) bool {
+	for _, change := range changes {
+		if change.Kind == DiffBehavioral {
+			return true
+		}
+	}
+	return false
+}
+
+func containsChangePath(changes []Change, want string) bool {
+	for _, change := range changes {
+		if change.Path == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNormalizeReturnsImmutableSnapshot(t *testing.T) {
 	def := workflow.Definition{
 		Name: "snapshot", Version: 1,
@@ -226,6 +650,66 @@ func TestValidateRejectsInconsistentEvaluatorAndParallelConfiguration(t *testing
 	base.Start = "fanout"
 	if err := Validate(base); err == nil || !strings.Contains(err.Error(), "at least two branches") {
 		t.Fatalf("Validate parallel error = %v, want structural error", err)
+	}
+}
+
+func TestValidateRejectsInconsistentPersistedSourceDefinition(t *testing.T) {
+	base := workflow.Definition{
+		Name: "pipeline", Version: 2, DSLVersion: "3.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Tasks:    []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build"}},
+		},
+	}
+	doc, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*workflow.Definition)
+		want   string
+	}{
+		{
+			name: "name",
+			mutate: func(def *workflow.Definition) {
+				def.Name = "other"
+			},
+			want: "source metadata name",
+		},
+		{
+			name: "version",
+			mutate: func(def *workflow.Definition) {
+				def.Version++
+			},
+			want: "source metadata version",
+		},
+		{
+			name: "dsl version",
+			mutate: func(def *workflow.Definition) {
+				def.DSLVersion = "4.0"
+			},
+			want: "source metadata DSL version",
+		},
+		{
+			name: "digest",
+			mutate: func(def *workflow.Definition) {
+				def.Spec.Tasks[0].Goal = "changed"
+			},
+			want: "source metadata digest",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mutated := doc
+			sourceCopy := cloneDefinition(*doc.SourceDefinition)
+			tt.mutate(&sourceCopy)
+			mutated.SourceDefinition = &sourceCopy
+			if err := Validate(mutated); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Validate() error = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 
