@@ -547,7 +547,8 @@ function AgentProgressCard({ summary }: { summary: AgentProgressSummary }) {
             {summary.role ? <span> · {summary.role}</span> : null}
           </p>
           <p className="agent-progress-card-meta">
-            stage {summary.stage} · attempt {summary.attempt} · fidelity {summary.fidelity}
+            stage {summary.stage} · attempt {summary.attempt} · status source{" "}
+            {agentCurrentSourceLabel(current)} · fidelity {summary.fidelity}
           </p>
         </div>
         <span className={`agent-progress-badge agent-progress-badge-${agentBadgeTone(summary)}`}>
@@ -627,6 +628,10 @@ function agentCurrentLabel(summary: NonNullable<AgentProgressSummary["currentSta
     default:
       return "Started";
   }
+}
+
+function agentCurrentSourceLabel(current?: AgentProgressSummary["currentStatus"]): string {
+  return current?.source ?? "unknown";
 }
 
 function agentBadgeTone(summary: AgentProgressSummary): "active" | "success" | "danger" | "warning" {
