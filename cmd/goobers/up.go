@@ -1709,13 +1709,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// hands rendered text to the daemon loop below rather than writing to
 	// stdout itself, so it adds no concurrent writer. It never applies an
 	// update and never affects the daemon's health or exit status.
-	updateNotices, updateCheckDone := startUpdateCheck(ctx, root, setup.Config, stderr)
+	updateNotices, updateCheckDone, updatePendingState := startUpdateCheck(ctx, root, setup.Config, stderr)
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
 		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
 		done := make(chan struct{})
 		heartbeatDone = done
-		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), tail, tailErr, heartbeatInterval, done)
+		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), tail, tailErr, heartbeatInterval, updatePendingState, done)
 	}
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
@@ -2166,6 +2166,7 @@ func emitHeartbeats(
 	tail *journal.InstanceLogTail,
 	err error,
 	interval time.Duration,
+	pending *updatePending,
 	done chan<- struct{},
 ) {
 	defer close(done)
@@ -2186,8 +2187,9 @@ func emitHeartbeats(
 				events, err = tail.Events()
 				if err == nil {
 					activity, _ := summarizeHeartbeat(events, 0)
-					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped; %s; %s\n",
-						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read(), cpustat.Read())
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped; %s; %s%s\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read(), cpustat.Read(),
+						updateClause(pending))
 					continue
 				}
 				_ = tail.Close()
@@ -2198,7 +2200,8 @@ func emitHeartbeats(
 				// that has lost its journal tail is exactly when an operator
 				// most needs to know whether it is also about to be OOM-killed,
 				// or merely too throttled to make progress.
-				pf(stdout, "[%s] alive — scheduler activity unavailable: %v; %s; %s\n", now.Format("15:04:05"), err, memstat.Read(), cpustat.Read())
+				pf(stdout, "[%s] alive — scheduler activity unavailable: %v; %s; %s%s\n",
+					now.Format("15:04:05"), err, memstat.Read(), cpustat.Read(), updateClause(pending))
 				continue
 			}
 		}

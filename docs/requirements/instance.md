@@ -112,7 +112,11 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   or applies anything. The check MUST NOT delay startup, and a failed or
   unreachable release source MUST NOT affect the daemon's health or exit
   status. It MUST be disableable (`updateCheck.enabled: false`), after which
-  this path makes no network request at all. This requirement exists because
+  this path makes no network request at all. Because the report is a
+  **condition** rather than an event, it MUST remain visible for as long as the
+  build is behind — a single line in a log stream the heartbeat scrolls past is
+  not a surface an operator can be expected to catch (#4920) — and MUST clear
+  once the running build is current. This requirement exists because
   INST-019's operator-invoked model has no awareness half: an unattended
   instance could otherwise sit on a stale binary indefinitely with nothing in
   the system noticing or saying so. *(Tiers 1–2)*
