@@ -71,6 +71,17 @@ On an instance without `goobers service install` the notice names
 supervised binary slot. `goobers status` renders the same answer from the
 daemon's cache (`<root>/updates/check.json`) and makes no request of its own.
 
+That sentence is announced once per discovered version. Because a single line
+scrolls out of `journalctl` behind the per-minute heartbeat, the heartbeat also
+carries a compact clause for as long as the build is behind (#4920):
+
+```
+[15:04:05] alive — 3 workflow(s), 0 trigger(s) fired, …; mem…; cpu…; update v0.5.0 available
+```
+
+The clause disappears once the running build is current, and `--quiet`
+suppresses it along with the rest of the heartbeat.
+
 The check is **notify-only** (INST-020): it never stages or applies anything,
 and a release source that is unreachable warns once and changes nothing about
 the daemon's health. A version is announced once, not once per tick.
