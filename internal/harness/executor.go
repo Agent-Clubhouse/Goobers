@@ -84,6 +84,9 @@ func (p *agentEventProjection) Emit(event journal.Event) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := p.appender.Append(clean); err != nil {
+		if clean.Type == journal.EventAgentProgress && errors.Is(err, journal.ErrAgentProgressRateLimited) {
+			return nil
+		}
 		return err
 	}
 	p.events = append(p.events, clean)

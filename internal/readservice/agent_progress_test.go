@@ -2,6 +2,7 @@ package readservice
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -276,5 +277,139 @@ func TestRunAgentProgressDropsLateProgressFromOlderPod(t *testing.T) {
 	}
 	if !summary.Degraded || summary.DegradedText == "" {
 		t.Fatalf("degraded summary = %#v, want lifecycle-only degraded fallback", summary)
+	}
+}
+
+func TestRunAgentProgressKeepsNestedGrandchildren(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	const runID = "test-agent-progress-grandchildren"
+
+	j, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
+		StartedAt:       time.Now(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+
+	now := time.Now().UTC()
+	events := []journal.Event{
+		{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "coordinator-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Coordinator: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", ParentID: "coordinator-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "leaf-1", ParentID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Leaf: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentProgress, Progress: &journal.AgentProgress{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "leaf-1",
+			RunID:      runID,
+			Stage:      "implement",
+			Attempt:    1,
+			Kind:       journal.AgentProgressSummary,
+			Source:     journal.AgentProgressSourceModel,
+			OccurredAt: now.Add(time.Second),
+			Summary:    "Completed the leaf task.",
+		}},
+	}
+	for _, event := range events {
+		if err := j.Append(event); err != nil {
+			t.Fatalf("Append %s: %v", event.Type, err)
+		}
+	}
+	_ = j.Close()
+
+	reads, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatalf("NewOfflineRuns: %v", err)
+	}
+	progress, err := reads.RunAgentProgress(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunAgentProgress: %v", err)
+	}
+	if len(progress) != 1 {
+		t.Fatalf("root summaries = %d, want 1", len(progress))
+	}
+	if len(progress[0].Children) != 1 {
+		t.Fatalf("root children = %#v, want one worker", progress[0].Children)
+	}
+	worker := progress[0].Children[0]
+	if len(worker.Children) != 1 || worker.Children[0].AgentID != "leaf-1" {
+		t.Fatalf("worker grandchildren = %#v, want leaf child", worker.Children)
+	}
+}
+
+func TestRunAgentProgressRetainsOnlyRecentHistory(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	const runID = "test-agent-progress-history-retention"
+
+	j, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
+		StartedAt:       time.Now(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+
+	start := time.Now().UTC()
+	total := journal.AgentProgressRetainedHistory + 6
+	for i := 0; i < total; i++ {
+		progress := journal.AgentProgress{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      runID,
+			Stage:      "implement",
+			Attempt:    1,
+			Kind:       journal.AgentProgressProgress,
+			Source:     journal.AgentProgressSourceNative,
+			OccurredAt: start.Add(time.Duration(i) * time.Minute),
+			Progress:   []string{fmt.Sprintf("step-%d", i)},
+		}
+		if err := j.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &progress}); err != nil {
+			t.Fatalf("Append progress %d: %v", i, err)
+		}
+	}
+	_ = j.Close()
+
+	reads, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatalf("NewOfflineRuns: %v", err)
+	}
+	summaries, err := reads.RunAgentProgress(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunAgentProgress: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %d, want 1", len(summaries))
+	}
+	summary := summaries[0]
+	wantLatestSeq := uint64(total + 1) // run.started is the first durable journal event
+	if len(summary.History) != journal.AgentProgressRetainedHistory {
+		t.Fatalf("history len = %d, want %d", len(summary.History), journal.AgentProgressRetainedHistory)
+	}
+	if summary.History[0].Sequence != wantLatestSeq-uint64(journal.AgentProgressRetainedHistory)+1 {
+		t.Fatalf("first retained sequence = %d, want %d", summary.History[0].Sequence, wantLatestSeq-uint64(journal.AgentProgressRetainedHistory)+1)
+	}
+	if summary.Latest == nil || summary.Latest.Sequence != wantLatestSeq {
+		t.Fatalf("latest = %#v, want seq %d", summary.Latest, wantLatestSeq)
 	}
 }

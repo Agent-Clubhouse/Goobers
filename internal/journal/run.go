@@ -651,6 +651,15 @@ func (r *Run) append(ev Event) error {
 	if ev.Branch == 0 {
 		ev.Branch = r.branch
 	}
+	if ev.Type == EventAgentProgress && ev.Progress != nil {
+		events, _, err := readEvents(filepath.Join(r.dir, fileEvents))
+		if err != nil {
+			return err
+		}
+		if err := validateAgentProgressRate(events, *ev.Progress, r.now()); err != nil {
+			return err
+		}
+	}
 	stamped, err := appendEvent(r.events, &r.seq, r.scrubber, r.now, ev)
 	if err != nil {
 		r.appendErr = err
