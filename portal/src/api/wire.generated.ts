@@ -156,6 +156,13 @@ export const goWireFixtures = {
       "observedAt": "2026-07-18T12:34:56Z",
       "watching": true,
       "state": "rejected"
+    },
+    "update": {
+      "available": true,
+      "latestVersion": "v1.3.0",
+      "currentVersion": "v1.2.3",
+      "channel": "stable",
+      "checkedAt": "2026-07-18T12:34:56Z"
     }
   },
   "instance": {

@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/version"
 )
@@ -74,6 +75,34 @@ type Health struct {
 	Instance         InstanceIdentity        `json:"instance"`
 	Freshness        Freshness               `json:"freshness"`
 	DefinitionReload *DefinitionReloadStatus `json:"definitionReload,omitempty"`
+	// Update reports whether a newer release exists, so the portal can surface
+	// what #4903 gave only terminal users. Nil means no check has run yet (a
+	// daemon that just started, or one with updateCheck.enabled: false) —
+	// absent, deliberately, rather than a zero value that would read as
+	// "confirmed up to date".
+	Update *UpdateAvailability `json:"update,omitempty"`
+}
+
+// UpdateAvailability is the daemon's last notify-only release check, read from
+// its on-disk cache. The daemon performs the check on its own interval; this
+// read NEVER contacts the release source, so serving /api/v1/health stays a
+// local read and the browser never talks to GitHub.
+type UpdateAvailability struct {
+	// Available reports LatestVersion > the running build by SemVer.
+	Available bool `json:"available"`
+	// LatestVersion is the newest release tag on the configured channel.
+	LatestVersion string `json:"latestVersion"`
+	// CurrentVersion is the build the verdict was computed against. It is
+	// always the running build — a cache written by a different binary is
+	// refused rather than served — and is carried so a consumer can show what
+	// the available version is being compared with.
+	CurrentVersion string `json:"currentVersion"`
+	// Channel is the channel the check resolved through (stable or prerelease).
+	Channel string `json:"channel"`
+	// CheckedAt is when the daemon last completed a check, so a consumer can
+	// tell a fresh answer from one left by a daemon that has since lost
+	// network access.
+	CheckedAt time.Time `json:"checkedAt"`
 }
 
 // BuildMetadata identifies the exact daemon binary serving the response.
@@ -96,6 +125,13 @@ type Freshness struct {
 	JournalUpdatedAt    *time.Time `json:"journalUpdatedAt"`
 	LastSchedulerTickAt *time.Time `json:"lastSchedulerTickAt"`
 	LastTickAgeMillis   *int64     `json:"lastTickAgeMillis"`
+}
+
+type cachedUpdateCheck struct {
+	modTime time.Time
+	size    int64
+	result  selfupdate.CheckResult
+	valid   bool
 }
 
 // LocalSources are the three local projections behind the shared service.
@@ -129,7 +165,10 @@ type LocalSources struct {
 // Local reads a tier 1-2 instance's provisioned definitions, journals, and
 // telemetry projection.
 type Local struct {
-	sources          LocalSources
+	sources LocalSources
+	// updateCheck memoizes the parsed <root>/updates/check.json so the
+	// highest-frequency route does not re-decode an unchanged file.
+	updateCheck      atomic.Pointer[cachedUpdateCheck]
 	telemetry        *Telemetry
 	ready            func() bool
 	now              func() time.Time
@@ -343,6 +382,7 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 
 	build := version.Get()
 	return Health{
+		Update:           s.updateAvailability(),
 		DefinitionReload: s.definitionReloadSnapshot(),
 		APIVersion:       APIVersion,
 		SchemaVersion:    SchemaVersion,
@@ -365,6 +405,85 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 			LastTickAgeMillis:   lastTickAgeMillis,
 		},
 	}, nil
+}
+
+// updateAvailability reports the daemon's cached release check. It is a local
+// read, never a request: the daemon owns the network side and writes the
+// answer to <root>/updates/check.json on its own schedule.
+//
+// Every failure mode returns nil rather than an error. A missing cache is the
+// normal state before the first check, and a corrupt one must not take
+// /api/v1/health down — losing an advisory field is not worth failing a health
+// endpoint over.
+func (s *Local) updateAvailability() *UpdateAvailability {
+	// An operator who turned the check off must not keep seeing its last
+	// answer. The daemon's disabled path never refreshes or removes the cache
+	// (there is no check running to do so), so a file left by an earlier
+	// enabled run would otherwise assert a pending update forever, with
+	// nothing short of editing the filesystem to silence it.
+	if !s.sources.Config.UpdateCheckSettings().EnabledEffective() {
+		return nil
+	}
+	result, ok := s.cachedUpdateCheck()
+	if !ok {
+		return nil
+	}
+	// The cached verdict is `latest > current` for the build that PERFORMED
+	// the check — which is not necessarily the build now serving this
+	// response. Refuse a verdict computed against a different binary rather
+	// than restate it:
+	//
+	//   - a `dev` build never refreshes the cache at all (CheckLatest returns
+	//     ErrVersionNotComparable before writing), so a file left by a
+	//     released build would make a developer's portal claim an update
+	//     forever — the exact outcome that early-out exists to prevent;
+	//   - after a successful upgrade whose next check cannot complete (no
+	//     network, or the check since disabled), the stale file still says the
+	//     operator is behind when they are not.
+	//
+	// `goobers status` tolerates this because it prints the checked-against
+	// version and the check's age; a one-line strip states the claim flatly,
+	// so the staleness has to be caught here.
+	if result.CurrentVersion != version.Get().Version {
+		return nil
+	}
+	return &UpdateAvailability{
+		Available:      result.UpdateAvailable,
+		LatestVersion:  result.LatestVersion,
+		CurrentVersion: result.CurrentVersion,
+		Channel:        result.Channel,
+		CheckedAt:      result.CheckedAt,
+	}
+}
+
+// cachedUpdateCheck returns the parsed check, re-reading only when the file
+// has actually changed.
+//
+// /api/v1/health is the highest-frequency route in the service (the portal's
+// live poll, three operationalData call sites, `goobers status`, liveness
+// probes), and this value changes at most once per updateCheck.interval —
+// 24h by default. Decoding the same JSON on every request to learn that
+// nothing changed is the kind of request-path I/O this package removes
+// elsewhere (definitionReload is served from an atomic.Pointer;
+// activeRunSampler exists to move a directory walk off this path). The mtime
+// probe rides alongside the os.Stat this method already performs for journal
+// freshness.
+func (s *Local) cachedUpdateCheck() (selfupdate.CheckResult, bool) {
+	info, err := os.Stat(selfupdate.CheckPath(s.sources.Layout.Root))
+	if err != nil {
+		return selfupdate.CheckResult{}, false
+	}
+	if cached := s.updateCheck.Load(); cached != nil &&
+		cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
+		return cached.result, cached.valid
+	}
+	result, err := selfupdate.ReadCheck(s.sources.Layout.Root)
+	// A corrupt file is cached as invalid too, so a broken cache is decoded
+	// once rather than on every request until someone fixes it.
+	s.updateCheck.Store(&cachedUpdateCheck{
+		modTime: info.ModTime(), size: info.Size(), result: result, valid: err == nil,
+	})
+	return result, err == nil
 }
 
 // Health returns the read response with its freshness envelope attached.

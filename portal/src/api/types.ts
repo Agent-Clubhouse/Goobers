@@ -331,6 +331,21 @@ export interface Health extends ContractVersion {
   healthy: boolean;
   instance: InstanceIdentity;
   freshness: Freshness;
+  /**
+   * The daemon's last notify-only release check. Absent means no check has run
+   * yet, or the operator set updateCheck.enabled: false — deliberately not the
+   * same as a check that confirmed the build is current.
+   */
+  update?: UpdateAvailability;
+}
+
+export interface UpdateAvailability {
+  available: boolean;
+  latestVersion: string;
+  /** The build the verdict was computed against — always the running build. */
+  currentVersion: string;
+  channel: string;
+  checkedAt: string;
 }
 
 export interface BuildMetadata {

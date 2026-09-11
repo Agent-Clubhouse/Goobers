@@ -222,6 +222,12 @@ function Overview({
               ) : (
                 "Unavailable"
               )}
+              {overview.health.update?.available ? (
+                <span className="version-update-available">
+                  {" "}
+                  · {overview.health.update.latestVersion} available
+                </span>
+              ) : null}
             </dd>
           </div>
           <div>
