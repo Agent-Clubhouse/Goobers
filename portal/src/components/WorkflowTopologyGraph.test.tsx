@@ -537,6 +537,51 @@ describe("workflow topology graph traversed edges (#1430)", () => {
     expect(screen.getAllByText("Cycle detected")).toHaveLength(2);
   });
 
+  // #4825: withheld analytics (no promotion-eligible causal confidence
+  // interval) is the common case for a fresh instance — the read API emits
+  // empty arrays, not null, for the withheld fields. Rendering must degrade
+  // silently rather than throw.
+  it("renders withheld graph analytics (empty arrays) without throwing", () => {
+    const analytics: GraphAnalytics = {
+      centrality: [],
+      criticalPath: { nodes: [], weight: 0 },
+      cycles: [],
+      confidence: "untrusted",
+      caveat: "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available",
+    };
+    render(
+      <WorkflowTopologyGraph
+        analytics={analytics}
+        graph={cyclicGraph}
+        onSelectStage={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText("Cycle detected")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Blame/)).not.toBeInTheDocument();
+  });
+
+  // Defense in depth for #4825: even if a malformed payload (e.g. from a
+  // server predating this fix, or a future regression) supplied null instead
+  // of empty arrays, the component must not throw and unmount the app.
+  it("tolerates a malformed analytics payload with null arrays", () => {
+    const malformedAnalytics = {
+      centrality: null,
+      criticalPath: { nodes: null, weight: 0 },
+      cycles: null,
+      confidence: "untrusted",
+    } as unknown as GraphAnalytics;
+    expect(() =>
+      render(
+        <WorkflowTopologyGraph
+          analytics={malformedAnalytics}
+          graph={cyclicGraph}
+          onSelectStage={() => {}}
+        />,
+      ),
+    ).not.toThrow();
+  });
+
   it("emphasizes only the edges actually crossed, not every edge whose endpoints were visited", () => {
     const { container } = render(
       <WorkflowTopologyGraph
