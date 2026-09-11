@@ -143,6 +143,7 @@ func TestCodexAdapterRejectsRestrictiveTools(t *testing.T) {
 func TestCodexAdapterMaterializesScopedMCPConfig(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("SAFE_TOOLCHAIN_VAR", "available")
+	t.Setenv("LANG", "codex-test-locale")
 	var capturedConfig string
 	runner := &fakeProcessRunner{
 		result: ProcessResult{ExitCode: 0, Transcript: []byte(codexCompletedStream)},
@@ -208,9 +209,10 @@ func TestCodexAdapterMaterializesScopedMCPConfig(t *testing.T) {
 		t.Fatalf("credential leaked into config:\n%s", config)
 	}
 	command := strings.Join(runner.lastReq.Command, "\n")
-	if !strings.Contains(command, `shell_environment_policy.include_only=`) ||
-		!strings.Contains(command, `shell_environment_policy.inherit="core"`) {
-		t.Fatalf("shell environment policy is not restricted to core variables:\n%s", command)
+	if !strings.Contains(command, `shell_environment_policy.set=`) ||
+		!strings.Contains(command, `shell_environment_policy.inherit="none"`) ||
+		!strings.Contains(command, `"LANG" = "codex-test-locale"`) {
+		t.Fatalf("shell environment policy does not explicitly set a non-inheriting environment:\n%s", command)
 	}
 	for _, excludedName := range []string{"SAFE_TOOLCHAIN_VAR", "TEST_CONTEXT_TOKEN", "CONTEXT_TOKEN", "CODEX_API_KEY"} {
 		if strings.Contains(command, `"`+excludedName+`"`) {

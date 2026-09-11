@@ -135,7 +135,7 @@ func isOpenAIAPIKey(value string) bool {
 	return strings.HasPrefix(value, "sk-")
 }
 
-func buildCodexArgv(baseCommand []string, model, effort, workspace string, shellEnvNames []string) []string {
+func buildCodexArgv(baseCommand []string, model, effort, workspace string, shellEnv map[string]string) []string {
 	trustedPath := filepath.Clean(workspace)
 	argv := append([]string(nil), baseCommand...)
 	argv = append(argv,
@@ -151,9 +151,9 @@ func buildCodexArgv(baseCommand []string, model, effort, workspace string, shell
 		"-c", "project_root_markers=[]",
 		"-c", `web_search="disabled"`,
 		"-c", "sandbox_workspace_write.network_access=false",
-		"-c", `shell_environment_policy.inherit="core"`,
+		"-c", `shell_environment_policy.inherit="none"`,
 		"-c", "shell_environment_policy.ignore_default_excludes=false",
-		"-c", "shell_environment_policy.include_only="+tomlStringArray(shellEnvNames),
+		"-c", "shell_environment_policy.set="+tomlStringMap(shellEnv),
 	)
 	if model != "" && model != "auto" {
 		argv = append(argv, "--model", model)
@@ -344,8 +344,8 @@ func (c *CodexAdapter) prepareInvocation(ctx context.Context, req RunRequest, op
 		secretEnv = append(secretEnv, name)
 	}
 	secretEnv = append(secretEnv, mcpSecretEnv...)
-	shellEnvNames := codexShellEnvironmentNames(env, secretEnv)
-	argv := buildCodexArgv(resolveStdioHarnessCommand(c.Command), req.Model, options["effort"], req.Workspace, shellEnvNames)
+	shellEnv := codexShellEnvironment(env, secretEnv)
+	argv := buildCodexArgv(resolveStdioHarnessCommand(c.Command), req.Model, options["effort"], req.Workspace, shellEnv)
 	if req.Sandbox != nil {
 		writableRoots, err := gitWritableRoots(req.Workspace)
 		if err != nil {
@@ -460,37 +460,43 @@ func tomlQuote(value string) string {
 	return string(data)
 }
 
-func tomlStringArray(values []string) string {
-	var out strings.Builder
-	out.WriteByte('[')
-	for i, value := range values {
-		if i > 0 {
-			out.WriteString(",")
-		}
-		out.WriteString(tomlQuote(value))
+func tomlStringMap(values map[string]string) string {
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
 	}
-	out.WriteByte(']')
+	sort.Strings(names)
+	var out strings.Builder
+	out.WriteString("{ ")
+	for i, name := range names {
+		if i > 0 {
+			out.WriteString(", ")
+		}
+		out.WriteString(tomlQuote(name))
+		out.WriteString(" = ")
+		out.WriteString(tomlQuote(values[name]))
+	}
+	out.WriteString(" }")
 	return out.String()
 }
 
-func codexShellEnvironmentNames(env, excluded []string) []string {
+func codexShellEnvironment(env, excluded []string) map[string]string {
 	deny := make(map[string]bool, len(excluded))
 	for _, name := range excluded {
 		deny[strings.ToUpper(name)] = true
 	}
-	var names []string
+	values := map[string]string{}
 	seen := map[string]bool{}
 	for _, entry := range env {
-		name, _, ok := strings.Cut(entry, "=")
+		name, value, ok := strings.Cut(entry, "=")
 		normalized := strings.ToUpper(name)
 		if !ok || name == "" || deny[normalized] || !codexShellCoreEnvironment[normalized] || seen[normalized] {
 			continue
 		}
 		seen[normalized] = true
-		names = append(names, name)
+		values[name] = value
 	}
-	sort.Strings(names)
-	return names
+	return values
 }
 
 var codexShellCoreEnvironment = map[string]bool{
