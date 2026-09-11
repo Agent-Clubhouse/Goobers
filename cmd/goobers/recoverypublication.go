@@ -50,12 +50,19 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 	if err != nil {
 		return err
 	}
+	recoveryCfg := cfg.Retention.RecoveryEffective()
+	retainWindow, err := recoveryCfg.RetainWindowEffective()
+	if err != nil {
+		return err
+	}
 	err = manager.WithRecoveryMirror(ctx, url, func(repository string) error {
 		_, _, err := recovery.AcceptArchive(ctx, body, recovery.RetentionRequest{
 			Repository: repository, RepositoryKey: key, RunID: runID,
-			IdentityTime: identity.StartedAt, RetainUntil: identity.StartedAt.Add(30 * 24 * time.Hour),
-			InventoryRoot: root, CleanupRoots: []string{manager.Root}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20,
-		}, recoveryPublicationAck{ctx: ctx, service: s, runID: runID, key: key, issue: issue, runDir: runDir})
+			IdentityTime: identity.StartedAt, RetainUntil: identity.StartedAt.Add(retainWindow),
+			InventoryRoot: root, CleanupRoots: []string{manager.Root},
+			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(),
+			EvictFull: recoveryEvictFunc(s.layout, cfg, manager, key),
+		}, recoveryPublicationAck{ctx: ctx, service: s, runID: runID, key: key, issue: issue, runDir: runDir, recoveryConfig: recoveryCfg})
 		return err
 	})
 	return err
@@ -66,6 +73,7 @@ type recoveryPublicationAck struct {
 	service           recoveryDeliveryService
 	runID, key, issue string
 	runDir            string
+	recoveryConfig    instance.RecoverySnapshotConfig
 }
 
 func (a recoveryPublicationAck) Append(event journal.Event) error {
@@ -95,6 +103,10 @@ func (a recoveryPublicationAck) withCurrentRetention(event journal.Event) (journ
 	if reserved, err := journal.PruneReserved(a.runDir); err != nil || reserved {
 		return journal.Event{}, fmt.Errorf("publication run unavailable for retention")
 	}
+	retainWindow, err := a.recoveryConfig.RetainWindowEffective()
+	if err != nil {
+		return journal.Event{}, err
+	}
 	captureAt, err := recoveryCaptureTime(a.ctx, reader, identity.StartedAt, true)
 	if err != nil {
 		return journal.Event{}, err
@@ -103,7 +115,7 @@ func (a recoveryPublicationAck) withCurrentRetention(event journal.Event) (journ
 	if err != nil || len(records) != 1 || records[0].RepositoryKey != a.key {
 		return journal.Event{}, fmt.Errorf("publication acknowledgement identity mismatch")
 	}
-	entries, err := recovery.ReadInventory(a.ctx, filepath.Join(a.service.layout.Root, "recovery"), 128)
+	entries, err := recovery.ReadInventory(a.ctx, filepath.Join(a.service.layout.Root, "recovery"), a.recoveryConfig.MaxSnapshotsEffective())
 	if err != nil {
 		return journal.Event{}, err
 	}
@@ -116,7 +128,7 @@ func (a recoveryPublicationAck) withCurrentRetention(event journal.Event) (journ
 		if comparison != records[0] {
 			return journal.Event{}, recovery.ErrRecordConflict
 		}
-		record, err := recovery.RenewRetention(a.ctx, entry.RecordPath, captureAt.Add(30*24*time.Hour), 512<<20)
+		record, err := recovery.RenewRetention(a.ctx, entry.RecordPath, captureAt.Add(retainWindow), a.recoveryConfig.MaxArchiveBytesEffective())
 		if err != nil {
 			return journal.Event{}, err
 		}

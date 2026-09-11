@@ -92,6 +92,9 @@ func statusRecoverySummaries(layout instance.Layout, runs []runSummary, now time
 }
 
 func printStatusRecovery(out io.Writer, layout instance.Layout, runs []runSummary, now time.Time) {
+	if len(runs) > 0 {
+		printRecoveryInventoryOccupancy(out, layout)
+	}
 	views, err := loadRecoveryViews(context.Background(), layout, now)
 	if err != nil {
 		printRecoveryView(out, &recoveryView{Status: "unavailable"})
@@ -103,6 +106,31 @@ func printStatusRecovery(out io.Writer, layout instance.Layout, runs []runSummar
 			printRecoveryView(out, view)
 		}
 	}
+}
+
+// recoveryInventoryOccupancy reports the recovery inventory's current entry
+// count against its configured cap (#4823 AC5), so an operator can see
+// pressure building before an ordinary worktree cleanup ever gets refused.
+func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (used, limit int, err error) {
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return 0, 0, err
+	}
+	limit = cfg.Retention.RecoveryEffective().MaxSnapshotsEffective()
+	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), limit)
+	if err != nil {
+		return 0, limit, err
+	}
+	return len(entries), limit, nil
+}
+
+func printRecoveryInventoryOccupancy(out io.Writer, layout instance.Layout) {
+	used, limit, err := recoveryInventoryOccupancy(context.Background(), layout)
+	if err != nil {
+		pf(out, "recovery inventory: unavailable\n")
+		return
+	}
+	pf(out, "recovery inventory: %d/%d\n", used, limit)
 }
 
 func printRecoveryView(out io.Writer, view *recoveryView) {

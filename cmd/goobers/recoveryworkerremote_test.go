@@ -48,7 +48,8 @@ func TestWorkerRecoveryRefusesUnownedOrExpiredClaimBeforeCapture(t *testing.T) {
 				t.Fatal(err)
 			}
 			worker := &workerSeams{root: root, recoveryEmitter: &livejournal.HTTPEmitter{BaseURL: server.URL, Token: "worker-token"}}
-			err := worker.publishWorkerRecovery(t.Context(), source, worktree.CleanupTarget{
+			manager := &worktree.Manager{Root: source}
+			err := worker.publishWorkerRecovery(t.Context(), manager, worktree.CleanupTarget{
 				Path: source, OwnerRunID: "source-run", Gaggle: "web", CreatedAt: time.Now(),
 			})
 			if err == nil {
