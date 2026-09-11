@@ -56,6 +56,38 @@ The hourly workflow defaults to a checksum-verified release; `manual` pins a tag
 config-diff checks. The host journals activation, retains the old binary, and rolls
 back with escalation on failed health. Config delivery remains owned by Workflow CD.
 
+### Knowing an update exists
+
+A running daemon checks the product release source at startup and every
+`updateCheck.interval` (default 24h) and prints one line when the newest
+release on its channel is ahead of the running build:
+
+```
+update available: v0.5.0 (running v0.4.0) — run `goobers self-update` to stage it
+```
+
+On an instance without `goobers service install` the notice names
+`goobers service install` instead, because `self-update` refuses without the
+supervised binary slot. `goobers status` renders the same answer from the
+daemon's cache (`<root>/updates/check.json`) and makes no request of its own.
+
+The check is **notify-only** (INST-020): it never stages or applies anything,
+and a release source that is unreachable warns once and changes nothing about
+the daemon's health. A version is announced once, not once per tick.
+
+Configure it in `instance.yaml`:
+
+```yaml
+updateCheck:
+  enabled: true       # default; false makes this path do no network request
+  channel: stable     # stable | prerelease — the same channels self-update stages
+  interval: 24h
+```
+
+`channel: prerelease` is the persistent equivalent of `self-update`'s
+`--include-prerelease`, which is otherwise reachable only by editing a stage's
+command line.
+
 > **Credentials & PATH.** Run the daemon as the user that owns the instance's
 > provider token, so it inherits per-user credentials — this is why the Linux
 > and macOS templates default to a *user* service. Remember the daemon's

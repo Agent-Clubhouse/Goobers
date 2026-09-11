@@ -45,6 +45,11 @@ const (
 	DefaultProductRepository = "Goobers"
 
 	requestSchema = "goobers.dev/self-update/v1"
+	// defaultAPIBaseURL is the public GitHub API. It is the default value of a
+	// caller-overridable option, not a built-in destination the product
+	// reaches on its own initiative: every request through it is one the
+	// operator asked for (a release check or a staged update).
+	defaultAPIBaseURL = "https://api.github.com"
 	// DefaultHealthTicks is the required number of clean heartbeat intervals.
 	DefaultHealthTicks = 3
 	// DefaultHealthTimeout bounds candidate health monitoring.
@@ -206,7 +211,7 @@ func defaultPrepareOptions(opts PrepareOptions) PrepareOptions {
 	opts.HeartbeatInterval = valueOr(opts.HeartbeatInterval, time.Minute)
 	opts.GOOS = valueOr(opts.GOOS, runtime.GOOS)
 	opts.GOARCH = valueOr(opts.GOARCH, runtime.GOARCH)
-	opts.APIBaseURL = valueOr(opts.APIBaseURL, "https://api.github.com")
+	opts.APIBaseURL = valueOr(opts.APIBaseURL, defaultAPIBaseURL)
 	if opts.HTTPClient == nil {
 		opts.HTTPClient = &http.Client{Timeout: 2 * time.Minute}
 	}
@@ -651,6 +656,7 @@ func updatesDir(root string) string      { return filepath.Join(root, "updates")
 func stagingDir(root string) string      { return filepath.Join(updatesDir(root), "staged") }
 func requestPath(root string) string     { return filepath.Join(updatesDir(root), "request.json") }
 func stopRequestPath(root string) string { return filepath.Join(updatesDir(root), "stop-request") }
+func checkPath(root string) string       { return filepath.Join(updatesDir(root), "check.json") }
 func currentBinary(root, goos string) string {
 	return filepath.Join(updatesDir(root), "current", binaryName(goos))
 }

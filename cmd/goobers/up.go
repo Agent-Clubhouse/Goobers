@@ -1705,6 +1705,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if fleetConnectorStarted {
 		pln(stdout, "Fleet connector started")
 	}
+	// Notify-only release check (#4903). It runs off the critical path and
+	// hands rendered text to the daemon loop below rather than writing to
+	// stdout itself, so it adds no concurrent writer. It never applies an
+	// update and never affects the daemon's health or exit status.
+	updateNotices, updateCheckDone := startUpdateCheck(ctx, root, setup.Config, stderr)
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
 		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
@@ -1727,16 +1732,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 daemonLoop:
 	for {
 		select {
+		case update := <-updateNotices:
+			update.report(stdout, stderr)
 		case connectorErr := <-fleetConnectorDone:
 			fleetConnectorDone = nil
 			fleetConnectorStarted = false
-			if ctx.Err() == nil {
-				if connectorErr != nil {
-					pf(stderr, "warning: Fleet connector stopped: %v\n", connectorErr)
-				} else {
-					pln(stderr, "Fleet connector stopped")
-				}
-			}
+			reportFleetConnectorStopped(stderr, connectorErr, ctx.Err())
 		case runErr = <-schedulerDone:
 			break daemonLoop
 		case stopErr := <-supervisorStop:
@@ -1819,6 +1820,7 @@ daemonLoop:
 	<-claimTickerDone
 	<-sharedVisibilityDone
 	<-stalledTickerDone
+	<-updateCheckDone
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
 	<-startupRetentionSweepDone

@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -1675,4 +1676,46 @@ func TestStatusDaemonRejectsRunListingFlags(t *testing.T) {
 	if !strings.Contains(stderr, "--daemon cannot be combined") {
 		t.Fatalf("stderr = %q", stderr)
 	}
+}
+
+func TestReportUpdateCheck(t *testing.T) {
+	t.Run("no cache is silent", func(t *testing.T) {
+		var buf bytes.Buffer
+		reportUpdateCheck(t.TempDir(), &buf)
+		if buf.Len() != 0 {
+			t.Errorf("reportUpdateCheck() = %q, want silence before the first check", buf.String())
+		}
+	})
+
+	t.Run("up to date", func(t *testing.T) {
+		root := t.TempDir()
+		if err := selfupdate.WriteCheck(root, selfupdate.CheckResult{
+			CurrentVersion: "v0.4.0", LatestVersion: "v0.4.0", Channel: selfupdate.ChannelStable, CheckedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		reportUpdateCheck(root, &buf)
+		if got := buf.String(); !strings.Contains(got, "update check: up to date") {
+			t.Errorf("reportUpdateCheck() = %q, want an up-to-date line", got)
+		}
+	})
+
+	t.Run("update available names the command", func(t *testing.T) {
+		root := t.TempDir()
+		if err := selfupdate.WriteCheck(root, selfupdate.CheckResult{
+			CurrentVersion: "v0.4.0", LatestVersion: "v0.5.0", UpdateAvailable: true,
+			Channel: selfupdate.ChannelPrerelease, CheckedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		reportUpdateCheck(root, &buf)
+		got := buf.String()
+		for _, want := range []string{"v0.5.0", "prerelease", "goobers service install"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("reportUpdateCheck() = %q, want it to contain %q", got, want)
+			}
+		}
+	})
 }

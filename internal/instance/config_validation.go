@@ -50,6 +50,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		c.Telemetry.Retention.validate,
 		c.RunConditions.validate,
 		c.Retention.validate,
+		func() error { return c.UpdateCheckSettings().Validate() },
 		func() error { return c.validateRepos(stores) },
 		c.validateGitHubCLIIdentityRefs,
 		func() error { return c.validateDaemonIdentity(stores) },

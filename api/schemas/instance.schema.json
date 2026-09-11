@@ -158,6 +158,10 @@
       "description": "Pruning of retained failure worktrees and merged local run branches, plus the portal projection window. Pruning is opt-out. Distinct from telemetry.retention, which bounds journals and rollups.",
       "$ref": "#/$defs/retention"
     },
+    "updateCheck": {
+      "description": "Notify-only release check: tells the operator when a newer release exists. Never applies an update.",
+      "$ref": "#/$defs/updateCheck"
+    },
     "notifications": {
       "type": "boolean",
       "default": false,
@@ -1053,6 +1057,28 @@
             "allowHTTP": { "type": "boolean", "default": false, "description": "Permits plaintext http:// to the allowed hosts. Off keeps every request https." }
           }
         }
+      }
+    },
+    "updateCheck": {
+      "description": "Notify-only release check (#4903). The daemon resolves the newest release on the configured channel and tells the operator when it is ahead of the running build \u2014 at startup and on the configured interval, announcing only when the resolved version changes. It NEVER applies an update: staging one stays an explicit operator action (INST-019). Enabled by default, because the daemon already queries the same GitHub API to do its work, so resolving a release tag discloses nothing new; set enabled to false for an instance that must make no release request at all.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true, "description": "Lets the daemon check whether a newer release exists. Defaults to true; set explicitly to false and this path performs no network request." },
+        "channel": {
+          "type": "string",
+          "enum": ["stable", "prerelease"],
+          "default": "stable",
+          "description": "Which releases to consider: \"stable\" resolves the newest stable release, \"prerelease\" resolves the newest release including pre-releases. These are the same two channels `goobers self-update` stages through, so the notice matches what acting on it would install."
+        },
+        "interval": {
+          "description": "How often a running daemon re-checks. Omitted uses 24h. A shorter interval does not repeat a notice: the daemon announces only when the resolved version changes.",
+          "$ref": "#/$defs/duration",
+          "default": "24h",
+          "examples": ["24h", "6h"]
+        },
+        "owner": { "type": "string", "description": "Product release source owner. Omitted resolves the canonical Goobers product repository, deliberately independent of the instance's configured workload repositories (#4324). Set with repository to track a private release mirror." },
+        "repository": { "type": "string", "description": "Product release source repository. Omitted resolves the canonical Goobers product repository. Set together with owner." }
       }
     },
     "retention": {
