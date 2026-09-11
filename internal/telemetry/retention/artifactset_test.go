@@ -67,14 +67,14 @@ func TestArtifactSetsFollowRunRetentionIncludingFailedPublication(t *testing.T) 
 		assertRetainedSet(t, run.Dir(), pointers, orphan)
 	}
 	policy := Policy{Window: 24 * time.Hour, MaxRuns: 100}
-	preview, err := Prune(layout, db, policy, Options{Now: now, DryRun: true})
+	preview, _, err := Prune(layout, db, policy, Options{Now: now, DryRun: true})
 	if err != nil || len(preview) != 1 || preview[0].RunID != "expired" {
 		t.Fatalf("retention preview = %+v, %v", preview, err)
 	}
 	for _, set := range sets {
 		assertRetainedSet(t, set.dir, set.pointers, set.orphan)
 	}
-	results, err := Prune(layout, db, policy, Options{Now: now})
+	results, _, err := Prune(layout, db, policy, Options{Now: now})
 	if err != nil || len(results) != 1 || results[0].RunID != "expired" {
 		t.Fatalf("retention = %+v, %v", results, err)
 	}

@@ -1440,24 +1440,37 @@ func reportPendingTriggerQueue(schedulerDir string, now time.Time, stdout io.Wri
 
 // reportTelemetryRetentionPolicy surfaces #4253/#3056's "status + portal
 // permanently surface: policy in force, last pass, candidate count"
-// acceptance criterion. Silent when no pass has ever recorded state —
-// retention explicitly disabled (telemetry.retention.enabled: false), or the
-// daemon has never ticked its retention sweep yet — same silent-when-
-// nothing-notable convention as reportPendingTriggerQueue.
+// acceptance criterion, plus #4824's addition: the effective cutoff age, not
+// only a raw candidate count — an operator staring at "14693 candidates"
+// cannot tell how much history that leaves without also knowing the total,
+// but "history retained back to 3 days ago" answers the question directly.
+// Silent when no pass has ever recorded state — retention explicitly
+// disabled (telemetry.retention.enabled: false), or the daemon has never
+// ticked its retention sweep yet — same silent-when-nothing-notable
+// convention as reportPendingTriggerQueue.
 func reportTelemetryRetentionPolicy(l instance.Layout, now time.Time, stdout io.Writer) {
 	state, ok, err := readTelemetryRetentionState(l)
 	if err != nil || !ok {
 		return
 	}
 	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
+	cutoff := ""
+	if !state.OldestRetainedAt.IsZero() {
+		cutoff = fmt.Sprintf(", history retained back to %s ago", now.Sub(state.OldestRetainedAt).Truncate(time.Second))
+	} else if state.TotalRuns > 0 {
+		cutoff = ", no run would survive enforcing this policy right now"
+	}
 	switch {
+	case state.LastPassDryRun && state.LargeFirstEnforceBlocked:
+		pf(stdout, "telemetry retention: enforcement held for explicit acknowledgement — %d of %d run(s) as of last pass %s ago would be pruned (over the safety threshold); set telemetry.retention.firstEnable: immediate to proceed%s\n",
+			state.CandidateCount, state.TotalRuns, lastPassAgo, cutoff)
 	case state.LastPassDryRun && !state.EnforceAt.IsZero():
-		pf(stdout, "telemetry retention: grace period active until %s (%d candidate(s) as of last pass %s ago) — nothing deleted yet\n",
-			state.EnforceAt.UTC().Format(time.RFC3339), state.CandidateCount, lastPassAgo)
+		pf(stdout, "telemetry retention: grace period active until %s (%d of %d run(s) as of last pass %s ago) — nothing deleted yet%s\n",
+			state.EnforceAt.UTC().Format(time.RFC3339), state.CandidateCount, state.TotalRuns, lastPassAgo, cutoff)
 	case state.LastPassDryRun:
-		pf(stdout, "telemetry retention: policy in force, no candidates as of last pass %s ago\n", lastPassAgo)
+		pf(stdout, "telemetry retention: policy in force, no candidates as of last pass %s ago%s\n", lastPassAgo, cutoff)
 	default:
-		pf(stdout, "telemetry retention: policy in force, last pass %s ago pruned %d run(s)\n", lastPassAgo, state.PrunedCount)
+		pf(stdout, "telemetry retention: policy in force, last pass %s ago pruned %d run(s)%s\n", lastPassAgo, state.PrunedCount, cutoff)
 	}
 }
 

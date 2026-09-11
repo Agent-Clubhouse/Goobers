@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,17 @@ func TestConfiguredTelemetryRetentionOptOutStartsGraceWindowThenEnforces(t *test
 	defer func() { _ = db.Close() }()
 	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatal(err)
+	}
+	// Two runs dated well past every check point this test advances through
+	// (including the final post-grace one), so the one stale candidate is a
+	// minority of this instance's history (#4824's large-first-enforcement
+	// gate only blocks when a pass would prune the majority) — this test
+	// exercises the timed grace window specifically, not that gate.
+	for _, id := range []string{"recent-1", "recent-2"} {
+		recentDir := createTelemetryRetentionRun(t, runLayout, id, now.Add(30*24*time.Hour))
+		if err := db.IngestRun(context.Background(), recentDir); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}
@@ -198,9 +210,19 @@ func TestConfiguredTelemetryRetentionStartsGraceWindowAfterPriorEmptyPass(t *tes
 	// finds real candidates. This must still be a dry run (the grace window
 	// starting now), not immediate enforcement.
 	later := now.Add(30 * 24 * time.Hour)
-	runDir := createTelemetryRetentionRun(t, instanceLayout.ForGaggle("example"), "first-real-candidate", later.Add(-48*time.Hour))
+	runLayout := instanceLayout.ForGaggle("example")
+	runDir := createTelemetryRetentionRun(t, runLayout, "first-real-candidate", later.Add(-48*time.Hour))
 	if err := db.IngestRun(context.Background(), runDir); err != nil {
 		t.Fatal(err)
+	}
+	// Two runs dated well past this test's final post-grace check point, so
+	// the one stale candidate stays a minority of history — #4824's
+	// large-first-enforcement gate is a separate test.
+	for _, id := range []string{"recent-1", "recent-2"} {
+		recentDir := createTelemetryRetentionRun(t, runLayout, id, later.Add(60*24*time.Hour))
+		if err := db.IngestRun(context.Background(), recentDir); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	results, dryRun, err = pruneConfiguredTelemetryRetention(instanceLayout, config, db, later)
@@ -308,6 +330,104 @@ func TestConfiguredTelemetryRetentionImmediateFirstEnableSkipsGraceWindow(t *tes
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
 		t.Fatalf("immediate enforcement left journal: %v", err)
+	}
+}
+
+// TestConfiguredTelemetryRetentionLargeFirstEnforcementRequiresAcknowledgement
+// is #4824's reported scenario: DefaultTelemetryRetentionMaxRuns binds long
+// before the documented window at production run rates, so a first
+// enforcement pass can queue the vast majority of an instance's history for
+// deletion. Even after the timed grace window elapses, such a pass must stay
+// dry until the operator explicitly acknowledges it (firstEnable: immediate)
+// — the timed window alone authorized a *report*, not a majority wipe nobody
+// reviewed.
+func TestConfiguredTelemetryRetentionLargeFirstEnforcementRequiresAcknowledgement(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	instanceLayout := instance.NewLayout(root)
+	runLayout := instanceLayout.ForGaggle("example")
+	db, err := rollup.Open(instanceLayout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// 9 stale runs, 1 recent one: enforcing right now would prune 90% of
+	// this instance's history.
+	staleDirs := make([]string, 9)
+	for i := range 9 {
+		runDir := createTelemetryRetentionRun(t, runLayout, fmt.Sprintf("stale-%d", i), now.Add(-48*time.Hour))
+		if err := db.IngestRun(context.Background(), runDir); err != nil {
+			t.Fatal(err)
+		}
+		staleDirs[i] = runDir
+	}
+	// Dated to stay within the window at every check point this test
+	// advances through, including the final post-acknowledgement one.
+	recentDir := createTelemetryRetentionRun(t, runLayout, "recent", now.Add(30*24*time.Hour))
+	if err := db.IngestRun(context.Background(), recentDir); err != nil {
+		t.Fatal(err)
+	}
+
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}
+
+	// First pass: the timed grace window starts, same as always.
+	if _, dryRun, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, now); err != nil {
+		t.Fatal(err)
+	} else if !dryRun {
+		t.Fatal("first pass over pre-existing excess data must be a dry run (grace window)")
+	}
+
+	// After the grace window elapses, an ordinary pass would enforce for
+	// real — but pruning 9 of 10 runs exceeds the large-first-enforcement
+	// fraction, so this must stay dry instead.
+	afterGrace := now.Add(telemetryRetentionGraceWindow + time.Hour)
+	results, dryRun, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, afterGrace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dryRun {
+		t.Fatal("a first enforcement pruning 90% of history must stay dry-run without explicit acknowledgement")
+	}
+	if len(results) != 9 {
+		t.Fatalf("blocked pass results = %#v, want all 9 stale candidates reported", results)
+	}
+	for i, dir := range staleDirs {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("blocked pass deleted journal stale-%d: %v", i, err)
+		}
+	}
+	state, ok, err := readTelemetryRetentionState(instanceLayout)
+	if err != nil || !ok {
+		t.Fatalf("readTelemetryRetentionState: ok=%v err=%v", ok, err)
+	}
+	if !state.LargeFirstEnforceBlocked {
+		t.Fatalf("state = %+v, want LargeFirstEnforceBlocked", state)
+	}
+	if state.TotalRuns != 10 {
+		t.Fatalf("state.TotalRuns = %d, want 10", state.TotalRuns)
+	}
+
+	// The operator reviews and explicitly acknowledges — immediate now
+	// proceeds despite the same lopsided ratio.
+	config.FirstEnable = "immediate"
+	results, dryRun, err = pruneConfiguredTelemetryRetention(instanceLayout, config, db, afterGrace.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dryRun {
+		t.Fatal("an explicit firstEnable: immediate acknowledgement must proceed even for a majority-of-history prune")
+	}
+	if len(results) != 9 {
+		t.Fatalf("acknowledged prune results = %#v, want all 9 stale runs pruned", results)
+	}
+	for i, dir := range staleDirs {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("acknowledged enforcement left journal stale-%d: %v", i, err)
+		}
+	}
+	if _, err := os.Stat(recentDir); err != nil {
+		t.Fatalf("acknowledged enforcement deleted the recent run: %v", err)
 	}
 }
 
@@ -480,11 +600,13 @@ func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
 	}
 
 	graceState := telemetryRetentionState{
-		DetectedAt:     now.Add(-time.Hour),
-		EnforceAt:      now.Add(6 * 24 * time.Hour),
-		LastPassAt:     now.Add(-time.Minute),
-		LastPassDryRun: true,
-		CandidateCount: 3,
+		DetectedAt:       now.Add(-time.Hour),
+		EnforceAt:        now.Add(6 * 24 * time.Hour),
+		LastPassAt:       now.Add(-time.Minute),
+		LastPassDryRun:   true,
+		CandidateCount:   3,
+		TotalRuns:        20,
+		OldestRetainedAt: now.Add(-72 * time.Hour),
 	}
 	if err := writeTelemetryRetentionState(layout, graceState); err != nil {
 		t.Fatal(err)
@@ -492,15 +614,39 @@ func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
 	var duringGrace bytes.Buffer
 	reportTelemetryRetentionPolicy(layout, now, &duringGrace)
 	if !strings.Contains(duringGrace.String(), "grace period active") ||
-		!strings.Contains(duringGrace.String(), "3 candidate") ||
+		!strings.Contains(duringGrace.String(), "3 of 20 run") ||
+		!strings.Contains(duringGrace.String(), "history retained back to 72h0m0s ago") ||
 		strings.Contains(duringGrace.String(), "pruned") {
 		t.Fatalf("grace-period status = %q", duringGrace.String())
 	}
 
+	// #4824: enforcement held pending explicit operator acknowledgement.
+	blockedState := telemetryRetentionState{
+		EnforceAt:                now.Add(-time.Hour),
+		LastPassAt:               now.Add(-time.Minute),
+		LastPassDryRun:           true,
+		LargeFirstEnforceBlocked: true,
+		CandidateCount:           18,
+		TotalRuns:                20,
+	}
+	if err := writeTelemetryRetentionState(layout, blockedState); err != nil {
+		t.Fatal(err)
+	}
+	var blocked bytes.Buffer
+	reportTelemetryRetentionPolicy(layout, now, &blocked)
+	if !strings.Contains(blocked.String(), "held for explicit acknowledgement") ||
+		!strings.Contains(blocked.String(), "18 of 20 run") ||
+		!strings.Contains(blocked.String(), "firstEnable: immediate") ||
+		!strings.Contains(blocked.String(), "no run would survive") {
+		t.Fatalf("acknowledgement-blocked status = %q", blocked.String())
+	}
+
 	enforcedState := telemetryRetentionState{
-		LastPassAt:     now.Add(-time.Minute),
-		LastPassDryRun: false,
-		PrunedCount:    7,
+		LastPassAt:       now.Add(-time.Minute),
+		LastPassDryRun:   false,
+		PrunedCount:      7,
+		TotalRuns:        13,
+		OldestRetainedAt: now.Add(-24 * time.Hour),
 	}
 	if err := writeTelemetryRetentionState(layout, enforcedState); err != nil {
 		t.Fatal(err)
@@ -508,7 +654,8 @@ func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
 	var enforced bytes.Buffer
 	reportTelemetryRetentionPolicy(layout, now, &enforced)
 	if !strings.Contains(enforced.String(), "policy in force") ||
-		!strings.Contains(enforced.String(), "pruned 7 run") {
+		!strings.Contains(enforced.String(), "pruned 7 run") ||
+		!strings.Contains(enforced.String(), "history retained back to 24h0m0s ago") {
 		t.Fatalf("enforced status = %q", enforced.String())
 	}
 }

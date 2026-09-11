@@ -56,7 +56,7 @@ func TestTelemetryPruneAcknowledgesTriggerBeforeDeletingItsJournal(t *testing.T)
 				}
 				runDir = staged
 			}
-			_, err = pruneTelemetryRetention(layout, instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}, db, now, mode == "dry-run")
+			_, _, err = pruneTelemetryRetention(layout, instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}, db, now, mode == "dry-run")
 			if mode == "mismatched" {
 				if err == nil {
 					t.Fatal("mismatched receipt allowed deletion")
