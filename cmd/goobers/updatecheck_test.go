@@ -119,8 +119,15 @@ func TestStartUpdateCheckDisabled(t *testing.T) {
 	cfg := &instance.Config{UpdateCheck: &instance.UpdateCheckConfig{Enabled: &disabled}}
 	var stderr bytes.Buffer
 	results, done := startUpdateCheck(context.Background(), t.TempDir(), cfg, &stderr)
-	if results != nil || done != nil {
-		t.Errorf("startUpdateCheck(disabled) = (%v, %v), want nil channels", results, done)
+	if results != nil {
+		t.Error("startUpdateCheck(disabled) returned a results channel, want nil so it never fires")
+	}
+	// done comes back already closed rather than nil so the daemon's shutdown
+	// join needs no special case for a disabled check.
+	select {
+	case <-done:
+	default:
+		t.Error("startUpdateCheck(disabled) done channel is not closed")
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("stderr = %q, want empty", stderr.String())
