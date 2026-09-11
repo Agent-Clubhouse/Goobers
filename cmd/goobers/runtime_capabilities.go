@@ -1057,6 +1057,21 @@ func (c cliCommand) dispatch(args []string, stdout, stderr io.Writer) int {
 			return subcommand.dispatch(args[1:], stdout, stderr)
 		}
 	}
+	// #4832: every command's `-h`/`--help` renders THIS node's own registered
+	// help text to stdout and exits 0 here, before any handler-specific flag
+	// parsing runs. Handlers built on flag.FlagSet never see -h/--help as an
+	// argument to parse: Go's flag package treats an undeclared -h/--help as
+	// a parse error (flag.ErrHelp) and every handler's uniform
+	// `if err := fs.Parse(args); err != nil { return 2 }` could not tell that
+	// case apart from a real usage error, so it wrote the (correct) help text
+	// to stderr and exited 2 — the exact bug this issue reports. Intercepting
+	// once here, at the single path every command's invocation already
+	// passes through, fixes every command without touching each handler's
+	// own flag parsing.
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		pf(stdout, "%s", c.long)
+		return 0
+	}
 	if c.providerStage {
 		return runProviderStageCommand(c.names[0], c.resultFile, c.run, args, stdout, stderr)
 	}
