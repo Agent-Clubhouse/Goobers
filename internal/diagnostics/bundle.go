@@ -121,6 +121,8 @@ func summaryDaemon(b *strings.Builder, bundle Bundle) {
 		writeLine(b, "- Running: pid %d, version %s, started %s, last tick %s.",
 			bundle.Daemon.PID, orUnknown(bundle.Daemon.Version),
 			orUnknown(bundle.Daemon.StartedAt), orUnknown(bundle.Daemon.LastTickAt))
+	case bundle.Daemon.LockPresent && bundle.Daemon.LockHolderKind == "manual":
+		writeLine(b, "- Not running, and no daemon crash indicated: the lock file was left by a foreground `goobers run`, not a daemon.")
 	case bundle.Daemon.LockPresent:
 		writeLine(b, "- Not running, but a lock file is present — a previous daemon exited without releasing it.")
 	default:
