@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/version"
 )
@@ -74,6 +75,29 @@ type Health struct {
 	Instance         InstanceIdentity        `json:"instance"`
 	Freshness        Freshness               `json:"freshness"`
 	DefinitionReload *DefinitionReloadStatus `json:"definitionReload,omitempty"`
+	// Update reports whether a newer release exists, so the portal can surface
+	// what #4903 gave only terminal users. Nil means no check has run yet (a
+	// daemon that just started, or one with updateCheck.enabled: false) —
+	// absent, deliberately, rather than a zero value that would read as
+	// "confirmed up to date".
+	Update *UpdateAvailability `json:"update,omitempty"`
+}
+
+// UpdateAvailability is the daemon's last notify-only release check, read from
+// its on-disk cache. The daemon performs the check on its own interval; this
+// read NEVER contacts the release source, so serving /api/v1/health stays a
+// local read and the browser never talks to GitHub.
+type UpdateAvailability struct {
+	// Available reports LatestVersion > the running build by SemVer.
+	Available bool `json:"available"`
+	// LatestVersion is the newest release tag on the configured channel.
+	LatestVersion string `json:"latestVersion"`
+	// Channel is the channel the check resolved through (stable or prerelease).
+	Channel string `json:"channel"`
+	// CheckedAt is when the daemon last completed a check, so a consumer can
+	// tell a fresh answer from one left by a daemon that has since lost
+	// network access.
+	CheckedAt time.Time `json:"checkedAt"`
 }
 
 // BuildMetadata identifies the exact daemon binary serving the response.
@@ -343,6 +367,7 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 
 	build := version.Get()
 	return Health{
+		Update:           s.updateAvailability(),
 		DefinitionReload: s.definitionReloadSnapshot(),
 		APIVersion:       APIVersion,
 		SchemaVersion:    SchemaVersion,
@@ -365,6 +390,27 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 			LastTickAgeMillis:   lastTickAgeMillis,
 		},
 	}, nil
+}
+
+// updateAvailability reads the daemon's cached release check. It is a local
+// file read, never a request: the daemon owns the network side and writes the
+// answer to <root>/updates/check.json on its own schedule.
+//
+// Every failure mode returns nil rather than an error. A missing cache is the
+// normal state before the first check and for an instance with the check
+// disabled, and a corrupt one must not take /api/v1/health down — losing an
+// advisory field is not worth failing a health endpoint over.
+func (s *Local) updateAvailability() *UpdateAvailability {
+	result, err := selfupdate.ReadCheck(s.sources.Layout.Root)
+	if err != nil {
+		return nil
+	}
+	return &UpdateAvailability{
+		Available:     result.UpdateAvailable,
+		LatestVersion: result.LatestVersion,
+		Channel:       result.Channel,
+		CheckedAt:     result.CheckedAt,
+	}
 }
 
 // Health returns the read response with its freshness envelope attached.

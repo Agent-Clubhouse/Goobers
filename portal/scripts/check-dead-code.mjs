@@ -99,6 +99,12 @@ const testOnlyExports = {
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
   "src/theme.ts": ["themeStorageKey", "persistTheme"],
   "src/ui/Inspector.tsx": ["InspectorHeading"],
+  "src/updateNotice.ts": [
+    "updateDismissalStorageKey",
+    "readStoredUpdateDismissal",
+    "onUpdateAvailability",
+    "resetUpdateAvailability",
+  ],
   "src/workflowDetailData.ts": ["loadWorkflowDetail"],
 };
 

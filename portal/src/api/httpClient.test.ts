@@ -16,6 +16,7 @@ import {
   UnsupportedSchemaVersionError,
 } from "./errors";
 import { HttpDaemonClient } from "./httpClient";
+import { onUpdateAvailability, resetUpdateAvailability } from "../updateNotice";
 import { API_VERSION, SCHEMA_VERSION, type Health } from "./types";
 
 const health: Health = {
@@ -50,6 +51,33 @@ describe("HttpDaemonClient", () => {
       "/api/v1/gaggles/core/workflows/implementation/queue-eligibility",
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  // The update strip observes health responses rather than fetching its own,
+  // so this publish is the only thing that feeds it (#4920).
+  it("publishes update availability observed on a health response", async () => {
+    resetUpdateAvailability();
+    const withUpdate = {
+      ...health,
+      update: {
+        available: true,
+        latestVersion: "v9.9.9",
+        channel: "stable",
+        checkedAt: "2026-09-11T12:00:00Z",
+      },
+    };
+    const observed: (unknown | undefined)[] = [];
+    const unsubscribe = onUpdateAvailability((update) => observed.push(update));
+    try {
+      const client = new HttpDaemonClient({
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(withUpdate)),
+      });
+      await client.getHealth();
+    } finally {
+      unsubscribe();
+    }
+
+    expect(observed).toEqual([withUpdate.update]);
   });
 
   it("uses the same origin by default", async () => {

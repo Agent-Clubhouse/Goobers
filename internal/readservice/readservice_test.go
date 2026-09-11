@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -263,4 +264,52 @@ func TestNewLocalRequiresSources(t *testing.T) {
 	if _, err := NewLocal(LocalSources{Definitions: testDefinitions()}, nil); err == nil {
 		t.Fatal("expected missing readiness function error")
 	}
+}
+
+// The portal reads update availability from Health, so the read must be a
+// local file read that never contacts the release source and never fails the
+// endpoint (#4920).
+func TestHealthUpdateAvailability(t *testing.T) {
+	t.Run("absent before any check", func(t *testing.T) {
+		root := t.TempDir()
+		if got := (&Local{sources: LocalSources{Layout: instance.NewLayout(root)}}).updateAvailability(); got != nil {
+			t.Errorf("updateAvailability() = %+v, want nil before the first check", got)
+		}
+	})
+
+	t.Run("reports a cached pending update", func(t *testing.T) {
+		root := t.TempDir()
+		checkedAt := time.Date(2026, time.September, 11, 12, 0, 0, 0, time.UTC)
+		if err := selfupdate.WriteCheck(root, selfupdate.CheckResult{
+			CurrentVersion: "v0.4.0", LatestVersion: "v0.5.0", UpdateAvailable: true,
+			Channel: selfupdate.ChannelStable, CheckedAt: checkedAt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		got := (&Local{sources: LocalSources{Layout: instance.NewLayout(root)}}).updateAvailability()
+		if got == nil {
+			t.Fatal("updateAvailability() = nil, want the cached result")
+		}
+		if !got.Available || got.LatestVersion != "v0.5.0" || got.Channel != selfupdate.ChannelStable {
+			t.Errorf("updateAvailability() = %+v", got)
+		}
+		if !got.CheckedAt.Equal(checkedAt) {
+			t.Errorf("CheckedAt = %s, want %s", got.CheckedAt, checkedAt)
+		}
+	})
+
+	// Losing an advisory field must never take /api/v1/health down.
+	t.Run("corrupt cache degrades to absent", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "updates", "check.json")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := (&Local{sources: LocalSources{Layout: instance.NewLayout(root)}}).updateAvailability(); got != nil {
+			t.Errorf("updateAvailability() = %+v, want nil for a corrupt cache", got)
+		}
+	})
 }
