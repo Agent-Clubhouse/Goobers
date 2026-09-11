@@ -390,8 +390,14 @@ func latestPodAgentProgressRecords(records []journal.EventRecord) []journal.Even
 	for _, record := range records {
 		key, ok := progressIdentityForEvent(record.Event)
 		if ok {
-			if ordinal := progressEventPodOrdinal(record.Event); ordinal > 0 && latest[key] > 0 && latest[key] != ordinal {
-				continue
+			if latest[key] > 0 {
+				ordinal := progressEventPodOrdinal(record.Event)
+				if record.Event.Type == journal.EventAgentProgress && ordinal != latest[key] {
+					continue
+				}
+				if ordinal > 0 && latest[key] != ordinal {
+					continue
+				}
 			}
 		}
 		filtered = append(filtered, record)

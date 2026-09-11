@@ -2,7 +2,11 @@ package readservice
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -280,6 +284,69 @@ func TestRunAgentProgressDropsLateProgressFromOlderPod(t *testing.T) {
 	}
 }
 
+func TestRunAgentProgressDropsLegacyProgressOnceStampedPodExists(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	const runID = "test-agent-progress-legacy-stale"
+
+	j, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
+		StartedAt:       time.Now(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+
+	now := time.Now().UTC()
+	events := []journal.Event{
+		{Type: journal.EventAgentLifecycle, Runner: map[string]any{"emitKey": "pod/1/agent.lifecycle"}, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentProgress, Progress: &journal.AgentProgress{
+			Schema: "goobers.dev/journal/agent-progress/v1", AgentID: "worker-1", RunID: runID,
+			Stage: "implement", Attempt: 1, Kind: journal.AgentProgressSummary,
+			Source: journal.AgentProgressSourceModel, OccurredAt: now.Add(time.Minute),
+			Summary: "Legacy unstamped progress from an older pod",
+		}},
+		{Type: journal.EventAgentLifecycle, Runner: map[string]any{"emitKey": "pod/2/agent.lifecycle"}, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Lifecycle: journal.AgentResumed, StartedAt: now.Add(2 * time.Minute),
+			UpdatedAt: now.Add(2 * time.Minute), Fidelity: journal.AgentFidelityNone,
+		}},
+	}
+	for _, event := range events {
+		if err := j.Append(event); err != nil {
+			t.Fatalf("Append %s: %v", event.Type, err)
+		}
+	}
+	_ = j.Close()
+
+	reads, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatalf("NewOfflineRuns: %v", err)
+	}
+	progress, err := reads.RunAgentProgress(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunAgentProgress: %v", err)
+	}
+	if len(progress) != 1 {
+		t.Fatalf("root summaries = %d, want 1", len(progress))
+	}
+	summary := progress[0]
+	if len(summary.History) != 0 {
+		t.Fatalf("history = %#v, want unstamped legacy progress filtered out", summary.History)
+	}
+	if summary.Current == nil || summary.Current.Source != "lifecycle" || summary.Current.Lifecycle != journal.AgentResumed {
+		t.Fatalf("current status = %#v, want lifecycle resumed from stamped pod", summary.Current)
+	}
+}
+
 func TestRunAgentProgressPreservesOlderAttemptsAcrossPodHandoff(t *testing.T) {
 	root := t.TempDir()
 	layout := instance.NewLayout(root)
@@ -479,5 +546,85 @@ func TestRunAgentProgressRetainsOnlyRecentHistory(t *testing.T) {
 	}
 	if summary.Latest == nil || summary.Latest.Sequence != wantLatestSeq {
 		t.Fatalf("latest = %#v, want seq %d", summary.Latest, wantLatestSeq)
+	}
+}
+
+func TestRunAgentProgressProjectsScrubbedIntermediateProgress(t *testing.T) {
+	const secret = "agent-progress-secret"
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+	const runID = "test-agent-progress-redaction"
+
+	j, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
+		StartedAt:       time.Now(),
+	}, nil, journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := j.Append(journal.Event{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+		Schema: "goobers.dev/journal/agent/v1", ID: "worker-" + secret, RunID: runID, Stage: "implement",
+		Attempt: 1, Worker: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+		Fidelity: journal.AgentFidelityFull,
+	}}); err != nil {
+		t.Fatalf("Append lifecycle: %v", err)
+	}
+	if err := j.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &journal.AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-" + secret,
+		RunID:      runID,
+		Stage:      "implement",
+		Attempt:    1,
+		Kind:       journal.AgentProgressProgress,
+		Source:     journal.AgentProgressSourceModel,
+		OccurredAt: now.Add(time.Minute),
+		UpdatedAt:  now.Add(time.Minute),
+		Summary:    "Working with " + secret,
+		Progress:   []string{"step " + secret},
+		Decision:   "chose " + secret,
+		NextAction: "verify " + secret,
+		Evidence: []journal.AgentProgressEvidence{{
+			Type:  "artifact",
+			ID:    "diff-" + secret,
+			Label: "evidence " + secret,
+		}},
+	}}); err != nil {
+		t.Fatalf("Append progress: %v", err)
+	}
+	_ = j.Close()
+
+	raw, err := os.ReadFile(filepath.Join(layout.RunsDir(), runID, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("Read events: %v", err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("persisted progress leaked secret: %s", raw)
+	}
+
+	reads, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatalf("NewOfflineRuns: %v", err)
+	}
+	progress, err := reads.RunAgentProgress(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunAgentProgress: %v", err)
+	}
+	encoded, err := json.Marshal(progress)
+	if err != nil {
+		t.Fatalf("Marshal progress summary: %v", err)
+	}
+	if strings.Contains(string(encoded), secret) {
+		t.Fatalf("projected progress leaked secret: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), journal.Redacted) {
+		t.Fatalf("projected progress missing redaction canary: %s", encoded)
 	}
 }
