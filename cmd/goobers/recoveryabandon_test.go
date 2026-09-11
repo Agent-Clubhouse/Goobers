@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -13,13 +14,18 @@ import (
 )
 
 func TestRecoveryAbandonCommandRequiresExactTerminalSnapshot(t *testing.T) {
-	for _, mode := range []string{"success", "running", "wrong-digest", "wrong-ref", "stage", "missing-confirmation"} {
+	for _, mode := range []string{"success", "renewed-success", "running", "wrong-digest", "wrong-ref", "stage", "missing-confirmation"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("GOOBERS_RUN_ID", "")
 			layout := instance.NewLayout(initDemo(t))
 			now := time.Now().UTC()
 			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "team", Name: "repo"}
 			path := seedRecoverySelection(t, layout, repo, "source", "7", now.Add(-time.Hour), now.Add(time.Hour), mode != "running")
+			if mode == "renewed-success" {
+				if _, err := recovery.RenewRetention(context.Background(), path, now.Add(2*time.Hour), 1<<20); err != nil {
+					t.Fatal(err)
+				}
+			}
 			record, err := recovery.ReadRetainedRecord(path)
 			if err != nil {
 				t.Fatal(err)
@@ -36,7 +42,7 @@ func TestRecoveryAbandonCommandRequiresExactTerminalSnapshot(t *testing.T) {
 			}
 			args := []string{"--run", record.RunID, "--ref", ref, "--confirm-digest", digest, layout.Root}
 			want := 1
-			if mode == "success" {
+			if mode == "success" || mode == "renewed-success" {
 				want = 0
 			}
 			if mode == "missing-confirmation" {
@@ -52,7 +58,7 @@ func TestRecoveryAbandonCommandRequiresExactTerminalSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			abandoned, err := recovery.ExplicitlyAbandoned(events, record)
-			if err != nil || abandoned != (mode == "success") {
+			if err != nil || abandoned != (mode == "success" || mode == "renewed-success") {
 				t.Fatalf("abandonment=%t err=%v", abandoned, err)
 			}
 			if _, err := os.Stat(path); err != nil {
