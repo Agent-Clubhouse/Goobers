@@ -880,6 +880,14 @@ jobs:
           tar -xzf "dist/goobers_${TAG}_linux_amd64.tar.gz" -C smoke
           export PATH="$PWD/smoke:$PATH"
           goobers --version | grep --fixed-strings "$TAG"
+          # #4829: a per-candidate readiness scratchpad (citing one author's
+          # own /tmp evidence trail, asserting a promotion status that goes
+          # stale the moment a later candidate ships) must never reach a
+          # release archive — its home is git history, not the archive.
+          if compgen -G "smoke/docs/releases/*-readiness.md" > /dev/null; then
+            echo "release archive shipped a readiness record: $(ls smoke/docs/releases/*-readiness.md)" >&2
+            exit 1
+          fi
           grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
           grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
           grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
