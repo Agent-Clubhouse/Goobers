@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
@@ -1394,6 +1395,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
 			reportFleetEnrollment(l.Root, stdout)
+			reportUpdateCheck(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 			reportTelemetryRetentionPolicy(l, now, stdout)
 			reportWorktreeRetentionPolicy(l, now, stdout)
@@ -1405,6 +1407,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
 		reportFleetEnrollment(l.Root, stdout)
+		reportUpdateCheck(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 		reportTelemetryRetentionPolicy(l, now, stdout)
 		reportWorktreeRetentionPolicy(l, now, stdout)
@@ -1589,4 +1592,29 @@ func daemonLivenessLabel(liveness daemonstate.Liveness) string {
 		return "running"
 	}
 	return "unhealthy"
+}
+
+// reportUpdateCheck prints the daemon's last notify-only release check
+// (#4903). It reads only the cache the daemon wrote and makes no request of
+// its own: `goobers status` must stay a local, offline-safe read, and the
+// daemon is the one process that talks to the release source.
+func reportUpdateCheck(instanceRoot string, stdout io.Writer) {
+	result, err := selfupdate.ReadCheck(instanceRoot)
+	if err != nil {
+		// No cache means the check has not run yet (a daemon that just
+		// started, or one with the check disabled). That is not a problem to
+		// report, and a corrupt cache must not make status fail.
+		if !errors.Is(err, os.ErrNotExist) {
+			pf(stdout, "update check: unavailable (%v)\n", err)
+		}
+		return
+	}
+	age := time.Since(result.CheckedAt).Truncate(time.Second)
+	if !result.UpdateAvailable {
+		pf(stdout, "update check: up to date (%s, %s channel, checked %s ago)\n",
+			result.CurrentVersion, result.Channel, age)
+		return
+	}
+	pf(stdout, "update check: %s (%s channel, checked %s ago)\n",
+		selfupdate.Notice(result, selfupdate.Supervised(instanceRoot)), result.Channel, age)
 }

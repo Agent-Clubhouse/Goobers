@@ -3,6 +3,7 @@ package instance
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/speechnotify"
 	"github.com/goobers/goobers/internal/strictyaml"
 )
@@ -125,6 +127,11 @@ type Config struct {
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 	// Speech configures an opt-in local speech sink for the same terminal alerts.
 	Speech *speechnotify.Config `json:"speech,omitempty" yaml:"speech,omitempty"`
+	// UpdateCheck configures the daemon's notify-only release check (#4903).
+	// Nil keeps the defaults: enabled, the stable channel, once a day. The
+	// check only tells the operator a newer release exists — applying it stays
+	// an explicit action (INST-019), so nothing here makes updates automatic.
+	UpdateCheck *UpdateCheckConfig `json:"updateCheck,omitempty" yaml:"updateCheck,omitempty"`
 	// Credentials sources individual stage capabilities or named BYO MCP
 	// credentials from their own token refs. A capability entry overrides any
 	// repo-token default; an MCP entry is reachable only through an explicit
@@ -2813,4 +2820,95 @@ func marshalConfig(cfg *Config) ([]byte, error) {
 		return nil, fmt.Errorf("marshal instance config: %w", err)
 	}
 	return yamlBytes, nil
+}
+
+// Default update-check settings. The check is opt-out rather than opt-in: the
+// daemon already queries api.github.com continuously to do its work, so
+// resolving a release tag from the same counterparty discloses nothing new,
+// while an operator who never learns a release exists is the failure this
+// exists to prevent. `enabled: false` covers airgapped instances.
+const (
+	// DefaultUpdateCheckChannel tracks stable releases only.
+	DefaultUpdateCheckChannel = selfupdate.ChannelStable
+	// DefaultUpdateCheckInterval is how often a running daemon re-checks.
+	DefaultUpdateCheckInterval = selfupdate.DefaultCheckInterval
+)
+
+// UpdateCheckConfig configures the daemon's notify-only release check.
+type UpdateCheckConfig struct {
+	// Enabled defaults to true (opt-out) — nil and unset are the same as
+	// true. Set explicitly to false to make this path perform no network
+	// request at all.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Channel is "stable" (default) or "prerelease" — the same two channels
+	// `goobers self-update` stages through, so what an operator is told about
+	// matches what acting on the notice would install. This is also the only
+	// persistent home the prerelease channel has: self-update's
+	// --include-prerelease is a flag with no config binding.
+	Channel string `json:"channel,omitempty" yaml:"channel,omitempty"`
+	// Interval is how often a running daemon re-checks. Empty means
+	// DefaultUpdateCheckInterval. The daemon announces only when the resolved
+	// version changes, so a shorter interval does not repeat a notice.
+	Interval string `json:"interval,omitempty" yaml:"interval,omitempty"`
+	// Owner and Repository override the product release source, e.g. for a
+	// private release mirror. Empty resolves the canonical Goobers product
+	// repository — deliberately independent of the instance's configured
+	// workload repositories (#4324).
+	Owner      string `json:"owner,omitempty" yaml:"owner,omitempty"`
+	Repository string `json:"repository,omitempty" yaml:"repository,omitempty"`
+}
+
+// UpdateCheckSettings returns the effective update-check configuration,
+// including for a nil block, so callers never branch on presence.
+func (c *Config) UpdateCheckSettings() UpdateCheckConfig {
+	if c == nil || c.UpdateCheck == nil {
+		return UpdateCheckConfig{}
+	}
+	return *c.UpdateCheck
+}
+
+// EnabledEffective reports whether the daemon performs the release check
+// (defaults to true — see Enabled's doc comment).
+func (u UpdateCheckConfig) EnabledEffective() bool {
+	return u.Enabled == nil || *u.Enabled
+}
+
+// ChannelEffective returns the configured channel, defaulting to stable.
+func (u UpdateCheckConfig) ChannelEffective() string {
+	if u.Channel == "" {
+		return DefaultUpdateCheckChannel
+	}
+	return u.Channel
+}
+
+// IntervalDuration returns the configured re-check interval. Empty uses
+// DefaultUpdateCheckInterval.
+func (u UpdateCheckConfig) IntervalDuration() (time.Duration, error) {
+	if u.Interval == "" {
+		return DefaultUpdateCheckInterval, nil
+	}
+	interval, err := time.ParseDuration(u.Interval)
+	if err != nil {
+		return 0, fmt.Errorf("updateCheck.interval %q must be a duration: %w", u.Interval, err)
+	}
+	if interval <= 0 {
+		return 0, fmt.Errorf("updateCheck.interval must be positive, got %s", u.Interval)
+	}
+	return interval, nil
+}
+
+// Validate reports configuration errors in the update-check block.
+func (u UpdateCheckConfig) Validate() error {
+	if u.Channel != "" {
+		if err := selfupdate.ValidateChannel(u.Channel); err != nil {
+			return fmt.Errorf("updateCheck.channel: %w", err)
+		}
+	}
+	if _, err := u.IntervalDuration(); err != nil {
+		return err
+	}
+	if (u.Owner == "") != (u.Repository == "") {
+		return errors.New("updateCheck.owner and updateCheck.repository must be set together")
+	}
+	return nil
 }
