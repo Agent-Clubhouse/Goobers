@@ -274,6 +274,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		EphemeralTmp:      ephemeralTmp,
 	}
 	if customLauncher {
+		copilotAdapter.ModelDiscoveryCommand = []string{"copilot"}
 		copilotAdapter.RequiredTools = []string{"task_complete"}
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), copilotAdapter); err != nil {

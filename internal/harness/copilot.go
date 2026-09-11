@@ -139,6 +139,9 @@ var copilotLongContextModels = map[string]bool{
 type CopilotAdapter struct {
 	// Command is the base CLI invocation, e.g. []string{"copilot"}.
 	Command []string
+	// ModelDiscoveryCommand is the direct Copilot invocation used by the SDK
+	// model lister. Empty uses Command.
+	ModelDiscoveryCommand []string
 	// RequireLauncherContract rejects unverified launcher overrides before
 	// dispatch. The built-in direct Copilot command keeps its existing contract.
 	RequireLauncherContract  bool
@@ -384,7 +387,11 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	if c.modelsErr != nil {
 		return nil, c.modelsErr
 	}
-	command := resolveStdioHarnessCommand(c.Command)
+	command := c.Command
+	if len(c.ModelDiscoveryCommand) > 0 {
+		command = c.ModelDiscoveryCommand
+	}
+	command = resolveStdioHarnessCommand(command)
 	if len(command) == 0 {
 		return nil, fmt.Errorf("no command configured")
 	}

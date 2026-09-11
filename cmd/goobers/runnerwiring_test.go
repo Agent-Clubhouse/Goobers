@@ -81,15 +81,51 @@ func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Gr
 
 type runnerWiringModelLister struct {
 	responses [][]harness.CopilotModelInfo
+	command   []string
 	env       []string
 	calls     int
 }
 
-func (l *runnerWiringModelLister) ListModels(_ context.Context, _ []string, env []string) ([]harness.CopilotModelInfo, error) {
+func (l *runnerWiringModelLister) ListModels(_ context.Context, command, env []string) ([]harness.CopilotModelInfo, error) {
+	l.command = append([]string(nil), command...)
 	l.env = append([]string(nil), env...)
 	response := l.responses[min(l.calls, len(l.responses)-1)]
 	l.calls++
 	return append([]harness.CopilotModelInfo(nil), response...), nil
+}
+
+func TestCustomCopilotLauncherUsesDirectModelDiscovery(t *testing.T) {
+	lister := &runnerWiringModelLister{responses: [][]harness.CopilotModelInfo{
+		{{ID: "gpt-5.4"}},
+	}}
+	previousLister := copilotModelLister
+	copilotModelLister = lister
+	t.Cleanup(func() { copilotModelLister = previousLister })
+
+	registry, err := buildHarnessRegistry(
+		nil,
+		nil,
+		map[string][]string{string(apiv1.HarnessCopilot): {"wrapper", "copilot"}},
+		"",
+		"",
+		false,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("buildHarnessRegistry: %v", err)
+	}
+	adapter, err := registry.Get(string(apiv1.HarnessCopilot))
+	if err != nil {
+		t.Fatalf("get Copilot adapter: %v", err)
+	}
+	if _, err := adapter.(*harness.CopilotAdapter).ResolveConfig("gpt-5.4", nil); err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if len(lister.command) != 1 ||
+		!strings.EqualFold(strings.TrimSuffix(filepath.Base(lister.command[0]), ".exe"), "copilot") {
+		t.Fatalf("model discovery command = %q, want direct Copilot", lister.command)
+	}
 }
 
 type runnerWiringHarnessRecorder struct {

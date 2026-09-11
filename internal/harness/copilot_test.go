@@ -63,16 +63,18 @@ type fakeProcessRunner struct {
 }
 
 type fakeCopilotModelLister struct {
-	models    []CopilotModelInfo
-	responses [][]CopilotModelInfo
-	err       error
-	calls     int
+	models      []CopilotModelInfo
+	responses   [][]CopilotModelInfo
+	err         error
+	calls       int
+	lastCommand []string
 	// lastEnv captures the env ListModels was invoked with, so a test can
 	// assert what credential (if any) reached the discovery subprocess (#4292).
 	lastEnv []string
 }
 
-func (f *fakeCopilotModelLister) ListModels(_ context.Context, _ []string, env []string) ([]CopilotModelInfo, error) {
+func (f *fakeCopilotModelLister) ListModels(_ context.Context, command, env []string) ([]CopilotModelInfo, error) {
+	f.lastCommand = append([]string(nil), command...)
 	f.lastEnv = env
 	response := f.models
 	if len(f.responses) > 0 {
@@ -80,6 +82,23 @@ func (f *fakeCopilotModelLister) ListModels(_ context.Context, _ []string, env [
 	}
 	f.calls++
 	return append([]CopilotModelInfo(nil), response...), f.err
+}
+
+func TestCopilotAdapterUsesSeparateModelDiscoveryCommand(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{
+		Command:               []string{"launcher", "copilot"},
+		ModelDiscoveryCommand: []string{"copilot"},
+		ModelLister:           modelLister,
+	}
+
+	if _, err := adapter.discoverModels(context.Background()); err != nil {
+		t.Fatalf("discoverModels: %v", err)
+	}
+	if len(modelLister.lastCommand) != 1 ||
+		!strings.EqualFold(strings.TrimSuffix(filepath.Base(modelLister.lastCommand[0]), ".exe"), "copilot") {
+		t.Fatalf("model discovery command = %q, want direct Copilot", modelLister.lastCommand)
+	}
 }
 
 func testCopilotModelList() []CopilotModelInfo {
