@@ -177,6 +177,18 @@ const telemetryStats = {
   models: [],
   creditAssignment: [],
   causalCredit: null,
+  // #4825: a fresh instance has no promotion-eligible causal confidence
+  // interval, so graphAnalytics is withheld — empty arrays, not null, per
+  // the (non-nullable) client contract. Previously omitted from this
+  // fixture entirely, which meant the portal's own e2e suite never
+  // exercised the withheld-analytics branch of WorkflowTopologyGraph.
+  graphAnalytics: {
+    centrality: [],
+    criticalPath: { nodes: [], weight: 0 },
+    cycles: [],
+    confidence: "untrusted",
+    caveat: "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available",
+  },
   curation: {
     everRecorded: false,
     runs: 0,

@@ -1001,8 +1001,11 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 			return TelemetryStatsResult{}, err
 		}
 		if len(trustedFailure) == 0 {
-			analytics.Centrality = nil
-			analytics.CriticalPath = readmodel.CriticalPath{}
+			// Withheld, not absent (#4825): keep Centrality/CriticalPath.Nodes
+			// as empty slices, not nil, so they marshal as JSON [] rather than
+			// null against the client contract's non-nullable fields.
+			analytics.Centrality = []readmodel.CentralityScore{}
+			analytics.CriticalPath = readmodel.CriticalPath{Nodes: []string{}}
 			analytics.Confidence = "untrusted"
 			analytics.Caveat = "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available"
 		} else if !sameAnalyticsNodes(trustedFailure, creditNodes) {

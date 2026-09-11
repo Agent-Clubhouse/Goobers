@@ -715,9 +715,9 @@ export function WorkflowTopologyGraph({
               // ("review, gate, Running at sequence 6"); on the definition page
               // it stays the richer configured-topology label.
               const causalSuffix = causalNodeId === node.id ? ", escalation cause" : "";
-              const centrality = analytics?.centrality.find((item) => item.node === node.id);
-              const critical = analytics?.criticalPath.nodes.includes(node.id);
-              const cycle = analytics?.cycles.some((component) => component.includes(node.id));
+              const centrality = analytics?.centrality?.find((item) => item.node === node.id);
+              const critical = analytics?.criticalPath?.nodes?.includes(node.id);
+              const cycle = analytics?.cycles?.some((component) => component.includes(node.id));
               const analyticsSuffix = [
                 centrality && `centrality ${centrality.score.toFixed(2)}`,
                 critical && "critical path",

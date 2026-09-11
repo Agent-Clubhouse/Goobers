@@ -43,9 +43,21 @@ function trackConsoleErrors(page: Page): string[] {
   return errors;
 }
 
+// Distinct from trackConsoleErrors: an uncaught render throw (the #4825
+// failure mode) surfaces as a `pageerror` event, which is not necessarily
+// also logged via console.error in a production build.
+function trackPageErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => {
+    errors.push(error.message);
+  });
+  return errors;
+}
+
 for (const [name, { path, heading }] of Object.entries(ROUTES)) {
   test(`loads the ${name} route from fixture daemon data`, async ({ page }) => {
     const consoleErrors = trackConsoleErrors(page);
+    const pageErrors = trackPageErrors(page);
     await page.goto(path);
 
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
@@ -61,8 +73,33 @@ for (const [name, { path, heading }] of Object.entries(ROUTES)) {
     }
 
     expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
   });
 }
+
+// #4825: a fresh instance has no promotion-eligible causal confidence
+// interval, so graphAnalytics.confidence is "untrusted" and its arrays are
+// withheld — this is the common case on a fresh `init --demo` instance, not
+// an edge case. The topology must still render, degraded, with zero
+// pageerror events instead of a blank page.
+test("renders the Workflow-detail topology with withheld graph analytics and zero page errors", async ({
+  page,
+}) => {
+  const consoleErrors = trackConsoleErrors(page);
+  const pageErrors = trackPageErrors(page);
+
+  await page.goto("/#/workflow/core/implementation");
+
+  await expect(page.getByRole("heading", { name: "Implementation" })).toBeVisible();
+  await expect(page.locator(".workflow-graph-shell")).toBeVisible();
+  // Degraded, not decorated: none of the analytics-derived labels a
+  // trusted/partial confidence would add should appear.
+  await expect(page.getByText("Cycle detected")).toHaveCount(0);
+  await expect(page.getByText(/^Blame /)).toHaveCount(0);
+
+  expect(consoleErrors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
 
 for (const [area, path, heading] of PRIMARY_ROUTES) {
   test(`keeps the ${area} primary route within a 320px viewport`, async ({ page }) => {

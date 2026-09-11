@@ -729,6 +729,34 @@ func TestLocalTelemetryStatsProjectsAnalyticsWithoutTerminalEdges(t *testing.T) 
 			t.Fatalf("terminal target appeared in centrality: %+v", got.GraphAnalytics.Centrality)
 		}
 	}
+
+	// #4825: an untrusted (withheld) result must marshal its arrays as JSON
+	// [], not null — the generated TypeScript client contract declares
+	// centrality/cycles/criticalPath.nodes non-nullable.
+	data, err := json.Marshal(TelemetryStatsResult{GraphAnalytics: got.GraphAnalytics})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	var graphAnalytics map[string]json.RawMessage
+	if err := json.Unmarshal(decoded["graphAnalytics"], &graphAnalytics); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"centrality", "cycles"} {
+		if string(graphAnalytics[field]) == "null" {
+			t.Fatalf("withheld graphAnalytics.%s marshaled as JSON null, want []", field)
+		}
+	}
+	var criticalPath map[string]json.RawMessage
+	if err := json.Unmarshal(graphAnalytics["criticalPath"], &criticalPath); err != nil {
+		t.Fatal(err)
+	}
+	if string(criticalPath["nodes"]) == "null" {
+		t.Fatal("withheld graphAnalytics.criticalPath.nodes marshaled as JSON null, want []")
+	}
 }
 
 func TestLocalTelemetryStatsClassifiesBoundedAndPartialAnalytics(t *testing.T) {
