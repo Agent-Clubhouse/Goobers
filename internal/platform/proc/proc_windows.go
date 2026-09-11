@@ -164,6 +164,9 @@ func resumeProcess(pid int) error {
 		found = true
 		thread, openErr := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
 		if openErr != nil {
+			if vanishedThread(openErr) {
+				continue
+			}
 			return fmt.Errorf("proc: open child thread: %w", openErr)
 		}
 		previousSuspendCount, resumeErr := windows.ResumeThread(thread)
@@ -185,6 +188,10 @@ func resumeProcess(pid int) error {
 		return fmt.Errorf("proc: child process %d has no suspended thread", pid)
 	}
 	return nil
+}
+
+func vanishedThread(err error) bool {
+	return errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 }
 
 // kill hard-terminates every process in the tree via TerminateJobObject, then

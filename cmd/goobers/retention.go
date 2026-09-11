@@ -167,9 +167,13 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	if err != nil {
 		return err
 	}
+	recoveryErr := errors.Join(
+		retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr),
+		reapConfiguredRecovery(ctx, l, cfg, dryRun, stdout, stderr),
+	)
 	protectedBranches, err := retentionProtectedBranches(runsByRoot, setup)
 	if err != nil {
-		return err
+		return errors.Join(recoveryErr, err)
 	}
 	results, warnings, err := worktree.PruneRetained(ctx, managers, worktree.RetentionOptions{
 		Now:              now,
@@ -194,7 +198,7 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 		JournalGraceAge: journalGraceAge,
 	})
 	if err != nil {
-		return err
+		return errors.Join(recoveryErr, err)
 	}
 	for _, warning := range warnings {
 		pf(stdout, "warning: skipped retention candidate %q: %v\n", warning.Path, warning.Err)
@@ -217,8 +221,7 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 			len(results), state.EnforceAt.UTC().Format(time.RFC3339))
 	}
 
-	recoveryErr := retireExpiredRecovery(ctx, l, setup, managers, runsByRoot, dryRun, stdout, stderr)
-	return errors.Join(stateErr, recoveryErr, reapConfiguredRecovery(ctx, l, cfg, dryRun, stdout, stderr))
+	return errors.Join(recoveryErr, stateErr)
 }
 
 func retentionManagers(l instance.Layout, setup *schedulerSetup) ([]*worktree.Manager, map[string]string, error) {
