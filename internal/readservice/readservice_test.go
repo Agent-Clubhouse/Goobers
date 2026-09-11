@@ -267,49 +267,138 @@ func TestNewLocalRequiresSources(t *testing.T) {
 }
 
 // The portal reads update availability from Health, so the read must be a
-// local file read that never contacts the release source and never fails the
-// endpoint (#4920).
+// local read that never contacts the release source, never fails the endpoint,
+// and never restates a verdict computed against a different binary (#4920).
 func TestHealthUpdateAvailability(t *testing.T) {
+	running := version.Get().Version
+	enabled := func(root string) *Local {
+		return &Local{sources: LocalSources{Layout: instance.NewLayout(root), Config: &instance.Config{}}}
+	}
+	write := func(t *testing.T, root string, result selfupdate.CheckResult) {
+		t.Helper()
+		if err := selfupdate.WriteCheck(root, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending := func(current string) selfupdate.CheckResult {
+		return selfupdate.CheckResult{
+			CurrentVersion: current, LatestVersion: "v99.0.0", UpdateAvailable: true,
+			Channel: selfupdate.ChannelStable, CheckedAt: time.Date(2026, time.September, 11, 12, 0, 0, 0, time.UTC),
+		}
+	}
+
 	t.Run("absent before any check", func(t *testing.T) {
-		root := t.TempDir()
-		if got := (&Local{sources: LocalSources{Layout: instance.NewLayout(root)}}).updateAvailability(); got != nil {
+		if got := enabled(t.TempDir()).updateAvailability(); got != nil {
 			t.Errorf("updateAvailability() = %+v, want nil before the first check", got)
 		}
 	})
 
 	t.Run("reports a cached pending update", func(t *testing.T) {
 		root := t.TempDir()
-		checkedAt := time.Date(2026, time.September, 11, 12, 0, 0, 0, time.UTC)
-		if err := selfupdate.WriteCheck(root, selfupdate.CheckResult{
-			CurrentVersion: "v0.4.0", LatestVersion: "v0.5.0", UpdateAvailable: true,
-			Channel: selfupdate.ChannelStable, CheckedAt: checkedAt,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		got := (&Local{sources: LocalSources{Layout: instance.NewLayout(root)}}).updateAvailability()
+		write(t, root, pending(running))
+		got := enabled(root).updateAvailability()
 		if got == nil {
 			t.Fatal("updateAvailability() = nil, want the cached result")
 		}
-		if !got.Available || got.LatestVersion != "v0.5.0" || got.Channel != selfupdate.ChannelStable {
+		if !got.Available || got.LatestVersion != "v99.0.0" || got.CurrentVersion != running {
 			t.Errorf("updateAvailability() = %+v", got)
 		}
-		if !got.CheckedAt.Equal(checkedAt) {
-			t.Errorf("CheckedAt = %s, want %s", got.CheckedAt, checkedAt)
+		if got.Channel != selfupdate.ChannelStable || got.CheckedAt.IsZero() {
+			t.Errorf("updateAvailability() = %+v, want the channel and check time carried", got)
+		}
+	})
+
+	// The cached verdict is "latest > current" for whichever build performed
+	// the check. A dev build never refreshes the cache at all, so a file left
+	// by a released build would otherwise make the portal claim an update
+	// forever — and the same stale claim survives a real upgrade whose next
+	// check cannot complete.
+	t.Run("refuses a verdict from a different build", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, pending("v0.0.1-not-the-running-build"))
+		if got := enabled(root).updateAvailability(); got != nil {
+			t.Errorf("updateAvailability() = %+v, want nil for a verdict computed against another build", got)
+		}
+	})
+
+	// Turning the check off must silence the surface. Nothing refreshes or
+	// removes the cache once the checker stops running, so a file left by an
+	// earlier enabled run would assert a pending update forever.
+	t.Run("disabled check reports nothing", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, pending(running))
+		off := false
+		local := &Local{sources: LocalSources{
+			Layout: instance.NewLayout(root),
+			Config: &instance.Config{UpdateCheck: &instance.UpdateCheckConfig{Enabled: &off}},
+		}}
+		if got := local.updateAvailability(); got != nil {
+			t.Errorf("updateAvailability() = %+v, want nil when updateCheck.enabled is false", got)
 		}
 	})
 
 	// Losing an advisory field must never take /api/v1/health down.
 	t.Run("corrupt cache degrades to absent", func(t *testing.T) {
 		root := t.TempDir()
-		path := filepath.Join(root, "updates", "check.json")
+		path := selfupdate.CheckPath(root)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if got := (&Local{sources: LocalSources{Layout: instance.NewLayout(root)}}).updateAvailability(); got != nil {
+		if got := enabled(root).updateAvailability(); got != nil {
 			t.Errorf("updateAvailability() = %+v, want nil for a corrupt cache", got)
+		}
+	})
+
+	// /api/v1/health is the highest-frequency route and this value changes at
+	// most once a day, so an unchanged file must not be re-decoded per call.
+	t.Run("memoizes an unchanged cache", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, pending(running))
+		local := enabled(root)
+		if got := local.updateAvailability(); got == nil {
+			t.Fatal("first read returned nil")
+		}
+		// Removing the file leaves the memo intact but its stat fails, which
+		// is the observable proof the second read did not decode again.
+		first := local.updateCheck.Load()
+		if first == nil {
+			t.Fatal("first read did not memoize")
+		}
+		if got := local.updateAvailability(); got == nil {
+			t.Fatal("second read returned nil")
+		}
+		if second := local.updateCheck.Load(); second != first {
+			t.Error("second read replaced the memo for an unchanged file")
+		}
+	})
+
+	// A refreshed cache must be picked up, or the memo would pin the first
+	// answer for the life of the daemon.
+	t.Run("re-reads after the cache changes", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, pending(running))
+		local := enabled(root)
+		if got := local.updateAvailability(); got == nil || !got.Available {
+			t.Fatalf("first read = %+v, want a pending update", got)
+		}
+		current := pending(running)
+		current.UpdateAvailable = false
+		current.LatestVersion = running
+		// Force a distinct mtime: a same-second rewrite would otherwise be
+		// indistinguishable on filesystems with coarse timestamps.
+		if err := os.Chtimes(selfupdate.CheckPath(root), time.Now(), time.Now().Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		write(t, root, current)
+		if err := os.Chtimes(selfupdate.CheckPath(root), time.Now(), time.Now().Add(2*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		got := local.updateAvailability()
+		if got == nil || got.Available {
+			t.Errorf("second read = %+v, want the refreshed not-available result", got)
 		}
 	})
 }

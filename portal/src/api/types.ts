@@ -342,6 +342,8 @@ export interface Health extends ContractVersion {
 export interface UpdateAvailability {
   available: boolean;
   latestVersion: string;
+  /** The build the verdict was computed against — always the running build. */
+  currentVersion: string;
   channel: string;
   checkedAt: string;
 }

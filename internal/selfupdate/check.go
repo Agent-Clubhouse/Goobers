@@ -156,6 +156,10 @@ func Supervised(root string) bool {
 	return err == nil
 }
 
+// CheckPath is where WriteCheck caches the result, exported so a reader can
+// probe the file's mtime without decoding it on every request.
+func CheckPath(root string) string { return checkPath(root) }
+
 // WriteCheck caches result under root for `goobers status` to render, so a
 // status call never makes a request of its own.
 func WriteCheck(root string, result CheckResult) error {

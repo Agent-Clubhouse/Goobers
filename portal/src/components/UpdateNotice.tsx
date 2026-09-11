@@ -23,8 +23,8 @@ export function UpdateNotice({ update, onDismiss }: UpdateNoticeProps) {
     <div className="update-notice" role="status">
       <span>
         <strong>Update available:</strong> {update.latestVersion}
-        {update.channel ? ` on the ${update.channel} channel` : ""}. This instance is still
-        running an older build.
+        {update.channel ? ` on the ${update.channel} channel` : ""}. This instance is running{" "}
+        {update.currentVersion || "an older build"}.
       </span>
       <button
         aria-label={`Dismiss the ${update.latestVersion} update notice`}

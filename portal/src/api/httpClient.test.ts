@@ -62,6 +62,7 @@ describe("HttpDaemonClient", () => {
       update: {
         available: true,
         latestVersion: "v9.9.9",
+        currentVersion: "v9.9.8",
         channel: "stable",
         checkedAt: "2026-09-11T12:00:00Z",
       },

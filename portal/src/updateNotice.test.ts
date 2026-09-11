@@ -12,6 +12,7 @@ import {
 const pending: UpdateAvailability = {
   available: true,
   latestVersion: "v0.5.0",
+  currentVersion: "v0.4.0",
   channel: "stable",
   checkedAt: "2026-09-11T12:00:00Z",
 };

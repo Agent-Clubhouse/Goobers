@@ -325,10 +325,11 @@ func newWireFixtures() wireFixtures {
 				LastTickAgeMillis:   int64Pointer(timestamp.Sub(startedAt).Milliseconds()),
 			},
 			Update: &readservice.UpdateAvailability{
-				Available:     true,
-				LatestVersion: "v1.3.0",
-				Channel:       "stable",
-				CheckedAt:     timestamp,
+				Available:      true,
+				LatestVersion:  "v1.3.0",
+				CurrentVersion: "v1.2.3",
+				Channel:        "stable",
+				CheckedAt:      timestamp,
 			},
 		},
 		Instance: readservice.Instance{
