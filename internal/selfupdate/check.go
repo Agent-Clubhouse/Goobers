@@ -88,7 +88,7 @@ func CheckLatest(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("%w: %q", ErrVersionNotComparable, opts.CurrentVersion)
 	}
-	release, err := resolveRelease(ctx, opts.prepareOptions())
+	release, _, err := resolveRelease(ctx, opts.prepareOptions())
 	if err != nil {
 		return CheckResult{}, err
 	}

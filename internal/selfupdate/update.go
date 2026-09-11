@@ -92,6 +92,10 @@ type PrepareResult struct {
 	UpdateRequested bool   `json:"updateRequested"`
 	Policy          string `json:"policy"`
 	Target          string `json:"target,omitempty"`
+	// SkippedInvalidTags counts release tags that failed to parse as SemVer
+	// and were skipped during selection (see resolveNewestRelease) — 0
+	// outside the include-prerelease path.
+	SkippedInvalidTags int `json:"skippedInvalidTags,omitempty"`
 }
 
 type commandRunner interface {
@@ -146,6 +150,8 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 	}
 
 	var target, version, commit, staged string
+	var skippedInvalidTags int
+	notNewer := false
 	if opts.Policy == PolicyOnMain {
 		commit, err = resolveMainCommit(ctx, opts)
 		target = opts.Branch + "@" + commit
@@ -154,14 +160,14 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 		}
 	} else {
 		var release githubRelease
-		release, err = resolveRelease(ctx, opts)
+		release, skippedInvalidTags, err = resolveRelease(ctx, opts)
 		target, version = release.TagName, release.TagName
 		if err == nil {
 			newer, compareErr := isNewerVersion(current.Version, version)
 			if compareErr != nil {
 				err = fmt.Errorf("compare current version %q with release %q: %w", current.Version, version, compareErr)
 			} else if !newer {
-				err = fmt.Errorf("refusing to stage %s: current build %s is newer than or equal to the target release", version, current.Version)
+				notNewer = true
 			} else {
 				staged, err = stageRelease(ctx, opts, release)
 			}
@@ -170,8 +176,15 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 	if err != nil {
 		return PrepareResult{}, err
 	}
+	// The resolved release not being newer than the running build is a
+	// steady state (already up to date, or a downgrade target), not a
+	// failure — Prepare reports it the same way as the on-main "nothing
+	// changed" case below rather than erroring.
+	if notNewer {
+		return PrepareResult{Policy: opts.Policy, Target: target, SkippedInvalidTags: skippedInvalidTags}, nil
+	}
 	if staged == "" {
-		return PrepareResult{Policy: opts.Policy, Target: target}, nil
+		return PrepareResult{Policy: opts.Policy, Target: target, SkippedInvalidTags: skippedInvalidTags}, nil
 	}
 	published := false
 	defer func() {
@@ -200,7 +213,7 @@ func Prepare(ctx context.Context, opts PrepareOptions) (_ PrepareResult, retErr 
 	if err != nil {
 		return PrepareResult{}, err
 	}
-	return PrepareResult{UpdateRequested: true, Policy: opts.Policy, Target: target}, nil
+	return PrepareResult{UpdateRequested: true, Policy: opts.Policy, Target: target, SkippedInvalidTags: skippedInvalidTags}, nil
 }
 
 func defaultPrepareOptions(opts PrepareOptions) PrepareOptions {
@@ -259,14 +272,19 @@ func validatePrepareOptions(opts PrepareOptions) error {
 	return nil
 }
 
-func resolveRelease(ctx context.Context, opts PrepareOptions) (githubRelease, error) {
+// resolveRelease returns the selected release plus the number of release
+// tags that were skipped for failing to parse as SemVer (always 0 outside
+// the include-prerelease path — see resolveNewestRelease).
+func resolveRelease(ctx context.Context, opts PrepareOptions) (githubRelease, int, error) {
 	if opts.Policy == PolicyManual {
-		return resolveSingleRelease(ctx, opts, "/releases/tags/"+url.PathEscape(opts.Target), opts.Target)
+		release, err := resolveSingleRelease(ctx, opts, "/releases/tags/"+url.PathEscape(opts.Target), opts.Target)
+		return release, 0, err
 	}
 	if opts.IncludePrerelease {
 		return resolveNewestRelease(ctx, opts)
 	}
-	return resolveSingleRelease(ctx, opts, "/releases/latest", "")
+	release, err := resolveSingleRelease(ctx, opts, "/releases/latest", "")
+	return release, 0, err
 }
 
 // requestedVersionDescription describes, for error messages, the version the
@@ -289,35 +307,45 @@ func resolveSingleRelease(ctx context.Context, opts PrepareOptions, suffix, want
 	return release, nil
 }
 
-func resolveNewestRelease(ctx context.Context, opts PrepareOptions) (githubRelease, error) {
+// resolveNewestRelease picks the newest SemVer-parseable tag out of the
+// repository's full /releases collection (used only by the
+// include-prerelease path; the default path reads /releases/latest, which
+// GitHub itself resolves and which this function never touches). Tags that
+// fail to parse as SemVer — e.g. a `portal-v0.1.0` tag from an unrelated
+// release stream sharing the same collection — are skipped entirely: they
+// are never used to seed the selection and never compared against, so one
+// appearing as the newest list entry can no longer wedge selection on an
+// unparseable "current pick" (#4826). The skipped count is returned so the
+// caller can surface it rather than discard it silently.
+func resolveNewestRelease(ctx context.Context, opts PrepareOptions) (githubRelease, int, error) {
 	var releases []githubRelease
 	if err := githubJSON(ctx, opts, "/releases", &releases); err != nil {
-		return githubRelease{}, fmt.Errorf("query GitHub releases from product repository %s/%s (newest release including pre-releases): %w", opts.Owner, opts.Repository, err)
+		return githubRelease{}, 0, fmt.Errorf("query GitHub releases from product repository %s/%s (newest release including pre-releases): %w", opts.Owner, opts.Repository, err)
 	}
 	if len(releases) == 0 {
-		return githubRelease{}, fmt.Errorf("product repository %s/%s has no releases", opts.Owner, opts.Repository)
+		return githubRelease{}, 0, fmt.Errorf("product repository %s/%s has no releases", opts.Owner, opts.Repository)
 	}
-	selected := githubRelease{}
+	var selected githubRelease
+	var selectedVersion *hashiversion.Version
+	skipped := 0
 	for _, release := range releases {
 		if release.TagName == "" {
 			continue
 		}
-		if selected.TagName == "" {
-			selected = release
-			continue
-		}
-		newer, err := isNewerVersion(selected.TagName, release.TagName)
+		candidateVersion, err := hashiversion.NewVersion(release.TagName)
 		if err != nil {
+			skipped++
 			continue
 		}
-		if newer {
+		if selectedVersion == nil || candidateVersion.GreaterThan(selectedVersion) {
 			selected = release
+			selectedVersion = candidateVersion
 		}
 	}
 	if selected.TagName == "" {
-		return githubRelease{}, fmt.Errorf("product repository %s/%s releases do not contain a valid SemVer tag", opts.Owner, opts.Repository)
+		return githubRelease{}, skipped, fmt.Errorf("product repository %s/%s releases do not contain a valid SemVer tag", opts.Owner, opts.Repository)
 	}
-	return selected, nil
+	return selected, skipped, nil
 }
 
 func isNewerVersion(currentVersion, candidateVersion string) (bool, error) {
