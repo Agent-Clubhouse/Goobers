@@ -188,3 +188,64 @@ spec:
       ports:
         - protocol: TCP
           port: 4317
+---
+# #4828: the daemon's API and blob-plane share one port (README.md's
+# "canonical blob-plane endpoint", internal/netpolrender.DefaultBlobEndpoint
+# ().Port, currently 8080). Without this rule the worker's journal-emit,
+# blob-put, artifact-record and surrender calls to the daemon are denied by
+# default-deny-all above — every dispatched stage fails closed, retrying
+# rather than surfacing as a visible error.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worker-daemon
+  namespace: goobers-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              goobers.dev/role: worker
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# #4828: the mode-3 dispatcher's stage pods (goobers.dev/role: stage,
+# internal/runnercap.RoleStage) live in gaggle namespaces, one per gaggle, and
+# every dispatched stage's journal-emit/blob-put/artifact-record/surrender
+# call targets this same daemon endpoint (the same port allow-worker-daemon
+# above grants the worker). NAMESPACE selector and POD selector are composed
+# in a SINGLE peer element (AND, not two list elements that would OR) — the
+# same decision-012 composition internal/netpolrender.composeCrossNamespacePeer
+# uses for the egress mirror of this grant — so this rule reaches every
+# gaggle namespace generically via the shared goobers.dev/gaggle-namespace
+# marker (../gaggle-namespace/base/namespace.yaml) rather than naming one
+# namespace, and never widens to non-stage pods sharing a gaggle namespace.
+# Selector shared with #3585's proposed per-runner-class narrowing of this
+# same grant — see that issue for scoping the port further to specific
+# runner classes once the operator wants that.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-stage-daemon
+  namespace: goobers-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              goobers.dev/gaggle-namespace: "true"
+          podSelector:
+            matchLabels:
+              goobers.dev/role: stage
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -9,5 +9,15 @@ metadata:
   name: change-me-gaggle
   labels:
     goobers.dev/gaggle: CHANGE-ME
+    # Marks this namespace as a gaggle namespace for cross-namespace
+    # NetworkPolicy ingress grants selecting gaggle namespaces generically —
+    # internal/runnercap.LabelGaggleNamespace / GaggleNamespaceMarker
+    # (#4828): the goobers-system daemon ingress grant for stage pods
+    # (../../goobers-system/networkpolicies.yaml) composes this namespace
+    # selector with the stage-pod podSelector in one peer, exactly like the
+    # per-runner-class egress renderer's blob-endpoint peer does in reverse.
+    # Every gaggle namespace MUST carry this label or its stage pods cannot
+    # reach the daemon to materialize, journal, or surrender a stage.
+    goobers.dev/gaggle-namespace: "true"
     # Stage pods are non-root, capability-dropped, no-privilege workloads.
     pod-security.kubernetes.io/enforce: restricted

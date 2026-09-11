@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/yaml"
 
@@ -56,6 +57,27 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 		policy    *networkingv1.NetworkPolicy
 	}
 	var policies []namespacedPolicy
+
+	// namespaceLabels lets a peer's namespaceSelector resolve to the actual
+	// namespace(s) it reaches (e.g. the goobers.dev/gaggle-namespace marker),
+	// rather than assuming a cross-namespace peer always targets the
+	// policy's own namespace. Kubernetes auto-labels every namespace with its
+	// own name, which composeCrossNamespacePeer relies on for its
+	// name-pinned grants (DNS, blob endpoint).
+	namespaceLabels := map[string]map[string]string{}
+	nsEntry := func(name string) map[string]string {
+		labels, ok := namespaceLabels[name]
+		if !ok {
+			labels = map[string]string{}
+			namespaceLabels[name] = labels
+		}
+		labels["kubernetes.io/metadata.name"] = name
+		return labels
+	}
+	for _, name := range []string{"goobers-system", "goobers-temporal", "kube-system", "gaggle-a"} {
+		nsEntry(name)
+	}
+
 	for _, path := range files {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -85,6 +107,19 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 					namespace: effectiveManifestNamespace(path, policy.Namespace),
 					policy:    &policy,
 				})
+			case "Namespace":
+				// The gaggle-namespace template's labels apply to every
+				// instantiated gaggle namespace; this test's concrete
+				// stand-in for one is "gaggle-a" (below).
+				if strings.Contains(path, "/gaggle-namespace/") {
+					var ns corev1.Namespace
+					if err := yaml.Unmarshal(doc, &ns); err != nil {
+						t.Fatalf("parse Namespace in %s: %v", path, err)
+					}
+					for k, v := range ns.Labels {
+						nsEntry("gaggle-a")[k] = v
+					}
+				}
 			}
 		}
 	}
@@ -158,33 +193,60 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 	}
 
 	// (2) Every goobers.dev-keyed selector — spec.podSelector or a peer —
-	// matches some rendered pod label set.
-	assertSelectorProduced := func(where, namespace string, selector map[string]string) {
+	// matches some rendered pod label set. A peer that also carries a
+	// namespaceSelector (decision-012 cross-namespace composition) resolves
+	// to whichever namespace(s) that selector actually reaches — e.g. every
+	// namespace carrying the goobers.dev/gaggle-namespace marker — rather
+	// than assuming the peer stays inside the policy's own namespace.
+	resolveNamespaces := func(policyNamespace string, nsSelector map[string]string) []string {
+		if len(nsSelector) == 0 {
+			return []string{policyNamespace}
+		}
+		var matches []string
+		for name, labels := range namespaceLabels {
+			if subset(nsSelector, labels) {
+				matches = append(matches, name)
+			}
+		}
+		return matches
+	}
+	assertSelectorProduced := func(where, policyNamespace string, nsSelector, selector map[string]string) {
 		keyed := goobersKeyed(selector)
 		if len(keyed) == 0 {
 			return
 		}
-		for i, labels := range podLabelSets {
-			if podNamespaces[i] == namespace && subset(keyed, labels) {
-				return
+		for _, namespace := range resolveNamespaces(policyNamespace, nsSelector) {
+			for i, labels := range podLabelSets {
+				if podNamespaces[i] == namespace && subset(keyed, labels) {
+					return
+				}
 			}
 		}
-		t.Errorf("%s selects %v, which no rendered pod labels satisfy — the policy grants nothing (the silent no-grant shape)", where, keyed)
+		t.Errorf("%s selects %v (namespace(s) %v), which no rendered pod labels satisfy — the policy grants nothing (the silent no-grant shape)",
+			where, keyed, resolveNamespaces(policyNamespace, nsSelector))
 	}
 	for _, namespaced := range policies {
 		policy := namespaced.policy
-		assertSelectorProduced("policy "+policy.Name+" podSelector", namespaced.namespace, policy.Spec.PodSelector.MatchLabels)
+		assertSelectorProduced("policy "+policy.Name+" podSelector", namespaced.namespace, nil, policy.Spec.PodSelector.MatchLabels)
 		for _, rule := range policy.Spec.Ingress {
 			for _, peer := range rule.From {
 				if peer.PodSelector != nil {
-					assertSelectorProduced("policy "+policy.Name+" ingress peer", namespaced.namespace, peer.PodSelector.MatchLabels)
+					var nsSelector map[string]string
+					if peer.NamespaceSelector != nil {
+						nsSelector = peer.NamespaceSelector.MatchLabels
+					}
+					assertSelectorProduced("policy "+policy.Name+" ingress peer", namespaced.namespace, nsSelector, peer.PodSelector.MatchLabels)
 				}
 			}
 		}
 		for _, rule := range policy.Spec.Egress {
 			for _, peer := range rule.To {
 				if peer.PodSelector != nil {
-					assertSelectorProduced("policy "+policy.Name+" egress peer", namespaced.namespace, peer.PodSelector.MatchLabels)
+					var nsSelector map[string]string
+					if peer.NamespaceSelector != nil {
+						nsSelector = peer.NamespaceSelector.MatchLabels
+					}
+					assertSelectorProduced("policy "+policy.Name+" egress peer", namespaced.namespace, nsSelector, peer.PodSelector.MatchLabels)
 				}
 			}
 		}
