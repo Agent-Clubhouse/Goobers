@@ -19,6 +19,10 @@ Use the
 [workflow primitive reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/reference/workflow-primitives/README.md)
 for the complete accepted vocabulary and parameter contracts.
 
+To run normal Copilot workflow turns through Agency while using persisted
+Copilot login, see the
+[Agency Copilot launcher example](agency-copilot/README.md).
+
 ## Folder layout
 
 ```
