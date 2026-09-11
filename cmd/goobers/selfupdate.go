@@ -121,11 +121,15 @@ func runSelfUpdateWith(
 		return failProviderStage(stderr, "self-update", err, resultFile)
 	}
 	if err := writeProviderStageResult(resultFile, map[string]interface{}{
-		"updateRequested": result.UpdateRequested,
-		"policy":          result.Policy,
-		"target":          result.Target,
+		"updateRequested":    result.UpdateRequested,
+		"policy":             result.Policy,
+		"target":             result.Target,
+		"skippedInvalidTags": result.SkippedInvalidTags,
 	}); err != nil {
 		return failProviderStage(stderr, "write self-update result", err, resultFile)
+	}
+	if result.SkippedInvalidTags > 0 {
+		pf(stdout, "self-update: skipped %d release tag(s) that did not parse as SemVer\n", result.SkippedInvalidTags)
 	}
 	if result.UpdateRequested {
 		pf(stdout, "self-update target %s staged; supervisor handoff requested\n", result.Target)
