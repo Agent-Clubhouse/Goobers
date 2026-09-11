@@ -24,7 +24,7 @@ func TestIntegrationSnapshotWindowsWithinOneSecondRemainDistinct(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		published, _, err := PublishToInventory(context.Background(), repository, inventory, []string{repository}, prepared, 2, 1<<20)
+		published, _, err := PublishToInventoryWithEviction(context.Background(), repository, inventory, []string{repository}, prepared, 2, 1<<20, nil)
 		if err != nil {
 			t.Fatalf("same-second capture window failed publication: %v", err)
 		}

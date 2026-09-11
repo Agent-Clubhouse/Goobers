@@ -120,7 +120,7 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, path, err := recovery.PublishToInventory(context.Background(), source, inventory, []string{source}, record, 128, 1<<20)
+		_, path, err := recovery.PublishToInventoryWithEviction(context.Background(), source, inventory, []string{source}, record, 128, 1<<20, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

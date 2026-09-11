@@ -17,16 +17,6 @@ import (
 // evidence. Cleanup must preserve its source when allocation fails.
 var ErrInventoryFull = errors.New("recovery inventory is full")
 
-// PublishToInventory reserves a deterministic snapshot directory then publishes
-// its archive and bound record. root must already exist privately outside all
-// cleanup roots. Failed reservations count toward maxSnapshots until explicitly
-// reconciled, bounding crash/retry debris as well as successful records. Each
-// archive is bounded by maxArchiveBytes. This helper never evicts old records;
-// see PublishToInventoryWithEviction for a caller that can (#4823).
-func PublishToInventory(ctx context.Context, repository, root string, cleanupRoots []string, prepared Record, maxSnapshots int, maxArchiveBytes int64) (Record, string, error) {
-	return publishToInventory(ctx, repository, root, cleanupRoots, prepared, maxSnapshots, maxArchiveBytes, nil, nil)
-}
-
 // EvictFunc attempts to free at least one inventory slot when reservation
 // finds the inventory full, and reports whether it freed anything. It is
 // tried only under actual capacity pressure — never speculatively — so it can
@@ -37,11 +27,16 @@ func PublishToInventory(ctx context.Context, repository, root string, cleanupRoo
 // it never causes data loss, since the source is preserved either way.
 type EvictFunc func(ctx context.Context, root string, limit int) (bool, error)
 
-// PublishToInventoryWithEviction behaves like PublishToInventory, but when
-// the inventory is full it first reaps any already-retired-but-unreaped
+// PublishToInventoryWithEviction reserves a deterministic snapshot directory
+// then publishes its archive and bound record. root must already exist
+// privately outside all cleanup roots. Failed reservations count toward
+// maxSnapshots until explicitly reconciled, bounding crash/retry debris as
+// well as successful records. Each archive is bounded by maxArchiveBytes.
+//
+// When the inventory is full, it first reaps any already-retired-but-unreaped
 // entries (cheap, no external context needed) and then, if still full, gives
 // evict one chance to retire something before failing (#4823). evict may be
-// nil, in which case only the reap step runs.
+// nil, in which case only the reap step runs and it otherwise never evicts.
 func PublishToInventoryWithEviction(ctx context.Context, repository, root string, cleanupRoots []string, prepared Record, maxSnapshots int, maxArchiveBytes int64, evict EvictFunc) (Record, string, error) {
 	return publishToInventory(ctx, repository, root, cleanupRoots, prepared, maxSnapshots, maxArchiveBytes, nil, evict)
 }

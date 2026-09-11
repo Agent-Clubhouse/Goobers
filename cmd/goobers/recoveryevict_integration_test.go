@@ -111,7 +111,7 @@ func TestIntegrationRecoveryCleanupEvictsLandedEntryUnderFullInventory(t *testin
 		BaseSHA: base, SnapshotSHA: runningSnapshot, PatchDigest: runningDigest,
 		CreatedAt: time.Now().Add(-time.Hour), RetainUntil: time.Now().Add(29 * 24 * time.Hour),
 	}
-	if _, _, err := recovery.PublishToInventory(ctx, mirror, root, []string{manager.Root}, runningRecord, 2, 1<<20); err != nil {
+	if _, _, err := recovery.PublishToInventoryWithEviction(ctx, mirror, root, []string{manager.Root}, runningRecord, 2, 1<<20, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +138,7 @@ func TestIntegrationRecoveryCleanupEvictsLandedEntryUnderFullInventory(t *testin
 		BaseSHA: base, SnapshotSHA: landedSnapshot, PatchDigest: landedDigest,
 		CreatedAt: time.Now().Add(-2 * time.Hour), RetainUntil: time.Now().Add(29 * 24 * time.Hour),
 	}
-	landedRetained, _, err := recovery.PublishToInventory(ctx, mirror, root, []string{manager.Root}, landedRecord, 2, 1<<20)
+	landedRetained, _, err := recovery.PublishToInventoryWithEviction(ctx, mirror, root, []string{manager.Root}, landedRecord, 2, 1<<20, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

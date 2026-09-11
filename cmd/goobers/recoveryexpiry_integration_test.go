@@ -111,7 +111,7 @@ func testRecoveryExpirySweep(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retained, path, err := recovery.PublishToInventory(ctx, mirror, root, []string{manager.Root}, record, 128, 1<<20)
+	retained, path, err := recovery.PublishToInventoryWithEviction(ctx, mirror, root, []string{manager.Root}, record, 128, 1<<20, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
