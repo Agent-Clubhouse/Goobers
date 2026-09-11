@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -709,6 +710,24 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 	return nil
 }
 
+// excludedReleaseDoc reports whether rel (relative to the repository's docs/
+// directory) is a working document that must not ship in a release archive.
+// A `docs/releases/*-readiness.md` record is a per-candidate scratchpad,
+// written against whatever the working tree looked like at the time and
+// citing that author's own local evidence trail; once superseded it goes
+// stale in place (#4829: the v0.4.0-rc.1 record shipped in the v0.4.0-rc.2
+// and stable archives, still asserting promotion was blocked on a decision
+// already reversed, citing dozens of /tmp paths no downstream reader can
+// resolve). Its home is git history, not the archive.
+func excludedReleaseDoc(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	if filepath.ToSlash(filepath.Dir(rel)) != "releases" {
+		return false
+	}
+	matched, err := path.Match("*-readiness.md", filepath.Base(rel))
+	return err == nil && matched
+}
+
 func copyReleaseTree(source, destination string) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -717,6 +736,9 @@ func copyReleaseTree(source, destination string) error {
 		rel, err := filepath.Rel(source, path)
 		if err != nil {
 			return err
+		}
+		if !entry.IsDir() && excludedReleaseDoc(rel) {
+			return nil
 		}
 		target := filepath.Join(destination, rel)
 		if entry.IsDir() {

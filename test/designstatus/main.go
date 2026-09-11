@@ -42,9 +42,10 @@ import (
 const headerLines = 40
 
 const (
-	designRoot = "docs/design"
-	adrRoot    = "docs/adr"
-	indexPath  = "docs/design/README.md"
+	designRoot   = "docs/design"
+	adrRoot      = "docs/adr"
+	releasesRoot = "docs/releases"
+	indexPath    = "docs/design/README.md"
 )
 
 var (
@@ -63,9 +64,12 @@ var (
 	// docs/requirements/pr-lifecycle.md), and recording that honestly is worth
 	// more than forcing the pointer into a shape the checker prefers.
 	docPath = regexp.MustCompile(`docs/[A-Za-z0-9._/-]+\.md`)
-	// machineLocalPath matches a path into a home directory. Only some of
-	// these are a problem — see isMachineLocalCitation.
-	machineLocalPath = regexp.MustCompile(`(?:/Users/|/home/|[A-Za-z]:\\Users\\|~/)[A-Za-z0-9._][A-Za-z0-9._/\\-]*`)
+	// machineLocalPath matches a path into a home directory, or a /tmp
+	// scratch path (#4829: a readiness document citing 63 `/tmp/goobers-rc-…`
+	// paths as its evidence trail shipped in the v0.4.0 release archive,
+	// unreproducible by any reader but the machine that wrote it). Only some
+	// of these are a problem — see isMachineLocalCitation.
+	machineLocalPath = regexp.MustCompile(`(?:/Users/|/home/|/tmp/|[A-Za-z]:\\Users\\|~/)[A-Za-z0-9._][A-Za-z0-9._/\\-]*`)
 
 	// serviceAccountHomes are home-directory owners that are not a person. A
 	// path under one of these is a product fact that is identical on every
@@ -136,6 +140,11 @@ func main() {
 	if *deliveryContext != "" {
 		problems = append(problems, checkDeliveryContext(*deliveryContext, docs)...)
 	}
+	// docs/releases holds release notes and readiness records, not design
+	// docs — they carry no Status/Delivered-by lifecycle metadata, so they
+	// are checked only for machine-local evidence citations (#4829), not run
+	// through the full design-lifecycle validate() above.
+	problems = append(problems, checkMachineLocalCitations(releasesRoot)...)
 	if len(problems) > 0 {
 		sort.Strings(problems)
 		_, _ = fmt.Fprintf(os.Stderr, "designstatus:\n%s\n", strings.Join(problems, "\n"))
@@ -185,17 +194,40 @@ func parseDocument(p string) (document, error) {
 	return parseDocumentBytes(p, body)
 }
 
-func parseDocumentBytes(p string, body []byte) (document, error) {
-	doc := document{Path: filepath.ToSlash(p)}
-	for _, candidate := range machineLocalPath.FindAllString(string(body), -1) {
+// machineLocalCitations returns the machine-local (home-directory or /tmp)
+// paths body cites as evidence.
+func machineLocalCitations(body []byte) []string {
+	var citations []string
+	for _, loc := range machineLocalPath.FindAllIndex(body, -1) {
+		start := loc[0]
+		if start > 0 && body[start-1] == '=' {
+			// `KEY=/tmp/path` illustrates a configuration value (e.g.
+			// goobernetes-restrictions.md's `GOCACHE=/tmp/gocache`), true on
+			// every machine that sets it — not a pointer into this one
+			// author's run, which is what the citation check exists to
+			// catch (#4829).
+			continue
+		}
+		candidate := string(body[loc[0]:loc[1]])
 		if isMachineLocalCitation(candidate) {
-			doc.MachineLocalPaths = append(doc.MachineLocalPaths, candidate)
+			citations = append(citations, candidate)
 		}
 	}
-	// Match with line wrapping and emphasis markers normalised away, so
-	// reflowing the paragraph the disclaimer sits in cannot silently disarm
-	// the check.
-	doc.DisclaimsExternalEvidence = strings.Contains(normalizeProse(string(body)), externalEvidenceDisclaimer)
+	return citations
+}
+
+// disclaimsExternalEvidence reports whether body carries
+// externalEvidenceDisclaimer, matched with line wrapping and emphasis markers
+// normalised away so reflowing the paragraph the disclaimer sits in cannot
+// silently disarm the check.
+func disclaimsExternalEvidence(body []byte) bool {
+	return strings.Contains(normalizeProse(string(body)), externalEvidenceDisclaimer)
+}
+
+func parseDocumentBytes(p string, body []byte) (document, error) {
+	doc := document{Path: filepath.ToSlash(p)}
+	doc.MachineLocalPaths = machineLocalCitations(body)
+	doc.DisclaimsExternalEvidence = disclaimsExternalEvidence(body)
 
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -336,8 +368,8 @@ func validateVerified(value string) error {
 	return nil
 }
 
-// isMachineLocalCitation reports whether a home-directory path is a citation of
-// somebody's own machine rather than a product fact.
+// isMachineLocalCitation reports whether a home-directory or /tmp path is a
+// citation of somebody's own machine rather than a product fact.
 //
 // Two shapes are deliberately NOT citations, because they name the same
 // location on every machine:
@@ -452,6 +484,41 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// checkMachineLocalCitations walks root for .md files and flags any that cite
+// a machine-local path without the external-evidence disclaimer (#4829).
+// Unlike loadDocuments/validate, it does not require design-document
+// lifecycle metadata (Status, Delivered-by, ...): root is not a design-doc
+// tree, so documents there are not expected to carry it.
+func checkMachineLocalCitations(root string) []string {
+	var problems []string
+	err := filepath.WalkDir(root, func(p string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || strings.ToLower(filepath.Ext(p)) != ".md" {
+			return nil
+		}
+		body, readErr := os.ReadFile(p)
+		if readErr != nil {
+			problems = append(problems, fmt.Sprintf("%s: %v", p, readErr))
+			return nil
+		}
+		citations := machineLocalCitations(body)
+		if len(citations) == 0 || disclaimsExternalEvidence(body) {
+			return nil
+		}
+		problems = append(problems, fmt.Sprintf(
+			"%s cites machine-local path(s) %s that no other reader can resolve. "+
+				"Commit the artifact, cite a stable URL, or state %q where the citation appears",
+			filepath.ToSlash(p), strings.Join(uniqueSorted(citations), ", "), externalEvidenceDisclaimer))
+		return nil
+	})
+	if err != nil {
+		problems = append(problems, fmt.Sprintf("%s: %v", root, err))
+	}
+	return problems
 }
 
 func checkIndexIsCurrent(docs []document) []string {
