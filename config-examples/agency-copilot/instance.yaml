@@ -1,5 +1,0 @@
-runner:
-  harnessCommand:
-    copilot:
-      - C:\tools\agency-copilot-launcher.exe
-

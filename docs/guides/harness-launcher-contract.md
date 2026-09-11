@@ -61,13 +61,6 @@ completion, usage, model, tool, credential, and sandbox contracts; this is not a
 new harness type. The wrapper must also support version and authentication probes
 on its complete configured launch prefix.
 
-Goobers uses the Copilot SDK for authenticated model discovery. The SDK appends
-`--headless --no-auto-update --stdio` to the configured command and expects its
-stdio JSON-RPC connection to terminate at Copilot. A wrapper that normally
-starts another Copilot host must recognize the `--headless --stdio` pair and
-delegate that invocation directly to Copilot. See the
-[Agency Copilot example](../../config-examples/agency-copilot/README.md).
-
 The handshake is an explicit compatibility declaration. The behavioral fallback
 is proof only of direct local session forwarding, not of every launcher feature.
 Configured launchers therefore use native-session usage accounting and do not
