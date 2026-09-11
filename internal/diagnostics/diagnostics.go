@@ -142,11 +142,18 @@ type DaemonInfo struct {
 	Running bool `json:"running"`
 	// LockPresent distinguishes "no daemon ever ran here" from "a lock exists
 	// but nothing holds it" — the stale-lock case that reads as a live daemon.
-	LockPresent bool   `json:"lockPresent"`
-	PID         int    `json:"pid,omitempty"`
-	Version     string `json:"version,omitempty"`
-	StartedAt   string `json:"startedAt,omitempty"`
-	LastTickAt  string `json:"lastTickAt,omitempty"`
+	LockPresent bool `json:"lockPresent"`
+	// LockHolderKind is the unheld lock file's own recorded holderKind
+	// ("daemon" or "manual", #4833) — only meaningful when LockPresent is
+	// true and Running is false. A plain foreground `goobers run` acquires
+	// the same lock file and leaves it behind on exit; that is expected
+	// residue, not evidence a daemon crashed. Empty when no lock file is
+	// present, or its holderKind field predates this distinction.
+	LockHolderKind string `json:"lockHolderKind,omitempty"`
+	PID            int    `json:"pid,omitempty"`
+	Version        string `json:"version,omitempty"`
+	StartedAt      string `json:"startedAt,omitempty"`
+	LastTickAt     string `json:"lastTickAt,omitempty"`
 	// Stale reports that a daemon holds the lock but has not ticked within its
 	// liveness timeout.
 	Stale bool `json:"stale,omitempty"`

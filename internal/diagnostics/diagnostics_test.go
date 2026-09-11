@@ -88,6 +88,71 @@ func TestBundleExplainsANoWorkCycleWithoutASourceCheckout(t *testing.T) {
 	}
 }
 
+// TestSummaryDaemonDistinguishesManualLockFromCrash is #4833's regression: a
+// foreground `goobers run` acquires the same up.lock the daemon does and
+// leaves it behind on exit (holderKind "manual") — that must never read as
+// "a previous daemon exited without releasing it", the exact false claim
+// diagnostics bundle made on the demo onboarding path (init --demo, run
+// demo, no daemon ever started). Pins the exact summary sentence for the
+// manual-lock, no-lock, and (still-legitimate) daemon-crash cases so the
+// distinction cannot silently regress.
+func TestSummaryDaemonDistinguishesManualLockFromCrash(t *testing.T) {
+	c := collectorForTest()
+	c.RunDirs = func(string) ([]string, error) { return nil, nil }
+	c.Instance = func(string) (InstanceInfo, []CredentialPresence, error) {
+		return InstanceInfo{}, nil, nil
+	}
+
+	for _, test := range []struct {
+		name   string
+		info   DaemonInfo
+		want   string
+		unwant []string
+	}{
+		{
+			name:   "manual lock is not a crash",
+			info:   DaemonInfo{LockPresent: true, LockHolderKind: "manual"},
+			want:   "Not running, and no daemon crash indicated: the lock file was left by a foreground `goobers run`, not a daemon.",
+			unwant: []string{"previous daemon exited"},
+		},
+		{
+			name:   "no lock at all",
+			info:   DaemonInfo{},
+			want:   "Not running, and no lock file is present.",
+			unwant: []string{"previous daemon exited", "foreground"},
+		},
+		{
+			name:   "daemon-held lock with nothing running is still a crash claim",
+			info:   DaemonInfo{LockPresent: true, LockHolderKind: "daemon"},
+			want:   "Not running, but a lock file is present — a previous daemon exited without releasing it.",
+			unwant: []string{"foreground"},
+		},
+		{
+			name:   "unknown holder kind (legacy lock file) stays the conservative crash claim",
+			info:   DaemonInfo{LockPresent: true},
+			want:   "Not running, but a lock file is present — a previous daemon exited without releasing it.",
+			unwant: []string{"foreground"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c.Daemon = func(string, time.Time) (DaemonInfo, error) { return test.info, nil }
+			bundle, err := c.Collect(Options{Root: "/instances/demo", Now: fixedNow()})
+			if err != nil {
+				t.Fatalf("Collect: %v", err)
+			}
+			summary := Summary(bundle)
+			if !strings.Contains(summary, test.want) {
+				t.Fatalf("summary = %q, want it to contain %q", summary, test.want)
+			}
+			for _, bad := range test.unwant {
+				if strings.Contains(summary, bad) {
+					t.Fatalf("summary = %q, must not contain %q", summary, bad)
+				}
+			}
+		})
+	}
+}
+
 // A support bundle collected during an incident must be produced from whatever
 // IS readable, and must SAY what it could not read: an omission stated is not
 // an omission found.
