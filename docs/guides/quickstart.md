@@ -28,6 +28,24 @@ for your operating system:** [macOS](https://github.com/Agent-Clubhouse/Goobers/
 for the disposable tutorial after the OS guide says the `goobers` binary and
 required host tools are ready.
 
+**On Windows, choose your host route before you install.** Native Windows and
+WSL 2 are two supported execution routes, not a first choice and a fallback.
+Pick by the workload you intend to run:
+
+| Route | Use it for | WSL required |
+| --- | --- | --- |
+| Native Windows binary | Officially supported deterministic workflows and foreground daemon operation | No |
+| WSL 2 with the Linux binary | The zero-credential demo in section 1, full Linux isolation, and agentic-stage confinement | Yes |
+
+Use the native Windows binary and the Windows guide above for supported
+deterministic workflows; WSL is not required for that route. Choose WSL
+separately when the workflow you selected requires the full Linux isolation
+posture, including the section 1 demo or agentic-stage confinement. OS
+sandboxing is a property of the workload you pick, not a prerequisite for
+running Goobers on Windows. Live native Copilot CLI/agentic parity remains
+separate [#647](https://github.com/Agent-Clubhouse/Goobers/issues/647) Tier 2
+scope.
+
 See `docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
 
 Keep every tutorial instance outside a GitHub App, hosted-agent, Codespaces, or
@@ -78,8 +96,10 @@ macOS, where Goobers enforces network isolation.
 
 For host setup differences, see the [macOS](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-macos.md),
 [Linux](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-linux.md), or [Windows](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-windows.md) guide. Native
-Windows cannot enforce the demo's network isolation; use its documented WSL 2
-path instead.
+Windows cannot enforce this demo's network isolation, so run it through the
+documented WSL 2 path. That requirement belongs to the isolated demo, not to
+Windows generally — deterministic workflows run on the native Windows binary
+without WSL, per the host-route table above.
 
 ```sh
 bin/goobers init --demo ./demo-instance
