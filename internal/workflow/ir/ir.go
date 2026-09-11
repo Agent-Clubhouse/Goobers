@@ -187,12 +187,16 @@ func NormalizeWithMetadata(def workflow.Definition, provenance *Provenance, feat
 	if err != nil {
 		return Document{}, fmt.Errorf("digest workflow definition: %w", err)
 	}
+	triggers, err := canonicalizeTriggers(def.Spec.Triggers)
+	if err != nil {
+		return Document{}, fmt.Errorf("canonicalize triggers: %w", err)
+	}
 	source := cloneDefinition(def)
 	doc := Document{
 		SchemaVersion:    SchemaVersion,
 		Compiler:         Compiler{Name: CompilerName, Version: CompilerVersion},
 		Source:           Source{Name: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Digest: digest},
-		Triggers:         cloneTriggers(def.Spec.Triggers),
+		Triggers:         triggers,
 		Start:            def.Spec.Start,
 		Schemas:          []Schema{},
 		Nodes:            []Node{},
@@ -571,12 +575,20 @@ func semanticContentChanged(before, after Document) bool {
 		Edges       []Edge          `json:"edges"`
 		Permissions []string        `json:"permissions"`
 	}
+	beforeTriggers, err := canonicalizeTriggers(before.Triggers)
+	if err != nil {
+		return true
+	}
+	afterTriggers, err := canonicalizeTriggers(after.Triggers)
+	if err != nil {
+		return true
+	}
 	left, _ := json.Marshal(semanticDocument{
-		Triggers: before.Triggers, Start: before.Start, Schemas: before.Schemas,
+		Triggers: beforeTriggers, Start: before.Start, Schemas: before.Schemas,
 		Nodes: before.Nodes, Edges: before.Edges, Permissions: before.Permissions,
 	})
 	right, _ := json.Marshal(semanticDocument{
-		Triggers: after.Triggers, Start: after.Start, Schemas: after.Schemas,
+		Triggers: afterTriggers, Start: after.Start, Schemas: after.Schemas,
 		Nodes: after.Nodes, Edges: after.Edges, Permissions: after.Permissions,
 	})
 	return string(left) != string(right)
@@ -1106,6 +1118,31 @@ func cloneTriggers(values []apiv1.Trigger) []apiv1.Trigger {
 		values[i].DeepCopyInto(&out[i])
 	}
 	return out
+}
+
+func canonicalizeTriggers(values []apiv1.Trigger) ([]apiv1.Trigger, error) {
+	type triggerWithKey struct {
+		trigger apiv1.Trigger
+		key     string
+	}
+	indexed := make([]triggerWithKey, len(values))
+	for i, trigger := range values {
+		key, err := json.Marshal(trigger)
+		if err != nil {
+			return nil, err
+		}
+		clone := apiv1.Trigger{}
+		trigger.DeepCopyInto(&clone)
+		indexed[i] = triggerWithKey{trigger: clone, key: string(key)}
+	}
+	sort.SliceStable(indexed, func(i, j int) bool {
+		return indexed[i].key < indexed[j].key
+	})
+	out := make([]apiv1.Trigger, len(indexed))
+	for i, entry := range indexed {
+		out[i] = entry.trigger
+	}
+	return out, nil
 }
 
 func cloneTask(v apiv1.Task) *apiv1.Task             { return v.DeepCopy() }

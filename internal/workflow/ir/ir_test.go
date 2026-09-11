@@ -458,6 +458,50 @@ func TestSemanticDiffClassifiesBehavioralChangesAcrossIRSurfaces(t *testing.T) {
 	}
 }
 
+func TestNormalizeAndSemanticDiffIgnoreTriggerReordering(t *testing.T) {
+	base := workflow.Definition{
+		Name: "trigger-order", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "build",
+			Triggers: []apiv1.Trigger{
+				{Type: apiv1.TriggerWebhook, Events: []string{"issues"}},
+				{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"label": "ready"}},
+				{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"},
+			},
+			Tasks: []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "build"}},
+		},
+	}
+
+	before, err := Normalize(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered := cloneDefinitionForTest(t, base)
+	reordered.Spec.Triggers = []apiv1.Trigger{
+		reordered.Spec.Triggers[2],
+		reordered.Spec.Triggers[0],
+		reordered.Spec.Triggers[1],
+	}
+	after, err := Normalize(reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(before.Triggers, after.Triggers) {
+		t.Fatalf("normalized triggers differ after reordering:\n before=%#v\n after=%#v", before.Triggers, after.Triggers)
+	}
+	diff, err := SemanticDiff(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff.Kind != DiffCosmetic {
+		t.Fatalf("SemanticDiff kind = %q, want %q; changes=%#v", diff.Kind, DiffCosmetic, diff.Changes)
+	}
+	if containsBehavioralChange(diff.Changes) {
+		t.Fatalf("SemanticDiff changes = %#v, want cosmetic-only changes", diff.Changes)
+	}
+}
+
 func TestSemanticDiffClassifiesCompilerAndSourceIdentityMetadataAsCosmetic(t *testing.T) {
 	base := semanticDiffBehavioralBaseDefinition()
 	before, err := Normalize(base)
