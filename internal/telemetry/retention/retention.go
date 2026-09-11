@@ -42,6 +42,23 @@ type Result struct {
 	Reason string
 }
 
+// Summary carries pass-level context a caller needs beyond the per-run
+// Results (#4824): how large the pass's action is relative to an instance's
+// total history, and how far back that history now actually reaches.
+type Summary struct {
+	// TotalRuns is every discovered run (terminal and in-flight), the same
+	// population selectCandidates ranges MaxRuns' index over — the
+	// denominator for judging what fraction of an instance's history a pass
+	// is about to prune.
+	TotalRuns int
+	// OldestRetainedStartedAt is the start time of the oldest terminal run
+	// that survives this pass (not selected as a candidate) — the age an
+	// operator would see if they asked "how far back does my run history
+	// actually go under the current policy?" Zero when no terminal run
+	// survives (every terminal run in scope is a candidate).
+	OldestRetainedStartedAt time.Time
+}
+
 type runInfo struct {
 	Result
 	startedAt time.Time
@@ -49,58 +66,59 @@ type runInfo struct {
 }
 
 // Prune applies policy across every legacy and gaggle-scoped run root.
-func Prune(layout instance.Layout, db *rollup.DB, policy Policy, opts Options) ([]Result, error) {
+func Prune(layout instance.Layout, db *rollup.DB, policy Policy, opts Options) ([]Result, Summary, error) {
 	if policy.Window <= 0 {
-		return nil, fmt.Errorf("telemetry retention window must be positive")
+		return nil, Summary{}, fmt.Errorf("telemetry retention window must be positive")
 	}
 	if policy.MaxRuns <= 0 {
-		return nil, fmt.Errorf("telemetry retention max runs must be positive")
+		return nil, Summary{}, fmt.Errorf("telemetry retention max runs must be positive")
 	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
 	runRoots, err := layout.RunDirs()
 	if err != nil {
-		return nil, err
+		return nil, Summary{}, err
 	}
 	if !opts.DryRun {
 		maintenanceLocks, err := journal.AcquireRunRootMaintenanceLocks(runRoots)
 		if err != nil {
-			return nil, err
+			return nil, Summary{}, err
 		}
 		defer func() { _ = maintenanceLocks.Release() }()
 	}
 	runs, err := discoverRuns(runRoots)
 	if err != nil {
-		return nil, err
+		return nil, Summary{}, err
 	}
 	if !opts.DryRun {
 		if db == nil {
-			return nil, fmt.Errorf("telemetry retention rollup is required")
+			return nil, Summary{}, fmt.Errorf("telemetry retention rollup is required")
 		}
 		if err := preflightInterruptedPrunes(runRoots); err != nil {
-			return nil, err
+			return nil, Summary{}, err
 		}
 		if err := finishInterruptedPrunes(runRoots, db, opts.BeforeDelete); err != nil {
-			return nil, err
+			return nil, Summary{}, err
 		}
 	}
-	candidates := selectCandidates(runs, policy, opts.Now)
+	candidates, oldestRetainedAt := selectCandidates(runs, policy, opts.Now)
+	summary := Summary{TotalRuns: len(runs), OldestRetainedStartedAt: oldestRetainedAt}
 	if opts.DryRun {
-		return candidates, nil
+		return candidates, summary, nil
 	}
 
 	pruned := make([]Result, 0, len(candidates))
 	for _, candidate := range candidates {
 		deleted, err := pruneOne(candidate, db, opts.BeforeDelete)
 		if err != nil {
-			return pruned, err
+			return pruned, summary, err
 		}
 		if deleted {
 			pruned = append(pruned, candidate)
 		}
 	}
-	return pruned, nil
+	return pruned, summary, nil
 }
 
 func discoverRuns(runRoots []string) ([]runInfo, error) {
@@ -160,9 +178,8 @@ func discoverRuns(runRoots []string) ([]runInfo, error) {
 	return runs, nil
 }
 
-func selectCandidates(runs []runInfo, policy Policy, now time.Time) []Result {
+func selectCandidates(runs []runInfo, policy Policy, now time.Time) (candidates []Result, oldestRetainedAt time.Time) {
 	cutoff := now.Add(-policy.Window)
-	var candidates []Result
 	for index, run := range runs {
 		if !run.terminal {
 			continue
@@ -170,6 +187,10 @@ func selectCandidates(runs []runInfo, policy Policy, now time.Time) []Result {
 		windowExceeded := !run.startedAt.After(cutoff)
 		maxRunsExceeded := index >= policy.MaxRuns
 		if !windowExceeded && !maxRunsExceeded {
+			// Retained. runs is sorted newest-first, so later iterations only
+			// ever see an older startedAt — the last retained run seen is the
+			// oldest one still kept under policy.
+			oldestRetainedAt = run.startedAt
 			continue
 		}
 		result := run.Result
@@ -183,7 +204,7 @@ func selectCandidates(runs []runInfo, policy Policy, now time.Time) []Result {
 		}
 		candidates = append(candidates, result)
 	}
-	return candidates
+	return candidates, oldestRetainedAt
 }
 
 func pruneOne(candidate Result, db *rollup.DB, beforeDelete func(Result) error) (bool, error) {

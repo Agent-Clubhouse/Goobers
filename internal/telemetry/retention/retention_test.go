@@ -53,7 +53,7 @@ func TestPruneAppliesBothBoundsProtectsLiveRunsAndRebuilds(t *testing.T) {
 		}
 	}
 
-	results, err := Prune(layout, db, Policy{Window: 30 * 24 * time.Hour, MaxRuns: 3}, Options{Now: now})
+	results, _, err := Prune(layout, db, Policy{Window: 30 * 24 * time.Hour, MaxRuns: 3}, Options{Now: now})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 		}
 	}
 
-	results, err := Prune(
+	results, _, err := Prune(
 		layout,
 		db,
 		Policy{Window: 24 * time.Hour, MaxRuns: 500},
@@ -206,7 +206,7 @@ func TestPruneRejectsSchemaOnlyFutureJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Prune(
+	_, _, err = Prune(
 		layout,
 		db,
 		Policy{Window: 24 * time.Hour, MaxRuns: 500},
@@ -261,7 +261,7 @@ func TestPrunePreflightsAllStagedJournalSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Prune(
+	_, _, err = Prune(
 		layout,
 		db,
 		Policy{Window: 24 * time.Hour, MaxRuns: 500},
@@ -295,7 +295,7 @@ func TestPruneRestoresJournalWhenRollupDeletionFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now}); err == nil {
+	if _, _, err := Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now}); err == nil {
 		t.Fatal("Prune succeeded with a closed rollup")
 	}
 	if _, err := os.Stat(runDir); err != nil {
@@ -328,7 +328,7 @@ func TestPruneCustodyFailurePreservesJournalAndClearsReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	failure := errors.New("custody acknowledgment unavailable")
-	_, err = Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now, BeforeDelete: func(result Result) error {
+	_, _, err = Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now, BeforeDelete: func(result Result) error {
 		if result.RunDir != runDir {
 			t.Errorf("candidate=%+v", result)
 		}
@@ -384,7 +384,7 @@ func TestPruneFinishesPartiallyRemovedStagedJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Prune(layout, db, Policy{Window: 365 * 24 * time.Hour, MaxRuns: 500}, Options{Now: now}); err != nil {
+	if _, _, err := Prune(layout, db, Policy{Window: 365 * 24 * time.Hour, MaxRuns: 500}, Options{Now: now}); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 	if _, err := os.Stat(staged); !os.IsNotExist(err) {
@@ -427,7 +427,7 @@ func TestPruneSerializesWithInFlightIngestion(t *testing.T) {
 	}()
 	waitForRunLock(t, runDir)
 
-	results, err := Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now})
+	results, _, err := Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now})
 	if err != nil {
 		t.Fatalf("Prune while ingesting: %v", err)
 	}
@@ -447,7 +447,7 @@ func TestPruneSerializesWithInFlightIngestion(t *testing.T) {
 	}
 	assertRollupRunIDs(t, db, "ingest-race")
 
-	results, err = Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now})
+	results, _, err = Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now})
 	if err != nil {
 		t.Fatalf("Prune after ingesting: %v", err)
 	}

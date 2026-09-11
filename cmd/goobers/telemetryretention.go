@@ -24,6 +24,23 @@ const telemetryRetentionSweepInterval = 6 * time.Hour
 // nothing — for this long before real enforcement begins.
 const telemetryRetentionGraceWindow = 7 * 24 * time.Hour
 
+// telemetryRetentionLargeFirstEnforceFraction is #4824's second safety net,
+// on top of the timed grace window above: even after the grace window has
+// elapsed, a FIRST real enforcement pass that would prune more than this
+// fraction of an instance's current run history stays dry-run instead of
+// proceeding automatically. The timed window alone is fine for a handful of
+// stale runs beyond policy — that is exactly what it exists to let an
+// operator notice and, if they disagree, react to. It is not fine for
+// wiping the bulk of an instance's history on a stock config nobody typed
+// (the reported case: 96.4% of history queued for deletion because
+// DefaultTelemetryRetentionMaxRuns binds in ~33 hours at production run
+// rates, long before the documented 90-day window ever would). Once a real
+// enforcement pass has actually run once without hitting this gate, later
+// passes never need it again — a policy that has already deleted anything
+// for real has already been exercised, whether or not this instance
+// happened to start under it.
+const telemetryRetentionLargeFirstEnforceFraction = 0.5
+
 // telemetryRetentionStateFile names the durable marker
 // pruneConfiguredTelemetryRetention reads and rewrites on every pass, kept
 // under SchedulerDir alongside the daemon's other operational state (e.g.
@@ -52,6 +69,23 @@ type telemetryRetentionState struct {
 	LastPassDryRun bool      `json:"lastPassDryRun"`
 	CandidateCount int       `json:"candidateCount"`
 	PrunedCount    int       `json:"prunedCount"`
+	// TotalRuns/OldestRetainedAt are the last pass's full picture (#4824):
+	// how many runs exist in total, and how far back history would actually
+	// reach if the policy enforced right now — `goobers status` reads these
+	// to print the effective cutoff age, not only a raw candidate count.
+	TotalRuns        int       `json:"totalRuns,omitempty"`
+	OldestRetainedAt time.Time `json:"oldestRetainedAt,omitempty"`
+	// EnforceAcknowledged records that a real enforcement pass has actually
+	// run for this instance at least once. Until it has, a pass that would
+	// prune more than telemetryRetentionLargeFirstEnforceFraction of current
+	// history stays dry-run regardless of whether the timed grace window has
+	// elapsed — see that constant's doc comment.
+	EnforceAcknowledged bool `json:"enforceAcknowledged,omitempty"`
+	// LargeFirstEnforceBlocked reports that the pass just recorded was held
+	// dry specifically by the large-first-enforcement gate (as opposed to
+	// the ordinary timed grace window) — status uses this to explain why
+	// enforcement has not started even though EnforceAt is already past.
+	LargeFirstEnforceBlocked bool `json:"largeFirstEnforceBlocked,omitempty"`
 }
 
 func telemetryRetentionStatePath(layout instance.Layout) string {
@@ -96,10 +130,10 @@ func pruneTelemetryRetention(
 	db *rollup.DB,
 	now time.Time,
 	dryRun bool,
-) ([]retention.Result, error) {
+) ([]retention.Result, retention.Summary, error) {
 	window, err := config.WindowDuration()
 	if err != nil {
-		return nil, err
+		return nil, retention.Summary{}, err
 	}
 	policy := retention.Policy{Window: window, MaxRuns: config.MaxRunLimit()}
 
@@ -107,18 +141,24 @@ func pruneTelemetryRetention(
 	if !dryRun && db == nil {
 		db, err = rollup.Open(layout.TelemetryDB())
 		if err != nil {
-			return nil, err
+			return nil, retention.Summary{}, err
 		}
 		ownedDB = true
 	}
 	if ownedDB {
 		defer func() { _ = db.Close() }()
 	}
-	guard, closeGuard, err := openTriggerPruneGuard(layout, dryRun, now)
+	triggerGuard, closeTriggerGuard, err := openTriggerPruneGuard(layout, dryRun, now)
 	if err != nil {
-		return nil, err
+		return nil, retention.Summary{}, err
 	}
-	defer closeGuard()
+	defer closeTriggerGuard()
+	recoveryGuard, closeRecoveryGuard, err := openRecoveryCustodyPruneGuard(layout, dryRun)
+	if err != nil {
+		return nil, retention.Summary{}, err
+	}
+	defer closeRecoveryGuard()
+	guard := combineBeforeDeleteGuards(triggerGuard, recoveryGuard)
 	return retention.Prune(layout, db, policy, retention.Options{Now: now, DryRun: dryRun, BeforeDelete: guard})
 }
 
@@ -159,9 +199,33 @@ func pruneConfiguredTelemetryRetention(
 	// actually starting the window the first time it finds real candidates.
 	dryRun = !immediate && (withinGrace || state.EnforceAt.IsZero())
 
-	results, err = pruneTelemetryRetention(layout, config, db, now, dryRun)
-	if err != nil {
-		return nil, dryRun, err
+	// #4824's second safety net: even once the timed grace window has fully
+	// elapsed, a pass that has never actually enforced for real on this
+	// instance runs a cheap dry precheck first. If enforcing now would prune
+	// more than telemetryRetentionLargeFirstEnforceFraction of current run
+	// history, stay dry-run and use the precheck's own results — an operator
+	// who has not reviewed the config gets one more chance to notice before
+	// most of their history disappears, on top of (not instead of) the timed
+	// window above.
+	largeFirstEnforceBlocked := false
+	var summary retention.Summary
+	if !dryRun && !immediate && !state.EnforceAcknowledged {
+		precheckResults, precheckSummary, precheckErr := pruneTelemetryRetention(layout, config, db, now, true)
+		if precheckErr != nil {
+			return nil, dryRun, precheckErr
+		}
+		if precheckSummary.TotalRuns > 0 &&
+			float64(len(precheckResults)) > float64(precheckSummary.TotalRuns)*telemetryRetentionLargeFirstEnforceFraction {
+			dryRun = true
+			largeFirstEnforceBlocked = true
+			results, summary = precheckResults, precheckSummary
+		}
+	}
+	if results == nil && !largeFirstEnforceBlocked {
+		results, summary, err = pruneTelemetryRetention(layout, config, db, now, dryRun)
+		if err != nil {
+			return nil, dryRun, err
+		}
 	}
 
 	if dryRun && !immediate && state.EnforceAt.IsZero() && len(results) > 0 {
@@ -171,8 +235,12 @@ func pruneConfiguredTelemetryRetention(
 	state.LastPassAt = now
 	state.LastPassDryRun = dryRun
 	state.CandidateCount = len(results)
+	state.TotalRuns = summary.TotalRuns
+	state.OldestRetainedAt = summary.OldestRetainedStartedAt
+	state.LargeFirstEnforceBlocked = largeFirstEnforceBlocked
 	if !dryRun {
 		state.PrunedCount = len(results)
+		state.EnforceAcknowledged = true
 	}
 	if err := writeTelemetryRetentionState(layout, state); err != nil {
 		return results, dryRun, err
