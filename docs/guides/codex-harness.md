@@ -46,7 +46,8 @@ file tools. Goobers therefore fails closed when a Codex goober declares a
 non-empty `tools` list instead of silently exposing omitted tools. Use
 `tools: []` only when unrestricted Codex built-ins are acceptable within the
 configured sandbox. MCP-specific allowlists remain supported by Codex, but a
-Goobers-wide restrictive tool declaration is not.
+separate MCP-only allowlist is not exposed by Goobers; any non-empty
+`spec.tools` declaration is rejected.
 
 Because the shipped quickstart templates declare `tools: [shell]`, they cannot
 be seeded with `--harness codex`; author the Codex goober explicitly.

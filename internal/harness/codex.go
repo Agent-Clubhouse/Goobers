@@ -151,7 +151,7 @@ func buildCodexArgv(baseCommand []string, model, effort, workspace string, shell
 		"-c", "project_root_markers=[]",
 		"-c", `web_search="disabled"`,
 		"-c", "sandbox_workspace_write.network_access=false",
-		"-c", `shell_environment_policy.inherit="all"`,
+		"-c", `shell_environment_policy.inherit="core"`,
 		"-c", "shell_environment_policy.ignore_default_excludes=false",
 		"-c", "shell_environment_policy.include_only="+tomlStringArray(shellEnvNames),
 	)
@@ -483,7 +483,7 @@ func codexShellEnvironmentNames(env, excluded []string) []string {
 	for _, entry := range env {
 		name, _, ok := strings.Cut(entry, "=")
 		normalized := strings.ToUpper(name)
-		if !ok || name == "" || deny[normalized] || seen[normalized] {
+		if !ok || name == "" || deny[normalized] || !codexShellCoreEnvironment[normalized] || seen[normalized] {
 			continue
 		}
 		seen[normalized] = true
@@ -491,6 +491,18 @@ func codexShellEnvironmentNames(env, excluded []string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+var codexShellCoreEnvironment = map[string]bool{
+	"PATH": true, "PATHEXT": true, "SHELL": true, "COMSPEC": true,
+	"SYSTEMROOT": true, "WINDIR": true, "SYSTEMDRIVE": true,
+	"USERNAME": true, "USERDOMAIN": true, "USERPROFILE": true,
+	"HOMEDRIVE": true, "HOMEPATH": true, "PROGRAMFILES": true,
+	"PROGRAMFILES(X86)": true, "PROGRAMW6432": true, "PROGRAMDATA": true,
+	"LOCALAPPDATA": true, "APPDATA": true, "HOME": true, "LOGNAME": true,
+	"USER": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true,
+	"TERM": true, "TMPDIR": true, "TEMP": true, "TMP": true, "TZ": true,
+	"POWERSHELL": true, "PWSH": true, "__CF_USER_TEXT_ENCODING": true,
 }
 
 type codexJSONLCapture struct {

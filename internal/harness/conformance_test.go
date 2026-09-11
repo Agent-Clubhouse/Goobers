@@ -46,7 +46,6 @@ type conformanceAdapter struct {
 	toolExcluded                string
 	restrictiveToolsUnsupported bool
 	mcpCredentialEnv            string
-	isolatesMCPEnvironments     bool
 
 	// Isolation dimension (e): the env var this adapter redirects to
 	// isolate ambient user config from a run, and whether that redirection
@@ -117,7 +116,6 @@ func conformanceAdapters() []conformanceAdapter {
 			stub:                        func(t *testing.T) {},
 			restrictiveToolsUnsupported: true,
 			mcpCredentialEnv:            "CONTEXT_TOKEN=context-secret",
-			isolatesMCPEnvironments:     true,
 			isolationEnvVar:             "CODEX_HOME",
 			isolationUnconditional:      true,
 		},
@@ -258,12 +256,6 @@ func TestConformanceMCPServersRejectCredentialExposureToLocalSibling(t *testing.
 					},
 				},
 			})
-			if ca.isolatesMCPEnvironments {
-				if err != nil {
-					t.Fatalf("Run: %v", err)
-				}
-				return
-			}
 			if err == nil || !strings.Contains(err.Error(), `local stdio server "local-context" cannot isolate credential "mcp:vendor-api"`) {
 				t.Fatalf("Run error = %v, want local credential-isolation rejection", err)
 			}

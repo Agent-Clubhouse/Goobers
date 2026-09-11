@@ -266,7 +266,7 @@ func TestValidateForHarness(t *testing.T) {
 // AC3: the shared-process-environment credential-isolation rejection applies
 // to harnesses whose stdio MCP servers inherit one parent environment.
 func TestValidateForHarnessRejectsCredentialExposureToLocalSibling(t *testing.T) {
-	for _, harness := range []apiv1.Harness{apiv1.HarnessCopilot, apiv1.HarnessClaudeCode} {
+	for _, harness := range []apiv1.Harness{apiv1.HarnessCopilot, apiv1.HarnessClaudeCode, apiv1.HarnessCodex} {
 		t.Run(string(harness), func(t *testing.T) {
 			credential := apiv1.MCPCredentialRef{
 				Kind:   apiv1.MCPCredentialKindBYO,
@@ -295,15 +295,4 @@ func TestValidateForHarnessRejectsCredentialExposureToLocalSibling(t *testing.T)
 		})
 	}
 
-	servers := []apiv1.MCPServer{
-		{Name: "local-context", Command: "context-server"},
-		{Name: "vendor-context", URL: "https://vendor.example.test/mcp", CredentialRefs: []apiv1.MCPCredentialRef{{
-			Kind:   apiv1.MCPCredentialKindBYO,
-			Ref:    "vendor-api",
-			Header: "Authorization",
-		}}},
-	}
-	if err := ValidateForHarness(apiv1.HarnessCodex, servers, nil, nil); err != nil {
-		t.Fatalf("Codex isolates stdio MCP environments: %v", err)
-	}
 }

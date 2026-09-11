@@ -209,12 +209,12 @@ func TestCodexAdapterMaterializesScopedMCPConfig(t *testing.T) {
 	}
 	command := strings.Join(runner.lastReq.Command, "\n")
 	if !strings.Contains(command, `shell_environment_policy.include_only=`) ||
-		!strings.Contains(command, `"SAFE_TOOLCHAIN_VAR"`) {
-		t.Fatalf("shell environment policy did not preserve ordinary variables:\n%s", command)
+		!strings.Contains(command, `shell_environment_policy.inherit="core"`) {
+		t.Fatalf("shell environment policy is not restricted to core variables:\n%s", command)
 	}
-	for _, secretName := range []string{"TEST_CONTEXT_TOKEN", "CONTEXT_TOKEN", "CODEX_API_KEY"} {
-		if strings.Contains(command, `"`+secretName+`"`) {
-			t.Fatalf("shell environment policy exposed credential variable %q:\n%s", secretName, command)
+	for _, excludedName := range []string{"SAFE_TOOLCHAIN_VAR", "TEST_CONTEXT_TOKEN", "CONTEXT_TOKEN", "CODEX_API_KEY"} {
+		if strings.Contains(command, `"`+excludedName+`"`) {
+			t.Fatalf("shell environment policy exposed non-core or credential variable %q:\n%s", excludedName, command)
 		}
 	}
 	if err := mcpconfig.ValidateForHarness(apiv1.HarnessCodex, []apiv1.MCPServer{{

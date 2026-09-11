@@ -47,16 +47,6 @@ they use, and authenticated as the same macOS user that will run Goobers:
   claude auth login
   ```
 
-- OpenAI Codex CLI for manually authored `harness: codex` goobers:
-
-  ```text
-  npm install -g @openai/codex
-  ```
-
-  Codex requires an OpenAI API key through `agent:model` and cannot currently
-  enforce the quickstart template's restrictive tool list; see
-  [Codex harness](codex-harness.md).
-
 Homebrew uses `/opt/homebrew/bin` on Apple silicon and `/usr/local/bin` on
 Intel. A launchd service does not read shell startup files, so include the
 appropriate path in its configured `PATH`.
