@@ -280,6 +280,74 @@ func TestRunAgentProgressDropsLateProgressFromOlderPod(t *testing.T) {
 	}
 }
 
+func TestRunAgentProgressPreservesOlderAttemptsAcrossPodHandoff(t *testing.T) {
+	root := t.TempDir()
+	layout := instance.NewLayout(root)
+	const runID = "test-agent-progress-pod-handoff"
+
+	j, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID:           runID,
+		Workflow:        "implementation",
+		WorkflowVersion: 1,
+		Gaggle:          "goobers",
+		Trigger:         journal.Trigger{Kind: journal.TriggerItem, Ref: "3771"},
+		StartedAt:       time.Now(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("journal.Create: %v", err)
+	}
+
+	now := time.Now().UTC()
+	events := []journal.Event{
+		{Type: journal.EventAgentLifecycle, Runner: map[string]any{"emitKey": "pod/1/agent.lifecycle"}, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 1, Worker: true, Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+			Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentProgress, Runner: map[string]any{"emitKey": "pod/1/agent.progress"}, Progress: &journal.AgentProgress{
+			Schema: "goobers.dev/journal/agent-progress/v1", AgentID: "worker-1", RunID: runID,
+			Stage: "implement", Attempt: 1, Kind: journal.AgentProgressSummary,
+			Source: journal.AgentProgressSourceModel, OccurredAt: now.Add(time.Minute),
+			Summary: "Attempt one summary",
+		}},
+		{Type: journal.EventAgentLifecycle, Runner: map[string]any{"emitKey": "pod/2/agent.lifecycle"}, Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: runID, Stage: "implement",
+			Attempt: 2, Worker: true, Lifecycle: journal.AgentResumed, StartedAt: now.Add(2 * time.Minute),
+			UpdatedAt: now.Add(2 * time.Minute), Fidelity: journal.AgentFidelityFull,
+		}},
+		{Type: journal.EventAgentProgress, Runner: map[string]any{"emitKey": "pod/2/agent.progress"}, Progress: &journal.AgentProgress{
+			Schema: "goobers.dev/journal/agent-progress/v1", AgentID: "worker-1", RunID: runID,
+			Stage: "implement", Attempt: 2, Kind: journal.AgentProgressProgress,
+			Source: journal.AgentProgressSourceModel, OccurredAt: now.Add(3 * time.Minute),
+			Progress: []string{"Attempt two progress"},
+		}},
+	}
+	for _, event := range events {
+		if err := j.Append(event); err != nil {
+			t.Fatalf("Append %s: %v", event.Type, err)
+		}
+	}
+	_ = j.Close()
+
+	reads, err := NewOfflineRuns(layout)
+	if err != nil {
+		t.Fatalf("NewOfflineRuns: %v", err)
+	}
+	progress, err := reads.RunAgentProgress(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunAgentProgress: %v", err)
+	}
+	if len(progress) != 2 {
+		t.Fatalf("summaries = %d, want both attempts retained", len(progress))
+	}
+	if progress[0].Attempt != 1 || len(progress[0].History) != 1 || progress[0].History[0].Summary != "Attempt one summary" {
+		t.Fatalf("attempt 1 summary = %#v", progress[0])
+	}
+	if progress[1].Attempt != 2 || len(progress[1].History) != 1 || progress[1].History[0].Progress[0] != "Attempt two progress" {
+		t.Fatalf("attempt 2 summary = %#v", progress[1])
+	}
+}
+
 func TestRunAgentProgressKeepsNestedGrandchildren(t *testing.T) {
 	root := t.TempDir()
 	layout := instance.NewLayout(root)

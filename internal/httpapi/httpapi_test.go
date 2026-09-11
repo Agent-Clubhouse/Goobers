@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
@@ -480,6 +481,115 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 		response.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("transcript headers = %+v", response.Header())
 	}
+}
+
+func TestRunDiagnosticRoutesSerializeStructuredProgress(t *testing.T) {
+	now := time.Date(2026, 9, 10, 1, 2, 3, 0, time.UTC)
+	progress := journal.AgentProgress{
+		Schema:     "goobers.dev/journal/agent-progress/v1",
+		AgentID:    "worker-1",
+		RunID:      "run-1",
+		Stage:      "implement",
+		Attempt:    2,
+		Sequence:   11,
+		Kind:       journal.AgentProgressDecision,
+		Source:     journal.AgentProgressSourceModel,
+		OccurredAt: now,
+		UpdatedAt:  now,
+		Fidelity:   journal.AgentFidelityPartial,
+		Decision:   "Use the captured patch",
+		Evidence: []journal.AgentProgressEvidence{{
+			Type:  "artifact",
+			ID:    "diff-1",
+			Label: "Recovered diff",
+		}},
+	}
+	reader := &fakeReader{
+		run: readservice.RunDetail{
+			RunSummary:  readservice.RunSummary{ID: "run-1"},
+			GraphStatus: "pinned",
+			AgentProgress: []readservice.AgentProgressSummary{{
+				AgentID:  "worker-1",
+				RunID:    "run-1",
+				Stage:    "implement",
+				Attempt:  2,
+				Role:     "worker",
+				Worker:   true,
+				Fidelity: journal.AgentFidelityPartial,
+				Current: &readservice.AgentCurrentStatus{
+					Source:    "progress",
+					Sequence:  progress.Sequence,
+					Kind:      progress.Kind,
+					Summary:   "Use the captured patch",
+					UpdatedAt: now,
+				},
+				Latest:  &progress,
+				History: []journal.AgentProgress{progress},
+			}},
+		},
+		events: readservice.EventList{
+			RunID: "run-1",
+			Events: []readservice.RunEvent{{
+				Schema:      journal.EventSchema,
+				Seq:         progress.Sequence,
+				Type:        journal.EventAgentProgress,
+				KnownSchema: true,
+				Stage:       "implement",
+				Attempt:     2,
+				Progress:    &progress,
+			}},
+		},
+	}
+	handler, err := NewHandler(reader, AllowAll, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("run detail", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, RunsPath+"/run-1", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+		}
+		var got readservice.RunDetail
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatalf("decode run detail: %v", err)
+		}
+		if len(got.AgentProgress) != 1 {
+			t.Fatalf("agent progress = %#v", got.AgentProgress)
+		}
+		card := got.AgentProgress[0]
+		if card.Current == nil || card.Current.Source != "progress" || card.Current.Kind != journal.AgentProgressDecision {
+			t.Fatalf("current status = %#v", card.Current)
+		}
+		if card.Latest == nil || card.Latest.Source != journal.AgentProgressSourceModel || len(card.Latest.Evidence) != 1 || card.Latest.Evidence[0].ID != "diff-1" {
+			t.Fatalf("latest progress = %#v", card.Latest)
+		}
+		if len(card.History) != 1 || card.History[0].Sequence != progress.Sequence {
+			t.Fatalf("history = %#v", card.History)
+		}
+	})
+
+	t.Run("run events", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, RunsPath+"/run-1/events", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+		}
+		var got readservice.EventList
+		if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+			t.Fatalf("decode run events: %v", err)
+		}
+		if len(got.Events) != 1 || got.Events[0].Progress == nil {
+			t.Fatalf("events = %#v", got.Events)
+		}
+		if got.Events[0].Progress.Sequence != progress.Sequence || got.Events[0].Progress.Source != journal.AgentProgressSourceModel {
+			t.Fatalf("event progress = %#v", got.Events[0].Progress)
+		}
+		if got.Events[0].Progress.Decision != "Use the captured patch" || len(got.Events[0].Progress.Evidence) != 1 {
+			t.Fatalf("event decision payload = %#v", got.Events[0].Progress)
+		}
+	})
 }
 
 func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
