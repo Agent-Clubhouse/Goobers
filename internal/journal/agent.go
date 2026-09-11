@@ -78,6 +78,8 @@ type AgentProvenance struct {
 // intent or observed fact, never hidden private reasoning.
 type AgentProgressKind string
 
+// Agent progress kinds surface the bounded operator-facing summaries a harness
+// may emit for one agent invocation.
 const (
 	AgentProgressPlan       AgentProgressKind = "plan"
 	AgentProgressProgress   AgentProgressKind = "progress"
@@ -91,18 +93,24 @@ const (
 // AgentProgressSource classifies how an operator-readable status was emitted.
 type AgentProgressSource string
 
+// Agent progress sources describe whether a status came from native adapter
+// telemetry, an explicit model summary, or evidence-derived projection.
 const (
 	AgentProgressSourceNative   AgentProgressSource = "native"
 	AgentProgressSourceModel    AgentProgressSource = "model"
 	AgentProgressSourceEvidence AgentProgressSource = "evidence"
 )
 
+// Agent progress emission and history bounds are independent from transcript
+// limits because progress is a separate operator-facing surface.
 const (
 	AgentProgressRateLimitWindow = time.Minute
 	AgentProgressRateLimitMax    = 32
 	AgentProgressRetainedHistory = 64
 )
 
+// ErrAgentProgressRateLimited reports progress emission beyond the per-agent
+// durable rate limit window.
 var ErrAgentProgressRateLimited = errors.New("journal: nested-agent progress emission rate exceeded")
 
 // AgentProgress is a bounded, resumable, operator-readable status update for a
