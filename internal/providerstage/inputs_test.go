@@ -9,7 +9,7 @@ import (
 )
 
 func TestBacklogQueryInputsDeclareCurrentAndRetiredSchema(t *testing.T) {
-	inputs := Inputs("backlog-query")
+	inputs := knownInputSchema(t, "backlog-query", "3.0")
 	for _, input := range inputs {
 		if input.Type == "" {
 			t.Errorf("input %q has no type", input.Name)
@@ -53,7 +53,7 @@ func TestBuiltInCommandsHaveInputSchemas(t *testing.T) {
 func TestEveryBuiltInSchemaIncludesExecutorInputs(t *testing.T) {
 	for _, command := range builtincmd.Names() {
 		for _, name := range []string{"maxOutputBytes", "timeout"} {
-			if !slices.ContainsFunc(Inputs(command), func(input Input) bool { return input.Name == name }) {
+			if !slices.ContainsFunc(knownInputSchema(t, command, "3.0"), func(input Input) bool { return input.Name == name }) {
 				t.Errorf("effective schema for %q lacks executor-wide input %q", command, name)
 			}
 		}
@@ -64,7 +64,7 @@ func TestProviderInputSchemasAreWellFormed(t *testing.T) {
 	for command := range inputSchemas {
 		for _, version := range []string{"2.0", "3.0"} {
 			seen := map[string]bool{}
-			for _, input := range InputsForVersion(command, version) {
+			for _, input := range knownInputSchema(t, command, version) {
 				if strings.TrimSpace(input.Name) == "" || input.Type == "" {
 					t.Errorf("%s at DSL %s has incomplete input metadata: %+v", command, version, input)
 				}
@@ -89,18 +89,18 @@ func TestProviderInputSchemasAreWellFormed(t *testing.T) {
 	}
 }
 
-func TestInputsReturnsCopyAndUnknownCommandIsOpen(t *testing.T) {
-	first := Inputs("backlog-query")
+func TestInputSchemaForVersionReturnsCopyAndUnknownCommandIsOpen(t *testing.T) {
+	first := knownInputSchema(t, "backlog-query", "3.0")
 	first[0].Name = "mutated"
-	if got := Inputs("backlog-query")[0].Name; got == "mutated" {
-		t.Fatal("Inputs returned mutable registry storage")
+	if got := knownInputSchema(t, "backlog-query", "3.0")[0].Name; got == "mutated" {
+		t.Fatal("InputSchemaForVersion returned mutable registry storage")
 	}
-	if got := Inputs("unknown"); got != nil {
-		t.Fatalf("Inputs(unknown) = %v, want nil", got)
+	if got, known := InputSchemaForVersion("unknown", "3.0"); known || got != nil {
+		t.Fatalf("InputSchemaForVersion(unknown) = (%v, %t), want (nil, false)", got, known)
 	}
 }
 
-func TestInputsForVersionHonorsDSLWindow(t *testing.T) {
+func TestInputSchemaForVersionHonorsDSLWindow(t *testing.T) {
 	const command = "test-versioned-input"
 	inputSchemas[command] = []Input{
 		{Name: "baseline", Type: InputString, State: InputCurrent},
@@ -110,14 +110,23 @@ func TestInputsForVersionHonorsDSLWindow(t *testing.T) {
 	}
 	t.Cleanup(func() { delete(inputSchemas, command) })
 
-	v2 := InputsForVersion(command, "2.0")
+	v2 := knownInputSchema(t, command, "2.0")
 	if got := inputNames(v2); !slices.Equal(got, []string{"baseline", "maxOutputBytes", "timeout", "transitioned"}) || v2[3].State != InputCurrent {
 		t.Fatalf("2.0 inputs = %q", got)
 	}
-	v3 := InputsForVersion(command, "3.0")
+	v3 := knownInputSchema(t, command, "3.0")
 	if got := inputNames(v3); !slices.Equal(got, []string{"baseline", "maxOutputBytes", "timeout", "transitioned", "v3-only"}) || v3[3].State != InputRetired {
 		t.Fatalf("3.0 inputs = %q", got)
 	}
+}
+
+func knownInputSchema(t *testing.T, command, dslVersion string) []Input {
+	t.Helper()
+	inputs, known := InputSchemaForVersion(command, dslVersion)
+	if !known {
+		t.Fatalf("InputSchemaForVersion(%q, %q) reports unknown command", command, dslVersion)
+	}
+	return inputs
 }
 
 func inputNames(inputs []Input) []string {

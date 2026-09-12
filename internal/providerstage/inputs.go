@@ -260,34 +260,12 @@ func durationsIn(names ...string) []Input   { return currentInputs(InputDuration
 func stringListsIn(names ...string) []Input { return currentInputs(InputStringList, names...) }
 func pathsIn(names ...string) []Input       { return currentInputs(InputPath, names...) }
 
-// Inputs returns the declared workflow-input schema for command. The result is
-// a copy and is sorted by name so validation and authoring output stay stable.
-func Inputs(command string) []Input {
-	declared, ok := inputSchemas[command]
-	if !ok {
-		return nil
-	}
-	inputs := append([]Input(nil), declared...)
-	for _, common := range executorInputs {
-		if !slices.ContainsFunc(declared, func(input Input) bool { return input.Name == common.Name }) {
-			inputs = append(inputs, common)
-		}
-	}
-	slices.SortFunc(inputs, func(a, b Input) int { return cmp.Compare(a.Name, b.Name) })
-	return inputs
-}
-
-// InputsForVersion resolves command's declared inputs at one DSL version.
-// Unbounded entries apply to every version; bounded entries use the same
+// InputSchemaForVersion resolves command's declared inputs at one DSL version
+// and reports whether command is a known workflow-callable built-in. Unbounded
+// entries apply to every version; bounded entries use the same
 // inclusive-since/exclusive-until semantics as capability requirements.
-func InputsForVersion(command, dslVersion string) []Input {
-	inputs, _ := InputSchemaForVersion(command, dslVersion)
-	return inputs
-}
-
-// InputSchemaForVersion is InputsForVersion plus whether command is a known
-// workflow-callable built-in. Callers use ok to keep external commands open
-// while treating a built-in's declared schema as complete.
+// Callers use ok to keep external commands open while treating a built-in's
+// declared schema as complete.
 func InputSchemaForVersion(command, dslVersion string) ([]Input, bool) {
 	declared, ok := inputSchemas[command]
 	if !ok {

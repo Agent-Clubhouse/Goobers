@@ -221,5 +221,7 @@ func providerInputCallProblems(owner inputSourceOwner, call providerInputCall) [
 }
 
 func schemaHasInput(command, name string) bool {
-	return slices.ContainsFunc(Inputs(command), func(input Input) bool { return input.Name == name })
+	declared, known := inputSchemas[command]
+	return known && (slices.ContainsFunc(declared, func(input Input) bool { return input.Name == name }) ||
+		slices.ContainsFunc(executorInputs, func(input Input) bool { return input.Name == name }))
 }
