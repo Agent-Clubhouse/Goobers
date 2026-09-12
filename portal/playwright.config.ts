@@ -1,7 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const port = process.env.PORTAL_E2E_PORT ?? "4173";
-const baseURL = `http://127.0.0.1:${port}`;
+const fixturePort = process.env.PORTAL_E2E_PORT ?? "4173";
+const realPort = process.env.PORTAL_E2E_REAL_PORT ?? "4174";
+const fixtureBaseURL = `http://127.0.0.1:${fixturePort}`;
+const realBaseURL = `http://127.0.0.1:${realPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -9,18 +11,32 @@ export default defineConfig({
   fullyParallel: true,
   timeout: 20_000,
   use: {
-    baseURL,
     trace: "retain-on-failure",
   },
   projects: [
     {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      name: "fixture-chromium",
+      testIgnore: /real-daemon-smoke\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: fixtureBaseURL },
+    },
+    {
+      name: "real-daemon-chromium",
+      testMatch: /real-daemon-smoke\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], baseURL: realBaseURL },
     },
   ],
-  webServer: {
-    command: "npm run build && node e2e/fixture-daemon.mjs",
-    url: baseURL,
-    reuseExistingServer: !process.env.CI,
-  },
+  webServer: [
+    {
+      command: "node e2e/fixture-daemon.mjs",
+      url: fixtureBaseURL,
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      command: "node e2e/real-daemon.mjs",
+      env: { PORTAL_E2E_REAL_PORT: realPort },
+      url: realBaseURL,
+      reuseExistingServer: !process.env.CI,
+      timeout: 180_000,
+    },
+  ],
 });
