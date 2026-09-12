@@ -6,10 +6,11 @@ import (
 	"path/filepath"
 	"sort"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"sigs.k8s.io/yaml"
 )
 
 type ownedRunLocation struct{ dir, gaggle string }
