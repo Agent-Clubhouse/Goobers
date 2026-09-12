@@ -192,6 +192,9 @@ func newWorkerSeams(root string, store blobstore.Store) (*workerSeams, error) {
 // the #2931 dispatch canary asserts serialized envelopes against.
 func (w *workerSeams) SharedRegistry() *journal.RegistryScrubber { return w.shared }
 
+// Scrubber exposes the chain over SharedRegistry and the pattern backstop.
+func (w *workerSeams) Scrubber() journal.Scrubber { return w.scrubber }
+
 // forGaggle builds (once per config tree) the runner config for a gaggle from
 // the CURRENT tree. Agentic stages go through forPinnedGaggle instead, which
 // resolves the tree the run was admitted against (#3884); this is the
