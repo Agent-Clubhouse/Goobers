@@ -428,7 +428,7 @@ func (i Issue) Scope() string {
 			object += "/" + i.Name
 		}
 	}
-	if i.Gaggle != "" {
+	if i.Gaggle != "" && !(i.Kind == "Gaggle" && i.Name == i.Gaggle) {
 		object = "Gaggle/" + i.Gaggle + " " + object
 	}
 	switch {
@@ -1169,7 +1169,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Workflow state machine integrity.
 	for _, indexed := range ix.workflows {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
-		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview)
+		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview,
+			ix.suppressedFeatureDependents(indexed.definition)...)
 	}
 	ix.checkWorkflowsCompile(r, allowPreview)
 
@@ -1195,7 +1196,7 @@ func (ix *index) featureDefinitionsForGaggle(gaggle string) []wf.Definition {
 			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
 		})
 	}
-	return wf.FeatureDefinitionsByDSLVersion(definitions)
+	return loadableFeatureDefinitions(definitions)
 }
 
 func (ix *index) featureDefinitionsForGoober(spec apiv1.GooberSpec) []wf.Definition {
@@ -1215,7 +1216,53 @@ func (ix *index) featureDefinitionsForGoober(spec apiv1.GooberSpec) []wf.Definit
 			Name: definition.Name, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
 		})
 	}
-	return wf.FeatureDefinitionsByDSLVersion(definitions)
+	return loadableFeatureDefinitions(definitions)
+}
+
+// loadableFeatureDefinitions removes pins that have no interpreter before
+// feature checks fan them out to gaggle and goober files. The workflow-level
+// DSL diagnostic owns those root causes; reporting them again on definitions
+// with no dslVersion field sends the author to the wrong file (#4838).
+func loadableFeatureDefinitions(definitions []wf.Definition) []wf.Definition {
+	filtered := make([]wf.Definition, 0, len(definitions))
+	for _, definition := range definitions {
+		support, ok := dslSupportMatrix().Lookup(definition.DSLVersion)
+		if definition.DSLVersion == "" || !ok || support.Level == supportmatrix.LevelUnsupported {
+			continue
+		}
+		filtered = append(filtered, definition)
+	}
+	if len(definitions) > 0 && len(filtered) == 0 {
+		return nil
+	}
+	return wf.FeatureDefinitionsByDSLVersion(filtered)
+}
+
+// suppressedFeatureDependents names the definitions whose feature checks
+// would otherwise repeat an unsupported workflow pin. It is included in the
+// workflow's primary diagnostic so the suppressed consequences stay visible.
+func (ix *index) suppressedFeatureDependents(w apiv1.Workflow) []string {
+	var dependents []string
+	if w.Spec.Gaggle != "" {
+		dependents = append(dependents, "Gaggle/"+w.Spec.Gaggle)
+	}
+	for _, goober := range ix.goobers {
+		if goober.Spec.Gaggle == "" {
+			dependents = append(dependents, "Goober/"+goober.Name)
+			continue
+		}
+		if goober.Spec.Gaggle != w.Spec.Gaggle {
+			continue
+		}
+		for _, workflow := range goober.Spec.Workflows {
+			if workflow == w.Name {
+				dependents = append(dependents, "Goober/"+goober.Name)
+				break
+			}
+		}
+	}
+	sort.Strings(dependents)
+	return dependents
 }
 
 func declaredSkillPackageDirs(configRoot, gaggle, skill string) (scoped, shared string, ok bool) {
@@ -1274,23 +1321,24 @@ var dslSupportMatrix = supportmatrix.GetDSL
 // daemon load path and instance.LoadConfigDir's offline CLI path both route
 // through this same Validator.ValidateDir → crossCheck call, so neither can
 // drift from the other.
-func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPreview bool, suppressedDependents ...string) {
 	version := w.DSLVersion
+	suppressed := suppressedFeatureDiagnosticSuffix(suppressedDependents)
 	if version == "" {
 		// The §8.3 cutover (#3507): a missing dslVersion used to default to 1.4
 		// and warn; 1.4 is dropped, so this is now a hard error naming the
 		// versions the author may pin.
 		r.addCoded(ErrorMissingDSLVersion, Error, file, "Workflow", w.Name,
-			"spec has no dslVersion pin; pin an explicit dslVersion (loadable: %s) — the transitional default is gone now that DSL 1.4 is dropped",
-			strings.Join(loadableDSLVersions(), ", "))
+			"spec has no dslVersion pin; pin an explicit dslVersion (loadable: %s) — the transitional default is gone now that DSL 1.4 is dropped%s",
+			strings.Join(loadableDSLVersions(), ", "), suppressed)
 		return
 	}
 
 	support, ok := dslSupportMatrix().Lookup(version)
 	if !ok {
 		r.addCoded(ErrorUnsupportedDSLVersion, Error, file, "Workflow", w.Name,
-			"dslVersion %q is not a version this binary recognizes; known versions: %s",
-			version, strings.Join(knownDSLVersions(), ", "))
+			"dslVersion %q is not a version this binary recognizes; known versions: %s%s",
+			version, strings.Join(knownDSLVersions(), ", "), suppressed)
 		return
 	}
 
@@ -1310,11 +1358,19 @@ func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPrev
 			version, support.Replacement, support.UnsupportedAfter, support.Replacement)
 	case supportmatrix.LevelUnsupported:
 		r.addCoded(ErrorUnsupportedDSLVersion, Error, file, "Workflow", w.Name,
-			"dslVersion %q is unsupported by this binary (replacement %q); migrate with `goobers fix --to %s` before upgrading",
-			version, support.Replacement, support.Replacement)
+			"dslVersion %q is unsupported by this binary (replacement %q); migrate with `goobers fix --to %s` before upgrading%s",
+			version, support.Replacement, support.Replacement, suppressed)
 	case supportmatrix.LevelSupported:
 		// Nothing to report — the common case.
 	}
+}
+
+func suppressedFeatureDiagnosticSuffix(dependents []string) string {
+	if len(dependents) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; dependent feature checks for %s were suppressed — edit this workflow's dslVersion, not those definitions",
+		strings.Join(dependents, ", "))
 }
 
 func knownDSLVersions() []string {

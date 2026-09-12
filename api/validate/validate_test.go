@@ -2096,6 +2096,19 @@ func TestWorkflowWarningPreservesLegacyCLIRepresentation(t *testing.T) {
 	}
 }
 
+func TestIssueCLIStringDoesNotRepeatGaggleScope(t *testing.T) {
+	issue := Issue{
+		Severity: Error,
+		Gaggle:   "demo",
+		Kind:     "Gaggle",
+		Name:     "demo",
+		Message:  `DSL version "1.4" is unsupported`,
+	}
+	if got, want := issue.CLIString(), `ERROR   Gaggle/demo: DSL version "1.4" is unsupported`; got != want {
+		t.Fatalf("CLIString() = %q, want %q", got, want)
+	}
+}
+
 func TestCLIReportPreservesIssuesSliceShape(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
