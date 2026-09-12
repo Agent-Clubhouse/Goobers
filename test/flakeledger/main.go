@@ -46,7 +46,9 @@ var (
 	// runnerFlagEcho matches a normalized signature segment that is only the Go
 	// test runner repeating one of its own flags, such as `-test.shuffle
 	// <value>`. A signature made of nothing else names no failure.
-	runnerFlagEcho = regexp.MustCompile(`^-test\.[A-Za-z0-9_.]+(?:[= ]\S+)?$`)
+	runnerFlagEcho  = regexp.MustCompile(`^-test\.[A-Za-z0-9_.]+(?:[= ]\S+)?$`)
+	packageSummary  = regexp.MustCompile(`^ok\s+\S+\s+\S+(?:\s+coverage:\s+\d+(?:\.\d+)?%\s+of statements)?$`)
+	coverageSummary = regexp.MustCompile(`^coverage:\s+\d+(?:\.\d+)?%\s+of statements$`)
 )
 
 type options struct {
@@ -372,7 +374,7 @@ func indexIssues(items []providers.WorkItem) (map[string]providers.WorkItem, err
 func distinguishingSignature(signature string) bool {
 	for _, segment := range strings.Split(signature, "|") {
 		segment = strings.TrimSpace(segment)
-		if segment == "" || runnerFlagEcho.MatchString(segment) {
+		if segment == "" || runnerFlagEcho.MatchString(segment) || packageSummary.MatchString(segment) || coverageSummary.MatchString(segment) {
 			continue
 		}
 		return true

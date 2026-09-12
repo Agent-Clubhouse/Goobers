@@ -24,6 +24,21 @@ type fakeLedgerProvider struct {
 	comments      map[string][]providers.Comment
 }
 
+func TestDistinguishingSignatureRejectsOnlyRunnerAndPackageSummaries(t *testing.T) {
+	for _, signature := range []string{
+		"coverage: 89.7% of statements",
+		"ok github.com/goobers/goobers/internal/bootstrap 120.228s coverage: 89.7% of statements",
+		"-test.shuffle=<value> | coverage: 89.7% of statements | ok example/pkg 1.2s",
+	} {
+		if distinguishingSignature(signature) {
+			t.Errorf("distinguishingSignature(%q) = true, want false", signature)
+		}
+	}
+	if !distinguishingSignature("start Temporal dev server: context deadline exceeded | coverage: 89.7% of statements") {
+		t.Fatal("underlying failure was rejected with its coverage summary")
+	}
+}
+
 func (f *fakeLedgerProvider) EnsureWorkItemLabels(
 	_ context.Context,
 	_ providers.RepositoryRef,

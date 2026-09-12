@@ -30,6 +30,8 @@ var (
 	// there is a seed or a limit the harness chose for this run, not anything
 	// that distinguishes one failure from another.
 	volatileTestFlagValue = regexp.MustCompile(`(-test\.[A-Za-z0-9_.]+)([= ])\d[^\s]*`)
+	packageSummary        = regexp.MustCompile(`^ok\s+\S+\s+\S+(?:\s+coverage:\s+\d+(?:\.\d+)?%\s+of statements)?$`)
+	coverageSummary       = regexp.MustCompile(`^coverage:\s+\d+(?:\.\d+)?%\s+of statements$`)
 )
 
 // NormalizeSignature removes volatile values while retaining the assertion,
@@ -148,6 +150,9 @@ func normalizeRaceSignature(lines []string) (string, bool) {
 
 func failureBoilerplate(line string) bool {
 	if line == "" {
+		return true
+	}
+	if packageSummary.MatchString(line) || coverageSummary.MatchString(line) {
 		return true
 	}
 	for _, prefix := range []string{
