@@ -5,6 +5,7 @@ import test from "node:test";
 import { lintInnerHTMLAssignments } from "./innerhtml-lint.mjs";
 import {
     formatRunDetailTime,
+    renderTelemetryInsights,
     renderCausalDiagnosis,
     renderExecutionWaterfall,
     renderHtml,
@@ -225,4 +226,87 @@ test("the browser script receives the escaping helpers, not raw interpolation", 
     assert.ok(!page.includes('"<td>" + (r.workflow || "")'), "raw workflow interpolation still present");
     assert.ok(!page.includes('"<td><code>" + runId'), "raw runId interpolation still present");
     assert.doesNotMatch(page, /\+\s*r\.[A-Za-z_$]/, "raw run-detail interpolation still present");
+});
+
+// #4892's escaping rewrite added a linked/unlinked fork at every association
+// and left the unlinked side untested, which dropped branch coverage below the
+// ratchet. These cover the fallback halves: the branch taken when there is no
+// safe URL to link to is exactly the one that must still escape its label.
+
+test("operator panel falls back to plain labels when no safe ref exists", () => {
+    const html = renderOperatorPanel(
+        {
+            issue: { number: 42, title: "<script>alert(1)</script>" },
+            pullRequest: { number: 7, title: "PR <b>title</b>" },
+        },
+        [],
+    );
+    assert.match(html, /#42/);
+    assert.doesNotMatch(html, /<a href=/);
+    // The unlinked path must still escape — it is the branch an attacker
+    // reaches by simply not supplying a resolvable URL.
+    assert.match(html, /&lt;script&gt;/);
+    assert.doesNotMatch(html, /<script>alert/);
+});
+
+test("operator panel links an issue and pull request when refs resolve", () => {
+    const html = renderOperatorPanel(
+        {
+            issue: { number: 42, title: "Issue title" },
+            pullRequest: { number: 7, title: "PR title", url: "https://example.com/pull/7" },
+        },
+        [
+            { id: "42", kind: "issue", url: "https://example.com/issues/42" },
+        ],
+    );
+    assert.match(html, /href="https:\/\/example\.com\/issues\/42"/);
+    assert.match(html, /rel="noopener noreferrer"/);
+});
+
+test("operator panel renders an escaped pull request description", () => {
+    const html = renderOperatorPanel({
+        pullRequest: { number: 7, title: "PR" },
+        pullRequestBody: "body with <img src=x onerror=1>",
+    });
+    assert.match(html, /Pull request description/);
+    assert.match(html, /&lt;img/);
+    assert.doesNotMatch(html, /<img src=x/);
+});
+
+test("execution waterfall reports absence rather than rendering an empty chart", () => {
+    assert.match(renderExecutionWaterfall({}), /No execution waterfall is available yet/);
+    assert.match(renderExecutionWaterfall({ attempts: [] }), /No execution waterfall is available yet/);
+});
+
+test("run event items add a transcript link only for transcript events", () => {
+    const withTranscript = renderRunEventItems(
+        [{ name: "Agent transcript", seq: 3 }],
+        "src",
+        "run-1",
+    );
+    assert.match(withTranscript, /run-transcript\?source=src/);
+    assert.match(withTranscript, /seq=3/);
+
+    const withoutTranscript = renderRunEventItems([{ name: "build", seq: 4 }], "src", "run-1");
+    assert.doesNotMatch(withoutTranscript, /run-transcript/);
+});
+
+// formatDuration's sub-second branch: a run that finishes in under a second
+// renders milliseconds rather than a rounded "0s", which is the difference
+// between a useful number and one that reads as "instant".
+test("telemetry insights render sub-second durations in milliseconds", () => {
+    const html = renderTelemetryInsights({
+        startedAt: "2026-08-28T10:00:00.000Z",
+        finishedAt: "2026-08-28T10:00:00.250Z",
+    });
+    assert.match(html, /250ms/);
+    assert.doesNotMatch(html, /Run duration<\/div><div class="value">0s/);
+});
+
+test("telemetry insights render multi-second durations in seconds", () => {
+    const html = renderTelemetryInsights({
+        startedAt: "2026-08-28T10:00:00Z",
+        finishedAt: "2026-08-28T10:00:12Z",
+    });
+    assert.match(html, /12s/);
 });
