@@ -54,6 +54,7 @@ retention:
   dryRun: true
   maxRetainedWorktreeBytes: 1048576
   retainedWorktreeMaxAge: 72h
+  journalGraceAge: 48h
 notifications: true
 speech:
   enabled: true
@@ -109,6 +110,9 @@ speech:
 
 	if got, err := cfg.Retention.RetainedWorktreeMaxAgeDuration(); err != nil || got != 72*time.Hour {
 		t.Fatalf("RetainedWorktreeMaxAgeDuration = %s, %v; want 72h", got, err)
+	}
+	if got, err := cfg.Retention.JournalGraceAgeDuration(); err != nil || got != 48*time.Hour {
+		t.Fatalf("JournalGraceAgeDuration = %s, %v; want 48h", got, err)
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
@@ -1232,6 +1236,13 @@ func TestRetentionConfigDefaultsToOptOutPruning(t *testing.T) {
 	if got, err := zero.RetainedWorktreeMaxAgeDuration(); err != nil || got != DefaultRetainedWorktreeMaxAge {
 		t.Fatalf("default RetainedWorktreeMaxAgeDuration = %s, %v; want %s, nil", got, err, DefaultRetainedWorktreeMaxAge)
 	}
+	if got, err := zero.JournalGraceAgeDuration(); err != nil || got != DefaultJournalGraceAge {
+		t.Fatalf("default JournalGraceAgeDuration = %s, %v; want %s, nil", got, err, DefaultJournalGraceAge)
+	}
+	journalGraceOff := RetentionConfig{JournalGraceAge: "0s"}
+	if got, err := journalGraceOff.JournalGraceAgeDuration(); err != nil || got != 0 {
+		t.Fatalf(`JournalGraceAgeDuration("0s") = %s, %v; want 0, nil`, got, err)
+	}
 	if err := (&Config{Retention: zero}).Validate(); err != nil {
 		t.Fatalf("Validate(zero retention) error = %v, want nil", err)
 	}
@@ -1250,9 +1261,10 @@ func TestRetentionConfigDefaultsToOptOutPruning(t *testing.T) {
 		{MaxRetainedWorktreeBytes: -1},
 		{RetainedWorktreeMaxAge: "not-a-duration"},
 		{RetainedWorktreeMaxAge: "-1h"},
+		{JournalGraceAge: "not-a-duration"},
+		{JournalGraceAge: "-1h"},
 		// ...but turning the age rule off with no byte ceiling leaves
-		// retention enabled and enforcing nothing, which is the silent no-op
-		// this validation has always existed to refuse.
+		// retention enabled without a general retained-worktree bound.
 		{RetainedWorktreeMaxAge: "0s"},
 		{FirstEnable: "someday"},
 	} {
@@ -1274,8 +1286,9 @@ func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
 	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true)}}).Validate(); err != nil {
 		t.Fatalf("Validate(enabled, no explicit limits) error = %v, want nil now that the age default applies", err)
 	}
-	// The trap only survives if the operator explicitly turns the age rule
-	// off and sets no ceiling, which is still refused.
+	// The trap only survives if the operator explicitly turns the general age
+	// rule off and sets no ceiling, which is still refused; journal-grace only
+	// covers worktrees whose journals have disappeared.
 	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true), RetainedWorktreeMaxAge: "0s"}}).Validate(); err == nil || !strings.Contains(err.Error(), "prune nothing") {
 		t.Fatalf("Validate(enabled, age rule off, no ceiling) error = %v, want a prunes-nothing error", err)
 	}

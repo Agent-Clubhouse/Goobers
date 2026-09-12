@@ -868,56 +868,65 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 		}
 		assignedTo = strings.TrimSpace(auth.Identity)
 	}
-	opts := instance.GuidedOptions{
-		GaggleName:           guidedGaggleName(repoName),
-		DisplayName:          guidedRepositoryDisplayName(provider, repoOwner, repoProject, repoName),
-		RepoProvider:         provider,
-		RepoOwner:            repoOwner,
-		RepoProject:          repoProject,
-		RepoName:             repoName,
-		RepoBranch:           input.Branch,
-		GitHubCLIUser:        input.GitHubCLIUser,
-		RepoAuthKind:         input.AuthKind,
-		RepoTokenEnv:         input.RepoTokenEnv,
-		WorkTrackingTokenEnv: input.WorkTrackingTokenEnv,
-		PullRequestTokenEnv:  input.PullRequestTokenEnv,
-		RepoPushTokenEnv:     input.RepoPushTokenEnv,
-		Harness:              input.Harness,
-		Workflows:            append([]string(nil), input.Workflows...),
-		IssueScope:           input.IssueScope,
-		AssignedTo:           assignedTo,
-		PullRequestCI:        input.PullRequestCI,
-		CICommand:            append([]string(nil), input.CICommand...),
-		RequiredCapabilities: append([]string(nil), input.RequiredCapabilities...),
+	repository := repoOwner + "/" + repoName
+	if provider == string(providers.ProviderADO) {
+		repository = repoOwner + "/" + repoProject + "/" + repoName
 	}
-	if input.Harness == "claude-code" {
-		opts.ClaudeTokenEnv = input.OptionalModelTokenEnv
-	} else {
-		opts.CopilotTokenEnv = input.OptionalModelTokenEnv
+	argv := guidedStandardInitArgv(repository, provider, assignedTo, instancePath, input)
+	if s.allowEphemeral {
+		argv = append(argv[:1], append([]string{"--allow-ephemeral"}, argv[1:]...)...)
 	}
-	var identityBanner string
-	result, err := instance.InitGuided(instancePath, opts, func(root, id string) error {
-		identityBanner = fmt.Sprintf("Instance root: %q; instance ID: %q", canonicalStatusRoot(root), id)
-		return s.errorLog.Output(2, identityBanner)
-	})
+	result, err := s.execSync(r.Context(), argv...)
 	if err != nil {
-		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
-			Code:    "guided_init_failed",
-			Message: err.Error(),
-		})
+		writeGuidedExecFailure(w, err)
 		return
 	}
-	s.mu.Lock()
-	s.instancePath = instancePath
-	s.mu.Unlock()
+	if result.exitCode == 0 {
+		s.mu.Lock()
+		s.instancePath = instancePath
+		s.mu.Unlock()
+	}
 	writeGuidedJSON(w, http.StatusOK, guidedInitBody{
-		ExitCode: 0,
-		Stdout: identityBanner + "\n" + fmt.Sprintf(
-			"Created %d workflow module(s) in the Goobers Instance at %s.",
-			len(input.Workflows),
-			result.Root,
-		),
+		ExitCode: result.exitCode,
+		Stdout:   result.stdout,
+		Stderr:   result.stderr,
 	})
+}
+
+func guidedStandardInitArgv(repository, provider, assignedTo, instancePath string, input *guidedInitOptionsInput) []string {
+	ciCommand, _ := json.Marshal(input.CICommand)
+	argv := []string{
+		"init", "--template=standard", "--provider=" + provider, "--repo=" + repository,
+		"--branch=" + input.Branch, "--issue-scope=" + input.IssueScope,
+		"--workflows=" + strings.Join(input.Workflows, ","), "--harness=" + input.Harness,
+	}
+	for _, option := range []struct{ name, value string }{
+		{"assigned-to", assignedTo},
+		{"ci-command", string(ciCommand)},
+		{"required-capabilities", strings.Join(input.RequiredCapabilities, ",")},
+		{"model-token-env", input.OptionalModelTokenEnv},
+		{"github-cli-user", input.GitHubCLIUser},
+	} {
+		if option.value != "" && option.value != "null" && option.value != "[]" {
+			argv = append(argv, "--"+option.name+"="+option.value)
+		}
+	}
+	// Empty token/auth locators are meaningful: browser-selected GitHub CLI or
+	// ADO Azure CLI auth intentionally carries no token env. Pass these flags
+	// explicitly so the CLI does not substitute its legacy template defaults.
+	for _, option := range []struct{ name, value string }{
+		{"repo-auth-kind", input.AuthKind},
+		{"repo-token-env", input.RepoTokenEnv},
+		{"work-tracking-token-env", input.WorkTrackingTokenEnv},
+		{"pr-token-env", input.PullRequestTokenEnv},
+		{"push-token-env", input.RepoPushTokenEnv},
+	} {
+		argv = append(argv, "--"+option.name+"="+option.value)
+	}
+	if input.PullRequestCI {
+		argv = append(argv, "--pr-ci")
+	}
+	return append(argv, instancePath)
 }
 
 func (s *guidedServer) checkInitTarget(ctx context.Context) error {

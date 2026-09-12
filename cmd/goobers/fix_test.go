@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/instance"
 )
 
 const fixTestWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
@@ -137,6 +139,21 @@ func TestFixRequiresToFlag(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--to <version> is required") {
 		t.Fatalf("fix (no --to) stderr missing usage diagnostic: %q", stderr)
+	}
+}
+
+func TestFixRejectsConfigDirectoryArgument(t *testing.T) {
+	root, _ := initFixTestInstance(t)
+	configDir := filepath.Join(root, instance.ConfigDirName)
+
+	code, _, stderr := runArgs(t, "fix", "--to", "2.0", configDir)
+	if code != 2 {
+		t.Fatalf("fix with config directory: code=%d, want 2; stderr=%q", code, stderr)
+	}
+	for _, want := range []string{"expects an instance root", "not its config directory", root} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("fix with config directory stderr missing %q: %q", want, stderr)
+		}
 	}
 }
 

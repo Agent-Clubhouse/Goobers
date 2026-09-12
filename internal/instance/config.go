@@ -64,6 +64,10 @@ const (
 	// whenever retention.retainedWorktreeMaxAge is omitted; set it to "0s" to
 	// turn the age rule off explicitly.
 	DefaultRetainedWorktreeMaxAge = 168 * time.Hour
+	// DefaultJournalGraceAge preserves the pre-#4856 24-hour policy while the
+	// clock now starts when a retained worktree's journal is first observed
+	// missing. Set retention.journalGraceAge to "0s" to disable this rule.
+	DefaultJournalGraceAge = 24 * time.Hour
 	// DefaultRecoverySnapshotMaxCount and DefaultRecoverySnapshotMaxArchiveBytes
 	// are the recovery inventory's opt-out defaults (#4823), matching the
 	// literals every call site hard-coded before this config surface existed:
@@ -1502,11 +1506,12 @@ func (c RunConditions) RunControls() apiv1.RunControls {
 	}
 }
 
-// RetentionConfig controls pruning of retained failure worktrees and merged
-// local run branches. Pruning is OPT-OUT (#4253, implementing the #3056
-// ruling), matching telemetry.retention: an instance that says nothing about
-// retention still bounds its own disk, because the alternative measured on the
-// live instance was ~240 MB/day of unbounded growth. DryRun still defaults to
+// RetentionConfig controls pruning of retained failure worktrees and local run
+// branches whose tip is an ancestor of another local branch. Pruning is OPT-OUT
+// (#4253, implementing the #3056 ruling), matching telemetry.retention. The
+// default age rule bounds retained failure worktrees, but local branch cleanup
+// is ancestry-only and has no alternate proof for squash/queue/legacy landings;
+// a branch whose tip is not an ancestor may remain. DryRun still defaults to
 // false and remains an operator preview knob, independent of the safe
 // first-enable grace window below.
 type RetentionConfig struct {
@@ -1522,6 +1527,10 @@ type RetentionConfig struct {
 	// Omitted means DefaultRetainedWorktreeMaxAge — the opt-out default, not
 	// "no age rule". An explicit "0s" turns the age rule off.
 	RetainedWorktreeMaxAge string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// JournalGraceAge bounds how long a retained worktree remains after its
+	// owning run journal is first observed missing. Omitted uses 24h; "0s"
+	// disables journal-absence pruning without changing the other rules.
+	JournalGraceAge string `json:"journalGraceAge,omitempty" yaml:"journalGraceAge,omitempty"`
 	// FirstEnable mirrors TelemetryRetentionConfig.FirstEnable: the default
 	// ("" / "gracePeriod") holds a 7-day dry-run window the first time a pass
 	// finds real candidates — report what would be deleted, delete nothing —
@@ -1710,6 +1719,22 @@ func (c RetentionConfig) RetainedWorktreeMaxAgeDuration() (time.Duration, error)
 	}
 	if window < 0 {
 		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge must not be negative, got %s", window)
+	}
+	return window, nil
+}
+
+// JournalGraceAgeDuration resolves the grace window measured from the first
+// persisted observation that a retained worktree's owning journal is absent.
+func (c RetentionConfig) JournalGraceAgeDuration() (time.Duration, error) {
+	if c.JournalGraceAge == "" {
+		return DefaultJournalGraceAge, nil
+	}
+	window, err := time.ParseDuration(c.JournalGraceAge)
+	if err != nil {
+		return 0, fmt.Errorf("retention.journalGraceAge %q: %w", c.JournalGraceAge, err)
+	}
+	if window < 0 {
+		return 0, fmt.Errorf("retention.journalGraceAge must not be negative, got %s", window)
 	}
 	return window, nil
 }

@@ -32,12 +32,12 @@ func TestActiveStageTimingMatchesJournalAndSQLiteAcrossRetryAndCompletion(t *tes
 			t.Fatal(err)
 		}
 		service.EnableReadModelReads()
-		projected, err := service.ListStatusRuns(ctx)
+		projected, err := service.ListStatusRuns(ctx, StatusRunOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		service.DisableReadModelReads()
-		authoritative, err := service.ListStatusRuns(ctx)
+		authoritative, err := service.ListStatusRuns(ctx, StatusRunOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}

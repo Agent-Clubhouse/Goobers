@@ -557,7 +557,11 @@ func generateRun(layout instance.Layout, spec Spec, rng *rand.Rand, index int, e
 		return run.Close()
 	}
 	phase := terminalPhases[index%len(terminalPhases)]
-	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
+	if err := run.Append(journal.Event{
+		Type:        journal.EventRunFinished,
+		Status:      string(phase),
+		Disposition: journal.RunDispositionProduced,
+	}); err != nil {
 		return fmt.Errorf("scale: append run.finished %s: %w", runID, err)
 	}
 	return run.Close()

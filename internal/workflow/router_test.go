@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	v20 "github.com/goobers/goobers/internal/workflow/v_2_0"
 )
@@ -33,14 +34,20 @@ func TestCompileDispatchesPinnedInterpreterVersion(t *testing.T) {
 
 func TestCompileAdaptsRouterOptionsToCurrentInterpreter(t *testing.T) {
 	t.Run("goobers and known harnesses", func(t *testing.T) {
+		spec := linearSpec()
+		spec.Tasks[0].Capabilities = []string{string(capability.AgentModel)}
 		def := Definition{
 			Name:       "harness",
 			Version:    1,
 			DSLVersion: v20.DSLVersion,
-			Spec:       linearSpec(),
+			Spec:       spec,
 		}
 		goobers := map[string]apiv1.GooberSpec{
-			"coder": {Role: "coder", Harness: apiv1.Harness("alternate")},
+			"coder": {
+				Role:         "coder",
+				Harness:      apiv1.Harness("alternate"),
+				Capabilities: []string{string(capability.AgentModel)},
+			},
 		}
 
 		if _, err := Compile(def, WithGoobers(goobers), WithKnownHarnesses([]string{"alternate"})); err != nil {

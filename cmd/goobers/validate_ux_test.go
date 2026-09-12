@@ -236,8 +236,12 @@ func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
 			}
 			envelope := decodeDiagnosticsEnvelope(t, stdout)
 			assertDiagnosticsSchema(t, stdout)
-			if envelope.Counts.Infos != 1 {
-				t.Fatalf("validate --json info count=%d, want 1; findings=%+v", envelope.Counts.Infos, envelope.Findings)
+			wantInfos := 1
+			if sourceTree {
+				wantInfos++ // SOURCE001 names the example-instance advisory solve.
+			}
+			if envelope.Counts.Infos != wantInfos {
+				t.Fatalf("validate --json info count=%d, want %d; findings=%+v", envelope.Counts.Infos, wantInfos, envelope.Findings)
 			}
 			var fallback *diagnosticFinding
 			for i := range envelope.Findings {
@@ -419,6 +423,69 @@ func TestValidateRejectsUnsupportedDSLVersion(t *testing.T) {
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestValidateUnsupportedDSLVersionNamesOnlyEditableWorkflowHumanAndJSON(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "quickstart")
+	if code, _, stderr := runArgs(t, "init", "--template=quickstart", root); code != 0 {
+		t.Fatalf("init quickstart: code=%d stderr=%q", code, stderr)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "quickstart.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	replaceInFile(t, workflowPath, `dslVersion: "2.0"`, `dslVersion: "1.4"`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("validate code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	if got := strings.Count(stdout, `dslVersion "1.4" is unsupported`); got != 1 {
+		t.Fatalf("human output contains unsupported-pin finding %d times, want 1:\n%s", got, stdout)
+	}
+	for _, want := range []string{
+		"gaggles/example/workflows/quickstart.yaml Workflow/quickstart",
+		"Gaggle/example in gaggles/example/gaggle.yaml",
+		"Goober/implementer in gaggles/example/goobers/implementer/goober.yaml",
+		"Goober/reviewer in gaggles/example/goobers/reviewer/goober.yaml",
+		"derivative findings on those files are suppressed",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("human output missing %q:\n%s", want, stdout)
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "validate", "--json", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("validate --json code=%d stderr=%q stdout=%q", code, stderr, stdout)
+	}
+	envelope := decodeDiagnosticsEnvelope(t, stdout)
+	var versionFindings []diagnosticFinding
+	for _, finding := range envelope.Findings {
+		if finding.Code == string(validate.ErrorUnsupportedDSLVersion) {
+			versionFindings = append(versionFindings, finding)
+		}
+		if finding.Code == "VER005" {
+			t.Errorf("derivative VER005 was not suppressed: %+v", finding)
+		}
+	}
+	if len(versionFindings) != 1 {
+		t.Fatalf("DVL030 findings = %+v, want exactly one", versionFindings)
+	}
+	wantFile := "config/gaggles/example/workflows/quickstart.yaml"
+	if versionFindings[0].File != wantFile {
+		t.Fatalf("DVL030 file = %q, want editable workflow %q", versionFindings[0].File, wantFile)
+	}
+	for _, want := range []string{"Gaggle/example", "Goober/implementer", "Goober/reviewer"} {
+		if !strings.Contains(versionFindings[0].Message, want) {
+			t.Errorf("DVL030 message %q missing suppressed consequence %q", versionFindings[0].Message, want)
 		}
 	}
 }

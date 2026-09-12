@@ -3591,8 +3591,7 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		return "", stalledResult, false, stalledErr
 	}
 
-	if result.Status == apiv1.ResultBlocked && result.Error != nil &&
-		result.Error.Code == ContextNotInspectedCode {
+	if isContextNotInspectedResult(result) {
 		// runTask validates before stage.finished is journaled, so the retry
 		// reason survives a crash and is available as the prior result.
 		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
@@ -3848,8 +3847,9 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 			}
 		}
 
-		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
-		res.NoWork = steps == 1
+		noWork := steps == 1
+		res, err = r.finishWithDisposition(runID, jr, journal.PhaseCompleted, t.Name, steps, terminalDisposition(noWork))
+		res.NoWork = noWork
 		return "", res, false, err
 	}
 	// A successful task's Next may be a plain state name or one of the
@@ -3872,6 +3872,10 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		return "", res, false, err
 	}
 	return t.Next, Result{}, true, nil
+}
+
+func isContextNotInspectedResult(result apiv1.ResultEnvelope) bool {
+	return result.Status == apiv1.ResultBlocked && result.Error != nil && result.Error.Code == ContextNotInspectedCode
 }
 
 func journalToleratedFailure(jr executionJournal, stage string) error {
@@ -3913,15 +3917,30 @@ func journalToleratedFailure(jr executionJournal, stage string) error {
 
 // finish claims terminalization from the watchdog before preparing cleanup.
 func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+	return r.finishWithDisposition(runID, jr, phase, finalState, steps, journal.RunDispositionProduced)
+}
+
+func (r *Runner) finishWithDisposition(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, disposition string) (Result, error) {
 	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
 		return outcome.result, outcome.err
 	}
-	return r.finishTakeover(runID, jr, phase, finalState, steps)
+	return r.finishTakeoverWithDisposition(runID, jr, phase, finalState, steps, disposition)
+}
+
+func terminalDisposition(noWork bool) string {
+	if noWork {
+		return journal.RunDispositionNoWork
+	}
+	return journal.RunDispositionProduced
 }
 
 // finishTakeover performs terminal cleanup for an already-claimed watchdog
 // takeover, or for a recovered run with no live owner.
 func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
+	return r.finishTakeoverWithDisposition(runID, jr, phase, finalState, steps, journal.RunDispositionProduced)
+}
+
+func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, disposition string) (Result, error) {
 	// Pinned-workspace bookkeeping is diagnostic state, not the run's terminal
 	// record. A local I/O failure here must be surfaced, but it must not strand
 	// the run before run.finished and FinalizeTerminal release its claims.
@@ -3939,7 +3958,7 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 	// returned to the caller AFTER terminalization so nothing is silently
 	// swallowed.
 	prepareErr := r.prepareTerminal(runID, phase, jr)
-	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
+	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition}); err != nil {
 		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}

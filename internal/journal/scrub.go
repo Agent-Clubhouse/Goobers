@@ -24,6 +24,50 @@ const Redacted = secretpattern.Redacted
 // stay reproducible across runners.
 const RedactedToken = secretpattern.RedactedToken
 
+// MetricRedactionsTotal counts scrub operations that removed secret material.
+// Its layer attribute is one of RedactionLayerRegistry or
+// RedactionLayerPattern, so operators can distinguish exact-value protection
+// from the pattern backstop.
+const MetricRedactionsTotal = "goobers.journal.redactions_total"
+
+// RedactionLayer identifies the scrubber layer that removed secret material.
+type RedactionLayer string
+
+const (
+	// RedactionLayerRegistry identifies exact-value redaction from the secret registry.
+	RedactionLayerRegistry RedactionLayer = "registry"
+	// RedactionLayerPattern identifies heuristic redaction by the pattern backstop.
+	RedactionLayerPattern RedactionLayer = "pattern"
+)
+
+// RedactionObserver receives one notification for each Scrub call whose output
+// differs from its input. Implementations must be safe for concurrent use.
+// Observers are attached per scrubber instance rather than through global OTel
+// state, so one process or test cannot redirect another's measurements.
+type RedactionObserver interface {
+	Redaction(RedactionLayer)
+}
+
+type redactionObservation struct {
+	mu       sync.RWMutex
+	observer RedactionObserver
+}
+
+func (o *redactionObservation) set(observer RedactionObserver) {
+	o.mu.Lock()
+	o.observer = observer
+	o.mu.Unlock()
+}
+
+func (o *redactionObservation) notify(layer RedactionLayer) {
+	o.mu.RLock()
+	observer := o.observer
+	o.mu.RUnlock()
+	if observer != nil {
+		observer.Redaction(layer)
+	}
+}
+
 // Scrubber removes secret-shaped material from bytes before they are written to
 // (and digested into) the journal. Every event, input snapshot, and artifact
 // passes through the run's Scrubber before hitting disk, so raw secrets never
@@ -47,8 +91,9 @@ func (nopScrubber) Scrub(b []byte) []byte { return b }
 // known values is exact and cannot false-negative on a value it has been told
 // about. It is safe for concurrent use.
 type RegistryScrubber struct {
-	mu      sync.RWMutex
-	secrets map[string][]byte // digest of secret -> secret bytes
+	mu       sync.RWMutex
+	secrets  map[string][]byte // digest of secret -> secret bytes
+	observed redactionObservation
 }
 
 // NewRegistryScrubber returns an empty registry scrubber.
@@ -107,6 +152,9 @@ func (s *RegistryScrubber) Scrub(b []byte) []byte {
 	for _, t := range targets {
 		out = bytes.ReplaceAll(out, t, []byte(Redacted))
 	}
+	if !bytes.Equal(out, b) {
+		s.observed.notify(RedactionLayerRegistry)
+	}
 	return out
 }
 
@@ -155,11 +203,29 @@ const minSecretLen = 6
 // patterns themselves live in internal/secretpattern so the author-time check
 // that refuses secret-shaped stage inputs can apply the identical net without
 // importing this package (#2931).
-type PatternScrubber = secretpattern.Scrubber
+type PatternScrubber struct {
+	scrubber *secretpattern.Scrubber
+	observed redactionObservation
+}
+
+// Scrub applies the secret-pattern net.
+func (s *PatternScrubber) Scrub(b []byte) []byte {
+	out := s.scrubber.Scrub(b)
+	if !bytes.Equal(out, b) {
+		s.observed.notify(RedactionLayerPattern)
+	}
+	return out
+}
+
+// SafePrefix delegates the streaming boundary calculation to the shared
+// pattern implementation, preserving PatternScrubber's checkpoint contract.
+func (s *PatternScrubber) SafePrefix(input []byte) int {
+	return s.scrubber.SafePrefix(input)
+}
 
 // NewPatternScrubber returns a scrubber using the default secret patterns.
 func NewPatternScrubber() *PatternScrubber {
-	return secretpattern.NewScrubber()
+	return &PatternScrubber{scrubber: secretpattern.NewScrubber()}
 }
 
 // multiScrubber applies its members in order.
@@ -171,6 +237,35 @@ func (m multiScrubber) Scrub(b []byte) []byte {
 		b = s.Scrub(b)
 	}
 	return b
+}
+
+type redactionObservable interface {
+	setRedactionObserver(RedactionObserver)
+}
+
+func (s *RegistryScrubber) setRedactionObserver(observer RedactionObserver) {
+	s.observed.set(observer)
+}
+
+func (s *PatternScrubber) setRedactionObserver(observer RedactionObserver) {
+	s.observed.set(observer)
+}
+
+func (m multiScrubber) setRedactionObserver(observer RedactionObserver) {
+	for _, scrubber := range m {
+		if observable, ok := scrubber.(redactionObservable); ok {
+			observable.setRedactionObserver(observer)
+		}
+	}
+}
+
+// ObserveRedactions attaches observer to every observable layer in scrubber.
+// It is intentionally separate from Scrubber: custom scrubbers remain valid,
+// while standard registry/pattern chains can publish layer-specific metrics.
+func ObserveRedactions(scrubber Scrubber, observer RedactionObserver) {
+	if observable, ok := scrubber.(redactionObservable); ok {
+		observable.setRedactionObserver(observer)
+	}
 }
 
 // Chain composes scrubbers into one applied left to right. The registry (exact,

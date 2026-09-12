@@ -347,6 +347,34 @@ func TestInstanceLogCompactPreservesLatestScheduledTriggerPerWorkflow(t *testing
 	}
 }
 
+func TestInstanceLogCompactPreservesLatestWorkerDivergencePerWorker(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	recent := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	line := func(seq int, at time.Time, worker, state string) string {
+		return `{"schema":"goobers.dev/journal/event/v1","seq":` + strconv.Itoa(seq) +
+			`,"time":"` + at.UTC().Format(time.RFC3339Nano) +
+			`","type":"runner.config_divergence","runner":{"worker":"` + worker + `","state":"` + state + `"}}`
+	}
+	writeRawInstanceLog(t, dir,
+		line(1, old, "worker:a", "not-checked"),
+		line(2, old.Add(time.Hour), "worker:a", "in-sync"),
+		line(3, old, "worker:b", "diverged"),
+		eventLine(4, recent, `"workflow":"recent","reason":"scheduled"`),
+	)
+
+	if _, err := CompactInstanceEvents(dir, recent.Add(-time.Hour), recent.Add(-time.Hour), false); err != nil {
+		t.Fatal(err)
+	}
+	events, err := ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 || events[0].Seq != 2 || events[1].Seq != 3 || events[2].Seq != 4 {
+		t.Fatalf("retained worker checkpoints = %#v, want seq 2, 3, and 4", events)
+	}
+}
+
 func TestInstanceLogCompactionBoundsSustainedTickJournal(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

@@ -34,6 +34,9 @@ type instanceState struct {
 	refusalOrder          []string
 	refusals              map[string]WorkflowRefusalStatus
 	refillBlocked         map[localscheduler.WorkflowIdentity]string
+	workerDivergenceOrder []string
+	workerDivergence      map[string]WorkerConfigDivergenceStatus
+	telemetryRetention    *TelemetryRetentionStatus
 }
 
 // snapshot folds every event appended since the previous call and returns a
@@ -89,6 +92,8 @@ func (s *instanceState) apply(event journal.Event) {
 		// reload, and refill blockers may have changed with the config.
 		s.resetRefusals()
 		s.refillBlocked = nil
+	case journal.EventWorkerConfigDivergence:
+		s.applyWorkerDivergence(event)
 	case journal.EventTickSkipped:
 		if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
 			candidate = candidate.UTC()
@@ -113,6 +118,22 @@ func (s *instanceState) apply(event journal.Event) {
 		}
 	case journal.EventDaemonDirtyRestart:
 		s.dirtyReason = event.Reason
+	case journal.EventTelemetryRetentionPass:
+		status := &TelemetryRetentionStatus{
+			LastPassMode:   runnerString(event.Runner, "mode"),
+			CandidateCount: runnerInt(event.Runner, "candidateCount"),
+		}
+		at := event.Time
+		if passAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "passAt")); err == nil {
+			at = passAt
+		}
+		if !at.IsZero() {
+			status.LastPassAt = &at
+		}
+		if enforceAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "enforceAt")); err == nil {
+			status.EnforceAt = &enforceAt
+		}
+		s.telemetryRetention = status
 	case journal.EventDaemonStarted:
 		s.resetRefusals()
 		s.refillBlocked = nil
@@ -137,6 +158,47 @@ func (s *instanceState) apply(event journal.Event) {
 			event.RunID != "" &&
 			!containsString(s.restart.RunIDs, event.RunID) {
 			s.restart.RunIDs = append(s.restart.RunIDs, event.RunID)
+		}
+	}
+}
+
+func (s *instanceState) applyWorkerDivergence(event journal.Event) {
+	worker := runnerString(event.Runner, "worker")
+	if worker == "" {
+		return
+	}
+	// The daemon-owned capability sentinel describes the period before any
+	// authenticated worker has reported. A later real worker report proves
+	// that reporting is active, so retaining "awaiting" beside that report
+	// would be false. Removing it in the fold makes replay and restart obey
+	// the same event ordering without requiring a synthetic clear event.
+	if worker != journal.WorkerConfigDivergenceReportingCapability {
+		s.clearWorkerDivergence(journal.WorkerConfigDivergenceReportingCapability)
+	}
+	if s.workerDivergence == nil {
+		s.workerDivergence = make(map[string]WorkerConfigDivergenceStatus)
+	}
+	if _, known := s.workerDivergence[worker]; !known {
+		s.workerDivergenceOrder = append(s.workerDivergenceOrder, worker)
+	}
+	s.workerDivergence[worker] = WorkerConfigDivergenceStatus{
+		Worker: worker, State: journal.WorkerConfigDivergenceState(runnerString(event.Runner, "state")),
+		WorkerDigest: runnerString(event.Runner, "workerDigest"),
+		DaemonDigest: runnerString(event.Runner, "daemonDigest"),
+		Reason:       runnerString(event.Runner, "reason"),
+		Message:      runnerString(event.Runner, "message"), At: event.Time,
+	}
+}
+
+func (s *instanceState) clearWorkerDivergence(worker string) {
+	if _, known := s.workerDivergence[worker]; !known {
+		return
+	}
+	delete(s.workerDivergence, worker)
+	for i, candidate := range s.workerDivergenceOrder {
+		if candidate == worker {
+			s.workerDivergenceOrder = append(s.workerDivergenceOrder[:i], s.workerDivergenceOrder[i+1:]...)
+			return
 		}
 	}
 }
@@ -166,8 +228,22 @@ func (s instanceState) clone() instanceState {
 		restart.Replacements = append([]RunReplacement(nil), s.restart.Replacements...)
 		clone.restart = &restart
 	}
+	if s.telemetryRetention != nil {
+		status := *s.telemetryRetention
+		if status.EnforceAt != nil {
+			at := *status.EnforceAt
+			status.EnforceAt = &at
+		}
+		if status.LastPassAt != nil {
+			at := *status.LastPassAt
+			status.LastPassAt = &at
+		}
+		clone.telemetryRetention = &status
+	}
 	clone.refusalOrder = append([]string(nil), s.refusalOrder...)
 	clone.refusals = maps.Clone(s.refusals)
 	clone.refillBlocked = maps.Clone(s.refillBlocked)
+	clone.workerDivergenceOrder = append([]string(nil), s.workerDivergenceOrder...)
+	clone.workerDivergence = maps.Clone(s.workerDivergence)
 	return clone
 }

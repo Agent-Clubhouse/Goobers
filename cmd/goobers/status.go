@@ -81,6 +81,41 @@ func maintenanceStatusLine(status readservice.SchedulerStatus) string {
 		status.Maintenance.State, status.Maintenance.Removed, status.Maintenance.Candidates)
 }
 
+func telemetryRetentionStatusLine(status readservice.SchedulerStatus) string {
+	retention := status.TelemetryRetention
+	if retention == nil {
+		return ""
+	}
+	line := fmt.Sprintf("Telemetry retention: enabled=%t, window=%s, max-runs=%d, first-enable=%s",
+		retention.Enabled, retention.Window, retention.MaxRuns, retention.FirstEnable)
+	if retention.LastPassAt == nil {
+		return line + ", last-pass=none; instance.yaml changes require daemon restart\n"
+	}
+	line += fmt.Sprintf(", last-pass=%s at %s, candidates=%d",
+		retention.LastPassMode, retention.LastPassAt.UTC().Format(time.RFC3339), retention.CandidateCount)
+	if retention.EnforceAt != nil {
+		line += ", enforcement=" + retention.EnforceAt.UTC().Format(time.RFC3339)
+	}
+	return line + "; instance.yaml changes require daemon restart\n"
+}
+
+func renderSchedulerStatus(
+	text *strings.Builder,
+	summary statusFleetSummary,
+	status readservice.SchedulerStatus,
+	now time.Time,
+) {
+	renderStatusFleetSummary(text, summary, now)
+	text.WriteString(daemonRestartStatusLine(status, now))
+	text.WriteString(providerQuotaStatusLine(status, now))
+	text.WriteString(maintenanceStatusLine(status))
+	text.WriteString(telemetryRetentionStatusLine(status))
+	text.WriteString(workerConfigDivergenceStatusLines(status, now))
+	text.WriteString(refusedWorkflowStatusLines(status))
+	text.WriteString(isolationMandateStatusLines(status))
+	text.WriteString(engineFallbackStatusLines(status))
+}
+
 // refusedWorkflowStatusLines surfaces the workflows the startup constraint
 // solve refused (#2860, dsl-3.0.md §5 checkpoint 3): the daemon is up and
 // every other workflow serves, so these lines are the operator's only
@@ -270,14 +305,16 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
-	Root              *statusRootIdentity              `json:"root,omitempty"`
-	QueueEligibility  *statusQueueEvidence             `json:"queueEligibility,omitempty"`
-	EngineFallbacks   []readmodel.EngineFallback       `json:"engineFallbacks,omitempty"`
-	Warnings          []validate.CodedWarning          `json:"warnings"`
-	TimeToFirstPR     *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
-	DaemonRestart     *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
-	IsolationMandates map[string][]string              `json:"isolationMandates,omitempty"`
-	Maintenance       *readservice.MaintenanceStatus   `json:"maintenance,omitempty"`
+	Root                   *statusRootIdentity                        `json:"root,omitempty"`
+	QueueEligibility       *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
+	EngineFallbacks        []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
+	Warnings               []validate.CodedWarning                    `json:"warnings"`
+	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
+	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
+	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
+	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
+	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -317,6 +354,15 @@ func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) 
 			replacement.ReplacementRunID,
 			replacement.ItemID,
 		)
+	}
+	return text.String()
+}
+
+func workerConfigDivergenceStatusLines(status readservice.SchedulerStatus, now time.Time) string {
+	var text strings.Builder
+	for _, report := range status.WorkerConfigDivergence {
+		fmt.Fprintf(&text, "Worker %s config divergence [%s, %s]: %s\n",
+			report.Worker, strings.ToUpper(string(report.State)), formatLastActivity(now, report.At), report.Message)
 	}
 	return text.String()
 }
@@ -589,6 +635,32 @@ func buildStatusFleetSummary(
 	return summary, nil
 }
 
+func newStatusFleetSummaryLoader(
+	layout instance.Layout,
+	runLoader *statusRunLoader,
+	location *time.Location,
+) func([]apiv1.Workflow, []runSummary, readservice.SchedulerStatus, time.Time) (statusFleetSummary, error) {
+	return func(
+		workflows []apiv1.Workflow,
+		runs []runSummary,
+		schedulerStatus readservice.SchedulerStatus,
+		now time.Time,
+	) (statusFleetSummary, error) {
+		if runLoader.projected {
+			runs = runLoader.fleetRuns
+		}
+		lastEvals, err := statusWorkflowLastEvals(layout)
+		if err != nil {
+			return statusFleetSummary{}, err
+		}
+		refill := make(map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus, len(schedulerStatus.RefillOccupancy))
+		for _, occupancy := range schedulerStatus.RefillOccupancy {
+			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
+		}
+		return buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, location)
+	}
+}
+
 func statusWorkflowLastEvals(
 	layout instance.Layout,
 ) (map[localscheduler.WorkflowIdentity]time.Time, error) {
@@ -709,8 +781,20 @@ type statusOptions struct {
 	limit    int
 }
 
-func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runSummary, error) {
-	summaries, err := reads.ListStatusRuns(ctx)
+func listStatusRuns(ctx context.Context, reads readservice.StatusReader, options ...statusOptions) ([]runSummary, error) {
+	var request readservice.StatusRunOptions
+	if len(options) > 0 {
+		request.Gaggle = options[0].gaggle
+		request.Workflow = options[0].workflow
+		request.Limit = options[0].limit
+		if request.Limit > 0 {
+			request.Limit++ // one-row lookahead keeps the omitted-runs hint truthful
+		}
+		for phase := range options[0].phases {
+			request.Phases = append(request.Phases, phase)
+		}
+	}
+	summaries, err := reads.ListStatusRuns(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -728,6 +812,23 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runS
 		}
 	}
 	return runs, nil
+}
+
+func statusFleetRuns(facts []readservice.StatusFleetFact) []runSummary {
+	var runs []runSummary
+	for _, fact := range facts {
+		for _, terminal := range fact.TerminalRuns {
+			runs = append(runs, runSummary{
+				RunID: terminal.ID, Workflow: terminal.Workflow, Gaggle: terminal.Gaggle,
+				Phase: terminal.Phase, StartedAt: terminal.StartedAt, LastActivityAt: terminal.LastActivityAt,
+				Operator: terminal.Operator,
+			})
+		}
+		for i := 0; i < fact.ActiveRuns; i++ {
+			runs = append(runs, runSummary{Workflow: fact.Workflow, Gaggle: fact.Gaggle, Phase: journal.PhaseRunning})
+		}
+	}
+	return runs
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {
@@ -834,7 +935,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		all = fs.Bool("all", false, "show individual detail for manual-only workflows")
 	}
 	fs.Usage = helpUsage(stderr, command)
-	if err := fs.Parse(args); err != nil {
+	if !parseFlagsBeforePath(fs, args, stderr) {
 		return 2
 	}
 	showAllWorkflows := statusOptionalBool(all)
@@ -991,26 +1092,16 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		gaggle:   *gaggleFilter,
 		limit:    *limit,
 	}
+	if agentsMode {
+		options.limit = 0
+		options.phases = map[journal.RunPhase]struct{}{journal.PhaseRunning: {}}
+	}
 
-	loadRuns := func() ([]runSummary, error) {
-		return listStatusRuns(context.Background(), reads)
+	runLoader := &statusRunLoader{
+		layout: l, sources: sources, journal: reads, options: options, needFleet: supportsWatch && !agentsMode,
 	}
-	loadFleetSummary := func(
-		workflows []apiv1.Workflow,
-		runs []runSummary,
-		schedulerStatus readservice.SchedulerStatus,
-		now time.Time,
-	) (statusFleetSummary, error) {
-		lastEvals, err := statusWorkflowLastEvals(l)
-		if err != nil {
-			return statusFleetSummary{}, err
-		}
-		refill := make(map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus, len(schedulerStatus.RefillOccupancy))
-		for _, occupancy := range schedulerStatus.RefillOccupancy {
-			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
-		}
-		return buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, statusLocation)
-	}
+	loadRuns := runLoader.Load
+	loadFleetSummary := newStatusFleetSummaryLoader(l, runLoader, statusLocation)
 	prLabelCounts := newStatusPRLabelCountCache()
 	parkedBacklog := newStatusParkedBacklogCache()
 	loadTimeToFirstPR := reads.TimeToFirstPR
@@ -1043,13 +1134,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			if summaryErr != nil {
 				return "", summaryErr
 			}
-			renderStatusFleetSummary(&text, summary, now)
-			text.WriteString(daemonRestartStatusLine(status, now))
-			text.WriteString(providerQuotaStatusLine(status, now))
-			text.WriteString(maintenanceStatusLine(status))
-			text.WriteString(refusedWorkflowStatusLines(status))
-			text.WriteString(isolationMandateStatusLines(status))
-			text.WriteString(engineFallbackStatusLines(status))
+			renderSchedulerStatus(&text, summary, status, now)
 		} else {
 			summary, summaryErr := loadFleetSummary(textWorkflows, runs, readservice.SchedulerStatus{}, now)
 			if summaryErr != nil {
@@ -1091,7 +1176,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		printValidationWarnings(stdout, textWarnings)
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
-		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText)); err != nil {
+		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText), runLoader.loadChangedRuns); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
@@ -1139,9 +1224,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
 		var maintenance *readservice.MaintenanceStatus
+		var telemetryRetention *readservice.TelemetryRetentionStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
 		var engineFallbacks []readmodel.EngineFallback
+		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
 		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
@@ -1151,34 +1238,33 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
 				maintenance = status.Maintenance
+				telemetryRetention = status.TelemetryRetention
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
 				engineFallbacks = status.EngineFallbacks
+				workerConfigDivergence = status.WorkerConfigDivergence
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
 				parked = &snapshot
 			}
 		}
-		var baselineBlockers *statusBaselineBlockers
-		// Omitted when nothing is parked, like the other optional sections: a
-		// healthy instance's JSON keeps exactly the shape it had before.
-		if snapshot, err := loadStatusBaselineBlockers(l); err == nil && snapshot.Total > 0 {
-			baselineBlockers = &snapshot
-		}
+		baselineBlockers := optionalStatusBaselineBlockers(l)
 		output := statusJSONOutput{
-			Root:              optionalStatusRoot(supportsWatch, l, now),
-			QueueEligibility:  optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
-			EngineFallbacks:   engineFallbacks,
-			Warnings:          warnings,
-			TimeToFirstPR:     timeToFirstPR,
-			DaemonRestart:     daemonRestart,
-			Maintenance:       maintenance,
-			RefusedWorkflows:  refusedWorkflows,
-			IsolationMandates: isolationMandates,
-			Summary:           fleetSummary,
-			ParkedBacklog:     parked,
-			BaselineBlockers:  baselineBlockers,
-			Runs:              statusRecoverySummaries(l, runs, now),
+			Root:                   optionalStatusRoot(supportsWatch, l, now),
+			QueueEligibility:       optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
+			EngineFallbacks:        engineFallbacks,
+			WorkerConfigDivergence: workerConfigDivergence,
+			Warnings:               warnings,
+			TimeToFirstPR:          timeToFirstPR,
+			DaemonRestart:          daemonRestart,
+			Maintenance:            maintenance,
+			TelemetryRetention:     telemetryRetention,
+			RefusedWorkflows:       refusedWorkflows,
+			IsolationMandates:      isolationMandates,
+			Summary:                fleetSummary,
+			ParkedBacklog:          parked,
+			BaselineBlockers:       baselineBlockers,
+			Runs:                   statusRecoverySummaries(l, runs, now),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)
@@ -1312,7 +1398,7 @@ func truncateStatusCell(value string, width int) string {
 
 func renderOlderRunsHint(stdout io.Writer, olderRuns int) {
 	if olderRuns > 0 {
-		pf(stdout, "%d older runs; use --limit 0 for all\n", olderRuns)
+		pln(stdout, "older runs omitted; use --limit 0 for all")
 	}
 }
 
@@ -1334,6 +1420,7 @@ func watchStatus(
 	stdout io.Writer,
 	loadRuns func() ([]runSummary, error),
 	loadStatusText func(context.Context, []runSummary, time.Time) (string, error),
+	loadProjectedChanges ...func(context.Context) (map[string]struct{}, error),
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1357,7 +1444,17 @@ func watchStatus(
 			return err
 		}
 		runs, olderRuns := selectStatusRuns(allRuns, options)
-		renderStatusWatchFrame(stdout, statusText, runs, changedStatusRuns(previous, current), now)
+		changed := changedStatusRuns(previous, current)
+		if len(loadProjectedChanges) > 0 && loadProjectedChanges[0] != nil {
+			projected, err := loadProjectedChanges[0](ctx)
+			if err != nil {
+				return err
+			}
+			for runID := range projected {
+				changed[runID] = struct{}{}
+			}
+		}
+		renderStatusWatchFrame(stdout, statusText, runs, changed, now)
 		renderOlderRunsHint(stdout, olderRuns)
 		previous = current
 
@@ -1523,6 +1620,7 @@ func reportTelemetryRetentionPolicy(l instance.Layout, now time.Time, stdout io.
 	if err != nil || !ok {
 		return
 	}
+	state, _ = normalizeRetentionGraceState(state, now)
 	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
 	cutoff := ""
 	if !state.OldestRetainedAt.IsZero() {
@@ -1542,6 +1640,7 @@ func reportTelemetryRetentionPolicy(l instance.Layout, now time.Time, stdout io.
 	default:
 		pf(stdout, "telemetry retention: policy in force, last pass %s ago pruned %d run(s)%s\n", lastPassAgo, state.PrunedCount, cutoff)
 	}
+	pln(stdout, "  instance.yaml retention changes require a daemon restart; --watch-config watches only the materialized config directory")
 }
 
 // reportWorktreeRetentionPolicy is the operator-facing half of #4253's flip.
@@ -1559,6 +1658,7 @@ func reportWorktreeRetentionPolicy(l instance.Layout, now time.Time, stdout io.W
 	if err != nil || !ok {
 		return
 	}
+	state, _ = normalizeRetentionGraceState(state, now)
 	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
 	switch {
 	case state.LastPassDryRun && !state.EnforceAt.IsZero():
@@ -1569,6 +1669,7 @@ func reportWorktreeRetentionPolicy(l instance.Layout, now time.Time, stdout io.W
 	default:
 		pf(stdout, "worktree retention: policy in force, last pass %s ago pruned %d item(s)\n", lastPassAgo, state.PrunedCount)
 	}
+	pln(stdout, "  instance.yaml retention changes require a daemon restart; --watch-config watches only the materialized config directory")
 }
 
 func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {

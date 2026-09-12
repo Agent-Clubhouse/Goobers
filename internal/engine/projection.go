@@ -437,6 +437,11 @@ func validateOp(op JournalOp, i, total int) error {
 			if i != total-1 {
 				return fmt.Errorf("%w: op %d is run.finished but %d ops follow it", ErrUnprojectable, i, total-1-i)
 			}
+			switch ev.Disposition {
+			case "", journal.RunDispositionProduced, journal.RunDispositionNoWork:
+			default:
+				return fmt.Errorf("%w: op %d run.finished has unknown disposition %q", ErrUnprojectable, i, ev.Disposition)
+			}
 		}
 	case opArtifact:
 		a := op.Artifact

@@ -192,6 +192,9 @@ func newWorkerSeams(root string, store blobstore.Store) (*workerSeams, error) {
 // the #2931 dispatch canary asserts serialized envelopes against.
 func (w *workerSeams) SharedRegistry() *journal.RegistryScrubber { return w.shared }
 
+// Scrubber exposes the chain over SharedRegistry and the pattern backstop.
+func (w *workerSeams) Scrubber() journal.Scrubber { return w.scrubber }
+
 // forGaggle builds (once per config tree) the runner config for a gaggle from
 // the CURRENT tree. Agentic stages go through forPinnedGaggle instead, which
 // resolves the tree the run was admitted against (#3884); this is the
@@ -295,13 +298,14 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		// the first engine dispatches failed: a bare manager clones a public
 		// repo happily and dies on a private one with "could not read Username
 		// for 'https://github.com'".
-		SharedRegistry:   w.shared,
-		WorktreeManager:  nil,
-		BranchNamespaces: branchNamespacesByGaggle(set),
-		GaggleProject:    project,
-		HarnessInfo:      harnessInfo,
-		CredentialStores: stores,
-		SandboxPosture:   instance.EffectiveAgenticSandbox(cfg, nil),
+		SharedRegistry:      w.shared,
+		WorktreeManager:     nil,
+		BranchNamespaces:    branchNamespacesByGaggle(set),
+		GaggleProject:       project,
+		HarnessInfo:         harnessInfo,
+		CredentialStores:    stores,
+		SandboxPosture:      instance.EffectiveAgenticSandbox(cfg, nil),
+		AppliedConfigDigest: snapshot.digest,
 		// Provider quota is a scheduler-side concern, not the executor's.
 		ProviderQuota: nil,
 	})

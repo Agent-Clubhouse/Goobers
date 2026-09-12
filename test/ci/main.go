@@ -167,6 +167,10 @@ func groupChecksOnly(all []check, group string) []check {
 //     Data races are a source-level property, so a single -race platform
 //     (Linux) suffices; a second OS can run the same behavioural suite without
 //     the ~3-5x instrumentation cost while preserving OS-specific coverage.
+//   - GOOBERS_CI_COVERAGE=0 strips coverage instrumentation from the unit
+//     suite when another whole-tree job owns the coverage gate. This keeps the
+//     macOS runtime pass behavioural rather than spending scarce runner time
+//     producing a profile that no gate consumes.
 //   - GOOBERS_CI_SHARD=i/n splits the unit suite across n runners (1-based i),
 //     dropping the coverage profile (partial per shard; the coverage *gate* is
 //     the separate full-tier cover-check). Timing capture stays with the
@@ -175,6 +179,7 @@ func groupChecksOnly(all []check, group string) []check {
 //     platforms without weakening the suite or changing its package set.
 func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 	raceEnabled := getenv("GOOBERS_CI_RACE") != "0"
+	coverageEnabled := getenv("GOOBERS_CI_COVERAGE") != "0"
 	shard := strings.TrimSpace(getenv("GOOBERS_CI_SHARD"))
 	testTimeout := strings.TrimSpace(getenv("GOOBERS_CI_TEST_TIMEOUT"))
 	// GOOBERS_LINT_GOOS cross-lints for another platform (e.g. darwin) from a
@@ -189,6 +194,10 @@ func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 		}
 		if !raceEnabled {
 			current.args = withoutArg(current.args, "-race")
+		}
+		if !coverageEnabled && current.label == "test" {
+			current.args = withoutArg(current.args, "-covermode=atomic")
+			current.args = withoutArg(current.args, "-coverprofile=coverage.out")
 		}
 		if shard != "" && current.label == "test" {
 			current.args = shardUnitArgs(current.args, shard)
@@ -336,6 +345,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// Validates design/ADR lifecycle metadata AND that docs/design/README.md
 		// is current. Regenerate the index with `make docs` (#4518).
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
+		// Also drift-checks the generated guides index and requires every guide
+		// to be reachable from that index, docs/cli, or docs/man (#4854).
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
 		// A workflow whose schedule is commented out never runs, and nothing
 		// else distinguishes it from an enforced gate (#4224).
@@ -419,7 +430,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// -count=1 disables Go's test-result cache for the merge-tier suite.
 		// Two reasons, both about not reporting work that did not happen.
 		// First, the coverage threshold is now enforced from this run's profile
-		// (unit-macos -> `make cover-gate`), so the run that produces the number
+		// (unit-linux-coverage -> `make cover-gate`), so the run that produces the number
 		// must be a real one. Second, it is the property the deleted
 		// `conformance` job uniquely had; carrying it here is what makes that
 		// deletion a no-op rather than a loosening. It costs nothing in CI,
@@ -506,12 +517,20 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// Makefile's `extension-test` target relies on POSIX shell for the
 		// `*.test.mjs` pattern) still runs every suite, and the
 		// `TestExtensionTestCheckUsesNodeAndCoversAllTestFiles` guard fails
-		// fast when a newly added *.test.mjs file is not wired here.
+		// fast when a newly added *.test.mjs file is not wired here. Coverage
+		// includes every production module, excludes the tests themselves, and
+		// ratchets the line/branch/function values measured when #4841 landed.
 		check{
 			label:   "extension-test",
 			command: tools.nodeCommand,
 			args: []string{
 				"--test",
+				"--experimental-test-coverage",
+				"--test-coverage-include=.github/extensions/goobers-portal/*.mjs",
+				"--test-coverage-exclude=.github/extensions/goobers-portal/*.test.mjs",
+				"--test-coverage-lines=68",
+				"--test-coverage-branches=73",
+				"--test-coverage-functions=64",
 				".github/extensions/goobers-portal/actions-source.test.mjs",
 				".github/extensions/goobers-portal/client.test.mjs",
 				".github/extensions/goobers-portal/extension.test.mjs",

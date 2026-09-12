@@ -20,7 +20,9 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readprobe"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -123,7 +125,7 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 		}, nil
 	}
 
-	runs, err := service.ListStatusRuns(context.Background())
+	runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +160,7 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
 		return providers.WorkItem{}, nil
 	}
-	runs, err = service.ListStatusRuns(context.Background())
+	runs, err = service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,12 +171,72 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	service.sources.WorkItemLookup = func(context.Context, string, string) (providers.WorkItem, error) {
 		return providers.WorkItem{}, errors.New("provider unavailable")
 	}
-	runs, err = service.ListStatusRuns(context.Background())
+	runs, err = service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := runs[0].Operator.Claim.ProviderMarker; got != "unavailable" {
 		t.Fatalf("provider marker after lookup failure = %q, want unavailable", got)
+	}
+}
+
+func TestTelemetryRetentionStatusReplaysAcrossReadersAndInstanceAPI(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	journaledAt := passAt.Add(10 * time.Minute)
+	enforceAt := passAt.Add(7 * 24 * time.Hour)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return journaledAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: map[string]any{
+		"mode": "dry-run", "candidateCount": 17, "passAt": passAt.Format(time.RFC3339Nano),
+		"enforceAt": enforceAt.Format(time.RFC3339Nano),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config := &instance.Config{Telemetry: instance.TelemetryConfig{Retention: &instance.TelemetryRetentionConfig{
+		Window: "30d", MaxRuns: 900,
+	}}}
+	newService := func() *Local {
+		service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions(), Config: config}, func() bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+
+	for i, service := range []*Local{newService(), newService()} {
+		status, err := service.SchedulerStatus(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := status.TelemetryRetention
+		if got == nil || !got.Enabled || got.Window != "30d" || got.MaxRuns != 900 ||
+			got.FirstEnable != "gracePeriod" || got.LastPassMode != "dry-run" || got.CandidateCount != 17 ||
+			got.LastPassAt == nil || !got.LastPassAt.Equal(passAt) || got.EnforceAt == nil || !got.EnforceAt.Equal(enforceAt) {
+			t.Fatalf("reader %d retention status = %+v", i, got)
+		}
+		api, err := service.Instance(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(api.TelemetryRetention, got) {
+			t.Fatalf("reader %d instance retention = %+v, scheduler = %+v", i, api.TelemetryRetention, got)
+		}
+	}
+	disabled := false
+	config.Telemetry.Retention.Enabled = &disabled
+	disabledStatus, err := newService().SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := disabledStatus.TelemetryRetention
+	if got == nil || got.Enabled || got.EnforceAt != nil || got.LastPassMode != "dry-run" || got.CandidateCount != 17 {
+		t.Fatalf("disabled policy retained misleading enforcement state or lost history: %+v", got)
 	}
 }
 
@@ -226,7 +288,7 @@ func TestListStatusRunsProjectsTerminalOperatorSummary(t *testing.T) {
 			finishFixtureRun(t, run, clock, phase)
 			service.now = func() time.Time { return startedAt.Add(10 * time.Minute) }
 
-			runs, err := service.ListStatusRuns(context.Background())
+			runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -626,6 +688,108 @@ func TestSchedulerStatusProjectsRefillOccupancyAndBlockingCondition(t *testing.T
 	}
 }
 
+func TestSchedulerStatusPersistsLatestWorkerConfigDivergencePerWorker(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	clock := now
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return clock }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendReport := func(worker, state, message string) {
+		t.Helper()
+		if err := log.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+			"worker": worker, "state": state, "workerDigest": "sha256:worker", "daemonDigest": "sha256:daemon",
+			"reason": "network down", "message": message,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendReport("worker-a", "not-checked", "not checked")
+	clock = clock.Add(time.Minute)
+	appendReport("worker-b", "not-active", "not active")
+	clock = clock.Add(time.Minute)
+	appendReport("worker-a", "in-sync", "recovered")
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.WorkerConfigDivergence) != 2 {
+		t.Fatalf("WorkerConfigDivergence = %+v", status.WorkerConfigDivergence)
+	}
+	if got := status.WorkerConfigDivergence[0]; got.Worker != "worker-a" || got.State != "in-sync" || got.Message != "recovered" || !got.At.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("worker-a latest = %+v", got)
+	}
+	if got := status.WorkerConfigDivergence[1]; got.Worker != "worker-b" || got.State != "not-active" || got.Message != "not active" {
+		t.Fatalf("worker-b latest = %+v", got)
+	}
+}
+
+func TestSchedulerStatusClearsReportingSentinelAfterWorkerReportAcrossCompaction(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	clock := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return clock }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendReport := func(worker, state, message string) {
+		t.Helper()
+		if err := log.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+			"worker": worker, "state": state, "workerDigest": "sha256:same", "daemonDigest": "sha256:same",
+			"reason": "awaiting authenticated per-worker report", "message": message,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendReport(journal.WorkerConfigDivergenceReportingCapability, "not-checked", "awaiting")
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.WorkerConfigDivergence) != 1 || status.WorkerConfigDivergence[0].Worker != journal.WorkerConfigDivergenceReportingCapability {
+		t.Fatalf("initial status = %+v, want reporting sentinel", status.WorkerConfigDivergence)
+	}
+
+	clock = clock.Add(time.Minute)
+	appendReport("worker:node-a", "in-sync", "reported")
+	assertResolved := func(label string, service *Local) {
+		t.Helper()
+		status, err := service.SchedulerStatus(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(status.WorkerConfigDivergence) != 1 || status.WorkerConfigDivergence[0].Worker != "worker:node-a" ||
+			status.WorkerConfigDivergence[0].Message != "reported" {
+			t.Fatalf("%s status retained reporting sentinel: %+v", label, status.WorkerConfigDivergence)
+		}
+	}
+	assertResolved("incremental fold", service)
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	keepAfter := clock.Add(time.Hour)
+	if _, err := journal.CompactInstanceEvents(layout.SchedulerDir(), keepAfter, keepAfter, false); err != nil {
+		t.Fatal(err)
+	}
+	service, err = NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertResolved("compacted replay", service)
+}
+
 func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	machine := fixtureMachine(t)
@@ -828,7 +992,7 @@ func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runs, err := service.ListStatusRuns(context.Background())
+	runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -891,7 +1055,7 @@ func TestListStatusRunsUsesReadModelWithZeroJournalOpens(t *testing.T) {
 	readprobe.Enable()
 	t.Cleanup(readprobe.Disable)
 	before := readprobe.Take()
-	runs, err := service.ListStatusRuns(context.Background())
+	runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -903,6 +1067,161 @@ func TestListStatusRunsUsesReadModelWithZeroJournalOpens(t *testing.T) {
 	}
 	if work.JournalOpens != 0 {
 		t.Fatalf("ListStatusRuns opened %d journals against the read-model path, want 0", work.JournalOpens)
+	}
+}
+
+type recordingStatusListReader struct {
+	readmodel.Reader
+	requests []readmodel.ListOptions
+}
+
+func (r *recordingStatusListReader) ListRuns(ctx context.Context, options readmodel.ListOptions) (readmodel.ListPage, error) {
+	r.requests = append(r.requests, options)
+	return r.Reader.ListRuns(ctx, options)
+}
+
+func TestListStatusRunsPushesLimitAndScopeIntoReadModelQuery(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	base := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	for i := range 1000 {
+		seedStatusReadModelRun(t, store, fmt.Sprintf("bounded-%04d", i), base.Add(time.Duration(i)*time.Minute))
+	}
+	recorder := &recordingStatusListReader{Reader: store}
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions(), ReadModel: recorder}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{
+		Gaggle: "goobers", Phases: []journal.RunPhase{journal.PhaseCompleted}, Limit: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 20 {
+		t.Fatalf("ListStatusRuns returned %d runs, want 20", len(runs))
+	}
+	if len(recorder.requests) != 1 {
+		t.Fatalf("read-model requests = %d, want one bounded query", len(recorder.requests))
+	}
+	request := recorder.requests[0]
+	if request.Limit != 20 || request.Gaggle != "goobers" || request.Phase != journal.PhaseCompleted {
+		t.Fatalf("read-model request = %+v, want limit/scope pushed into query", request)
+	}
+}
+
+func TestStatusFleetFactsAreIndependentOfDisplayLimit(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	base := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	for i := range 70 {
+		startedAt := base.Add(time.Duration(i) * time.Minute)
+		row := readmodel.RunRow{
+			RunID: fmt.Sprintf("fleet-%03d", i), Gaggle: "goobers", Workflow: "implementation",
+			Phase: journal.PhaseRunning, StartedAt: startedAt, LastActivity: startedAt, LastSeq: 1,
+		}
+		if i < 57 {
+			finishedAt := startedAt.Add(time.Minute)
+			row.Phase, row.Terminal, row.FinishedAt, row.LastActivity = journal.PhaseCompleted, true, &finishedAt, finishedAt
+		}
+		if i >= 57 {
+			finishedAt := startedAt.Add(time.Minute)
+			row.Phase, row.Terminal, row.FinishedAt, row.LastActivity = journal.PhaseFailed, true, &finishedAt, finishedAt
+			row.Operator.LatestError = &journal.ErrorDetail{Code: telemetry.ErrCodeInfraWorkspace, Message: "workspace unavailable"}
+		}
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: row}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Active rows are newer than the terminal history and must be counted
+	// without consuming the terminal sample.
+	for i := range 3 {
+		startedAt := base.Add(time.Duration(100+i) * time.Minute)
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+			RunID: fmt.Sprintf("active-%d", i), Gaggle: "goobers", Workflow: "implementation",
+			Phase: journal.PhaseRunning, StartedAt: startedAt, LastActivity: startedAt, LastSeq: 1,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	definitions := testDefinitions()
+	definitions.Workflows = []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "goobers", Start: "review",
+			Gates: []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+				Branches:  map[string]string{"pass": workflow.TerminalComplete, "fail": workflow.TargetEscalate},
+			}},
+		},
+	}}
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: definitions, ReadModel: store}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, err := service.StatusFleetFacts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("fleet facts = %+v, want one workflow", facts)
+	}
+	if facts[0].ActiveRuns != 3 {
+		t.Fatalf("active runs = %d, want 3", facts[0].ActiveRuns)
+	}
+	// Thirteen leading infra failures plus the completed breaker are retained:
+	// more than the display limit or success-rate window, but exactly what the
+	// fleet alarm needs to report the full current streak.
+	if len(facts[0].TerminalRuns) != 14 || facts[0].TerminalRuns[0].Phase != journal.PhaseFailed ||
+		facts[0].TerminalRuns[12].Phase != journal.PhaseFailed || facts[0].TerminalRuns[13].Phase != journal.PhaseCompleted {
+		t.Fatalf("terminal fleet sample = %+v, want 13 failures and their breaker", facts[0].TerminalRuns)
+	}
+}
+
+func BenchmarkListStatusRunsLimitOn10KProjection(b *testing.B) {
+	layout := instance.NewLayout(b.TempDir())
+	store, err := readmodel.Open(filepath.Join(b.TempDir(), readmodel.FileName))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = store.Close() })
+	base := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	for i := range 10_000 {
+		startedAt := base.Add(time.Duration(i) * time.Minute)
+		finishedAt := startedAt.Add(time.Minute)
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+			RunID: fmt.Sprintf("benchmark-%05d", i), Gaggle: "goobers", Workflow: "implementation",
+			Phase: journal.PhaseCompleted, Terminal: true, StartedAt: startedAt,
+			FinishedAt: &finishedAt, LastActivity: finishedAt, LastSeq: 1,
+		}}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions(), ReadModel: store}, func() bool { return true })
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, limit := range []int{1, 200} {
+		b.Run(fmt.Sprintf("limit-%d", limit), func(b *testing.B) {
+			for range b.N {
+				runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{Limit: limit})
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(runs) != limit {
+					b.Fatalf("returned %d runs, want %d", len(runs), limit)
+				}
+			}
+		})
 	}
 }
 
@@ -929,7 +1248,7 @@ func TestListStatusRunsFallsBackToJournalWalkWithoutReadModel(t *testing.T) {
 	readprobe.Enable()
 	t.Cleanup(readprobe.Disable)
 	before := readprobe.Take()
-	runs, err := service.ListStatusRuns(context.Background())
+	runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -976,7 +1295,7 @@ func TestListStatusRunsTreatsExecutedTerminalGateAsTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runs, err := service.ListStatusRuns(context.Background())
+	runs, err := service.ListStatusRuns(context.Background(), StatusRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

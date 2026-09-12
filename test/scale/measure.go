@@ -226,7 +226,7 @@ func measure(layout instance.Layout, gen GenerateResult, samples int, noFsync bo
 			return nil
 		}},
 		{opStatusFullScan, func() error {
-			_, err := service.ListStatusRuns(ctx)
+			_, err := service.ListStatusRuns(ctx, readservice.StatusRunOptions{})
 			return err
 		}},
 
