@@ -15,44 +15,50 @@ func TestUnsupportedDSLVersionDoesNotCascadeAcrossSemanticRules(t *testing.T) {
 		t.Run(version, func(t *testing.T) {
 			dir := t.TempDir()
 			source := strings.Replace(contextFromConfig(""), `dslVersion: "2.0"`, `dslVersion: "`+version+`"`, 1)
-			// Keep an independent graph error and a separate invalid resource:
-			// neither may disappear behind the version failure.
-			source = strings.Replace(source, "next: second", "next: missing", 1)
-			source += "---\napiVersion: goobers.dev/v1alpha1\nkind: Gaggle\nmetadata:\n  name: broken\nspec: {}\n"
+			source += `---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: author
+spec:
+  gaggle: web
+  role: coder
+  instructions: instructions.md
+  workflows:
+    - context-flow
+`
 			if err := os.WriteFile(filepath.Join(dir, "objects.yaml"), []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "instructions.md"), []byte("# Author\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			report, err := newV(t).ValidateDir(dir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var workflowVersion, gaggleVersion, graph, schema int
-			for _, issue := range report.Issues {
-				if issue.Kind == "Workflow" && (strings.Contains(issue.Message, "DSL version") || strings.Contains(issue.Message, "dslVersion")) {
-					workflowVersion++
-					if issue.Code != ErrorUnsupportedDSLVersion {
-						t.Errorf("cascaded version error: %+v", issue)
-					}
-					for _, want := range []string{"dependent feature checks for Gaggle/web were suppressed", "edit this workflow's dslVersion"} {
-						if !strings.Contains(issue.Message, want) {
-							t.Errorf("workflow version message %q missing %q", issue.Message, want)
-						}
-					}
-				}
-				if issue.Kind == "Gaggle" && issue.Name == "web" && strings.Contains(issue.Message, "DSL version") {
-					gaggleVersion++
-				}
-				if issue.Code == errorTaskNextState {
-					graph++
-				}
-				if issue.Kind == "Gaggle" && issue.Name == "broken" && issue.Severity == Error {
-					schema++
-				}
+			if len(report.Issues) != 1 {
+				t.Fatalf("findings = %+v, want exactly the workflow DSL finding", report.Issues)
 			}
-			if workflowVersion != 1 || gaggleVersion != 0 || graph != 1 || schema == 0 {
-				t.Fatalf("findings workflow-version=%d gaggle-version=%d graph=%d schema=%d: %+v", workflowVersion, gaggleVersion, graph, schema, report.Issues)
+			issue := report.Issues[0]
+			if issue.Code != ErrorUnsupportedDSLVersion || issue.Kind != "Workflow" || issue.Name != "context-flow" || issue.File != "objects.yaml" {
+				t.Fatalf("finding = %+v, want the edited workflow file's DSL diagnostic", issue)
+			}
+			for _, want := range []string{"dependent feature checks for Gaggle/web, Goober/author were suppressed", "edit this workflow's dslVersion"} {
+				if !strings.Contains(issue.Message, want) {
+					t.Errorf("workflow version message %q missing %q", issue.Message, want)
+				}
 			}
 		})
+	}
+}
+
+func TestSuppressedFeatureDependentsOmitsMissingGaggle(t *testing.T) {
+	ix := &index{}
+	w := dslWorkflow("build", "99.0")
+	w.Spec.Gaggle = "missing"
+	if got := ix.suppressedFeatureDependents(w); len(got) != 0 {
+		t.Fatalf("suppressed dependents = %v, want none for definitions that do not exist", got)
 	}
 }
 

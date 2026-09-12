@@ -1244,7 +1244,9 @@ func loadableFeatureDefinitions(definitions []wf.Definition) []wf.Definition {
 func (ix *index) suppressedFeatureDependents(w apiv1.Workflow) []string {
 	var dependents []string
 	if w.Spec.Gaggle != "" {
-		dependents = append(dependents, "Gaggle/"+w.Spec.Gaggle)
+		if _, ok := ix.gaggles[w.Spec.Gaggle]; ok {
+			dependents = append(dependents, "Gaggle/"+w.Spec.Gaggle)
+		}
 	}
 	for _, goober := range ix.goobers {
 		if goober.Spec.Gaggle == "" {
