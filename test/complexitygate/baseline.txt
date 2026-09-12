@@ -120,8 +120,10 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	internal/runner/run.go	(*Runner).taskOutcome	290
 !body-length	internal/runner/run.go	(*Runner).walk	417
 !body-length	internal/telemetry/rollup/ingest.go	insertEvents	222
-!body-length	internal/workflow/v_2_0/features.go	currentFeatures	224
-!body-length	internal/workflow/v_3_0/features.go	currentFeatures	246
+!body-length-justification	internal/workflow/v_2_0/features.go	currentFeatures	225	#4810 registers the codex harness feature id in the v2 feature list
+!body-length	internal/workflow/v_2_0/features.go	currentFeatures	225
+!body-length-justification	internal/workflow/v_3_0/features.go	currentFeatures	247	#4810 registers the codex harness feature id in the v3 feature list
+!body-length	internal/workflow/v_3_0/features.go	currentFeatures	247
 !body-length	internal/worktree/worktree.go	(*Manager).Create	267
 !body-length	release/docs.go	adaptInstalledOnboarding	233
 !body-length	test/ci/main.go	checks	302
