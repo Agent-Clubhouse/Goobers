@@ -9,6 +9,10 @@ import (
 
 const signatureLimit = 1024
 
+// NoStableSignature is returned when a failure contains only test-runner
+// boilerplate. Consumers must not use it as a defect identity.
+const NoStableSignature = "test failed without stable signature"
+
 var (
 	leadingSourceLocation = regexp.MustCompile(`^.*?\.go:\d+:\s*`)
 	sourceLocation        = regexp.MustCompile(`(?:[A-Za-z]:)?(?:[^\s:()]+[\\/])*([^\s:()\\/]+\.go):(\d+)`)
@@ -30,8 +34,8 @@ var (
 	// there is a seed or a limit the harness chose for this run, not anything
 	// that distinguishes one failure from another.
 	volatileTestFlagValue = regexp.MustCompile(`(-test\.[A-Za-z0-9_.]+)([= ])\d[^\s]*`)
-	packageSummary        = regexp.MustCompile(`^ok\s+\S+\s+\S+(?:\s+coverage:\s+\d+(?:\.\d+)?%\s+of statements)?$`)
-	coverageSummary       = regexp.MustCompile(`^coverage:\s+\d+(?:\.\d+)?%\s+of statements$`)
+	packageSummary        = regexp.MustCompile(`^ok\s+\S+\s+(?:\(cached\)|\d+(?:\.\d+)?s)(?:\s+coverage:\s+(?:\d+(?:\.\d+)?%\s+of statements(?:\s+in\s+.+)?|\[no statements\]))?$`)
+	coverageSummary       = regexp.MustCompile(`^coverage:\s+(?:\d+(?:\.\d+)?%\s+of statements(?:\s+in\s+.+)?|\[no statements\])$`)
 )
 
 // NormalizeSignature removes volatile values while retaining the assertion,
@@ -77,7 +81,7 @@ func NormalizeSignature(text string) string {
 		}
 	}
 	if len(signature) == 0 {
-		return "test failed without stable signature"
+		return NoStableSignature
 	}
 	return boundSignature(strings.Join(signature, " | "))
 }

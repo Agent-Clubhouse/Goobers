@@ -6,10 +6,13 @@ func TestNormalizeSignatureDropsPackageAndCoverageSummaries(t *testing.T) {
 	for _, failure := range []string{
 		"ok  \tgithub.com/goobers/goobers/internal/bootstrap\t120.228s\tcoverage: 89.7% of statements",
 		"ok  \tgithub.com/goobers/goobers/internal/bootstrap\t120.228s\tcoverage: 89.8% of statements",
+		"ok  \tgithub.com/goobers/goobers/internal/bootstrap\t(cached)\tcoverage: [no statements]",
+		"coverage: 89.7% of statements in ./...",
+		"coverage: [no statements]",
 		// Exact useless failure body captured in #4333.
 		"FAIL\ncoverage: 89.7% of statements\nFAIL\tgithub.com/goobers/goobers/internal/bootstrap\t120.228s",
 	} {
-		if got := NormalizeSignature(failure); got != "test failed without stable signature" {
+		if got := NormalizeSignature(failure); got != NoStableSignature {
 			t.Errorf("NormalizeSignature(%q) = %q, want boilerplate fallback", failure, got)
 		}
 	}
