@@ -340,7 +340,11 @@ func init() {
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.1.0"),
+			// The manual example must name a target the ordering guard can
+			// actually accept (#4887). It previously pinned v0.1.0, which
+			// every build since has been newer than, so the shipped example
+			// failed verbatim for every reader who ran it.
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.0"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",
