@@ -633,6 +633,49 @@ func releaseBlobURL(version, target string) string {
 
 func adaptInstalledOnboarding(payloadDir, version string) error {
 	releaseCommand := "goobers-" + version
+	prerelease := strings.Contains(version, "-")
+	if prerelease {
+		releaseCommand = "./goobers"
+	}
+	readmeOnboarding := fmt.Sprintf(
+		"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
+			"a newer release cannot change this walkthrough:\n\n"+
+			"```sh\n%s --version\n```\n\n",
+		version,
+		releaseCommand,
+	)
+	readmeSetup := fmt.Sprintf(
+		"The release installer installs the binary and documentation only. Start setup with\n"+
+			"`goobers init --guided` after installation.\n\n"+
+			"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
+			"below with `./goobers`:\n\n",
+		releaseCommand,
+	)
+	quickstartConfirmation := fmt.Sprintf(
+		"## Confirm the installed binary\n\n"+
+			"This copy is bundled with release `%s` and uses its versioned executable from `PATH`.\n\n"+
+			"```sh\n%s --version\n```\n\n",
+		version,
+		releaseCommand,
+	)
+	if prerelease {
+		readmeOnboarding = fmt.Sprintf(
+			"This copy is bundled with pre-release `%s`. The stable installer does not install\n"+
+				"pre-releases, so run the binary from the extracted archive directory:\n\n"+
+				"```sh\n%s --version\n```\n\n",
+			version,
+			releaseCommand,
+		)
+		readmeSetup = "This pre-release is distributed for manual archive extraction. From the directory\n" +
+			"containing the extracted binary, start setup directly:\n\n"
+		quickstartConfirmation = fmt.Sprintf(
+			"## Confirm the extracted binary\n\n"+
+				"This pre-release `%s` uses the binary in the manually extracted archive directory.\n\n"+
+				"```sh\n%s --version\n```\n\n",
+			version,
+			releaseCommand,
+		)
+	}
 	rewrites := []struct {
 		path                 string
 		sections             []onboardingSectionRewrite
@@ -648,11 +691,8 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				},
 				{
 					source: readmeSourceInstall,
-					installed: fmt.Sprintf(
-						"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
-							"a newer release cannot change this walkthrough:\n\n"+
-							"```sh\n%s --version\n```\n\n"+
-							"The fastest first run is the hermetic demo:\n\n"+
+					installed: readmeOnboarding + fmt.Sprintf(
+						"The fastest first run is the hermetic demo:\n\n"+
 							"```sh\n"+
 							"%s init --demo ./demo-instance\n"+
 							"%s run demo ./demo-instance\n"+
@@ -667,17 +707,11 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"production-oriented definitions under\n"+
 							"[`config-examples/`](onboarding/templates/canonical/README.md).\n\n"+
 							"The [full quickstart](docs/guides/quickstart.md) walks through that progression.\n\n"+
-							"The release installer installs the binary and documentation only. Start setup with\n"+
-							"`goobers init --guided` after installation.\n\n"+
-							"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
-							"below with `./goobers`:\n\n"+
+							readmeSetup+
 							"```sh\n"+
 							"%s init --guided\n"+
 							"%s run %s ./my-instance\n"+
 							"```\n",
-						version,
-						releaseCommand,
-						releaseCommand,
 						releaseCommand,
 						releaseCommand,
 						releaseCommand,
@@ -704,14 +738,8 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 					),
 				},
 				{
-					source: quickstartSourceBuild,
-					installed: fmt.Sprintf(
-						"## Confirm the installed binary\n\n"+
-							"This copy is bundled with release `%s` and uses its versioned executable from `PATH`.\n\n"+
-							"```sh\n%s --version\n```\n\n",
-						version,
-						releaseCommand,
-					),
+					source:    quickstartSourceBuild,
+					installed: quickstartConfirmation,
 				},
 				{
 					source:    "../../config-examples/README.md",
