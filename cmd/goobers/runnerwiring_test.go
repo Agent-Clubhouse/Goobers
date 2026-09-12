@@ -2360,6 +2360,9 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	}
 
 	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, gaggle := range []string{"alpha", "beta"} {
 		if err := layout.EnsureGaggleRuntime(gaggle); err != nil {
 			t.Fatal(err)
