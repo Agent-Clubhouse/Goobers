@@ -99,6 +99,23 @@ func telemetryRetentionStatusLine(status readservice.SchedulerStatus) string {
 	return line + "\n"
 }
 
+func renderSchedulerStatus(
+	text *strings.Builder,
+	summary statusFleetSummary,
+	status readservice.SchedulerStatus,
+	now time.Time,
+) {
+	renderStatusFleetSummary(text, summary, now)
+	text.WriteString(daemonRestartStatusLine(status, now))
+	text.WriteString(providerQuotaStatusLine(status, now))
+	text.WriteString(maintenanceStatusLine(status))
+	text.WriteString(telemetryRetentionStatusLine(status))
+	text.WriteString(workerConfigDivergenceStatusLines(status, now))
+	text.WriteString(refusedWorkflowStatusLines(status))
+	text.WriteString(isolationMandateStatusLines(status))
+	text.WriteString(engineFallbackStatusLines(status))
+}
+
 // refusedWorkflowStatusLines surfaces the workflows the startup constraint
 // solve refused (#2860, dsl-3.0.md §5 checkpoint 3): the daemon is up and
 // every other workflow serves, so these lines are the operator's only
@@ -1072,15 +1089,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			if summaryErr != nil {
 				return "", summaryErr
 			}
-			renderStatusFleetSummary(&text, summary, now)
-			text.WriteString(daemonRestartStatusLine(status, now))
-			text.WriteString(providerQuotaStatusLine(status, now))
-			text.WriteString(maintenanceStatusLine(status))
-			text.WriteString(telemetryRetentionStatusLine(status))
-			text.WriteString(workerConfigDivergenceStatusLines(status, now))
-			text.WriteString(refusedWorkflowStatusLines(status))
-			text.WriteString(isolationMandateStatusLines(status))
-			text.WriteString(engineFallbackStatusLines(status))
+			renderSchedulerStatus(&text, summary, status, now)
 		} else {
 			summary, summaryErr := loadFleetSummary(textWorkflows, runs, readservice.SchedulerStatus{}, now)
 			if summaryErr != nil {
