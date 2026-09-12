@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { lintInnerHTMLAssignments } from "./innerhtml-lint.mjs";
 import {
+    formatRunDetailTime,
     renderCausalDiagnosis,
     renderExecutionWaterfall,
     renderHtml,
+    renderRunDetailSummary,
+    renderRunEventItems,
     renderRunRowCells,
     renderSnapshotCard,
 } from "./render.mjs";
@@ -93,18 +98,84 @@ test("run rows fall back without throwing on an empty run", () => {
     assert.ok(!html.includes("undefined"), html);
 });
 
+test("run detail summary escapes every metadata field", () => {
+    const html = renderRunDetailSummary({
+        id: HOSTILE,
+        workflow: HOSTILE,
+        workflowVersion: '"><script>version</script>',
+        gaggle: HOSTILE,
+        phase: HOSTILE,
+        terminal: true,
+        repassCount: HOSTILE,
+        retryCount: HOSTILE,
+        trigger: { kind: HOSTILE },
+        startedAt: HOSTILE,
+        finishedAt: HOSTILE,
+        events: [{ type: "stage.finished", stage: HOSTILE }],
+        transitions: [{ terminal: true, status: HOSTILE }],
+    });
+    assert.doesNotMatch(html, /<img|<script>/);
+    assert.match(html, /&lt;img/);
+    assert.match(html, /&lt;script&gt;version/);
+});
+
+test("run event items escape hostile metadata and preserve safe links", () => {
+    const html = renderRunEventItems([{
+        seq: HOSTILE,
+        type: HOSTILE,
+        stage: HOSTILE,
+        status: HOSTILE,
+        time: HOSTILE,
+        artifact: { digest: '"><script>digest</script>', name: HOSTILE, size: HOSTILE },
+        externalRef: { url: "https://example.test/run", provider: HOSTILE, kind: HOSTILE, id: HOSTILE },
+        outputs: { value: HOSTILE },
+    }], HOSTILE, HOSTILE);
+    assert.doesNotMatch(html, /<img|<script>/);
+    assert.match(html, /&lt;img/);
+    assert.match(html, /href="https:\/\/example\.test\/run"/);
+    assert.match(html, /%3Cimg%20src%3Dx/);
+});
+
+test("run-detail time fallback escapes values when date conversion throws", () => {
+    const hostile = { toString() { return HOSTILE; }, valueOf() { throw new Error("no conversion"); } };
+    const formatted = formatRunDetailTime(hostile);
+    assert.doesNotMatch(formatted, /<img/);
+    assert.match(formatted, /&lt;img/);
+});
+
+test("innerHTML lint rejects direct unescaped property interpolation", async () => {
+    const source = await readFile(new URL("./render.mjs", import.meta.url), "utf8");
+    assert.deepEqual(lintInnerHTMLAssignments(source), []);
+    assert.deepEqual(
+        lintInnerHTMLAssignments('element.innerHTML = "<p>" + run.workflow + "</p>";'),
+        ["line 1: innerHTML concatenates unescaped run.workflow"],
+    );
+    assert.deepEqual(
+        lintInnerHTMLAssignments('element.innerHTML = "<p>" + escapeHtml(run.workflow) + "</p>";'),
+        [],
+    );
+    assert.deepEqual(
+        lintInnerHTMLAssignments('element.innerHTML = "<p>" + workflow + "</p>";'),
+        ["line 1: innerHTML concatenates unescaped workflow"],
+    );
+});
+
 test("the browser script receives the escaping helpers, not raw interpolation", () => {
     const page = renderHtml("inst-1");
     // The helpers are inlined verbatim for the client to call...
     assert.match(page, /const renderSnapshotCard = function renderSnapshotCard/);
     assert.match(page, /const renderRunRowCells = function renderRunRowCells/);
+    assert.match(page, /const renderRunDetailSummary = function renderRunDetailSummary/);
+    assert.match(page, /const renderRunEventItems = function renderRunEventItems/);
     // ...remapped onto the client's own escapeHtml, so no stale identifier
     // survives to throw at runtime.
     assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the page");
     // ...and the call sites go through them rather than concatenating.
     assert.match(page, /div\.innerHTML = renderSnapshotCard\(label, value\);/);
     assert.match(page, /tr\.innerHTML = renderRunRowCells\(r, \{/);
+    assert.match(page, /let html = renderRunDetailSummary\(r, \{ actionsLink \}\);/);
     // The pre-fix raw forms are gone.
     assert.ok(!page.includes('"<td>" + (r.workflow || "")'), "raw workflow interpolation still present");
     assert.ok(!page.includes('"<td><code>" + runId'), "raw runId interpolation still present");
+    assert.doesNotMatch(page, /\+\s*r\.[A-Za-z_$]/, "raw run-detail interpolation still present");
 });
