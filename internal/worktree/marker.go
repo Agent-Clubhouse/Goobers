@@ -11,16 +11,17 @@ import (
 	"github.com/goobers/goobers/internal/platform/durability"
 )
 
-// status records why a worktree's marker is on disk, distinguishing an
-// in-flight run from one that was intentionally kept after failure for
-// debugging (KeepOnFailure). Reap treats the two differently: active markers
-// with a dead owning process are always crash orphans; kept markers are only
-// swept up once they age past ReapOptions.StaleAfter.
+// status records why a worktree's marker is on disk. Active is still owned by
+// a stage, cleanup-pending was explicitly surrendered but could not yet be
+// removed, and kept was intentionally retained for debugging. Reap treats the
+// three differently: active markers require a dead owner, cleanup-pending is
+// immediately retryable, and kept requires ReapOptions.StaleAfter.
 type status string
 
 const (
-	statusActive status = "active"
-	statusKept   status = "kept"
+	statusActive         status = "active"
+	statusCleanupPending status = "cleanup-pending"
+	statusKept           status = "kept"
 )
 
 // marker is the on-disk record placed alongside each worktree. It carries

@@ -265,43 +265,15 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if err := os.MkdirAll(m.runsDirForKey(key), 0o755); err != nil {
 		return nil, fmt.Errorf("worktree: create runs dir: %w", err)
 	}
-
 	// A run's stages share one branch, not one tree: the first stage creates
 	// the run branch off BaseRef; every later stage checks out that same
 	// branch — now carrying the prior stages' commits — in its own fresh
 	// worktree. That is what makes local-ci and the reviewer gate evaluate the
 	// run's actual diff rather than a pristine BaseRef (#133). A detached
 	// checkout (Branch == "") keeps the pre-#133 behavior.
-	sparse := len(opts.Sparse) > 0
-	args := []string{"worktree", "add"}
-	if sparse {
-		// Skip materializing the full tree here; sparse-checkout is configured
-		// below, before the explicit checkout that actually populates the
-		// working directory, so only the declared cones are ever written to
-		// disk (#649).
-		args = append(args, "--no-checkout")
-	}
-	checkoutTarget := opts.BaseRef
-	switch {
-	case opts.Branch == "":
-		args = append(args, "--detach", path, opts.BaseRef)
-	case existingBranch:
-		// Existing run branch: check it out as-is. BaseRef is not the
-		// continuity point — the branch's own tip is. git forbids the same
-		// branch in two live worktrees, which holds here because stages run
-		// sequentially and each stage's worktree is removed before the next.
-		args = append(args, path, opts.Branch)
-		checkoutTarget = opts.Branch
-	case opts.RequireExistingBranch:
-		// Never silently substitute a fresh branch off BaseRef for a branch
-		// the caller asserted already exists — see RequireExistingBranch.
-		return nil, fmt.Errorf("worktree: branch %q does not exist in the working copy for run %s (refusing to create it)", opts.Branch, opts.RunID)
-	default:
-		// First stage of the run: create the run branch off BaseRef.
-		// Run continuity comes from the local branch tip, so avoid creating
-		// persistent tracking config that branch retention cannot reap.
-		args = append(args, "--no-track", "-b", opts.Branch, path, opts.BaseRef)
-		checkoutTarget = opts.Branch
+	args, checkoutTarget, sparse, err := m.prepareWorktreeAdd(ctx, key, repoDir, path, opts, existingBranch)
+	if err != nil {
+		return nil, err
 	}
 
 	pid := os.Getpid()
@@ -895,6 +867,13 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		if worktreeMeasured {
 			mk.SizeBytes = &worktreeBytes
 		}
+		if !opts.Keep {
+			var err error
+			mk, err = wt.manager.markCleanupPending(wt.key, wt.Path, wt.RunID, mk)
+			if err != nil {
+				return err
+			}
+		}
 		if err := wt.manager.prepareMarkerExit(ctx, wt.Path, wt.RunID, mk, opts.Keep); err != nil {
 			return err
 		}
@@ -938,4 +917,197 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 		return fmt.Errorf("worktree: remove ownership record for run %s: %w", wt.RunID, err)
 	}
 	return nil
+}
+
+// markCleanupPending durably records that the stage has surrendered this
+// workspace before any cleanup guard runs. A daemon owns many stage worktrees
+// under one PID, so an "active" marker cannot distinguish a genuinely running
+// sibling from a completed stage whose guarded teardown was deferred. The
+// explicit state is the only fact a later stage may use to reconcile a branch
+// still checked out elsewhere.
+//
+// Both durable records must describe the same workspace before either is
+// changed. The ownership record is written first: if the second write fails,
+// the disagreement deliberately leaves future reconciliation fail-closed.
+func (m *Manager) markCleanupPending(key, path, runID string, primary marker) (marker, error) {
+	directory, err := primary.directoryName()
+	if err != nil {
+		return marker{}, fmt.Errorf("worktree: mark cleanup pending for run %s: %w", runID, err)
+	}
+	if directory != filepath.Base(path) || primary.RunID != runID {
+		return marker{}, fmt.Errorf("worktree: mark cleanup pending for run %s: marker identity does not match %s", runID, path)
+	}
+	ownershipPath := m.ownershipPath(key, directory)
+	ownership, err := readMarker(ownershipPath)
+	if err != nil {
+		return marker{}, fmt.Errorf("worktree: mark cleanup pending for run %s: read ownership record: %w", runID, err)
+	}
+	if !sameWorkspaceIdentity(primary, ownership) || primary.Status != ownership.Status {
+		return marker{}, fmt.Errorf("worktree: mark cleanup pending for run %s: ownership records disagree", runID)
+	}
+	if primary.Status != statusActive && primary.Status != statusCleanupPending {
+		return marker{}, fmt.Errorf("worktree: mark cleanup pending for run %s: marker has status %q", runID, primary.Status)
+	}
+	primary.Status = statusCleanupPending
+	ownership.Status = statusCleanupPending
+	ownership.SizeBytes = primary.SizeBytes
+	if err := writeMarker(ownershipPath, ownership); err != nil {
+		return marker{}, fmt.Errorf("worktree: mark cleanup pending for run %s: write ownership record: %w", runID, err)
+	}
+	if err := writeMarker(m.markerPath(key, runID), primary); err != nil {
+		return marker{}, fmt.Errorf("worktree: mark cleanup pending for run %s: write run marker: %w", runID, err)
+	}
+	return primary, nil
+}
+
+func sameWorkspaceIdentity(a, b marker) bool {
+	return a.RepositoryDigest == b.RepositoryDigest &&
+		a.RunID == b.RunID &&
+		a.OwnerRunID == b.OwnerRunID &&
+		a.Gaggle == b.Gaggle &&
+		a.Directory == b.Directory &&
+		a.BaseRef == b.BaseRef &&
+		a.Branch == b.Branch &&
+		a.Writer == b.Writer &&
+		a.PID == b.PID &&
+		a.PIDStartedAt.Equal(b.PIDStartedAt) &&
+		a.CreatedAt.Equal(b.CreatedAt)
+}
+
+func (m *Manager) prepareWorktreeAdd(ctx context.Context, key, repoDir, path string, opts CreateOptions, existingBranch bool) ([]string, string, bool, error) {
+	if existingBranch {
+		if err := m.reconcileReleasedSameRunBranch(ctx, key, repoDir, path, opts); err != nil {
+			return nil, "", false, err
+		}
+	}
+
+	sparse := len(opts.Sparse) > 0
+	args := []string{"worktree", "add"}
+	if sparse {
+		// Skip materializing the full tree here; sparse-checkout is configured
+		// before the explicit checkout that populates only the declared cones.
+		args = append(args, "--no-checkout")
+	}
+	checkoutTarget := opts.BaseRef
+	switch {
+	case opts.Branch == "":
+		args = append(args, "--detach", path, opts.BaseRef)
+	case existingBranch:
+		// Existing run branch: check it out at its current tip so sequential
+		// stages retain every prior stage's commit.
+		args = append(args, path, opts.Branch)
+		checkoutTarget = opts.Branch
+	case opts.RequireExistingBranch:
+		return nil, "", false, fmt.Errorf("worktree: branch %q does not exist in the working copy for run %s (refusing to create it)", opts.Branch, opts.RunID)
+	default:
+		args = append(args, "--no-track", "-b", opts.Branch, path, opts.BaseRef)
+		checkoutTarget = opts.Branch
+	}
+	return args, checkoutTarget, sparse, nil
+}
+
+// reconcileReleasedSameRunBranch removes a different stage tree that still
+// holds the requested run branch, but only after two durable records prove the
+// same owning run explicitly surrendered it. Active, kept, legacy, foreign,
+// corrupt, or path-ambiguous occupants remain refusals; Create must never infer
+// permission to delete a live workspace from a branch-name convention.
+func (m *Manager) reconcileReleasedSameRunBranch(ctx context.Context, key, repoDir, targetPath string, opts CreateOptions) error {
+	entries, err := registeredWorktrees(ctx, repoDir)
+	if err != nil {
+		return fmt.Errorf("worktree: inspect branch occupancy for run %s: %w", opts.RunID, err)
+	}
+	branchRef := "refs/heads/" + opts.Branch
+	var occupant string
+	for _, entry := range entries {
+		if entry.Branch != branchRef {
+			continue
+		}
+		if occupant != "" {
+			return fmt.Errorf("worktree: branch %q has multiple registered occupants", opts.Branch)
+		}
+		occupant = entry.Path
+	}
+	if occupant == "" {
+		return nil
+	}
+	if samePathOnDisk(occupant, targetPath) {
+		return fmt.Errorf("worktree: branch %q remains registered at target path %s", opts.Branch, targetPath)
+	}
+
+	directory, err := m.containedRunDirectory(key, occupant)
+	if err != nil {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: %w", opts.Branch, occupant, err)
+	}
+	ownershipPath := m.ownershipPath(key, directory)
+	ownership, err := readMarker(ownershipPath)
+	if err != nil {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: read ownership record: %w", opts.Branch, occupant, err)
+	}
+	if ownership.Directory == "" || ownership.Directory != directory || ownership.RunID == "" ||
+		worktreeDirectoryName(ownership.RunID) != directory {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: ownership directory identity is invalid", opts.Branch, occupant)
+	}
+	primaryPath := m.markerPath(key, ownership.RunID)
+	primary, err := readMarker(primaryPath)
+	if err != nil {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: read run marker: %w", opts.Branch, occupant, err)
+	}
+	if !sameWorkspaceIdentity(primary, ownership) {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: ownership records disagree", opts.Branch, occupant)
+	}
+	if primary.RepositoryDigest != RepositoryDigest(opts.RepoURL) || primary.Branch != opts.Branch {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: repository or branch identity disagrees", opts.Branch, occupant)
+	}
+	if primary.OwnerRunID == "" || primary.OwnerRunID != opts.OwnerRunID {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: owned by another run", opts.Branch, occupant)
+	}
+	if primary.Status != statusCleanupPending {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: owner has not surrendered it (status %q)", opts.Branch, occupant, primary.Status)
+	}
+	if primary.Status != ownership.Status {
+		return fmt.Errorf("worktree: refuse branch %q occupant %s: ownership records disagree", opts.Branch, occupant)
+	}
+	if err := m.forceClear(ctx, key, occupant, primary.RunID); err != nil {
+		return fmt.Errorf("worktree: reconcile released branch %q occupant %s: %w", opts.Branch, occupant, err)
+	}
+	return nil
+}
+
+func (m *Manager) containedRunDirectory(key, path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	info, err := os.Lstat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("inspect registered path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("registered path is not a real directory")
+	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve registered path: %w", err)
+	}
+	realRuns, err := filepath.EvalSymlinks(m.runsDirForKey(key))
+	if err != nil {
+		return "", fmt.Errorf("resolve managed runs directory: %w", err)
+	}
+	if !samePathOnDisk(filepath.Dir(realPath), realRuns) {
+		return "", fmt.Errorf("registered path is outside the managed runs directory")
+	}
+	directory := filepath.Base(realPath)
+	if !validRunID(directory) {
+		return "", fmt.Errorf("registered directory %q is invalid", directory)
+	}
+	return directory, nil
+}
+
+func samePathOnDisk(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	aInfo, aErr := os.Stat(a)
+	bInfo, bErr := os.Stat(b)
+	return aErr == nil && bErr == nil && os.SameFile(aInfo, bInfo)
 }

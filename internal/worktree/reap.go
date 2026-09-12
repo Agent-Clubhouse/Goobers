@@ -58,8 +58,9 @@ type ReapWarning struct {
 }
 
 // Reap scans every managed working copy under Root for worktrees whose
-// marker shows either a dead owning process (a crash orphan) or a
-// keep-on-failure worktree older than opts.StaleAfter, and removes them. It
+// marker shows a dead owning process (a crash orphan), a surrendered cleanup
+// awaiting retry, or a keep-on-failure worktree older than opts.StaleAfter,
+// and removes them. It
 // also removes markerless directories still registered with git (a crash
 // between `git worktree add` and the marker write) and deregistered
 // markerless directories whose owning journal is terminal. Call it on daemon
@@ -160,6 +161,10 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			if processAlive(mk.PID) && !pidReused(mk) {
 				continue
 			}
+			reason = ReapReasonOrphaned
+		case statusCleanupPending:
+			// Remove already recorded that the stage surrendered this tree.
+			// Retry immediately even while the owning daemon PID remains live.
 			reason = ReapReasonOrphaned
 		case statusKept:
 			if opts.StaleAfter <= 0 || time.Since(mk.retainedAt()) <= opts.StaleAfter {
@@ -351,25 +356,15 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 }
 
 func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error) {
-	out, err := runCleanupGitOutput(ctx, repoDir, "worktree list", "worktree", "list", "--porcelain")
+	registered, err := registeredWorktrees(ctx, repoDir)
 	if err != nil {
 		return false, err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, "worktree ") {
-			continue
-		}
-		registeredPath := strings.TrimPrefix(line, "worktree ")
-		if strings.HasPrefix(registeredPath, `"`) {
-			registeredPath, err = strconv.Unquote(registeredPath)
-			if err != nil {
-				return false, fmt.Errorf("worktree: parse registered path %q: %w", registeredPath, err)
-			}
-		}
-		if sameWorktreePath(registeredPath, path) {
+	for _, entry := range registered {
+		if sameWorktreePath(entry.Path, path) {
 			return true, nil
 		}
-		registeredInfo, registeredErr := os.Stat(registeredPath)
+		registeredInfo, registeredErr := os.Stat(entry.Path)
 		pathInfo, pathErr := os.Stat(path)
 		if registeredErr == nil && pathErr == nil && os.SameFile(registeredInfo, pathInfo) {
 			return true, nil
@@ -398,6 +393,46 @@ func canonicalAbsentLeafPath(path string) string {
 		return filepath.Join(parent, filepath.Base(path))
 	}
 	return path
+}
+
+type registeredWorktree struct {
+	Path   string
+	Branch string
+}
+
+// registeredWorktrees parses Git's stable porcelain records once for callers
+// that need either path registration or branch occupancy. Keeping the parser
+// shared prevents Create's reconciliation path from interpreting quoted paths
+// differently from Reap's safety check.
+func registeredWorktrees(ctx context.Context, repoDir string) ([]registeredWorktree, error) {
+	out, err := runCleanupGitOutput(ctx, repoDir, "worktree list", "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var entries []registeredWorktree
+	var current *registeredWorktree
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			if current != nil {
+				entries = append(entries, *current)
+			}
+			path := strings.TrimPrefix(line, "worktree ")
+			if strings.HasPrefix(path, `"`) {
+				path, err = strconv.Unquote(path)
+				if err != nil {
+					return nil, fmt.Errorf("worktree: parse registered path %q: %w", path, err)
+				}
+			}
+			current = &registeredWorktree{Path: path}
+		case current != nil && strings.HasPrefix(line, "branch "):
+			current.Branch = strings.TrimPrefix(line, "branch ")
+		}
+	}
+	if current != nil {
+		entries = append(entries, *current)
+	}
+	return entries, nil
 }
 
 // processAlive reports whether pid names a live process. Indirected through
