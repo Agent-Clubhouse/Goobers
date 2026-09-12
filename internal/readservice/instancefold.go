@@ -96,6 +96,14 @@ func (s *instanceState) apply(event journal.Event) {
 		if worker == "" {
 			break
 		}
+		// The daemon-owned capability sentinel describes the period before any
+		// authenticated worker has reported. A later real worker report proves
+		// that reporting is active, so retaining "awaiting" beside that report
+		// would be false. Removing it in the fold makes replay and restart obey
+		// the same event ordering without requiring a synthetic clear event.
+		if worker != journal.WorkerConfigDivergenceReportingCapability {
+			s.clearWorkerDivergence(journal.WorkerConfigDivergenceReportingCapability)
+		}
 		if s.workerDivergence == nil {
 			s.workerDivergence = make(map[string]WorkerConfigDivergenceStatus)
 		}
@@ -157,6 +165,19 @@ func (s *instanceState) apply(event journal.Event) {
 			event.RunID != "" &&
 			!containsString(s.restart.RunIDs, event.RunID) {
 			s.restart.RunIDs = append(s.restart.RunIDs, event.RunID)
+		}
+	}
+}
+
+func (s *instanceState) clearWorkerDivergence(worker string) {
+	if _, known := s.workerDivergence[worker]; !known {
+		return
+	}
+	delete(s.workerDivergence, worker)
+	for i, candidate := range s.workerDivergenceOrder {
+		if candidate == worker {
+			s.workerDivergenceOrder = append(s.workerDivergenceOrder[:i], s.workerDivergenceOrder[i+1:]...)
+			return
 		}
 	}
 }

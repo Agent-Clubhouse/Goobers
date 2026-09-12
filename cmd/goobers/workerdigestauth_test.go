@@ -355,10 +355,10 @@ func TestDaemonRecordsRemoteReportingNotActiveWithoutWorkerKey(t *testing.T) {
 	if err := recordDaemonWorkerDivergenceAvailability(&recordingDivergenceAppender{events: events}, cfg); err != nil {
 		t.Fatal(err)
 	}
-	assertDivergenceEvent(t, events, "worker:remote-reporting", workerDivergenceNotActive)
+	assertDivergenceEvent(t, events, journal.WorkerConfigDivergenceReportingCapability, workerDivergenceNotActive)
 	cfg.API.PodTokenKeyFile = "/var/run/goobers/pod.key"
 	if err := recordDaemonWorkerDivergenceAvailability(&recordingDivergenceAppender{events: events}, cfg); err != nil {
 		t.Fatal(err)
 	}
-	assertDivergenceEvent(t, events, "worker:remote-reporting", workerDivergenceNotChecked)
+	assertDivergenceEvent(t, events, journal.WorkerConfigDivergenceReportingCapability, workerDivergenceNotChecked)
 }

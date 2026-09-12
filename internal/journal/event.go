@@ -31,6 +31,9 @@ type EventType string
 type WorkerConfigDivergenceState string
 
 const (
+	// WorkerConfigDivergenceReportingCapability is the daemon-owned sentinel
+	// used until an authenticated worker proves that remote reporting is live.
+	WorkerConfigDivergenceReportingCapability = "worker:remote-reporting"
 	// WorkerConfigDivergenceInSync means both known digests match.
 	WorkerConfigDivergenceInSync WorkerConfigDivergenceState = "in-sync"
 	// WorkerConfigDivergenceDiverged means both digests are known and differ.

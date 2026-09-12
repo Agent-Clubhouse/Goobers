@@ -670,6 +670,64 @@ func TestSchedulerStatusPersistsLatestWorkerConfigDivergencePerWorker(t *testing
 	}
 }
 
+func TestSchedulerStatusClearsReportingSentinelAfterWorkerReportAcrossCompaction(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	clock := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return clock }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendReport := func(worker, state, message string) {
+		t.Helper()
+		if err := log.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+			"worker": worker, "state": state, "workerDigest": "sha256:same", "daemonDigest": "sha256:same",
+			"reason": "awaiting authenticated per-worker report", "message": message,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendReport(journal.WorkerConfigDivergenceReportingCapability, "not-checked", "awaiting")
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.WorkerConfigDivergence) != 1 || status.WorkerConfigDivergence[0].Worker != journal.WorkerConfigDivergenceReportingCapability {
+		t.Fatalf("initial status = %+v, want reporting sentinel", status.WorkerConfigDivergence)
+	}
+
+	clock = clock.Add(time.Minute)
+	appendReport("worker:node-a", "in-sync", "reported")
+	assertResolved := func(label string, service *Local) {
+		t.Helper()
+		status, err := service.SchedulerStatus(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(status.WorkerConfigDivergence) != 1 || status.WorkerConfigDivergence[0].Worker != "worker:node-a" ||
+			status.WorkerConfigDivergence[0].Message != "reported" {
+			t.Fatalf("%s status retained reporting sentinel: %+v", label, status.WorkerConfigDivergence)
+		}
+	}
+	assertResolved("incremental fold", service)
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	keepAfter := clock.Add(time.Hour)
+	if _, err := journal.CompactInstanceEvents(layout.SchedulerDir(), keepAfter, keepAfter, false); err != nil {
+		t.Fatal(err)
+	}
+	service, err = NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertResolved("compacted replay", service)
+}
+
 func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	machine := fixtureMachine(t)

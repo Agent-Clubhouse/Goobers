@@ -312,7 +312,7 @@ func recordDaemonWorkerDivergenceAvailability(recorder workerDivergenceAppender,
 		message = "worker config divergence: NOT CHECKED — remote reporting is active and awaiting authenticated per-worker state"
 	}
 	return recorder.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
-		"worker": "worker:remote-reporting", "state": state,
+		"worker": journal.WorkerConfigDivergenceReportingCapability, "state": state,
 		"reason": reason, "message": message,
 	}})
 }
