@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -74,6 +75,32 @@ func TestGenerateProducesReadableRuns(t *testing.T) {
 	}
 	if gen.SchedulerJournalSize == 0 {
 		t.Fatal("scheduler journal is empty")
+	}
+	// Generated run journals model newly written authoritative records, not
+	// legacy input. Their terminal events must therefore carry the normative
+	// disposition explicitly; the projector's legacy inference is not a
+	// substitute for exercising the current producer contract.
+	for i := 0; i < spec.Runs; i++ {
+		if i%7 == 0 {
+			continue
+		}
+		runID := fmt.Sprintf("run-%08d", i)
+		dir, err := gen.Layout.FindRunDir(runID)
+		if err != nil {
+			t.Fatalf("find generated run %s: %v", runID, err)
+		}
+		reader, err := journal.OpenRead(dir)
+		if err != nil {
+			t.Fatalf("open generated run %s: %v", runID, err)
+		}
+		events, err := reader.Events()
+		if err != nil {
+			t.Fatalf("read generated run %s: %v", runID, err)
+		}
+		terminal := events[len(events)-1]
+		if terminal.Type != journal.EventRunFinished || terminal.Disposition != journal.RunDispositionProduced {
+			t.Fatalf("generated run %s terminal = %+v, want explicit produced run.finished", runID, terminal)
+		}
 	}
 
 	if err := rebuildAllRoots(gen); err != nil {
