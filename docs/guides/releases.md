@@ -338,6 +338,44 @@ signature below — both `sign-macos` and `sign-windows` recompute this
 manifest after signing, so it always reflects the signed bytes actually
 published.
 
+## Verifying a release
+
+Every published release is verifiable two ways, and both need something the
+project publishes rather than something you already trust.
+
+**The tag signature.** Release tags are signed locally by the maintainer
+cutting them, not by CI. The signing key is published as
+[`.github/allowed_signers`](../../.github/allowed_signers), which is what makes
+`git tag -v` succeed for anyone other than the person who cut the tag:
+
+```sh
+git fetch --tags
+git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.4.0-rc.2
+```
+
+A good signature prints `Good "git" signature for <principal> with ED25519 key
+SHA256:...`. Anything else — including `No principal matched` — means the tag
+is not the one this repository published, or the signing identity changed
+without this file being updated in the same commit.
+
+That signature covers the **tag annotation**, which is the release's identity
+and message. It does not cover the generated changelog, DSL deltas, or support
+policy that `RELEASE_NOTES.md` appends below it; those are covered by the
+checksum manifest instead.
+
+**The artifacts.** `SHA256SUMS` covers every published asset, including
+`RELEASE_NOTES.md`:
+
+```sh
+# From a directory holding the downloaded assets and SHA256SUMS:
+sha256sum --check SHA256SUMS        # GNU coreutils
+shasum -a 256 --check SHA256SUMS    # macOS
+```
+
+`SHA256SUMS` itself is not self-covering — nothing can be. Its integrity comes
+from the tag: verify the signature first, then the checksums, and the chain
+holds end to end.
+
 ## Signing posture
 
 - **macOS: Developer ID signed and notarized.** The `sign-macos` job in
