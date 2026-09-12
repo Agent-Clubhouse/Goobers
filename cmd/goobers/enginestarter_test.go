@@ -33,6 +33,12 @@ type recordingEngineStarter struct {
 	once    sync.Once
 }
 
+type engineStarterMinuteSchedule struct{}
+
+func (engineStarterMinuteSchedule) Next(after time.Time) time.Time {
+	return after.Add(time.Minute)
+}
+
 func (s *recordingEngineStarter) Start(_ context.Context, in engine.RunInput) (engine.StartResult, error) {
 	s.mu.Lock()
 	s.started = append(s.started, in)
@@ -352,6 +358,60 @@ func TestEngineStarterFiresTerminalHooksOnceTheWorkflowCloses(t *testing.T) {
 	for i := range want {
 		if fixture.hooks.order[i] != want[i] {
 			t.Fatalf("hook order = %v, want %v", fixture.hooks.order, want)
+		}
+	}
+}
+
+// TestDSL3EngineNoWorkRepeatedlyEngagesIdleBackoff covers the production
+// daemon mapping and scheduler together. It is intentionally a repeated DSL 3
+// schedule, not a fabricated scheduler StartResult: every admitted input must
+// retain the definition's DSL version, and the third configured tick must be
+// suppressed after two consecutive engine no-work terminals (#4882).
+func TestDSL3EngineNoWorkRepeatedlyEngagesIdleBackoff(t *testing.T) {
+	base := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	now := base
+	temporal := &fakeEngineWorkflows{
+		status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED,
+		result: engine.RunResult{
+			Status:     engine.StatusCompleted,
+			FinalState: "implement",
+			Steps:      1,
+			NoWork:     true,
+		},
+	}
+	fixture := newEngineStarterFixture(t, temporal, &recordingEngineStarter{})
+	fixture.starter.def.DSLVersion = "3.0"
+	scheduler := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Gaggle:    "web",
+		Workflow:  fixture.starter.def.Name,
+		RepoRef:   apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		Schedules: []localscheduler.Schedule{engineStarterMinuteSchedule{}},
+		ScheduleBackoffs: []localscheduler.IdleBackoffConfig{{
+			Enabled: true,
+			Floor:   time.Minute,
+			Ceiling: 4 * time.Minute,
+		}},
+		Starter: fixture.starter,
+	}}, fixture.starter.log, localscheduler.WithClock(func() time.Time { return now }, time.After))
+
+	for _, tickAt := range []time.Time{
+		base.Add(time.Minute),
+		base.Add(2 * time.Minute),
+		base.Add(3 * time.Minute),
+		base.Add(4 * time.Minute),
+	} {
+		now = tickAt
+		scheduler.Tick(t.Context(), tickAt)
+		scheduler.Wait()
+	}
+
+	inputs := fixture.engine.inputs()
+	if len(inputs) != 3 {
+		t.Fatalf("engine starts = %d, want 3: the third configured tick should be suppressed by idle backoff", len(inputs))
+	}
+	for i, input := range inputs {
+		if input.DSLVersion != "3.0" {
+			t.Errorf("engine input %d DSL version = %q, want 3.0", i, input.DSLVersion)
 		}
 	}
 }

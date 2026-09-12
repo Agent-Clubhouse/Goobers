@@ -14,14 +14,12 @@ import (
 
 // Disposition values for RunRow.Disposition (§5.3).
 //
-// Only two of the three reserved enum values are ever written here.
-// DispositionProduced is deliberately absent: defining "did this run produce
-// something" for every workflow shape is #1429's contract, not this
-// projector's to guess at. DispositionUnknown is the safe default for
-// everything this projector cannot classify — including a real productive
-// run — until #1429 lands.
+// Unknown is reserved for a live run whose terminal outcome is not yet known.
+// Every terminal run is classified into one of the two accounting buckets:
+// no-work for the explicit first-stage short circuit, produced otherwise.
 const (
-	DispositionUnknown = "unknown"
+	DispositionUnknown  = "unknown"
+	DispositionProduced = "produced"
 	// DispositionNoWork marks a run that touched exactly one stage and that
 	// stage's terminal status was apiv1.ResultNoWork (#2188). Expressed as a
 	// bare string rather than importing api/v1alpha1: event.Status is already
@@ -83,12 +81,9 @@ type RunRow struct {
 	OutcomeVerdict string
 	OutcomeTarget  string
 
-	// Disposition is the reserved semantic-work-disposition column (§5.3):
-	// 'no-work' when this run touched exactly one stage and that stage's
-	// terminal status was no-work (#2188), 'unknown' otherwise. It never
-	// claims 'produced' — that half of the enum, and the rest of the
-	// contract, is #1429/#1439's to define; this only ever asserts the one
-	// classification the existing no-work signal already answers cleanly.
+	// Disposition is the semantic-work-disposition column (§5.3): 'unknown'
+	// while the run is live, 'no-work' for an explicit first-stage no-work
+	// short circuit, and 'produced' for every other terminal outcome.
 	Disposition string
 
 	// Stages is every stage or gate the run has touched, sorted. It backs the
@@ -579,12 +574,19 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	// Recomputed from the full fold every time (not carried from prev), so
 	// incremental and whole-history projection agree (§14.9) exactly like
 	// row.Stages above.
-	row.Disposition = DispositionUnknown
-	if row.Phase == journal.PhaseCompleted && len(out) == 1 && out[0].LastStatus == DispositionNoWork {
-		row.Disposition = DispositionNoWork
-	}
+	row.Disposition = runDisposition(row, out)
 
 	return Projection{Run: row, Stages: out, Nodes: outNodes}
+}
+
+func runDisposition(row RunRow, stages []StageRow) string {
+	if !row.Terminal {
+		return DispositionUnknown
+	}
+	if row.Phase == journal.PhaseCompleted && len(stages) == 1 && stages[0].LastStatus == DispositionNoWork {
+		return DispositionNoWork
+	}
+	return DispositionProduced
 }
 
 // ProjectRunFromJournal adds facts that require resolving immutable journal
