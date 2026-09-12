@@ -322,15 +322,19 @@ func inventoryRetainedWorktrees(managers []*Manager, opts RetentionOptions) ([]r
 }
 
 func observeJournalMissing(managerRoot, worktreeID, markerPath string, mk *marker, opts RetentionOptions) (bool, time.Time, error) {
+	if opts.JournalGraceAge <= 0 {
+		// Disabling the rule also abandons any prior observation. Re-enabling
+		// must start a fresh grace window, not resume a clock accumulated under
+		// a policy that was no longer in force.
+		observed, err := updateJournalMissingObservation(markerPath, mk, false, opts.Now)
+		return false, observed, err
+	}
 	if opts.JournalMissing == nil {
 		return false, time.Time{}, nil
 	}
 	missing, err := opts.JournalMissing(managerRoot, worktreeID, mk.OwnerRunID)
 	if err != nil {
 		return false, time.Time{}, err
-	}
-	if opts.JournalGraceAge <= 0 {
-		return missing, time.Time{}, nil
 	}
 	observed, err := updateJournalMissingObservation(markerPath, mk, missing, opts.Now)
 	if err != nil {
