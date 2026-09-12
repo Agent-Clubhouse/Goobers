@@ -452,7 +452,9 @@ func telemetryRetentionStatus(config *instance.Config, latest *TelemetryRetentio
 		status.FirstEnable = "gracePeriod"
 	}
 	if latest != nil {
-		status.EnforceAt = latest.EnforceAt
+		if status.Enabled {
+			status.EnforceAt = latest.EnforceAt
+		}
 		status.LastPassAt = latest.LastPassAt
 		status.LastPassMode = latest.LastPassMode
 		status.CandidateCount = latest.CandidateCount

@@ -224,6 +224,16 @@ func TestTelemetryRetentionStatusReplaysAcrossReadersAndInstanceAPI(t *testing.T
 			t.Fatalf("reader %d instance retention = %+v, scheduler = %+v", i, api.TelemetryRetention, got)
 		}
 	}
+	disabled := false
+	config.Telemetry.Retention.Enabled = &disabled
+	disabledStatus, err := newService().SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := disabledStatus.TelemetryRetention
+	if got == nil || got.Enabled || got.EnforceAt != nil || got.LastPassMode != "dry-run" || got.CandidateCount != 17 {
+		t.Fatalf("disabled policy retained misleading enforcement state or lost history: %+v", got)
+	}
 }
 
 func TestListStatusRunsProjectsTerminalOperatorSummary(t *testing.T) {

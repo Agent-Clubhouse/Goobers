@@ -715,7 +715,7 @@ function InstanceStrip({
           ) : (
             <span>no retention pass recorded</span>
           )}
-          {telemetryRetention.enforceAt && (
+          {telemetryRetention.enabled && telemetryRetention.enforceAt && (
             <span>enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
           )}
         </div>

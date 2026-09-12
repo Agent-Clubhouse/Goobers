@@ -271,6 +271,25 @@ describe("overview page", () => {
     expect(screen.getByText(/enforcement begins/)).toBeInTheDocument();
   });
 
+  it("does not present a stale enforcement date for a disabled retention policy", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.instance.telemetryRetention = {
+      enabled: false,
+      window: "30d",
+      maxRuns: 900,
+      firstEnable: "gracePeriod",
+      enforceAt: "2026-09-19T08:00:00Z",
+      lastPassAt: "2026-09-12T08:00:00Z",
+      lastPassMode: "dry-run",
+      candidateCount: 17,
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+    expect(await screen.findByText("Telemetry retention disabled")).toBeInTheDocument();
+    expect(screen.getByText(/last pass dry-run/)).toHaveTextContent("17 candidates");
+    expect(screen.queryByText(/enforcement begins/)).not.toBeInTheDocument();
+  });
+
   it("renders a failed retention sweep status", async () => {
     const failed = populatedDaemonFixtures();
     failed.instance.maintenance = {

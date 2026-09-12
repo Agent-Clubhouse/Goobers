@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,6 +91,39 @@ func TestRecordTelemetryRetentionPassJournalsBoundedProjection(t *testing.T) {
 		events[0].Runner["mode"] != "dry-run" || events[0].Runner["candidateCount"] != float64(3) ||
 		events[0].Runner["enforceAt"] != enforceAt.Format(time.RFC3339Nano) {
 		t.Fatalf("retention pass event = %+v", events)
+	}
+}
+
+func TestStatusJSONProjectsJournaledTelemetryRetentionPass(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	enforceAt := passAt.Add(7 * 24 * time.Hour)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return passAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: map[string]any{
+		"mode": "dry-run", "candidateCount": 11, "enforceAt": enforceAt.Format(time.RFC3339Nano),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json code=%d stderr=%q", code, stderr)
+	}
+	var output statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatal(err)
+	}
+	got := output.TelemetryRetention
+	if got == nil || got.LastPassMode != "dry-run" || got.CandidateCount != 11 ||
+		got.LastPassAt == nil || !got.LastPassAt.Equal(passAt) || got.EnforceAt == nil || !got.EnforceAt.Equal(enforceAt) {
+		t.Fatalf("status JSON telemetry retention = %+v", got)
 	}
 }
 
