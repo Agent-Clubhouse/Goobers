@@ -81,6 +81,24 @@ func maintenanceStatusLine(status readservice.SchedulerStatus) string {
 		status.Maintenance.State, status.Maintenance.Removed, status.Maintenance.Candidates)
 }
 
+func telemetryRetentionStatusLine(status readservice.SchedulerStatus) string {
+	retention := status.TelemetryRetention
+	if retention == nil {
+		return ""
+	}
+	line := fmt.Sprintf("Telemetry retention: enabled=%t, window=%s, max-runs=%d, first-enable=%s",
+		retention.Enabled, retention.Window, retention.MaxRuns, retention.FirstEnable)
+	if retention.LastPassAt == nil {
+		return line + ", last-pass=none\n"
+	}
+	line += fmt.Sprintf(", last-pass=%s at %s, candidates=%d",
+		retention.LastPassMode, retention.LastPassAt.UTC().Format(time.RFC3339), retention.CandidateCount)
+	if retention.EnforceAt != nil {
+		line += ", enforcement=" + retention.EnforceAt.UTC().Format(time.RFC3339)
+	}
+	return line + "\n"
+}
+
 // refusedWorkflowStatusLines surfaces the workflows the startup constraint
 // solve refused (#2860, dsl-3.0.md §5 checkpoint 3): the daemon is up and
 // every other workflow serves, so these lines are the operator's only
@@ -279,6 +297,7 @@ type statusJSONOutput struct {
 	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
 	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
 	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
+	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -1057,6 +1076,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			text.WriteString(daemonRestartStatusLine(status, now))
 			text.WriteString(providerQuotaStatusLine(status, now))
 			text.WriteString(maintenanceStatusLine(status))
+			text.WriteString(telemetryRetentionStatusLine(status))
 			text.WriteString(workerConfigDivergenceStatusLines(status, now))
 			text.WriteString(refusedWorkflowStatusLines(status))
 			text.WriteString(isolationMandateStatusLines(status))
@@ -1150,6 +1170,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
 		var maintenance *readservice.MaintenanceStatus
+		var telemetryRetention *readservice.TelemetryRetentionStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
 		var engineFallbacks []readmodel.EngineFallback
@@ -1163,6 +1184,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
 				maintenance = status.Maintenance
+				telemetryRetention = status.TelemetryRetention
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
 				engineFallbacks = status.EngineFallbacks
@@ -1182,6 +1204,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			TimeToFirstPR:          timeToFirstPR,
 			DaemonRestart:          daemonRestart,
 			Maintenance:            maintenance,
+			TelemetryRetention:     telemetryRetention,
 			RefusedWorkflows:       refusedWorkflows,
 			IsolationMandates:      isolationMandates,
 			Summary:                fleetSummary,

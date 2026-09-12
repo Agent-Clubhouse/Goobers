@@ -444,7 +444,7 @@ func telemetryRetentionStatus(config *instance.Config, latest *TelemetryRetentio
 	}
 	status := TelemetryRetentionStatus{
 		Enabled:     retentionConfig.EnabledEffective(),
-		Window:      window.String(),
+		Window:      formatTelemetryRetentionWindow(window),
 		MaxRuns:     retentionConfig.MaxRunLimit(),
 		FirstEnable: retentionConfig.FirstEnable,
 	}
@@ -458,6 +458,13 @@ func telemetryRetentionStatus(config *instance.Config, latest *TelemetryRetentio
 		status.CandidateCount = latest.CandidateCount
 	}
 	return &status
+}
+
+func formatTelemetryRetentionWindow(window time.Duration) string {
+	if window%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", window/(24*time.Hour))
+	}
+	return window.String()
 }
 
 func workflowRefillOccupancy(

@@ -126,7 +126,7 @@ func queueEligibilityWireFixture(at time.Time) readservice.QueueEligibilityView 
 	return readservice.QueueEligibilityView{Gaggle: report.Gaggle, Workflow: report.Workflow, AsOf: at, Status: "observed", SourceRunID: report.RunID, SourceStage: "select", Report: &report}
 }
 
-func instanceWireFixture(warning validate.CodedWarning) readservice.Instance {
+func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt time.Time) readservice.Instance {
 	return readservice.Instance{
 		APIVersion:    readservice.APIVersion,
 		SchemaVersion: readservice.SchemaVersion,
@@ -146,6 +146,10 @@ func instanceWireFixture(warning validate.CodedWarning) readservice.Instance {
 			ActiveRuns: 1,
 		},
 		Warnings: []validate.CodedWarning{warning},
+		TelemetryRetention: &readservice.TelemetryRetentionStatus{
+			Enabled: true, Window: "90d", MaxRuns: 500, FirstEnable: "gracePeriod",
+			EnforceAt: &finishedAt, LastPassAt: &startedAt, LastPassMode: "dry-run", CandidateCount: 7,
+		},
 	}
 }
 
@@ -355,7 +359,7 @@ func newWireFixtures() wireFixtures {
 				CheckedAt:      timestamp,
 			},
 		},
-		Instance: instanceWireFixture(warning),
+		Instance: instanceWireFixture(warning, startedAt, finishedAt),
 		PortalConfig: readservice.PortalConfig{
 			Brand: readservice.PortalBrandResponse{
 				Name:       "goobers",

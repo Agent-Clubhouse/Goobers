@@ -12,6 +12,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -52,6 +53,43 @@ func TestTelemetryPruneIsExplicitWhenAutomationDisabled(t *testing.T) {
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
 		t.Fatalf("explicit prune left journal: %v", err)
+	}
+}
+
+func TestTelemetryRetentionStartupSummaryIsBounded(t *testing.T) {
+	results := make([]retention.Result, 25)
+	var stdout bytes.Buffer
+	reportTelemetryPruned(&stdout, results, true, true)
+	if got, want := stdout.String(), "telemetry retention: candidates=25 mode=dry-run\n"; got != want {
+		t.Fatalf("startup summary = %q, want %q", got, want)
+	}
+}
+
+func TestRecordTelemetryRetentionPassJournalsBoundedProjection(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	enforceAt := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	if err := writeTelemetryRetentionState(layout, telemetryRetentionState{EnforceAt: enforceAt}); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make([]retention.Result, 3)
+	if err := recordTelemetryRetentionPass(log, layout, instance.TelemetryRetentionConfig{}, results, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != journal.EventTelemetryRetentionPass ||
+		events[0].Runner["mode"] != "dry-run" || events[0].Runner["candidateCount"] != float64(3) ||
+		events[0].Runner["enforceAt"] != enforceAt.Format(time.RFC3339Nano) {
+		t.Fatalf("retention pass event = %+v", events)
 	}
 }
 
