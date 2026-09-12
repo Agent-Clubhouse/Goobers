@@ -94,6 +94,13 @@ var httpShutdownGrace = 5 * time.Second
 
 const daemonAPIAddressFileName = "api.address"
 
+func daemonChangeFeedHandlerOptions(setup *schedulerSetup) []httpapi.HandlerOption {
+	if setup.ReadModel == nil {
+		return nil
+	}
+	return []httpapi.HandlerOption{httpapi.WithChangeFeedStream(setup.ReadModel)}
+}
+
 // diagnosticsMode is set true by `goobers up --diagnostics`. Read in
 // buildRunnerConfig to arm the executor's per-stage diagnostics watchdog and
 // un-truncate stage output. A package var (like runProcessExits) so it threads
@@ -724,10 +731,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	//
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
-	var apiHandlerOpts []httpapi.HandlerOption
-	if setup.ReadModel != nil {
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
-	}
+	apiHandlerOpts := daemonChangeFeedHandlerOptions(setup)
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
 	// #3883 (decision 005 R8): give the intervention surface a second
 	// destination. Runner-driven runs keep the in-process path untouched;
@@ -857,16 +861,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// its own has diverged instead of finding out when an agentic gate refuses.
 	configDigests := newConfigDigestPublisher(setup.ConfigDigest)
 	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithConfigDigest(configDigests.Get))
-	workerDivergenceRecorder, err := newWorkerDivergenceJournalRecorder(setup.InstanceLog)
+	workerDivergenceOption, err := newWorkerDivergenceHandlerOption(setup.InstanceLog, setup.Config)
 	if err != nil {
-		pf(stderr, "error: initialize worker config-divergence journal: %v\n", err)
+		pf(stderr, "error: initialize worker config-divergence reporting: %v\n", err)
 		return 1
 	}
-	if err := recordDaemonWorkerDivergenceAvailability(workerDivergenceRecorder, setup.Config); err != nil {
-		pf(stderr, "error: record worker config-divergence availability: %v\n", err)
-		return 1
-	}
-	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithWorkerConfigDivergence(workerDivergenceRecorder.Append))
+	apiHandlerOpts = append(apiHandlerOpts, workerDivergenceOption)
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -59,6 +60,17 @@ import (
 // incidents ran 32 minutes and until a deploy) and costs the daemon one bounded
 // GET per worker per minute.
 const workerDivergenceCheckInterval = time.Minute
+
+func newWorkerDivergenceHandlerOption(log *journal.InstanceLog, cfg *instance.Config) (httpapi.HandlerOption, error) {
+	recorder, err := newWorkerDivergenceJournalRecorder(log)
+	if err != nil {
+		return nil, fmt.Errorf("initialize journal: %w", err)
+	}
+	if err := recordDaemonWorkerDivergenceAvailability(recorder, cfg); err != nil {
+		return nil, fmt.Errorf("record daemon availability: %w", err)
+	}
+	return httpapi.WithWorkerConfigDivergence(recorder.Append), nil
+}
 
 // workerDigestTokenSource keeps static-token deployments compatible while a
 // split worker uses its existing shared key for a separate, short-lived worker
