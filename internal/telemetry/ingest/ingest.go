@@ -174,13 +174,14 @@ func SchedulerLog(db *rollup.DB, schedulerDir string, log *journal.InstanceLog, 
 
 // LogFailure appends a best-effort diagnostic event for a failed
 // rollup ingest (issue #246) — nil-safe (log may be nil in a test/standalone
-// context) and itself swallows its own Append error, since a logging
-// failure must not cascade into a second failure mode.
+// context). A logging failure must not cascade into a second failure mode, but
+// it still crosses the observable discard boundary so #4873's process counter
+// and external metric record the loss.
 func LogFailure(log *journal.InstanceLog, runID, code string, cause error) {
 	if log == nil {
 		return
 	}
-	_ = log.Append(journal.Event{
+	log.AppendBestEffort(journal.Event{
 		Type: journal.EventError, RunID: runID,
 		Error: &journal.ErrorDetail{Code: code, Message: cause.Error()},
 	})
