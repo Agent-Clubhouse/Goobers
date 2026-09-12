@@ -62,7 +62,7 @@ type jobBudget struct {
 	Baseline        string  `json:"baseline"`
 	// RegressionTolerance is the fraction of growth over the previous
 	// successful run's ElapsedSeconds that counts as a genuine regression
-	// signal. Shared CI runners (macOS in particular) swing run-to-run purely
+	// signal. Shared CI runners can swing run-to-run purely
 	// from contention -- see #3323, where a green run landed 566.7s against a
 	// 300s budget that every prior green run had already blown, with day-to-day
 	// swings over 20% observed with no code change at all. A fixed-second

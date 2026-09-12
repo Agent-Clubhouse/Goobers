@@ -565,28 +565,72 @@ func singleStageEvents(status string) []journal.Event {
 	}
 }
 
-// TestProjectionClassifiesSingleStageNoWork is the regression test for #2188:
-// the portal's run list needs to tell a routine no-work schedule tick apart
-// from a genuine single-stage success, using only the signal the runner
-// already records (a stage's own terminal status).
-func TestProjectionClassifiesSingleStageNoWork(t *testing.T) {
+// TestProjectionClassifiesTerminalDisposition is the regression test for
+// #2188/#4882: the portal and scheduler accounting need every terminal run in
+// exactly one of the produced/no-work buckets.
+func TestProjectionClassifiesTerminalDisposition(t *testing.T) {
 	noWork := ProjectRun(testIdentity(), Projection{}, singleStageEvents("no-work"))
 	if noWork.Run.Disposition != DispositionNoWork {
 		t.Errorf("disposition = %q, want %q for a single no-work stage", noWork.Run.Disposition, DispositionNoWork)
 	}
 
 	success := ProjectRun(testIdentity(), Projection{}, singleStageEvents("success"))
-	if success.Run.Disposition != DispositionUnknown {
+	if success.Run.Disposition != DispositionProduced {
 		t.Errorf("disposition = %q, want %q for a single successful stage — a real single-task workflow is not no-work",
-			success.Run.Disposition, DispositionUnknown)
+			success.Run.Disposition, DispositionProduced)
 	}
 
 	// completedRunEvents touches two stages (implement, review); even though
 	// "implement" itself succeeds, a multi-stage run must never be classified
 	// no-work regardless of any individual stage's status.
 	multiStage := ProjectRun(testIdentity(), Projection{}, completedRunEvents())
-	if multiStage.Run.Disposition != DispositionUnknown {
-		t.Errorf("disposition = %q, want %q for a multi-stage run", multiStage.Run.Disposition, DispositionUnknown)
+	if multiStage.Run.Disposition != DispositionProduced {
+		t.Errorf("disposition = %q, want %q for a multi-stage run", multiStage.Run.Disposition, DispositionProduced)
+	}
+
+	for _, phase := range []journal.RunPhase{
+		journal.PhaseFailed,
+		journal.PhaseAborted,
+		journal.PhaseEscalated,
+	} {
+		events := singleStageEvents("no-work")
+		events[len(events)-1].Status = string(phase)
+		run := ProjectRun(testIdentity(), Projection{}, events).Run
+		if !run.Terminal || run.Disposition != DispositionProduced {
+			t.Errorf("phase %q projected terminal=%t disposition=%q, want terminal produced", phase, run.Terminal, run.Disposition)
+		}
+	}
+
+	live := ProjectRun(testIdentity(), Projection{}, singleStageEvents("success")[:2]).Run
+	if live.Terminal || live.Disposition != DispositionUnknown {
+		t.Errorf("live run projected terminal=%t disposition=%q, want non-terminal unknown", live.Terminal, live.Disposition)
+	}
+}
+
+func TestLegacyNoWorkInferenceCountsExecutionsNotUniqueStageNames(t *testing.T) {
+	tests := map[string][]journal.Event{
+		"same-stage re-entry": {
+			ev(1, time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "poll" }),
+			ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) { e.Stage, e.Status = "poll", "success" }),
+			ev(3, 3*time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "poll" }),
+			ev(4, 4*time.Second, journal.EventStageFinished, func(e *journal.Event) { e.Stage, e.Status = "poll", "no-work" }),
+			ev(5, 5*time.Second, journal.EventRunFinished, func(e *journal.Event) { e.Status = string(journal.PhaseCompleted) }),
+		},
+		"gate before poll": {
+			ev(1, time.Second, journal.EventGateStarted, func(e *journal.Event) { e.Gate = "ready" }),
+			ev(2, 2*time.Second, journal.EventGateEvaluated, func(e *journal.Event) { e.Gate, e.Target = "ready", "poll" }),
+			ev(3, 3*time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "poll" }),
+			ev(4, 4*time.Second, journal.EventStageFinished, func(e *journal.Event) { e.Stage, e.Status = "poll", "no-work" }),
+			ev(5, 5*time.Second, journal.EventRunFinished, func(e *journal.Event) { e.Status = string(journal.PhaseCompleted) }),
+		},
+	}
+	for name, events := range tests {
+		t.Run(name, func(t *testing.T) {
+			run := ProjectRun(testIdentity(), Projection{}, events).Run
+			if run.Disposition != DispositionProduced {
+				t.Fatalf("disposition = %q, want %q; a later no-work step must not erase earlier work", run.Disposition, DispositionProduced)
+			}
+		})
 	}
 }
 

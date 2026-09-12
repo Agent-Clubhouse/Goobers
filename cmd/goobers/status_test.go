@@ -23,6 +23,9 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -30,6 +33,323 @@ import (
 
 func writeStatusRun(t *testing.T, root, runID, workflow, gaggle string, startedAt time.Time) {
 	writeStatusRunWithPhase(t, root, runID, workflow, gaggle, startedAt, journal.PhaseRunning)
+}
+
+func TestStatusLimitUsesExistingReadModelWithoutRunJournalWalk(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	for i := range 1000 {
+		startedAt := base.Add(time.Duration(i) * time.Minute)
+		finishedAt := startedAt.Add(time.Minute)
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+			RunID: fmt.Sprintf("projected-%04d", i), Gaggle: "example", Workflow: "default-implement",
+			Phase: journal.PhaseCompleted, Terminal: true, StartedAt: startedAt,
+			FinishedAt: &finishedAt, LastActivity: finishedAt, LastSeq: 1,
+		}}); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := store.MarkReady(context.Background()); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watermarks.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	code, stdout, stderr := runArgs(t, "status", "--json", "--limit", "20", root)
+	work := readprobe.Take()
+	readprobe.Disable()
+	if code != 0 {
+		t.Fatalf("status: code=%d stderr=%q", code, stderr)
+	}
+	var output struct {
+		Runs []json.RawMessage `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("decode status JSON: %v\n%s", err, stdout)
+	}
+	if len(output.Runs) != 20 {
+		t.Fatalf("status returned %d runs, want --limit 20", len(output.Runs))
+	}
+	if work.JournalOpens != 0 {
+		t.Fatalf("status --limit 20 opened %d run journals with 1,000 projected runs, want 0", work.JournalOpens)
+	}
+}
+
+func TestStatusFallsBackWhenProjectionIsNotAuthoritative(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		ready         bool
+		createIntake  bool
+		pending       bool
+		corruptReadDB bool
+	}{
+		{name: "not ready"},
+		{name: "ready without intake evidence", ready: true},
+		{name: "pending source watermark", ready: true, createIntake: true, pending: true},
+		{name: "corrupt projection", corruptReadDB: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initDemo(t)
+			layout := instance.NewLayout(root)
+			writeStatusRunWithPhase(t, root, "journal-run", "default-implement", "example", time.Now().Add(-time.Minute), journal.PhaseCompleted)
+			if tc.corruptReadDB {
+				if err := os.WriteFile(layout.ReadDB(), []byte("not a sqlite database"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				store, err := readmodel.Open(layout.ReadDB())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.ready {
+					if err := store.MarkReady(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.createIntake {
+				watermarks, err := intake.Open(layout.IntakeDB())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.pending {
+					if err := watermarks.Observed(context.Background(), "journal-run", 2); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := watermarks.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			readprobe.Enable()
+			t.Cleanup(readprobe.Disable)
+			code, stdout, stderr := runArgs(t, "status", "--json", "--limit", "1", root)
+			work := readprobe.Take()
+			readprobe.Disable()
+			if code != 0 || !strings.Contains(stdout, "journal-run") {
+				t.Fatalf("status fallback: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if work.JournalOpens == 0 {
+				t.Fatal("status did not use authoritative journal fallback")
+			}
+		})
+	}
+}
+
+func TestStatusFrameRejectsTransientIntakeMutation(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	writeStatusRunWithPhase(t, root, "journal-run", "default-implement", "example", time.Now(), journal.PhaseCompleted)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watermarks.Close() }()
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := loadConfigDirectory(layout.ConfigDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := readservice.LocalSources{Layout: layout, Config: cfg, Definitions: set, Validation: report}
+	journals, err := readservice.NewLocal(sources, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq uint64
+	loader := &statusRunLoader{
+		layout: layout, sources: sources, journal: journals, options: statusOptions{limit: 1}, needFleet: true,
+		afterProjectedQueries: func() {
+			seq++
+			if err := watermarks.Observed(context.Background(), "journal-run", seq); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := watermarks.Ack(context.Background(), "journal-run", seq); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	runs, err := loader.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loader.projected || len(runs) != 1 || runs[0].RunID != "journal-run" ||
+		len(loader.fleetRuns) != 1 || loader.fleetRuns[0].RunID != "journal-run" {
+		t.Fatalf("unstable frame projected=%v display=%v fleet=%v", loader.projected, runs, loader.fleetRuns)
+	}
+}
+
+func TestStatusFrameReopensProjectionAcrossEpochSwap(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	ctx := context.Background()
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	old := readmodel.Projection{Run: readmodel.RunRow{
+		RunID: "old-epoch-run", Gaggle: "example", Workflow: "default-implement",
+		Phase: journal.PhaseCompleted, Terminal: true, StartedAt: startedAt, LastActivity: startedAt, LastSeq: 1,
+	}}
+	if err := store.UpsertRun(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watermarks.Close() }()
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, report, err := loadConfigDirectory(layout.ConfigDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := readservice.LocalSources{Layout: layout, Config: cfg, Definitions: set, Validation: report}
+	journals, err := readservice.NewLocal(sources, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader := &statusRunLoader{layout: layout, sources: sources, journal: journals, options: statusOptions{}}
+	first, err := loader.Load()
+	if err != nil || !loader.projected || len(first) != 1 || first[0].RunID != "old-epoch-run" {
+		t.Fatalf("first frame projected=%v runs=%v err=%v", loader.projected, first, err)
+	}
+	firstCursor := loader.cursor
+
+	rebuild, err := store.BeginRebuild(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rebuild.Target().UpsertRun(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	newer := old
+	newer.Run.RunID = "new-epoch-run"
+	newer.Run.StartedAt = startedAt.Add(time.Minute)
+	newer.Run.LastActivity = newer.Run.StartedAt
+	if err := rebuild.Target().UpsertRun(ctx, newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := rebuild.Swap(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, err := loader.Load()
+	if err != nil || !loader.projected || len(second) != 2 {
+		t.Fatalf("second frame projected=%v runs=%v err=%v", loader.projected, second, err)
+	}
+	if loader.cursor.epoch == firstCursor.epoch || len(loader.changed) != 0 {
+		t.Fatalf("epoch swap cursor before=%+v after=%+v changed=%v", firstCursor, loader.cursor, loader.changed)
+	}
+}
+
+func TestStatusChangesThroughHighlightsOnlyAcceptedFrameChanges(t *testing.T) {
+	store, err := readmodel.Open(filepath.Join(t.TempDir(), readmodel.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	startedAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	projection := readmodel.Projection{Run: readmodel.RunRow{
+		RunID: "changing-run", Gaggle: "example", Workflow: "default-implement",
+		Phase: journal.PhaseRunning, StartedAt: startedAt, LastActivity: startedAt, LastSeq: 1,
+	}}
+	if err := store.UpsertRun(context.Background(), projection); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cut, err := store.LatestChangeSeq(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, cursor, err := statusChangesThrough(context.Background(), store, statusProjectedCursor{}, state, cut)
+	if err != nil || len(changed) != 0 {
+		t.Fatalf("initial change snapshot = %v, %v; want no invented highlight", changed, err)
+	}
+	finishedAt := startedAt.Add(time.Minute)
+	projection.Run.Phase = journal.PhaseCompleted
+	projection.Run.Terminal = true
+	projection.Run.FinishedAt = &finishedAt
+	projection.Run.LastActivity = finishedAt
+	projection.Run.LastSeq = 2
+	if err := store.UpsertRun(context.Background(), projection); err != nil {
+		t.Fatal(err)
+	}
+	cut, err = store.LatestChangeSeq(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A change committed after this frame's cut may be returned by the open-
+	// ended feed query, but it belongs to the next frame and must not advance
+	// the accepted cursor.
+	projection.Run.RunID = "future-run"
+	projection.Run.LastSeq = 3
+	if err := store.UpsertRun(context.Background(), projection); err != nil {
+		t.Fatal(err)
+	}
+	changed, next, err := statusChangesThrough(context.Background(), store, cursor, state, cut)
+	if err != nil || len(changed) != 1 || next.seq != cut {
+		t.Fatalf("changes through old cut = %v cursor=%+v err=%v", changed, next, err)
+	}
+	if _, ok := changed["changing-run"]; !ok {
+		t.Fatalf("changes through old cut = %v, want changing-run", changed)
+	}
+	if _, ok := changed["future-run"]; ok {
+		t.Fatalf("changes through old cut included future-run: %v", changed)
+	}
+	futureCut, err := store.LatestChangeSeq(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, _, err = statusChangesThrough(context.Background(), store, next, state, futureCut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := changed["future-run"]; !ok {
+		t.Fatalf("next-frame changes = %v, want future-run", changed)
+	}
 }
 
 func writeStatusRunWithPhase(
@@ -91,6 +411,43 @@ func TestDaemonRestartStatusLine(t *testing.T) {
 		"Warning: run run-old failed during the daemon restart and was replaced by run-new for item 3090\n"
 	if got != want {
 		t.Fatalf("daemon restart line = %q, want %q", got, want)
+	}
+}
+
+func TestWorkerConfigDivergenceStatusLinesIncludesNotActive(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	got := workerConfigDivergenceStatusLines(readservice.SchedulerStatus{WorkerConfigDivergence: []readservice.WorkerConfigDivergenceStatus{{
+		Worker: "worker-a", State: "not-active", Message: "worker config divergence: NOT ACTIVE", At: now.Add(-time.Minute),
+	}}}, now)
+	want := "Worker worker-a config divergence [NOT-ACTIVE, 1m0s ago]: worker config divergence: NOT ACTIVE\n"
+	if got != want {
+		t.Fatalf("status lines = %q, want %q", got, want)
+	}
+}
+
+func TestStatusJSONIncludesWorkerConfigDivergence(t *testing.T) {
+	blob, err := json.Marshal(statusJSONOutput{WorkerConfigDivergence: []readservice.WorkerConfigDivergenceStatus{{
+		Worker: "worker-a", State: journal.WorkerConfigDivergenceDiverged, Message: "mismatch",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"workerConfigDivergence":[{"worker":"worker-a","state":"diverged"`) {
+		t.Fatalf("status JSON = %s", blob)
+	}
+}
+
+func TestTelemetryRetentionStatusLine(t *testing.T) {
+	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	enforceAt := passAt.Add(7 * 24 * time.Hour)
+	got := telemetryRetentionStatusLine(readservice.SchedulerStatus{TelemetryRetention: &readservice.TelemetryRetentionStatus{
+		Enabled: true, Window: "30d", MaxRuns: 900, FirstEnable: "gracePeriod",
+		LastPassAt: &passAt, LastPassMode: "dry-run", CandidateCount: 17, EnforceAt: &enforceAt,
+	}})
+	for _, want := range []string{"enabled=true", "window=30d", "max-runs=900", "last-pass=dry-run", "candidates=17", "enforcement=2026-09-19T08:00:00Z", "instance.yaml changes require daemon restart"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("status line %q does not contain %q", got, want)
+		}
 	}
 }
 
@@ -464,7 +821,7 @@ func TestStatusDefaultsToNewestFiftyRuns(t *testing.T) {
 	if strings.Contains(stdout, "run-00") || !strings.Contains(stdout, "run-50") {
 		t.Fatalf("stdout = %q, want newest 50 runs", stdout)
 	}
-	if !strings.Contains(stdout, "1 older runs; use --limit 0 for all") {
+	if !strings.Contains(stdout, "older runs omitted; use --limit 0 for all") {
 		t.Fatalf("stdout = %q, want older-runs hint", stdout)
 	}
 
@@ -520,7 +877,7 @@ type stubStatusReadService struct {
 	calls         int
 }
 
-func (s *stubStatusReadService) ListStatusRuns(context.Context) ([]readservice.RunSummary, error) {
+func (s *stubStatusReadService) ListStatusRuns(context.Context, readservice.StatusRunOptions) ([]readservice.RunSummary, error) {
 	s.calls++
 	if s.err != nil {
 		return nil, s.err

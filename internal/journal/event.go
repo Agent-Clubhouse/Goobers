@@ -26,6 +26,24 @@ func IsRunnerNamespace(t EventType) bool {
 // harness all switch on it. Values are dotted and versioned with the envelope.
 type EventType string
 
+// WorkerConfigDivergenceState is the closed operational state vocabulary for
+// worker-to-daemon config-tree comparison reports.
+type WorkerConfigDivergenceState string
+
+const (
+	// WorkerConfigDivergenceReportingCapability is the daemon-owned sentinel
+	// used until an authenticated worker proves that remote reporting is live.
+	WorkerConfigDivergenceReportingCapability = "worker:remote-reporting"
+	// WorkerConfigDivergenceInSync means both known digests match.
+	WorkerConfigDivergenceInSync WorkerConfigDivergenceState = "in-sync"
+	// WorkerConfigDivergenceDiverged means both digests are known and differ.
+	WorkerConfigDivergenceDiverged WorkerConfigDivergenceState = "diverged"
+	// WorkerConfigDivergenceNotChecked means a comparison could not be made.
+	WorkerConfigDivergenceNotChecked WorkerConfigDivergenceState = "not-checked"
+	// WorkerConfigDivergenceNotActive means polling has no authentication source.
+	WorkerConfigDivergenceNotActive WorkerConfigDivergenceState = "not-active"
+)
+
 // The event taxonomy (issue #8). Every run's journal is a sequence of these.
 const (
 	// EventRunStarted opens a run; carries the pinned identity echoed from run.yaml.
@@ -205,6 +223,9 @@ const (
 	// EventConfigReloadRejected records a changed config directory that failed
 	// validation and was not applied.
 	EventConfigReloadRejected EventType = "config.reload.rejected"
+	// EventWorkerConfigDivergence records a worker's observed config-tree
+	// relationship with the daemon. Its operational payload lives under Runner.
+	EventWorkerConfigDivergence EventType = "runner.config_divergence"
 	// EventDaemonStarted records a daemon lifetime beginning after it acquires
 	// the instance lock.
 	EventDaemonStarted EventType = "daemon.started"
@@ -214,6 +235,9 @@ const (
 	// EventDaemonDirtyRestart records startup finding a previous daemon lock
 	// without a subsequent clean-shutdown event.
 	EventDaemonDirtyRestart EventType = "daemon.dirty_restart"
+	// EventTelemetryRetentionPass records one successful automatic telemetry
+	// retention evaluation. Its operational summary is carried under Runner.
+	EventTelemetryRetentionPass EventType = "telemetry.retention.pass"
 	// EventDaemonUpdateDrainStarted records the stable supervisor beginning a
 	// graceful drain for a validated binary handoff.
 	EventDaemonUpdateDrainStarted EventType = "daemon.update.drain_started"
@@ -230,6 +254,14 @@ const (
 // TargetComplete is the explicit journal representation of the workflow
 // engine's empty-string successful terminal target.
 const TargetComplete = "@complete"
+
+// Terminal run dispositions are durable run.finished facts. Unknown is the
+// live/read-model default; a terminal producer writes produced or no-work.
+const (
+	RunDispositionUnknown  = "unknown"
+	RunDispositionProduced = "produced"
+	RunDispositionNoWork   = "no-work"
+)
 
 // AttemptClass tags why a non-initial stage attempt exists. Policy and human
 // attempts are conformance-normative; infra attempts (an infrastructure
@@ -358,6 +390,11 @@ type Event struct {
 	// Status is the terminal status for run.finished / stage.finished, or the
 	// prior terminal phase for run.resumed. Normative.
 	Status string `json:"status,omitempty"`
+	// Disposition records whether a terminal run performed work. Normative on
+	// run.finished: no-work is the runner's authoritative first-step short
+	// circuit, produced is every other terminal. Empty is accepted only for
+	// journals written before this field existed.
+	Disposition string `json:"disposition,omitempty"`
 	// WorkflowVersion is the immutable workflow version re-asserted by a
 	// run.resumed action. Normative.
 	WorkflowVersion int `json:"workflowVersion,omitempty"`
@@ -538,7 +575,8 @@ func (e Event) IsConformanceNormative() bool {
 	}
 	switch e.Type {
 	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired,
-		EventInitCompleted, EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
+		EventInitCompleted, EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart,
+		EventTelemetryRetentionPass:
 		// Gate markers and torn-write repair are durability/operational
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.

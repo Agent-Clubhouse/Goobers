@@ -14,20 +14,16 @@ import (
 
 // Disposition values for RunRow.Disposition (§5.3).
 //
-// Only two of the three reserved enum values are ever written here.
-// DispositionProduced is deliberately absent: defining "did this run produce
-// something" for every workflow shape is #1429's contract, not this
-// projector's to guess at. DispositionUnknown is the safe default for
-// everything this projector cannot classify — including a real productive
-// run — until #1429 lands.
+// Unknown is reserved for a live run whose terminal outcome is not yet known.
+// Every terminal run is classified into one of the two accounting buckets:
+// no-work for the explicit first-stage short circuit, produced otherwise.
 const (
-	DispositionUnknown = "unknown"
-	// DispositionNoWork marks a run that touched exactly one stage and that
-	// stage's terminal status was apiv1.ResultNoWork (#2188). Expressed as a
-	// bare string rather than importing api/v1alpha1: event.Status is already
-	// a bare string by the time it reaches the projector, and this package
-	// has no other reason to depend on the API layer.
-	DispositionNoWork = "no-work"
+	DispositionUnknown  = journal.RunDispositionUnknown
+	DispositionProduced = journal.RunDispositionProduced
+	// DispositionNoWork marks a run whose first execution step reported
+	// no-work (#2188). The terminal journal event carries that authoritative
+	// runner decision; the legacy fallback reconstructs it from attempts.
+	DispositionNoWork = journal.RunDispositionNoWork
 )
 
 // Projection: journal events to a run row.
@@ -83,12 +79,9 @@ type RunRow struct {
 	OutcomeVerdict string
 	OutcomeTarget  string
 
-	// Disposition is the reserved semantic-work-disposition column (§5.3):
-	// 'no-work' when this run touched exactly one stage and that stage's
-	// terminal status was no-work (#2188), 'unknown' otherwise. It never
-	// claims 'produced' — that half of the enum, and the rest of the
-	// contract, is #1429/#1439's to define; this only ever asserts the one
-	// classification the existing no-work signal already answers cleanly.
+	// Disposition is the semantic-work-disposition column (§5.3): 'unknown'
+	// while the run is live, 'no-work' for an explicit first-stage no-work
+	// short circuit, and 'produced' for every other terminal outcome.
 	Disposition string
 
 	// Stages is every stage or gate the run has touched, sorted. It backs the
@@ -579,12 +572,45 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	// Recomputed from the full fold every time (not carried from prev), so
 	// incremental and whole-history projection agree (§14.9) exactly like
 	// row.Stages above.
-	row.Disposition = DispositionUnknown
-	if row.Phase == journal.PhaseCompleted && len(out) == 1 && out[0].LastStatus == DispositionNoWork {
-		row.Disposition = DispositionNoWork
-	}
+	row.Disposition = runDisposition(row, out, outNodes, events)
 
 	return Projection{Run: row, Stages: out, Nodes: outNodes}
+}
+
+func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []journal.Event) string {
+	if !row.Terminal {
+		return DispositionUnknown
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != journal.EventRunFinished {
+			continue
+		}
+		switch events[i].Disposition {
+		case DispositionNoWork, DispositionProduced:
+			return events[i].Disposition
+		}
+		break
+	}
+	// Legacy journals predate the authoritative terminal field. Reconstruct
+	// their engine/runner steps from attempt-bearing nodes, not the unique
+	// stage-name map: a same-stage re-entry and a gate-before-poll both have
+	// more than one execution step even though only one task reports no-work.
+	steps := 0
+	for _, node := range nodes {
+		steps += node.Attempts
+	}
+	// Entering a parallel is itself an engine step but is not represented by a
+	// run_node row. Full rebuilds (including the migration replay) have the
+	// immutable event history available, so preserve that part explicitly.
+	for _, event := range events {
+		if event.Type == journal.EventParallelStarted {
+			steps++
+		}
+	}
+	if row.Phase == journal.PhaseCompleted && steps == 1 && len(stages) == 1 && stages[0].LastStatus == DispositionNoWork {
+		return DispositionNoWork
+	}
+	return DispositionProduced
 }
 
 // ProjectRunFromJournal adds facts that require resolving immutable journal

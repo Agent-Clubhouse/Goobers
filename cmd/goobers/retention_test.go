@@ -514,7 +514,7 @@ func TestReportWorktreeRetentionPolicySurfacesTheGraceWindow(t *testing.T) {
 	stdout.Reset()
 	reportWorktreeRetentionPolicy(layout, now, &stdout)
 	got := stdout.String()
-	for _, want := range []string{"grace period active until", enforceAt.UTC().Format(time.RFC3339), "3 candidate(s)", "nothing deleted yet"} {
+	for _, want := range []string{"grace period active until", enforceAt.UTC().Format(time.RFC3339), "3 candidate(s)", "nothing deleted yet", "instance.yaml retention changes require a daemon restart", "materialized config directory"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("grace-window line missing %q: %q", want, got)
 		}

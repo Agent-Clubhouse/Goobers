@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -373,23 +372,17 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// which tree is in force and say so.
 	//
 	// A shared-key worker authenticates as itself with a short-lived credential
-	// confined to this GET-only plane. No synthetic run or standing pod bearer
-	// is needed; existing static-token deployments keep their explicit token.
+	// confined to the digest read and divergence-report planes. A legacy static
+	// GOOBERS_POD_TOKEN remains usable for the digest read only: it authenticates
+	// a stage run, not this worker host, so it cannot author durable health.
 	if seams != nil && *daemonAPI != "" {
-		tokenSource, tokenErr := workerDigestTokenSource(*instanceRoot, workerEnvOr("GOOBERS_POD_TOKEN", ""))
-		if tokenErr != nil {
-			pf(stderr, "error: configure worker config-divergence authentication: %v\n", tokenErr)
+		divergence, err := configureWorkerDivergence(ctx, seams, *instanceRoot, *daemonAPI, stdout, stderr)
+		if err != nil {
+			pf(stderr, "error: configure worker config-divergence authentication: %v\n", err)
 			return 2
 		}
-		if tokenSource == nil {
-			pf(stderr, "warning: goobers worker: config-divergence checking is NOT ACTIVE — configure api.podTokenKeyFile or GOOBERS_POD_TOKEN; "+
-				"this worker cannot compare its config tree with the daemon's (#4153)\n")
-		} else {
-			divergence := startWorkerDivergenceWatcher(ctx, seams, http.DefaultClient,
-				*daemonAPI, tokenSource, workerDivergenceCheckInterval)
+		if divergence != nil {
 			defer divergence.Stop()
-			pf(stdout, "goobers worker: checking config-tree divergence against %s every %s\n",
-				*daemonAPI, workerDivergenceCheckInterval)
 		}
 	}
 

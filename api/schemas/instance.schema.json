@@ -155,7 +155,7 @@
       }
     },
     "retention": {
-      "description": "Pruning of retained failure worktrees and merged local run branches, plus the portal projection window. Pruning is opt-out. Distinct from telemetry.retention, which bounds journals and rollups.",
+      "description": "Pruning of retained failure worktrees and ancestry-proven local run branches, plus the portal projection window. Pruning is opt-out. The rule has no alternate proof for squash, merge-queue, or legacy landings, so a branch whose tip is not an ancestor may remain. Distinct from telemetry.retention, which bounds journals and rollups.",
       "$ref": "#/$defs/retention"
     },
     "updateCheck": {
@@ -1082,14 +1082,14 @@
       }
     },
     "retention": {
-      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning of retained failure worktrees and merged run branches is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h worktree age bound and a safe first-enable grace window, unless enabled is explicitly false.",
+      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h retained-worktree age bound and a safe first-enable grace window, unless enabled is explicitly false. Local run-branch cleanup currently requires Git ancestry; squash, merge-queue, and legacy landings may leave local branches behind.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Lets the daemon prune retained terminal-failure worktrees and merged local run branches. Defaults to true (#4253); set explicitly to false to keep automatic pruning off. Active runs are never candidates."
+          "description": "Lets the daemon prune retained terminal-failure worktrees and local run branches whose tip is an ancestor of another local branch. Defaults to true (#4253); set explicitly to false to keep automatic pruning off. Active runs are never candidates. Squash, merge-queue, and legacy landings may not satisfy the ancestry check and can remain."
         },
         "dryRun": { "type": "boolean", "default": false, "description": "Reports the deterministic candidate set without deleting anything." },
         "maxRetainedWorktreeBytes": { "type": "integer", "minimum": 0, "description": "Byte ceiling for retained failure worktrees; the oldest are removed first once exceeded. Zero or omitted disables the size rule." },

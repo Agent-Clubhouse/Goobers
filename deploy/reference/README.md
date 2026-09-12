@@ -233,12 +233,16 @@ ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to
 get, delete and list pods in this gaggle's namespace, and read the worker's own
 Deployment (DI-9 template read). This is what lets a worker whose `--dispatch-namespace`
 names this gaggle actually dispatch pod-per-stage runs into it (#4286); stage pods
-themselves still get no token mount and no RBAC grants at all
-(`serviceaccount.yaml`). **One worker dispatches into one namespace** —
-`--dispatch-namespace` takes a single value, not a list — so stamping a second gaggle
-means either pointing a second worker Deployment at it, or copying
-`goobers-system/worker-deployment.yaml` per gaggle for the G2 dedicated-worker mode
-(#656).
+themselves still get no token mount and no RBAC grants at all. The included
+`goobers-stage` ServiceAccount is a target-topology template, not one the current
+dispatcher selects. `--dispatch-namespace` takes a single value, but the
+worker still polls every gaggle queue loaded from its config. All loaded
+gaggles therefore share that worker-wide namespace; `spec.isolation.namespace`
+does not enforce per-gaggle isolation. Copies with different namespace flags
+still poll the same unscoped queues and race nondeterministically, so whichever
+copy wins decides where a pod lands. Issue #4897 leaves the resolution open:
+possible choices include dedicated queue scoping, dynamic gaggle-to-namespace
+mapping, or demoting the isolation field.
 
 ## Operating notes from a real cluster
 

@@ -94,6 +94,26 @@ var httpShutdownGrace = 5 * time.Second
 
 const daemonAPIAddressFileName = "api.address"
 
+func daemonChangeFeedHandlerOptions(setup *schedulerSetup) []httpapi.HandlerOption {
+	if setup.ReadModel == nil {
+		return nil
+	}
+	return []httpapi.HandlerOption{httpapi.WithChangeFeedStream(setup.ReadModel)}
+}
+
+func appendWorkerDivergenceHandlerOption(options []httpapi.HandlerOption, setup *schedulerSetup) ([]httpapi.HandlerOption, error) {
+	option, err := newWorkerDivergenceHandlerOption(setup.InstanceLog, setup.Config)
+	if err != nil {
+		return options, err
+	}
+	return append(options, option), nil
+}
+
+func reportDaemonStartupError(stderr io.Writer, operation string, err error) int {
+	pf(stderr, "error: %s: %v\n", operation, err)
+	return 1
+}
+
 // diagnosticsMode is set true by `goobers up --diagnostics`. Read in
 // buildRunnerConfig to arm the executor's per-stage diagnostics watchdog and
 // un-truncate stage output. A package var (like runProcessExits) so it threads
@@ -290,7 +310,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"webhook.secret is configured. Invalid revisions are rejected with the\n" +
 	"last-known-good definitions left running. Direct edits to the materialized\n" +
 	"config directory are watched by default; --watch-config=false explicitly\n" +
-	"disables that watcher. Existing runs retain their pinned definitions.\n\n" +
+	"disables that watcher. instance.yaml is loaded only at daemon startup and\n" +
+	"is never hot-reloaded; changes to it, including retention: and\n" +
+	"telemetry.retention:, require a daemon restart. Existing runs retain their\n" +
+	"pinned definitions.\n\n" +
 	"--diagnostics turns on deep, opt-in capture for hard hangs: any\n" +
 	"deterministic stage still running past a couple of minutes gets a\n" +
 	"periodic native process sample + process tree + open-fd (lsof)\n" +
@@ -367,7 +390,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
-	watchConfig := fs.Bool("watch-config", true, "hot-reload edits to the materialized config directory (default true; Git workflow sources reconcile automatically)")
+	watchConfig := fs.Bool("watch-config", true, "hot-reload materialized config-directory edits (default true; instance.yaml changes require restart)")
 	drainTimeout := fs.Duration("drain-timeout", 0, "force shutdown if graceful drain exceeds this duration (default: wait indefinitely)")
 	var notifications notifyFlag
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
@@ -537,6 +560,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// ticker below (#4373's "share the same exclusion mechanism"): one
 	// error-rate-limiting reporter per failure class, not per call site.
 	worktreeRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "worktree_retention_sweep_failed")
+	terminalCleanupRetryErrors := newSweepErrorReporter(setup.InstanceLog, "terminal_cleanup_retry_failed")
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -724,10 +748,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	//
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
-	var apiHandlerOpts []httpapi.HandlerOption
-	if setup.ReadModel != nil {
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
-	}
+	apiHandlerOpts := daemonChangeFeedHandlerOptions(setup)
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
 	// #3883 (decision 005 R8): give the intervention surface a second
 	// destination. Runner-driven runs keep the in-process path untouched;
@@ -857,6 +878,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// its own has diverged instead of finding out when an agentic gate refuses.
 	configDigests := newConfigDigestPublisher(setup.ConfigDigest)
 	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithConfigDigest(configDigests.Get))
+	if apiHandlerOpts, err = appendWorkerDivergenceHandlerOption(apiHandlerOpts, setup); err != nil {
+		return reportDaemonStartupError(stderr, "initialize worker config-divergence reporting", err)
+	}
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)
@@ -1066,22 +1090,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// coalescing with the periodic 6h sweep via retentionGate so at most one
 	// ever runs at a time.
 	pf(stdout, "%s startup phase=retention-sweep status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#4373)")
-	telemetryRetentionConfig := instance.TelemetryRetentionConfig{}
-	if setup.Config.Telemetry.Retention != nil {
-		telemetryRetentionConfig = *setup.Config.Telemetry.Retention
-	}
-	var telemetryPruned []retention.Result
-	var telemetryPrunedDryRun bool
-	telemetryErr := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
-		var pruneErr error
-		telemetryPruned, telemetryPrunedDryRun, pruneErr = pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, time.Now())
-		return pruneErr
-	})
+	telemetryRetentionConfig, telemetryErr := runStartupTelemetryRetention(stdout, tracker, l, setup)
 	if telemetryErr != nil {
 		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
-	reportTelemetryPruned(stdout, telemetryPruned, telemetryPrunedDryRun)
 
 	// Prune crash-abandoned orphan runs and run-creation staging directories
 	// before anything else touches the runs tree (#2035): a mid-Create crash's
@@ -1252,6 +1265,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	openPRs := newOpenPRLoop(ctx, setup.OpenPRRefresher)
 	defer openPRs.Stop()
+	cleanupRetries := newTerminalCleanupRetryRegistry(setup)
 	setup.MergedPRCostReconciler = newDaemonMergedPRCostReconciler(
 		setup.Root,
 		setup.Config,
@@ -1273,6 +1287,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		scheduler:      sched,
 		openPRs:        openPRs,
 		reads:          reads,
+		cleanupRetries: cleanupRetries,
 		readModel:      setup.ReadModel,
 		wg:             &wg,
 		appliedDigest:  setup.ConfigDigest,
@@ -1515,10 +1530,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-telemetryRetentionTicker.C:
-				_, _, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
-				if err == nil {
-					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
-				}
+				err := runPeriodicTelemetryRetention(ctx, setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, journalGenerationCleanupErrors, now)
 				telemetryRetentionErrors.report(err)
 				migrationBackupCleanupErrors.report(sweepMigrationBackups(l, setup, now))
 			}
@@ -1724,6 +1736,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// was actually reached, so the shutdown join below never blocks on a
 	// sweep that was never launched.
 	startupRetentionSweepDone := startDeferredRetentionSweep(ctx, l, setup, retentionGate, worktreeRetentionErrors, readyNow)
+	terminalCleanupRetryCtx, stopTerminalCleanupRetry := context.WithCancel(context.Background())
+	defer stopTerminalCleanupRetry()
+	terminalCleanupRetryDone := startTerminalCleanupRetry(terminalCleanupRetryCtx, cleanupRetries, terminalCleanupRetryErrors, readyNow)
 	startupMergedPRCostSweepDone := mergedPRCostSweeps.startDeferred(ctx, readyNow)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", root, len(setup.Entries), apiServer.Scheme(), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
@@ -1885,6 +1900,9 @@ daemonLoop:
 
 	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
 		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
+	stopTerminalCleanupRetry()
+	<-terminalCleanupRetryDone
+	runTerminalCleanupRetryFinal(cleanupRetries, terminalCleanupRetryErrors, readyNow)
 	if !drainResult.forced {
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {

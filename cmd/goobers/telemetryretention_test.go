@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,8 +14,18 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
+
+func pruneConfiguredTelemetryRetention(
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	now time.Time,
+) ([]retention.Result, bool, error) {
+	return pruneConfiguredTelemetryRetentionPassWithWriter(layout, config, db, now, false, writeTelemetryRetentionState)
+}
 
 func TestTelemetryPruneIsExplicitWhenAutomationDisabled(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
@@ -52,6 +64,370 @@ func TestTelemetryPruneIsExplicitWhenAutomationDisabled(t *testing.T) {
 	}
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
 		t.Fatalf("explicit prune left journal: %v", err)
+	}
+}
+
+func TestTelemetryRetentionStartupSummaryIsBounded(t *testing.T) {
+	var stdout bytes.Buffer
+	reportTelemetryPruned(&stdout, 25, true, true)
+	if got, want := stdout.String(), "telemetry retention: candidates=25 mode=dry-run\n"; got != want {
+		t.Fatalf("startup summary = %q, want %q", got, want)
+	}
+}
+
+func TestRecordTelemetryRetentionPassJournalsBoundedProjection(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	enforceAt := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	if err := writeTelemetryRetentionState(layout, telemetryRetentionState{
+		EnforceAt: enforceAt,
+		PendingTelemetryPass: &telemetryRetentionPass{
+			ID: "pass-1", Phase: telemetryRetentionPassCompleted, At: passAt,
+			DryRun: true, CandidateCount: 3, EnforceAt: enforceAt,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, dryRun, err := pruneAndRecordTelemetryRetention(log, layout, instance.TelemetryRetentionConfig{}, nil, passAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 || !dryRun {
+		t.Fatalf("published pass = (count %d, dryRun %v), want (3, true)", count, dryRun)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != journal.EventTelemetryRetentionPass ||
+		events[0].Runner["mode"] != "dry-run" || events[0].Runner["candidateCount"] != float64(3) ||
+		events[0].Runner["passId"] != "pass-1" || events[0].Runner["passAt"] != passAt.Format(time.RFC3339Nano) ||
+		events[0].Runner["enforceAt"] != enforceAt.Format(time.RFC3339Nano) {
+		t.Fatalf("retention pass event = %+v", events)
+	}
+}
+
+func TestTelemetryRetentionPersistsIntentBeforeEnforcingDeletion(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		writeState telemetryRetentionStateWriter
+		wantState  bool
+	}{
+		{
+			name: "state write fails",
+			writeState: func(instance.Layout, telemetryRetentionState) error {
+				return errors.New("state unavailable")
+			},
+		},
+		{
+			name: "crash after prepared state is durable",
+			writeState: func(layout instance.Layout, state telemetryRetentionState) error {
+				if err := writeTelemetryRetentionState(layout, state); err != nil {
+					return err
+				}
+				return errors.New("simulated crash")
+			},
+			wantState: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+			root := initDeterministicDemo(t)
+			layout := instance.NewLayout(root)
+			runDir := createTelemetryRetentionRun(t, layout.ForGaggle("example"), "automatic-old", now.Add(-48*time.Hour))
+			db, err := rollup.Open(layout.TelemetryDB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			if err := db.IngestRun(context.Background(), runDir); err != nil {
+				t.Fatal(err)
+			}
+			log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = log.Close() }()
+
+			config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500, FirstEnable: "immediate"}
+			if _, _, err := pruneAndRecordTelemetryRetentionWithWriter(log, layout, config, db, now, tc.writeState); err == nil {
+				t.Fatal("enforcing pass unexpectedly succeeded")
+			}
+			if _, err := os.Stat(runDir); err != nil {
+				t.Fatalf("pass deleted before prepared state was durable: %v", err)
+			}
+			state, ok, err := readTelemetryRetentionState(layout)
+			if err != nil || ok != tc.wantState {
+				t.Fatalf("prepared state: ok=%v state=%+v err=%v", ok, state, err)
+			}
+			if tc.wantState && (state.PendingTelemetryPass == nil || state.PendingTelemetryPass.Phase != telemetryRetentionPassPrepared) {
+				t.Fatalf("durable prepared pass = %+v", state.PendingTelemetryPass)
+			}
+		})
+	}
+}
+
+func TestTelemetryRetentionReconcilesPreparedPassAfterCrash(t *testing.T) {
+	now := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	runDir := createTelemetryRetentionRun(t, layout.ForGaggle("example"), "automatic-old", now.Add(-48*time.Hour))
+	lateDir := createActiveTelemetryRetentionRun(t, layout.ForGaggle("example"), "late-terminal", now.Add(-48*time.Hour))
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, dir := range []string{runDir, lateDir} {
+		if err := db.IngestRun(context.Background(), dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+
+	writes := 0
+	crashAfterPrepare := func(layout instance.Layout, state telemetryRetentionState) error {
+		writes++
+		if err := writeTelemetryRetentionState(layout, state); err != nil {
+			return err
+		}
+		if writes == 1 {
+			return errors.New("simulated crash")
+		}
+		return nil
+	}
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500, FirstEnable: "immediate"}
+	if _, _, err := pruneAndRecordTelemetryRetentionWithWriter(log, layout, config, db, now, crashAfterPrepare); err == nil {
+		t.Fatal("pre-crash pass unexpectedly succeeded")
+	}
+	state, ok, err := readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass == nil || len(state.PendingTelemetryPass.Candidates) != 1 ||
+		state.PendingTelemetryPass.Candidates[0].RunID != "automatic-old" {
+		t.Fatalf("frozen prepared manifest: ok=%v state=%+v err=%v", ok, state, err)
+	}
+	late, _, err := journal.Recover(lateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Close(); err != nil {
+		t.Fatal(err)
+	}
+	count, dryRun, err := pruneAndRecordTelemetryRetention(log, layout, config, db, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || dryRun {
+		t.Fatalf("reconciled prepared pass = candidates %d dryRun %v", count, dryRun)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("reconciled prepared pass left run: %v", err)
+	}
+	if _, err := os.Stat(lateDir); err != nil {
+		t.Fatalf("reconciled pass absorbed newly eligible run: %v", err)
+	}
+	state, ok, err = readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass != nil || !state.LastPassAt.Equal(now) {
+		t.Fatalf("reconciled state: ok=%v state=%+v err=%v", ok, state, err)
+	}
+}
+
+func TestTelemetryRetentionDeduplicatesJournaledPassAfterAckFailure(t *testing.T) {
+	now := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	runDir := createTelemetryRetentionRun(t, layout.ForGaggle("example"), "automatic-old", now.Add(-48*time.Hour))
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+
+	ackErr := errors.New("ack unavailable")
+	writes := 0
+	failAck := func(layout instance.Layout, state telemetryRetentionState) error {
+		writes++
+		if writes == 3 {
+			return ackErr
+		}
+		return writeTelemetryRetentionState(layout, state)
+	}
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500, FirstEnable: "immediate"}
+	if _, _, err := pruneAndRecordTelemetryRetentionWithWriter(log, layout, config, db, now, failAck); !errors.Is(err, ackErr) {
+		t.Fatalf("first pass error = %v, want %v", err, ackErr)
+	}
+	state, ok, err := readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass == nil || state.PendingTelemetryPass.Phase != telemetryRetentionPassCompleted {
+		t.Fatalf("completed pending pass: ok=%v state=%+v err=%v", ok, state, err)
+	}
+	passID := state.PendingTelemetryPass.ID
+	count, dryRun, err := pruneAndRecordTelemetryRetention(log, layout, config, db, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || dryRun {
+		t.Fatalf("deduplicated retry = candidates %d dryRun %v", count, dryRun)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	passEvents := 0
+	for _, event := range events {
+		if event.Type == journal.EventTelemetryRetentionPass && runnerString(event.Runner, "passId") == passID {
+			passEvents++
+		}
+	}
+	if passEvents != 1 {
+		t.Fatalf("pass %s was journaled %d times, want once", passID, passEvents)
+	}
+	state, ok, err = readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass != nil {
+		t.Fatalf("deduplicated retry did not acknowledge state: ok=%v state=%+v err=%v", ok, state, err)
+	}
+}
+
+func TestStatusJSONProjectsJournaledTelemetryRetentionPass(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	enforceAt := passAt.Add(7 * 24 * time.Hour)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return passAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: map[string]any{
+		"mode": "dry-run", "candidateCount": 11, "enforceAt": enforceAt.Format(time.RFC3339Nano),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json code=%d stderr=%q", code, stderr)
+	}
+	var output statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatal(err)
+	}
+	got := output.TelemetryRetention
+	if got == nil || got.LastPassMode != "dry-run" || got.CandidateCount != 11 ||
+		got.LastPassAt == nil || !got.LastPassAt.Equal(passAt) || got.EnforceAt == nil || !got.EnforceAt.Equal(enforceAt) {
+		t.Fatalf("status JSON telemetry retention = %+v", got)
+	}
+}
+
+func TestTelemetryRetentionReconcilesDeletedPassAfterJournalAppendFailure(t *testing.T) {
+	now := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	retryAt := now.Add(10 * time.Minute)
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	runDir := createTelemetryRetentionRun(t, layout.ForGaggle("example"), "automatic-old", now.Add(-48*time.Hour))
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.IngestRun(context.Background(), runDir); err != nil {
+		t.Fatal(err)
+	}
+
+	closedLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closedLog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config := instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500, FirstEnable: "immediate"}
+	candidateCount, dryRun, err := pruneAndRecordTelemetryRetention(closedLog, layout, config, db, now)
+	if !errors.Is(err, journal.ErrClosed) {
+		t.Fatalf("first pass error = %v, want %v", err, journal.ErrClosed)
+	}
+	if candidateCount != 1 || dryRun {
+		t.Fatalf("first pass = candidates %d dryRun %v, want 1 false", candidateCount, dryRun)
+	}
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("enforcing pass left deleted run: %v", err)
+	}
+	state, ok, err := readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass == nil {
+		t.Fatalf("pending pass after append failure: ok=%v state=%+v err=%v", ok, state, err)
+	}
+	if got := state.PendingTelemetryPass; !got.At.Equal(now) || got.DryRun || got.CandidateCount != 1 {
+		t.Fatalf("pending pass = %+v, want original enforcing pass", got)
+	}
+
+	retryLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return retryAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateCount, dryRun, err = pruneAndRecordTelemetryRetention(retryLog, layout, config, db, retryAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidateCount != 1 || dryRun {
+		t.Fatalf("reconciled pass = candidates %d dryRun %v, want 1 false", candidateCount, dryRun)
+	}
+	if err := retryLog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state, ok, err = readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass != nil || !state.LastPassAt.Equal(now) {
+		t.Fatalf("acknowledged state: ok=%v state=%+v err=%v", ok, state, err)
+	}
+
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var passes []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventTelemetryRetentionPass {
+			passes = append(passes, event)
+		}
+	}
+	if len(passes) != 1 || passes[0].Runner["mode"] != "enforcing" ||
+		passes[0].Runner["candidateCount"] != float64(1) || passes[0].Runner["passAt"] != now.Format(time.RFC3339Nano) {
+		t.Fatalf("reconciled retention events = %+v", passes)
+	}
+
+	code, stdout, stderr := runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json code=%d stderr=%q", code, stderr)
+	}
+	var output statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatal(err)
+	}
+	got := output.TelemetryRetention
+	if got == nil || got.LastPassMode != "enforcing" || got.CandidateCount != 1 ||
+		got.LastPassAt == nil || !got.LastPassAt.Equal(now) {
+		t.Fatalf("status after reconciliation = %+v", got)
 	}
 }
 
@@ -617,6 +993,27 @@ func createTelemetryRetentionRun(t *testing.T, layout instance.Layout, runID str
 	return run.Dir()
 }
 
+func createActiveTelemetryRetentionRun(t *testing.T, layout instance.Layout, runID string, startedAt time.Time) string {
+	t.Helper()
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithClock(func() time.Time { return startedAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordArtifact("transcript.jsonl", []byte("transcript\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return run.Dir()
+}
+
 // TestReportTelemetryRetentionPolicySurfacesStatus is #4253's operator-
 // visibility acceptance guard: `goobers status` must show policy-in-force,
 // last-pass, and candidate-count without the caller needing to parse the
@@ -651,6 +1048,9 @@ func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
 		!strings.Contains(duringGrace.String(), "history retained back to 72h0m0s ago") ||
 		strings.Contains(duringGrace.String(), "pruned") {
 		t.Fatalf("grace-period status = %q", duringGrace.String())
+	}
+	if !strings.Contains(duringGrace.String(), "instance.yaml retention changes require a daemon restart") {
+		t.Fatalf("grace-period status omits restart boundary: %q", duringGrace.String())
 	}
 
 	// #4824: enforcement held pending explicit operator acknowledgement.

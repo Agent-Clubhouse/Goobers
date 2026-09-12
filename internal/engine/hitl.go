@@ -970,7 +970,7 @@ func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) {
 		// which map. Defensive only.
 		phase = journal.PhaseFailed
 	}
-	s.rec.runFinished(ctx, phase)
+	s.rec.runFinished(ctx, phase, journal.RunDispositionProduced)
 	s.generation++
 	s.rec.emitTerminal(ctx)
 }

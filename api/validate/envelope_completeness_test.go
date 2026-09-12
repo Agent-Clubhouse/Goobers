@@ -382,6 +382,7 @@ func completeJournalEvent() journal.Event {
 		Complete:            true,
 		Escalated:           true,
 		Status:              "success",
+		Disposition:         journal.RunDispositionProduced,
 		WorkflowVersion:     1,
 		WorkflowDigest:      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		SourceRunID:         "0af7651916cd43dd8448eb211c80319c",

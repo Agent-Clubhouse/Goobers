@@ -17,7 +17,7 @@ import (
 func TestJournalEventMirrorFieldSet(t *testing.T) {
 	intentionallyUnmirrored := []string{
 		"action", "agent", "branchName", "branchStatus", "complete", "completeness",
-		"decision", "gaggle", "instructionAddendum", "integrity",
+		"decision", "disposition", "gaggle", "instructionAddendum", "integrity",
 		"minimumIntegrity", "notificationReceipt", "notificationRequest",
 		"parallel", "peerMessage", "rationale", "skipCount",
 	}

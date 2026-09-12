@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "jobs": {
     "unit": {
-      "baselineSeconds": 550,
+      "baselineSeconds": 676,
       "budgetSeconds": 900,
-      "baseline": "The macOS behavioral suite measured 452-607 seconds across successful main runs on 2026-08-20 (#3323); the 900-second budget is informational headroom over that range, not a pass/fail gate -- see regressionTolerance for the advisory signal.",
+      "baseline": "The Linux whole-tree coverage suite measured 544-715 seconds across 47 admitted PR runs on 2026-09-12 (#5001), with a 676-second median; the 900-second budget is informational headroom over that range, not a pass/fail gate -- see regressionTolerance for the advisory signal.",
       "regressionTolerance": 0.5
     }
   }

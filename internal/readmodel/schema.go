@@ -690,4 +690,9 @@ ON run(gaggle, workflow, json_extract(operator_json, '$.QueueEligibility.Recorde
 WHERE json_type(operator_json, '$.QueueEligibility') = 'object';
 UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
 `,
+	// v21: replay existing journals so terminal rows receive the complete
+	// produced/no-work disposition classification introduced by #4882.
+	`
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+`,
 }
