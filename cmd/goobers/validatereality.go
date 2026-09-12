@@ -110,14 +110,18 @@ type realityWarning struct {
 // substitutes instance.yaml.example, so its solve is advisory by
 // definition), and the daemon's startup preflight, where the finding's
 // consequence is a per-workflow refusal rather than a dead config
-// (checkpoint 3, #2860 — see runStartupConfigPreflight).
+// (checkpoint 3, #2860 — see runStartupConfigPreflight). CAP003 retains its
+// legacy warning severity for ordinary instance validation and startup, but an
+// explicit source-tree --instance makes it an error: that flag is the config
+// repository gate's request for an authoritative answer against the deployed
+// runner claims.
 func appendStaticRealityWarnings(
-	root, configDir string,
+	root, configDir, configFile string,
 	cfg *instance.Config,
 	set *instance.ConfigSet,
 	goobers map[string]apiv1.GooberSpec,
 	report *validate.Report,
-	advisory bool,
+	advisory, authoritativeLegacyCapabilities bool,
 ) []realityWarning {
 	if set == nil || report == nil {
 		return nil
@@ -146,12 +150,13 @@ func appendStaticRealityWarnings(
 		addSeverity(code, validate.Warning, kind, name, file, path, message)
 	}
 	appendPlacementFindings(root, configDir, cfg, set, goobers, advisory, addSeverity)
-	appendUnclaimedCapabilityWarnings(root, configDir, cfg, set, add)
+	appendUnclaimedCapabilityWarnings(root, configDir, cfg, set, authoritativeLegacyCapabilities, addSeverity)
 	appendMaxOpenPRWarnings(root, configDir, cfg, set, add)
 	appendGateCompletionWarnings(root, configDir, set, add)
-	appendWindowsAVExclusionWarnings(root, cfg, add)
-	appendDaemonIdentitySlugWarning(root, cfg, add)
-	appendCobrandAssetWarnings(root, cfg, add)
+	instanceFile := diagnosticFile(root, configFile)
+	appendWindowsAVExclusionWarnings(instanceFile, cfg, add)
+	appendDaemonIdentitySlugWarning(instanceFile, cfg, add)
+	appendCobrandAssetWarnings(filepath.Dir(configFile), instanceFile, cfg, add)
 	return warnings
 }
 
@@ -166,31 +171,32 @@ func appendStaticRealityWarnings(
 // surface -- the operator's only signal is that their logo silently did not
 // appear.
 func appendCobrandAssetWarnings(
-	root string,
+	instanceRoot, instanceFile string,
 	cfg *instance.Config,
 	add func(code validate.WarningCode, kind, name, file, path, message string),
 ) {
-	if cfg == nil || root == "" {
+	if cfg == nil || instanceRoot == "" {
 		return
 	}
 	for _, asset := range []struct {
 		code  validate.WarningCode
 		field string
+		path  string
 		url   string
 	}{
-		{validate.WarningCobrandMissingLogoAsset, "portal.brand.logoUrl", cfg.Portal.Brand.LogoURL},
-		{validate.WarningCobrandMissingFaviconAsset, "portal.brand.faviconUrl", cfg.Portal.Brand.FaviconURL},
+		{validate.WarningCobrandMissingLogoAsset, "portal.brand.logoUrl", "/portal/brand/logoUrl", cfg.Portal.Brand.LogoURL},
+		{validate.WarningCobrandMissingFaviconAsset, "portal.brand.faviconUrl", "/portal/brand/faviconUrl", cfg.Portal.Brand.FaviconURL},
 	} {
 		relative := strings.TrimPrefix(asset.url, portalAssetURLPrefix)
 		if asset.url == "" || relative == asset.url || relative == "" {
 			continue
 		}
-		full := filepath.Join(root, portalAssetDirName, filepath.FromSlash(path.Clean(relative)))
+		full := filepath.Join(instanceRoot, portalAssetDirName, filepath.FromSlash(path.Clean(relative)))
 		if info, err := os.Stat(full); err == nil && !info.IsDir() {
 			continue
 		}
 		add(asset.code, "Instance", "portal",
-			filepath.Join(root, instance.ConfigFileName), asset.field,
+			instanceFile, asset.path,
 			fmt.Sprintf("%s is %q, but %s does not exist; the daemon falls through to the embedded bundle, "+
 				"so the stock branding is served with no error", asset.field, asset.url, full))
 	}
@@ -208,7 +214,7 @@ func appendCobrandAssetWarnings(
 // The instance still mints and authenticates correctly, so this is a warning --
 // but nothing else surfaces the downgrade, which is why it is worth one.
 func appendDaemonIdentitySlugWarning(
-	root string,
+	instanceFile string,
 	cfg *instance.Config,
 	add func(code validate.WarningCode, kind, name, file, path, message string),
 ) {
@@ -219,7 +225,7 @@ func appendDaemonIdentitySlugWarning(
 		return
 	}
 	add(validate.WarningDaemonIdentityMissingSlug, "Instance", "daemonIdentity",
-		filepath.Join(root, instance.ConfigFileName), "daemonIdentity.slug",
+		instanceFile, "/daemonIdentity/slug",
 		"daemonIdentity is kind: github-app but declares no slug: PR selection cannot recognise the daemon's own "+
 			"pull requests by login and silently falls back to the branch-name-prefix heuristic. Set slug to the "+
 			"App's bot login without the \"[bot]\" suffix (for example slug: goobersbot for goobersbot[bot]).")
@@ -235,14 +241,13 @@ func appendDaemonIdentitySlugWarning(
 // the operator should see that the runner is known-unprepared rather than
 // merely undeclared.
 func appendWindowsAVExclusionWarnings(
-	root string,
+	instanceFile string,
 	cfg *instance.Config,
 	add func(code validate.WarningCode, kind, name, file, path, message string),
 ) {
 	if cfg == nil {
 		return
 	}
-	file := diagnosticFile(root, filepath.Join(root, instance.ConfigFileName))
 	for i, entry := range cfg.Runners {
 		if entry.Provides.OS != instance.RunnerOSWindows {
 			continue
@@ -254,7 +259,7 @@ func appendWindowsAVExclusionWarnings(
 		if entry.Provides.Windows != nil {
 			state = "declares provides.windows.avExclusionsVerified: false"
 		}
-		add(validate.RunnerAVExclusionsUnverified, "Instance", "runners["+entry.Name+"]", file,
+		add(validate.RunnerAVExclusionsUnverified, "Instance", "runners["+entry.Name+"]", instanceFile,
 			fmt.Sprintf("/runners/%d/provides/windows/avExclusionsVerified", i),
 			fmt.Sprintf("runner %q declares provides.os: windows and %s — whether the directories Goobers writes then "+
 				"immediately reads on it are excluded from real-time antivirus scanning is unknown; a scan holding a handle "+
@@ -507,8 +512,9 @@ func selfOSUnknownUnsat(inventory runnersolve.Inventory, requirement runnersolve
 // `totally-made-up-toolchain@42` probes.
 //
 // Scope, per dsl-3.0.md §5: CAP003 keeps its shipped meaning for 2.0
-// documents on inventory-less instances ONLY (frozen interpreter, frozen
-// severity — zero-declaration invariance). With a declared runners:
+// documents on inventory-less instances ONLY (frozen interpreter, and frozen
+// warning severity except when source-tree CI explicitly supplies a real
+// --instance for an authoritative solve). With a declared runners:
 // inventory this whole-gaggle self-claims union would both mis-warn about
 // capabilities another runner provides and duplicate the solver's findings,
 // so the per-stage placement solve (appendPlacementFindings, RNR001 at
@@ -519,7 +525,8 @@ func appendUnclaimedCapabilityWarnings(
 	root, configDir string,
 	cfg *instance.Config,
 	set *instance.ConfigSet,
-	add func(code validate.WarningCode, kind, name, file, path, message string),
+	authoritative bool,
+	add func(code validate.WarningCode, severity validate.Severity, kind, name, file, path, message string),
 ) {
 	if cfg == nil || len(cfg.Runners) > 0 {
 		return
@@ -553,7 +560,11 @@ func appendUnclaimedCapabilityWarnings(
 					" — note %q is outside the prober families (%s), so the host toolchain is never verified for it; "+
 						"double-check the token spelling", family, proberFamilyList())
 			}
-			add(validate.WarningUnclaimedRunnerCapability, "Gaggle", gaggle.Name,
+			severity := validate.Warning
+			if authoritative {
+				severity = validate.Error
+			}
+			add(validate.WarningUnclaimedRunnerCapability, severity, "Gaggle", gaggle.Name,
 				gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
 				"/spec/requiredCapabilities", message)
 		}

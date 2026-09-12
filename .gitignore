@@ -43,6 +43,7 @@ coverage.html
 /node_modules/
 /portal/node_modules/
 /portal/dist/
+/portal/.portal-package/
 /internal/portalassets/dist/
 /portal/coverage/
 /portal/*.tsbuildinfo
@@ -57,6 +58,7 @@ __pycache__/
 *.pyc
 
 # Agent-local (do not commit)
+.playwright-cli/
 .mcp.json
 CLAUDE.md
 /config-sync

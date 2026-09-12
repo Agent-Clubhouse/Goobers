@@ -341,45 +341,6 @@ export function keyMoments(events: RunEvent[]): KeyMoment[] {
   );
 }
 
-export function keyMomentLabel(kind: KeyMomentKind): string {
-  switch (kind) {
-    case "escalation":
-      return "Escalation";
-    case "decision":
-      return "Decision";
-    case "handoff":
-      return "Handoff";
-  }
-}
-
-// keyMomentEvidence finds the payload a key moment's inline preview shows:
-// the latest inspectable evidence (an artifact or transcript) recorded on the
-// same branch, scoped to the same node when the moment resolves to one, at or
-// before the moment's own sequence. For a gate.evaluated decision this is the
-// verdict artifact that carried the rationale; for a branch handoff it is the
-// branch's own recorded output.
-export function keyMomentEvidence(
-  events: RunEvent[],
-  moment: RunEvent,
-  runId?: string,
-): RunEvent | undefined {
-  const nodeId = eventNodeId(moment, runId);
-  let evidence: RunEvent | undefined;
-  for (const event of orderRunEvents(events)) {
-    if (event.seq > moment.seq) {
-      break;
-    }
-    if (event.branch !== moment.branch || !isInspectableEvidenceEvent(event)) {
-      continue;
-    }
-    if (nodeId && eventNodeId(event, runId) !== nodeId) {
-      continue;
-    }
-    evidence = event;
-  }
-  return evidence;
-}
-
 export function isMajorJournalEvent(event: RunEvent): boolean {
   if (!event.knownSchema || !event.category) {
     return true;
@@ -836,8 +797,6 @@ export function formatTimestamp(value: string | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    timeZone: "UTC",
-    timeZoneName: "short",
   }).format(timestamp);
 }
 

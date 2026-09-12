@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -62,6 +63,7 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 	setAPIListenAddress(t, root, address)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	started := &daemonStartedWriter{started: make(chan struct{})}
 	var stderr bytes.Buffer
 	done := make(chan int, 1)
@@ -99,6 +101,10 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 	if health.Instance.Name != "example" || health.Instance.Environment != "dev" {
 		t.Fatalf("instance = %+v", health.Instance)
 	}
+	identity, err := instance.NewLayout(root).ReadIdentity()
+	if err != nil || identity == "" {
+		t.Fatalf("real daemon startup did not persist its instance identity: %q, %v", identity, err)
+	}
 	if health.Freshness.ObservedAt.IsZero() || health.Freshness.DefinitionsLoadedAt.IsZero() {
 		t.Fatalf("freshness = %+v", health.Freshness)
 	}
@@ -110,15 +116,25 @@ func TestUpServesHealthAndStopsHTTPGracefully(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	inventoryBody, bodyErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if bodyErr != nil {
+		t.Fatal(bodyErr)
+	}
 	var inventory readservice.Instance
-	if err := json.NewDecoder(response.Body).Decode(&inventory); err != nil {
+	if err := json.Unmarshal(inventoryBody, &inventory); err != nil {
 		_ = response.Body.Close()
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK || !inventory.Ready ||
 		inventory.Counts.Gaggles == 0 || inventory.Counts.Workflows == 0 {
-		t.Fatalf("inventory status/view = %d / %+v", response.StatusCode, inventory)
+		cancel()
+		select {
+		case <-done:
+			t.Fatalf("inventory status/view = %d / %+v; body=%s; daemon stderr=%s", response.StatusCode, inventory, inventoryBody, stderr.String())
+		case <-time.After(10 * time.Second):
+			t.Fatalf("inventory status/view = %d / %+v; body=%s; daemon did not stop", response.StatusCode, inventory, inventoryBody)
+		}
 	}
 
 	response, err = http.Get("http://" + address + httpapi.GagglesPath)

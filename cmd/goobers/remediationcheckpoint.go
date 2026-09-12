@@ -2120,18 +2120,18 @@ func declaredRemediationBudgets(override int) (remediationBudgets, error) {
 	var budgets remediationBudgets
 	values := []struct {
 		input  string
+		raw    string
 		target *int
 	}{
-		{"conflictBudget", &budgets.Conflict},
-		{"substantiveBudget", &budgets.Substantive},
-		{"failingCIBudget", &budgets.FailingCI},
-		{"siblingOverlapBudget", &budgets.SiblingOverlap},
+		{"conflictBudget", providerInput("conflictBudget", ""), &budgets.Conflict},
+		{"substantiveBudget", providerInput("substantiveBudget", ""), &budgets.Substantive},
+		{"failingCIBudget", providerInput("failingCIBudget", ""), &budgets.FailingCI},
+		{"siblingOverlapBudget", providerInput("siblingOverlapBudget", ""), &budgets.SiblingOverlap},
 	}
 	for _, value := range values {
-		raw := providerInput(value.input, "")
-		budget, err := strconv.Atoi(raw)
+		budget, err := strconv.Atoi(value.raw)
 		if err != nil || budget <= 0 {
-			return remediationBudgets{}, fmt.Errorf("%s must be a positive integer, got %q", value.input, raw)
+			return remediationBudgets{}, fmt.Errorf("%s must be a positive integer, got %q", value.input, value.raw)
 		}
 		*value.target = budget
 	}

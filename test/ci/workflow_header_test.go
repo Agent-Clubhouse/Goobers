@@ -53,6 +53,66 @@ func TestCIHeaderNamesOnlyDefinedJobs(t *testing.T) {
 	}
 }
 
+// TestContributingRequiredJobTableMatchesWorkflowNames keeps the contributor
+// map tied to the display names users actually see in required-check output.
+// The table covers every required-ci dependency plus the aggregate itself;
+// neither invented names nor silently omitted gates are allowed.
+func TestContributingRequiredJobTableMatchesWorkflowNames(t *testing.T) {
+	t.Parallel()
+
+	workflow := loadCIWorkflow(t)
+	required := workflow.Jobs["required-ci"].Needs
+	want := make([]string, 0, len(required)+1)
+	for _, id := range required {
+		job, ok := workflow.Jobs[id]
+		if !ok {
+			t.Fatalf("required-ci needs undefined job %q", id)
+		}
+		if strings.TrimSpace(job.Name) == "" {
+			t.Fatalf("required job %q has no display name", id)
+		}
+		want = append(want, job.Name)
+	}
+	want = append(want, workflow.Jobs["required-ci"].Name)
+	slices.Sort(want)
+
+	data, err := os.ReadFile(filepath.Join(moduleRoot(t), "CONTRIBUTING.md"))
+	if err != nil {
+		t.Fatalf("read CONTRIBUTING.md: %v", err)
+	}
+	const start = "<!-- ci-required-jobs:start -->"
+	const end = "<!-- ci-required-jobs:end -->"
+	_, rest, ok := strings.Cut(string(data), start)
+	if !ok {
+		t.Fatalf("CONTRIBUTING.md omits %q", start)
+	}
+	section, _, ok := strings.Cut(rest, end)
+	if !ok {
+		t.Fatalf("CONTRIBUTING.md omits %q", end)
+	}
+	var got []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "| `") {
+			continue
+		}
+		name, _, ok := strings.Cut(strings.TrimPrefix(line, "| `"), "`")
+		if !ok {
+			t.Fatalf("malformed CI job table row %q", line)
+		}
+		if seen[name] {
+			t.Errorf("CONTRIBUTING.md repeats CI job %q", name)
+		}
+		seen[name] = true
+		got = append(got, name)
+	}
+	slices.Sort(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("CONTRIBUTING.md CI jobs = %q, want workflow display names %q", got, want)
+	}
+}
+
 // parseCIHeaderJobs reads the two job lists out of ci.yml's leading comment
 // block: the indented `group jobs:` table, one job per line, and the
 // comma-joined `dedicated jobs:` list, which may wrap onto continuation lines.

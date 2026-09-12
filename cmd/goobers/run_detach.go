@@ -146,12 +146,17 @@ func runDetachedWorkerContext(ctx context.Context, args []string, stdout, stderr
 		}
 		name = name[:marker]
 	}
+	force := strings.HasSuffix(name, "#force")
+	if force {
+		name = strings.TrimSuffix(name, "#force")
+	}
 	target, err := parseRunTarget(name, "")
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 	target.PR = pr
+	target.Force = force
 	l := instance.NewLayout(root)
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())

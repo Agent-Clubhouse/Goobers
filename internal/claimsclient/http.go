@@ -41,11 +41,14 @@ type claimListRequest struct {
 	RunID          string `json:"runId"`
 	Scope          string `json:"scope"`
 	IncludeHistory bool   `json:"includeHistory,omitempty"`
+	Execution      bool   `json:"execution,omitempty"`
 }
 
 type claimListResponse struct {
-	Entries []Entry `json:"entries"`
-	History []Entry `json:"history,omitempty"`
+	Entries         []Entry   `json:"entries"`
+	History         []Entry   `json:"history,omitempty"`
+	ClaimVisibility string    `json:"claimVisibility,omitempty"`
+	ObservedAt      time.Time `json:"observedAt,omitzero"`
 }
 
 type claimRecoverRequest struct {
@@ -111,11 +114,15 @@ type HTTP struct {
 
 // NewHTTP constructs the plane backend.
 func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
+	return newHTTP(cfg, false)
+}
+
+func newHTTP(cfg HTTPConfig, anonymous bool) (*HTTP, error) {
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if cfg.BaseURL == "" {
 		return nil, errors.New("claimsclient: HTTP backend requires a base URL")
 	}
-	if strings.TrimSpace(cfg.Token) == "" {
+	if strings.TrimSpace(cfg.Token) == "" && !anonymous {
 		return nil, errors.New("claimsclient: HTTP backend requires a bearer token")
 	}
 	if strings.TrimSpace(cfg.RunID) == "" {
@@ -144,7 +151,9 @@ func (h *HTTP) post(ctx context.Context, path string, body, target any) error {
 		return fmt.Errorf("claimsclient: build request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
+	if h.cfg.Token != "" {
+		request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
+	}
 	response, err := h.cfg.Client.Do(request)
 	if err != nil {
 		return fmt.Errorf("claimsclient: %s: %w", endpoint, err)
@@ -270,7 +279,51 @@ func (h *HTTP) ListNamespace(ctx context.Context, gaggle, provider string) (List
 	}, &response); err != nil {
 		return Listing{}, err
 	}
-	return Listing(response), nil
+	return Listing{Entries: response.Entries, History: response.History}, nil
+}
+
+// ExecutionSnapshot reads only this run's leases, history and trusted pinned
+// policy. Missing policy is refused: an older/unavailable server must never
+// silently turn shared execution into local execution.
+func (h *HTTP) ExecutionSnapshot(ctx context.Context) (string, Listing, error) {
+	var response claimListResponse
+	started := time.Now()
+	if err := h.post(ctx, apicontract.ClaimListPath, claimListRequest{RunID: h.cfg.RunID, Scope: scopeRun, IncludeHistory: true, Execution: true}, &response); err != nil {
+		return "", Listing{}, err
+	}
+	if response.ClaimVisibility != "local" && response.ClaimVisibility != "shared" {
+		return "", Listing{}, fmt.Errorf("claims plane did not verify execution policy")
+	}
+	if response.ClaimVisibility == "shared" {
+		if response.ObservedAt.IsZero() {
+			return "", Listing{}, fmt.Errorf("claims plane omitted the execution observation clock")
+		}
+		// Anchor remaining server-clock authority at the START of the local
+		// request. Network and server wait time are spent, never granted anew.
+		// This remains conservative even when daemon and worker clocks differ.
+		response.Entries = localExecutionTimes(response.Entries, started, response.ObservedAt)
+		response.History = localExecutionTimes(response.History, started, response.ObservedAt)
+	}
+	return response.ClaimVisibility, Listing{Entries: response.Entries, History: response.History}, nil
+}
+
+func localExecutionTimes(entries []Entry, started, observed time.Time) []Entry {
+	translate := func(value time.Time) time.Time {
+		if value.IsZero() {
+			return value
+		}
+		return started.Add(value.Sub(observed))
+	}
+	for i := range entries {
+		entries[i].ExpiresAt = translate(entries[i].ExpiresAt)
+		entries[i].SharedDeadline = translate(entries[i].SharedDeadline)
+		entries[i].ClaimedAt = translate(entries[i].ClaimedAt)
+		if entries[i].ReleasedAt != nil {
+			released := translate(*entries[i].ReleasedAt)
+			entries[i].ReleasedAt = &released
+		}
+	}
+	return entries
 }
 
 // errMergeLeaseLost is MergeLock's context.Cause when a renewal is

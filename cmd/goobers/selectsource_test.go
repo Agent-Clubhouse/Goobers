@@ -103,7 +103,7 @@ func decompositionInstanceEnv(t *testing.T, root string) {
 
 func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
 	const trustLabel = "acme:maintainer-approved"
-	root := t.TempDir()
+	root := initDemo(t)
 	buildSelectSourceRun(t, root, selectSourceRunOptions{
 		runID:          "escalated-1",
 		startedAt:      time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC),
@@ -367,7 +367,7 @@ func TestSelectSourceExcludesCITimeout(t *testing.T) {
 }
 
 func TestSelectSourceOldestEligibleRunOwnsFirstPass(t *testing.T) {
-	root := t.TempDir()
+	root := initDemo(t)
 	buildSelectSourceRun(t, root, selectSourceRunOptions{
 		runID:          "escalated-newer",
 		startedAt:      time.Date(2026, time.July, 10, 0, 0, 0, 0, time.UTC),

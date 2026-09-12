@@ -387,9 +387,15 @@ func runPostMergeCore(root string, repo providers.RepositoryRef, transport postM
 // runPostMergeADO's doc comment). This is what stops the PBI parking at
 // New/in-review forever after its PR lands (merge-wiring-plan.md §6).
 func performPostMergeADOWithPRComments(ctx context.Context, closer adoWorkItemCloser, prComments adoPostMergePRComments, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
+	return performPostMergeADOWithOrigin(ctx, closer, prComments, backlogRepo, poll, pullNumber, root, providerGaggle(), repo, stdout, stderr)
+}
+
+// Delayed entries carry their originating gaggle explicitly. An empty legacy
+// origin remains empty so the cost resolver can apply its conservative policy.
+func performPostMergeADOWithOrigin(ctx context.Context, closer adoWorkItemCloser, prComments adoPostMergePRComments, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root, origin string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
 	issueIDs := closingIssueNumbers(poll.Body)
 	var report postMergeCostReport
-	if prComments != nil && costPublicationAllowed(root, providerGaggle(), repo, stderr) {
+	if prComments != nil && costPublicationAllowed(root, origin, repo, stderr) {
 		report = collectADOPostMergeCostReport(ctx, closer, prComments, backlogRepo, repo, pullNumber, issueIDs, stderr)
 	}
 	comments := make(map[string]string, len(issueIDs))

@@ -426,6 +426,7 @@ const (
 	featureWorkflowDisplayName            FeatureID = "workflow.spec.displayName"
 	featureWorkflowTriggers               FeatureID = "workflow.spec.triggers"
 	featureWorkflowReadiness              FeatureID = "workflow.spec.readiness"
+	featureWorkflowClaimVisibility        FeatureID = "workflow.spec.readiness.claimVisibility"
 	featureWorkflowRunControls            FeatureID = "workflow.spec.runControls"
 	featureWorkflowDesiredConcurrentRuns  FeatureID = "workflow.spec.readiness.desiredConcurrentRuns"
 	featureWorkflowMaxConcurrentRuns      FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
@@ -671,6 +672,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowTriggers,
 		featureWorkflowReadiness,
 		featureWorkflowRunControls,
+		featureWorkflowClaimVisibility,
 		featureWorkflowDesiredConcurrentRuns,
 		featureWorkflowMaxConcurrentRuns,
 		featureWorkflowMaxRunsPerHour,
@@ -1118,6 +1120,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	)
 	if def.Spec.DisplayName != "" {
 		used.add(featureWorkflowDisplayName)
+	}
+	if def.Spec.Readiness.ClaimVisibility != "" {
+		used.add(featureWorkflowClaimVisibility)
 	}
 	if def.Spec.Readiness.DesiredConcurrentRuns != 0 {
 		used.add(featureWorkflowDesiredConcurrentRuns)

@@ -213,7 +213,7 @@ describe("replay scrubber", () => {
       }),
     ).toBeInTheDocument();
 
-    const scope = screen.getByRole("group", { name: "Workflow, stage, and goober" });
+    const scope = screen.getByRole("group", { name: "Workflow, stage kind, and goober" });
     expect(within(scope).getByText("implementation")).toBeInTheDocument();
     expect(within(scope).getByText("implement")).toBeInTheDocument();
     expect(within(scope).getByText("builder-goober")).toBeInTheDocument();
@@ -335,6 +335,13 @@ describe("replay scrubber", () => {
       expect(within(item).getByText(glyph)).toHaveAttribute("aria-hidden", "true");
       expect(window.getComputedStyle(item).color).toBe(`var(${color})`);
     }
+  });
+
+  it("keeps replay controls at WCAG target sizes in the shared stylesheet", () => {
+    expect(styles).toMatch(/\.speed-button\s*\{[^}]*min-height:\s*24px/s);
+    expect(styles).toMatch(/\.speed-button\s*\{[^}]*min-width:\s*24px/s);
+    expect(styles).toMatch(/\.journal-view-button\s*\{[^}]*min-height:\s*24px/s);
+    expect(styles).toMatch(/\.journal-stage-filter select\s*\{[^}]*min-height:\s*24px/s);
   });
 
   it("discloses and exposes each compressed idle period for inspection", () => {

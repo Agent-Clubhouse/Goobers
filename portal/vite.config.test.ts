@@ -29,6 +29,21 @@ describe("portal development proxy", () => {
     });
   });
 
+  it("routes instance branding assets to the dashboard server", () => {
+    expect(createViteConfig({}).server.proxy["/assets"]).toEqual({
+      target: "http://127.0.0.1:8085",
+      changeOrigin: true,
+    });
+    expect(
+      createViteConfig({
+        GOOBERS_DASHBOARD_URL: "http://127.0.0.1:9095",
+      }).server.proxy["/assets"],
+    ).toEqual({
+      target: "http://127.0.0.1:9095",
+      changeOrigin: true,
+    });
+  });
+
   it("routes guided requests to the Getting Started backend", () => {
     expect(createViteConfig({}).server.proxy["/guided"]).toMatchObject({
       target: "http://127.0.0.1:8081",

@@ -100,6 +100,16 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 
 	code, stdout, stderr := runArgs(t, "run", "quickstart", root)
 	if code != 0 {
+		reader, err := journal.OpenRead(filepath.Join(root, "runs", runIDFromRunStdout(t, stdout)))
+		if err == nil {
+			events, readErr := reader.Events()
+			t.Logf("read failed quickstart journal: %v", readErr)
+			for _, event := range events {
+				if event.Error != nil {
+					t.Logf("quickstart event %s stage %s: %+v", event.Type, event.Stage, event.Error)
+				}
+			}
+		}
 		t.Fatalf("goobers run quickstart: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "phase=completed") {

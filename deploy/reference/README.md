@@ -21,7 +21,7 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 | `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`) | §2, §3, §4, §5 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
-| `temporal/` | values for the OSS Temporal Helm chart + Temporal-isolation NetworkPolicy + the namespace-registration Job | §2, §4, §5 |
+| `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
 
 ## Hand-managed node-pool contract
 
@@ -52,9 +52,13 @@ namespace is a required step, not follow-up hardening; bring the stack up in thi
    (`temporal/values.yaml`'s `existingSecret:` references).
 2. Install the chart (`temporal/values.yaml` header carries the pinned `helm install`
    command).
-3. Apply `temporal/namespace-job.yaml` and wait for it to complete
+3. Apply `kubectl apply -k deploy/reference/temporal` (the namespace-registration Job
+   plus both Temporal-isolation NetworkPolicies — #4827 split frontend's external
+   control-plane grant from the intra-cluster RPC/ringpop grant every server component
+   needs from every other, so applying either alone leaves the other traffic denied)
+   and wait for the Job to complete
    (`kubectl wait --for=condition=complete -n goobers-temporal job/goobers-temporal-namespace`).
-   It is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
+   The Job is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
 4. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
    registered).
 
@@ -127,21 +131,75 @@ scale-to-zero default.
 - **CRDs**: initial CRD install is a cluster-admin action (§1) from the operator release
   you deploy. The committed `config/crd/bases` are generated from `api/v1alpha1`; update
   them with `make manifests`. The merge gate regenerates the CRDs and rejects any diff.
-- **Stubs**: the worker `args` (`goobers worker`, v2-cloud-scale A1.6/#632) are stubbed
-  with CHANGE-ME comments until they land. The daemon API Deployment is explicitly
-  disabled (`replicas: 0`) until its in-cluster listener (#652) lands; enabling the
-  current lock-owning daemon would also contend with the worker for the RWO instance
-  volume. The operator Deployment is disabled the same way (`replicas: 0`):
-  `internal/operator` is quarantined Tier-3 (V2) and the runtime image its reconciler
-  schedules is not published, so applying it as shipped would only produce
-  `ImagePullBackOff` workloads. Per #663 the manifests express the target shape now.
+- **Configuration scaffolding, not a runnable mode-3 installation**: the worker
+  flags are implemented, but its seed only creates empty directories. An adopter
+  must supply `instance.yaml`, the complete config tree, runner inventory, and
+  credentials. The API Deployment remains disabled (`replicas: 0`); its Service
+  consequently has no backend. Off-loopback TLS and signed pod authentication
+  are implemented, but this base does not configure them. The worker also lacks
+  its daemon/blob endpoints and shared signing key. It now refuses this incomplete
+  dispatch configuration at startup, before polling or creating stage pods.
+  The operator Deployment is also disabled (`replicas: 0`); configure and validate
+  its runtime image and adopted topology before enabling it.
+
+### Mode-3 authority and storage prerequisites
+
+The opt-in [authenticated topology preparer](authenticated/README.md) produces a
+self-contained single-gaggle deployment with separate writable state, shared blobs,
+immutable config rollouts, authenticated endpoints, and explicit network grants.
+It requires validated adopter configuration and the documented external inputs.
+
+A configured deployment needs all of these inputs before enabling stage dispatch:
+
+- Run the daemon as the sole owner of its writable instance/journal volume, in
+  its own Deployment and ServiceAccount. Set `api.listen`, `api.tls.certFile`,
+  `api.tls.keyFile`, and `api.podTokenKeyFile` in its instance configuration.
+  A pod-only listener can use signed pod authentication without a human OIDC
+  provider; enabling human access requires its own supported authentication.
+- Give the worker `--daemon-api` (or `GOOBERS_DAEMON_API`) and
+  `GOOBERS_BLOB_ENDPOINT`, normally both
+  `https://goobers-api.goobers-system.svc:8080`, and the same signing key through
+  its own `api.podTokenKeyFile`. These must be absolute HTTP(S) base URLs without
+  user information, query parameters, or fragments. Startup validates syntax
+  and key material, not endpoint reachability or remote key agreement. Use TLS
+  for the in-cluster listener. The certificate must cover the Service name;
+  workers and **all stage images** must trust its CA. Successful kubelet HTTPS
+  probes alone do not establish client trust.
+- Share the RWX blob volume: the daemon's `<instance>/blobstore` and the worker's
+  `--blob-store` must refer to the same backing tree, including its `surrender/`
+  directory. Stage pods use the authenticated network planes, never the PVC.
+- Give the worker its **own writable instance root** and private `--work-root`,
+  with matching config supplied through a whole mounted config tree or a
+  maintained sync source. `--work-root` alone does not relocate all writes:
+  workspace setup constructs per-gaggle worktree managers under the instance,
+  and local execution stages artifacts there. A read-only mount of the daemon's
+  whole instance is therefore insufficient. RWO same-node affinity does not
+  solve state ownership. See the reload section below for propagation and pin
+  retention requirements; copying config once does not provide live sync.
+- Add explicit deny-first network grants for worker-to-daemon, worker-to-Kubernetes
+  API, worker-to-Temporal, and stage-to-daemon traffic, with DNS available.
+  Retain namespace **and** pod selectors on cross-namespace blob/API grants.
+  Keep pod-creation RBAC on the worker ServiceAccount and out of the daemon's
+  ServiceAccount. The base does not supply adopter-specific API-server addresses
+  or a fully connected authority topology.
+
+Do not enable the API beside the worker while both use the base's same writable
+instance PVC. The manifests require an adopter overlay implementing the ownership
+and configuration above, followed by an actual authenticated stage execution,
+artifact retrieval, surrender, and restart test. Static manifest validation does
+not demonstrate those runtime properties.
 
 ## Validation
 
-No cluster is required. The merge gate runs `make deploy-validate`, which renders all
-three kustomizations and passes them through strict kubeconform schema validation.
-The Go test suite also checks every Deployment's container arguments against the
-registered CLI flags and requires execution-critical worker flags such as `--instance`.
+No cluster is required. The merge gate runs `make deploy-validate`, which renders every
+kustomization under `deploy/reference/` — including `temporal/` (#4827: this tree had
+no `kustomization.yaml` and was never rendered or schema-checked, which is why its
+NetworkPolicy shipped denying Temporal's own intra-cluster RPC) — and passes them
+through strict kubeconform schema validation. The Go test suite also checks every
+Deployment's container arguments against the registered CLI flags, requires
+execution-critical worker flags such as `--instance`, and (#4827) asserts that no
+reference NetworkPolicy selects pods from a chart release without also admitting
+that release's own required intra-cluster traffic.
 Run the same render and schema gate locally with:
 
 ```sh
@@ -175,12 +233,16 @@ ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to
 get, delete and list pods in this gaggle's namespace, and read the worker's own
 Deployment (DI-9 template read). This is what lets a worker whose `--dispatch-namespace`
 names this gaggle actually dispatch pod-per-stage runs into it (#4286); stage pods
-themselves still get no token mount and no RBAC grants at all
-(`serviceaccount.yaml`). **One worker dispatches into one namespace** —
-`--dispatch-namespace` takes a single value, not a list — so stamping a second gaggle
-means either pointing a second worker Deployment at it, or copying
-`goobers-system/worker-deployment.yaml` per gaggle for the G2 dedicated-worker mode
-(#656).
+themselves still get no token mount and no RBAC grants at all. The included
+`goobers-stage` ServiceAccount is a target-topology template, not one the current
+dispatcher selects. `--dispatch-namespace` takes a single value, but the
+worker still polls every gaggle queue loaded from its config. All loaded
+gaggles therefore share that worker-wide namespace; `spec.isolation.namespace`
+does not enforce per-gaggle isolation. Copies with different namespace flags
+still poll the same unscoped queues and race nondeterministically, so whichever
+copy wins decides where a pod lands. Issue #4897 leaves the resolution open:
+possible choices include dedicated queue scoping, dynamic gaggle-to-namespace
+mapping, or demoting the isolation field.
 
 ## Operating notes from a real cluster
 
@@ -376,10 +438,16 @@ make bytes appear under a mount that never updates: a `config/` directory
 copied once into an `emptyDir` by an initContainer is frozen for the life of the
 pod, and the reloader will poll it forever finding nothing — exactly the
 `subPath` trap above, in a different costume. Give the worker a config tree that
-actually changes (a whole-ConfigMap or projected volume, a synced PVC, a sidecar
+actually changes (a projected volume, a synced PVC, a sidecar
 that writes into the mounted directory), then verify by execution: edit the
 tree, wait past the interval, and confirm the worker logged
 `worker config reload: applied config tree sha256:…`.
+
+For credential-free cross-node **boot seeding**, use the
+[rendered-config mirror overlay](config-mirror/README.md) instead of a worker
+ConfigMap bridge. It copies a complete validated snapshot without the ConfigMap
+size ceiling. It is deliberately not a live updater: drain and recreate workers
+to consume a newer seed, accounting for configuration pins of in-flight runs.
 
 ### The worker refuses a kit its run was not admitted against
 
@@ -499,3 +567,54 @@ for Windows workers, and do not copy the Linux security context into them.
 after a cluster is deleted and recreated under the same name — it can keep
 resolving the old control-plane FQDN and fail with `no such host`. Re-run it
 explicitly as a step rather than trusting the flag.
+
+### Worker replacement and shutdown
+
+The Linux reference worker uses `Recreate` because its instance root holds locks
+on an RWO volume: the old pod must exit before its replacement starts. This
+introduces a brief polling interruption during upgrades; Temporal retains queued
+work. Keep this worker at one replica until instance storage is separated for
+additional workers. Both worker templates allow 90 seconds for shutdown, covering
+the default 30-second Temporal drain, up to 30 seconds of stage-pod cleanup, and
+process exit. Increase the pod grace period when increasing `--drain-timeout`.
+The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
+and git helpers can write temporary files under a read-only root filesystem.
+
+### Scoped cloud preflight checks
+
+`goobers doctor --k8s --checks apiserver-ipblock-drift` runs only the
+API-server drift check. Unknown, empty, or repeated check selections are usage
+errors. Omitting `--checks` runs the full preflight. This lets the recurring
+monitor retain its NetworkPolicy-only RBAC instead of acquiring the install,
+node, storage, and pod permissions that the full report requires.
+
+Mark **dedicated API-server egress policies** with
+`goobers.dev/apiserver-egress: "true"`. The checker inspects their egress
+`ipBlock` entries against the configured comparison endpoint (the kubeconfig server by default);
+ordinary provider allowlists and ingress client CIDRs are excluded. Use an
+exact `/32` (IPv4) or `/128` (IPv6), and do not exclude the endpoint with an
+`except` entry. The example monitor includes a policy for its own API egress;
+replace its documentation IP with the control-plane IP and set the CronJob's
+`--apiserver-endpoint` to its matching DNS URL. In-cluster client configuration
+normally names the Kubernetes Service ClusterIP; it may differ from the
+control-plane address the CNI evaluates after destination NAT. The comparison
+override does not change the monitor's authenticated client connection. The
+namespace's DNS grant must also be present. Inspecting zero marked egress
+entries fails with a checked-zero diagnostic. Migration from older overlays
+requires adding the purpose label to their API egress policies.
+
+`runner-class-capacity` checks each active runner pod against one compatible
+node, including its node selector, required node affinity, hard taints,
+resource requests, init-container peak, restartable init sidecars, and pod
+overhead. Several replicas of a class do not become one giant pod, and CPU on
+one node cannot satisfy a pod whose memory fits only on another node. This is
+static request fit, not current free capacity or a complete scheduler verdict:
+inter-pod placement, volume constraints, and dynamic allocation still need
+scheduler observation. No active runner pods means unverified, not success.
+
+The current `otlp-signal-set` implementation is **not release evidence of
+telemetry ingestion**. Its endpoint option is not connected to the CLI, and
+its library probe issues HTTP GET requests, whereas OTLP/HTTP ingestion uses
+POST. Do not count a skipped check or a generic HTTP success as proof that
+traces, metrics, and logs were received; capture actual collector/backend
+observations for the smoke until a protocol-correct check is wired.

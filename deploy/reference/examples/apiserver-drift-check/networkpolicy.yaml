@@ -1,0 +1,21 @@
+# Dedicated API egress lets doctor distinguish this endpoint from provider
+# allowlists and client ingress CIDRs. The deny-first namespace already grants
+# DNS; the monitor needs only HTTPS to the API server in addition.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apiserver-drift-check
+  labels:
+    goobers.dev/apiserver-egress: "true"
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: apiserver-drift-check
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 203.0.113.10/32 # CHANGE-ME: current API-server address
+      ports:
+        - protocol: TCP
+          port: 443

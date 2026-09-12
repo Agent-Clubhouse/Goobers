@@ -53,13 +53,12 @@ appropriate path in its configured `PATH`.
 
 ## 2. Download and verify a release
 
-Choose an exact stable tag from
-[GitHub Releases](https://github.com/Agent-Clubhouse/Goobers/releases), then
-download its archive and `SHA256SUMS`. This example selects the archive for the
-current Mac:
+Resolve the newest stable release, then download its archive and
+`SHA256SUMS`. This example selects the archive for the current Mac:
 
 ```sh
-VERSION=v0.1.0
+VERSION="$(curl -fsSL https://api.github.com/repos/Agent-Clubhouse/Goobers/releases/latest |
+  awk -F '"' '/tag_name/ { print $4; exit }')"
 case "$(uname -m)" in
   arm64) ARCH=arm64 ;;
   x86_64) ARCH=amd64 ;;
@@ -79,6 +78,10 @@ test "$ACTUAL" = "$EXPECTED" || {
 }
 echo "OK: checksum matches"
 ```
+
+To pin a known stable release instead, replace the first command by setting
+`VERSION` to an explicit tag from
+[GitHub Releases](https://github.com/Agent-Clubhouse/Goobers/releases).
 
 The binary is Developer ID signed and notarized, but verify the checksum
 too — it's recomputed after signing, so it always covers the exact

@@ -96,7 +96,11 @@ func TestInterventionCLICommandsCallDaemonAPI(t *testing.T) {
 			args := append([]string{test.command}, test.flags...)
 			args = append(args, "run-1", "review", root)
 			code, stdout, stderr := runArgs(t, args...)
-			if code != 0 || stderr != "" {
+			var banner strings.Builder
+			if err := prepareManualRoot(instance.NewLayout(root), &banner); err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 || stderr != banner.String() {
 				t.Fatalf("code = %d, stderr = %q", code, stderr)
 			}
 			if !strings.Contains(stdout, test.command+" accepted for run run-1") ||

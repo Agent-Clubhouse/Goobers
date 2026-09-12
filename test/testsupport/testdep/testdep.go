@@ -31,6 +31,10 @@ var declared = map[string]Dependency{
 		Name:        "copilot",
 		InstallHint: "install and sign in to the GitHub Copilot CLI (https://docs.github.com/copilot/using-github-copilot/using-github-copilot-in-the-command-line)",
 	},
+	"cp": {
+		Name:        "cp",
+		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
 	"dirname": {
 		Name:        "dirname",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
@@ -38,6 +42,10 @@ var declared = map[string]Dependency{
 	"dotnet": {
 		Name:        "dotnet",
 		InstallHint: "install the .NET SDK (https://dotnet.microsoft.com/download)",
+	},
+	"find": {
+		Name:        "find",
+		InstallHint: "install findutils (Debian/Ubuntu: apt-get install findutils)",
 	},
 	"git": {
 		Name:        "git",
@@ -58,6 +66,10 @@ var declared = map[string]Dependency{
 	"mvn": {
 		Name:        "mvn",
 		InstallHint: "install Maven (Debian/Ubuntu: apt-get install maven)",
+	},
+	"powershell.exe": {
+		Name:        "powershell.exe",
+		InstallHint: "use Windows PowerShell 5.1, included with Windows Server; native Windows image tests are Windows-only",
 	},
 	"ps": {
 		Name:        "ps",

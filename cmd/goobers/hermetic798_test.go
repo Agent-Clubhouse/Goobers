@@ -2,11 +2,9 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"net"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -55,21 +53,11 @@ func TestDaemonStartsWhileDefaultPortOccupied(t *testing.T) {
 
 	root := initDeterministicDemo(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Fatalf("code = %d, stderr = %q — daemon failed to start hermetically while :8080 was occupied", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runUpContext did not return — daemon wedged instead of binding an ephemeral port")
+	if code := runUpThroughStartup(t, []string{root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("daemon startup/shutdown code=%d stderr=%q", code, stderr.String())
 	}
+
 	if !strings.Contains(stdout.String(), "daemon started") {
 		t.Fatalf("stdout = %q, want daemon-started message", stdout.String())
 	}

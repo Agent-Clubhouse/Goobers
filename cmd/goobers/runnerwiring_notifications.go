@@ -421,31 +421,10 @@ func failureStreakKey(repo providers.RepositoryRef, itemID string) string {
 }
 
 // loadFailureStreakCount returns the last persisted failure-streak count for
-// an item, or 0 if none has ever been recorded. It scans the instance journal
-// for the newest matching failure-streak annotation — the same append-only,
-// scan-for-the-latest-marker pattern the provider-comment version used,
-// just against durable local state instead of a live network call.
+// an item, or 0 if none has ever been recorded. The shared annotation fold
+// preserves newest-wins semantics while reading only newly appended records.
 func loadFailureStreakCount(l instance.Layout, repo providers.RepositoryRef, itemID string) (int, error) {
-	events, err := journal.ReadInstanceLog(l.SchedulerDir())
-	if err != nil {
-		return 0, fmt.Errorf("read instance log for failure streak: %w", err)
-	}
-	key := failureStreakKey(repo, itemID)
-	count := 0
-	for _, event := range events {
-		if event.Type != journal.EventRunnerAnnotation || event.Runner["annotation"] != failureStreakAnnotation {
-			continue
-		}
-		if event.Runner["key"] != key {
-			continue
-		}
-		// Runner values round-trip through JSON, so a persisted int decodes
-		// as float64 here.
-		if n, ok := event.Runner["count"].(float64); ok {
-			count = int(n)
-		}
-	}
-	return count, nil
+	return annotationsForInstance(l.SchedulerDir()).failureStreak(l.SchedulerDir(), failureStreakKey(repo, itemID))
 }
 
 // writeFailureStreakCount persists an item's current failure-streak count to

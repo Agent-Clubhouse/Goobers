@@ -65,6 +65,56 @@ This is unrelated to the DSL feature/support-matrix registry's own
 intentionally does not accept pre-release identifiers. A pre-release tag
 never appears in that lineage.
 
+Prerelease packaging validates the matrix against the corresponding stable
+release line (for example, `v0.4.0-rc.1` is checked against `v0.4.0`). It cannot
+bypass the final release's support checks. The optional `effectiveIn` field in
+schema-version-1 support snapshots records the actual enforcement release for
+the already-shipped DSL 1.4 early removal: `v0.4.0`, while the unchanged history
+retains the previously promised `v0.5.0`. This is a narrowly validated correction
+of a historical breach, not a general exemption from lifecycle windows. An
+`effectiveIn` correction that predates its published transition also requires a
+declared `retraction` (`internal/supportmatrix.Retraction`: the withdrawn
+commitment, the release performing the withdrawal, and a rationale) — the
+append-only evolution guard honors a matching retraction instead of refusing
+the discrepancy, and the release-notes support-matrix delta surfaces it under
+"Retracted commitments" (#4708). Readers should use `level` for what the
+binary accepts and retain both dates for audit.
+
+This check (`ValidateSupportPolicyForRelease` in `release/supportnotes.go`,
+invoked at actual packaging time) only ever runs against a version that is
+either an explicit `-version` flag/`GOOBERS_VERSION` or exactly on a git tag —
+a `git describe` result several commits past a tag (an ordinary development
+build) is skipped, not checked against whichever tag happens to be nearest.
+Whether the compiled-in matrix can actually ship is instead asserted on every
+PR, independent of checkout position, against
+**`supportmatrix.NextPlannedRelease`** — a single declared constant naming the
+next planned stable release line, reviewed like any other change
+(`internal/supportmatrix/supportmatrix.go`;
+`TestDSLMatrixAgainstNextPlannedRelease`). Bump it when the plan changes; a PR
+that writes a lifecycle transition the declared release can't ship fails
+immediately, on that PR, rather than only at tag time (#4709).
+The declared version must remain later than the newest published stable tag;
+the same test names both values when the constant needs a post-release bump.
+
+A staged lifecycle transition also constrains release ordering. Because the
+matrix's declared level must match its last history transition, merging a
+transition effective in (for example) `v0.5.0` prevents an intermediate
+`v0.4.x` patch from passing release validation. If that hotfix must ship first,
+prepare its branch from the intended release base and edit the support matrix
+there to remove the not-yet-effective transition, then validate and publish the
+patch from that branch. Do not rewrite the already-merged transition on the
+main development line merely to cut the hotfix.
+
+Before publication, signed archives execute natively on Linux AMD64/ARM64,
+macOS AMD64/ARM64, and Windows AMD64. Each native leg checks its checksum,
+reported version, and quickstart init/validate. Linux AMD64 also runs the
+credential-free demo through a completed terminal state and checks the portal
+payload. Stable installer smoke uses the actual staged archives with only the
+download transport redirected locally; this verifies the installer before any
+public release exists. Prerelease smoke verifies the intentional refusal and
+manual checksum-verification guidance. The trusted mock demo explicitly opts
+into unisolated execution on CI hosts that cannot enforce user namespaces.
+
 ## Install the latest stable release
 
 On Linux or macOS, resolve GitHub's latest stable release and run the installer
@@ -277,16 +327,58 @@ expect); unix targets use `.tar.gz`.
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
 `<hex>  <filename>` line per binary archive, `install.sh`, portable agent
-toolkit, onboarding payload, and authoritative `feature-registry.json` and
-`dsl-support-matrix.json`, sorted by filename. The generated release note
-remains editable for curation and is not checksummed. The same file verifies on
-every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
+toolkit, onboarding payload, authoritative `feature-registry.json` and
+`dsl-support-matrix.json`, and the published `RELEASE_NOTES.md`. The same file
+verifies on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This
 integrity check is in addition to, not instead of, the Authenticode
 signature below — both `sign-macos` and `sign-windows` recompute this
 manifest after signing, so it always reflects the signed bytes actually
 published.
+
+## Verifying a release
+
+Every published release is verifiable two ways, and both need something the
+project publishes rather than something you already trust.
+
+**The tag signature.** Release tags are signed locally by the maintainer
+cutting them, not by CI. The signing key is published as
+[`.github/allowed_signers`](../../.github/allowed_signers), which is what makes
+`git tag -v` succeed for anyone other than the person who cut the tag. From a
+trusted current checkout, set `TAG` to the release you downloaded and run:
+
+```sh
+TAG=v0.4.0-rc.2
+git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v "${TAG}"
+```
+
+A good signature prints `Good "git" signature for <principal> with ED25519 key
+SHA256:...`. Anything else — including `No principal matched` — means the tag
+is not the one this repository published, or the signing identity changed
+without this file being updated in the same commit.
+
+That signature covers the **tag annotation**, which is the release's identity
+and message. It does not cover the generated changelog, DSL deltas, or support
+policy that `RELEASE_NOTES.md` appends below it; those are covered by the
+checksum manifest instead.
+
+**The artifacts.** `SHA256SUMS` covers every published asset, including
+`RELEASE_NOTES.md`:
+
+```sh
+# From a directory holding the downloaded assets and SHA256SUMS:
+sha256sum --check SHA256SUMS        # GNU coreutils
+shasum -a 256 --check SHA256SUMS    # macOS
+```
+
+`SHA256SUMS` itself is not self-covering, and the tag signature does not cover
+this separately generated file. Obtain the manifest and assets from the
+official GitHub Release over authenticated HTTPS, use the signature to verify
+the release's tag identity and source commit, and use the manifest to detect
+any change to the downloaded assets. Signing the generated manifest itself
+would require a separate publication mechanism.
 
 ## Signing posture
 
@@ -407,40 +499,25 @@ a live arm64 Windows machine or a CI leg that executes (not just compiles) the
 arm64 binary. Until then the decision is *deferred, with evidence required to
 ship*.
 
-## linux/arm64 and darwin/amd64 (shipped, never executed)
+## Native execution coverage for shipped targets
 
-Unlike `windows/arm64` above, `linux/arm64` and `darwin/amd64` **are** published
-`DefaultTargets` — but no CI leg or release step ever *runs* either binary. CI
-executes tests only on `linux/amd64` (ubuntu runners), `darwin/arm64`
-(macos-latest, now Apple Silicon), and `windows/amd64` (windows-latest); the
-release workflow's own smoke test (`.github/workflows/release.yml`, "Verify
-release artifacts") extracts and exercises only the `linux_amd64` archive.
-That leaves two shipped arches with zero recorded runtime evidence, ever.
+The release workflow now executes every `DefaultTargets` archive before
+publication: Linux AMD64/ARM64, macOS AMD64/ARM64, and Windows AMD64. The
+`native-smoke` matrix uses native hosted runners and consumes the final signed
+artifact set. Linux AMD64 runs the deeper demo and release-document checks in
+`validate-release`, which has only read permission. A failed native smoke blocks
+publication. The separate `verify-and-publish` job independently downloads the
+final signer artifact by immutable artifact ID, checks the exact release asset
+set and every checksum, and uploads an explicit file list. It treats the
+validation job’s generated release notes as data and never executes release
+binaries, installers, or build tools with publication permission. Every
+post-signing gate uses that same immutable artifact ID; missing, malformed, or
+multiple IDs fail before download rather than selecting all run artifacts.
 
-**Recorded decision (2026-08-01, filed from the state-of-repo review,
-[#2039](https://github.com/Agent-Clubhouse/Goobers/issues/2039)): ship without
-adding execution coverage, for now.** Rationale:
-
-- The codebase is pure Go with no `cgo`, no architecture-conditional assembly,
-  and no OS/arch-specific syscalls outside the already-covered
-  `internal/platform/*` seam (which is exercised per-OS, not per-arch — the
-  Windows/amd64 and darwin/arm64 gates already prove the *OS* seams; nothing
-  in this repo branches on *arch* the way it branches on OS).
-- Adding real execution requires either GitHub-hosted arm64 Linux runners and
-  an Intel macOS runner (both available, at added job-minute cost) or
-  QEMU/Rosetta emulation (slower, and emulates rather than proves native
-  behavior) — a real cost for a risk this analysis judges low.
-- This is the honest counterpart to the `windows/arm64` decision above, not a
-  silent gap: unlike that deferred-and-unpublished target, these two **are**
-  shipped today: a real, if judged-low-probability, risk exists that a user
-  on one of these arches runs a binary this project has never once executed.
-
-**Promotion trigger:** add a real smoke execution (a CI leg or a release-workflow
-step, per-arch) if evidence emerges that arch-specific behavior actually matters
-here (an arch-dependent bug report, a new `cgo` dependency, inline assembly, or
-architecture-conditional code), or if the job-minute cost becomes justified
-regardless. Until then, this decision stands as reviewed and deliberate, not an
-accident of the release workflow's history.
+This supersedes the earlier #2039 decision to publish Linux ARM64 and macOS
+AMD64 without execution coverage. Native smoke proves startup and packaged
+quickstart behavior; it does not replace the complete OS-specific unit suites
+or establish Windows ARM64 support.
 
 ## The Windows gate
 

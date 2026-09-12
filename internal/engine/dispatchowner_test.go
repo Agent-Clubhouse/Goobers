@@ -70,6 +70,7 @@ func TestScheduledRunStampsItsOwnWorkflowIDOnTheAttempt(t *testing.T) {
 	workflowID := scheduledRunWorkflowID(claimID)
 
 	in := runInput("nightly", remotelyPlacedSpec(stage))
+	in.InstanceID = "0123456789abcdef0123456789abcdef"
 	in.RunID = claimID
 	in.TriggerRef = scheduleID
 	in.Placements = remotePlacement(stage)
@@ -97,6 +98,9 @@ func TestScheduledRunStampsItsOwnWorkflowIDOnTheAttempt(t *testing.T) {
 		t.Fatalf("dispatched %d attempts, want 1", len(attempts))
 	}
 	got := attempts[0]
+	if got.InstanceID != in.InstanceID {
+		t.Fatalf("dispatch instance identity = %q, want %q", got.InstanceID, in.InstanceID)
+	}
 	if got.OwningWorkflowID != workflowID {
 		t.Fatalf("attempt.OwningWorkflowID = %q, want the run workflow's own id %q — the pod would name no describable driver",
 			got.OwningWorkflowID, workflowID)

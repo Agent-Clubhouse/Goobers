@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   insightErrorSignatureFilters,
   insightPreviousWindowFilters,
+  serializeInsightAggregate,
   selectInsightCostTrendBuckets,
   insightTrendBuckets,
   insightWindowFilters,
 } from "./insightData";
+import type { DaemonClient } from "./api/types";
 
 describe("Insight time windows", () => {
   it("pins both ends of a bounded snapshot and the end of all-time snapshots", () => {
@@ -18,6 +20,7 @@ describe("Insight time windows", () => {
     expect(insightWindowFilters("all", now)).toEqual({
       until: "2026-07-22T12:00:00.000Z",
     });
+
   });
 
   it("adds the selected operational scope to failure-reason queries", () => {
@@ -34,7 +37,43 @@ describe("Insight time windows", () => {
       limit: 20,
     });
   });
+});
 
+describe("Insight aggregate admission", () => {
+  it("serializes simultaneous refreshes for one daemon client", async () => {
+    const client = {} as DaemonClient;
+    const signal = new AbortController().signal;
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maximumActive = 0;
+    const load = () =>
+      new Promise<number>((resolve) => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        releases.push(() => {
+          active -= 1;
+          resolve(active);
+        });
+      });
+
+    const first = serializeInsightAggregate(client, signal, load);
+    const second = serializeInsightAggregate(client, signal, load);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(active).toBe(1);
+    expect(releases).toHaveLength(1);
+    releases[0]();
+    await first;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(active).toBe(1);
+    expect(releases).toHaveLength(2);
+    releases[1]();
+    await second;
+    expect(maximumActive).toBe(1);
+  });
 });
 
 describe("Insight cost trend buckets", () => {

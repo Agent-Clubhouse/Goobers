@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -96,6 +97,10 @@ type CIChecksArtifactMetadata struct {
 	AnnotationMessagesTruncated int  `json:"annotationMessagesTruncated,omitempty"`
 	AnnotationsDropped          int  `json:"annotationsDropped,omitempty"`
 	ChecksDropped               int  `json:"checksDropped,omitempty"`
+	// RetryFailedChecksError records #4750's mechanical rerun call failing to
+	// even be attempted (transport error, or a permission gap like #4751) —
+	// evidence only; it never changes the reported ciStatus.
+	RetryFailedChecksError string `json:"retryFailedChecksError,omitempty"`
 }
 
 // CIStatusTimeout is the OutputCIStatus value CIPollExecutor sets when it
@@ -127,6 +132,18 @@ const (
 	// are provider-interpreted (the ADO provider matches branch-policy
 	// configuration ids). Unset means every required policy gates.
 	InputHumanPolicyIDs = "humanPolicyConfigurationIds"
+	// InputRetryFailedChecksMaxAttempts declares how many times ci-poll may
+	// mechanically rerun the PR's currently-failing checks (#4750) before
+	// reporting a terminal failing outcome — a plain non-negative integer
+	// count, not a duration. Unset or "0" (the default) disables the retry
+	// entirely: a workflow must explicitly opt in, and the poll behaves
+	// byte-identically to before this feature existed.
+	InputRetryFailedChecksMaxAttempts = "retryFailedChecksMaxAttempts"
+	// InputRetryFailedChecksBackoffSeconds is a time.ParseDuration string (see
+	// InputPollIntervalSec's doc comment on the "Sec" naming) for how long to
+	// wait, after triggering a rerun, before re-polling. Unset defaults to
+	// this call's effective poll interval.
+	InputRetryFailedChecksBackoffSeconds = "retryFailedChecksBackoffSeconds"
 )
 
 // Default poll cadence for CIPollExecutor: capped exponential backoff and an
@@ -167,6 +184,11 @@ type CIPollConfig struct {
 	Owner, Repo, PullID            string
 	Interval, MaxInterval, Timeout time.Duration
 	HumanPolicyIDs                 []string
+	// RetryFailedChecksMaxAttempts and RetryFailedChecksBackoff
+	// configure #4750's mechanical failed-check retry. Zero
+	// RetryFailedChecksMaxAttempts (the default) disables it.
+	RetryFailedChecksMaxAttempts int
+	RetryFailedChecksBackoff     time.Duration
 }
 
 // CIPollConfigFromEnvelope builds a CIPollConfig from the well-known Input*
@@ -199,6 +221,12 @@ func CIPollConfigFromEnvelope(env apiv1.InvocationEnvelope) (CIPollConfig, error
 		return CIPollConfig{}, err
 	}
 	if cfg.Timeout, err = durationInput(env, InputPollTimeoutSec); err != nil {
+		return CIPollConfig{}, err
+	}
+	if cfg.RetryFailedChecksMaxAttempts, err = nonNegativeIntInput(env, InputRetryFailedChecksMaxAttempts); err != nil {
+		return CIPollConfig{}, err
+	}
+	if cfg.RetryFailedChecksBackoff, err = durationInput(env, InputRetryFailedChecksBackoffSeconds); err != nil {
 		return CIPollConfig{}, err
 	}
 	if env.Limits.MaxDurationSeconds > 0 {
@@ -243,6 +271,23 @@ func stringSliceInput(env apiv1.InvocationEnvelope, key string) []string {
 		out = appendNonEmpty(out, fmt.Sprint(t))
 	}
 	return out
+}
+
+// nonNegativeIntInput parses key's declared value as a plain non-negative
+// integer count (not a duration, despite neighboring keys' "Sec" naming
+// convention) — an unset key returns 0 (the caller's disabled default), and a
+// set, malformed, or negative value fails closed rather than silently
+// defaulting, mirroring durationInput's posture for a misconfigured value.
+func nonNegativeIntInput(env apiv1.InvocationEnvelope, key string) (int, error) {
+	s := stringInput(env, key)
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("executor: invalid %s input %q: want a non-negative integer", key, s)
+	}
+	return n, nil
 }
 
 // durationInput parses key's declared value as a time.ParseDuration string
@@ -349,6 +394,11 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		sleep = contextSleep
 	}
 
+	retryBackoff := cfg.RetryFailedChecksBackoff
+	if retryBackoff <= 0 {
+		retryBackoff = interval
+	}
+
 	deadline := now().Add(timeout)
 	req := providers.PullRequestPollRequest{
 		Repository:                  providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo},
@@ -357,6 +407,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	}
 
 	consecutiveErrors := 0
+	retriesUsed := 0
 	for attempt := 0; ; attempt++ {
 		result, err := e.Poller.PollPullRequest(ctx, req)
 		invoke.ReportProgress(ctx)
@@ -392,7 +443,28 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		case providers.CheckStatePassing:
 			return ciPollOutcome(providers.CheckStatePassing, "ci-poll: checks passing", cfg.PullID), nil
 		case providers.CheckStateFailing:
-			return e.ciPollFailureOutcome(ctx, cfg, result)
+			retried, rerunErr := e.attemptFailedChecksRetry(ctx, cfg, result, &retriesUsed)
+			if !retried {
+				// A context deadline mid-rerun-call takes the existing timeout
+				// sentinel, same as everywhere else in this loop — case 3 of
+				// #4750's fall-through rule applies to the retry attempt itself,
+				// not only the sleeps around it.
+				if rerunErr != nil && ciPollDeadlineExceeded(parentCtx, ctx) {
+					return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+				}
+				return e.ciPollFailureOutcome(ctx, cfg, result, rerunErr)
+			}
+			invoke.ReportProgress(ctx)
+			if now().After(deadline) {
+				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+			}
+			if serr := sleep(ctx, retryBackoff); serr != nil {
+				if ciPollDeadlineExceeded(parentCtx, ctx) {
+					return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
+				}
+				return apiv1.ResultEnvelope{}, serr
+			}
+			continue
 		}
 		if now().After(deadline) {
 			return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
@@ -406,14 +478,25 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	}
 }
 
-func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) (apiv1.ResultEnvelope, error) {
-	outcome := ciPollOutcome(providers.CheckStateFailing, "ci-poll: checks failing", cfg.PullID)
+// ciPollFailureOutcome reports the normal terminal "failing" outcome.
+// retryErr, when non-nil, is #4750's mechanical rerun call failing (a
+// transport error, or the actions:write permission gap tracked in #4751) —
+// recorded as evidence on the artifact/summary, not surfaced as a distinct
+// error or failure mode: per design, a retry that cannot even be attempted is
+// exactly as good as a workflow that never declared retryFailedChecksMaxAttempts,
+// never worse.
+func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult, retryErr error) (apiv1.ResultEnvelope, error) {
+	summary := "ci-poll: checks failing"
+	if retryErr != nil {
+		summary = fmt.Sprintf("ci-poll: checks failing (mechanical retry could not be attempted, falling through unchanged: %v)", retryErr)
+	}
+	outcome := ciPollOutcome(providers.CheckStateFailing, summary, cfg.PullID)
 	names := failingCheckNames(result.Checks)
 	if len(names) == 0 {
 		return outcome, nil
 	}
 
-	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckAnnotations(ctx, cfg, result))
+	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckAnnotations(ctx, cfg, result), retryErr)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
 	}
@@ -436,6 +519,46 @@ func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollCon
 // keep working exactly as before — the artifact simply carries no annotations.
 type CIFailureLister interface {
 	CIFailures(ctx context.Context, repo providers.RepositoryRef, ref string) ([]providers.CIFailureDetail, error)
+}
+
+// CIFailureRerunner is the optional provider capability that mechanically
+// reruns a pull request's currently-failing CI checks (#4750). Optional
+// rather than part of PRPoller because not every provider supports it —
+// GitHub only, ADO/Gitea unimplemented today — and a provider that does not
+// implement it must keep working exactly as before: RetryFailedChecksMaxAttempts
+// is simply never actionable, and every failing poll falls straight through
+// to ciPollFailureOutcome.
+type CIFailureRerunner interface {
+	RerunFailedChecks(ctx context.Context, repo providers.RepositoryRef, headSHA string) error
+}
+
+// attemptFailedChecksRetry triggers one mechanical rerun of the PR's
+// currently-failing checks when the workflow opted in
+// (RetryFailedChecksMaxAttempts > 0) and attempts remain. retried reports
+// whether the rerun call was made and succeeded — the caller should re-enter
+// the poll loop rather than report a terminal failure.
+//
+// Deliberately best-effort, like annotation enrichment
+// (failingCheckAnnotations): the retry is an enhancement over today's
+// behavior, never a new way to fail. A rerun call that errors (a transport
+// failure, or the actions:write permission gap tracked in #4751) is reported
+// back as retried=false plus the error so the caller can record it as
+// evidence — it must fall straight through to the exact same terminal
+// "failing" outcome a workflow that never declared retryFailedChecksMaxAttempts
+// would reach, never a distinct failure mode.
+func (e *CIPollExecutor) attemptFailedChecksRetry(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult, retriesUsed *int) (retried bool, rerunErr error) {
+	if cfg.RetryFailedChecksMaxAttempts <= 0 || *retriesUsed >= cfg.RetryFailedChecksMaxAttempts {
+		return false, nil
+	}
+	rerunner, ok := e.Poller.(CIFailureRerunner)
+	if !ok || result.HeadSHA == "" {
+		return false, nil
+	}
+	if err := rerunner.RerunFailedChecks(ctx, providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo}, result.HeadSHA); err != nil {
+		return false, fmt.Errorf("rerun failed checks: %w", err)
+	}
+	*retriesUsed++
+	return true, nil
 }
 
 // failingCheckAnnotations resolves annotations for the failing checks, keyed by
@@ -569,9 +692,12 @@ func boundFailedCheckNames(names []string) string {
 	return string(first) + marker
 }
 
-func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[string][]providers.CheckAnnotation) ([]byte, error) {
+func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[string][]providers.CheckAnnotation, retryErr error) ([]byte, error) {
 	artifact := CIChecksArtifact{
 		Checks: make([]CICheck, 0, min(len(checks), maxCIChecks)),
+	}
+	if retryErr != nil {
+		artifact.Metadata.RetryFailedChecksError = retryErr.Error()
 	}
 	nonPassing := 0
 	for _, check := range checks {

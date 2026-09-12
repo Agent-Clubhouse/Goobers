@@ -82,6 +82,9 @@ type InputRef struct {
 // version it started on and completes on that version (WF-016). Input snapshots
 // taken at Create are listed here by content digest.
 type RunIdentity struct {
+	// InstanceID pins the owning daemon's durable root identity. Empty is
+	// legacy/unverified, not an identity inferred from a name or forge login.
+	InstanceID string `json:"instanceId,omitempty"`
 	// Schema is the run.yaml schema version.
 	Schema string `json:"schema"`
 	// RunID is the run identifier — the OpenTelemetry trace id for the run.

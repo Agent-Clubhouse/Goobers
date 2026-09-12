@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -16,6 +18,30 @@ import (
 // cliLeak is a plaintext secret shaped so the default pattern net does NOT catch
 // it — it reaches disk and must be remediated by `goobers journal redact`.
 const cliLeak = "PLAINTEXT-CLI-LEAK-do-not-store-7c1a"
+
+func TestJournalRedactHistoricalRootWarnsAndRemovesSecret(t *testing.T) {
+	root := initDemo(t)
+	runID, blobPath := writeRunWithLeakedArtifact(t, root)
+	marker, err := instance.DecommissionRoot(context.Background(), root, "migration complete", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretFile := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secretFile, []byte(cliLeak), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runArgs(t, "journal", "redact", "--run", runID, "--path", blobPath, "--reason", "remove exposed credential", "--secret-file", secretFile, root)
+	if code != 0 || !strings.Contains(stderr, marker.InstanceID) || !strings.Contains(stderr, "Historical root; do not use") {
+		t.Fatalf("historical remediation: %d %s", code, stderr)
+	}
+	if runDirContainsLeak(t, filepath.Join(instance.NewLayout(root).RunsDir(), runID), []byte(cliLeak)) {
+		t.Fatal("historical root still holds secret")
+	}
+	after, err := instance.ReadRootDecommission(root)
+	if err != nil || !after.At.Equal(marker.At) {
+		t.Fatalf("redaction altered lifecycle: %+v %v", after, err)
+	}
+}
 
 // writeRunWithLeakedArtifact creates a run under root's instance layout whose
 // stored artifact holds cliLeak at rest, returning the run id and the artifact's

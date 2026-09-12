@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
@@ -14,13 +15,68 @@ describe("workflows page", () => {
 
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
     for (const gaggle of ["Core product", "Developer tools"]) {
+      await userEvent.click(screen.getByRole("button", { name: new RegExp(gaggle) }));
       const inventory = screen.getByRole("region", { name: `${gaggle} workflow definitions` });
       expect(
-        within(inventory).getByRole("link", {
-          name: `Open workflow Implementation for gaggle ${gaggle}`,
-        }),
+        within(inventory).getByRole("link", { name: "Details" }),
       ).toBeInTheDocument();
     }
+  });
+
+  it("renders page structure before a cold inventory load finishes", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const realListGaggles = client.listGaggles.bind(client);
+    let releaseInventory: () => void = () => {};
+    const inventoryGate = new Promise<void>((resolve) => {
+      releaseInventory = resolve;
+    });
+    vi.spyOn(client, "listGaggles").mockImplementation(async (...args) => {
+      await inventoryGate;
+      return realListGaggles(...args);
+    });
+
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    expect(screen.getAllByRole("status").some((status) => status.textContent === "Loading")).toBe(
+      true,
+    );
+    expect(screen.queryByText("Core product")).not.toBeInTheDocument();
+
+    releaseInventory();
+    expect(await screen.findByRole("button", { name: /Core product/ })).toBeInTheDocument();
+  });
+
+  it("uses compact persona summaries and collapses large gaggle inventories", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const workflow = fixtures.workflows?.core?.items[0];
+    if (!workflow || !fixtures.workflows?.core) {
+      throw new Error("Core workflow fixture is required.");
+    }
+    fixtures.workflows.core.items = Array.from({ length: 4 }, (_, index) => ({
+      ...workflow,
+      identity: { gaggle: "core", name: `workflow-${index}` },
+      displayName: `Workflow ${index}`,
+      definition: { ...workflow.definition, digest: `sha256:workflow-${index}` },
+    }));
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const toggle = await screen.findByRole("button", { name: /Core product/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Workflow 0")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const section = toggle.closest("section");
+    if (!section) {
+      throw new Error("Expected gaggle inventory section.");
+    }
+    expect(within(section).getByText("Workflow 0")).toBeInTheDocument();
+    expect(within(section).getByText(/1 configured persona/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "View Core product Goobers" }),
+    ).toHaveAttribute("href", "#/goobers?gaggle=core");
+    expect(within(section).queryByText("Workflow ownership")).not.toBeInTheDocument();
   });
 
   it("copies a manual-run command and announces success", async () => {
@@ -31,8 +87,9 @@ describe("workflows page", () => {
     });
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
     fireEvent.click(
-      (await screen.findAllByRole("button", { name: "Copy manual run command" }))[0],
+      (await screen.findAllByRole("button", { name: "Copy run command" }))[0],
     );
 
     await waitFor(() =>
@@ -43,6 +100,9 @@ describe("workflows page", () => {
     expect(
       screen.getByText("Manual run command copied to the clipboard."),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Manual run command copied to the clipboard." }),
+    ).toBeInTheDocument();
   });
 
   it("announces clipboard failure without navigating to the workflow", async () => {
@@ -52,17 +112,21 @@ describe("workflows page", () => {
     });
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /Core product/ }));
     fireEvent.click(
-      (await screen.findAllByRole("button", { name: "Copy manual run command" }))[0],
+      (await screen.findAllByRole("button", { name: "Copy run command" }))[0],
     );
 
     await waitFor(() =>
       expect(
         screen.getByText(
-          "Could not copy the manual run command. Copy the command from the workflow row.",
+          "Could not copy the manual run command. Select and copy the command from the workflow details.",
         ),
       ).toBeInTheDocument(),
     );
+    expect(
+      screen.getByRole("button", { name: "Retry copy run command" }),
+    ).toBeInTheDocument();
     expect(window.location.hash).toBe("#/workflows");
   });
 });

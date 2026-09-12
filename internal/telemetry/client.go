@@ -116,7 +116,11 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 
 	scrubber := cfg.Scrubber
 	if scrubber == nil {
-		scrubber = providerNet
+		// Do not attach client-local metric observation to providerNet: that
+		// scrubber is the package-global net used by Redact, so a second Client
+		// would replace the first one's observer and unrelated Redact calls would
+		// be charged to whichever client was constructed last.
+		scrubber = journal.NewPatternScrubber()
 	}
 
 	instanceID, err := NewRunID()
@@ -203,6 +207,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		// export is optional and must never become a new boot-fatal class.
 		if inst, instErr := newInstruments(meterProvider.Meter(ScopeName)); instErr == nil {
 			client.instruments = inst
+			journal.ObserveRedactions(scrubber, redactionMetricObserver{counter: inst.redactions})
 		}
 	}
 	if cfg.SpanExporter != nil {

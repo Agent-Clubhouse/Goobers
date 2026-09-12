@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
 const forceReleaseActorCLI = "cli"
@@ -50,7 +51,12 @@ type ClaimEntry struct {
 	Workflow     string            `json:"workflow"`
 	ClaimedAt    time.Time         `json:"claimedAt"`
 	ExpiresAt    time.Time         `json:"expiresAt"`
-	ReleasedAt   *time.Time        `json:"releasedAt,omitempty"`
+	// SharedDeadline marks admission that must not be renewed through the
+	// local-only path, including after the ledger is reopened on restart.
+	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
+	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
+	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
 }
 
 // expired reports whether the lease is no longer live at now.
@@ -156,6 +162,9 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 		}
 		l.entries[storageKey] = entry
 	}
+	if err := l.validateSharedClaims(); err != nil {
+		return nil, fmt.Errorf("localscheduler: invalid shared claim ledger: %w", err)
+	}
 	l.history = l.retainedHistory(l.now())
 	return l, nil
 }
@@ -258,7 +267,7 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 // bypassed by a caller-supplied duration (e.g. a workflow's leaseDuration
 // input) reaching a live-lease branch that skips validation.
 func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
-	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration)
+	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration, time.Time{}, sharedclaim.Owner{})
 }
 
 // ClaimScoped acquires a claim namespaced by gaggle, provider, and external ID.
@@ -267,7 +276,34 @@ func (l *ClaimLedger) ClaimScoped(key ClaimKey, runID, workflow string, leaseDur
 	if err != nil {
 		return false, "", err
 	}
-	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration)
+	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration, time.Time{}, sharedclaim.Owner{})
+}
+
+// ClaimScopedUntil acquires a local claim bounded by an already established
+// shared admission deadline. The deadline is checked under the ledger mutex,
+// so waiting for local contention cannot restart the remote lease's lifetime.
+// Callers must still stop execution at the deadline and handle remote release.
+func (l *ClaimLedger) ClaimScopedUntil(key ClaimKey, runID, workflow string, deadline time.Time, owner sharedclaim.Owner) (ok bool, holder string, err error) {
+	if deadline.IsZero() {
+		return false, "", errors.New("localscheduler: claim deadline is required")
+	}
+	if owner.Run != runID {
+		return false, "", errors.New("localscheduler: shared owner must match the local run")
+	}
+	if _, err := sharedclaim.Encode(key.ExternalID, sharedclaim.Record{Version: 1, Owner: owner, ExpiresAt: deadline}); err != nil {
+		return false, "", err
+	}
+	storageKey, err := key.storageKey()
+	if err != nil {
+		return false, "", err
+	}
+	return l.claim(storageKey, key.ExternalID, key, runID, workflow, 0, deadline, owner)
+}
+
+type plannedClaim struct {
+	storageKey       string
+	legacyStorageKey string
+	key              ClaimKey
 }
 
 // ReclaimAll atomically reacquires a prior run's complete claim set. Either
@@ -281,14 +317,12 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 		return true, runID, nil
 	}
 
-	type plannedClaim struct {
-		storageKey       string
-		legacyStorageKey string
-		key              ClaimKey
-	}
 	planned := make([]plannedClaim, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
+		if !entry.SharedDeadline.IsZero() {
+			return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before reclaim")
+		}
 		itemID := entry.ExternalID
 		if itemID == "" {
 			itemID = entry.ItemID
@@ -327,15 +361,8 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	defer l.mu.Unlock()
 
 	now := l.now()
-	for _, claim := range planned {
-		if claim.legacyStorageKey != "" {
-			if existing, held := l.entries[claim.legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
-				return false, existing.RunID, nil
-			}
-		}
-		if existing, held := l.entries[claim.storageKey]; held && !existing.expired(now) && existing.RunID != runID {
-			return false, existing.RunID, nil
-		}
+	if refused, holder, err := l.refusePlannedClaims(planned, runID, now); err != nil || refused {
+		return false, holder, err
 	}
 
 	previous := make(map[string]ClaimEntry, len(l.entries))
@@ -374,8 +401,30 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	return true, runID, nil
 }
 
-func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
-	if leaseDuration <= 0 {
+// refusePlannedClaims checks the entire batch before any mutation. The caller
+// holds l.mu so a checked claim cannot change before the batch is committed.
+func (l *ClaimLedger) refusePlannedClaims(planned []plannedClaim, runID string, now time.Time) (bool, string, error) {
+	for _, claim := range planned {
+		if historical, ok := l.historyEntry(runID, claim.storageKey); ok && historical.SharedRevoked {
+			return true, "", errors.New("localscheduler: shared execution was administratively revoked")
+		}
+		if existing := l.entries[claim.storageKey]; !existing.SharedDeadline.IsZero() {
+			return true, "", errors.New("localscheduler: shared claim cannot be reclaimed through local-only admission")
+		}
+		if claim.legacyStorageKey != "" {
+			if existing, held := l.entries[claim.legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
+				return true, existing.RunID, nil
+			}
+		}
+		if existing, held := l.entries[claim.storageKey]; held && !existing.expired(now) && existing.RunID != runID {
+			return true, existing.RunID, nil
+		}
+	}
+	return false, "", nil
+}
+
+func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration, deadline time.Time, owner sharedclaim.Owner) (ok bool, holder string, err error) {
+	if leaseDuration <= 0 && deadline.IsZero() {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
 	}
 
@@ -383,6 +432,13 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	defer l.mu.Unlock()
 
 	now := l.now()
+	expires := deadline
+	if expires.IsZero() {
+		expires = now.Add(leaseDuration)
+	}
+	if !expires.After(now) {
+		return false, "", errors.New("localscheduler: claim admission deadline has expired")
+	}
 	// An unresolved item-only claim could belong to any namespace, so it
 	// remains exclusive against every scoped claimant until its lease expires.
 	if legacyStorageKey != "" {
@@ -395,15 +451,26 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	}
 
 	prev, hadPrev := l.entries[storageKey]
+	if historical, ok := l.historyEntry(runID, storageKey); ok && historical.SharedRevoked {
+		return false, "", errors.New("localscheduler: shared execution was administratively revoked")
+	}
+	if deadline.IsZero() && !prev.SharedDeadline.IsZero() {
+		return false, "", errors.New("localscheduler: shared claim requires fresh remote admission before renewal")
+	}
+	if prev.SharedOwner != (sharedclaim.Owner{}) && prev.SharedOwner != owner && !prev.expired(now) {
+		return false, prev.RunID, nil
+	}
 	entry := ClaimEntry{
-		ItemID:     key.ExternalID,
-		Gaggle:     key.Gaggle,
-		Provider:   key.Provider,
-		ExternalID: key.ExternalID,
-		RunID:      runID,
-		Workflow:   workflow,
-		ClaimedAt:  now,
-		ExpiresAt:  now.Add(leaseDuration),
+		ItemID:         key.ExternalID,
+		Gaggle:         key.Gaggle,
+		Provider:       key.Provider,
+		ExternalID:     key.ExternalID,
+		RunID:          runID,
+		Workflow:       workflow,
+		ClaimedAt:      now,
+		ExpiresAt:      expires,
+		SharedDeadline: deadline,
+		SharedOwner:    owner,
 	}
 	// A live same-owner renewal is continuous ownership, not a new provider
 	// observation. Retain its original as-of timestamp; replacement or expired
@@ -411,8 +478,17 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	if hadPrev && prev.RunID == runID && !prev.expired(now) && prev.ReleasedAt == nil {
 		entry.Verification = prev.Verification
 	}
+	if err := l.storeClaim(storageKey, entry); err != nil {
+		return false, "", err
+	}
+	return true, runID, nil
+}
+
+// storeClaim commits ownership and history together. The caller holds l.mu.
+func (l *ClaimLedger) storeClaim(storageKey string, entry ClaimEntry) error {
+	prev, hadPrev := l.entries[storageKey]
 	l.entries[storageKey] = entry
-	previousHistory, hadHistory := l.historyEntry(runID, storageKey)
+	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
 	l.recordHistory(storageKey, entry)
 	if err := l.persist(); err != nil {
 		// Roll back the in-memory mutation so a failed persist leaves the item
@@ -425,11 +501,11 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		} else {
 			delete(l.entries, storageKey)
 		}
-		l.restoreHistory(runID, storageKey, previousHistory, hadHistory)
-		return false, "", err
+		l.restoreHistory(entry.RunID, storageKey, previousHistory, hadHistory)
+		return err
 	}
 	l.journal(journal.EventClaimAcquired, entry)
-	return true, runID, nil
+	return nil
 }
 
 // Release explicitly releases a claim (run finished, failed, or crash-recovery
@@ -438,7 +514,7 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 // completion and crash-recovery can race to release the same item, and both
 // outcomes are fine as long as exactly one claimant ever wins.
 func (l *ClaimLedger) Release(itemID, runID string) error {
-	return l.release(itemID, runID)
+	return l.release(itemID, runID, sharedclaim.Owner{})
 }
 
 // ReleaseScoped releases a claim identified by its scoped key.
@@ -447,7 +523,21 @@ func (l *ClaimLedger) ReleaseScoped(key ClaimKey, runID string) error {
 	if err != nil {
 		return err
 	}
-	return l.release(storageKey, runID)
+	return l.release(storageKey, runID, sharedclaim.Owner{})
+}
+
+// ReleaseSharedScoped removes only the exact locally recorded incarnation.
+// The coordinator must acknowledge remote release before calling this method;
+// keeping the local owner on failure preserves restart reconciliation evidence.
+func (l *ClaimLedger) ReleaseSharedScoped(key ClaimKey, owner sharedclaim.Owner) error {
+	if owner.Instance == "" || owner.Run == "" || owner.Token == "" {
+		return errors.New("localscheduler: shared release requires complete owner identity")
+	}
+	storageKey, err := key.storageKey()
+	if err != nil {
+		return err
+	}
+	return l.release(storageKey, owner.Run, owner)
 }
 
 // ReleaseEntry releases entry without reconstructing whether it came from a
@@ -484,13 +574,22 @@ func (l *ClaimLedger) RenewEntry(entry ClaimEntry, leaseDuration time.Duration) 
 	return ok, err
 }
 
-func (l *ClaimLedger) release(storageKey, runID string) error {
+func (l *ClaimLedger) release(storageKey, runID string, owner sharedclaim.Owner) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	entry, held := l.entries[storageKey]
-	if !held || entry.RunID != runID {
+	if !held {
 		return nil
+	}
+	if owner != (sharedclaim.Owner{}) && entry.SharedOwner != owner {
+		return sharedclaim.ErrNotOwner
+	}
+	if entry.RunID != runID {
+		return nil
+	}
+	if !entry.SharedDeadline.IsZero() && owner == (sharedclaim.Owner{}) {
+		return errors.New("localscheduler: shared release requires acknowledged owner-scoped handoff")
 	}
 	previousHistory, hadHistory := l.historyEntry(runID, storageKey)
 	l.recordReleasedHistory(storageKey, entry, l.now())
@@ -514,14 +613,14 @@ func (l *ClaimLedger) release(storageKey, runID string) error {
 // reserved for operator recovery of stuck claims and journals a distinct event
 // so the override cannot be mistaken for normal run cleanup.
 func (l *ClaimLedger) ForceRelease(itemID string) error {
-	return l.forceRelease(itemID, forceReleaseActorCLI)
+	return l.forceRelease(itemID, forceReleaseActorCLI, sharedclaim.Owner{})
 }
 
 // ForceReleaseEntry force-releases entry without losing its namespace and
 // records actor in the distinct administrative journal event.
 func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if entry.Gaggle == "" || entry.Provider == "" {
-		return l.forceRelease(entry.ItemID, actor)
+		return l.forceRelease(entry.ItemID, actor, sharedclaim.Owner{})
 	}
 	storageKey, err := (ClaimKey{
 		Gaggle:     entry.Gaggle,
@@ -531,10 +630,10 @@ func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
 	if err != nil {
 		return err
 	}
-	return l.forceRelease(storageKey, actor)
+	return l.forceRelease(storageKey, actor, sharedclaim.Owner{})
 }
 
-func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
+func (l *ClaimLedger) forceRelease(storageKey, actor string, owner sharedclaim.Owner) error {
 	if actor == "" {
 		return errors.New("localscheduler: force-release actor is required")
 	}
@@ -544,6 +643,12 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
 	entry, held := l.entries[storageKey]
 	if !held {
 		return nil
+	}
+	if owner != (sharedclaim.Owner{}) && entry.SharedOwner != owner {
+		return sharedclaim.ErrNotOwner
+	}
+	if !entry.SharedDeadline.IsZero() && owner == (sharedclaim.Owner{}) {
+		return errors.New("localscheduler: shared force-release requires remote coordination")
 	}
 	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
 	l.recordReleasedHistory(storageKey, entry, l.now())
@@ -598,6 +703,12 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	}
 	var released []releasedClaim
 	for storageKey, entry := range l.entries {
+		// Expiry ends execution authority, not cleanup custody. A shared
+		// record must pass through provider-coordinated release before its
+		// persisted incarnation can be discarded, including after a crash.
+		if !entry.SharedDeadline.IsZero() {
+			continue
+		}
 		if entry.expired(now) {
 			previous, hadHistoryEntry := l.historyEntry(entry.RunID, storageKey)
 			l.recordReleasedHistory(storageKey, entry, now)
@@ -833,6 +944,17 @@ func (l *ClaimLedger) retainedHistory(now time.Time) map[string]map[string]Claim
 				}
 			}
 			if !newest.After(cutoff) {
+				// Revocation is an enduring denial for this run incarnation,
+				// not ordinary historical display data. Forgetting it could
+				// let a still-open, long-paused run reacquire after retention.
+				for key, entry := range history {
+					if entry.SharedRevoked {
+						if retained[runID] == nil {
+							retained[runID] = make(map[string]ClaimEntry)
+						}
+						retained[runID][key] = entry
+					}
+				}
 				continue
 			}
 		}

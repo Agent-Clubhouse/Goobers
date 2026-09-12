@@ -26,7 +26,11 @@ type AnalyticsEdge struct {
 	Target string `json:"target"`
 }
 
-// GraphAnalytics contains the computed topology insights.
+// GraphAnalytics contains the computed topology insights. Centrality, Cycles,
+// and CriticalPath.Nodes are never nil (#4825): the generated TypeScript
+// client contract declares them non-nullable, and a nil Go slice marshals to
+// JSON null, which the portal does not defensively guard against everywhere
+// it reads these fields.
 type GraphAnalytics struct {
 	Centrality   []CentralityScore `json:"centrality"`
 	CriticalPath CriticalPath      `json:"criticalPath"`
@@ -82,8 +86,9 @@ func AnalyzeGraph(graph AnalyticsGraph) (GraphAnalytics, error) {
 	}
 
 	result := GraphAnalytics{
-		Centrality: betweenness(ids, adj, failure),
-		Cycles:     stronglyConnectedCycles(ids, adj),
+		Centrality:   betweenness(ids, adj, failure),
+		CriticalPath: CriticalPath{Nodes: []string{}},
+		Cycles:       stronglyConnectedCycles(ids, adj),
 	}
 	if len(result.Cycles) == 0 {
 		result.CriticalPath = longestPath(ids, adj, latency)
@@ -195,7 +200,7 @@ func longestPath(ids map[string]bool, adj map[string][]string, latency map[strin
 			}
 		}
 	}
-	best := CriticalPath{}
+	best := CriticalPath{Nodes: []string{}}
 	for _, id := range sortedIDs(ids) {
 		if distance[id] > best.Weight || (distance[id] == best.Weight && pathLess(paths[id], best.Nodes, "")) {
 			best = CriticalPath{Nodes: paths[id], Weight: distance[id]}
@@ -223,7 +228,7 @@ func stronglyConnectedCycles(ids map[string]bool, adj map[string][]string) [][]s
 	index, next := make(map[string]int, len(ids)), 0
 	low, stack := make(map[string]int, len(ids)), []string{}
 	onStack := make(map[string]bool, len(ids))
-	var components [][]string
+	components := [][]string{}
 	var visit func(string)
 	visit = func(node string) {
 		index[node], low[node] = next, next

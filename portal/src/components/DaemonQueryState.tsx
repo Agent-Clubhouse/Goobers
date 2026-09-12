@@ -1,12 +1,23 @@
+import { useEffect, useState } from "react";
 import { DaemonAuthError } from "../api/errors";
 
 export function DaemonLoadingState({ standalone = false }: { standalone?: boolean }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setVisible(true), 200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  if (!visible) {
+    return null;
+  }
+
   return (
     <section aria-live="polite" className="daemon-state" role="status">
       <span aria-hidden="true" className="loading-mark" />
       <div>
-        <h1>{standalone ? "Loading instance data" : "Connecting to daemon"}</h1>
-        <p>Loading the current instance, workforce, workflows, and runs.</p>
+        <h1>{standalone ? "Loading instance data" : "Connecting to Goobers Instance"}</h1>
       </div>
     </section>
   );
@@ -36,7 +47,7 @@ export function DaemonErrorState({
           </p>
         </div>
         <button className="reconnect-button" onClick={retry} type="button">
-          {standalone ? "Reload" : "Try again"}
+          {standalone ? "Reload" : "Retry"}
         </button>
       </section>
     );

@@ -1315,11 +1315,14 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 			t.Fatalf("empty no-work tick recorded run-branch provenance: %+v", event)
 		}
 	}
+	if terminal := events[len(events)-1]; terminal.Type != journal.EventRunFinished || terminal.Disposition != journal.RunDispositionNoWork {
+		t.Fatalf("terminal event = %+v, want durable no-work disposition", terminal)
+	}
 }
 
 func TestRunnerMultiStageNoWorkDoesNotSignalIdlePoll(t *testing.T) {
 	const runID = "run-multi-stage-no-work"
-	r, _ := newTestRunner(t, map[string]stubTaskResult{
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
 		runID + ":query-backlog": {status: apiv1.ResultSuccess},
 		runID + ":curate":        {status: apiv1.ResultNoWork, summary: "nothing to curate"},
 	}, nil)
@@ -1339,6 +1342,17 @@ func TestRunnerMultiStageNoWorkDoesNotSignalIdlePoll(t *testing.T) {
 	}
 	if res.NoWork {
 		t.Fatal("productive multi-stage run was exposed to the scheduler as an idle poll")
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal := events[len(events)-1]; terminal.Type != journal.EventRunFinished || terminal.Disposition != journal.RunDispositionProduced {
+		t.Fatalf("terminal event = %+v, want durable produced disposition", terminal)
 	}
 }
 
@@ -1850,6 +1864,7 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 		},
 	}
 	r, runsDir := newTestRunner(t, byTask, gate.NewAutomatedEvaluator())
+	r.cfg.InstanceID = "e62c1c105fdc4273a72d199394b41cb0"
 
 	res, err := r.Start(context.Background(), StartInput{
 		RunID:        "run-1",
@@ -1886,6 +1901,9 @@ func TestRunnerAdvancesFixtureWorkflowToCompletion(t *testing.T) {
 	}
 	if id.GooberDigest != gooberDigest {
 		t.Errorf("run.yaml gooberDigest = %q, want %q", id.GooberDigest, gooberDigest)
+	}
+	if id.InstanceID != r.cfg.InstanceID {
+		t.Fatalf("run.yaml instance identity = %q, want %q", id.InstanceID, r.cfg.InstanceID)
 	}
 	if id.RunControls == nil || id.RunControls.MaxRepasses != 2 ||
 		id.RunControls.StalledRunTimeout != "2h0m0s" || id.RunControls.MaxRunDuration != "6h0m0s" {
@@ -4458,10 +4476,15 @@ func TestRunnerDrainsInFlightAttemptOnCancellation(t *testing.T) {
 // torn-write repair is internal/journal's own, already-tested concern
 // (TestKill9MidAppendRecovers); this test is about the runner's
 // interpretation of "started with no finished", not journal-write durability.
-func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Machine, runID, stageName string, attempt int, trigger journal.Trigger, branchRecorded bool) {
+func simulateCrashMidAttempt(t *testing.T, runsDir string, machine *workflow.Machine, runID, stageName string, attempt int, trigger journal.Trigger, branchRecorded bool, instanceIDs ...string) {
 	t.Helper()
+	instanceID := ""
+	if len(instanceIDs) > 0 {
+		instanceID = instanceIDs[0]
+	}
 	jr, err := journal.Create(runsDir, journal.RunIdentity{
-		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+		InstanceID: instanceID,
+		RunID:      runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
 		WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: trigger,
 	}, nil)
 	if err != nil {
@@ -4750,9 +4773,11 @@ func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *
 	}
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
 	const runID = "run-agentic-recovery"
-	simulateCrashMidAttempt(t, runsDir, machine, runID, "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true)
+	const originalInstance = "0123456789abcdef0123456789abcdef"
+	simulateCrashMidAttempt(t, runsDir, machine, runID, "implement", 1, journal.Trigger{Kind: journal.TriggerManual}, true, originalInstance)
 	goober := &capturingSuccessGoober{}
 	r, err := New(Config{
+		InstanceID: "abcdef0123456789abcdef0123456789",
 		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 			return goober, nil
 		},
@@ -4774,6 +4799,9 @@ func TestRunnerResumeAnnotatesInterruptedAgenticAttemptAsInfrastructureRetry(t *
 	}
 	if result.Phase != journal.PhaseCompleted || len(goober.invocations) != 1 {
 		t.Fatalf("result = %+v, agent invocations = %d", result, len(goober.invocations))
+	}
+	if got := goober.invocations[0].InstanceID; got != originalInstance {
+		t.Fatalf("resumed invocation identity = %q, want original journal identity %q, not current runner", got, originalInstance)
 	}
 	events := readRunEvents(t, runsDir, runID)
 	var recovery, interrupted bool

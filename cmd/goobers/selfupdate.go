@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,7 +24,17 @@ const selfUpdateHelp = "Usage: goobers self-update [flags] [path]\n\n" +
 	"are manual, on-release (default), and on-main. Manual requires a release tag;\n" +
 	"on-main builds the configured branch. on-release resolves the newest stable\n" +
 	"release unless --include-prerelease is set, which considers all GitHub\n" +
-	"releases and only stages a target strictly newer than the running build.\n"
+	"releases.\n\n" +
+	"EVERY policy refuses a target that is not strictly newer than the running\n" +
+	"build -- manual included. There is no downgrade flag and no rollback path\n" +
+	"here: self-update only moves forward, and a supervised update that turns\n" +
+	"out unhealthy is reverted by the supervisor's own rollback, not by staging\n" +
+	"an older tag. To move to an older build deliberately, install it directly.\n\n" +
+	"Releases are resolved from the canonical Goobers product repository\n" +
+	"(Agent-Clubhouse/Goobers) by default, independent of any workload\n" +
+	"repositories the instance is configured to operate on. Override the\n" +
+	"product release source with the owner/repository stage inputs (e.g. for\n" +
+	"a private release mirror).\n"
 
 func runSelfUpdate(args []string, stdout, stderr io.Writer) int {
 	return runSelfUpdateWith(args, stdout, stderr, "self-update", selfupdate.Prepare)
@@ -65,6 +76,10 @@ func runSelfUpdateWith(
 		pf(stderr, "error: %s not found (not an instance root)\n", layout.ConfigFile())
 		return 2
 	}
+	if err := prepareManualRoot(layout, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
 		return failProviderStage(stderr, "load instance config", err, resultFile)
@@ -81,11 +96,13 @@ func runSelfUpdateWith(
 			*healthTimeout = minimumWindow
 		}
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		return failProviderStage(stderr, "resolve product repository", err, resultFile)
-	}
-	owner, repository := providerInput("owner", repo.Owner), providerInput("repository", repo.Name)
+	// The product release source is always the canonical Goobers repository
+	// by default, independent of the instance's configured workload
+	// repositories — it is not resolved via providerRepo. A gaggle may
+	// override it explicitly via the owner/repository stage inputs (e.g. for
+	// a private release mirror).
+	owner := providerInput("owner", selfupdate.DefaultProductOwner)
+	repository := providerInput("repository", selfupdate.DefaultProductRepository)
 	workDir, err := os.Getwd()
 	if err != nil {
 		return failProviderStage(stderr, "resolve working directory", err, resultFile)
@@ -109,11 +126,15 @@ func runSelfUpdateWith(
 		return failProviderStage(stderr, "self-update", err, resultFile)
 	}
 	if err := writeProviderStageResult(resultFile, map[string]interface{}{
-		"updateRequested": result.UpdateRequested,
-		"policy":          result.Policy,
-		"target":          result.Target,
+		"updateRequested":    result.UpdateRequested,
+		"policy":             result.Policy,
+		"target":             result.Target,
+		"skippedInvalidTags": result.SkippedInvalidTags,
 	}); err != nil {
 		return failProviderStage(stderr, "write self-update result", err, resultFile)
+	}
+	if result.SkippedInvalidTags > 0 {
+		pf(stdout, "self-update: skipped %d release tag(s) that did not parse as SemVer\n", result.SkippedInvalidTags)
 	}
 	if result.UpdateRequested {
 		pf(stdout, "self-update target %s staged; supervisor handoff requested\n", result.Target)
@@ -132,16 +153,14 @@ func (e selfUpdateEscalator) Escalate(ctx context.Context, request selfupdate.Re
 	if err != nil {
 		return err
 	}
-	var configured *instance.RepoRef
-	for index := range cfg.Repos {
-		repo := &cfg.Repos[index]
-		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == request.Owner && repo.Name == request.Repository {
-			configured = repo
-			break
-		}
-	}
+	// The rollback notification is filed against the instance's own
+	// configured workload repository, not the product release repository
+	// (request.Owner/request.Repository) — the product repository defaults
+	// to the canonical Goobers repository, which an instance's operators
+	// generally cannot file issues against.
+	configured := firstGitHubRepo(cfg)
 	if configured == nil {
-		return fmt.Errorf("rollback repository %s/%s is not configured in instance.yaml", request.Owner, request.Repository)
+		return errors.New("self-update rollback escalation requires a GitHub repository configured in instance.yaml")
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
@@ -156,14 +175,26 @@ func (e selfUpdateEscalator) Escalate(ctx context.Context, request selfupdate.Re
 	if runID == "" {
 		runID = "self-update-" + request.Target
 	}
-	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: request.Owner, Name: request.Repository}
+	repository := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: configured.Owner, Name: configured.Name}
 	_, err = provider.CreateWorkItem(ctx, providers.CreateWorkItemRequest{
 		Repository: repository,
 		Title:      "Self-update rolled back: " + request.Target,
-		Body:       fmt.Sprintf("The supervised update to `%s` was rolled back.\n\nReason: %s", request.Target, reason),
+		Body:       fmt.Sprintf("The supervised update to `%s/%s@%s` was rolled back.\n\nReason: %s", request.Owner, request.Repository, request.Target, reason),
 		RunID:      runID,
 	})
 	return err
+}
+
+// firstGitHubRepo returns the first GitHub-provider repository configured in
+// the instance, mirroring providerRepo's standalone fallback.
+func firstGitHubRepo(cfg *instance.Config) *instance.RepoRef {
+	for index := range cfg.Repos {
+		repo := &cfg.Repos[index]
+		if repo.Provider == string(providers.ProviderGitHub) {
+			return repo
+		}
+	}
+	return nil
 }
 
 func resolveSelfUpdateEscalationToken(ctx context.Context, cfg *instance.Config, configured instance.RepoRef, stores credentials.StoreResolver) (string, error) {

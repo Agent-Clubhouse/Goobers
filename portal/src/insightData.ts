@@ -1,4 +1,3 @@
-import type { QueryState } from "./api/queryState";
 import type {
   DaemonClient,
   TelemetryCostOptions,
@@ -11,8 +10,33 @@ import type {
   TelemetryUsageStats,
   UpdateModel,
 } from "./api/types";
+import { MissingCapabilityError } from "./api/errors";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
-import { useLiveQuery } from "./liveQuery";
+import { type LiveQuery, useLiveQuery } from "./liveQuery";
+
+const aggregateLoadTails = new WeakMap<DaemonClient, Promise<unknown>>();
+
+export function serializeInsightAggregate<T>(
+  client: DaemonClient,
+  signal: AbortSignal,
+  load: () => Promise<T>,
+): Promise<T> {
+  const previous = aggregateLoadTails.get(client) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(() => {
+    if (signal.aborted) {
+      const error = new Error("Insight aggregate request was cancelled.");
+      error.name = "AbortError";
+      throw error;
+    }
+    return load();
+  });
+  aggregateLoadTails.set(client, current);
+  return current.finally(() => {
+    if (aggregateLoadTails.get(client) === current) {
+      aggregateLoadTails.delete(client);
+    }
+  });
+}
 
 export type InsightWindow = "24h" | "7d" | "30d" | "all";
 
@@ -69,6 +93,7 @@ export interface InsightExternalCostSnapshot {
   result: TelemetryCostResult;
   window: InsightWindow;
   boundedAllTime: boolean;
+  loadedAt: string;
 }
 
 export function useInsightStats(
@@ -78,10 +103,7 @@ export function useInsightStats(
   workflow?: string,
   scopeRequest = false,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightSnapshot>;
-} {
+): LiveQuery<InsightSnapshot> {
   return useLiveQuery<InsightSnapshot>({
     cacheKey: scopeRequest
       ? dataCacheKey("insight-stats", window, gaggle ?? "", workflow ?? "")
@@ -96,7 +118,9 @@ export function useInsightStats(
       const filters = scopeRequest
         ? insightStatsFilters(window, gaggle, workflow)
         : insightWindowFilters(window);
-      const stats = await client.getTelemetryStats(filters, { signal });
+      const stats = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryStats(filters, { signal }),
+      );
       return { filters, stats, window };
     },
   });
@@ -168,10 +192,7 @@ export function useInsightCostTrend(
   gaggle?: string,
   workflow?: string,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightCostTrendSnapshot>;
-} {
+): LiveQuery<InsightCostTrendSnapshot> {
   return useLiveQuery<InsightCostTrendSnapshot>({
     cacheKey: dataCacheKey("insight-cost-trend", window, gaggle ?? "", workflow ?? ""),
     enabled,
@@ -190,22 +211,27 @@ export function useInsightCostTrend(
       const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
       const trendUntil = bucketRanges.at(-1)?.until;
       const trendBucketCount = previousRange ? bucketRanges.length * 2 : bucketRanges.length;
-      const stats = await client.getTelemetryStats(
-        {
-          gaggle,
-          workflow,
-          since: currentRange.since,
-          until: currentRange.until,
-          trendSince,
-          trendUntil,
-          trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,
-          trendPreviousSince: previousRange?.since,
-          trendPreviousUntil: previousRange?.until,
-        },
-        { signal },
+      const stats = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryStats(
+          {
+            gaggle,
+            workflow,
+            since: currentRange.since,
+            until: currentRange.until,
+            trendSince,
+            trendUntil,
+            trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,
+            trendPreviousSince: previousRange?.since,
+            trendPreviousUntil: previousRange?.until,
+          },
+          { signal },
+        ),
       );
+      if (stats.trend === undefined) {
+        throw new MissingCapabilityError("telemetry-cost-trend");
+      }
       const buckets = selectInsightCostTrendBuckets(
-        stats.trend ?? [],
+        stats.trend,
         bucketRanges.length,
         previousRange !== undefined,
       ).map(({ since, until, usage }) => ({ since, until, usage }));
@@ -228,10 +254,7 @@ export function useInsightCostRollup(
   client: DaemonClient,
   window: InsightWindow,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightCostRollupSnapshot>;
-} {
+): LiveQuery<InsightCostRollupSnapshot> {
   return useLiveQuery<InsightCostRollupSnapshot>({
     cacheKey: dataCacheKey("insight-cost-rollup", window),
     enabled,
@@ -241,7 +264,9 @@ export function useInsightCostRollup(
     errorMessage: "Unable to read instance spend.",
     load: async (signal) => {
       const filters = insightWindowFilters(window);
-      const stats = await client.getTelemetryStats(filters, { signal });
+      const stats = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryStats(filters, { signal }),
+      );
       return costRollupFromStats(filters, stats, window);
     },
   });
@@ -251,10 +276,7 @@ export function useInsightExternalCosts(
   client: DaemonClient,
   window: InsightWindow,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightExternalCostSnapshot>;
-} {
+): LiveQuery<InsightExternalCostSnapshot> {
   return useLiveQuery<InsightExternalCostSnapshot>({
     cacheKey: dataCacheKey("insight-external-costs", window),
     enabled,
@@ -264,8 +286,16 @@ export function useInsightExternalCosts(
     errorMessage: "Unable to read pull request and issue costs.",
     load: async (signal) => {
       const filters = insightCostFilters(window);
-      const result = await client.getTelemetryCosts(filters, { signal });
-      return { filters, result, window, boundedAllTime: window === "all" };
+      const result = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryCosts(filters, { signal }),
+      );
+      return {
+        filters,
+        result,
+        window,
+        boundedAllTime: window === "all",
+        loadedAt: new Date().toISOString(),
+      };
     },
   });
 }
@@ -298,10 +328,7 @@ export function useInsightErrorSignatures(
   workflow?: string,
   stage?: string,
   enabled = true,
-): {
-  retry: () => void;
-  state: QueryState<InsightErrorSignaturesSnapshot>;
-} {
+): LiveQuery<InsightErrorSignaturesSnapshot> {
   const requestKey = JSON.stringify([window, gaggle ?? "", workflow ?? "", stage ?? ""]);
   return useLiveQuery<InsightErrorSignaturesSnapshot>({
     cacheKey: dataCacheKey("insight-error-signatures", requestKey),
@@ -313,7 +340,9 @@ export function useInsightErrorSignatures(
     errorMessage: "Unable to read failure reasons.",
     load: async (signal) => {
       const filters = insightErrorSignatureFilters(window, gaggle, workflow, stage);
-      const result = await client.getTelemetryErrorSignatures(filters, { signal });
+      const result = await serializeInsightAggregate(client, signal, () =>
+        client.getTelemetryErrorSignatures(filters, { signal }),
+      );
       return { filters, requestKey, result };
     },
   });

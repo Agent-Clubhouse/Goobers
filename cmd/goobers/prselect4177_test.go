@@ -133,12 +133,11 @@ func selectPullRequest(t *testing.T, server *fakeGitHubServer, root, runID strin
 		return nil, selectStdout
 	}
 	selected := make(map[string]string, len(raw))
-	for key, value := range raw {
-		text, ok := value.(string)
-		if !ok {
-			t.Fatalf("selected-pr.json[%q] = %v, want a string", key, value)
-		}
-		selected[key] = text
+	if _, present := raw["queueEligibility"]; !present {
+		t.Fatal("successful selection omitted queue eligibility artifact extension")
+	}
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
+		t.Fatal(err)
 	}
 	return selected, selectStdout
 }

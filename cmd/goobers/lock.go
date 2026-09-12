@@ -110,6 +110,11 @@ func acquireInstanceLockWithIdentity(lockPath string, identity *daemonIdentity) 
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}
 	f := held.File()
+	if identity != nil {
+		if err := instance.RequireCurrentRoot(identity.InstanceRoot); err != nil {
+			return nil, errors.Join(err, held.Release())
+		}
+	}
 	holderKind := lockHolderDaemon
 	holderPID := os.Getpid()
 	if identity == nil {

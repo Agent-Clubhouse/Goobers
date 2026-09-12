@@ -106,12 +106,16 @@ func TestReserveRunHeaderIsByteIdenticalToTheWorkflowsOwn(t *testing.T) {
 // cannot be built on an identity that never carried it.
 func TestReserveRunPinsTheGooberDigestIntoRunIdentity(t *testing.T) {
 	in := reservationRunInput()
+	in.InstanceID = "e62c1c105fdc4273a72d199394b41cb0"
 	req, err := ReserveRun(in, time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ReserveRun: %v", err)
 	}
 	if got := req.Open.Identity.GooberDigest; got != in.GooberDigest {
 		t.Errorf("reserved run identity GooberDigest = %q, want %q", got, in.GooberDigest)
+	}
+	if req.Open.Identity.InstanceID != in.InstanceID {
+		t.Fatalf("reservation lost pinned instance identity: %q", req.Open.Identity.InstanceID)
 	}
 }
 
@@ -195,6 +199,7 @@ func TestAbandonReservationClosesTheRunItReserved(t *testing.T) {
 
 	var started, finished, cause int
 	var finishedStatus string
+	var finishedDisposition string
 	var causeText string
 	for _, op := range abandoned.Ops {
 		if op.Event == nil {
@@ -206,6 +211,7 @@ func TestAbandonReservationClosesTheRunItReserved(t *testing.T) {
 		case journal.EventRunFinished:
 			finished++
 			finishedStatus = op.Event.Status
+			finishedDisposition = op.Event.Disposition
 		case journal.EventError:
 			if op.Event.Error != nil && op.Event.Error.Code == "run_failed" {
 				cause++
@@ -221,6 +227,9 @@ func TestAbandonReservationClosesTheRunItReserved(t *testing.T) {
 	}
 	if finishedStatus != string(journal.PhaseFailed) {
 		t.Errorf("terminal status = %q, want %q — the workflow never started, so the run failed", finishedStatus, journal.PhaseFailed)
+	}
+	if finishedDisposition != journal.RunDispositionProduced {
+		t.Errorf("terminal disposition = %q, want %q", finishedDisposition, journal.RunDispositionProduced)
 	}
 	if cause != 1 || causeText != "temporal frontend unavailable" {
 		t.Errorf("run_failed cause = %d/%q, want the start failure text", cause, causeText)

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { RunTiming } from "../components/RunTiming";
+import { QueueEligibilityPanel } from "../components/QueueEligibilityPanel";
 import type {
   DaemonClient,
   GraphAnalytics,
@@ -10,6 +11,7 @@ import type {
 } from "../api/types";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
+import { SectionQueryStatus } from "../components/SectionQueryStatus";
 import { ScopePivot } from "../components/ScopePivot";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
 import { formatTimestamp } from "../runDetailData";
@@ -77,15 +79,11 @@ export function WorkflowPage({
   return (
     <>
       {query.state.status === "stale" && query.state.error && (
-        <div className="workflow-stale-error" role="alert">
-          <span>
-            <strong>Workflow detail may be stale</strong>
-            <small>{query.state.error.message}</small>
-          </span>
-          <button className="text-button" onClick={query.retry} type="button">
-            Try again
-          </button>
-        </div>
+        <SectionQueryStatus
+          error
+          message={`Workflow detail refresh failed. Showing the last successful read: ${query.state.error.message}`}
+          retry={query.retry}
+        />
       )}
       <WorkflowDetailWorkspace
         configurationWarnings={configurationWarnings}
@@ -99,6 +97,7 @@ export function WorkflowPage({
             : undefined
         }
       />
+      <QueueEligibilityPanel key={`${gaggle}/${workflowName}`} client={client} gaggle={gaggle} workflow={workflowName} />
     </>
   );
 }
@@ -137,7 +136,6 @@ function WorkflowDetailWorkspace({
         >
           {workflow.identity.gaggle}
         </button>
-        <ScopePivot label={workflow.identity.gaggle} scope={{ gaggle: workflow.identity.gaggle }} />
         <Icon name="chevron" size={14} />
         <span>{workflow.displayName}</span>
       </nav>

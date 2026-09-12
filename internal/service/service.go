@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/packaging"
 )
 
@@ -31,6 +32,13 @@ const (
 	serviceStatusInterval  = 100 * time.Millisecond
 	serviceReadinessWindow = time.Second
 	serviceReadinessChecks = int(serviceReadinessWindow/serviceStatusInterval) + 1
+
+	// SCM reports its host running before the daemon finishes startup. Observe
+	// it beyond the first configured recovery interval so a five-second startup
+	// crash cannot be mistaken for a successful install (#4210). This is bounded
+	// process liveness, not a claim that application subsystems are ready.
+	windowsFirstRecoveryDelay = 5 * time.Second
+	windowsReadinessWindow    = windowsFirstRecoveryDelay + serviceReadinessWindow
 )
 
 // ErrAlreadyInstalled indicates that a Goobers service definition already exists.
@@ -559,7 +567,7 @@ func (m *Manager) installWindows(ctx context.Context) (Status, error) {
 	}
 	if err := m.runRequired(ctx, "sc.exe", "failure", Name,
 		"reset=", "86400",
-		"actions=", "restart/5000/restart/30000/restart/60000"); err != nil {
+		"actions=", fmt.Sprintf("restart/%d/restart/30000/restart/60000", windowsFirstRecoveryDelay.Milliseconds())); err != nil {
 		return Status{}, errors.Join(err, m.rollbackWindows(ctx))
 	}
 	if err := m.runRequired(ctx, "sc.exe", "failureflag", Name, "1"); err != nil {
@@ -570,7 +578,8 @@ func (m *Manager) installWindows(ctx context.Context) (Status, error) {
 	}
 	status, err = waitUntilRunning(ctx, m.statusWindows)
 	if err != nil {
-		return Status{}, errors.Join(err, m.rollbackWindows(ctx))
+		diagnostic := fmt.Errorf("%w; inspect daemon log %s", err, instance.NewLayout(m.config.InstanceRoot).DaemonLogFile())
+		return Status{}, errors.Join(diagnostic, m.rollbackWindows(ctx))
 	}
 	return status, nil
 }
@@ -618,6 +627,7 @@ func (m *Manager) statusWindows(ctx context.Context) (Status, error) {
 	status.Installed = true
 	status.Loaded = true
 	status.State = windowsServiceState(string(output))
+	status.LastFailure = windowsServiceFailure(string(output))
 	status.Running = status.State == "running"
 	return status, nil
 }
@@ -907,18 +917,29 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 	defer ticker.Stop()
 	var last Status
 	consecutiveRunning := 0
+	readinessWindow := serviceReadinessWindow
+	var runningSince time.Time
 	for {
 		current, err := status(waitCtx)
 		if err != nil {
 			return Status{}, err
 		}
 		last = current
+		if current.Supervisor == "windows-service" {
+			readinessWindow = windowsReadinessWindow
+		}
 		if !current.Installed {
 			return Status{}, errors.New("service registration disappeared while starting")
 		}
+		if current.State == "stopped" && current.LastFailure != "" {
+			return Status{}, fmt.Errorf("service failed while starting: %s", current.LastFailure)
+		}
 		if current.Running {
+			if consecutiveRunning == 0 {
+				runningSince = time.Now()
+			}
 			consecutiveRunning++
-			if consecutiveRunning >= serviceReadinessChecks {
+			if serviceRunningStable(current, consecutiveRunning, runningSince) {
 				return current, nil
 			}
 		} else {
@@ -928,11 +949,21 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 		case <-waitCtx.Done():
 			return Status{}, fmt.Errorf(
 				"service did not remain running for %s (last state %s): %w",
-				serviceReadinessWindow, last.State, waitCtx.Err(),
+				readinessWindow, last.State, waitCtx.Err(),
 			)
 		case <-ticker.C:
 		}
 	}
+}
+
+// Count-based probes remain the existing policy for the other supervisors.
+// SCM queries launch sc.exe each time, so elapsed time avoids requiring an
+// unattainable number of process launches on slow or antivirus-scanned hosts.
+func serviceRunningStable(current Status, consecutive int, since time.Time) bool {
+	if current.Supervisor == "windows-service" {
+		return time.Since(since) >= windowsReadinessWindow
+	}
+	return consecutive >= serviceReadinessChecks
 }
 
 func waitUntilStopped(ctx context.Context, status func(context.Context) (Status, error)) (Status, error) {
@@ -1000,7 +1031,7 @@ func launchdState(output string) string {
 	return "loaded"
 }
 
-func windowsServiceState(output string) string {
+func windowsServiceNumericFields(output string) []int {
 	var numericFields []int
 	for _, line := range strings.Split(output, "\n") {
 		_, value, ok := strings.Cut(line, ":")
@@ -1016,6 +1047,11 @@ func windowsServiceState(output string) string {
 			numericFields = append(numericFields, numericValue)
 		}
 	}
+	return numericFields
+}
+
+func windowsServiceState(output string) string {
+	numericFields := windowsServiceNumericFields(output)
 	// sc.exe localizes field labels but always reports service type before numeric state.
 	if len(numericFields) >= 2 {
 		return windowsServiceStateCode(numericFields[1])
@@ -1024,6 +1060,25 @@ func windowsServiceState(output string) string {
 		return windowsServiceStateCode(numericFields[0])
 	}
 	return "unknown"
+}
+
+// windowsServiceFailure uses the stable numeric field order in sc.exe query,
+// which localizes labels: type, state, Win32 exit code, service-specific exit
+// code. Only a stopped service's codes describe the current startup failure;
+// pending/running states may retain a previous process's failure codes.
+func windowsServiceFailure(output string) string {
+	fields := windowsServiceNumericFields(output)
+	if len(fields) < 4 || fields[1] != 1 {
+		return ""
+	}
+	const errorServiceSpecificError = 1066
+	if fields[2] == errorServiceSpecificError {
+		return fmt.Sprintf("Windows service-specific exit code %d (Win32 exit code %d)", fields[3], fields[2])
+	}
+	if fields[2] != 0 {
+		return fmt.Sprintf("Windows service Win32 exit code %d", fields[2])
+	}
+	return ""
 }
 
 func windowsServiceStateCode(code int) string {

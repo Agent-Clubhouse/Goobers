@@ -33,7 +33,7 @@ func withFakeDoctorCluster(t *testing.T) {
 			Provisioner: "file.csi.azure.com",
 		},
 		&networkingv1.NetworkPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "api-server-egress", Namespace: "goobers-system"},
+			ObjectMeta: metav1.ObjectMeta{Name: "api-server-egress", Namespace: "goobers-system", Labels: map[string]string{k8spreflight.APIServerEgressLabel: "true"}},
 			Spec: networkingv1.NetworkPolicySpec{Egress: []networkingv1.NetworkPolicyEgressRule{{
 				To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "127.0.0.1/32"}}},
 			}}},
@@ -179,5 +179,48 @@ func TestDoctorK8sJSONReportAndFailExitCode(t *testing.T) {
 	}
 	if report.Target != "https://127.0.0.1" {
 		t.Fatalf("report.Target = %q", report.Target)
+	}
+}
+
+func TestDoctorCheckSelectionAndValidation(t *testing.T) {
+	withFakeDoctorCluster(t)
+	code, stdout, stderr := runArgs(t, "doctor", "--k8s", "--checks", "apiserver-ipblock-drift", "--report", "json")
+	if code != 0 {
+		t.Fatalf("selected check failed: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	var report k8spreflight.Report
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Results) != 1 || report.Results[0].ID != "apiserver-ipblock-drift" {
+		t.Fatalf("selection ignored: %+v", report)
+	}
+	for _, args := range [][]string{{"doctor", "--k8s", "--checks", "typo"}, {"doctor", "--k8s", "--checks", "pod-health,pod-health"}, {"doctor", "--k8s", "--checks", ","}, {"doctor", "--repo", "--checks", "pod-health"}} {
+		code, _, stderr := runArgs(t, args...)
+		if code != 2 {
+			t.Fatalf("%v code=%d stderr=%s, want usage error", args, code, stderr)
+		}
+	}
+}
+
+func TestDoctorAPIServerComparisonOverrideDoesNotChangeClientEndpoint(t *testing.T) {
+	withFakeDoctorCluster(t)
+	existing := doctorKubeClient
+	doctorKubeClient = func(config, context string, timeout time.Duration) (kubernetes.Interface, string, error) {
+		client, _, err := existing(config, context, timeout)
+		// An in-cluster client uses a Service VIP; the labeled policy allows the
+		// actual control-plane endpoint after destination NAT instead.
+		return client, "https://10.96.0.1", err
+	}
+	code, stdout, stderr := runArgs(t, "doctor", "--k8s", "--checks", "apiserver-ipblock-drift", "--apiserver-endpoint", "https://127.0.0.1", "--report", "json")
+	if code != 0 {
+		t.Fatalf("comparison override did not reach check: %d %s %s", code, stdout, stderr)
+	}
+	var report k8spreflight.Report
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Target != "https://10.96.0.1" {
+		t.Fatalf("comparison override changed client/report target: %+v", report)
 	}
 }

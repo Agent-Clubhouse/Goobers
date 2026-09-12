@@ -21,7 +21,7 @@ const fixHelp = "Usage: goobers fix (--to <version> | --instance-schema) [--writ
 	"--to <version> mechanically migrates workflows; --instance-schema repairs\n" +
 	"instance.yaml's schema revision. They are separate remedies over separate\n" +
 	"files, so they are never combined in one run.\n\n" +
-	"Mechanically migrate every workflow in a config directory (default path\n" +
+	"Mechanically migrate every workflow under an instance root (default path\n" +
 	"\".\") from its current dslVersion to <version>, one registered version\n" +
 	"step at a time (DVL-6). Prints a reviewable unified diff per changed\n" +
 	"workflow file by default; --write applies the diff to each file in\n" +
@@ -63,6 +63,15 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
 	}
+	// A config directory has its manifest directly beneath the supplied path;
+	// an instance root has it beneath <root>/config. Catch the common mistake
+	// before layout expansion turns it into a confusing config/config error.
+	if filepath.Base(filepath.Clean(root)) == instance.ConfigDirName {
+		if _, err := os.Stat(filepath.Join(root, "manifest.yaml")); err == nil {
+			pf(stderr, "error: fix expects an instance root, not its config directory; pass %s instead\n", filepath.Dir(filepath.Clean(root)))
+			return 2
+		}
+	}
 	if *instanceSchema {
 		if target != "" {
 			pf(stderr, "error: --instance-schema and --to are separate remedies; run one at a time\n")
@@ -97,6 +106,12 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 	if len(set.Workflows) == 0 {
 		pln(stdout, "FIX: no workflows found; nothing to migrate")
 		return 0
+	}
+	if *write {
+		if err := prepareManualRoot(layout, stderr); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
 	}
 
 	ok := true

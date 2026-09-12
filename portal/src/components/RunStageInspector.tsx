@@ -134,6 +134,7 @@ export function RunStageInspector({
   selectedSeq,
   events = [],
   inspectorRef,
+  hideHeading = false,
   onSelectAttempt,
   selectedEvidence,
   selectedEvidenceVisit,
@@ -146,6 +147,7 @@ export function RunStageInspector({
   selectedSeq: number;
   events?: RunEvent[];
   inspectorRef?: React.Ref<HTMLElement>;
+  hideHeading?: boolean;
   onSelectAttempt?: (isLatest: boolean) => void;
   selectedEvidence?: RunEvent;
   selectedEvidenceVisit?: number;
@@ -231,14 +233,7 @@ export function RunStageInspector({
   }, [client, liveRevision, runId, selectedEvidence, stageId]);
 
   if (!node) {
-    return (
-      <Inspector className="run-inspector" label="Stage inspector" rootRef={inspectorRef}>
-        <div className="not-reached">
-          <span>Select a node</span>
-          <small>Choose a stage in the graph to inspect its attempts.</small>
-        </div>
-      </Inspector>
-    );
+    return null;
   }
 
   // Only attempts started by the selected sequence are visible on the playhead.
@@ -306,24 +301,25 @@ export function RunStageInspector({
 
   return (
     <Inspector
-      className="run-inspector"
+      className={hideHeading ? "run-inspector run-inspector-compact" : "run-inspector"}
       label={
         workflow ? `${workflow} · ${node.id} attempt inspector` : `${node.id} attempt inspector`
       }
       rootRef={inspectorRef}
     >
-      <div className="inspector-heading">
-        <span className={`primitive-icon primitive-${node.kind}`}>
-          <Icon name={nodeIcon(node.kind)} size={17} />
-        </span>
-        <div>
-          <span className="inspector-scope">
-            {workflow ? `${workflow} · ${node.kind}` : node.kind}
+      {!hideHeading && !selectedEvidence && (
+        <div className="inspector-heading">
+          <span className={`primitive-icon primitive-${node.kind}`}>
+            <Icon name={nodeIcon(node.kind)} size={17} />
           </span>
-          <h3>{node.id}</h3>
-          {node.owner && <span className="inspector-owner">Owned by {node.owner}</span>}
+          <div>
+            <h3>{node.id}</h3>
+            <span className="inspector-context">
+              {workflow ? `${workflow} · ${node.kind}` : node.kind}
+            </span>
+          </div>
         </div>
-      </div>
+      )}
 
       {selectedEvidence ? (
         <EvidenceDetail
@@ -444,24 +440,18 @@ function EvidenceDetail({
   visit?: number;
 }) {
   return (
-    <div className="attempt-content">
+    <div className="attempt-content evidence-content">
       <div className="repass-context">
         <span>
-          {node.id} evidence · Visit {visit ?? "unknown"} · Sequence {event.seq}
+          Evidence · Visit {visit ?? "unknown"} · Sequence {event.seq}
         </span>
-        <strong>{eventHeading(event)}</strong>
       </div>
       <EvidencePayload client={client} event={event} runId={runId} visit={visit} />
     </div>
   );
 }
 
-// EvidencePayload renders whatever an inspectable evidence event (transcript
-// or artifact) carries, without assuming a graph node context — the shared
-// core EvidenceDetail wraps for the stage inspector and KeyMomentsDigest
-// reuses directly for its inline "state change and payload" preview (#2537),
-// so the two views never grow separate rendering logic for the same evidence.
-export function EvidencePayload({
+function EvidencePayload({
   client,
   event,
   runId,
@@ -751,30 +741,30 @@ function AttemptDetail({
     <div className="attempt-content">
       <div className="attempt-summary-row">
         <span className={`attempt-state attempt-${status}`}>{status}</span>
-        <span className="mono">{formatDuration(attempt.durationMillis)}</span>
+        <span className="run-duration">{formatDuration(attempt.durationMillis)}</span>
         <span>{attemptLabel(attempt)}</span>
-        {attempt.model && <span className="mono">model: {attempt.model}</span>}
+        {attempt.model && <span>Model <code>{attempt.model}</code></span>}
       </div>
       {attempt.placement && (
         <div aria-label="Attempt placement" className="attempt-summary-row">
-          <span className="mono">runner: {attempt.placement.runner}</span>
+          <span>Runner <code>{attempt.placement.runner}</code></span>
           {/* node is a real cluster node; host is the executing process's own
               hostname, which inside a pod is the pod name. Show the node when
               some authority declared one, and otherwise the honest host —
               never one labelled as the other. */}
           {attempt.placement.node ? (
-            <span className="mono">node: {attempt.placement.node}</span>
+            <span>Node <code>{attempt.placement.node}</code></span>
           ) : (
-            attempt.placement.host && <span className="mono">host: {attempt.placement.host}</span>
+            attempt.placement.host && <span>Host <code>{attempt.placement.host}</code></span>
           )}
-          {attempt.placement.os && <span className="mono">os: {attempt.placement.os}</span>}
+          {attempt.placement.os && <span>OS <code>{attempt.placement.os}</code></span>}
           {attempt.placement.image && (
-            <span className="mono">image: {attempt.placement.image}</span>
+            <span>Image <code>{attempt.placement.image}</code></span>
           )}
-          {attempt.placement.pod && <span className="mono">pod: {attempt.placement.pod}</span>}
+          {attempt.placement.pod && <span>Pod <code>{attempt.placement.pod}</code></span>}
           {queueWaitMillis(attempt.placement) !== undefined && (
-            <span className="mono">
-              queue wait: {formatDuration(queueWaitMillis(attempt.placement) ?? 0)}
+            <span>
+              Queue wait {formatDuration(queueWaitMillis(attempt.placement) ?? 0)}
             </span>
           )}
         </div>

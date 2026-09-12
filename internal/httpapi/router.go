@@ -17,9 +17,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
@@ -37,6 +40,10 @@ const (
 	TelemetryErrorSignaturesPath = apicontract.TelemetryErrorSignaturesPath
 	// TelemetryErrorsPath exposes paginated recent telemetry errors.
 	TelemetryErrorsPath = apicontract.TelemetryErrorsPath
+	// WorkItemsPath exposes the recorded work-item action index.
+	WorkItemsPath = apicontract.WorkItemsPath
+	// WorkItemDetailPath exposes one work item's action history and cost.
+	WorkItemDetailPath = apicontract.WorkItemDetailPath
 	// RunsPath is the run history endpoint.
 	RunsPath = apicontract.RunsPath
 	// InstancePath is the instance inventory endpoint.
@@ -131,6 +138,11 @@ func (p Principal) HasRole(required Role) bool {
 // implementation). Pod principals hold no instance roles: authorization for
 // them is plane-scoped, not role-ranked.
 const PodPrincipalIssuer = "goobers/pod"
+
+// WorkerPrincipalIssuer identifies a resident worker's short-lived
+// config-observability credential. It carries neither instance roles nor a run
+// identity.
+const WorkerPrincipalIssuer = "goobers/worker"
 
 // IsPodPrincipal reports whether principal was authenticated as a stage pod.
 func IsPodPrincipal(principal Principal) bool {
@@ -371,11 +383,27 @@ func telemetryPlanePath(path string) bool {
 // a stage subprocess unable to surrender its own result even though it holds
 // a bearer for the same run — route confinement, checked here, not a naming
 // convention.
+//
+// Resident worker principals use a separate identity and may only GET the
+// config digest or POST their own divergence report. Neither pod scopes nor
+// instance roles broaden that grant.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
 		if !ok {
 			return errors.New("no authenticated principal")
+		}
+		if request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath {
+			if principal.Issuer == WorkerPrincipalIssuer {
+				return nil
+			}
+			return errors.New("only an authenticated worker may report config divergence")
+		}
+		if principal.Issuer == WorkerPrincipalIssuer {
+			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
+				return nil
+			}
+			return errors.New("worker principal may only read config digest or report config divergence")
 		}
 		if IsPodPrincipal(principal) {
 			scope, admitted := podRouteScope(request)
@@ -388,7 +416,7 @@ func RequireRoles() Authorizer {
 			return nil
 		}
 		required := RoleView
-		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		if request.Method != http.MethodGet && request.Method != http.MethodHead || recoveryPlanePath(request.URL.Path) {
 			required = RoleOperate
 		}
 		if !principal.HasRole(required) {
@@ -407,6 +435,9 @@ func RequireRoles() Authorizer {
 // does not compile.
 func podRouteScope(request *http.Request) (scope string, admitted bool) {
 	path, method := request.URL.Path, request.Method
+	if suffix, ok := strings.CutPrefix(path, apicontract.TriggerIngestPath+"/"); ok && suffix != "" && !strings.Contains(suffix, "/") && method == http.MethodGet {
+		return ScopeState, true
+	}
 	if scope, ok := podPlanePath(path); ok && method == http.MethodPost {
 		return scope, true
 	}
@@ -437,6 +468,9 @@ func podRouteScope(request *http.Request) (scope string, admitted bool) {
 	// decides WHICH run.
 	if runReadPlanePath(path) && method == http.MethodGet {
 		return ScopeJournal, true
+	}
+	if recoveryPlanePath(path) && (method == http.MethodGet || method == http.MethodPost) {
+		return ScopeClaims, true
 	}
 	return "", false
 }
@@ -501,8 +535,9 @@ type Router struct {
 	// admission bounds concurrency per cost class (#1926). Lazily created so
 	// every existing Router construction keeps working without threading a
 	// constructor argument through each one.
-	admissionOnce sync.Once
-	admission     *admissionController
+	admissionOnce  sync.Once
+	admission      *admissionController
+	aggregateReads aggregateFlightGroup
 }
 
 // ensureAdmission creates the controller on first use.
@@ -511,25 +546,27 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
-	events              eventSource
-	authenticator       Authenticator
-	interventions       InterventionService
-	interventionContext context.Context
-	runRevealer         func(context.Context, string) error
-	workflowMutations   WorkflowMutationService
-	claims              ClaimService
-	triggers            TriggerService
-	escalations         EscalationService
-	cancels             CancelService
-	journal             JournalService
-	runJournal          RunJournalService
-	credentials         CredentialService
-	blobs               blobstore.Store
-	surrenders          SurrenderService
-	state               StateService
-	telemetryDefects    TelemetryDefectAggregateService
-	podRunGaggle        func(context.Context, string) (string, error)
-	configDigest        func() string
+	events                 eventSource
+	authenticator          Authenticator
+	interventions          InterventionService
+	interventionContext    context.Context
+	runRevealer            func(context.Context, string) error
+	workflowMutations      WorkflowMutationService
+	claims                 ClaimService
+	triggers               TriggerService
+	escalations            EscalationService
+	cancels                CancelService
+	journal                JournalService
+	runJournal             RunJournalService
+	credentials            CredentialService
+	blobs                  blobstore.Store
+	recovery               RecoveryService
+	surrenders             SurrenderService
+	state                  StateService
+	telemetryDefects       TelemetryDefectAggregateService
+	podRunGaggle           func(context.Context, string) (string, error)
+	configDigest           func() string
+	workerConfigDivergence func(journal.Event) error
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -603,6 +640,18 @@ func WithConfigDigest(digest func() string) HandlerOption {
 			return errors.New("http api: config digest source is required")
 		}
 		c.configDigest = digest
+		return nil
+	}
+}
+
+// WithWorkerConfigDivergence registers the daemon-owned instance-journal
+// destination for resident worker reports.
+func WithWorkerConfigDivergence(appendEvent func(journal.Event) error) HandlerOption {
+	return func(c *handlerConfig) error {
+		if appendEvent == nil {
+			return errors.New("http api: worker config-divergence appender is required")
+		}
+		c.workerConfigDivergence = appendEvent
 		return nil
 	}
 }
@@ -769,6 +818,14 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 		writeError(w, http.StatusForbidden, "forbidden", "request is not authorized")
 		return
 	}
+	if route.Method == http.MethodGet && route.Cost == apicontract.CostAggregate {
+		r.serveAggregate(route, handler, w, request)
+		return
+	}
+	r.serveAdmitted(route, handler, w, request)
+}
+
+func (r *Router) serveAdmitted(route apicontract.Route, handler http.HandlerFunc, w http.ResponseWriter, request *http.Request) {
 	// Admission control (#1926). Applied AFTER auth for the same reason the
 	// budget is — an unauthenticated request must not consume a slot — and
 	// BEFORE the budget, because a refused request should not have started
@@ -849,7 +906,11 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err := apicontract.ValidateRoutes(expected, router.routes); err != nil {
 		return nil, fmt.Errorf("register HTTP API routes: %w", err)
 	}
-	_, isNull := config.authenticator.(NullAuthenticator)
+	isNull := false
+	switch config.authenticator.(type) {
+	case NullAuthenticator, *NullAuthenticator:
+		isNull = true
+	}
 	return &apiHandler{Handler: router.Handler(), events: config.events, authenticated: !isNull}, nil
 }
 
@@ -877,6 +938,45 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		}
 		writeJSON(w, http.StatusOK, ConfigDigest{Digest: digest})
 	})
+	router.Handle(apicontract.RouteWorkerConfigDivergence, func(w http.ResponseWriter, request *http.Request) {
+		if config.workerConfigDivergence == nil {
+			writeError(w, http.StatusServiceUnavailable, "worker_config_divergence_unavailable", "worker config-divergence journal is unavailable")
+			return
+		}
+		principal, ok := PrincipalFromRequest(request)
+		if !ok || principal.Issuer != WorkerPrincipalIssuer || strings.TrimSpace(principal.Subject) == "" {
+			writeError(w, http.StatusForbidden, "worker_identity_required", "only an authenticated worker may report config divergence")
+			return
+		}
+		var input struct {
+			State        string `json:"state"`
+			WorkerDigest string `json:"workerDigest,omitempty"`
+			DaemonDigest string `json:"daemonDigest,omitempty"`
+			Reason       string `json:"reason,omitempty"`
+		}
+		if err := decodeWriteRequestBounded(request, &input, 16<<10); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if err := validateWorkerConfigDivergenceInput(input.State, input.WorkerDigest, input.DaemonDigest, input.Reason); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_worker_config_divergence", err.Error())
+			return
+		}
+		message := workerConfigDivergenceMessage(input.State, input.WorkerDigest, input.DaemonDigest, input.Reason)
+		event := journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+			"worker": principal.Subject, "state": input.State,
+			"workerDigest": input.WorkerDigest,
+			"daemonDigest": input.DaemonDigest,
+			"reason":       input.Reason,
+			"message":      message,
+		}}
+		if err := config.workerConfigDivergence(event); err != nil {
+			errorLog.Printf("worker config-divergence append failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "write_error", "worker config-divergence state could not be recorded")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]bool{"recorded": true})
+	})
 	router.Handle(apicontract.RoutePortalConfig, func(w http.ResponseWriter, request *http.Request) {
 		portalConfig, err := reader.PortalConfig(request.Context())
 		if err != nil {
@@ -900,8 +1000,66 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, errorLog)
+	router.HandleByMethod(map[string]apicontract.RouteID{
+		http.MethodGet: apicontract.RouteRunRecovery, http.MethodPost: apicontract.RouteRunRecoveryPublish,
+	}, map[apicontract.RouteID]http.HandlerFunc{
+		apicontract.RouteRunRecovery:        recoveryArchiveHandler(config.recovery, errorLog),
+		apicontract.RouteRunRecoveryPublish: recoveryPublishHandler(config.recovery, errorLog),
+	})
 	registerSurrenderPlaneRoutes(router, config, errorLog)
 	registerStatePlaneRoutes(router, config.state, errorLog)
+}
+
+func validWorkerConfigDivergenceState(state string) bool {
+	switch state {
+	case string(journal.WorkerConfigDivergenceInSync),
+		string(journal.WorkerConfigDivergenceDiverged),
+		string(journal.WorkerConfigDivergenceNotChecked):
+		return true
+	default:
+		return false
+	}
+}
+
+func validateWorkerConfigDivergenceInput(state, workerDigest, daemonDigest, reason string) error {
+	if !validWorkerConfigDivergenceState(state) {
+		return errors.New("state must be in-sync, diverged, or not-checked")
+	}
+	for name, value := range map[string]string{"workerDigest": workerDigest, "daemonDigest": daemonDigest, "reason": reason} {
+		if len(value) > 2048 || !utf8.ValidString(value) || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("%s must be valid bounded text without control characters", name)
+		}
+	}
+	switch state {
+	case string(journal.WorkerConfigDivergenceInSync):
+		if workerDigest == "" || workerDigest != daemonDigest || reason != "" {
+			return errors.New("in-sync requires equal nonempty digests and no reason")
+		}
+	case string(journal.WorkerConfigDivergenceDiverged):
+		if workerDigest == "" || daemonDigest == "" || workerDigest == daemonDigest || reason != "" {
+			return errors.New("diverged requires distinct nonempty digests and no reason")
+		}
+	case string(journal.WorkerConfigDivergenceNotChecked):
+		if reason == "" {
+			return errors.New("not-checked requires a reason")
+		}
+	}
+	return nil
+}
+
+func workerConfigDivergenceMessage(state, workerDigest, daemonDigest, reason string) string {
+	switch state {
+	case string(journal.WorkerConfigDivergenceInSync):
+		return fmt.Sprintf("worker config divergence: none; worker and daemon both have config tree %s in force", workerDigest)
+	case string(journal.WorkerConfigDivergenceDiverged):
+		return fmt.Sprintf("worker config divergence: this worker serves config tree %s but the daemon has %s in force. "+
+			"Every agentic gate is pinned to the daemon's tree and served from this one, so gates will be REFUSED "+
+			"(gate_pin_missing) until they agree. The worker's tree is seeded at deploy time and has no live writer: "+
+			"a goober-content change merged to the config repo requires a DEPLOY, not just a merge (#4153)",
+			workerDigest, daemonDigest)
+	default:
+		return fmt.Sprintf("worker config divergence: NOT CHECKED (%s); worker cannot tell whether its config tree matches the daemon's", reason)
+	}
 }
 
 func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {

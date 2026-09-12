@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,7 +78,7 @@ func selectedPullNumber(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	var result map[string]string
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := decodePRSelectionTestResult(data, &result); err != nil {
 		t.Fatal(err)
 	}
 	return result["number"]

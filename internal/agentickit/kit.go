@@ -85,6 +85,10 @@ type Kit struct {
 	Grants []Grant `json:"grants,omitempty"`
 	// SandboxPosture is the instance's sandbox posture, verbatim.
 	SandboxPosture string `json:"sandboxPosture,omitempty"`
+	// HarnessCommand is the selected goober's configured launcher argv only.
+	// It is literal process data, not shell syntax. Omitted in legacy kits and
+	// when no override is declared, preserving the adapter's default command.
+	HarnessCommand []string `json:"harnessCommand,omitempty"`
 }
 
 // Marshal renders the kit and returns it with its content address.

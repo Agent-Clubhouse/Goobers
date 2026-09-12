@@ -9,12 +9,13 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 	nanoAIU := int64(12_345_000_000)
 	premium := 1.5
 	attribution := Attribution{
-		Instance: "MDB1",
-		Gaggle:   "dogfood",
-		Workflow: "implementation",
-		Task:     "escalate",
-		Goober:   "implementer",
-		Run:      "224712dcde5c4deda9717a03a8c26770",
+		Instance:   "MDB1",
+		InstanceID: "e62c1c105fdc4273a72d199394b41cb0",
+		Gaggle:     "dogfood",
+		Workflow:   "implementation",
+		Task:       "escalate",
+		Goober:     "implementer",
+		Run:        "224712dcde5c4deda9717a03a8c26770",
 		Cost: &CostReceipt{
 			JournalSequence:        42,
 			CopilotPremiumRequests: &premium,
@@ -30,6 +31,7 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 		t.Fatalf("ParseAttribution: ok=%v err=%v", ok, err)
 	}
 	if parsed.Instance != attribution.Instance ||
+		parsed.InstanceID != attribution.InstanceID ||
 		parsed.Schema != 1 ||
 		!parsed.Goobers ||
 		parsed.Gaggle != attribution.Gaggle ||

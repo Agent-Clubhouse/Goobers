@@ -53,6 +53,7 @@ func podRouteTable() []struct {
 		{"claim list", http.MethodPost, apicontract.ClaimListPath, ScopeClaims},
 		{"claim recover", http.MethodPost, apicontract.ClaimRecoverPath, ScopeClaims},
 		{"trigger ingest", http.MethodPost, apicontract.TriggerIngestPath, ScopeState},
+		{"trigger status", http.MethodGet, apicontract.TriggerStatusPath, ScopeState},
 		{"credential resolve", http.MethodPost, apicontract.CredentialResolvePath, ScopeCredential},
 		{"journal run-phase", http.MethodPost, apicontract.JournalRunPhasePath, ScopeJournal},
 		{"journal conflict-touches", http.MethodPost, apicontract.JournalConflictTouchesPath, ScopeJournal},

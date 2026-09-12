@@ -1,0 +1,222 @@
+name: Windows image prepublication verification
+
+# Opt-in evidence only. No publishing, registry credentials or support-tier change.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_version:
+        description: Candidate version checked against the real DSL support policy
+        required: true
+        default: v0.4.0-rc.1
+        type: string
+      baseline_tag:
+        description: Previous published stable release providing feature and support snapshots
+        required: true
+        default: v0.3.3
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-image-verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-image:
+    name: Server 2022 native image verification
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # Windows containers use the Windows legacy builder; no Linux BuildKit VM.
+      DOCKER_BUILDKIT: '0'
+    steps:
+      - name: Initialize evidence and check native Docker host
+        run: |
+          $evidenceDir = Join-Path $env:RUNNER_TEMP 'windows-image-evidence'
+          New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+          $PSVersionTable | Out-String | Set-Content (Join-Path $evidenceDir 'host-powershell.txt')
+          docker version 2>&1 | Tee-Object -FilePath (Join-Path $evidenceDir 'docker-version.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Docker engine unavailable' }
+          $dockerOS = docker info --format '{{.OSType}}'
+          if ($LASTEXITCODE -ne 0 -or $dockerOS.Trim() -ne 'windows') { throw 'A native Windows Docker engine is required' }
+          docker info --format 'OS={{.OSType}} Architecture={{.Architecture}} Kernel={{.KernelVersion}}' |
+            Set-Content (Join-Path $evidenceDir 'docker-host.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect native Docker host' }
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+
+      - name: Require native Windows PowerShell 5.1 input verification
+        shell: powershell
+        timeout-minutes: 5
+        env:
+          TESTDEP_STRICT: '1'
+        run: |
+          cmd.exe /d /c 'go test -tags=integration ./packaging -run ^TestIntegrationWindowsImage -count=1 -timeout=3m -v 2>&1' |
+            Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'windows-image-evidence\powershell-5.1-tests.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Native PowerShell 5.1 input verification failed' }
+
+      - name: Fetch published release baselines
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_TAG: ${{ inputs.baseline_tag }}
+        run: |
+          if ($env:BASELINE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Baseline must be a stable release tag' }
+          $baselineDir = Join-Path $env:RUNNER_TEMP 'windows-image-baseline'
+          New-Item -ItemType Directory -Path $baselineDir | Out-Null
+          gh release download $env:BASELINE_TAG --repo $env:GITHUB_REPOSITORY `
+            --pattern feature-registry.json --pattern dsl-support-matrix.json --dir $baselineDir
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch published release baselines' }
+          foreach ($file in @('feature-registry.json', 'dsl-support-matrix.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $baselineDir $file))) { throw "Missing baseline $file" }
+            Copy-Item -LiteralPath (Join-Path $baselineDir $file) -Destination (Join-Path $env:RUNNER_TEMP "windows-image-evidence\baseline-$file")
+          }
+
+      - name: Build embedded Portal
+        timeout-minutes: 10
+        run: |
+          npm --prefix portal ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Portal dependency installation failed' }
+          npm --prefix portal run build
+          if ($LASTEXITCODE -ne 0) { throw 'Portal build failed' }
+
+      - name: Build and verify Windows image through the release engine
+        timeout-minutes: 50
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+        run: |
+          $sourceCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[a-f0-9]{40}$') { throw 'Cannot determine source commit' }
+          $sourceDate = (git show -s --format=%cI HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot determine source build date' }
+          $smokeVersion = $env:CANDIDATE_VERSION
+          if ($smokeVersion -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') { throw 'Candidate must be a release version' }
+          $baselineDir = Join-Path $env:RUNNER_TEMP 'windows-image-baseline'
+          $assetsDir = Join-Path $env:RUNNER_TEMP 'windows-image-assets'
+          $contextsDir = Join-Path $env:RUNNER_TEMP 'windows-image-contexts'
+          $evidenceDir = Join-Path $env:RUNNER_TEMP 'windows-image-evidence'
+          $imagePrefix = "goobers-windows-verify-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          "WINDOWS_SMOKE_IMAGE_PREFIX=$imagePrefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          go run ./release -version $smokeVersion -commit $sourceCommit -date $sourceDate `
+            -targets windows/amd64 -output $assetsDir -image-contexts $contextsDir `
+            -build-images -image-prefix $imagePrefix `
+            -previous-features (Join-Path $baselineDir 'feature-registry.json') `
+            -previous-support-matrix (Join-Path $baselineDir 'dsl-support-matrix.json') `
+            2>&1 | Tee-Object -FilePath (Join-Path $evidenceDir 'release-preparation.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release image build or native verification failed' }
+          $engineEvidencePath = Join-Path $contextsDir 'image-evidence.json'
+          Copy-Item -LiteralPath $engineEvidencePath -Destination $evidenceDir
+          $engineEvidence = Get-Content -Raw -LiteralPath $engineEvidencePath | ConvertFrom-Json
+          $builtImages = @($engineEvidence.images)
+          if ($engineEvidence.schemaVersion -ne 1 -or $engineEvidence.native -isnot [bool] -or $engineEvidence.native -ne $true -or $engineEvidence.enginePlatform -ne 'windows/amd64') { throw 'Engine evidence must prove native Windows verification' }
+          if ($builtImages.Count -ne 1 -or $builtImages[0].family -ne 'goobers-base-windows' -or $builtImages[0].platform -ne 'windows/amd64' -or $builtImages[0].user -ne 'ContainerUser') { throw 'Engine evidence must contain exactly one Windows base image' }
+          $builtImage = $builtImages[0]
+          if ($builtImage.imageID -notmatch '^sha256:[a-f0-9]{64}$' -or -not $builtImage.reference.StartsWith("$imagePrefix/goobers-base-windows:", [StringComparison]::Ordinal)) { throw 'Engine image identity is outside this verification run' }
+          "WINDOWS_SMOKE_VERSION=$smokeVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_SMOKE_IMAGE=$($builtImage.reference)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_SMOKE_IMAGE_ID=$($builtImage.imageID)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WINDOWS_SMOKE_CONTAINER=goobers-image-verify-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $contextDir = Join-Path $contextsDir 'windows-amd64'
+          foreach ($file in @('release.json', 'dependencies.json', 'SHA256SUMS')) {
+            Copy-Item -LiteralPath (Join-Path $contextDir $file) -Destination $evidenceDir
+          }
+          Copy-Item -LiteralPath (Join-Path $assetsDir 'SHA256SUMS') -Destination (Join-Path $evidenceDir 'archive-SHA256SUMS')
+
+      - name: Verify archive bytes and native metadata against image inputs
+        run: |
+          $assetsDir = Join-Path $env:RUNNER_TEMP 'windows-image-assets'
+          $contextDir = Join-Path $env:RUNNER_TEMP 'windows-image-contexts\windows-amd64'
+          $archiveName = "goobers_$($env:WINDOWS_SMOKE_VERSION)_windows_amd64.zip"
+          $archive = Join-Path $assetsDir $archiveName
+          $pattern = '^([a-fA-F0-9]{64})  ' + [regex]::Escape($archiveName) + '$'
+          $entries = @(Get-Content (Join-Path $assetsDir 'SHA256SUMS') | Where-Object { $_ -match $pattern })
+          if ($entries.Count -ne 1 -or (Get-FileHash $archive -Algorithm SHA256).Hash -ne $entries[0].Substring(0, 64)) { throw 'Archive checksum mismatch' }
+          $archiveDir = Join-Path $env:RUNNER_TEMP 'windows-image-archive-extracted'
+          Expand-Archive -LiteralPath $archive -DestinationPath $archiveDir
+          $archiveBinary = Join-Path $archiveDir 'goobers.exe'
+          if ((Get-FileHash $archiveBinary).Hash -ne (Get-FileHash (Join-Path $contextDir 'goobers.exe')).Hash) { throw 'Archive/image-input binary bytes differ' }
+          . ./packaging/docker/windows/Release-Metadata.ps1
+          $release = Read-ImageRelease -Path (Join-Path $contextDir 'release.json')
+          $versionOutput = (& $archiveBinary --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Archived Windows binary did not execute' }
+          Assert-ImageReleaseStamp -Release $release -Output $versionOutput -Binary 'archived goobers'
+          $versionOutput | Set-Content (Join-Path $env:RUNNER_TEMP 'windows-image-evidence\archive-version.txt')
+
+      - name: Verify ContainerUser archive parity and quickstart demo
+        timeout-minutes: 10
+        run: |
+          $evidenceDir = Join-Path $env:RUNNER_TEMP 'windows-image-evidence'
+          $contextDir = Join-Path $env:RUNNER_TEMP 'windows-image-contexts\windows-amd64'
+          $image = docker image inspect $env:WINDOWS_SMOKE_IMAGE | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $image[0].Config.User -ne 'ContainerUser' -or $image[0].Os -ne 'windows' -or $image[0].Id -ne $env:WINDOWS_SMOKE_IMAGE_ID) { throw 'Image identity or Windows ContainerUser declaration differs from engine evidence' }
+          docker create --isolation=process --name $env:WINDOWS_SMOKE_CONTAINER --entrypoint powershell `
+            $env:WINDOWS_SMOKE_IMAGE_ID -NoLogo -NoProfile -NonInteractive -File C:\image-smoke.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot create native smoke container' }
+          docker cp packaging/docker/windows/Smoke-Image.ps1 "$($env:WINDOWS_SMOKE_CONTAINER):C:/image-smoke.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage smoke script' }
+          foreach ($binary in @('goobers.exe', 'goobers-operator.exe')) {
+            $extracted = Join-Path $env:RUNNER_TEMP "image-$binary"
+            docker cp "$($env:WINDOWS_SMOKE_CONTAINER):C:/Goobers/$binary" $extracted
+            if ($LASTEXITCODE -ne 0) { throw "Cannot extract image $binary for comparison" }
+            $hash = (Get-FileHash $extracted -Algorithm SHA256).Hash
+            if ($hash -ne (Get-FileHash (Join-Path $contextDir $binary) -Algorithm SHA256).Hash) { throw "Image $binary differs from release input" }
+            "$hash  $binary" | Out-File -FilePath (Join-Path $evidenceDir 'image-binary-SHA256SUMS') -Append -Encoding utf8
+          }
+          docker start --attach $env:WINDOWS_SMOKE_CONTAINER 2>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceDir 'container-smoke.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'Native container startup or smoke failed' }
+          $exitCode = docker inspect --format '{{.State.ExitCode}}' $env:WINDOWS_SMOKE_CONTAINER
+          if ($LASTEXITCODE -ne 0 -or $exitCode.Trim() -ne '0') { throw "Native smoke container exited $exitCode" }
+
+      - name: Retain native image and container evidence
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $evidenceDir = Join-Path $env:RUNNER_TEMP 'windows-image-evidence'
+          New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+          if ($env:WINDOWS_SMOKE_IMAGE_PREFIX) {
+            $attemptedImages = @(docker image ls --quiet --no-trunc --filter "reference=$($env:WINDOWS_SMOKE_IMAGE_PREFIX)/*")
+            if ($LASTEXITCODE -eq 0 -and $attemptedImages.Count -gt 0) {
+              docker image inspect @attemptedImages 2>&1 | Set-Content (Join-Path $evidenceDir 'engine-attempted-images.json')
+            }
+          }
+          if ($env:WINDOWS_SMOKE_IMAGE) {
+            docker image inspect $env:WINDOWS_SMOKE_IMAGE 2>&1 | Set-Content (Join-Path $evidenceDir 'image-inspect.json')
+          }
+          if ($env:WINDOWS_SMOKE_CONTAINER) {
+            docker inspect $env:WINDOWS_SMOKE_CONTAINER 2>&1 | Set-Content (Join-Path $evidenceDir 'container-inspect.json')
+            docker logs $env:WINDOWS_SMOKE_CONTAINER 2>&1 | Set-Content (Join-Path $evidenceDir 'container-logs.txt')
+            docker cp "$($env:WINDOWS_SMOKE_CONTAINER):C:/workspace/demo-output.txt" (Join-Path $evidenceDir 'demo-output.txt')
+            docker rm --force $env:WINDOWS_SMOKE_CONTAINER | Out-Null
+          }
+          # Missing images/containers are expected when an earlier build failed.
+          exit 0
+
+      - name: Upload native verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-image-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-image-evidence
+          if-no-files-found: warn
+          retention-days: 14

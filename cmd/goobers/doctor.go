@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"flag"
@@ -26,7 +27,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"                          [--overlay-dir <dir>] [--image-runtime docker|podman]\n" +
 	"                          [--image-pull-policy always|never]\n" +
 	"                          [--image-tools <tool,...>] [--image-ca <root.pem>]\n" +
-	"                          [--timeout <duration>]\n" +
+	"                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]\n" +
 	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
 	"       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]\n\n" +
 	"--k8s preflights a target Kubernetes cluster against the documented\n" +
@@ -37,12 +38,16 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"  networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)\n" +
 	"  rbac-install       required  §1/§3  permissions to install goobers-system\n" +
 	"  rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces\n" +
-	"  storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists\n" +
+	"  storage-rwx        required  §4     instance-root StorageClass topology\n" +
 	"  mixed-os-placement required  §7     Linux workloads cannot land on Windows nodes\n" +
 	"  oidc-issuer        required* §1/§3  issuer discovery document reachable\n" +
 	"  egress             required* §1/§5  outbound targets reachable from this host\n" +
 	"  temporal-namespace required* §2/§4  configured Temporal namespace is registered\n" +
 	"  registry           optional  §1     registry reachable (host-side sanity)\n\n" +
+	"  apiserver-ipblock-drift required §5 marked API egress IPs match the endpoint\n" +
+	"  runner-class-capacity required §7 active runner pod requests fit a compatible node\n" +
+	"  pod-health           required §2 every observed container is healthy\n" +
+	"  otlp-signal-set      optional §4 currently unconfigured by this CLI\n" +
 	"  overlay-pin-agreement required* #4298 remote base, image, and runner pins agree\n" +
 	"  overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks\n\n" +
 	"Checks marked required* apply when their probe target is configured; left\n" +
@@ -50,6 +55,12 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"created on the cluster, and a check that cannot run reports fail with the\n" +
 	"reason — never a silent pass. Reference manifests expressing the same\n" +
 	"requirements live under deploy/reference/ (#663).\n\n" +
+	"--checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.\n" +
+	"For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.\n" +
+	"That check inspects only egress policies labeled goobers.dev/apiserver-egress=true.\n" +
+	"--apiserver-endpoint overrides the comparison endpoint when in-cluster service IPs\n" +
+	"differ from the actual control-plane endpoint used by the network policy. It does\n" +
+	"not change the authenticated Kubernetes client address.\n\n" +
 	"--overlay-dir additionally renders the consumer overlay with kubectl and pulls\n" +
 	"its pinned images using --image-runtime (default docker). Image checks run\n" +
 	"temporary network-isolated containers and remove them afterwards. Use trusted\n" +
@@ -144,9 +155,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	egress := fs.String("egress", "", "comma-separated host:port outbound targets that must be reachable")
 	temporalHostPort := fs.String("temporal-hostport", "", "Temporal frontend host:port whose configured namespace must be registered")
 	temporalNamespace := fs.String("temporal-namespace", "", "Temporal namespace to check for (default \"default\")")
+	apiServerEndpoint := fs.String("apiserver-endpoint", "", "API-server comparison URL for egress-policy drift (default: kubeconfig server)")
+	checks := fs.String("checks", "", "comma-separated Kubernetes check IDs (omitted: all checks)")
 	timeout := fs.Duration("timeout", k8spreflight.DefaultTimeout, "per-probe timeout")
 	fs.Usage = helpUsage(stderr, "doctor")
-	if err := fs.Parse(args); err != nil {
+	if !parseFlagsBeforePath(fs, args, stderr) {
 		return 2
 	}
 	if *reportFormat != "text" && *reportFormat != "json" {
@@ -162,6 +175,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if modes != 1 {
 		pf(stderr, "goobers doctor: exactly one of --k8s, --repo or --av-exclusions is required\n\n")
 		fs.Usage()
+		return 2
+	}
+	checkIDs, err := validateDoctorCheckFlags(fs, *k8sMode, *checks, *apiServerEndpoint)
+	if err != nil {
+		pf(stderr, "goobers doctor: %v\n", err)
 		return 2
 	}
 	if err := validateDoctorOverlayFlags(fs, *k8sMode, *overlayDir, *imageRuntime); err != nil {
@@ -214,12 +232,13 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	report := k8spreflight.Run(context.Background(), client, k8spreflight.Options{
+		Checks:            checkIDs,
 		OverlayDir:        *overlayDir,
 		ImageRuntime:      *imageRuntime,
 		ImagePullPolicy:   *imagePullPolicy,
 		ImageTools:        splitCommaList(*imageTools),
 		ImageCAFile:       *imageCA,
-		APIServerEndpoint: host,
+		APIServerEndpoint: cmp.Or(*apiServerEndpoint, host),
 		OIDCIssuer:        *oidcIssuer,
 		Registry:          *registry,
 		Egress:            splitCommaList(*egress),
@@ -453,4 +472,22 @@ func writeDoctorRepoText(stdout io.Writer, reports []doctorRepoReport) {
 			pf(stdout, "  DRIFT field=%q declared=%q live=%q\n", finding.Field, finding.Declared, finding.Live)
 		}
 	}
+}
+
+// validateDoctorCheckFlags rejects ignored scope inputs before loading a
+// Kubernetes client. A mistyped selection must never run the full preflight.
+func validateDoctorCheckFlags(fs *flag.FlagSet, k8sMode bool, raw, endpoint string) ([]string, error) {
+	ids := splitCommaList(raw)
+	supplied := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { supplied[f.Name] = true })
+	if supplied["checks"] && (!k8sMode || len(ids) == 0) {
+		return nil, fmt.Errorf("--checks requires --k8s and at least one check ID")
+	}
+	if supplied["apiserver-endpoint"] && (!k8sMode || strings.TrimSpace(endpoint) == "") {
+		return nil, fmt.Errorf("--apiserver-endpoint requires --k8s and a nonempty URL")
+	}
+	if err := k8spreflight.ValidateChecks(ids); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }

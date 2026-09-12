@@ -85,7 +85,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
+var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "landing_intents", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -118,6 +118,10 @@ func (db *DB) DeleteRun(ctx context.Context, runID string) error {
 }
 
 func insertRun(ctx context.Context, tx *sql.Tx, id runIdentity, events []journalEvent) error {
+	instanceID := ""
+	if instance.ValidIdentity(id.InstanceID) {
+		instanceID = id.InstanceID
+	}
 	var status string
 	var finishedAt time.Time
 	for _, ev := range events {
@@ -131,11 +135,11 @@ func insertRun(ctx context.Context, tx *sql.Tx, id runIdentity, events []journal
 		}
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO runs (run_id, workflow, workflow_version, workflow_digest, gaggle, trigger_kind, trigger_ref, status, started_at, finished_at, duration_ms, instance_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id.RunID, id.Workflow, id.WorkflowVersion, nullIfEmpty(id.WorkflowDigest), id.Gaggle,
 		nullIfEmpty(id.Trigger.Kind), nullIfEmpty(id.Trigger.Ref), nullIfEmpty(status),
-		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt))
+		formatTime(id.StartedAt), formatTime(finishedAt), durationMillis(id.StartedAt, finishedAt), nullIfEmpty(instanceID))
 	if err != nil {
 		return fmt.Errorf("rollup: insert run %s: %w", id.RunID, err)
 	}
@@ -374,7 +378,7 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 				}
 			}
 
-		case eventRefTouched:
+		case eventRefTouched, eventMutationRecovered:
 			if err := insertRefTouched(ctx, tx, runID, ev); err != nil {
 				return err
 			}
@@ -396,7 +400,7 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 }
 
 func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalEvent) error {
-	if ev.ExternalRef == nil {
+	if ev.ExternalRef == nil || recoveredMutationFailed(ev) {
 		return nil
 	}
 	relationship := operationFromRunner(ev.Runner)
@@ -410,6 +414,24 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 		runID, ev.ExternalRef.Provider, ev.ExternalRef.Kind, ev.ExternalRef.ID, relationship); err != nil {
 		return fmt.Errorf("rollup: insert cost attribution seq %d: %w", ev.Seq, err)
 	}
+	// An intent relates this run to the PR, but acknowledges only local
+	// durable storage. It must never inflate the external mutation ledger.
+	// The complete attempt remains available in the retained run journal.
+	if relationship == "merge-intent" {
+		raw, err := runnerJSON(ev.Runner)
+		if err != nil {
+			return err
+		}
+		// Keep an invalid/oversized attempt visible as an unverified row,
+		// without retaining an unbounded payload in the read model.
+		if len(raw.String) > 16384 {
+			raw = sql.NullString{}
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO landing_intents
+			(run_id, seq, provider, external_id, occurred_at, runner_json) VALUES (?, ?, ?, ?, ?, ?)`,
+			runID, ev.Seq, ev.ExternalRef.Provider, ev.ExternalRef.ID, formatTime(ev.Time), raw)
+		return err
+	}
 	rj, err := runnerJSON(ev.Runner)
 	if err != nil {
 		return err
@@ -422,6 +444,13 @@ func insertRefTouched(ctx context.Context, tx *sql.Tx, runID string, ev journalE
 		return fmt.Errorf("rollup: insert provider_mutation seq %d: %w", ev.Seq, err)
 	}
 	return nil
+}
+
+// Recovered failed/conflicting operations remain journal evidence, not
+// successful external mutations for attribution or KPI purposes.
+func recoveredMutationFailed(ev journalEvent) bool {
+	outcome, _ := ev.Runner["outcome"].(string)
+	return ev.Type == eventMutationRecovered && (outcome == "failure" || outcome == "conflict")
 }
 
 type ciChecksArtifact struct {
@@ -885,10 +914,19 @@ func classifyGateEvaluation(runID string, ev journalEvent) (string, string, stri
 	return classification, reason, string(evidence), nil
 }
 
-// schedulerCursor is the incremental-ingest watermark (#1411): how far into the
-// instance journal IngestSchedulerLog has read (byteOffset) and the highest
-// event seq it has applied (lastSeq).
+// schedulerCursor is the incremental-ingest watermark (#1411): how far into
+// the instance journal IngestSchedulerLog has read (byteOffset), the highest
+// event seq it has applied (lastSeq), and the generation byteOffset was
+// recorded against (generation — #3639). generation matters because
+// compaction (internal/journal.CompactInstanceEvents) never appends to or
+// truncates the file a byteOffset was measured in: it writes kept records to
+// a brand new generation file and atomically advances a pointer, so a stored
+// byteOffset only means anything against the SAME generation it was recorded
+// in. readInstanceEventsFrom uses generation to detect that the pointer has
+// moved since the last ingest and re-reads the new generation from its head
+// rather than reusing a byteOffset that now refers to unrelated content.
 type schedulerCursor struct {
+	generation int
 	byteOffset int64
 	lastSeq    uint64
 }
@@ -899,16 +937,24 @@ type schedulerCursor struct {
 // left, so the first incremental pass re-reads the journal head once but writes
 // nothing for events already stored (ON CONFLICT makes each a no-op), then
 // records the cursor so every later pass reads only the new tail.
+//
+// generation defaults to 0 on a store upgrading from before this column
+// existed (migration v27). That is deliberately not "trust it, it's probably
+// still generation 0": if the live instance has already compacted past
+// generation 0 by the time this runs, generation 0 will not match the
+// resolved current generation, so the very next ingest forces exactly the
+// one full re-read from the new generation's head needed to catch up on
+// whatever #3639 silently missed — safe because the insert is idempotent.
 func readSchedulerCursor(ctx context.Context, sqlDB *sql.DB) (schedulerCursor, error) {
 	var c schedulerCursor
-	err := sqlDB.QueryRowContext(ctx, `SELECT byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
-		Scan(&c.byteOffset, &c.lastSeq)
+	err := sqlDB.QueryRowContext(ctx, `SELECT generation, byte_offset, last_seq FROM scheduler_ingest_cursor WHERE id = 1`).
+		Scan(&c.generation, &c.byteOffset, &c.lastSeq)
 	if err == sql.ErrNoRows {
 		var seed uint64
 		if err := sqlDB.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM scheduler_events`).Scan(&seed); err != nil {
 			return schedulerCursor{}, fmt.Errorf("rollup: seed scheduler cursor: %w", err)
 		}
-		return schedulerCursor{byteOffset: 0, lastSeq: seed}, nil
+		return schedulerCursor{generation: 0, byteOffset: 0, lastSeq: seed}, nil
 	}
 	if err != nil {
 		return schedulerCursor{}, fmt.Errorf("rollup: read scheduler cursor: %w", err)
@@ -916,12 +962,12 @@ func readSchedulerCursor(ctx context.Context, sqlDB *sql.DB) (schedulerCursor, e
 	return c, nil
 }
 
-func writeSchedulerCursor(ctx context.Context, tx *sql.Tx, byteOffset int64, lastSeq uint64) error {
+func writeSchedulerCursor(ctx context.Context, tx *sql.Tx, generation int, byteOffset int64, lastSeq uint64) error {
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO scheduler_ingest_cursor (id, byte_offset, last_seq)
-		VALUES (1, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET byte_offset = excluded.byte_offset, last_seq = excluded.last_seq`,
-		byteOffset, lastSeq); err != nil {
+		INSERT INTO scheduler_ingest_cursor (id, generation, byte_offset, last_seq)
+		VALUES (1, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET generation = excluded.generation, byte_offset = excluded.byte_offset, last_seq = excluded.last_seq`,
+		generation, byteOffset, lastSeq); err != nil {
 		return fmt.Errorf("rollup: write scheduler cursor: %w", err)
 	}
 	return nil
@@ -1027,7 +1073,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	events, newOffset, _, err := readInstanceEventsFrom(schedulerDir, cursor.byteOffset)
+	events, newGen, newOffset, _, err := readInstanceEventsFrom(schedulerDir, cursor.generation, cursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -1112,7 +1158,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 			return err
 		}
 	}
-	if err := writeSchedulerCursor(ctx, tx, newOffset, maxSeq); err != nil {
+	if err := writeSchedulerCursor(ctx, tx, newGen, newOffset, maxSeq); err != nil {
 		return err
 	}
 	if err := writeSpansCursor(ctx, tx, newSpanOffset); err != nil {

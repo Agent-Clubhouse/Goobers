@@ -5,6 +5,7 @@ export type IconName =
   | "check"
   | "chevron"
   | "clock"
+  | "cost"
   | "close"
   | "code"
   | "copy"
@@ -12,6 +13,7 @@ export type IconName =
   | "gate"
   | "goober"
   | "insight"
+  | "menu"
   | "moon"
   | "next"
   | "overview"
@@ -20,7 +22,8 @@ export type IconName =
   | "previous"
   | "run"
   | "sun"
-  | "workflow";
+  | "workflow"
+  | "work-item";
 
 export interface IconProps {
   name: IconName;
@@ -105,6 +108,20 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="M19 19V8" />
       </>
     ),
+    menu: (
+      <>
+        <path d="M4 7h16" />
+        <path d="M4 12h16" />
+        <path d="M4 17h16" />
+      </>
+    ),
+    cost: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M15.5 8.5c-.8-.7-1.8-1-3-1-1.7 0-3 .8-3 2s1.1 1.8 3 2.2 3 1 3 2.3-1.3 2.5-3.2 2.5c-1.3 0-2.5-.4-3.3-1.2" />
+        <path d="M12 5.5v13" />
+      </>
+    ),
     moon: <path d="M20 15.4A8.5 8.5 0 0 1 8.6 4 8.5 8.5 0 1 0 20 15.4Z" />,
     next: (
       <>
@@ -160,6 +177,14 @@ export function Icon({ name, size = 18 }: IconProps) {
         <path d="M7 6h10" />
         <path d="m6.5 8 4.2 8" />
         <path d="m17.5 8-4.2 8" />
+      </>
+    ),
+    "work-item": (
+      <>
+        <rect height="16" rx="2" width="16" x="4" y="4" />
+        <path d="M8 9h8" />
+        <path d="M8 13h5" />
+        <path d="m14 17 2 2 4-4" />
       </>
     ),
   };

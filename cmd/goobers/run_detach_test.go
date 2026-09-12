@@ -150,6 +150,15 @@ func TestDetachedRunWorkerReleasesLockWhenRunPauses(t *testing.T) {
 	t.Skip("pause-and-release-lock had no non-human-gate implementation after #706; rewrite against #168/#465's durable pause/resume mechanism")
 }
 
+func TestDetachedRunSelectorPreservesTriggerOptions(t *testing.T) {
+	if got := detachedRunSelector(runTarget{Gaggle: "example", Workflow: "nightly", Force: true}); got != "example/nightly#force" {
+		t.Fatalf("forced selector = %q", got)
+	}
+	if got := detachedRunSelector(runTarget{Workflow: "merge-review", PR: 42}); got != "merge-review#pr-42" {
+		t.Fatalf("pull-request selector = %q", got)
+	}
+}
+
 func TestDetachedRunCreatedRequiresCompleteLine(t *testing.T) {
 	if _, _, _, ok := detachedRunCreated([]byte("created run partial-id")); ok {
 		t.Fatal("accepted a partially written created-run line")

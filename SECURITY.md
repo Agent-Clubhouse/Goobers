@@ -9,6 +9,31 @@ security & isolation model, see [`docs/requirements/security.md`](docs/requireme
 Goobers is pre-1.0 and evolving quickly. Security fixes land on `main`; there are no
 backported release branches yet. Always track the latest `main`.
 
+## Verifying what you downloaded
+
+Release tags are signed. The signing key is published as
+[`.github/allowed_signers`](.github/allowed_signers). From a trusted current
+checkout, set `TAG` to the release you downloaded and run:
+
+```sh
+TAG=v0.4.0-rc.2
+git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v "${TAG}"
+```
+
+Published assets are covered by `SHA256SUMS`, which ships beside them:
+
+```sh
+sha256sum --check SHA256SUMS        # shasum -a 256 --check on macOS
+```
+
+The tag signature and checksum manifest answer different questions: the tag
+authenticates the tag annotation and referenced source commit, while the
+separately generated manifest detects changed asset bytes after download. The
+tag does not authenticate `SHA256SUMS`; obtain it from the official GitHub
+Release over authenticated HTTPS. `docs/guides/releases.md` describes these
+boundaries.
+
 ## Reporting a vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues, pull

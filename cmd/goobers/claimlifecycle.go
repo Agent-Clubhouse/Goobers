@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -86,7 +88,7 @@ func renewLiveClaims(ctx context.Context, l instance.Layout, probe localschedule
 			return fmt.Errorf("open claim ledger: %w", openErr)
 		}
 		var renewErr error
-		renewed, renewErr = ledger.RenewRuns(live, leaseDuration)
+		renewed, renewErr = renewCoordinatedLiveClaims(ctx, l, ledger, live, leaseDuration, localLifecycleSharedClaimResolver(l))
 		return renewErr
 	})
 	return renewed, probeErr, err
@@ -110,6 +112,17 @@ func recoverClaims(
 	now time.Time,
 	interventionActive func(string) bool,
 	gate *localscheduler.RecoveryGate,
+) ([]localscheduler.ClaimEntry, error) {
+	return recoverClaimsWithResolver(l, log, now, interventionActive, gate, localLifecycleSharedClaimResolver(l))
+}
+
+func recoverClaimsWithResolver(
+	l instance.Layout,
+	log *journal.InstanceLog,
+	now time.Time,
+	interventionActive func(string) bool,
+	gate *localscheduler.RecoveryGate,
+	resolver claimsclient.SharedClaimResolver,
 ) ([]localscheduler.ClaimEntry, error) {
 	if !gate.RecoveryPermitted() {
 		return nil, nil
@@ -159,6 +172,11 @@ func recoverClaims(
 		if err != nil {
 			return err
 		}
+		service := &daemonClaimService{layout: l, shared: resolver}
+		coordinated, err := service.coordinatedLedger(ledger)
+		if err != nil {
+			return err
+		}
 		recorded := make(map[string]struct{})
 		for _, entry := range terminalEntries {
 			current, held := currentClaimEntry(ledger, entry)
@@ -177,9 +195,11 @@ func recoverClaims(
 				recorded[entry.RunID] = struct{}{}
 			}
 		}
+		sharedExpired, cleanupErr := recoverExpiredSharedClaims(claimContext(), ledger, coordinated, now)
+		released = append(released, sharedExpired...)
 		expired, err := ledger.RecoverExpired(now)
 		if err != nil {
-			return err
+			return errors.Join(cleanupErr, err)
 		}
 		released = append(released, expired...)
 		for _, entry := range terminalEntries {
@@ -198,14 +218,34 @@ func recoverClaims(
 			if !terminal {
 				continue
 			}
-			if err := ledger.ReleaseEntry(current, current.RunID); err != nil {
-				return fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err)
+			if err := coordinated.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(current), current.RunID); err != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release terminal claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
+				continue
 			}
 			released = append(released, current)
 		}
-		return nil
+		return cleanupErr
 	})
 	return released, err
+}
+
+// Called under the same cross-process lock as the terminal recovery pass.
+// Retain failed cleanup in the ledger so a later pass can retry with the
+// exact persisted owner; an expired lease is never renewal authority.
+func recoverExpiredSharedClaims(ctx context.Context, ledger *localscheduler.ClaimLedger, coordinated claimsclient.Ledger, now time.Time) ([]localscheduler.ClaimEntry, error) {
+	var released []localscheduler.ClaimEntry
+	var cleanupErr error
+	for _, entry := range ledger.Snapshot() {
+		if entry.SharedDeadline.IsZero() || entry.ExpiresAt.After(now) {
+			continue
+		}
+		if err := coordinated.ReleaseScoped(ctx, claimsclient.KeyForEntry(entry), entry.RunID); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("release expired shared claim %s for run %s: %w", entry.ItemID, entry.RunID, err))
+			continue
+		}
+		released = append(released, entry)
+	}
+	return released, cleanupErr
 }
 
 func currentClaimEntry(ledger *localscheduler.ClaimLedger, entry localscheduler.ClaimEntry) (localscheduler.ClaimEntry, bool) {

@@ -9,12 +9,19 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
 type wireFixtures struct {
+	TriggerRequest           TriggerRequest                             `json:"triggerRequest"`
+	TriggerResponse          TriggerResponse                            `json:"triggerResponse"`
+	TriggerStatus            TriggerStatusResponse                      `json:"triggerStatus"`
+	CancelRequest            CancelRunRequest                           `json:"cancelRequest"`
+	CancelResult             CancelRunResult                            `json:"cancelResult"`
+	QueueEligibility         readservice.QueueEligibilityView           `json:"queueEligibility"`
 	Health                   readservice.Health                         `json:"health"`
 	Instance                 readservice.Instance                       `json:"instance"`
 	PortalConfig             readservice.PortalConfig                   `json:"portalConfig"`
@@ -47,6 +54,12 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "triggerRequest", scriptType: "TriggerRequest"},
+	{name: "triggerResponse", scriptType: "TriggerResponse"},
+	{name: "triggerStatus", scriptType: "TriggerStatusResponse"},
+	{name: "cancelRequest", scriptType: "CancelRunRequest"},
+	{name: "cancelResult", scriptType: "CancelRunResult"},
+	{name: "queueEligibility", scriptType: "QueueEligibilityView"},
 	{name: "health", scriptType: "Health"},
 	{name: "instance", scriptType: "Instance"},
 	{name: "portalConfig", scriptType: "PortalConfig"},
@@ -107,10 +120,50 @@ func TypeScriptWireFixtures() ([]byte, error) {
 	return []byte(output.String()), nil
 }
 
-func newWireFixtures() wireFixtures {
+func queueEligibilityWireFixture(at time.Time) readservice.QueueEligibilityView {
+	report := prqueue.Report{Version: 1, RepositoryKey: "github|||org|repo|", Gaggle: "goobers", Workflow: "review", RunID: "queue-run", ObservedAt: at, CompleteSnapshot: true, Items: []prqueue.Item{}}
+	report.Add(42, prqueue.Escalated)
+	return readservice.QueueEligibilityView{Gaggle: report.Gaggle, Workflow: report.Workflow, AsOf: at, Status: "observed", SourceRunID: report.RunID, SourceStage: "select", Report: &report}
+}
+
+func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt time.Time) readservice.Instance {
+	return readservice.Instance{
+		APIVersion:    readservice.APIVersion,
+		SchemaVersion: readservice.SchemaVersion,
+		Name:          "fixture",
+		Environment:   apiv1.EnvironmentDev,
+		InstanceRoot:  "/instances/fixture",
+		Ready:         true,
+		Status:        readservice.InstanceStatusDegraded,
+		Concurrency: readservice.Concurrency{
+			ActiveRuns:        1,
+			MaxConcurrentRuns: 4,
+		},
+		Counts: readservice.InventoryCounts{
+			Gaggles:    1,
+			Goobers:    1,
+			Workflows:  1,
+			ActiveRuns: 1,
+		},
+		Warnings:           []validate.CodedWarning{warning},
+		TelemetryRetention: telemetryRetentionWireFixture(startedAt, finishedAt),
+	}
+}
+
+func telemetryRetentionWireFixture(startedAt, finishedAt time.Time) *readservice.TelemetryRetentionStatus {
+	return &readservice.TelemetryRetentionStatus{
+		Enabled: true, Window: "90d", MaxRuns: 500, FirstEnable: "gracePeriod",
+		EnforceAt: &finishedAt, LastPassAt: &startedAt, LastPassMode: "dry-run", CandidateCount: 7,
+	}
+}
+
+func wireFixtureTimes() (time.Time, time.Time, time.Time) {
 	timestamp := time.Date(2026, time.July, 18, 12, 34, 56, 0, time.UTC)
-	finishedAt := timestamp.Add(2 * time.Minute)
-	startedAt := timestamp.Add(-2 * time.Minute)
+	return timestamp, timestamp.Add(2 * time.Minute), timestamp.Add(-2 * time.Minute)
+}
+
+func newWireFixtures() wireFixtures {
+	timestamp, finishedAt, startedAt := wireFixtureTimes()
 	successRate := 0.75
 	averageDuration := 120000.5
 	minDuration := int64(100000)
@@ -225,7 +278,7 @@ func newWireFixtures() wireFixtures {
 			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status"},
 			CurrentStage:      "review",
 			Liveness:          "terminal",
-			Trajectory:        "parked",
+			Trajectory:        "terminal",
 			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
 			NextTransition:    "",
 			PotentialBlockers: []string{},
@@ -281,10 +334,17 @@ func newWireFixtures() wireFixtures {
 	}
 
 	return wireFixtures{
+		TriggerRequest:   TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
+		TriggerResponse:  TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
+		TriggerStatus:    TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
+		CancelRequest:    CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},
+		CancelResult:     CancelRunResult{Code: "cancellation_requested"},
+		QueueEligibility: queueEligibilityWireFixture(timestamp),
 		Health: readservice.Health{
 			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},
 			APIVersion:       readservice.APIVersion,
 			SchemaVersion:    readservice.SchemaVersion,
+			Build:            readservice.BuildMetadata{Version: "v1.2.3", Commit: "abc1234", Date: "2026-07-18T12:00:00Z"},
 			Ready:            true,
 			Healthy:          true,
 			Instance: readservice.InstanceIdentity{
@@ -298,27 +358,15 @@ func newWireFixtures() wireFixtures {
 				LastSchedulerTickAt: &startedAt,
 				LastTickAgeMillis:   int64Pointer(timestamp.Sub(startedAt).Milliseconds()),
 			},
-		},
-		Instance: readservice.Instance{
-			APIVersion:    readservice.APIVersion,
-			SchemaVersion: readservice.SchemaVersion,
-			Name:          "fixture",
-			Environment:   apiv1.EnvironmentDev,
-			InstanceRoot:  "/instances/fixture",
-			Ready:         true,
-			Status:        readservice.InstanceStatusDegraded,
-			Concurrency: readservice.Concurrency{
-				ActiveRuns:        1,
-				MaxConcurrentRuns: 4,
+			Update: &readservice.UpdateAvailability{
+				Available:      true,
+				LatestVersion:  "v1.3.0",
+				CurrentVersion: "v1.2.3",
+				Channel:        "stable",
+				CheckedAt:      timestamp,
 			},
-			Counts: readservice.InventoryCounts{
-				Gaggles:    1,
-				Goobers:    1,
-				Workflows:  1,
-				ActiveRuns: 1,
-			},
-			Warnings: []validate.CodedWarning{warning},
 		},
+		Instance: instanceWireFixture(warning, startedAt, finishedAt),
 		PortalConfig: readservice.PortalConfig{
 			Brand: readservice.PortalBrandResponse{
 				Name:       "goobers",

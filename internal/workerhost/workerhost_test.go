@@ -229,3 +229,74 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not reached before deadline")
 }
+
+// A blocked drain on one queue must not delay stopping polling on any other
+// queue, both on shutdown and when startup fails partway through the fleet.
+func TestRunDrainsQueuesConcurrently(t *testing.T) {
+	for _, failStartup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("startup_failure=%t", failStartup), func(t *testing.T) {
+			h, err := New(Config{TaskQueues: []string{"first", "second", "third"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.dial = func(string, string) (client.Client, error) { return nil, nil }
+			started := make(chan string, 3)
+			stopping := make(chan string, 3)
+			release := make(chan struct{})
+			h.newWorker = func(_ client.Client, queue string, _ worker.Options) managedWorker {
+				return &blockingDrainWorker{queue: queue, started: started, stopping: stopping, release: release, fail: failStartup && queue == "third"}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- h.Run(ctx) }()
+			defer func() {
+				cancel()
+				close(release)
+				if err := <-done; (err != nil) != failStartup {
+					t.Errorf("Run error = %v; startup failure = %t", err, failStartup)
+				}
+			}()
+			for range 3 {
+				select {
+				case <-started:
+				case <-time.After(5 * time.Second):
+					t.Fatal("worker startup stalled")
+				}
+			}
+			cancel()
+			want := 3
+			if failStartup {
+				want = 2
+			}
+			for range want {
+				select {
+				case <-stopping:
+				case <-time.After(5 * time.Second):
+					t.Fatal("one queue's drain prevented stopping another queue")
+				}
+			}
+		})
+	}
+}
+
+type blockingDrainWorker struct {
+	queue    string
+	started  chan<- string
+	stopping chan<- string
+	release  <-chan struct{}
+	fail     bool
+}
+
+func (w *blockingDrainWorker) Start() error {
+	w.started <- w.queue
+	if w.fail {
+		return errors.New("startup failed")
+	}
+	return nil
+}
+
+func (w *blockingDrainWorker) Stop() {
+	w.stopping <- w.queue
+	<-w.release
+}

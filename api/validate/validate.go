@@ -334,6 +334,7 @@ const (
 	errorPathSimulation           WarningCode = "WF017"
 	errorCapabilityRuntimeSupport WarningCode = "WF019"
 	errorWorkflowCompile          WarningCode = "WF025"
+	errorProviderStageInput       WarningCode = "WF026"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorOutbox                   WarningCode = "OUT001"
 	errorUnsupportedFeature       WarningCode = "VER005"
@@ -410,6 +411,12 @@ func (i Issue) CLIString() string {
 func (i Issue) cliIssue() Issue {
 	if i.Severity == Error && i.Code != WarningPreviewFeature && i.Code != ErrorRemovedFeature {
 		i.Code = ""
+	}
+	// Kind/Name already renders this exact subject. Drop only the redundant
+	// CLI prefix; structured consumers keep the original Gaggle provenance,
+	// and Workflow/Goober findings retain their distinct gaggle context.
+	if i.Gaggle != "" && i.Kind == "Gaggle" && i.Name == i.Gaggle {
+		i.Gaggle = ""
 	}
 	if i.Severity == Warning && i.Code == WarningCompatibility && i.Gaggle != "" && i.Kind == "Workflow" {
 		i.Code = ""
@@ -1069,6 +1076,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 		r.add(errorMultipleManifests, Error, "", "Manifest", "", "more than one Manifest found (%d); exactly one is expected", len(ix.manifests))
 	}
 	allowPreview := ix.allowPreviewFeatures(r)
+	suppressedFeatureConsequences := make(map[string]map[string]struct{})
 
 	// Manifest -> gaggle references resolve.
 	for _, m := range ix.manifests {
@@ -1111,6 +1119,11 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkFieldSelections(r)
 	for name, g := range ix.gaggles {
 		for _, def := range ix.featureDefinitionsForGaggle(name) {
+			if unsupportedDSLVersion(def.DSLVersion) {
+				addSuppressedFeatureConsequence(suppressedFeatureConsequences, def.DSLVersion,
+					ix.gaggleFile[name], "Gaggle", name)
+				continue
+			}
 			r.addFeatureDiagnostics(ix.gaggleFile[name], name, "Gaggle", name,
 				wf.CheckGaggleFeatureSupport(def, g.Spec, allowPreview))
 		}
@@ -1119,6 +1132,11 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	for _, g := range ix.goobers {
 		file := ix.gooberFile[g.Name]
 		for _, def := range ix.featureDefinitionsForGoober(g.Spec) {
+			if unsupportedDSLVersion(def.DSLVersion) {
+				addSuppressedFeatureConsequence(suppressedFeatureConsequences, def.DSLVersion,
+					file, "Goober", g.Name)
+				continue
+			}
 			r.addFeatureDiagnostics(file, g.Spec.Gaggle, "Goober", g.Name,
 				wf.CheckGooberFeatureSupport(def, g.Spec, allowPreview))
 		}
@@ -1169,7 +1187,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Workflow state machine integrity.
 	for _, indexed := range ix.workflows {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
-		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview)
+		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview,
+			sortedSuppressedFeatureConsequences(suppressedFeatureConsequences[indexed.definition.DSLVersion])...)
 	}
 	ix.checkWorkflowsCompile(r, allowPreview)
 
@@ -1267,16 +1286,14 @@ var dslSupportMatrix = supportmatrix.GetDSL
 // checked against this binary's declared supportmatrix.SupportMatrix, so an
 // unsupported or blocked-preview pin fails here, with a clear diagnostic,
 // instead of surfacing later as an opaque interpreterForVersion compile
-// error. The default this applies to a missing pin (supportmatrix.
-// CurrentDSLVersion) is deliberately the exact same default
-// internal/workflow.Compile's own interpreterForVersion falls back to, so
-// this check can never disagree with what actually compiles and runs.
+// error. A missing author-facing pin is a hard error; the compiler's 2.0
+// fallback is reserved for programmatically constructed definitions.
 //
 // This is the sole enforcement point for the lifecycle: internal/configsync's
 // daemon load path and instance.LoadConfigDir's offline CLI path both route
 // through this same Validator.ValidateDir → crossCheck call, so neither can
 // drift from the other.
-func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPreview bool, suppressedConsequences ...string) {
 	version := w.DSLVersion
 	if version == "" {
 		// The §8.3 cutover (#3507): a missing dslVersion used to default to 1.4
@@ -1291,8 +1308,8 @@ func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPrev
 	support, ok := dslSupportMatrix().Lookup(version)
 	if !ok {
 		r.addCoded(ErrorUnsupportedDSLVersion, Error, file, "Workflow", w.Name,
-			"dslVersion %q is not a version this binary recognizes; known versions: %s",
-			version, strings.Join(knownDSLVersions(), ", "))
+			"dslVersion %q is not a version this binary recognizes; known versions: %s%s",
+			version, strings.Join(knownDSLVersions(), ", "), suppressedFeatureConsequenceSuffix(suppressedConsequences))
 		return
 	}
 
@@ -1312,11 +1329,47 @@ func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPrev
 			version, support.Replacement, support.UnsupportedAfter, support.Replacement)
 	case supportmatrix.LevelUnsupported:
 		r.addCoded(ErrorUnsupportedDSLVersion, Error, file, "Workflow", w.Name,
-			"dslVersion %q is unsupported by this binary (replacement %q); migrate with `goobers fix --to %s` before upgrading",
-			version, support.Replacement, support.Replacement)
+			"dslVersion %q is unsupported by this binary (replacement %q); migrate with `goobers fix --to %s` before upgrading%s",
+			version, support.Replacement, support.Replacement, suppressedFeatureConsequenceSuffix(suppressedConsequences))
 	case supportmatrix.LevelSupported:
 		// Nothing to report — the common case.
 	}
+}
+
+func unsupportedDSLVersion(version string) bool {
+	if version == "" {
+		return false
+	}
+	support, ok := dslSupportMatrix().Lookup(version)
+	return !ok || support.Level == supportmatrix.LevelUnsupported
+}
+
+func addSuppressedFeatureConsequence(byVersion map[string]map[string]struct{}, version, file, kind, name string) {
+	if byVersion[version] == nil {
+		byVersion[version] = make(map[string]struct{})
+	}
+	subject := kind + "/" + name
+	if file != "" {
+		subject += " in " + file
+	}
+	byVersion[version][subject] = struct{}{}
+}
+
+func sortedSuppressedFeatureConsequences(consequences map[string]struct{}) []string {
+	result := make([]string, 0, len(consequences))
+	for consequence := range consequences {
+		result = append(result, consequence)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func suppressedFeatureConsequenceSuffix(consequences []string) string {
+	if len(consequences) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; this pin also prevents feature validation for %s; derivative findings on those files are suppressed because they have no dslVersion to edit",
+		strings.Join(consequences, ", "))
 }
 
 func knownDSLVersions() []string {
@@ -1987,20 +2040,31 @@ func repoIdentity(ref apiv1.RepoRef) string {
 	return strings.Join([]string{string(ref.Provider), ref.Owner, ref.Project, ref.Name}, "/")
 }
 
-func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+// checkWorkflowVersionAndReferences validates independent workflow references
+// and controls and reports feature support only when an interpreter exists.
+// Its result gates the deeper semantic checks, avoiding version-error cascades.
+func (ix *index) checkWorkflowVersionAndReferences(r *Report, w apiv1.Workflow, file string, allowPreview bool) bool {
 	checkArtifactManifestInputs(r, w, file)
 	if _, ok := ix.gaggles[w.Spec.Gaggle]; !ok {
 		ix.referenceNotFound(r, errorWorkflowGaggleReference, file, "Workflow", w.Name, "spec.gaggle names %q, but no Gaggle/%s definition was found",
 			w.Spec.Gaggle, w.Spec.Gaggle)
 	}
-	r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
-		wf.CheckWorkflowFeatureSupport(wf.Definition{
-			Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec,
-		}, allowPreview))
+	support, knownVersion := dslSupportMatrix().Lookup(w.DSLVersion)
+	canInterpret := w.DSLVersion == "" || (knownVersion && support.Level != supportmatrix.LevelUnsupported)
+	if canInterpret {
+		r.addFeatureDiagnostics(file, w.Spec.Gaggle, "Workflow", w.Name,
+			wf.CheckWorkflowFeatureSupport(wf.Definition{
+				Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec,
+			}, allowPreview))
+	}
 	if err := runcontrol.ValidateWorkflow(w.Spec); err != nil {
 		r.add(errorRunControls, Error, file, "Workflow", w.Name, "%v", err)
 	}
+	return canInterpret
+}
 
+func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPreview bool) {
+	canInterpret := ix.checkWorkflowVersionAndReferences(r, w, file, allowPreview)
 	states := map[string]bool{}
 	for _, t := range w.Spec.Tasks {
 		if states[t.Name] {
@@ -2110,6 +2174,17 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 		}
 	}
 
+	// These checks inspect declarations without requiring an interpreter, so
+	// keep reporting them even when a version pin needs repair.
+	ix.checkCapabilityRuntimeSupport(r, w, file)
+	checkSecretShapedInputs(r, w, file)
+	if !canInterpret {
+		// checkWorkflowDSLVersion reports the root cause once as DVL030.
+		// Every semantic facade below would only repeat the router's
+		// same refusal under a different rule code (#4216).
+		return
+	}
+
 	// Delegate the deeper semantic analysis to the workflow compiler so the CLI
 	// and the compiler stay in lockstep: reachability + loop-without-exit,
 	// schedule-expression validity, and capability/harness admission. These are
@@ -2183,7 +2258,6 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckRepoHandoffs(def) {
 		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	ix.checkCapabilityRuntimeSupport(r, w, file)
 	// Stage output/input contracts (#900). These catch the class of defect
 	// that is structurally valid, compiles, and then silently loses data at
 	// runtime — a stage promising outputs it has no channel to emit, or
@@ -2212,11 +2286,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	// Bounded waits must finish before the executor can terminate their stage;
-	// command-specific clamps are modeled by the workflow check itself.
-	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
-		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
-	}
+	checkProviderInputsAndTimeouts(r, def, file, w)
 	// A stage's own subprocess can carry a longer wall-clock ceiling than the
 	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
 	// under a 25-minute stage timeout. Warning, not error: detection only
@@ -2225,12 +2295,6 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckSubprocessTimeoutCoherence(def) {
 		r.addWarning(WarningSubprocessTimeout, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
-	// Stage inputs are history-resident on the engine tier, so a credential
-	// pasted into `inputs:` is persisted verbatim in durable Temporal history
-	// (#2931). Warning, not error: the detection is a pattern net over
-	// literals the author wrote, so it is intentionally incomplete and can
-	// only ever be evidence of shape, never of secrecy.
-	checkSecretShapedInputs(r, w, file)
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's
 	// VER003 "expectedOutputs is declared but not enforced" already warns
@@ -2238,6 +2302,20 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
+}
+
+func checkProviderInputsAndTimeouts(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+	// Provider-stage input lifecycle (#4879). Runtime parsers retain their
+	// defensive refusals, but a retired input is visible in the workflow and
+	// must be rejected here before the stage can claim work and fail a run.
+	for _, msg := range wf.CheckProviderStageInputs(def) {
+		r.add(errorProviderStageInput, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// Bounded waits must finish before the executor can terminate their stage;
+	// command-specific clamps are modeled by the workflow check itself.
+	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
+		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
+	}
 }
 
 func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {

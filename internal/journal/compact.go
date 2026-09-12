@@ -204,26 +204,29 @@ func compactInstanceEventsData(
 	tail := data[end+1:]
 
 	type record struct {
-		line       []byte
-		time       time.Time
-		triggerKey string
-		runStarted bool
-		initDone   bool
+		line                []byte
+		time                time.Time
+		triggerKey          string
+		workerDivergenceKey string
+		runStarted          bool
+		initDone            bool
 	}
 	var records []record
 	latestTrigger := make(map[string]int)
+	latestWorkerDivergence := make(map[string]int)
 	for _, line := range bytes.SplitAfter(complete, []byte{'\n'}) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var meta struct {
-			Schema   string    `json:"schema"`
-			Seq      uint64    `json:"seq"`
-			Time     time.Time `json:"time"`
-			Type     EventType `json:"type"`
-			Gaggle   string    `json:"gaggle"`
-			Workflow string    `json:"workflow"`
-			Reason   string    `json:"reason"`
+			Schema   string         `json:"schema"`
+			Seq      uint64         `json:"seq"`
+			Time     time.Time      `json:"time"`
+			Type     EventType      `json:"type"`
+			Gaggle   string         `json:"gaggle"`
+			Workflow string         `json:"workflow"`
+			Reason   string         `json:"reason"`
+			Runner   map[string]any `json:"runner"`
 		}
 		if err := json.Unmarshal(bytes.TrimSpace(line), &meta); err != nil {
 			return InstanceEventsCompaction{}, nil, fmt.Errorf("journal: compact decode record: %w", err)
@@ -239,15 +242,18 @@ func compactInstanceEventsData(
 			rec.triggerKey = meta.Gaggle + "\x00" + meta.Workflow
 			latestTrigger[rec.triggerKey] = len(records)
 		}
+		rec.workerDivergenceKey = compactWorkerDivergenceKey(meta.Type, meta.Runner)
+		latestWorkerDivergence[rec.workerDivergenceKey] = len(records)
 		records = append(records, rec)
 	}
 
 	var kept bytes.Buffer
 	for i, rec := range records {
 		keepTriggerCheckpoint := rec.triggerKey != "" && latestTrigger[rec.triggerKey] == i
+		keepWorkerDivergenceCheckpoint := compactKeepsWorkerDivergence(rec.workerDivergenceKey, i, latestWorkerDivergence)
 		keepBudgetHistory := rec.runStarted &&
 			(keepRunStartsAfter.IsZero() || !rec.time.Before(keepRunStartsAfter))
-		if !keepAfter.IsZero() && rec.time.Before(keepAfter) && !keepTriggerCheckpoint && !keepBudgetHistory && !rec.initDone {
+		if compactDropsAgedRecord(rec.time, keepAfter, keepTriggerCheckpoint, keepWorkerDivergenceCheckpoint, keepBudgetHistory, rec.initDone) {
 			result.Dropped++
 			continue
 		}
@@ -260,6 +266,22 @@ func compactInstanceEventsData(
 	kept.Write(tail)
 	result.AfterBytes = int64(kept.Len())
 	return result, kept.Bytes(), nil
+}
+
+func compactWorkerDivergenceKey(eventType EventType, runner map[string]any) string {
+	if eventType != EventWorkerConfigDivergence {
+		return ""
+	}
+	worker, _ := runner["worker"].(string)
+	return worker
+}
+
+func compactKeepsWorkerDivergence(worker string, index int, latest map[string]int) bool {
+	return worker != "" && latest[worker] == index
+}
+
+func compactDropsAgedRecord(at, keepAfter time.Time, triggerCheckpoint, workerCheckpoint, budgetHistory, initDone bool) bool {
+	return !keepAfter.IsZero() && at.Before(keepAfter) && !triggerCheckpoint && !workerCheckpoint && !budgetHistory && !initDone
 }
 
 // Compact atomically checkpoints records at or after keepAfter while the

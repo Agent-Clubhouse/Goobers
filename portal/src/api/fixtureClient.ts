@@ -36,7 +36,12 @@ import type {
   TelemetryStatsResult,
   TranscriptContent,
   WorkflowDetail,
+  QueueEligibilityView,
   WorkflowPage,
+  WorkItemDetail,
+  WorkItemKind,
+  WorkItemListOptions,
+  WorkItemPage,
 } from "./types";
 
 export interface DaemonFixtures {
@@ -58,6 +63,8 @@ export interface DaemonFixtures {
   telemetryCosts?: TelemetryCostResult;
   telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
+  workItems?: WorkItemPage;
+  workItemDetails?: Record<string, WorkItemDetail>;
 }
 
 export interface FixtureStageUsage {
@@ -169,6 +176,11 @@ export class FixtureDaemonClient implements DaemonClient {
       required(this.fixtures.workflowDetails, fixtureKey(gaggle, workflow), "workflow"),
       options,
     );
+  }
+
+  async getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView> {
+    required(this.fixtures.workflowDetails, fixtureKey(gaggle, workflow), "workflow");
+    return fixture({ gaggle, workflow, asOf: "2026-09-08T00:00:00Z", status: "not-observed", problem: "No queue eligibility observation is included in this fixture." }, options);
   }
 
   // Emulates the daemon's deterministic run listing so filtered and paginated
@@ -371,6 +383,34 @@ export class FixtureDaemonClient implements DaemonClient {
     options?: RequestOptions,
   ): Promise<TelemetryErrorSignaturesResult> {
     return fixture(this.fixtures.telemetryErrorSignatures, options);
+  }
+
+  listWorkItems(
+    request?: WorkItemListOptions,
+    options?: RequestOptions,
+  ): Promise<WorkItemPage> {
+    throwIfCancelled(options);
+    const page = this.fixtures.workItems ?? { items: [], hasMore: false };
+    return Promise.resolve(structuredClone({
+      ...page,
+      items: page.items
+        .filter((item) => !request?.provider || item.provider === request.provider)
+        .filter((item) => !request?.kind || item.kind === request.kind)
+        .slice(0, request?.limit ?? page.items.length),
+    }));
+  }
+
+  getWorkItem(
+    provider: string,
+    repository: string,
+    kind: WorkItemKind,
+    externalId: string,
+    options?: RequestOptions,
+  ): Promise<WorkItemDetail> {
+    return fixture(
+      required(this.fixtures.workItemDetails, `${provider}/${repository}/${kind}/${externalId}`, "work item"),
+      options,
+    );
   }
 
   listTelemetryErrors(

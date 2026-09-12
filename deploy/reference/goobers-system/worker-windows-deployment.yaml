@@ -24,6 +24,9 @@ spec:
         goobers.dev/platform: windows
     spec:
       serviceAccountName: goobers-worker
+      # Allow Temporal drain, bounded stage-pod disposal, and process exit.
+      # Increase this when overriding --drain-timeout.
+      terminationGracePeriodSeconds: 90
       nodeSelector:
         kubernetes.io/os: windows
       tolerations:

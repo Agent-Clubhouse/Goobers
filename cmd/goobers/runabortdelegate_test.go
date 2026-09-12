@@ -114,7 +114,7 @@ func TestRunAbortDelegatesToLiveDaemonOnLockContention(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run --no-wait: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	runID := runIDFromRunStdout(t, stdout)
+	runID := runIDFromAcceptedTriggerStdout(t, l, stdout)
 
 	// Wait for the run to actually be live under the daemon (holding its
 	// journal lock via acquireRunLock) before racing abort against it.
@@ -153,7 +153,7 @@ func TestRunAbortFallsBackToJournalErrorWithoutLiveDaemon(t *testing.T) {
 	restoreLock := journal.SetLockTimeoutForTest(300*time.Millisecond, 20*time.Millisecond)
 	t.Cleanup(restoreLock)
 
-	layout := instance.NewLayout(t.TempDir())
+	layout := instance.NewLayout(initScheduledDemo(t))
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
 	if err != nil {
 		t.Fatal(err)

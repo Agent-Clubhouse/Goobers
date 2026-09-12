@@ -62,6 +62,7 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
+	InstanceID             string             `json:"instanceId,omitempty"`
 	RunID                  string             `json:"runId"`
 	Gaggle                 string             `json:"gaggle"`
 	WorkflowName           string             `json:"workflowName"`
@@ -334,11 +335,11 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		// cause and the failed terminal in the projection, then fail the
 		// workflow.
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
-			rec.runFailedCause(ctx, "", "", err.Error())
-			rec.runFinished(ctx, journal.PhaseFailed)
+			rec.runFailedCause(ctx, "", "", err.Error(), err)
+			rec.runFinished(ctx, journal.PhaseFailed, journal.RunDispositionProduced)
 			hitl.noteTerminal()
 			rec.emitTerminal(ctx)
-			return RunResult{}, err
+			return RunResult{}, terminalWorkflowFailure(err)
 		}
 		// Cancellation is a terminal OUTCOME, not an absence of one. It used
 		// to be the single exception that wrote no terminal, and that left the
@@ -365,7 +366,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
-		rec.runFinished(abortCtx, journal.PhaseAborted)
+		rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced)
 		hitl.noteTerminal()
 		rec.emitTerminal(abortCtx)
 		return RunResult{}, err
@@ -386,13 +387,18 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	if err != nil {
 		return RunResult{}, err
 	}
-	rec.runFinished(ctx, phase)
+	disposition := journal.RunDispositionProduced
+	if res.NoWork {
+		disposition = journal.RunDispositionNoWork
+	}
+	rec.runFinished(ctx, phase, disposition)
 	hitl.noteTerminal()
 	rec.emitTerminal(ctx)
 	return res, nil
 }
 
 func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hitl *hitlSession) (RunResult, error) {
+	ctx = workflow.WithValue(ctx, podDispatchActivationKey{}, &podDispatchActivation{})
 	logger := workflow.GetLogger(ctx)
 	upstream := map[string]apiv1.ResultEnvelope{}
 	// pointers accumulates every completed stage's artifacts as read-only
@@ -418,6 +424,8 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
 	gateDispatches := map[string]int{}
+	// Physical task dispatches never reset when the graph revisits a task.
+	taskDispatches := map[string]int{}
 	// evaluatedGates names every gate that has recorded a verdict on this
 	// walk. A gate named in a downstream stage's contextFrom delivers that
 	// verdict as context, so the #2736 no-work check must count it as
@@ -514,7 +522,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			var published deltaPublication
 			addendum := addenda[t.Name]
 			delete(addenda, t.Name)
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult, completed, workspaceBranch, selected.Digest, addendum, &published, rec)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, completed, workspaceBranch, selected.Digest, addendum, &published, taskDispatches, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -617,7 +625,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				}
 				outcome = knownOutcome
 			} else {
-				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, rec)
+				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, gateInitialAttemptClass(repassBudget.Attempts[g.Name], repassBudget.InfrastructureAttempts[g.Name]), rec)
 			}
 			if gerr != nil {
 				return RunResult{}, gerr
@@ -657,6 +665,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				return RunResult{}, rerr
 			}
 			applyImplementationLaneOutcome(g, &gr, ev, review, findingReason, lifecycle.Arbitrate)
+			verdict = applyBudgetVerdict(g, &gr, verdict)
 			gr.ResolvedFindingIDs = lifecycle.Resolved
 			gr.SuppressedFindingIDs = lifecycle.Suppressed
 			gr.ReopenedFindingIDs = lifecycle.Reopened
@@ -902,7 +911,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, rec *runJournal) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, taskDispatches map[string]int, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -983,14 +992,14 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// as before this branch existed (zero-declaration invariance,
 	// architecture §11 item 1).
 	if placement, remote := remotePlacementFor(in, t.Name); remote {
-		ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
+		ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		produced := engineProducedIntegrity(t, env, inputGrades)
 		// workspaceBranch rides to the pod for the same reason it rides to the
 		// local arms (#392): a run that rebound it — pr-remediation, onto the
 		// claimed PR's head — must have every later stage checked out THERE.
 		// Without it the pod derived the run branch from workflow+runID and
 		// remediated a branch nobody was reviewing.
-		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut)
+		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut, taskDispatches)
 	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, inputGrades)
@@ -1004,7 +1013,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// task's own declaration — the same one the continuity selector
 		// decided the delta from — so the worktree the agent is cut and the
 		// commits it is handed can never disagree.
-		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := env
 			attemptEnv.Attempt = int32(attempt)
@@ -1032,7 +1041,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// taskWorkspaceMode already read it. Pure over the pinned spec, so
 	// replay-deterministic.
 	run.Workspace = t.EffectiveWorkspace()
-	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
@@ -1056,7 +1065,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // ActReviewGoober with the arguments it always has (ruling 8, as amended by
 // #3845): that arm is untouched, and the walk's continuity selector already
 // hands both arms the same delta.
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, firstClass journal.AttemptClass, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -1089,7 +1098,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			return "", nil, GateReviewResult{}, err
 		}
 		var outcome string
-		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
+		if err := evaluateWithInfraRetry(ctx, g, rec, "", func(ctx workflow.Context, _ journal.AttemptClass) error {
 			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
@@ -1108,6 +1117,8 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
+		_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
+		env.ReviewerMechanicalEscalationAllowed = gate.StructuredMechanicalEscalation(g)
 		env.InstructionAddendum = instructionAddendum
 		// #3383: the subject already knows this gate's answer, so the gate
 		// routes on it and the reviewer is never invoked. Resolved by
@@ -1130,7 +1141,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// ones it has always had.
 		placement, remote := remotePlacementFor(in, g.Name)
 		if remote {
-			ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
+			ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		} else {
 			ctx = stageActivityContext(ctx, env.Limits)
 		}
@@ -1160,9 +1171,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// both zero-valued, which disables both short-circuits — precisely the
 		// pre-#3882 behaviour.
 		var review GateReviewResult
-		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
+		if err := evaluateWithInfraRetry(ctx, g, rec, firstClass, func(ctx workflow.Context, class journal.AttemptClass) error {
 			if remote {
-				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name))
+				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
 				if err != nil {
 					return err
 				}
@@ -1243,6 +1254,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 	}
 	return apiv1.InvocationEnvelope{
 		TaskID:          in.RunID + ":" + stateName,
+		InstanceID:      in.InstanceID,
 		WorkflowID:      in.WorkflowName,
 		RunID:           in.RunID,
 		TriggerRef:      in.TriggerRef,

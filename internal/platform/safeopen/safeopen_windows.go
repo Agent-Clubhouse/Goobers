@@ -37,16 +37,27 @@ func openAt(dir *os.File, name string) (*os.File, error) {
 }
 
 func openNoFollow(path string) (*os.File, error) {
+	return openWithAccess(path, windows.GENERIC_READ, windows.OPEN_EXISTING, false)
+}
+
+func appendAt(dir *os.File, name string) (*os.File, error) {
+	// Match Go's append-only access: omit FILE_WRITE_DATA so the kernel
+	// appends each write without a seek/end-of-file race between writers.
+	access := uint32(windows.FILE_APPEND_DATA | windows.FILE_WRITE_ATTRIBUTES | windows.FILE_WRITE_EA | windows.STANDARD_RIGHTS_WRITE | windows.SYNCHRONIZE | windows.FILE_READ_ATTRIBUTES)
+	return openWithAccess(filepath.Join(dir.Name(), name), access, windows.OPEN_ALWAYS, true)
+}
+
+func openWithAccess(path string, access, disposition uint32, appendOnly bool) (*os.File, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
 	}
 	handle, err := windows.CreateFile(
 		p,
-		windows.GENERIC_READ,
+		access,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
-		windows.OPEN_EXISTING,
+		disposition,
 		windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS,
 		0,
 	)
@@ -63,6 +74,10 @@ func openNoFollow(path string) (*os.File, error) {
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 		_ = windows.CloseHandle(handle)
 		return nil, fmt.Errorf("%w: %s", ErrSymlink, path)
+	}
+	if appendOnly && (info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 || info.NumberOfLinks != 1) {
+		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("safeopen: append requires a regular singly-linked file")
 	}
 	return os.NewFile(uintptr(handle), path), nil
 }

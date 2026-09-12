@@ -48,7 +48,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, workflow.refused, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, workflow.refused, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, daemon.*, and telemetry.retention.pass (a bounded automatic-retention pass summary) are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -73,6 +73,7 @@
         "runner.isolation.posture",
         "runner.placement",
         "runner.workspace.delta",
+        "runner.mutation.recovered",
         "notification.requested",
         "notification.delivery.receipt",
         "parallel.started",
@@ -96,16 +97,18 @@
         "claims_lock_timeout",
         "config.reloaded",
         "config.reload.rejected",
+        "runner.config_divergence",
         "daemon.started",
         "daemon.clean_shutdown",
         "daemon.dirty_restart",
+        "telemetry.retention.pass",
         "daemon.update.drain_started",
         "daemon.update.restarted",
         "daemon.update.healthy",
         "daemon.update.rolled_back",
         "daemon.update.escalated"
       ],
-      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, runner-scoped bookkeeping, and notification output events are excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, telemetry.retention.pass, runner-scoped bookkeeping, and notification output events are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
@@ -195,6 +198,12 @@
     "status": {
       "description": "Terminal status for run.finished / stage.finished, or the prior terminal phase for run.resumed.",
       "type": "string",
+      "x-conformance": "normative"
+    },
+    "disposition": {
+      "description": "Whether a terminal run performed work. New run.finished events carry produced or no-work; absence is accepted for journals written before disposition was introduced.",
+      "type": "string",
+      "enum": ["produced", "no-work"],
       "x-conformance": "normative"
     },
     "workflowVersion": {

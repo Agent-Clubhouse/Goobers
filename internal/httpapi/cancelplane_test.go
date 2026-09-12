@@ -39,7 +39,7 @@ func TestCancelRouteRequiresKeyAndActor(t *testing.T) {
 		t.Fatalf("a keyless cancel reached the service")
 	}
 
-	request := jsonRequest(http.MethodPost, path, `{"gaggle":"g","workflow":"w"}`)
+	request := jsonRequest(http.MethodPost, path, `{"gaggle":"g","workflow":"w","actor":"spoofed"}`)
 	request.Header.Set("Idempotency-Key", "key-1")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -50,7 +50,7 @@ func TestCancelRouteRequiresKeyAndActor(t *testing.T) {
 		t.Fatalf("cancel service saw %d inputs", len(cancels.inputs))
 	}
 	input := cancels.inputs[0]
-	if input.RunID != "run-1" || input.Actor != "operator" || input.Gaggle != "g" || input.Workflow != "w" {
+	if input.RunID != "run-1" || input.Actor != "operator" || input.Gaggle != "g" || input.Workflow != "w" || input.IdempotencyKey != "key-1" {
 		t.Fatalf("input = %+v", input)
 	}
 	var decoded CancelRunResult
@@ -114,5 +114,17 @@ func TestCancelRouteUnavailableWithoutService(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", response.Code)
+	}
+}
+
+func TestCancelRouteRejectsBodyIdempotencyKey(t *testing.T) {
+	cancels := &fakeCancelService{}
+	handler := writePlaneHandler(t, nil, AllowAll, WithCancelService(cancels))
+	request := jsonRequest(http.MethodPost, "/api/v1/runs/run-1/cancel", `{"actor":"cli","idempotencyKey":"spoofed"}`)
+	request.Header.Set(HeaderIdempotencyKey, "header-key")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || len(cancels.inputs) != 0 {
+		t.Fatalf("status=%d inputs=%+v", response.Code, cancels.inputs)
 	}
 }

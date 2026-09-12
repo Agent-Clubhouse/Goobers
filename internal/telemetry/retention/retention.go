@@ -29,13 +29,35 @@ type Policy struct {
 type Options struct {
 	Now    time.Time
 	DryRun bool
+	// BeforeDelete durably transfers any dependent custody before the journal
+	// is staged or deleted. Errors preserve the journal. Also runs when
+	// completing an interrupted prune; never runs for a dry-run.
+	BeforeDelete func(Result) error
 }
 
 // Result describes one selected or deleted run.
 type Result struct {
-	RunID  string
-	RunDir string
-	Reason string
+	RunID     string    `json:"runId"`
+	RunDir    string    `json:"runDir"`
+	Reason    string    `json:"reason"`
+	StartedAt time.Time `json:"startedAt"`
+}
+
+// Summary carries pass-level context a caller needs beyond the per-run
+// Results (#4824): how large the pass's action is relative to an instance's
+// total history, and how far back that history now actually reaches.
+type Summary struct {
+	// TotalRuns is every discovered run (terminal and in-flight), the same
+	// population selectCandidates ranges MaxRuns' index over — the
+	// denominator for judging what fraction of an instance's history a pass
+	// is about to prune.
+	TotalRuns int
+	// OldestRetainedStartedAt is the start time of the oldest terminal run
+	// that survives this pass (not selected as a candidate) — the age an
+	// operator would see if they asked "how far back does my run history
+	// actually go under the current policy?" Zero when no terminal run
+	// survives (every terminal run in scope is a candidate).
+	OldestRetainedStartedAt time.Time
 }
 
 type runInfo struct {
@@ -45,58 +67,59 @@ type runInfo struct {
 }
 
 // Prune applies policy across every legacy and gaggle-scoped run root.
-func Prune(layout instance.Layout, db *rollup.DB, policy Policy, opts Options) ([]Result, error) {
+func Prune(layout instance.Layout, db *rollup.DB, policy Policy, opts Options) ([]Result, Summary, error) {
 	if policy.Window <= 0 {
-		return nil, fmt.Errorf("telemetry retention window must be positive")
+		return nil, Summary{}, fmt.Errorf("telemetry retention window must be positive")
 	}
 	if policy.MaxRuns <= 0 {
-		return nil, fmt.Errorf("telemetry retention max runs must be positive")
+		return nil, Summary{}, fmt.Errorf("telemetry retention max runs must be positive")
 	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
 	runRoots, err := layout.RunDirs()
 	if err != nil {
-		return nil, err
+		return nil, Summary{}, err
 	}
 	if !opts.DryRun {
 		maintenanceLocks, err := journal.AcquireRunRootMaintenanceLocks(runRoots)
 		if err != nil {
-			return nil, err
+			return nil, Summary{}, err
 		}
 		defer func() { _ = maintenanceLocks.Release() }()
 	}
 	runs, err := discoverRuns(runRoots)
 	if err != nil {
-		return nil, err
+		return nil, Summary{}, err
 	}
 	if !opts.DryRun {
 		if db == nil {
-			return nil, fmt.Errorf("telemetry retention rollup is required")
+			return nil, Summary{}, fmt.Errorf("telemetry retention rollup is required")
 		}
 		if err := preflightInterruptedPrunes(runRoots); err != nil {
-			return nil, err
+			return nil, Summary{}, err
 		}
-		if err := finishInterruptedPrunes(runRoots, db); err != nil {
-			return nil, err
+		if err := finishInterruptedPrunes(runRoots, db, opts.BeforeDelete); err != nil {
+			return nil, Summary{}, err
 		}
 	}
-	candidates := selectCandidates(runs, policy, opts.Now)
+	candidates, oldestRetainedAt := selectCandidates(runs, policy, opts.Now)
+	summary := Summary{TotalRuns: len(runs), OldestRetainedStartedAt: oldestRetainedAt}
 	if opts.DryRun {
-		return candidates, nil
+		return candidates, summary, nil
 	}
 
 	pruned := make([]Result, 0, len(candidates))
 	for _, candidate := range candidates {
-		deleted, err := pruneOne(candidate, db)
+		deleted, err := pruneOne(candidate, db, opts.BeforeDelete)
 		if err != nil {
-			return pruned, err
+			return pruned, summary, err
 		}
 		if deleted {
 			pruned = append(pruned, candidate)
 		}
 	}
-	return pruned, nil
+	return pruned, summary, nil
 }
 
 func discoverRuns(runRoots []string) ([]runInfo, error) {
@@ -138,7 +161,7 @@ func discoverRuns(runRoots []string) ([]runInfo, error) {
 				return nil, fmt.Errorf("telemetry retention: read phase for run %s: %w", identity.RunID, err)
 			}
 			runs = append(runs, runInfo{
-				Result:    Result{RunID: identity.RunID, RunDir: dir},
+				Result:    Result{RunID: identity.RunID, RunDir: dir, StartedAt: identity.StartedAt},
 				startedAt: identity.StartedAt,
 				terminal:  phase != journal.PhaseRunning,
 			})
@@ -156,9 +179,82 @@ func discoverRuns(runRoots []string) ([]runInfo, error) {
 	return runs, nil
 }
 
-func selectCandidates(runs []runInfo, policy Policy, now time.Time) []Result {
+// PruneCandidates enforces only a previously selected, durable candidate
+// manifest. It never expands the pass by reapplying policy: runs that become
+// eligible after the manifest was prepared belong to a later pass. Missing
+// candidates are treated as already completed so an interrupted pass is
+// idempotent; a path or identity mismatch is preserved rather than allowing a
+// stale manifest to delete a recreated run.
+func PruneCandidates(layout instance.Layout, db *rollup.DB, candidates []Result, opts Options) ([]Result, error) {
+	if db == nil {
+		return nil, fmt.Errorf("telemetry retention rollup is required")
+	}
+	runRoots, err := layout.RunDirs()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCandidateManifest(runRoots, candidates); err != nil {
+		return nil, err
+	}
+	maintenanceLocks, err := journal.AcquireRunRootMaintenanceLocks(runRoots)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = maintenanceLocks.Release() }()
+	if err := preflightInterruptedPrunes(runRoots); err != nil {
+		return nil, err
+	}
+	if err := finishInterruptedPrunes(runRoots, db, opts.BeforeDelete); err != nil {
+		return nil, err
+	}
+	runs, err := discoverRuns(runRoots)
+	if err != nil {
+		return nil, err
+	}
+	current := make(map[string]runInfo, len(runs))
+	for _, run := range runs {
+		current[run.RunID] = run
+	}
+	pruned := make([]Result, 0, len(candidates))
+	for _, candidate := range candidates {
+		run, exists := current[candidate.RunID]
+		if !exists || !run.terminal || filepath.Clean(run.RunDir) != filepath.Clean(candidate.RunDir) ||
+			!run.startedAt.Equal(candidate.StartedAt) {
+			continue
+		}
+		run.Reason = candidate.Reason
+		deleted, err := pruneOne(run.Result, db, opts.BeforeDelete)
+		if err != nil {
+			return pruned, err
+		}
+		if deleted {
+			pruned = append(pruned, run.Result)
+		}
+	}
+	return pruned, nil
+}
+
+func validateCandidateManifest(runRoots []string, candidates []Result) error {
+	roots := make(map[string]bool, len(runRoots))
+	for _, root := range runRoots {
+		roots[filepath.Clean(root)] = true
+	}
+	seen := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		dir := filepath.Clean(candidate.RunDir)
+		if candidate.RunID == "" || candidate.StartedAt.IsZero() || !roots[filepath.Dir(dir)] {
+			return fmt.Errorf("telemetry retention: invalid candidate manifest entry for run %q", candidate.RunID)
+		}
+		if seen[candidate.RunID] {
+			return fmt.Errorf("telemetry retention: duplicate candidate manifest entry for run %q", candidate.RunID)
+		}
+		seen[candidate.RunID] = true
+	}
+	return nil
+}
+
+func selectCandidates(runs []runInfo, policy Policy, now time.Time) (candidates []Result, oldestRetainedAt time.Time) {
 	cutoff := now.Add(-policy.Window)
-	var candidates []Result
 	for index, run := range runs {
 		if !run.terminal {
 			continue
@@ -166,6 +262,10 @@ func selectCandidates(runs []runInfo, policy Policy, now time.Time) []Result {
 		windowExceeded := !run.startedAt.After(cutoff)
 		maxRunsExceeded := index >= policy.MaxRuns
 		if !windowExceeded && !maxRunsExceeded {
+			// Retained. runs is sorted newest-first, so later iterations only
+			// ever see an older startedAt — the last retained run seen is the
+			// oldest one still kept under policy.
+			oldestRetainedAt = run.startedAt
 			continue
 		}
 		result := run.Result
@@ -179,16 +279,21 @@ func selectCandidates(runs []runInfo, policy Policy, now time.Time) []Result {
 		}
 		candidates = append(candidates, result)
 	}
-	return candidates
+	return candidates, oldestRetainedAt
 }
 
-func pruneOne(candidate Result, db *rollup.DB) (bool, error) {
+func pruneOne(candidate Result, db *rollup.DB, beforeDelete func(Result) error) (bool, error) {
 	reserved, err := journal.ReserveTerminalForPrune(candidate.RunDir)
 	if err != nil {
 		return false, fmt.Errorf("telemetry retention: reserve run %s: %w", candidate.RunID, err)
 	}
 	if !reserved {
 		return false, nil
+	}
+	if beforeDelete != nil {
+		if err := beforeDelete(candidate); err != nil {
+			return false, errors.Join(err, journal.ClearPruneReservation(candidate.RunDir))
+		}
 	}
 
 	staged := stagedRunDir(candidate.RunDir)
@@ -233,7 +338,7 @@ func stagingRoot(runRoot string) string {
 	return filepath.Join(filepath.Dir(runRoot), stagingDirName)
 }
 
-func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
+func finishInterruptedPrunes(runRoots []string, db *rollup.DB, beforeDelete func(Result) error) error {
 	for _, root := range runRoots {
 		stagedRoot := stagingRoot(root)
 		entries, err := os.ReadDir(stagedRoot)
@@ -268,6 +373,11 @@ func finishInterruptedPrunes(runRoots []string, db *rollup.DB) error {
 				}
 			} else if !errors.Is(openErr, fs.ErrNotExist) {
 				return fmt.Errorf("telemetry retention: open staged run %s: %w", runID, openErr)
+			}
+			if beforeDelete != nil {
+				if err := beforeDelete(Result{RunID: runID, RunDir: dir, Reason: "interrupted"}); err != nil {
+					return err
+				}
 			}
 			if err := db.DeleteRun(context.Background(), runID); err != nil {
 				return fmt.Errorf("telemetry retention: finish rollup prune for run %s: %w", runID, err)

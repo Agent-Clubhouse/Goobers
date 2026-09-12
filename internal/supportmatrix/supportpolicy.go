@@ -37,7 +37,8 @@ func ValidateSupportPolicy(matrix SupportMatrix) error {
 // ValidateSupportPolicyForRelease checks matrix under ValidateSupportPolicy and
 // additionally requires every declared Level to be the level the version
 // actually holds in release — the last lifecycle transition dated at or before
-// the release being built. ValidateSupportPolicy alone is release-invariant: it
+// the release being built, with an explicit effectiveIn correction for the
+// already-shipped DSL 1.4 early removal (#4271). ValidateSupportPolicy alone is release-invariant: it
 // only ties Level to the *last* transition, so a matrix can declare a level
 // whose transition is dated at a release that does not exist yet and ship it in
 // a build that behaves as if the transition already happened (#4215). Release
@@ -100,6 +101,15 @@ func levelAtRelease(version Version, release releaseVersion) (level Level, since
 		}
 		level = transition.Level
 		since = transition.SinceVersion
+	}
+	if version.EffectiveIn != "" {
+		effective, parseErr := parseSupportReleaseVersion(version.EffectiveIn, false)
+		if parseErr != nil {
+			return "", "", fmt.Errorf("invalid effectiveIn version %q: %w", version.EffectiveIn, parseErr)
+		}
+		if compareReleaseVersions(effective, release) <= 0 {
+			level, since = version.Level, version.EffectiveIn
+		}
 	}
 	return level, since, nil
 }
@@ -195,6 +205,14 @@ func validateSupportMatrixEvolution(
 		}
 		if err := validateUnsupportedAfterCarriedForward(previous, candidate); err != nil {
 			return err
+		}
+		if previous.EffectiveIn != "" && candidate.EffectiveIn != previous.EffectiveIn {
+			return fmt.Errorf("released DSL version %q effectiveIn correction must not change", previous.Version)
+		}
+		if previous.Retraction != nil {
+			if candidate.Retraction == nil || *candidate.Retraction != *previous.Retraction {
+				return fmt.Errorf("released DSL version %q retraction must not change", previous.Version)
+			}
 		}
 	}
 
@@ -324,6 +342,9 @@ func validateVersionHistory(version Version) (versionLifecycle, error) {
 	if len(version.History) == 0 {
 		return lifecycle, fmt.Errorf("lifecycle history must not be empty")
 	}
+	if err := validateEffectiveIn(version); err != nil {
+		return lifecycle, err
+	}
 
 	var previousVersion releaseVersion
 	for i, transition := range version.History {
@@ -398,6 +419,75 @@ func validateVersionHistory(version Version) (versionLifecycle, error) {
 		lifecycle.hasUnsupportedAt = true
 	}
 	return lifecycle, nil
+}
+
+// validateEffectiveIn checks a declared EffectiveIn correction. EffectiveIn
+// exists to say a level took effect BEFORE the release its History transition
+// names — anything else (equal to or after that date) corrects nothing, so it
+// is refused outright rather than accepted as a no-op. A correction that
+// genuinely predates its published transition is only valid alongside a
+// matching Retraction (#4708): the declared, auditable exception that lets
+// the append-only evolution guard honor the discrepancy instead of refusing
+// it, without opening a general license to bypass support windows or rewrite
+// history — validateRetraction ties it to exactly the commitment it
+// withdraws.
+func validateEffectiveIn(version Version) error {
+	if version.EffectiveIn == "" {
+		return nil
+	}
+	effective, err := parseSupportReleaseVersion(version.EffectiveIn, false)
+	if err != nil {
+		return fmt.Errorf("invalid effectiveIn version %q: %w", version.EffectiveIn, err)
+	}
+	last := version.History[len(version.History)-1]
+	lastRelease, err := parseSupportReleaseVersion(last.SinceVersion, len(version.History) == 1)
+	if err != nil {
+		return fmt.Errorf("invalid lifecycle version %q: %w", last.SinceVersion, err)
+	}
+	if compareReleaseVersions(effective, lastRelease) >= 0 {
+		return fmt.Errorf(
+			"effectiveIn %q must be earlier than the published transition %q it corrects",
+			version.EffectiveIn, last.SinceVersion,
+		)
+	}
+	if version.Retraction == nil {
+		return fmt.Errorf(
+			"effectiveIn %q before the published transition %q requires a declared retraction (#4708)",
+			version.EffectiveIn, last.SinceVersion,
+		)
+	}
+	return validateRetraction(version.Version, version.EffectiveIn, last.SinceVersion, version.Retraction)
+}
+
+// validateRetraction checks a declared Retraction actually withdraws
+// something that was genuinely published, performed by the same release
+// EffectiveIn names, and carries the audit-trail rationale #4708 requires.
+// Requiring an exact match on the withdrawn commitment (rather than merely
+// requiring a Retraction to be present) is what keeps a retraction from
+// being usable to excuse an ordinary early drop that was never promised in
+// the first place — the declaration must match the record it withdraws.
+func validateRetraction(version, effectiveIn, published string, retraction *Retraction) error {
+	retracted := strings.TrimSpace(retraction.UnsupportedAfter)
+	if retracted != published {
+		return fmt.Errorf(
+			"DSL version %q retraction names unsupported-after release %q but %q was published",
+			version, retracted, published,
+		)
+	}
+	release := strings.TrimSpace(retraction.Release)
+	if release != effectiveIn {
+		return fmt.Errorf(
+			"DSL version %q retraction release %q does not match effectiveIn %q",
+			version, release, effectiveIn,
+		)
+	}
+	if _, err := parseSupportReleaseVersion(release, false); err != nil {
+		return fmt.Errorf("DSL version %q retraction has invalid release %q: %w", version, release, err)
+	}
+	if strings.TrimSpace(retraction.Rationale) == "" {
+		return fmt.Errorf("DSL version %q retraction must declare a rationale", version)
+	}
+	return nil
 }
 
 func firstSupersedingVersion(current versionLifecycle, lifecycles []versionLifecycle) (versionLifecycle, bool) {

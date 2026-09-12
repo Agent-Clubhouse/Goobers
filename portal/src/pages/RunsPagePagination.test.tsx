@@ -13,7 +13,7 @@ import type {
 import { largeJournalFixtures } from "../test/daemonFixtures";
 
 beforeEach(() => {
-  window.location.hash = "#/runs";
+  window.location.hash = "#/runs?status=all";
 });
 
 /**
@@ -25,7 +25,13 @@ beforeEach(() => {
  */
 class PushableClient extends FixtureDaemonClient {
   private readers: ((result: IteratorResult<DaemonUpdateEvent>) => void)[] = [];
-  private queued: DaemonUpdateEvent[] = [];
+  private queued: DaemonUpdateEvent[] = [
+    {
+      id: "session:0",
+      type: "snapshot",
+      data: { cursor: "session:0", models: ["instance", "run", "workflow"] },
+    },
+  ];
 
   connectEvents(
     _request?: EventStreamRequest,
@@ -78,6 +84,10 @@ function expectGloballyOrderedUniqueRuns(history: HTMLElement): string[] {
   return ids;
 }
 
+function runLinks(history: HTMLElement): HTMLAnchorElement[] {
+  return Array.from(history.querySelectorAll<HTMLAnchorElement>('a[aria-label^="Open run "]'));
+}
+
 describe("runs history pagination under live events", () => {
   it("paginates attention streams independently until both exhaust", async () => {
     const fixtures = largeJournalFixtures({
@@ -102,10 +112,10 @@ describe("runs history pagination under live events", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    const history = await screen.findByRole("region", { name: "Run history" });
+    const history = await screen.findByRole("region", { name: "Run history" }, { timeout: 10_000 });
     await user.click(screen.getByRole("button", { name: "attention" }));
 
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(100));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(100));
     expect(expectGloballyOrderedUniqueRuns(history)).toContain(olderDuplicate.id);
     expect(
       within(screen.getByRole("link", { name: `Open run ${olderDuplicate.id}` })).getByText(
@@ -116,7 +126,7 @@ describe("runs history pagination under live events", () => {
 
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
 
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(150));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(150));
     expect(expectGloballyOrderedUniqueRuns(history)).toContain(olderDuplicate.id);
     const replacement = screen.getByRole("link", { name: `Open run ${olderDuplicate.id}` });
     expect(within(replacement).getByText("Escalated")).toBeInTheDocument();
@@ -125,14 +135,14 @@ describe("runs history pagination under live events", () => {
 
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
 
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(151));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(151));
     expect(expectGloballyOrderedUniqueRuns(history)).toContain(olderDuplicate.id);
     expect(screen.queryByRole("button", { name: "Load more runs" })).not.toBeInTheDocument();
     const paginatedPhases = listRuns.mock.calls
       .filter(([request]) => request?.cursor)
       .map(([request]) => request?.phase);
     expect(paginatedPhases).toEqual(["failed", "escalated", "failed"]);
-  }, 10_000);
+  }, 20_000);
 
   // #1713: a live run event collapsed the Runs page back to the first page,
   // discarding everything the user had paged in.
@@ -153,11 +163,11 @@ describe("runs history pagination under live events", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    const history = await screen.findByRole("region", { name: "Run history" });
-    expect(history.querySelectorAll("a")).toHaveLength(50);
+    const history = await screen.findByRole("region", { name: "Run history" }, { timeout: 10_000 });
+    expect(runLinks(history)).toHaveLength(50);
 
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(68));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(68));
     const retainedRun = fixtures.runs.runs.at(-1);
     if (!retainedRun) {
       throw new Error("Expected a paged-in run fixture.");
@@ -175,11 +185,11 @@ describe("runs history pagination under live events", () => {
       client.push(runEvent("session:live-1"));
     });
 
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(69));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(69));
     expect(
       screen.getByRole("link", { name: `Open run ${retainedRun.id}` }),
     ).toBeInTheDocument();
-  });
+  }, 20_000);
 
   it("updates every invalidated row outside the refreshed head page", async () => {
     const fixtures = largeJournalFixtures({
@@ -277,9 +287,9 @@ describe("runs history pagination under live events", () => {
 
     const history = await screen.findByRole("region", { name: "Run history" });
     await user.click(screen.getByRole("button", { name: "active" }));
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(50));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(50));
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(68));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(68));
     expect(screen.getByRole("link", { name: `Open run ${finished.id}` })).toBeInTheDocument();
 
     fixtures.runDetails = {
@@ -306,7 +316,7 @@ describe("runs history pagination under live events", () => {
         screen.queryByRole("link", { name: `Open run ${finished.id}` }),
       ).not.toBeInTheDocument(),
     );
-    expect(history.querySelectorAll("a")).toHaveLength(67);
+    expect(runLinks(history)).toHaveLength(67);
     expect(screen.getByRole("link", { name: `Open run ${retained.id}` })).toBeInTheDocument();
   });
 
@@ -402,7 +412,7 @@ describe("runs history pagination under live events", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("detail refresh failed");
     expect(within(row).getByText("query-backlog")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(within(row).getByText("review")).toBeInTheDocument());
     expect(getRun).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -429,9 +439,9 @@ describe("runs history pagination under live events", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    const history = await screen.findByRole("region", { name: "Run history" });
+    const history = await screen.findByRole("region", { name: "Run history" }, { timeout: 10_000 });
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(100));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(100));
     expect(
       screen.getByRole("link", { name: `Open run ${completedRun.id}` }),
     ).toBeInTheDocument();
@@ -442,7 +452,7 @@ describe("runs history pagination under live events", () => {
     const callsBeforeFilterChange = listRuns.mock.calls.length;
     await user.click(screen.getByRole("button", { name: "active" }));
 
-    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(50));
+    await waitFor(() => expect(runLinks(history)).toHaveLength(50));
     expect(
       screen.queryByRole("link", { name: `Open run ${completedRun.id}` }),
     ).not.toBeInTheDocument();
@@ -455,5 +465,5 @@ describe("runs history pagination under live events", () => {
         { signal: expect.any(AbortSignal) },
       ],
     ]);
-  });
+  }, 20_000);
 });

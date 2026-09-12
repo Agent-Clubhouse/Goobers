@@ -337,7 +337,7 @@ func Recover(dir string, opts ...Option) (*Run, RecoverReport, error) {
 
 func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverReport, error) {
 	cfg := newConfig(opts...)
-	rd, err := OpenRead(dir)
+	rd, err := openRecoveryReader(dir, cfg.tryRecoveryLocks)
 	if err != nil {
 		return nil, RecoverReport{}, err
 	}
@@ -354,7 +354,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 
 	var publicationLock *journalLock
 	if !publicationLocked {
-		publicationLock, err = acquireRunPublicationLock(dir)
+		publicationLock, err = acquireRecoveryPublicationLock(dir, cfg.tryRecoveryLocks)
 		if err != nil {
 			return nil, RecoverReport{}, err
 		}
@@ -367,7 +367,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 	// run) must block here rather than open its own independent writer on
 	// this events.jsonl. Held for the lifetime of the returned *Run,
 	// released in Close.
-	lock, err := acquireRunLock(dir)
+	lock, err := acquireRecoveryRunLock(dir, cfg.tryRecoveryLocks)
 	if err != nil {
 		return nil, RecoverReport{}, err
 	}
@@ -510,6 +510,11 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 			releaseRunLock(lock)
 			return nil, RecoverReport{}, err
 		}
+	}
+	if err := r.recoverCompletedTranscripts(events); err != nil {
+		_ = f.Close()
+		releaseRunLock(lock)
+		return nil, RecoverReport{}, err
 	}
 	return r, report, nil
 }

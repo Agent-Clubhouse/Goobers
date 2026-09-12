@@ -64,7 +64,7 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 	var problems []string
 	version := def.DSLVersion
 	if version == "" {
-		version = supportmatrix.CurrentDSLVersion
+		version = supportmatrix.V1DSLVersion
 	}
 	for _, task := range def.Spec.Tasks {
 		if task.RunsOn != nil {
@@ -121,7 +121,7 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 func preV30WindowsAdminProblems(def Definition, gaggleRequiredCapabilities []string) []string {
 	version := def.DSLVersion
 	if version == "" {
-		version = supportmatrix.CurrentDSLVersion
+		version = supportmatrix.V1DSLVersion
 	}
 	var problems []string
 	for _, task := range def.Spec.Tasks {
@@ -149,7 +149,7 @@ func noRepoHandoffProblems(Definition) []string { return nil }
 // say.
 func noGateRunsOnProblems(Definition) []string { return nil }
 
-var nextInterpreter = versionedInterpreter{
+var v20Interpreter = versionedInterpreter{
 	compile:                         compileNext,
 	checkWarnings:                   v20.CheckWarnings,
 	checkReachability:               v20.CheckReachability,
@@ -381,9 +381,11 @@ func compileNext(def Definition, config compileConfig) (*Machine, error) {
 }
 
 func compileV30(def Definition, config compileConfig) (*Machine, error) {
-	// The inverse surface rule: a 3.0 workflow whose gaggle still declares
-	// requiredCapabilities is refused inside the interpreter (its
-	// FeaturesForGaggle), so only the runsOn floor is routed through here.
+	// Check the legacy gaggle floor before routing: the interpreter receives
+	// only runsOn, so dropping requiredCapabilities here would lose constraints.
+	if _, err := v30.FeaturesForGaggle(apiv1.GaggleSpec{RequiredCapabilities: config.gaggleRequiredCapabilities}); err != nil {
+		return nil, fmt.Errorf("invalid workflow %q: %w", def.Name, err)
+	}
 	var opts []v30.Option
 	if config.goobersSet {
 		opts = append(opts, v30.WithGoobers(goobersForCapabilityAdmission(config.goobers)))
@@ -428,7 +430,7 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 		// programmatically-constructed Definition with no pin; it resolves to
 		// the back-compat contract version (2.0) rather than fabricating an
 		// interpreter for a version the build no longer carries.
-		version = supportmatrix.NextDSLVersion
+		version = supportmatrix.V2DSLVersion
 	}
 
 	support, ok := supportmatrix.GetDSL().Lookup(version)
@@ -444,7 +446,7 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 
 	switch version {
 	case v20.DSLVersion:
-		return &nextInterpreter, nil
+		return &v20Interpreter, nil
 	case v30.DSLVersion:
 		return &v30Interpreter, nil
 	default:

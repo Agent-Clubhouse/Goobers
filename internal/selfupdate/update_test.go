@@ -113,7 +113,7 @@ func TestPrepareReleaseAndMain(t *testing.T) {
 	}
 }
 
-func TestPrepareRejectsNonNewerRelease(t *testing.T) {
+func TestPrepareNoOpsWhenReleaseNotNewer(t *testing.T) {
 	root, work := t.TempDir(), t.TempDir()
 	current := currentBinary(root, "linux")
 	writeTestExecutable(t, current, "current")
@@ -141,17 +141,20 @@ func TestPrepareRejectsNonNewerRelease(t *testing.T) {
 		return nil, fmt.Errorf("unexpected command %q", name)
 	})
 
-	_, err := Prepare(context.Background(), PrepareOptions{
+	result, err := Prepare(context.Background(), PrepareOptions{
 		Root: root, WorkDir: work, Policy: PolicyOnRelease, Owner: "acme", Repository: "goobers",
 		RunID: "run", GOOS: "linux", GOARCH: "amd64", APIBaseURL: server.URL,
 		HTTPClient: server.Client(), Runner: runner, HealthTicks: 1,
 		HealthTimeout: time.Minute, HeartbeatInterval: time.Second,
 	})
-	if err == nil || !strings.Contains(err.Error(), "refusing to stage v0.3.3") {
-		t.Fatalf("Prepare() error = %v, want error containing %q", err, "refusing to stage v0.3.3")
+	if err != nil {
+		t.Fatalf("Prepare() error = %v, want no-op (nil error)", err)
+	}
+	if result.UpdateRequested || result.Target != "v0.3.3" {
+		t.Fatalf("result = %+v, want no-op targeting v0.3.3", result)
 	}
 	if _, err := os.Stat(requestPath(root)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("update request exists after downgrade refusal: %v", err)
+		t.Fatalf("update request exists after no-op: %v", err)
 	}
 }
 
@@ -207,6 +210,75 @@ func TestPreparePrereleaseOptInSelectsNewerRelease(t *testing.T) {
 	}
 	if !result.UpdateRequested || result.Target != targetVersion {
 		t.Fatalf("result = %+v, want staged %s", result, targetVersion)
+	}
+	request, err := readRequest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Target != targetVersion {
+		t.Fatalf("request target = %q, want %q", request.Target, targetVersion)
+	}
+}
+
+func TestPreparePrereleaseSkipsNonSemVerReleaseTags(t *testing.T) {
+	const (
+		currentVersion = "v0.4.0-beta.2"
+		targetVersion  = "v0.4.0-beta.3"
+	)
+	root, work := t.TempDir(), t.TempDir()
+	current := currentBinary(root, "linux")
+	writeTestExecutable(t, current, "current")
+	releaseArchive := testTarGz(t, "release")
+	sum := sha256.Sum256(releaseArchive)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/goobers/releases":
+			// portal-v0.1.0 is a non-SemVer tag from an unrelated release
+			// stream sharing this repository's release collection (#4826):
+			// listed newest-first, ahead of the actual SemVer candidates.
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"tag_name": "portal-v0.1.0"},
+				{"tag_name": targetVersion, "prerelease": true, "assets": []map[string]string{
+					{"name": "goobers_" + targetVersion + "_linux_amd64.tar.gz", "browser_download_url": server.URL + "/archive"},
+					{"name": "SHA256SUMS", "browser_download_url": server.URL + "/sums"},
+				}},
+				{"tag_name": "v0.3.3"},
+			})
+		case "/archive":
+			_, _ = w.Write(releaseArchive)
+		case "/sums":
+			_, _ = fmt.Fprintf(w, "%x  goobers_%s_linux_amd64.tar.gz\n", sum, targetVersion)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	runner := commandFunc(func(_ context.Context, _ string, _ []string, name string, args ...string) ([]byte, error) {
+		if name == current {
+			return []byte(`{"version":"` + currentVersion + `","commit":"beta2"}`), nil
+		}
+		if len(args) > 0 && args[0] == "version" {
+			return []byte(`{"version":"` + targetVersion + `","commit":"beta3"}`), nil
+		}
+		return nil, nil
+	})
+
+	result, err := Prepare(context.Background(), PrepareOptions{
+		Root: root, WorkDir: work, Policy: PolicyOnRelease, IncludePrerelease: true,
+		Owner: "acme", Repository: "goobers", RunID: "run", GOOS: "linux", GOARCH: "amd64",
+		APIBaseURL: server.URL, HTTPClient: server.Client(), Runner: runner,
+		HealthTicks: 1, HealthTimeout: time.Minute, HeartbeatInterval: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.UpdateRequested || result.Target != targetVersion {
+		t.Fatalf("result = %+v, want staged %s", result, targetVersion)
+	}
+	if result.SkippedInvalidTags != 1 {
+		t.Fatalf("result.SkippedInvalidTags = %d, want 1 (portal-v0.1.0)", result.SkippedInvalidTags)
 	}
 	request, err := readRequest(root)
 	if err != nil {

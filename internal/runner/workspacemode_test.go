@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -144,6 +145,51 @@ func TestWritableRepoWorkspacesCollideForOneRun(t *testing.T) {
 	if err == nil {
 		t.Cleanup(func() { _ = second.Remove(ctx) })
 		t.Fatal("two writable repo workspaces on one run branch should collide; if this now passes, §6.5's rationale needs revisiting")
+	}
+}
+
+func TestWritableRepoNextStageRecoversDeferredPriorStageCleanup(t *testing.T) {
+	r, in := readOnlyWorkspaceRunner(t)
+	ctx := context.Background()
+	guardCalls := 0
+	if err := r.cfg.Worktrees.SetCleanupGuard("recovery", func(context.Context, worktree.CleanupTarget) error {
+		guardCalls++
+		if guardCalls == 1 {
+			return errors.New("temporary recovery outage")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := r.createStageWorkspace(ctx, in, "stage-a", apiv1.WorkspaceRepo, false, "")
+	if err != nil {
+		t.Fatalf("first writable workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(first.path, "stage-a.txt"), []byte("branch continuity\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, first.path, "add", "stage-a.txt")
+	runGit(t, first.path, "commit", "-m", "stage A")
+	if err := first.Remove(ctx); !errors.Is(err, worktree.ErrCleanupDeferred) {
+		t.Fatalf("first workspace Remove = %v, want deferred cleanup", err)
+	}
+
+	second, err := r.createStageWorkspace(ctx, in, "stage-b", apiv1.WorkspaceRepo, false, "")
+	if err != nil {
+		t.Fatalf("next stage should reconcile surrendered prior tree: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(second.path, "stage-a.txt")); err != nil || string(got) != "branch continuity\n" {
+		t.Fatalf("next stage lost prior stage commit: %q, %v", got, err)
+	}
+	if first.path == second.path {
+		t.Fatal("sequential stages unexpectedly shared a worktree path")
+	}
+	if guardCalls != 2 {
+		t.Fatalf("cleanup guard calls = %d, want failed teardown plus reconciliation retry", guardCalls)
+	}
+	if err := second.Remove(ctx); err != nil {
+		t.Fatalf("remove second stage: %v", err)
 	}
 }
 

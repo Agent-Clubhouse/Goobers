@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ROOTS DISCOVER" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers roots discover \- discover likely instance roots and daemon ownership
+.SH SYNOPSIS
+\fBgoobers roots discover\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers roots discover [--json] [paths...]
+
+Search supplied directories, or the current directory and user home by default.
+Read-only: legacy roots are not adopted. Search is limited to 20,000 directory
+entries, depth 8, and 10 seconds; incomplete scans are reported explicitly.
+Child symlinks, .git, node_modules, .cache, Library, vendor, and instance interiors
+are not searched. Supply other storage locations explicitly. Read-model modification
+time is only file freshness, never proof of a running daemon. Exit codes: 0 = complete
+within the stated search scope, 1 = partial, 2 = error.
+.fi
+.SH EXAMPLES
+.nf
+goobers roots discover --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

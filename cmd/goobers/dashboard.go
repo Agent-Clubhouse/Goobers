@@ -31,6 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/portalassets"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 const (
@@ -84,6 +85,31 @@ func (r standaloneDashboardReader) Health(ctx context.Context) (readservice.Heal
 			DefinitionsLoadedAt: r.loadedAt,
 		},
 	}, nil
+}
+
+func (r standaloneDashboardReader) WorkItems(
+	ctx context.Context,
+	options readservice.WorkItemListOptions,
+) (readservice.WorkItemPage, error) {
+	reader, ok := r.Reader.(readservice.WorkItemReader)
+	if !ok {
+		return readservice.WorkItemPage{}, readservice.ErrTelemetryUnavailable
+	}
+	return reader.WorkItems(ctx, options)
+}
+
+func (r standaloneDashboardReader) WorkItem(
+	ctx context.Context,
+	provider string,
+	repository string,
+	kind string,
+	externalID string,
+) (readservice.WorkItemDetail, error) {
+	reader, ok := r.Reader.(readservice.WorkItemReader)
+	if !ok {
+		return readservice.WorkItemDetail{}, readservice.ErrTelemetryUnavailable
+	}
+	return reader.WorkItem(ctx, provider, repository, kind, externalID)
 }
 
 func runDashboard(args []string, stdout, stderr io.Writer) int {
@@ -571,26 +597,18 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	}
 	readStore, readMode, _ := readservice.OpenReadModel(topology)
 	if readStore != nil {
-		// No measurement source here, and that is deliberate (#1782).
-		//
-		// The obvious move is to attach one -- the population flags come from the
-		// telemetry rollup, and without a source they project as zero. But
-		// standalone is contractually required to leave the instance
-		// BYTE-IDENTICAL, and opening a SQLite database creates its -wal and -shm
-		// alongside the file. TestStandaloneDashboardAPILeavesInstanceUnchanged
-		// caught exactly that.
-		//
-		// Attaching is also unnecessary. Standalone constructs its service with
-		// Telemetry nil, and listRunsUnannotated refuses a telemetry-backed
-		// population filter with ErrTelemetryUnavailable BEFORE it dispatches to
-		// the read model. So the zeroed flags are unreachable: the filter is
-		// refused with a typed error rather than answered wrongly with an empty
-		// page, which is the same behaviour standalone had before this change.
 		if err := readservice.EnsureBuilt(context.Background(), readStore, layout, nil); err != nil {
 			// A failed build degrades rather than fails: single-run routes still
 			// work, and saying so beats refusing to start.
 			readMode = readservice.ReadModeDegraded
 		}
+	}
+	telemetry, telemetryErr := rollup.OpenExistingReader(context.Background(), layout.TelemetryDB())
+	if telemetryErr != nil && !errors.Is(telemetryErr, os.ErrNotExist) {
+		if readStore != nil {
+			_ = readStore.Close()
+		}
+		return dashboardAPI{}, fmt.Errorf("open standalone telemetry: %w", telemetryErr)
 	}
 
 	reads, err := readservice.NewLocal(readservice.LocalSources{
@@ -598,15 +616,23 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		Config:      config,
 		Definitions: definitions,
 		Validation:  report,
+		Telemetry:   telemetry,
 		ReadModel:   readStore,
 	}, func() bool { return true })
 	if err != nil {
+		if telemetry != nil {
+			_ = telemetry.Close()
+		}
+		if readStore != nil {
+			_ = readStore.Close()
+		}
 		return dashboardAPI{}, err
 	}
 	reads.SetReadMode(readMode)
 	if readStore != nil {
 		reads.EnableReadModelReads()
 	}
+	stopSchedulerProjector := reads.StartSchedulerStateProjector(0)
 	manifestInstance := definitions.Manifest.Spec.Instance
 	reader := standaloneDashboardReader{
 		Reader: reads,
@@ -668,10 +694,16 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		// (#1929); the change-feed stream holds no goroutine of its own beyond
 		// each subscription, which the handler cancels.
 		close: func() error {
-			if readStore != nil {
-				return readStore.Close()
+			projectorErr := stopSchedulerProjector()
+			var telemetryCloseErr error
+			if telemetry != nil {
+				telemetryCloseErr = telemetry.Close()
 			}
-			return nil
+			var readStoreCloseErr error
+			if readStore != nil {
+				readStoreCloseErr = readStore.Close()
+			}
+			return errors.Join(projectorErr, telemetryCloseErr, readStoreCloseErr)
 		},
 	}, nil
 }

@@ -3,6 +3,7 @@ package instance
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -20,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/speechnotify"
 	"github.com/goobers/goobers/internal/strictyaml"
 )
@@ -55,6 +57,26 @@ const (
 	DefaultTelemetryRetentionWindow   = 90 * 24 * time.Hour
 	DefaultTelemetryRetentionMaxRuns  = 500
 	DefaultProjectionFullFidelityDays = 90
+	// DefaultRetainedWorktreeMaxAge bounds retained terminal-failure worktrees
+	// on a stock instance (#4253). A retained worktree exists so an operator
+	// can inspect a failure; a week is long enough to do that and short enough
+	// that an unattended instance does not accrete them forever. Applies
+	// whenever retention.retainedWorktreeMaxAge is omitted; set it to "0s" to
+	// turn the age rule off explicitly.
+	DefaultRetainedWorktreeMaxAge = 168 * time.Hour
+	// DefaultJournalGraceAge preserves the pre-#4856 24-hour policy while the
+	// clock now starts when a retained worktree's journal is first observed
+	// missing. Set retention.journalGraceAge to "0s" to disable this rule.
+	DefaultJournalGraceAge = 24 * time.Hour
+	// DefaultRecoverySnapshotMaxCount and DefaultRecoverySnapshotMaxArchiveBytes
+	// are the recovery inventory's opt-out defaults (#4823), matching the
+	// literals every call site hard-coded before this config surface existed:
+	// 128 snapshots, 512 MiB archive bound apiece.
+	DefaultRecoverySnapshotMaxCount        = 128
+	DefaultRecoverySnapshotMaxArchiveBytes = 512 << 20
+	// DefaultRecoverySnapshotRetainWindow mirrors the 30-day floor every
+	// recovery capture site applied inline before #4823.
+	DefaultRecoverySnapshotRetainWindow = 30 * 24 * time.Hour
 	// LargeRepoDefaultStageTimeout is the preset's deterministic-stage deadline.
 	LargeRepoDefaultStageTimeout = "4h"
 	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
@@ -95,10 +117,13 @@ type Config struct {
 	// target code repositories. Nil keeps the local <instance-root>/config
 	// default.
 	WorkflowSource *WorkflowSource `json:"workflowSource,omitempty" yaml:"workflowSource,omitempty"`
-	API            APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
-	Webhook        WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
-	Portal         PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
-	Telemetry      TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	// ConfigMirrorPath opts the daemon into publishing worker-consumable
+	// rendered configuration to an absolute shared path. Empty disables it.
+	ConfigMirrorPath string          `json:"configMirrorPath,omitempty" yaml:"configMirrorPath,omitempty"`
+	API              APIConfig       `json:"api,omitempty" yaml:"api,omitempty"`
+	Webhook          WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
+	Portal           PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
+	Telemetry        TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
 	// projection loop disabled; standalone engine commands still use defaults.
 	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
@@ -115,6 +140,11 @@ type Config struct {
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 	// Speech configures an opt-in local speech sink for the same terminal alerts.
 	Speech *speechnotify.Config `json:"speech,omitempty" yaml:"speech,omitempty"`
+	// UpdateCheck configures the daemon's notify-only release check (#4903).
+	// Nil keeps the defaults: enabled, the stable channel, once a day. The
+	// check only tells the operator a newer release exists — applying it stays
+	// an explicit action (INST-019), so nothing here makes updates automatic.
+	UpdateCheck *UpdateCheckConfig `json:"updateCheck,omitempty" yaml:"updateCheck,omitempty"`
 	// Credentials sources individual stage capabilities or named BYO MCP
 	// credentials from their own token refs. A capability entry overrides any
 	// repo-token default; an MCP entry is reachable only through an explicit
@@ -335,14 +365,14 @@ type RunnerConfig struct {
 	// START new runs while the cgroup is hot, and in every one of those
 	// incidents the killing allocation was a stage ALREADY RUNNING.
 	//
-	// EMPTY IS NOT UNBOUNDED. Left empty, the bound is DERIVED from the pod's
-	// own cgroup memory limit less a reserve for the daemon, and applied only
-	// through a child cgroup — an RSS bound the kernel enforces in the same
-	// unit it OOM-kills on. Set explicitly, the number is also allowed to be
-	// applied through RLIMIT_AS where no cgroup can be delegated. That
-	// asymmetry is deliberate: RLIMIT_AS bounds ADDRESS SPACE, which runtimes
-	// reserve far more of than they touch, so it is safe to apply to a number
-	// an operator chose and unsafe to apply to one derived on their behalf.
+	// Empty means UNBOUNDED: no defensible bound can be derived from the pod's
+	// cgroup limit because stages run concurrently with the daemon, page cache,
+	// and sibling stages. TestPodLimitLessReserveWouldNotHaveStoppedTheIncident
+	// pins the incident arithmetic that rejected such a derived default. Set
+	// this explicitly to apply the chosen number through a child cgroup, or
+	// through RLIMIT_AS where no cgroup can be delegated. RLIMIT_AS bounds
+	// ADDRESS SPACE, which runtimes reserve far more of than they touch, so it
+	// is safe only for a number an operator chose.
 	//
 	// Outside a container, or where the memory controller is not delegated to
 	// child cgroups, there may be no mechanism at all; the daemon reports
@@ -1231,16 +1261,43 @@ type TelemetryConfig struct {
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
 	// Retention bounds terminal run journals and their rollup rows. Automatic
-	// daemon pruning is opt-in; explicit pruning can use the configured policy
-	// while automation remains disabled.
+	// daemon pruning is opt-out (#4253, ruling on #3056): it defaults on, at
+	// DefaultTelemetryRetentionWindow/DefaultTelemetryRetentionMaxRuns,
+	// unless this block sets enabled: false. A fresh instance whose data
+	// already exceeds policy the first time this runs gets a safe
+	// first-enable grace window (see TelemetryRetentionConfig.FirstEnable)
+	// rather than immediate deletion.
 	Retention *TelemetryRetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
 }
 
 // TelemetryRetentionConfig controls pruning of terminal run telemetry.
 type TelemetryRetentionConfig struct {
-	Enabled bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Enabled defaults to true (opt-out, #4253) — nil and unset are the same
+	// as true. Set explicitly to false to keep automatic pruning off while
+	// still allowing an explicit `goobers telemetry prune` to use this
+	// policy.
+	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	Window  string `json:"window,omitempty" yaml:"window,omitempty"`
 	MaxRuns int    `json:"maxRuns,omitempty" yaml:"maxRuns,omitempty"`
+	// FirstEnable controls the #3056 ruling's safe first-enable behavior:
+	// the default ("" / "gracePeriod") holds a 7-day dry-run window — report
+	// what would be pruned, delete nothing — the first time an instance's
+	// existing data is found to already exceed policy. "immediate" skips
+	// straight to enforcement, e.g. for an operator who has already reviewed
+	// what would be deleted.
+	FirstEnable string `json:"firstEnable,omitempty" yaml:"firstEnable,omitempty"`
+}
+
+// EnabledEffective reports whether automatic telemetry retention pruning
+// runs (defaults to true — see Enabled's doc comment).
+func (c TelemetryRetentionConfig) EnabledEffective() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// ImmediateFirstEnable reports whether FirstEnable opted out of the safe
+// first-enable grace window.
+func (c TelemetryRetentionConfig) ImmediateFirstEnable() bool {
+	return c.FirstEnable == "immediate"
 }
 
 // WindowDuration returns the configured retention window. Empty uses 90 days.
@@ -1449,13 +1506,38 @@ func (c RunConditions) RunControls() apiv1.RunControls {
 	}
 }
 
-// RetentionConfig controls opt-in pruning of retained failure worktrees and
-// merged local run branches. Both Enabled and DryRun default to false.
+// RetentionConfig controls pruning of retained failure worktrees and local run
+// branches whose tip is an ancestor of another local branch. Pruning is OPT-OUT
+// (#4253, implementing the #3056 ruling), matching telemetry.retention. The
+// default age rule bounds retained failure worktrees, but local branch cleanup
+// is ancestry-only and has no alternate proof for squash/queue/legacy landings;
+// a branch whose tip is not an ancestor may remain. DryRun still defaults to
+// false and remains an operator preview knob, independent of the safe
+// first-enable grace window below.
 type RetentionConfig struct {
-	Enabled                  bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	DryRun                   bool   `json:"dryRun,omitempty" yaml:"dryRun,omitempty"`
-	MaxRetainedWorktreeBytes int64  `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
-	RetainedWorktreeMaxAge   string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// Enabled defaults to true (opt-out) — nil and unset are the same as true.
+	// Set explicitly to false to keep automatic pruning off.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// DryRun forces every pass to report candidates and delete nothing,
+	// regardless of the grace window. This is the operator's own preview
+	// switch; FirstEnable governs the automatic one.
+	DryRun                   bool  `json:"dryRun,omitempty" yaml:"dryRun,omitempty"`
+	MaxRetainedWorktreeBytes int64 `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
+	// RetainedWorktreeMaxAge bounds retained failure worktrees by age.
+	// Omitted means DefaultRetainedWorktreeMaxAge — the opt-out default, not
+	// "no age rule". An explicit "0s" turns the age rule off.
+	RetainedWorktreeMaxAge string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// JournalGraceAge bounds how long a retained worktree remains after its
+	// owning run journal is first observed missing. Omitted uses 24h; "0s"
+	// disables journal-absence pruning without changing the other rules.
+	JournalGraceAge string `json:"journalGraceAge,omitempty" yaml:"journalGraceAge,omitempty"`
+	// FirstEnable mirrors TelemetryRetentionConfig.FirstEnable: the default
+	// ("" / "gracePeriod") holds a 7-day dry-run window the first time a pass
+	// finds real candidates — report what would be deleted, delete nothing —
+	// so an instance that has been accruing worktrees under the old opt-in
+	// default does not lose them all on the first sweep after an upgrade.
+	// "immediate" skips straight to enforcement.
+	FirstEnable string `json:"firstEnable,omitempty" yaml:"firstEnable,omitempty"`
 	// ProjectionFullFidelityDays bounds how much history stays INDIVIDUALLY
 	// LISTABLE in the portal read model (#1932, §11.4). This is a product
 	// policy decision (issue #3056) to age out runs beyond full-fidelity
@@ -1482,6 +1564,71 @@ type RetentionConfig struct {
 	// projectionFullFidelityDaysSet records whether the field was present at
 	// decode time, so an omitted value can differ from an explicit zero.
 	projectionFullFidelityDaysSet bool `json:"-" yaml:"-"`
+	// Recovery bounds the recovery-snapshot inventory (#4823). Omitted fields
+	// keep the pre-#4823 hard-coded behavior (128 snapshots, 512 MiB, 30 days).
+	// A pointer, matching Telemetry.Retention: encoding/json's omitempty does
+	// not treat a zero-value struct as empty, so a plain (non-pointer) field
+	// here would always render "recovery: {}" into every scaffolded and
+	// re-marshaled instance.yaml.
+	Recovery *RecoverySnapshotConfig `json:"recovery,omitempty" yaml:"recovery,omitempty"`
+}
+
+// RecoveryEffective resolves the configured recovery-snapshot policy,
+// including an omitted section.
+func (c RetentionConfig) RecoveryEffective() RecoverySnapshotConfig {
+	if c.Recovery == nil {
+		return RecoverySnapshotConfig{}
+	}
+	return *c.Recovery
+}
+
+// RecoverySnapshotConfig bounds the recovery inventory that
+// cmd/goobers/recovery*.go captures into before a worktree may be destroyed
+// (#4823). Before this type existed, MaxSnapshots/MaxArchiveBytes/the 30-day
+// retain-until floor were literals repeated at six call sites, un-tunable
+// without a code change.
+type RecoverySnapshotConfig struct {
+	// MaxSnapshots bounds inventory entries. Omitted or zero means
+	// DefaultRecoverySnapshotMaxCount.
+	MaxSnapshots int `json:"maxSnapshots,omitempty" yaml:"maxSnapshots,omitempty"`
+	// MaxArchiveBytes bounds a single captured bundle. Omitted or zero means
+	// DefaultRecoverySnapshotMaxArchiveBytes.
+	MaxArchiveBytes int64 `json:"maxArchiveBytes,omitempty" yaml:"maxArchiveBytes,omitempty"`
+	// RetainWindow bounds how long a snapshot is protected from retirement
+	// purely by age, regardless of landing proof. Omitted means
+	// DefaultRecoverySnapshotRetainWindow (30 days).
+	RetainWindow string `json:"retainWindow,omitempty" yaml:"retainWindow,omitempty"`
+}
+
+// MaxSnapshotsEffective resolves the configured inventory cap.
+func (c RecoverySnapshotConfig) MaxSnapshotsEffective() int {
+	if c.MaxSnapshots > 0 {
+		return c.MaxSnapshots
+	}
+	return DefaultRecoverySnapshotMaxCount
+}
+
+// MaxArchiveBytesEffective resolves the configured per-snapshot archive bound.
+func (c RecoverySnapshotConfig) MaxArchiveBytesEffective() int64 {
+	if c.MaxArchiveBytes > 0 {
+		return c.MaxArchiveBytes
+	}
+	return DefaultRecoverySnapshotMaxArchiveBytes
+}
+
+// RetainWindowEffective resolves the configured retain-until floor.
+func (c RecoverySnapshotConfig) RetainWindowEffective() (time.Duration, error) {
+	if c.RetainWindow == "" {
+		return DefaultRecoverySnapshotRetainWindow, nil
+	}
+	window, err := time.ParseDuration(c.RetainWindow)
+	if err != nil {
+		return 0, fmt.Errorf("retention.recovery.retainWindow %q: %w", c.RetainWindow, err)
+	}
+	if window <= 0 {
+		return 0, fmt.Errorf("retention.recovery.retainWindow must be positive, got %s", window)
+	}
+	return window, nil
 }
 
 // MarshalJSON preserves an explicitly configured zero projection window, which
@@ -1547,18 +1694,47 @@ func (c *Config) ProjectionFullFidelityRetentionDays() int {
 	return c.Retention.ProjectionFullFidelityDaysEffective()
 }
 
-// RetainedWorktreeMaxAgeDuration resolves the optional retention window.
-// Zero disables age-based pruning.
+// EnabledEffective reports whether automatic worktree/branch retention
+// pruning runs (defaults to true — see Enabled's doc comment).
+func (c RetentionConfig) EnabledEffective() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// ImmediateFirstEnable reports whether FirstEnable opted out of the safe
+// first-enable grace window.
+func (c RetentionConfig) ImmediateFirstEnable() bool {
+	return c.FirstEnable == "immediate"
+}
+
+// RetainedWorktreeMaxAgeDuration resolves the retention window. An omitted
+// value means DefaultRetainedWorktreeMaxAge (#4253's opt-out default); an
+// explicit "0s" disables age-based pruning and returns zero.
 func (c RetentionConfig) RetainedWorktreeMaxAgeDuration() (time.Duration, error) {
 	if c.RetainedWorktreeMaxAge == "" {
-		return 0, nil
+		return DefaultRetainedWorktreeMaxAge, nil
 	}
 	window, err := time.ParseDuration(c.RetainedWorktreeMaxAge)
 	if err != nil {
 		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge %q: %w", c.RetainedWorktreeMaxAge, err)
 	}
-	if window <= 0 {
-		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge must be positive, got %s", window)
+	if window < 0 {
+		return 0, fmt.Errorf("retention.retainedWorktreeMaxAge must not be negative, got %s", window)
+	}
+	return window, nil
+}
+
+// JournalGraceAgeDuration resolves the grace window measured from the first
+// persisted observation that a retained worktree's owning journal is absent.
+func (c RetentionConfig) JournalGraceAgeDuration() (time.Duration, error) {
+	if c.JournalGraceAge == "" {
+		return DefaultJournalGraceAge, nil
+	}
+	window, err := time.ParseDuration(c.JournalGraceAge)
+	if err != nil {
+		return 0, fmt.Errorf("retention.journalGraceAge %q: %w", c.JournalGraceAge, err)
+	}
+	if window < 0 {
+		return 0, fmt.Errorf("retention.journalGraceAge must not be negative, got %s", window)
 	}
 	return window, nil
 }
@@ -2743,4 +2919,95 @@ func marshalConfig(cfg *Config) ([]byte, error) {
 		return nil, fmt.Errorf("marshal instance config: %w", err)
 	}
 	return yamlBytes, nil
+}
+
+// Default update-check settings. The check is opt-out rather than opt-in: the
+// daemon already queries api.github.com continuously to do its work, so
+// resolving a release tag from the same counterparty discloses nothing new,
+// while an operator who never learns a release exists is the failure this
+// exists to prevent. `enabled: false` covers airgapped instances.
+const (
+	// DefaultUpdateCheckChannel tracks stable releases only.
+	DefaultUpdateCheckChannel = selfupdate.ChannelStable
+	// DefaultUpdateCheckInterval is how often a running daemon re-checks.
+	DefaultUpdateCheckInterval = selfupdate.DefaultCheckInterval
+)
+
+// UpdateCheckConfig configures the daemon's notify-only release check.
+type UpdateCheckConfig struct {
+	// Enabled defaults to true (opt-out) — nil and unset are the same as
+	// true. Set explicitly to false to make this path perform no network
+	// request at all.
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Channel is "stable" (default) or "prerelease" — the same two channels
+	// `goobers self-update` stages through, so what an operator is told about
+	// matches what acting on the notice would install. This is also the only
+	// persistent home the prerelease channel has: self-update's
+	// --include-prerelease is a flag with no config binding.
+	Channel string `json:"channel,omitempty" yaml:"channel,omitempty"`
+	// Interval is how often a running daemon re-checks. Empty means
+	// DefaultUpdateCheckInterval. The daemon announces only when the resolved
+	// version changes, so a shorter interval does not repeat a notice.
+	Interval string `json:"interval,omitempty" yaml:"interval,omitempty"`
+	// Owner and Repository override the product release source, e.g. for a
+	// private release mirror. Empty resolves the canonical Goobers product
+	// repository — deliberately independent of the instance's configured
+	// workload repositories (#4324).
+	Owner      string `json:"owner,omitempty" yaml:"owner,omitempty"`
+	Repository string `json:"repository,omitempty" yaml:"repository,omitempty"`
+}
+
+// UpdateCheckSettings returns the effective update-check configuration,
+// including for a nil block, so callers never branch on presence.
+func (c *Config) UpdateCheckSettings() UpdateCheckConfig {
+	if c == nil || c.UpdateCheck == nil {
+		return UpdateCheckConfig{}
+	}
+	return *c.UpdateCheck
+}
+
+// EnabledEffective reports whether the daemon performs the release check
+// (defaults to true — see Enabled's doc comment).
+func (u UpdateCheckConfig) EnabledEffective() bool {
+	return u.Enabled == nil || *u.Enabled
+}
+
+// ChannelEffective returns the configured channel, defaulting to stable.
+func (u UpdateCheckConfig) ChannelEffective() string {
+	if u.Channel == "" {
+		return DefaultUpdateCheckChannel
+	}
+	return u.Channel
+}
+
+// IntervalDuration returns the configured re-check interval. Empty uses
+// DefaultUpdateCheckInterval.
+func (u UpdateCheckConfig) IntervalDuration() (time.Duration, error) {
+	if u.Interval == "" {
+		return DefaultUpdateCheckInterval, nil
+	}
+	interval, err := time.ParseDuration(u.Interval)
+	if err != nil {
+		return 0, fmt.Errorf("updateCheck.interval %q must be a duration: %w", u.Interval, err)
+	}
+	if interval <= 0 {
+		return 0, fmt.Errorf("updateCheck.interval must be positive, got %s", u.Interval)
+	}
+	return interval, nil
+}
+
+// Validate reports configuration errors in the update-check block.
+func (u UpdateCheckConfig) Validate() error {
+	if u.Channel != "" {
+		if err := selfupdate.ValidateChannel(u.Channel); err != nil {
+			return fmt.Errorf("updateCheck.channel: %w", err)
+		}
+	}
+	if _, err := u.IntervalDuration(); err != nil {
+		return err
+	}
+	if (u.Owner == "") != (u.Repository == "") {
+		return errors.New("updateCheck.owner and updateCheck.repository must be set together")
+	}
+	return nil
 }

@@ -76,7 +76,7 @@ func runIOSSimulatorTestWith(args []string, stdout, stderr io.Writer, deps iosSi
 		return 2
 	}
 
-	resultPath := os.Getenv(executor.InputEnvVar(executor.InputResultFile))
+	resultPath := providerInput(executor.InputResultFile, "")
 	if resultPath == "" {
 		resultPath = iosSimulatorResultFile
 	}

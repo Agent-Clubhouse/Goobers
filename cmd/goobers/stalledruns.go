@@ -400,7 +400,7 @@ func sweepStalledRuns(
 							continue
 						}
 					}
-					manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir())
+					manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
 					if managerErr != nil {
 						sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, managerErr))
 						continue

@@ -42,10 +42,11 @@
           "description": "Admission limits that bound when runs may start. maxChainDepth is reserved and is not currently enforced.",
           "additionalProperties": false,
           "properties": {
+            "claimVisibility": { "type": "string", "enum": ["local", "shared"], "description": "Claim coordination mode. Omitted or local uses instance-local claims. Shared additionally requires a provider-backed lease; GitHub is supported and unsupported providers fail closed." },
             "desiredConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Opt-in target occupancy for eligible queue work. Refill remains subject to every admission limit and never exceeds maxConcurrentRuns." },
             "maxConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Maximum simultaneous runs of this workflow." },
-            "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. Zero or omitted both fall back to the scheduler default of 10 — NOT unlimited (that is instance.yaml's runConditions.maxParallelRuns, where zero does mean unlimited). Set an explicit large value if you want a high hourly ceiling." },
-            "maxRunsPerDay": { "type": "integer", "minimum": 0, "description": "Rolling 24-hour run budget. Zero or omitted disables the daily cap." },
+            "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. An operator may explicitly bypass the ceiling for one manual invocation with `goobers run --force`. Zero or omitted both fall back to the scheduler default of 10 — NOT unlimited (that is instance.yaml's runConditions.maxParallelRuns, where zero does mean unlimited). Set an explicit large value if you want a high hourly ceiling." },
+            "maxRunsPerDay": { "type": "integer", "minimum": 0, "description": "Rolling 24-hour run budget. An operator may explicitly bypass the ceiling for one manual invocation with `goobers run --force`. Zero or omitted disables the daily cap." },
             "maxChainDepth": { "type": "integer", "minimum": 0, "description": "Reserved maximum depth for signal-triggered workflow chains. The scheduler does not currently enforce this field, and configuring it has no effect." },
             "maxOpenPRs": { "type": "integer", "minimum": 0, "description": "Maximum open pull requests produced by this workflow. Zero or omitted disables the cap." }
           }
@@ -271,6 +272,7 @@
               "github:milestones:write",
               "github:issues:approve",
               "provider:pr:write",
+              "github:pr:read",
               "github:pr:write",
               "github:pr:review",
               "provider:ci:cancel",

@@ -83,6 +83,12 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 	opts := []livejournal.Option{}
 	if blobs != nil {
 		opts = append(opts, livejournal.WithSpanSource(blobs))
+		// Prepared artifact sets use content references instead of placing
+		// large payloads in journal HTTP requests. Adoption must remain
+		// bounded; a store without this capability cannot accept reference ops.
+		if bounded, ok := blobs.(livejournal.ArtifactSource); ok {
+			opts = append(opts, livejournal.WithArtifactSource(bounded))
+		}
 	}
 	if observer := telemetryingest.RunIntakeObserver(watermarks, instanceLog); observer != nil {
 		// The same read-model intake the local runner notifies per append —

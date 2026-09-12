@@ -162,6 +162,7 @@ workflow.spec.parallels.join                             2.0          ga        
 workflow.spec.parallels.maxConcurrentBranches            2.0          ga               supported        dev
 workflow.spec.parallels.onFailure                        2.0          ga               supported        dev
 workflow.spec.readiness                                  2.0          ga               supported        dev
+workflow.spec.readiness.claimVisibility                  2.0          ga               supported        dev
 workflow.spec.readiness.desiredConcurrentRuns            2.0          ga               supported        dev
 workflow.spec.readiness.maxChainDepth                    2.0          ga               supported        dev
 workflow.spec.readiness.maxConcurrentRuns                2.0          ga               supported        dev
@@ -363,6 +364,7 @@ workflow.spec.parallels.join                             3.0          ga        
 workflow.spec.parallels.maxConcurrentBranches            3.0          ga               preview          dev
 workflow.spec.parallels.onFailure                        3.0          ga               preview          dev
 workflow.spec.readiness                                  3.0          ga               preview          dev
+workflow.spec.readiness.claimVisibility                  3.0          ga               preview          dev
 workflow.spec.readiness.desiredConcurrentRuns            3.0          ga               preview          dev
 workflow.spec.readiness.maxChainDepth                    3.0          ga               preview          dev
 workflow.spec.readiness.maxConcurrentRuns                3.0          ga               preview          dev
@@ -384,4 +386,4 @@ workflow.terminal.abort                                  3.0          ga        
 workflow.terminal.complete                               3.0          ga               preview          dev
 workflow.terminal.escalate                               3.0          ga               preview          dev
 
-384 feature/version row(s)
+386 feature/version row(s)

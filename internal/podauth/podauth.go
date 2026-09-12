@@ -278,10 +278,22 @@ func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authe
 	return &Authenticator{verifier: verifier, fallback: fallback}, nil
 }
 
-// Authenticate verifies a pod bearer token, or delegates to the fallback
-// authenticator when the request carries none.
+// Authenticate verifies pod or shared-key worker bearers. A worker credential
+// carries a distinct identity, never a synthetic run. Unknown credentials with
+// either reserved prefix fail closed instead of reaching human authentication.
 func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
 	token := bearerToken(request)
+	if strings.HasPrefix(token, workerTokenPrefix) {
+		verifier, ok := a.verifier.(interface{ verifyWorkerConfigDigest(string) (string, error) })
+		if !ok {
+			return nil, ErrUnknownToken
+		}
+		workerID, err := verifier.verifyWorkerConfigDigest(token)
+		if err != nil {
+			return nil, err
+		}
+		return &httpapi.Principal{Subject: "worker:" + workerID, Issuer: httpapi.WorkerPrincipalIssuer}, nil
+	}
 	if !isPodToken(token) {
 		return a.fallback.Authenticate(request)
 	}

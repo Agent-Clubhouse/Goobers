@@ -138,6 +138,9 @@ func TestShippedWorkflowContracts(t *testing.T) {
 			}
 			sort.Strings(keys)
 			allowPreview := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
+			if config.name == "reference-workflows" && allowPreview {
+				t.Fatal("reference workflows must not pre-authorize preview features")
+			}
 			gateCapabilities := gooberCapabilities(set.Goobers)
 			for _, key := range keys {
 				definition := loaded[key]

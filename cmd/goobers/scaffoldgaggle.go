@@ -118,21 +118,15 @@ func runScaffoldGaggle(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	fromActive := false
-	for _, existing := range manifest.Spec.Gaggles {
-		if existing == name {
-			pf(stderr, "error: gaggle %q is already registered in %s\n", name, manifestPath)
-			return 2
-		}
-		if *from != "" && existing == *from {
-			fromActive = true
-		}
-	}
-	if *from != "" && !fromActive {
-		pf(stderr, "error: gaggle %q is not active in %s; check the name or scaffold it first\n", *from, manifestPath)
+	if err := validateScaffoldGaggleNames(manifest.Spec.Gaggles, name, *from, manifestPath); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 
+	if err := prepareManualRoot(layout, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	if *from == "" {
 		if err := scaffoldNewGaggle(instanceRoot, layout, manifest, manifestPath, name, *force, stdout); err != nil {
 			pf(stderr, "error: %v\n", err)
@@ -146,6 +140,22 @@ func runScaffoldGaggle(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "next: goobers validate %s\n", instanceRoot)
 	return 0
+}
+
+func validateScaffoldGaggleNames(active []string, name, from, manifestPath string) error {
+	fromActive := false
+	for _, existing := range active {
+		if existing == name {
+			return fmt.Errorf("gaggle %q is already registered in %s", name, manifestPath)
+		}
+		if existing == from {
+			fromActive = true
+		}
+	}
+	if from != "" && !fromActive {
+		return fmt.Errorf("gaggle %q is not active in %s; check the name or scaffold it first", from, manifestPath)
+	}
+	return nil
 }
 
 // reorderScaffoldGaggleArgs moves --force and --from (with its value) to the

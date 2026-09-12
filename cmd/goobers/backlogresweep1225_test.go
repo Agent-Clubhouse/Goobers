@@ -13,7 +13,7 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-func configureCurationResweep(t *testing.T, maxItems, resweepMaxItems, interval string) {
+func configureCurationResweep(t *testing.T, maxItems, resweepMaxItems string) {
 	t.Helper()
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 	t.Setenv("GOOBERS_INPUT_CURATION", "true")
@@ -21,7 +21,7 @@ func configureCurationResweep(t *testing.T, maxItems, resweepMaxItems, interval 
 	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady+","+providers.LabelNeedsHuman+","+blockedOnSiblingLabel)
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", maxItems)
 	t.Setenv("GOOBERS_INPUT_RESWEEPMAXITEMS", resweepMaxItems)
-	t.Setenv("GOOBERS_INPUT_RESWEEPINTERVAL", interval)
+	t.Setenv("GOOBERS_INPUT_RESWEEPINTERVAL", "")
 	t.Setenv("GOOBERS_INPUT_RESWEEPREADYLABEL", providers.LabelReady)
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
 	t.Setenv("GOOBERS_INPUT_STALEAFTERDAYS", "90")
@@ -50,7 +50,8 @@ func TestBacklogQueryForwardCurationKeepsFullBatchPriority(t *testing.T) {
 	server.addIssue(4, "Ready re-sweep item", "goobers:approved", providers.LabelReady)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "forward-run")
-	configureCurationResweep(t, "3", "2", "24h")
+	configureCurationResweep(t, "3", "")
+	t.Setenv("GOOBERS_INPUT_RESWEEPREADYLABEL", "")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
@@ -89,24 +90,24 @@ func TestBacklogQueryResweepUsesLeftoverCapacityAfterBlockerCloses(t *testing.T)
 	server.setIssueState(99, "closed")
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "leftover-run")
-	configureCurationResweep(t, "2", "2", "24h")
+	configureCurationResweep(t, "2", "2")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
 	}
 	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
-	if len(items) != 2 || items[0].ID != "1" || items[1].ID != "2" {
-		t.Fatalf("curation items = %+v, want forward item 1 then ready item 2", items)
+	if len(items) != 1 || items[0].ID != "2" {
+		t.Fatalf("curation items = %+v, want only ready item 2, reserving capacity for forward item 1", items)
 	}
-	if items[1].CurationMode != "resweep" || items[1].ReadOnly {
-		t.Fatalf("ready item mode = %q readOnly=%t, want mutable resweep", items[1].CurationMode, items[1].ReadOnly)
+	if items[0].CurationMode != "resweep" || items[0].ReadOnly {
+		t.Fatalf("ready item mode = %q readOnly=%t, want mutable resweep", items[0].CurationMode, items[0].ReadOnly)
 	}
 }
 
-func TestBacklogQueryResweepRateLimitsReadOnlyInFlightContext(t *testing.T) {
+func TestBacklogQueryScheduledResweepRetainsReadOnlyInFlightContext(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(
@@ -118,14 +119,14 @@ func TestBacklogQueryResweepRateLimitsReadOnlyInFlightContext(t *testing.T) {
 	)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "resweep-run-1")
-	configureCurationResweep(t, "2", "2", "24h")
+	configureCurationResweep(t, "2", "2")
 	if policy, enabled, err := readBacklogResweepPolicy(2); err != nil || !enabled {
 		t.Fatalf("re-sweep policy = %+v enabled=%t err=%v", policy, enabled, err)
 	}
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("first backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -143,12 +144,13 @@ func TestBacklogQueryResweepRateLimitsReadOnlyInFlightContext(t *testing.T) {
 	}
 
 	t.Setenv("GOOBERS_RUN_ID", "resweep-run-2")
-	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("second backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if strings.Contains(stdout, "selected 1 read-only") {
-		t.Fatalf("second backlog-query ignored the 24h re-sweep interval: stdout = %q", stdout)
+	items = readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+	if len(items) != 1 || items[0].ID != "7" || !items[0].ReadOnly {
+		t.Fatalf("scheduled second sweep suppressed read-only context: %+v", items)
 	}
 }
 
@@ -178,11 +180,11 @@ func TestBacklogQueryDependencyRecheckFiltersBeforeClaim(t *testing.T) {
 			server.setIssueBlockers(7, 8)
 
 			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "dependency-run")
-			configureCurationResweep(t, "2", "1", "24h")
+			configureCurationResweep(t, "2", "1")
 			workDir := t.TempDir()
 			t.Chdir(workDir)
 
-			code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+			code, stdout, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 			if code != 0 {
 				t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 			}
@@ -217,24 +219,30 @@ func TestBacklogQueryUnchangedDependencyDoesNotChurnOrStarve(t *testing.T) {
 	server.setIssueBlockers(1, 99)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recheck-run-1")
-	configureCurationResweep(t, "2", "1", "24h")
+	configureCurationResweep(t, "2", "1")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("first backlog-query: code = %d, stderr = %q", code, stderr)
 	}
-	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
-	if len(items) != 1 || items[0].ID != "2" {
-		t.Fatalf("first-pass items = %+v, want forward item 2", items)
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-items.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		NoWork bool `json:"noWork"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil || !result.NoWork {
+		t.Fatalf("first-pass result = %s, err=%v, want no actionable re-sweep items", data, err)
 	}
 	if got := len(server.issues[1].comments); got != 0 {
 		t.Fatalf("blocked item comments after first pass = %d, want 0", got)
 	}
 
 	t.Setenv("GOOBERS_RUN_ID", "recheck-run-2")
-	code, _, stderr = runArgs(t, "backlog-query", "--claim", root)
+	code, _, stderr = runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("second backlog-query: code = %d, stderr = %q", code, stderr)
 	}
@@ -266,17 +274,17 @@ func TestBacklogQueryDependencyRechecksRespectRemainingBatchCapacity(t *testing.
 	server.addIssue(30, "Ready re-sweep item", "goobers:approved", providers.LabelReady)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "capacity-run")
-	configureCurationResweep(t, "20", "20", "24h")
+	configureCurationResweep(t, "20", "20")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
 	}
 	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
-	if len(items) != 20 {
-		t.Fatalf("curation items = %d, want batch capped at 20", len(items))
+	if len(items) != 1 {
+		t.Fatalf("curation items = %d, want one leftover slot after 19 forward items", len(items))
 	}
 	dependencyRechecks := 0
 	for _, item := range items {
@@ -303,12 +311,12 @@ func TestBacklogQueryReadyResweepRespectsPartitionRequireLabels(t *testing.T) {
 	server.addIssue(2, "Out-of-partition ready item", "goobers:approved", providers.LabelReady)
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "partition-resweep-run")
-	configureCurationResweep(t, "2", "2", "24h")
+	configureCurationResweep(t, "2", "2")
 	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:cloud")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
 	}
@@ -346,12 +354,12 @@ func TestBacklogQueryBlockedResweepRespectsPartitionRequireLabels(t *testing.T) 
 	server.setIssueState(99, "closed")
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "partition-blocked-resweep-run")
-	configureCurationResweep(t, "2", "2", "24h")
+	configureCurationResweep(t, "2", "2")
 	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:cloud")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
-	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
 	if code != 0 {
 		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
 	}
@@ -377,8 +385,8 @@ func TestReadBacklogResweepPolicyRejectsUnboundedInputs(t *testing.T) {
 		maxItems string
 		interval string
 	}{
-		{name: "exceeds total batch", maxItems: "3", interval: "24h"},
-		{name: "zero interval", maxItems: "1", interval: "0s"},
+		{name: "exceeds total batch", maxItems: "3"},
+		{name: "retired interval", maxItems: "1", interval: "0s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -205,6 +205,7 @@ func (h *HTTP) runPath(template string, extra map[string]string) string {
 // contract's shape, not on the daemon's read service; the server's tests pin
 // the two together.
 type wireEvent struct {
+	RunID               string                  `json:"runId,omitempty"`
 	Schema              string                  `json:"schema"`
 	Seq                 uint64                  `json:"seq"`
 	Type                journal.EventType       `json:"type"`
@@ -255,6 +256,7 @@ type wireEventList struct {
 // layout), and every read this client serves is digest-addressed anyway.
 func (e wireEvent) JournalEvent() journal.Event {
 	event := journal.Event{
+		RunID:               e.RunID,
 		Schema:              e.Schema,
 		Seq:                 e.Seq,
 		Type:                e.Type,
@@ -314,7 +316,12 @@ func (h *HTTP) EventsContext(ctx context.Context) ([]journal.Event, error) {
 	}
 	events := make([]journal.Event, 0, len(list.Events))
 	for _, wire := range list.Events {
-		events = append(events, wire.JournalEvent())
+		event := wire.JournalEvent()
+		if event.RunID != "" && event.RunID != h.cfg.RunID {
+			return nil, fmt.Errorf("journalclient: event belongs to another run")
+		}
+		event.RunID = h.cfg.RunID
+		events = append(events, event)
 	}
 	return events, nil
 }

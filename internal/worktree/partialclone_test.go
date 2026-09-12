@@ -427,7 +427,29 @@ func TestWorktree_Diff_PartialCloneBackfillsBaseBlobsWithCredentialEnvironment(t
 	if !strings.Contains(string(diff), "-hello") || !strings.Contains(string(diff), "+goodbye") {
 		t.Fatalf("diff does not carry the base...HEAD change:\n%s", diff)
 	}
-	if trace := readTrace(t, traceFile); !strings.Contains(trace, "diff main...HEAD") {
+	want := string(diff)
+	for key, value := range map[string]string{
+		"core.quotePath":           "true",
+		"diff.algorithm":           "histogram",
+		"diff.compactionHeuristic": "true",
+		"diff.context":             "0",
+		"diff.indentHeuristic":     "true",
+		"diff.interHunkContext":    "10",
+		"diff.mnemonicPrefix":      "true",
+		"diff.noprefix":            "true",
+		"diff.orderFile":           filepath.Join(t.TempDir(), "order"),
+		"diff.submodule":           "diff",
+	} {
+		runTestGit(t, wt.Path, "config", key, value)
+	}
+	configured, err := wt.Diff(ctx, "main")
+	if err != nil {
+		t.Fatalf("Diff with conflicting repository settings: %v", err)
+	}
+	if string(configured) != want {
+		t.Fatalf("diff changed under conflicting repository settings:\nbase:\n%s\nconfigured:\n%s", want, configured)
+	}
+	if trace := readTrace(t, traceFile); !strings.Contains(trace, "diff ") || !strings.Contains(trace, "main...HEAD") {
 		t.Fatalf("Diff did not run with the credential environment; trace:\n%s", trace)
 	}
 }
@@ -493,7 +515,7 @@ func TestManager_WorkingCopy_PartialCloneOffIsByteIdentical(t *testing.T) {
 
 	recorded := recordedGitLines(t, log)
 	wantClone := hardenedGitPrefix + " clone --mirror " + repo + " " + mirror
-	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/*:refs/* ^refs/heads/goobers/*"
+	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/*:refs/* ^refs/heads/goobers/* ^refs/goobers/recovery/* ^refs/goobers/recovery-snapshots/*"
 	if got := findRecordedLine(recorded, " clone "); got != wantClone {
 		t.Errorf("flag-off clone invocation:\n got %q\nwant %q", got, wantClone)
 	}
@@ -532,7 +554,7 @@ func TestManager_WorkingCopy_PartialCloneOnInvocations(t *testing.T) {
 
 	recorded := recordedGitLines(t, log)
 	wantClone := hardenedGitPrefix + " clone --mirror --filter=blob:none " + url + " " + mirror
-	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* ^refs/heads/goobers/*"
+	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* ^refs/heads/goobers/* ^refs/goobers/recovery/* ^refs/goobers/recovery-snapshots/*"
 	if got := findRecordedLine(recorded, " clone "); got != wantClone {
 		t.Errorf("flag-on clone invocation:\n got %q\nwant %q", got, wantClone)
 	}

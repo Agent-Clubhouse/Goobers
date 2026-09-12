@@ -18,6 +18,11 @@ from their last durable checkpoints on the next startup before
 exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
 2 = usage/IO error.
 
+After readiness and every 15 minutes, the daemon scans a bounded seven-day
+window of recently merged GitHub Goobers pull requests and publishes
+any missing or updated cost summary. This is a workflow-independent backstop; the
+normal post-merge stage still publishes synchronously when Goobers merges.
+
 Legacy spans-only run directories are reported as cleanup candidates
 and preserved by default. --cleanup-spans-only-runs deletes them at
 startup after reporting each candidate.
@@ -31,7 +36,10 @@ is always active, and authenticated GitHub push deliveries wake it when
 webhook.secret is configured. Invalid revisions are rejected with the
 last-known-good definitions left running. Direct edits to the materialized
 config directory are watched by default; --watch-config=false explicitly
-disables that watcher. Existing runs retain their pinned definitions.
+disables that watcher. instance.yaml is loaded only at daemon startup and
+is never hot-reloaded; changes to it, including retention: and
+telemetry.retention:, require a daemon restart. Existing runs retain their
+pinned definitions.
 
 --diagnostics turns on deep, opt-in capture for hard hangs: any
 deterministic stage still running past a couple of minutes gets a

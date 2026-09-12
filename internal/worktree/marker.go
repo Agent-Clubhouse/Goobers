@@ -5,30 +5,38 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/durability"
 )
 
-// status records why a worktree's marker is on disk, distinguishing an
-// in-flight run from one that was intentionally kept after failure for
-// debugging (KeepOnFailure). Reap treats the two differently: active markers
-// with a dead owning process are always crash orphans; kept markers are only
-// swept up once they age past ReapOptions.StaleAfter.
+// status records why a worktree's marker is on disk. Active is still owned by
+// a stage, cleanup-pending was explicitly surrendered but could not yet be
+// removed, and kept was intentionally retained for debugging. Reap treats the
+// three differently: active markers require a dead owner, cleanup-pending is
+// immediately retryable, and kept requires ReapOptions.StaleAfter.
 type status string
 
 const (
-	statusActive status = "active"
-	statusKept   status = "kept"
+	statusActive         status = "active"
+	statusCleanupPending status = "cleanup-pending"
+	statusKept           status = "kept"
 )
 
 // marker is the on-disk record placed alongside each worktree. It carries
 // enough state for Manager.Reap to tell a live run apart from one whose
 // owning process died mid-stage.
 type marker struct {
-	RunID          string `json:"run_id"`
-	OwnerRunID     string `json:"owner_run_id,omitempty"`
-	Directory      string `json:"directory,omitempty"`
+	RepositoryDigest string `json:"repository_digest,omitempty"`
+	RunID            string `json:"run_id"`
+	OwnerRunID       string `json:"owner_run_id,omitempty"`
+	Gaggle           string `json:"gaggle,omitempty"`
+	Directory        string `json:"directory,omitempty"`
+	// BaseRef is the base identity selected when this workspace was created.
+	// Cleanup recovery must use this durable value rather than current config:
+	// a repository's configured branch can change while a run is in flight.
+	BaseRef        string `json:"base_ref,omitempty"`
 	Branch         string `json:"branch,omitempty"`
 	StartRef       string `json:"start_ref,omitempty"`
 	AssetPathGuard bool   `json:"asset_path_guard,omitempty"`
@@ -46,8 +54,13 @@ type marker struct {
 	PIDStartedAt time.Time `json:"pid_started_at,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	RetainedAt   time.Time `json:"retained_at,omitempty"`
-	Status       status    `json:"status"`
-	SizeBytes    *int64    `json:"size_bytes,omitempty"`
+	// JournalMissingSince starts RetentionRuleJournalGrace at the first
+	// retention pass that observes the owning run journal absent. It lives on
+	// the existing durable marker so the clock survives daemon restarts and
+	// remains bound to this exact retained worktree.
+	JournalMissingSince time.Time `json:"journal_missing_since,omitempty"`
+	Status              status    `json:"status"`
+	SizeBytes           *int64    `json:"size_bytes,omitempty"`
 }
 
 type branchAcquisition struct {
@@ -77,6 +90,9 @@ func (m marker) retainedAt() time.Time {
 }
 
 func writeMarker(path string, m marker) error {
+	if err := validateMarkerGaggle(m.Gaggle); err != nil {
+		return err
+	}
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("worktree: encode marker: %w", err)
@@ -145,5 +161,15 @@ func readMarker(path string) (marker, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return marker{}, fmt.Errorf("worktree: decode marker %s: %w", path, err)
 	}
+	if err := validateMarkerGaggle(m.Gaggle); err != nil {
+		return marker{}, err
+	}
 	return m, nil
+}
+
+func validateMarkerGaggle(gaggle string) error {
+	if len(gaggle) > 1024 || strings.ContainsAny(gaggle, "\x00\r\n") {
+		return fmt.Errorf("worktree: invalid bounded recovery gaggle")
+	}
+	return nil
 }

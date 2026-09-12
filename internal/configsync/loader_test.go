@@ -51,12 +51,12 @@ func TestLoad_ValidExampleRepo(t *testing.T) {
 	// claude-prefixed to stay globally unique; dotnet-service:
 	// dotnet-implementer, dotnet-reviewer; java-service: java-implementer,
 	// java-reviewer; python-service: python-implementer, python-reviewer),
-	// and twenty-one Workflows (acme-web's nine, acme-web-claude's own nine
+	// and twenty-three Workflows (acme-web's ten, acme-web-claude's own ten
 	// claude-prefixed to stay globally unique — config-sync's Kubernetes
 	// representation requires unique Workflow names across gaggles, unlike
 	// Goobers which the flat loader already required unique — plus all three
 	// polyglot implementations).
-	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 5, "Goober": 18, "Workflow": 21}
+	wantByKind := map[string]int{"Manifest": 1, "Gaggle": 5, "Goober": 18, "Workflow": 23}
 	by := objectsByKind(set.Objects)
 	for kind, want := range wantByKind {
 		if len(by[kind]) != want {

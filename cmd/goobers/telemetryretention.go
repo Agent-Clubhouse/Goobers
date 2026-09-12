@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -13,21 +18,320 @@ import (
 
 const telemetryRetentionSweepInterval = 6 * time.Hour
 
+// telemetryRetentionLargeFirstEnforceFraction is #4824's second safety net,
+// on top of the shared timed grace window: even after the grace window has
+// elapsed, a FIRST real enforcement pass that would prune more than this
+// fraction of an instance's current run history stays dry-run instead of
+// proceeding automatically. The timed window alone is fine for a handful of
+// stale runs beyond policy — that is exactly what it exists to let an
+// operator notice and, if they disagree, react to. It is not fine for
+// wiping the bulk of an instance's history on a stock config nobody typed
+// (the reported case: 96.4% of history queued for deletion because
+// DefaultTelemetryRetentionMaxRuns binds in ~33 hours at production run
+// rates, long before the documented 90-day window ever would). Once a real
+// enforcement pass has actually run once without hitting this gate, later
+// passes never need it again — a policy that has already deleted anything
+// for real has already been exercised, whether or not this instance
+// happened to start under it.
+const telemetryRetentionLargeFirstEnforceFraction = 0.5
+
+// telemetryRetentionStateFile names the durable marker
+// the configured telemetry-retention pass reads and rewrites on every pass, kept
+// under SchedulerDir alongside the daemon's other operational state (e.g.
+// pending-triggers). Its policy projection is derived, but a pending journal
+// summary is an outbox record and remains authoritative until it is appended;
+// that prevents a completed destructive pass from being hidden by a later
+// zero-candidate pass after restart.
+const telemetryRetentionStateFile = "telemetry-retention-state.json"
+
+const telemetryRetentionStateSchema = "goobers.dev/telemetry-retention-state/v1"
+
+const (
+	telemetryRetentionPassPrepared  = "prepared"
+	telemetryRetentionPassCompleted = "completed"
+)
+
+// telemetryRetentionState is #4253's status-surface record: `goobers status`
+// (reportTelemetryRetentionPolicy) reads it to show the policy in force, the
+// last pass, and its candidate count — the ruling's "status + portal
+// permanently surface" requirement — and the configured retention pass
+// itself reads it to decide whether a grace window is already running (and,
+// if so, whether it has elapsed) rather than re-deciding from scratch on
+// every restart.
+type telemetryRetentionState = retentionGraceState
+
+func telemetryRetentionStatePath(layout instance.Layout) string {
+	return filepath.Join(layout.SchedulerDir(), telemetryRetentionStateFile)
+}
+
+// readTelemetryRetentionState returns ok=false (zero state, nil error) when
+// no pass has ever recorded one yet — a fresh instance, or one that predates
+// this file.
+func readTelemetryRetentionState(layout instance.Layout) (state telemetryRetentionState, ok bool, err error) {
+	data, err := os.ReadFile(telemetryRetentionStatePath(layout))
+	if os.IsNotExist(err) {
+		return telemetryRetentionState{}, false, nil
+	}
+	if err != nil {
+		return telemetryRetentionState{}, false, fmt.Errorf("telemetry retention: read state: %w", err)
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return telemetryRetentionState{}, false, fmt.Errorf("telemetry retention: decode state: %w", err)
+	}
+	return state, true, nil
+}
+
+func writeTelemetryRetentionState(layout instance.Layout, state telemetryRetentionState) error {
+	state.Schema = telemetryRetentionStateSchema
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("telemetry retention: encode state: %w", err)
+	}
+	if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+		return fmt.Errorf("telemetry retention: create scheduler dir: %w", err)
+	}
+	if err := journal.WriteFileAtomic(telemetryRetentionStatePath(layout), data, 0o644); err != nil {
+		return fmt.Errorf("telemetry retention: write state: %w", err)
+	}
+	return nil
+}
+
+// telemetryRetentionPassIsDryRun is the telemetry policy's named adapter to
+// the shared first-enable decision. Keeping the adapter makes it possible to
+// prove both deletion paths stay equivalent without maintaining two copies of
+// the decision itself.
+func telemetryRetentionPassIsDryRun(state telemetryRetentionState, immediate bool, now time.Time) bool {
+	return retentionPassIsDryRun(state, immediate, now)
+}
+
 func pruneTelemetryRetention(
 	layout instance.Layout,
 	config instance.TelemetryRetentionConfig,
 	db *rollup.DB,
 	now time.Time,
 	dryRun bool,
-) ([]retention.Result, error) {
+) ([]retention.Result, retention.Summary, error) {
 	window, err := config.WindowDuration()
 	if err != nil {
-		return nil, err
+		return nil, retention.Summary{}, err
 	}
-	policy := retention.Policy{Window: window, MaxRuns: config.MaxRunLimit()}
+	return pruneTelemetryRetentionPolicy(
+		layout,
+		retention.Policy{Window: window, MaxRuns: config.MaxRunLimit()},
+		db,
+		now,
+		dryRun,
+	)
+}
 
+func pruneTelemetryRetentionPolicy(
+	layout instance.Layout,
+	policy retention.Policy,
+	db *rollup.DB,
+	now time.Time,
+	dryRun bool,
+) ([]retention.Result, retention.Summary, error) {
+	var err error
 	ownedDB := false
 	if !dryRun && db == nil {
+		db, err = rollup.Open(layout.TelemetryDB())
+		if err != nil {
+			return nil, retention.Summary{}, err
+		}
+		ownedDB = true
+	}
+	if ownedDB {
+		defer func() { _ = db.Close() }()
+	}
+	triggerGuard, closeTriggerGuard, err := openTriggerPruneGuard(layout, dryRun, now)
+	if err != nil {
+		return nil, retention.Summary{}, err
+	}
+	defer closeTriggerGuard()
+	recoveryGuard, closeRecoveryGuard, err := openRecoveryCustodyPruneGuard(layout, dryRun)
+	if err != nil {
+		return nil, retention.Summary{}, err
+	}
+	defer closeRecoveryGuard()
+	guard := combineBeforeDeleteGuards(triggerGuard, recoveryGuard)
+	return retention.Prune(layout, db, policy, retention.Options{Now: now, DryRun: dryRun, BeforeDelete: guard})
+}
+
+// pruneConfiguredTelemetryRetentionPassWithWriter runs one retention pass, honoring
+// #4253's opt-out-by-default policy and the #3056 ruling's safe first-enable
+// semantics: the pass is a dry run (reports candidates, deletes nothing)
+// whenever a grace window is running or being started, and switches to real
+// enforcement once that window elapses (or immediately, if the operator set
+// telemetry.retention.firstEnable: immediate). The returned dryRun value
+// tells the caller which happened, since an identical []retention.Result
+// means something very different in each case.
+type telemetryRetentionStateWriter func(instance.Layout, telemetryRetentionState) error
+
+func pruneConfiguredTelemetryRetentionPassWithWriter(
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	now time.Time,
+	journalPass bool,
+	writeState telemetryRetentionStateWriter,
+) (results []retention.Result, dryRun bool, err error) {
+	if !config.EnabledEffective() {
+		return nil, false, nil
+	}
+
+	state, _, err := readTelemetryRetentionState(layout)
+	if err != nil {
+		return nil, false, err
+	}
+	state, _ = normalizeRetentionGraceState(state, now)
+	immediate := config.ImmediateFirstEnable()
+	// A grace window that has never started (EnforceAt still zero) also runs
+	// dry — this is the probe pass that decides whether a window needs to
+	// start at all. This must key off EnforceAt, not "does a state file
+	// exist": the state file is written on every pass, including a dry pass
+	// that found zero candidates, so gating on file existence alone (#4253's
+	// original bug) let a single harmless empty pass permanently satisfy the
+	// "first pass" check — the very next pass to find real candidates, no
+	// matter how much later, then enforced immediately with zero grace
+	// period. An instance with nothing yet to prune stays harmlessly dry-run
+	// forever (there is nothing a real pass would do differently), only
+	// actually starting the window the first time it finds real candidates.
+	dryRun = telemetryRetentionPassIsDryRun(state, immediate, now)
+
+	// #4824's second safety net: even once the timed grace window has fully
+	// elapsed, a pass that has never actually enforced for real on this
+	// instance runs a cheap dry precheck first. If enforcing now would prune
+	// more than telemetryRetentionLargeFirstEnforceFraction of current run
+	// history, stay dry-run and use the precheck's own results — an operator
+	// who has not reviewed the config gets one more chance to notice before
+	// most of their history disappears, on top of (not instead of) the timed
+	// window above.
+	results, summary, largeFirstEnforceBlocked, prechecked, err := precheckLargeFirstTelemetryEnforcement(
+		layout, config, db, now, dryRun, immediate, state.EnforceAcknowledged,
+	)
+	if err != nil {
+		return nil, dryRun, err
+	}
+	if largeFirstEnforceBlocked {
+		dryRun = true
+	}
+	var pending *telemetryRetentionPass
+	if !largeFirstEnforceBlocked {
+		results, summary, pending, err = executeTelemetryRetentionPass(
+			layout, config, db, now, dryRun, journalPass, state, results, summary, prechecked, writeState,
+		)
+		if err != nil {
+			return results, dryRun, err
+		}
+	}
+
+	if dryRun && !immediate && state.EnforceAt.IsZero() && len(results) > 0 {
+		state.DetectedAt = now
+		state.EnforceAt = now.Add(retentionGraceWindow)
+	}
+	if journalPass && pending == nil {
+		pending, err = newTelemetryRetentionPass(config, now, dryRun, results, state.EnforceAt, summary)
+		if err != nil {
+			return results, dryRun, err
+		}
+	}
+	if pending != nil {
+		pending.Phase = telemetryRetentionPassCompleted
+		pending.EnforceAt = state.EnforceAt
+		state.PendingTelemetryPass = pending
+	}
+	candidateCount := len(results)
+	if pending != nil {
+		candidateCount = pending.CandidateCount
+		summary.TotalRuns = pending.TotalRuns
+		summary.OldestRetainedStartedAt = pending.OldestRetainedAt
+	}
+	state.LastPassAt = now
+	state.LastPassDryRun = dryRun
+	state.CandidateCount = candidateCount
+	state.TotalRuns = summary.TotalRuns
+	state.OldestRetainedAt = summary.OldestRetainedStartedAt
+	state.LargeFirstEnforceBlocked = largeFirstEnforceBlocked
+	if !dryRun {
+		state.PrunedCount = len(results)
+		state.EnforceAcknowledged = true
+	}
+	if err := writeState(layout, state); err != nil {
+		return results, dryRun, err
+	}
+	return results, dryRun, nil
+}
+
+func precheckLargeFirstTelemetryEnforcement(
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	now time.Time,
+	dryRun bool,
+	immediate bool,
+	enforceAcknowledged bool,
+) ([]retention.Result, retention.Summary, bool, bool, error) {
+	if dryRun || immediate || enforceAcknowledged {
+		return nil, retention.Summary{}, false, false, nil
+	}
+	results, summary, err := pruneTelemetryRetention(layout, config, db, now, true)
+	if err != nil {
+		return nil, retention.Summary{}, false, true, err
+	}
+	blocked := summary.TotalRuns > 0 &&
+		float64(len(results)) > float64(summary.TotalRuns)*telemetryRetentionLargeFirstEnforceFraction
+	return results, summary, blocked, true, nil
+}
+
+func executeTelemetryRetentionPass(
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	now time.Time,
+	dryRun bool,
+	journalPass bool,
+	state telemetryRetentionState,
+	precheckResults []retention.Result,
+	precheckSummary retention.Summary,
+	prechecked bool,
+	writeState telemetryRetentionStateWriter,
+) ([]retention.Result, retention.Summary, *telemetryRetentionPass, error) {
+	var pending *telemetryRetentionPass
+	if journalPass && !dryRun {
+		if !prechecked {
+			var err error
+			precheckResults, precheckSummary, err = pruneTelemetryRetention(layout, config, db, now, true)
+			if err != nil {
+				return nil, retention.Summary{}, nil, err
+			}
+		}
+		prepared, err := newTelemetryRetentionPass(config, now, false, precheckResults, state.EnforceAt, precheckSummary)
+		if err != nil {
+			return nil, retention.Summary{}, nil, err
+		}
+		pending = prepared
+		state.PendingTelemetryPass = pending
+		if err := writeState(layout, state); err != nil {
+			return nil, retention.Summary{}, nil, err
+		}
+	}
+	if pending != nil {
+		results, err := pruneTelemetryRetentionCandidates(layout, db, pending.Candidates, now)
+		return results, precheckSummary, pending, err
+	}
+	results, summary, err := pruneTelemetryRetention(layout, config, db, now, dryRun)
+	return results, summary, pending, err
+}
+
+func pruneTelemetryRetentionCandidates(
+	layout instance.Layout,
+	db *rollup.DB,
+	candidates []retention.Result,
+	now time.Time,
+) ([]retention.Result, error) {
+	var err error
+	ownedDB := false
+	if db == nil {
 		db, err = rollup.Open(layout.TelemetryDB())
 		if err != nil {
 			return nil, err
@@ -37,19 +341,279 @@ func pruneTelemetryRetention(
 	if ownedDB {
 		defer func() { _ = db.Close() }()
 	}
-	return retention.Prune(layout, db, policy, retention.Options{Now: now, DryRun: dryRun})
+	triggerGuard, closeTriggerGuard, err := openTriggerPruneGuard(layout, false, now)
+	if err != nil {
+		return nil, err
+	}
+	defer closeTriggerGuard()
+	recoveryGuard, closeRecoveryGuard, err := openRecoveryCustodyPruneGuard(layout, false)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRecoveryGuard()
+	return retention.PruneCandidates(
+		layout,
+		db,
+		candidates,
+		retention.Options{Now: now, BeforeDelete: combineBeforeDeleteGuards(triggerGuard, recoveryGuard)},
+	)
 }
 
-func pruneConfiguredTelemetryRetention(
+func newTelemetryRetentionPass(
+	config instance.TelemetryRetentionConfig,
+	at time.Time,
+	dryRun bool,
+	candidates []retention.Result,
+	enforceAt time.Time,
+	summary retention.Summary,
+) (*telemetryRetentionPass, error) {
+	window, err := config.WindowDuration()
+	if err != nil {
+		return nil, err
+	}
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return nil, fmt.Errorf("telemetry retention: create pass id: %w", err)
+	}
+	pass := &telemetryRetentionPass{
+		ID:               fmt.Sprintf("%x", id[:]),
+		Phase:            telemetryRetentionPassPrepared,
+		At:               at,
+		DryRun:           dryRun,
+		CandidateCount:   len(candidates),
+		EnforceAt:        enforceAt,
+		PolicyWindow:     window,
+		PolicyMaxRuns:    config.MaxRunLimit(),
+		TotalRuns:        summary.TotalRuns,
+		OldestRetainedAt: summary.OldestRetainedStartedAt,
+	}
+	if !dryRun {
+		pass.Candidates = append([]retention.Result(nil), candidates...)
+	}
+	return pass, nil
+}
+
+// reportTelemetryPruned prints one startup-log line per configured telemetry-retention
+// result, wording it correctly for whichever pass produced it: a dry run
+// (#4253's grace window) reports candidates without claiming anything was
+// deleted, a real pass reports what actually was. Factored out of
+// runUpContextWithForce (rather than inlined at its one call site) so this
+// dryRun/real branch doesn't grow that already-large function's cyclomatic
+// complexity — the same reason startPeriodicSweep exists (#4323).
+func reportTelemetryPruned(stdout io.Writer, candidateCount int, dryRun, enabled bool) {
+	mode := "enforcing"
+	if !enabled {
+		mode = "disabled"
+	} else if dryRun {
+		mode = "dry-run"
+	}
+	pf(stdout, "telemetry retention: candidates=%d mode=%s\n", candidateCount, mode)
+}
+
+func publishTelemetryRetentionPass(
+	log *journal.InstanceLog,
+	layout instance.Layout,
+	state telemetryRetentionState,
+	pass telemetryRetentionPass,
+	dedupe bool,
+	writeState telemetryRetentionStateWriter,
+) error {
+	if log == nil {
+		return fmt.Errorf("telemetry retention: instance journal is unavailable")
+	}
+	if err := validateTelemetryRetentionPass(pass); err != nil {
+		return err
+	}
+	if pass.Phase != telemetryRetentionPassCompleted {
+		return fmt.Errorf("telemetry retention: pass %s is not complete", pass.ID)
+	}
+	if dedupe {
+		journaled, err := telemetryRetentionPassJournaled(layout, pass.ID)
+		if err != nil {
+			return err
+		}
+		if journaled {
+			return acknowledgeTelemetryRetentionPass(layout, state, writeState)
+		}
+	}
+	mode := "enforcing"
+	if pass.DryRun {
+		mode = "dry-run"
+	}
+	runner := map[string]any{
+		"mode":           mode,
+		"candidateCount": pass.CandidateCount,
+		"passId":         pass.ID,
+	}
+	if !pass.At.IsZero() {
+		runner["passAt"] = pass.At.UTC().Format(time.RFC3339Nano)
+	}
+	if !pass.EnforceAt.IsZero() {
+		runner["enforceAt"] = pass.EnforceAt.UTC().Format(time.RFC3339Nano)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: runner}); err != nil {
+		return err
+	}
+	return acknowledgeTelemetryRetentionPass(layout, state, writeState)
+}
+
+func acknowledgeTelemetryRetentionPass(layout instance.Layout, state telemetryRetentionState, writeState telemetryRetentionStateWriter) error {
+	state.PendingTelemetryPass = nil
+	if err := writeState(layout, state); err != nil {
+		return fmt.Errorf("telemetry retention: acknowledge journaled pass: %w", err)
+	}
+	return nil
+}
+
+func telemetryRetentionPassJournaled(layout instance.Layout, passID string) (bool, error) {
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		return false, fmt.Errorf("telemetry retention: inspect journal for pass %s: %w", passID, err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventTelemetryRetentionPass && runnerString(event.Runner, "passId") == passID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func validateTelemetryRetentionPass(pass telemetryRetentionPass) error {
+	if pass.ID == "" || pass.At.IsZero() || pass.CandidateCount < 0 {
+		return fmt.Errorf("telemetry retention: invalid pending pass identity")
+	}
+	switch pass.Phase {
+	case telemetryRetentionPassCompleted:
+		if !pass.DryRun && len(pass.Candidates) != pass.CandidateCount {
+			return fmt.Errorf("telemetry retention: completed pass %s has an incomplete candidate manifest", pass.ID)
+		}
+		return nil
+	case telemetryRetentionPassPrepared:
+		if pass.DryRun || pass.PolicyWindow <= 0 || pass.PolicyMaxRuns <= 0 || len(pass.Candidates) != pass.CandidateCount {
+			return fmt.Errorf("telemetry retention: invalid prepared pass %s", pass.ID)
+		}
+		return nil
+	default:
+		return fmt.Errorf("telemetry retention: pass %s has invalid phase %q", pass.ID, pass.Phase)
+	}
+}
+
+// pruneAndRecordTelemetryRetention sequences the pass and its observable
+// journal event: the caller does not report success until the state-backed
+// summary is published.
+func pruneAndRecordTelemetryRetention(
+	log *journal.InstanceLog,
 	layout instance.Layout,
 	config instance.TelemetryRetentionConfig,
 	db *rollup.DB,
 	now time.Time,
-) ([]retention.Result, error) {
-	if !config.Enabled {
-		return nil, nil
+) (int, bool, error) {
+	return pruneAndRecordTelemetryRetentionWithWriter(log, layout, config, db, now, writeTelemetryRetentionState)
+}
+
+func pruneAndRecordTelemetryRetentionWithWriter(
+	log *journal.InstanceLog,
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	now time.Time,
+	writeState telemetryRetentionStateWriter,
+) (int, bool, error) {
+	if pending, ok, err := reconcilePendingTelemetryRetentionPass(log, layout, db, writeState); err != nil || ok {
+		return pending.CandidateCount, pending.DryRun, err
 	}
-	return pruneTelemetryRetention(layout, config, db, now, false)
+	results, dryRun, err := pruneConfiguredTelemetryRetentionPassWithWriter(layout, config, db, now, true, writeState)
+	if err != nil {
+		return len(results), dryRun, err
+	}
+	if !config.EnabledEffective() {
+		return 0, false, nil
+	}
+	state, ok, err := readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass == nil {
+		if err == nil {
+			err = fmt.Errorf("telemetry retention: successful pass has no pending journal summary")
+		}
+		return len(results), dryRun, err
+	}
+	pass := *state.PendingTelemetryPass
+	return pass.CandidateCount, pass.DryRun, publishTelemetryRetentionPass(log, layout, state, pass, false, writeState)
+}
+
+func reconcilePendingTelemetryRetentionPass(
+	log *journal.InstanceLog,
+	layout instance.Layout,
+	db *rollup.DB,
+	writeState telemetryRetentionStateWriter,
+) (telemetryRetentionPass, bool, error) {
+	state, ok, err := readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass == nil {
+		return telemetryRetentionPass{}, false, err
+	}
+	pass := *state.PendingTelemetryPass
+	if err := validateTelemetryRetentionPass(pass); err != nil {
+		return pass, true, err
+	}
+	if pass.Phase == telemetryRetentionPassPrepared {
+		results, err := pruneTelemetryRetentionCandidates(layout, db, pass.Candidates, pass.At)
+		if err != nil {
+			return pass, true, err
+		}
+		pass.Phase = telemetryRetentionPassCompleted
+		state.PendingTelemetryPass = &pass
+		state.LastPassAt = pass.At
+		state.LastPassDryRun = false
+		state.CandidateCount = pass.CandidateCount
+		state.TotalRuns = pass.TotalRuns
+		state.OldestRetainedAt = pass.OldestRetainedAt
+		state.PrunedCount = len(results)
+		state.EnforceAcknowledged = true
+		state.LargeFirstEnforceBlocked = false
+		if err := writeState(layout, state); err != nil {
+			return pass, true, err
+		}
+	}
+	return pass, true, publishTelemetryRetentionPass(log, layout, state, pass, true, writeState)
+}
+
+func runPeriodicTelemetryRetention(
+	ctx context.Context,
+	log *journal.InstanceLog,
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	cleanupErrors *sweepErrorReporter,
+	now time.Time,
+) error {
+	if _, _, err := pruneAndRecordTelemetryRetention(log, layout, config, db, now); err != nil {
+		return err
+	}
+	return compactSchedulerRetention(ctx, config, db, log, cleanupErrors, now)
+}
+
+// runStartupTelemetryRetention keeps the startup phase, failure, and summary
+// sequencing together without growing the daemon's orchestration body.
+func runStartupTelemetryRetention(
+	stdout io.Writer,
+	tracker *startupPhaseTracker,
+	layout instance.Layout,
+	setup *schedulerSetup,
+) (instance.TelemetryRetentionConfig, error) {
+	config := instance.TelemetryRetentionConfig{}
+	if setup.Config.Telemetry.Retention != nil {
+		config = *setup.Config.Telemetry.Retention
+	}
+	var candidateCount int
+	var dryRun bool
+	err := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
+		var pruneErr error
+		candidateCount, dryRun, pruneErr = pruneAndRecordTelemetryRetention(setup.InstanceLog, layout, config, setup.RollupDB, time.Now())
+		return pruneErr
+	})
+	if err == nil {
+		reportTelemetryPruned(stdout, candidateCount, dryRun, config.EnabledEffective())
+	}
+	return config, err
 }
 
 // compactSchedulerRetention bounds the scheduler journal and rollup rows. A

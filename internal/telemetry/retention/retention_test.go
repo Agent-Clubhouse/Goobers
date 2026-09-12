@@ -53,7 +53,7 @@ func TestPruneAppliesBothBoundsProtectsLiveRunsAndRebuilds(t *testing.T) {
 		}
 	}
 
-	results, err := Prune(layout, db, Policy{Window: 30 * 24 * time.Hour, MaxRuns: 3}, Options{Now: now})
+	results, _, err := Prune(layout, db, Policy{Window: 30 * 24 * time.Hour, MaxRuns: 3}, Options{Now: now})
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
@@ -103,6 +103,65 @@ func TestPruneAppliesBothBoundsProtectsLiveRunsAndRebuilds(t *testing.T) {
 	)
 }
 
+func TestPruneCandidatesDoesNotExpandPreparedManifest(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	runLayout := layout.ForGaggle("example")
+	if err := layout.EnsureGaggleRuntime("example"); err != nil {
+		t.Fatal(err)
+	}
+	preparedDir := createRetentionRun(t, runLayout, "prepared", now.Add(-48*time.Hour), "terminal")
+	lateDir := createRetentionRun(t, runLayout, "late-terminal", now.Add(-48*time.Hour), "active")
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, dir := range []string{preparedDir, lateDir} {
+		if err := db.IngestRun(context.Background(), dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manifest, _, err := Prune(
+		layout,
+		db,
+		Policy{Window: 24 * time.Hour, MaxRuns: 500},
+		Options{Now: now, DryRun: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest) != 1 || manifest[0].RunID != "prepared" || manifest[0].StartedAt.IsZero() {
+		t.Fatalf("prepared manifest = %+v", manifest)
+	}
+	late, _, err := journal.Recover(lateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	pruned, err := PruneCandidates(layout, db, manifest, Options{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 1 || pruned[0].RunID != "prepared" {
+		t.Fatalf("pruned manifest = %+v", pruned)
+	}
+	if _, err := os.Stat(preparedDir); !os.IsNotExist(err) {
+		t.Fatalf("prepared candidate remains: %v", err)
+	}
+	if _, err := os.Stat(lateDir); err != nil {
+		t.Fatalf("newly eligible run was absorbed into prepared pass: %v", err)
+	}
+	assertRollupRunIDs(t, db, "late-terminal")
+}
+
 func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()
@@ -148,7 +207,7 @@ func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 		}
 	}
 
-	results, err := Prune(
+	results, _, err := Prune(
 		layout,
 		db,
 		Policy{Window: 24 * time.Hour, MaxRuns: 500},
@@ -206,7 +265,7 @@ func TestPruneRejectsSchemaOnlyFutureJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Prune(
+	_, _, err = Prune(
 		layout,
 		db,
 		Policy{Window: 24 * time.Hour, MaxRuns: 500},
@@ -261,7 +320,7 @@ func TestPrunePreflightsAllStagedJournalSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Prune(
+	_, _, err = Prune(
 		layout,
 		db,
 		Policy{Window: 24 * time.Hour, MaxRuns: 500},
@@ -295,7 +354,7 @@ func TestPruneRestoresJournalWhenRollupDeletionFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now}); err == nil {
+	if _, _, err := Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now}); err == nil {
 		t.Fatal("Prune succeeded with a closed rollup")
 	}
 	if _, err := os.Stat(runDir); err != nil {
@@ -310,6 +369,41 @@ func TestPruneRestoresJournalWhenRollupDeletionFails(t *testing.T) {
 	}
 	defer func() { _ = reopened.Close() }()
 	assertRollupRunIDs(t, reopened, "rollback-run")
+}
+
+func TestPruneCustodyFailurePreservesJournalAndClearsReservation(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	now := time.Now()
+	if err := os.MkdirAll(layout.RunsDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	runDir := createRetentionRun(t, layout, "custody-run", now.Add(-48*time.Hour), "terminal")
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.IngestRun(t.Context(), runDir); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("custody acknowledgment unavailable")
+	_, _, err = Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now, BeforeDelete: func(result Result) error {
+		if result.RunDir != runDir {
+			t.Errorf("candidate=%+v", result)
+		}
+		return failure
+	}})
+	if !errors.Is(err, failure) {
+		t.Fatalf("prune error=%v", err)
+	}
+	reserved, err := journal.PruneReserved(runDir)
+	if err != nil || reserved {
+		t.Fatalf("reservation=%v, %v", reserved, err)
+	}
+	if _, err := os.Stat(runDir); err != nil {
+		t.Fatal(err)
+	}
+	assertRollupRunIDs(t, db, "custody-run")
 }
 
 func TestPruneFinishesPartiallyRemovedStagedJournal(t *testing.T) {
@@ -349,7 +443,7 @@ func TestPruneFinishesPartiallyRemovedStagedJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Prune(layout, db, Policy{Window: 365 * 24 * time.Hour, MaxRuns: 500}, Options{Now: now}); err != nil {
+	if _, _, err := Prune(layout, db, Policy{Window: 365 * 24 * time.Hour, MaxRuns: 500}, Options{Now: now}); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 	if _, err := os.Stat(staged); !os.IsNotExist(err) {
@@ -392,7 +486,7 @@ func TestPruneSerializesWithInFlightIngestion(t *testing.T) {
 	}()
 	waitForRunLock(t, runDir)
 
-	results, err := Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now})
+	results, _, err := Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now})
 	if err != nil {
 		t.Fatalf("Prune while ingesting: %v", err)
 	}
@@ -412,7 +506,7 @@ func TestPruneSerializesWithInFlightIngestion(t *testing.T) {
 	}
 	assertRollupRunIDs(t, db, "ingest-race")
 
-	results, err = Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now})
+	results, _, err = Prune(layout, db, Policy{Window: 24 * time.Hour, MaxRuns: 500}, Options{Now: now})
 	if err != nil {
 		t.Fatalf("Prune after ingesting: %v", err)
 	}

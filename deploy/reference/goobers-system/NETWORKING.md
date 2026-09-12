@@ -16,6 +16,8 @@ Allowed paths in the base:
 | Daemon and workers | same-namespace `name: goobers-egress-proxy` | TCP 3128 |
 | Forward proxy | public IPv4, with private/link-local/loopback exclusions | TCP 443 |
 | Daemon | same-namespace `name: goobers-collector` | TCP 4317 |
+| Workers | Daemon (`component: api`) | TCP 8080 |
+| Stage pods in any gaggle namespace (`goobers.dev/gaggle-namespace: "true"`) | Daemon (`component: api`) | TCP 8080 |
 
 `name` and `component` above mean the `app.kubernetes.io/` label keys. Proxy and
 collector ingress rules allow only the named clients in the same namespace.
@@ -23,6 +25,17 @@ The proxy's DNS permission does not give it access to private HTTPS targets;
 RFC1918 and all `169.254.0.0/16` addresses, including IMDS, remain excluded.
 There is no public IPv6 grant. NetworkPolicy grants compose additively: an
 overlay-wide Internet grant can undo these restrictions and must be reviewed.
+
+TCP 8080 is the daemon's single API **and** blob-plane port
+(`internal/netpolrender.DefaultBlobEndpoint().Port`) — every dispatched
+stage's journal-emit, blob-put, artifact-record and surrender call targets
+it, alongside ordinary API traffic. The stage-pod grant selects gaggle
+namespaces generically via the `goobers.dev/gaggle-namespace: "true"` label
+(`../gaggle-namespace/base/namespace.yaml`); a gaggle namespace that omits
+this label is invisible to the grant and its stage pods cannot reach the
+daemon at all (#4828). See #3585 for narrowing this same grant further, to
+specific stage-pod runner classes, once the operator wants defense-in-depth
+beyond "any stage pod, any gaggle."
 
 ## Required adopter configuration
 
@@ -49,5 +62,9 @@ without these adopter settings fails closed; it is not a ready-to-apply cluster.
 
 This floor fixes the namespace-policy mismatch, not multi-tenant isolation.
 Shared workers still share filesystem, service identity and other process
-resources across same-operator gaggles. Stage pods retain their separate
-per-runner-class policies in gaggle namespaces.
+resources across same-operator gaggles. The templates can give stage pods
+separate per-runner-class policies in gaggle namespaces, but the current
+worker does not route by `spec.isolation.namespace`: one worker-wide flag
+controls every loaded gaggle queue. Copied workers with different flag values
+race nondeterministically for those same queues; this does not enforce
+per-gaggle namespace isolation (#4897).

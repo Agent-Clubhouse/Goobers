@@ -79,6 +79,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"roots discover": {
+		{name: "json", desc: "Emit structured root discovery"},
+	},
+	"roots decommission": {
+		{name: "reason", takesArg: true, desc: "Why this root is historical"},
+	},
 	"version": {
 		{name: "json", desc: "Emit JSON"},
 	},
@@ -109,6 +115,19 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "ci-command", takesArg: true, desc: "With --template=standard, local CI command as JSON argv"},
 		{name: "required-capabilities", takesArg: true, desc: "With --template=standard, comma-separated toolchain capabilities"},
 		{name: "provider", takesArg: true, values: []string{"github", "ado"}, desc: "With --template=standard, repository provider"},
+		{name: "repo", takesArg: true, desc: "With --template=standard, repository identity"},
+		{name: "branch", takesArg: true, desc: "With --template=standard, repository branch"},
+		{name: "issue-scope", takesArg: true, values: []string{"all", "assigned"}, desc: "With --template=standard, issue selection scope"},
+		{name: "assigned-to", takesArg: true, desc: "With --issue-scope=assigned, provider identity"},
+		{name: "pr-ci", desc: "With --template=standard, use pull-request CI"},
+		{name: "workflows", takesArg: true, desc: "With --template=standard, comma-separated workflow modules"},
+		{name: "repo-auth-kind", takesArg: true, values: []string{instance.ADOAuthAzureCLI, instance.ADOAuthPAT}, desc: "With --template=standard, repository authentication kind"},
+		{name: "repo-token-env", takesArg: true, desc: "With --template=standard, repository token environment variable"},
+		{name: "work-tracking-token-env", takesArg: true, desc: "With --template=standard, work-tracking token environment variable"},
+		{name: "pr-token-env", takesArg: true, desc: "With --template=standard, pull-request token environment variable"},
+		{name: "push-token-env", takesArg: true, desc: "With --template=standard, repository push token environment variable"},
+		{name: "model-token-env", takesArg: true, desc: "With --template=standard, optional model token environment variable"},
+		{name: "github-cli-user", takesArg: true, desc: "With --template=standard, authenticated GitHub CLI account"},
 		{name: "harness", takesArg: true, values: []string{string(apiv1.HarnessCopilot), string(apiv1.HarnessClaudeCode)}, desc: "With --template, the harness every seeded goober uses"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
 		{name: "json", desc: "Emit the config-source action result as JSON"},
@@ -169,6 +188,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Validate a checked-in config source tree"},
+		{name: "instance", takesArg: true, desc: "Real instance document for source-tree placement and capability solving"},
 		{name: "strict", desc: "Treat config warnings as validation errors"},
 	},
 	"lint": {
@@ -177,6 +197,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Lint a checked-in config source tree"},
+		{name: "instance", takesArg: true, desc: "Real instance document for source-tree placement and capability solving"},
 		{name: "strict", desc: "Treat config warnings as validation errors"},
 	},
 	"up": {
@@ -184,7 +205,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "diagnostics", desc: "Capture deep per-stage diagnostics for hang debugging"},
 		{name: "notify", desc: "Desktop-notify on escalated/failed runs (=all for every outcome)"},
 		{name: "skip-preflight", desc: "Start despite config validation errors"},
-		{name: "watch-config", desc: "Experimental: hot-reload config edits"},
+		{name: "watch-config", desc: "Hot-reload materialized config-directory edits (default on; instance.yaml requires restart)"},
 		{name: "drain-timeout", takesArg: true, desc: "Force shutdown after this graceful-drain duration"},
 		{name: "cleanup-spans-only-runs", desc: "Delete reported legacy spans-only run directories at startup"},
 		{name: "disable-read-model-reads", desc: "Read-model rollback: force authoritative journal scans for this run"},
@@ -195,6 +216,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
+		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
 		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},
 		{name: "overlay-dir", takesArg: true, desc: "Consumer kustomization directory (--k8s)"},
 		{name: "image-runtime", takesArg: true, values: []string{"docker", "podman"}, desc: "Runtime for pinned image checks"},
@@ -274,6 +297,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "drain-timeout", takesArg: true, desc: "Graceful-drain timeout"},
 		{name: "work-root", takesArg: true, desc: "Stage workspace root"},
 	},
+	"config-seed": {
+		{name: "mirror", takesArg: true, desc: "Read-only rendered config mirror path"},
+		{name: "instance", takesArg: true, desc: "Private worker instance path"},
+	},
 	"speech preflight": {
 		{name: "json", desc: "Emit JSON"},
 	},
@@ -297,12 +324,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
 	"run": {
+		{name: "no-api", desc: "Explicitly use local execution or file delegation"},
+		{name: "api-timeout", takesArg: true, desc: "Bound API validation and acceptance"},
+		{name: "force", desc: "Bypass hourly and daily cadence budgets for this manual run"},
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "github-progress", desc: "Publish live progress to one GitHub Check Run"},
 		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "request-id", takesArg: true, desc: "Retry-safe delivery identity for an API submission"},
-		{name: "no-wait", desc: "Return after the run is dispatched"},
+		{name: "no-wait", desc: "Return on durable API acceptance or local dispatch"},
 	},
 	"approve": {
 		{name: "decision", takesArg: true, desc: "Gate decision"},
@@ -313,6 +343,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"run cancel": {
+		{name: "no-api", desc: "Explicitly use local cancellation or file delegation"},
+		{name: "request-id", takesArg: true, desc: "Reuse an API cancellation identity"},
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"override": {
@@ -341,6 +373,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"status": {
 		{name: "agents", desc: "List in-flight agentic stages by role"},
+		{name: "all", desc: "Show individual detail for manual-only workflows"},
 		{name: "daemon", desc: "Report daemon health and identity"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "phase", takesArg: true, desc: "Filter by phase"},
@@ -349,6 +382,24 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "limit", takesArg: true, desc: "Maximum runs"},
 		{name: "watch", desc: "Refresh the status board until interrupted"},
 		{name: "interval", takesArg: true, desc: "Watch refresh interval"},
+	},
+	"queue-explain": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "pr", takesArg: true, desc: "PR number to explain"},
+		{name: "gaggle", takesArg: true, desc: "Gaggle namespace"},
+		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow that evaluated the queue"},
+	},
+	"recovery-restore": {
+		{name: "record", takesArg: true, desc: "Published recovery record"},
+		{name: "issue", takesArg: true, desc: "Issue with retained implementation"},
+		{name: "repository-key", takesArg: true, desc: "Canonical repository key"},
+		{name: "repository", takesArg: true, desc: "Destination Git repository"},
+		{name: "branch", takesArg: true, desc: "New local operator branch"},
+	},
+	"recovery-abandon": {
+		{name: "run", takesArg: true, desc: "Terminal source run"},
+		{name: "ref", takesArg: true, desc: "Exact recovery ref"},
+		{name: "confirm-digest", takesArg: true, desc: "Confirm published patch digest"},
 	},
 	"stats": {
 		{name: "since", takesArg: true, desc: "Only include activity from the preceding duration"},
@@ -436,6 +487,17 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
 	},
+	"telemetry merges": {
+		{name: "compare-github", takesArg: true, desc: "Compare an explicit GitHub owner/repository"},
+		{name: "shared-identities", takesArg: true, desc: "Comma-separated shared merger logins"},
+		{name: "json", desc: "Emit JSON"},
+		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
+		{name: "instance-id", takesArg: true, desc: "Filter by originating instance"},
+		{name: "repository-api-url", takesArg: true, desc: "Filter by repository API address"},
+		{name: "since", takesArg: true, desc: "Inclusive start timestamp"},
+		{name: "until", takesArg: true, desc: "Exclusive end timestamp"},
+		{name: "rebuild", desc: "Rebuild from retained journals"},
+	},
 	"telemetry errors": {
 		{name: "json", desc: "Emit JSON"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
@@ -444,6 +506,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "limit", takesArg: true, desc: "Maximum errors"},
 		{name: "since", takesArg: true, desc: "Include errors at or after this RFC3339 timestamp"},
 		{name: "until", takesArg: true, desc: "Include errors at or before this RFC3339 timestamp"},
+		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
+	},
+	"work-items": {
+		{name: "provider", takesArg: true, desc: "Filter by provider"},
+		{name: "repository", takesArg: true, desc: "Filter by repository"},
+		{name: "kind", takesArg: true, values: []string{"pr", "issue"}, desc: "Filter by work-item kind"},
+		{name: "id", takesArg: true, desc: "Show one work item's action timeline"},
+		{name: "limit", takesArg: true, desc: "Maximum work items"},
+		{name: "json", desc: "Emit JSON"},
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
 	},
 	"telemetry prune-orphans": {
@@ -471,6 +542,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},
+		{name: "resweep", desc: "Run scheduled re-sweep with --claim"},
 		{name: "debug", desc: "Explain candidate eligibility and exclusions"},
 		{name: "release", desc: "Release this run's claim leases early"},
 		{name: "read-only", desc: "Query without mutating provider state"},

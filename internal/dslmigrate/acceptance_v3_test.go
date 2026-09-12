@@ -176,8 +176,10 @@ func migratedRepoFrom(t *testing.T, wf apiv1.Workflow) map[string][]string {
 // proxy for dsl-3.0.md §9 item 1's second half: on a single runner, repoFrom
 // and runsOn are inert (§4 "byte-identical behavior" in modes 1/2), so the
 // migrated 3.0 machine must present the exact same stage-transition graph as
-// the 2.0 original — the graph a conformance journal records. A full runtime
-// journal diff on the local runner is the recorded follow-up.
+// the 2.0 original — the graph a conformance journal records. Representative
+// local runtime journal comparisons (including retry, repass, and actual repo
+// consumption) live in test/e2e/dsl_migration_conformance_test.go; exhaustive
+// runtime execution of every shipped workflow remains a separate acceptance.
 func TestAcceptanceConformanceEquivalentTransitionGraph(t *testing.T) {
 	entries, err := os.ReadDir(referenceWorkflowsDir)
 	if err != nil {

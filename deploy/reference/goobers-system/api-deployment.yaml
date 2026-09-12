@@ -9,8 +9,8 @@ metadata:
     app.kubernetes.io/name: goobers-api
     app.kubernetes.io/component: api
 spec:
-  # Disabled in the reference base: the daemon is loopback-only until #652,
-  # and running this stub would contend with the worker for the RWO instance.
+  # Disabled until an adopter configures TLS, pod authentication, and exclusive
+  # instance ownership. See ../README.md: Mode-3 authority and storage prerequisites.
   replicas: 0
   selector:
     matchLabels:
@@ -34,8 +34,8 @@ spec:
       containers:
         - name: api
           image: goobers # rewritten by the kustomization images: transformer
-          # CHANGE-ME: enable replicas only after #652 provides the in-cluster
-          # listener and the deployment no longer runs the lock-owning daemon.
+          # CHANGE-ME: configure the listener/authentication and separate the worker
+          # instance root before enabling this sole journal-owning daemon.
           args: ["up", "/var/lib/goobers"]
           ports:
             - name: http
@@ -50,13 +50,14 @@ spec:
           # must track api.listen. internal/httpapi/server.go refuses to
           # serve a non-loopback bind without TLS (SEC-043/#640) — so any
           # daemon a kubelet can reach at podIP:8080 is necessarily HTTPS,
-          # exactly like the loopback-only stub this base ships (replicas: 0,
+          # as required when enabling this base (replicas: 0,
           # CHANGE-ME above): raising replicas without also setting
           # api.listen/api.tls (and this scheme) reproduces the exact
           # CrashLoopBackOff #3806's httpGet probes exist to prevent, just
           # from the probes themselves. kubelet skips certificate
           # verification for HTTPS probes, so the cluster/self-signed cert
-          # api.tls points at is sufficient — no extra trust config needed.
+          # api.tls points at is sufficient FOR PROBES. Workers and stage pods
+          # must separately trust its CA for authenticated API/blob requests.
           #
           # startupProbe alone gates when liveness/readiness probing begins:
           # crash-resume of interrupted runs at daemon start

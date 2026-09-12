@@ -77,8 +77,10 @@ type activeRunSampler struct {
 
 	stopTimeout time.Duration
 
-	mu     sync.RWMutex
-	sample *activeSample
+	mu            sync.RWMutex
+	sample        *activeSample
+	initialSample chan struct{}
+	initialOnce   sync.Once
 
 	// sampling guards against overlapping samples. A historical walk takes seconds; an
 	// interval shorter than the walk would otherwise stack them and turn a
@@ -117,12 +119,13 @@ func newActiveRunSampler(layout instance.Layout, interval time.Duration, now fun
 		now = time.Now
 	}
 	sampler := &activeRunSampler{
-		layout:      layout,
-		interval:    interval,
-		now:         now,
-		stopTimeout: activeSamplerStopTimeout,
-		stop:        make(chan struct{}),
-		done:        make(chan struct{}),
+		initialSample: make(chan struct{}),
+		layout:        layout,
+		interval:      interval,
+		now:           now,
+		stopTimeout:   activeSamplerStopTimeout,
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
 	}
 	sampler.walk = sampler.walkRuns
 	return sampler
@@ -198,6 +201,7 @@ func (a *activeRunSampler) refresh(ctx context.Context) {
 	a.mu.Lock()
 	a.sample = &activeSample{counts: counts, takenAt: a.now(), err: err}
 	a.mu.Unlock()
+	a.initialOnce.Do(func() { close(a.initialSample) })
 }
 
 // walk performs the O(history) directory walk the read paths no longer do.

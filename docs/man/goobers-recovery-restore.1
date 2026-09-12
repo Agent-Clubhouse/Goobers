@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RECOVERY RESTORE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers recovery-restore \- restore retained implementation onto current main
+.SH SYNOPSIS
+\fBgoobers recovery-restore\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers recovery-restore --record <record.json> --repository <checkout> --branch <new-branch> [instance]
+
+Or select by --issue <id> --repository-key <canonical-key> instead of --record.
+
+Restore a retained implementation archive onto freshly fetched main from
+the matching configured repository. The archive must be snapshot.bundle
+beside record.json. The destination checkout and index remain unchanged;
+the new local branch must not exist. Expired records and runtime asset
+changes are refused. This does not push, open a PR, or abandon recovery.
+.fi
+.SH EXAMPLES
+.nf
+goobers recovery-restore --record ./retained/record.json --repository ./checkout --branch recovered-work ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

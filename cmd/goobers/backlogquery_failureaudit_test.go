@@ -76,7 +76,9 @@ func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 		}
 	}
 
-	const wantProducers = 17
+	// Each of the three scheduled re-sweep workflows adds a query and release.
+	// The dedicated implementation-recovery workflow adds one claim query.
+	const wantProducers = 24
 	if producers != wantProducers {
 		t.Fatalf("found %d shipped backlog-query stages, want audited inventory of %d", producers, wantProducers)
 	}
@@ -136,6 +138,7 @@ func TestBacklogQueryFatalProviderPathInventory(t *testing.T) {
 		"reconcile closed pull requests":            1,
 		"list work items":                           2,
 		"list blocked items for dependency recheck": 1,
+		"recheck blocked-item dependencies":         1,
 		"list ready items for re-sweep":             1,
 		"read ready-label transitions":              1,
 		"compute claimed-item staleness":            1,
