@@ -275,6 +275,12 @@ func (r *workerDivergenceJournalRecorder) Append(event journal.Event) error {
 
 func (r *workerDivergenceJournalRecorder) remember(event journal.Event) {
 	worker := divergenceRunnerString(event, "worker")
+	// A real worker report resolves the daemon-lifetime capability sentinel.
+	// Forget its fingerprint as well as letting the read-model fold hide it,
+	// so the next daemon startup can author a genuinely new "awaiting" period.
+	if worker != "" && worker != journal.WorkerConfigDivergenceReportingCapability {
+		delete(r.latest, journal.WorkerConfigDivergenceReportingCapability)
+	}
 	if worker != "" {
 		r.latest[worker] = workerDivergenceFingerprint(event)
 	}

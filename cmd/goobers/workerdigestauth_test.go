@@ -349,6 +349,46 @@ func TestWorkerDivergenceJournalRecorderDeduplicatesAcrossRestart(t *testing.T) 
 	}
 }
 
+func TestWorkerDivergenceRecorderReopensAwaitingPeriodOnDaemonRestart(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	recorder, err := newWorkerDivergenceJournalRecorder(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{Engine: &instance.EngineConfig{HostPort: "temporal:7233"}}
+	cfg.API.PodTokenKeyFile = "/var/run/goobers/pod.key"
+	if err := recordDaemonWorkerDivergenceAvailability(recorder, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+		"worker": "worker:node-a", "state": workerDivergenceInSync,
+		"workerDigest": "sha256:a", "daemonDigest": "sha256:a", "message": "reported",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := newWorkerDivergenceJournalRecorder(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recordDaemonWorkerDivergenceAvailability(restarted, cfg); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 || events[2].Runner["worker"] != journal.WorkerConfigDivergenceReportingCapability ||
+		events[2].Runner["state"] != workerDivergenceNotChecked {
+		t.Fatalf("restart events = %+v, want fresh trailing reporting sentinel", events)
+	}
+}
+
 func TestDaemonRecordsRemoteReportingNotActiveWithoutWorkerKey(t *testing.T) {
 	events := make(chan journal.Event, 1)
 	cfg := &instance.Config{Engine: &instance.EngineConfig{HostPort: "temporal:7233"}}
