@@ -345,6 +345,14 @@ func readInstanceLogIDWith(dir string, openAt func(*os.File, string) (*os.File, 
 	if !before.Mode().IsRegular() || before.Size() != 33 {
 		return "", fmt.Errorf("journal: invalid instance log identity file %s", path)
 	}
+	// On Windows, FileInfo defers loading its stable volume/file identity until
+	// os.SameFile is called. Resolve it before opening the file: otherwise a
+	// pathname swap between Lstat and OpenAt can make both FileInfos resolve the
+	// replacement and falsely appear identical. Other platforms perform this
+	// comparison entirely from the metadata Lstat already captured.
+	if !os.SameFile(before, before) {
+		return "", fmt.Errorf("journal: instance log identity changed while opening %s", path)
+	}
 	directory, err := safeopen.Open(dir)
 	if err != nil {
 		return "", fmt.Errorf("journal: open instance log directory: %w", err)
