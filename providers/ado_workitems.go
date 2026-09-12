@@ -379,7 +379,11 @@ func (p *ADOProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWorkIt
 	if err := p.doPatch(ctx, http.MethodPatch, endpoint, patch, &out); err != nil {
 		return WorkItem{}, err
 	}
-	p.recordMutation(ctx, "issue", req.ID, "status")
+	operation := "status"
+	if req.Status == WorkItemStatusDone || req.Status == WorkItemStatusClosed {
+		operation = "close"
+	}
+	p.recordMutation(ctx, "issue", req.ID, operation)
 	updated, err := p.mapADOWorkItem(ctx, req.Repository, out)
 	if err != nil {
 		return WorkItem{}, err

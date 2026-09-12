@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -61,6 +62,23 @@ func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt 
 	}
 }
 
+func writeStatsReadModel(t *testing.T, root string, runs ...readmodel.RunRow) {
+	t.Helper()
+	store, err := readmodel.Open(instance.NewLayout(root).ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	for _, run := range runs {
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: run}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.MarkReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStatsJSONAndSinceWindow(t *testing.T) {
 	root := initDemo(t)
 	now := time.Now()
@@ -100,6 +118,45 @@ func TestStatsJSONAndSinceWindow(t *testing.T) {
 		got.TimeToFirstPR.Milliseconds == nil ||
 		*got.TimeToFirstPR.Milliseconds != got.TimeToFirstPR.FirstPROpenAt.Sub(*got.TimeToFirstPR.InitCompletedAt).Milliseconds() {
 		t.Fatalf("timeToFirstPR = %#v, want source timestamps and their millisecond interval", got.TimeToFirstPR)
+	}
+}
+
+func TestStatsMergedCountUsesReadyReadModelOutcome(t *testing.T) {
+	root := initDemo(t)
+	now := time.Now().UTC()
+	writeStatsCommandRun(t, root, "old-merged", "merge-review", now.Add(-48*time.Hour), journal.PhaseCompleted)
+	writeStatsCommandRun(t, root, "recent-merged", "merge-review", now.Add(-time.Hour), journal.PhaseCompleted)
+	layout := instance.NewLayout(root)
+	if err := rollup.Rebuild(context.Background(), layout.TelemetryDB(), layout.RunsDir(), layout.SchedulerDir()); err != nil {
+		t.Fatal(err)
+	}
+	writeStatsReadModel(t, root,
+		readmodel.RunRow{RunID: "old-merged", Gaggle: "example", Workflow: "merge-review", Phase: journal.PhaseCompleted, Terminal: true, StartedAt: now.Add(-48 * time.Hour), LastActivity: now.Add(-48 * time.Hour), LastSeq: 1, OutcomeVerdict: "merged"},
+		readmodel.RunRow{RunID: "recent-merged", Gaggle: "example", Workflow: "merge-review", Phase: journal.PhaseCompleted, Terminal: true, StartedAt: now.Add(-time.Hour), LastActivity: now.Add(-time.Hour), LastSeq: 1, OutcomeVerdict: "merged"},
+	)
+
+	code, stdout, stderr := runArgs(t, "stats", "--json", root)
+	if code != 0 {
+		t.Fatalf("stats: code=%d stderr=%q", code, stderr)
+	}
+	var lifetime statsJSONSummary
+	if err := json.Unmarshal([]byte(stdout), &lifetime); err != nil {
+		t.Fatal(err)
+	}
+	if lifetime.PullRequests.Merged != 2 {
+		t.Fatalf("lifetime merged = %d, want read-model outcomes 2", lifetime.PullRequests.Merged)
+	}
+
+	code, stdout, stderr = runArgs(t, "stats", "--since", "24h", "--json", root)
+	if code != 0 {
+		t.Fatalf("windowed stats: code=%d stderr=%q", code, stderr)
+	}
+	var windowed statsJSONSummary
+	if err := json.Unmarshal([]byte(stdout), &windowed); err != nil {
+		t.Fatal(err)
+	}
+	if windowed.PullRequests.Merged != 1 {
+		t.Fatalf("windowed merged = %d, want read-model outcomes 1", windowed.PullRequests.Merged)
 	}
 }
 

@@ -661,11 +661,15 @@ func (p *GitHubProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWor
 	if err != nil {
 		return WorkItem{}, err
 	}
+	operation := "status"
+	if req.Status == WorkItemStatusDone {
+		operation = "close"
+	}
 	p.recordExternalRef(ctx, ExternalRef{
 		Provider:  ProviderGitHub,
 		Ref:       issueRef(req.Repository, req.ID),
 		URL:       item.URL,
-		Operation: "status",
+		Operation: operation,
 		Fields: map[string]FieldDigest{
 			"status": {Before: digestString(string(statusFromLabels(current.Labels, current.State))), After: digestString(string(req.Status))},
 		},

@@ -54,7 +54,8 @@ func TestIssueCloseOutCommentsClosesAndReleasesClaim(t *testing.T) {
 	server.mu.Unlock()
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
-	t.Chdir(t.TempDir())
+	workspace := t.TempDir()
+	t.Chdir(workspace)
 
 	code, stdout, stderr := runArgs(t, "issue-close-out", root)
 	if code != 0 {
@@ -72,6 +73,16 @@ func TestIssueCloseOutCommentsClosesAndReleasesClaim(t *testing.T) {
 	}
 	if len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "https://example/pull/1") {
 		t.Fatalf("issue comments = %+v, want exactly one linking pull/1", issue.comments)
+	}
+	var recordedClose bool
+	for _, fact := range readMutationFacts(t, workspace) {
+		if fact.Kind == "issue" && fact.ID == "7" && fact.Operation == "close" {
+			recordedClose = true
+			break
+		}
+	}
+	if !recordedClose {
+		t.Fatal("issue-close-out did not record its provider close mutation")
 	}
 
 	// The claim was released, not left to expire.
