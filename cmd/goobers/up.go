@@ -1087,22 +1087,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// coalescing with the periodic 6h sweep via retentionGate so at most one
 	// ever runs at a time.
 	pf(stdout, "%s startup phase=retention-sweep status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#4373)")
-	telemetryRetentionConfig := instance.TelemetryRetentionConfig{}
-	if setup.Config.Telemetry.Retention != nil {
-		telemetryRetentionConfig = *setup.Config.Telemetry.Retention
-	}
-	var telemetryPrunedCount int
-	var telemetryPrunedDryRun bool
-	telemetryErr := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
-		var err error
-		telemetryPrunedCount, telemetryPrunedDryRun, err = pruneAndRecordTelemetryRetention(setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, time.Now())
-		return err
-	})
+	telemetryRetentionConfig, telemetryErr := runStartupTelemetryRetention(stdout, tracker, l, setup)
 	if telemetryErr != nil {
 		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
-	reportTelemetryPruned(stdout, telemetryPrunedCount, telemetryPrunedDryRun, telemetryRetentionConfig.EnabledEffective())
 
 	// Prune crash-abandoned orphan runs and run-creation staging directories
 	// before anything else touches the runs tree (#2035): a mid-Create crash's

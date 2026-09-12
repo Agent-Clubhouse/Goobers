@@ -591,6 +591,31 @@ func runPeriodicTelemetryRetention(
 	return compactSchedulerRetention(ctx, config, db, log, cleanupErrors, now)
 }
 
+// runStartupTelemetryRetention keeps the startup phase, failure, and summary
+// sequencing together without growing the daemon's orchestration body.
+func runStartupTelemetryRetention(
+	stdout io.Writer,
+	tracker *startupPhaseTracker,
+	layout instance.Layout,
+	setup *schedulerSetup,
+) (instance.TelemetryRetentionConfig, error) {
+	config := instance.TelemetryRetentionConfig{}
+	if setup.Config.Telemetry.Retention != nil {
+		config = *setup.Config.Telemetry.Retention
+	}
+	var candidateCount int
+	var dryRun bool
+	err := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
+		var pruneErr error
+		candidateCount, dryRun, pruneErr = pruneAndRecordTelemetryRetention(setup.InstanceLog, layout, config, setup.RollupDB, time.Now())
+		return pruneErr
+	})
+	if err == nil {
+		reportTelemetryPruned(stdout, candidateCount, dryRun, config.EnabledEffective())
+	}
+	return config, err
+}
+
 // compactSchedulerRetention bounds the scheduler journal and rollup rows. A
 // stale-generation cleanup failure is reported through cleanupErrors (a nil
 // reporter simply drops it) rather than returned: the compaction itself
