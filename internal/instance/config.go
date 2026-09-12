@@ -1506,11 +1506,12 @@ func (c RunConditions) RunControls() apiv1.RunControls {
 	}
 }
 
-// RetentionConfig controls pruning of retained failure worktrees and merged
-// local run branches. Pruning is OPT-OUT (#4253, implementing the #3056
-// ruling), matching telemetry.retention: an instance that says nothing about
-// retention still bounds its own disk, because the alternative measured on the
-// live instance was ~240 MB/day of unbounded growth. DryRun still defaults to
+// RetentionConfig controls pruning of retained failure worktrees and local run
+// branches whose tip is an ancestor of another local branch. Pruning is OPT-OUT
+// (#4253, implementing the #3056 ruling), matching telemetry.retention. The
+// default age rule bounds retained failure worktrees, but local branch cleanup
+// is ancestry-only and has no alternate proof for squash/queue/legacy landings;
+// a branch whose tip is not an ancestor may remain. DryRun still defaults to
 // false and remains an operator preview knob, independent of the safe
 // first-enable grace window below.
 type RetentionConfig struct {
