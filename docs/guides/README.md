@@ -14,6 +14,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Configuring backlog park-label filtering](backlog-park-filtering.md)
 - [Find ready issues with no label route](backlog-routing-diagnostics.md)
 - [Inspect claim verification](claim-verification.md)
+- [Codex harness](codex-harness.md)
 - [Goobers comment attribution](comment-attribution.md)
 - [Workflow config drift](config-drift.md)
 - [Config-repo PR validation gate](config-pr-validation-gate.md)
