@@ -27,7 +27,7 @@ _goobers_completion()
             flags+=" --json"
             ;;
         init)
-            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --provider --harness --source-tree --json"
+            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --provider --repo --branch --issue-scope --assigned-to --pr-ci --workflows --repo-auth-kind --repo-token-env --work-tracking-token-env --pr-token-env --push-token-env --model-token-env --github-cli-user --harness --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
