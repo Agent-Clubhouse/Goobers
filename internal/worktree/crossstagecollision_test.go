@@ -242,6 +242,67 @@ func TestManagerCreateRefusesDisagreeingReleasedOwnershipRecords(t *testing.T) {
 	}
 }
 
+func TestManagerCreateRefusesTraversingReleasedOwnershipRunID(t *testing.T) {
+	for _, maliciousRunID := range []string{"../escaped", `..\escaped`} {
+		t.Run(strings.ReplaceAll(maliciousRunID, `\`, "backslash"), func(t *testing.T) {
+			ctx := context.Background()
+			repo := newSourceRepo(t)
+			m := newTestManager(t)
+			const (
+				owner  = "workflow-run"
+				branch = "goobers/review/workflow-run"
+			)
+			if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+				return errors.New("defer cleanup")
+			}); err != nil {
+				t.Fatal(err)
+			}
+			first, err := m.Create(ctx, CreateOptions{
+				RepoURL: repo, RunID: owner + "-stage-a", OwnerRunID: owner, BaseRef: "main", Branch: branch,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := first.Remove(ctx, RemoveOptions{}); !errors.Is(err, ErrCleanupDeferred) {
+				t.Fatalf("first Remove error = %v, want deferred cleanup", err)
+			}
+
+			// Recreate the hostile disk shape precisely: the branch occupant is
+			// still contained under runs/, but its ownership record hashes a RunID
+			// that would escape markers/ on one supported platform.
+			directory := worktreeDirectoryName(maliciousRunID)
+			hostilePath := filepath.Join(m.runsDirForKey(first.key), directory)
+			runTestGit(t, m.repoDirForKey(first.key), "worktree", "move", first.Path, hostilePath)
+			ownership, err := readMarker(m.ownershipPath(first.key, filepath.Base(first.Path)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ownership.RunID = maliciousRunID
+			ownership.Directory = directory
+			if err := writeMarker(m.ownershipPath(first.key, directory), ownership); err != nil {
+				t.Fatal(err)
+			}
+			escapedPrimary := m.markerPath(first.key, maliciousRunID)
+			if err := writeMarker(escapedPrimary, ownership); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = m.Create(ctx, CreateOptions{
+				RepoURL: repo, RunID: owner + "-stage-b", OwnerRunID: owner, BaseRef: "main", Branch: branch,
+			})
+			if err == nil || !strings.Contains(err.Error(), "ownership directory identity is invalid") {
+				t.Fatalf("Create with traversing ownership RunID error = %v, want identity refusal", err)
+			}
+			if _, err := os.Stat(hostilePath); err != nil {
+				t.Fatalf("traversing ownership removed occupant: %v", err)
+			}
+			if _, err := os.Stat(escapedPrimary); err != nil {
+				t.Fatalf("traversing ownership removed primary evidence: %v", err)
+			}
+		})
+	}
+}
+
 func TestManagerCreateRefusesBranchOccupantOutsideManagedRuns(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

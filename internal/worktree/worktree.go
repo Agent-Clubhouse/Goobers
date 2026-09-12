@@ -169,13 +169,16 @@ func (wt *Worktree) HeadSHA(ctx context.Context) (string, error) {
 
 // validRunID reports whether id is safe to join onto a directory as a
 // single path segment: non-empty, not "." or "..", and not itself a
-// multi-segment or absolute path (filepath.Base(id) == id is false for any
-// of those) — mirrors api/v1alpha1.ValidRunID; duplicated rather than
+// multi-segment or absolute path. Both slash forms are rejected on every OS:
+// durable markers can cross platform boundaries, so a Windows separator must
+// not become a valid Unix filename (or vice versa). This otherwise mirrors
+// api/v1alpha1.ValidRunID; duplicated rather than
 // shared since this package has no other reason to depend on the stage
 // contract package (see doc.go), the same tradeoff already accepted for
 // marker.go's fsyncDir (which mirrors internal/journal's own copy).
 func validRunID(id string) bool {
-	return id != "" && id != "." && id != ".." && filepath.Base(id) == id
+	return id != "" && id != "." && id != ".." &&
+		!strings.ContainsAny(id, `/\`) && filepath.Base(id) == id
 }
 
 // Create prepares repoURL's managed working copy (cloning or fetching as
@@ -1043,7 +1046,7 @@ func (m *Manager) reconcileReleasedSameRunBranch(ctx context.Context, key, repoD
 	if err != nil {
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: read ownership record: %w", opts.Branch, occupant, err)
 	}
-	if ownership.Directory == "" || ownership.Directory != directory || ownership.RunID == "" ||
+	if ownership.Directory == "" || ownership.Directory != directory || !validRunID(ownership.RunID) ||
 		worktreeDirectoryName(ownership.RunID) != directory {
 		return fmt.Errorf("worktree: refuse branch %q occupant %s: ownership directory identity is invalid", opts.Branch, occupant)
 	}
