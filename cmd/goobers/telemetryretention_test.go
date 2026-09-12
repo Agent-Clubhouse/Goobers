@@ -14,8 +14,18 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
+
+func pruneConfiguredTelemetryRetention(
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	now time.Time,
+) ([]retention.Result, bool, error) {
+	return pruneConfiguredTelemetryRetentionPassWithWriter(layout, config, db, now, false, writeTelemetryRetentionState)
+}
 
 func TestTelemetryPruneIsExplicitWhenAutomationDisabled(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
@@ -82,8 +92,12 @@ func TestRecordTelemetryRetentionPassJournalsBoundedProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := recordTelemetryRetentionPass(log, layout); err != nil {
+	count, dryRun, err := pruneAndRecordTelemetryRetention(log, layout, instance.TelemetryRetentionConfig{}, nil, passAt)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if count != 3 || !dryRun {
+		t.Fatalf("published pass = (count %d, dryRun %v), want (3, true)", count, dryRun)
 	}
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
