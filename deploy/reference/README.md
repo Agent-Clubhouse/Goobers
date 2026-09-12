@@ -236,13 +236,13 @@ names this gaggle actually dispatch pod-per-stage runs into it (#4286); stage po
 themselves still get no token mount and no RBAC grants at all. The included
 `goobers-stage` ServiceAccount is a target-topology template, not one the current
 dispatcher selects. `--dispatch-namespace` takes a single value, but the
-worker still polls every gaggle queue loaded from its config. Therefore the
-generic worker is safe only for a single-gaggle config whose declared and flag
-namespaces have been manually aligned. Do **not** copy it with different
-namespace flags for multiple gaggles: those unscoped workers race for every
-gaggle queue, and the winner's flag—not `spec.isolation.namespace`—decides where
-the pod lands (#4897). Dedicated per-gaggle queue scoping is the recommended
-future shape and is not implemented yet.
+worker still polls every gaggle queue loaded from its config. All loaded
+gaggles therefore share that worker-wide namespace; `spec.isolation.namespace`
+does not enforce per-gaggle isolation. Copies with different namespace flags
+still poll the same unscoped queues and race nondeterministically, so whichever
+copy wins decides where a pod lands. Issue #4897 leaves the resolution open:
+possible choices include dedicated queue scoping, dynamic gaggle-to-namespace
+mapping, or demoting the isolation field.
 
 ## Operating notes from a real cluster
 

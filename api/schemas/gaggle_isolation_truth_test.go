@@ -25,8 +25,8 @@ func TestGaggleIsolationSchemaStatesCurrentDispatchLimitation(t *testing.T) {
 		t.Fatalf("isolation.required = %#v, want unchanged [namespace] shape", isolation["required"])
 	}
 	for name, phrases := range map[string][]string{
-		"isolation":   {"active mode-3 worker does not route", "--dispatch-namespace"},
-		"namespace":   {"currently ignored by active mode-3 dispatch", "--dispatch-namespace"},
+		"isolation":   {"active mode-3 worker does not route", "All gaggles loaded", "--dispatch-namespace", "does not enforce per-gaggle isolation"},
+		"namespace":   {"currently ignored by active mode-3 dispatch", "All loaded gaggles share", "--dispatch-namespace", "does not enforce per-gaggle isolation"},
 		"identityRef": {"active dispatcher does not consume"},
 	} {
 		field := isolation
@@ -38,6 +38,12 @@ func TestGaggleIsolationSchemaStatesCurrentDispatchLimitation(t *testing.T) {
 			if !strings.Contains(description, phrase) {
 				t.Errorf("%s description = %q, want %q", name, description, phrase)
 			}
+		}
+	}
+	combined := isolation["description"].(string) + " " + schemaObject(t, isolation, "properties", "namespace")["description"].(string)
+	for _, policyClaim := range []string{"safe only", "supported topology", "recommended future"} {
+		if strings.Contains(strings.ToLower(combined), policyClaim) {
+			t.Errorf("isolation descriptions contain policy claim %q: %q", policyClaim, combined)
 		}
 	}
 }

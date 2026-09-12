@@ -33,14 +33,14 @@
         "backlog": { "$ref": "#/$defs/backlogRef", "description": "Singleton source of work-item truth for this gaggle." },
         "isolation": {
           "type": "object",
-          "description": "Target per-gaggle namespace and workload-identity boundary. The quarantined operator consumes this block, but the active mode-3 worker does not route from it; its single --dispatch-namespace value controls every gaggle queue it polls. Do not treat this declaration alone as an enforced isolation boundary (#4897).",
+          "description": "Target per-gaggle namespace and workload-identity boundary. The quarantined operator consumes this block, but the active mode-3 worker does not route from it. All gaggles loaded by that worker share its single --dispatch-namespace value; this does not enforce per-gaggle isolation (#4897).",
           "additionalProperties": false,
           "required": ["namespace"],
           "properties": {
             "namespace": {
               "type": "string",
               "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
-              "description": "Kubernetes namespace reserved for this gaggle's workloads and secrets in the target/operator topology. Required for schema compatibility, but currently ignored by active mode-3 dispatch, which uses one worker-wide --dispatch-namespace value (#4897)."
+              "description": "Kubernetes namespace reserved for this gaggle's workloads and secrets in the target/operator topology. Required for schema compatibility, but currently ignored by active mode-3 dispatch. All loaded gaggles share the worker-wide --dispatch-namespace value; this does not enforce per-gaggle isolation (#4897)."
             },
             "identityRef": { "type": "string", "description": "Target per-gaggle Azure workload identity for external services. The active dispatcher does not consume this declaration (#4897)." }
           }

@@ -7,7 +7,8 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // goobers and workflows (which reference it by name). Isolation declares the
 // target namespace + identity per gaggle (GAG-001..006, SEC-001/002). The
 // active mode-3 worker does not yet route from this declaration: its single
-// --dispatch-namespace value controls every gaggle queue it polls (#4897).
+// --dispatch-namespace value is shared by every gaggle it loads and does not
+// enforce per-gaggle isolation (#4897).
 type GaggleSpec struct {
 	// Cost overrides instance-wide external cost publication. An omitted or
 	// null enabled value inherits the instance default; local accounting remains active.
@@ -211,8 +212,8 @@ type GaggleIsolation struct {
 	// Namespace is the k8s namespace reserved for this gaggle's pods and secrets
 	// in the target/operator topology. It is still required for schema
 	// compatibility, but does not select the active mode-3 dispatch namespace:
-	// one --dispatch-namespace value controls every gaggle queue a worker polls.
-	// Do not treat this declaration alone as an enforced isolation boundary.
+	// all loaded gaggles share one worker-wide --dispatch-namespace value. This
+	// does not enforce per-gaggle isolation.
 	// +kubebuilder:validation:Required
 	Namespace string `json:"namespace" yaml:"namespace"`
 	// IdentityRef names the target per-gaggle Azure workload identity

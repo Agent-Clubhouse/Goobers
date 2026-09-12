@@ -49,10 +49,11 @@ mode-3 worker derives from `Gaggle.spec.isolation`. Today one worker accepts one
 `--dispatch-namespace`, polls every `(gaggle × runner)` queue loaded from its
 config tree, and creates every stage pod it wins in that one namespace (#4897).
 Copying the unscoped worker with a different namespace does not partition the
-queues: the copies race for all gaggles, so the winning worker determines the
-pod namespace. The shipped authenticated topology is safe only because it
-admits exactly one gaggle. Dedicated per-gaggle queue scoping is the recommended
-future architecture, but is not implemented by these declarations or manifests.
+queues: the copies race nondeterministically for all gaggles, so the winning
+worker determines the pod namespace. This does not enforce per-gaggle
+isolation. Issue #4897 leaves the architecture decision open; dedicated queue
+scoping, dynamic gaggle-to-namespace mapping, and demotion of the isolation
+field are possible resolutions, with none selected here.
 
 - **`goobers-system`** — control plane (operator, workers, API). One service account per
   component, least-privilege Roles; the operator alone holds CRD-reconcile rights.

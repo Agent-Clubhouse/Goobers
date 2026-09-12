@@ -37,9 +37,9 @@ subjects:
   # The worker's OWN ServiceAccount (../../goobers-system/worker-rbac.yaml),
   # bound cross-namespace — not a new identity. This grant authorizes the
   # worker's ONE --dispatch-namespace value, but does not scope the queues it
-  # polls. Do not stamp multiple gaggle overlays and copy unscoped workers with
-  # different namespace flags: they race for every loaded gaggle queue (#4897).
-  # The current generic deployment is safe only for one loaded gaggle.
+  # polls. All loaded gaggles share that worker-wide namespace; copied unscoped
+  # workers with different namespace flags race nondeterministically for the
+  # same queues, so this grant does not enforce per-gaggle isolation (#4897).
   - kind: ServiceAccount
     name: goobers-worker
     namespace: goobers-system

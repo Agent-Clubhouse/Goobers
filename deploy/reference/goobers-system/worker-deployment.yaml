@@ -118,16 +118,18 @@ spec:
             # real stage fails closed with "not configured". Takes a SINGLE
             # namespace, independent of each gaggle's
             # spec.isolation.namespace. This worker polls EVERY gaggle queue
-            # loaded from its config, so it is safe only with one gaggle. Do
-            # not copy it with different namespace values for a multi-gaggle
-            # config: the copies race for all queues and the winner decides
-            # the pod namespace (#4897). Dedicated per-gaggle queue scoping is
-            # the recommended future shape, but is not implemented. The
+            # loaded from its config, so all loaded gaggles share this
+            # worker-wide namespace. Copies with different namespace values
+            # race nondeterministically for the same queues and the winner
+            # decides the pod namespace; this does not enforce per-gaggle
+            # isolation (#4897). Possible resolutions include dedicated queue
+            # scoping, dynamic gaggle-to-namespace mapping, or demoting the
+            # isolation field. The
             # matching RBAC grant lives in
             # ../gaggle-namespace/base/dispatcher-rbac.yaml, bound to this
             # same goobers-worker ServiceAccount.
             - "--dispatch-namespace"
-            - "gaggle-a" # CHANGE-ME: worker-wide namespace; safe only for one loaded gaggle
+            - "gaggle-a" # CHANGE-ME: worker-wide namespace shared by every loaded gaggle
           env:
             # Temporal frontend (§2); reachable from workers and operator only
             # (§5 — see ../temporal/networkpolicy-temporal.yaml). The worker
