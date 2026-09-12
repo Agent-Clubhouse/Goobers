@@ -79,10 +79,17 @@ func runRemoteTrigger(
 	target runTarget,
 	requestID string,
 	noWait bool,
+	timeout time.Duration,
 	stdout, stderr io.Writer,
 ) int {
+	if timeout <= 0 {
+		pf(stderr, "error: --api-timeout must be positive\n")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if target.PR > 0 {
-		pf(stderr, "error: --pr is not supported over the daemon API; run it from the daemon's own instance root\n")
+		pf(stderr, "error: --pr is not supported over the daemon API; use --no-api from the daemon's own instance root\n")
 		return 2
 	}
 	requestID = strings.TrimSpace(requestID)
@@ -99,13 +106,18 @@ func runRemoteTrigger(
 		return 2
 	}
 
+	if err := prepareRemoteRoot(ctx, endpoint, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	response, apiErr, err := submitRemoteTrigger(ctx, endpoint, httpapi.TriggerRequest{
 		Gaggle:    target.Gaggle,
 		Workflow:  target.Workflow,
 		RequestID: requestID,
+		Force:     target.Force,
 	})
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: trigger acceptance is unknown: %v; retry with --request-id %q and the same workflow/options\n", err, requestID)
 		return 2
 	}
 	if apiErr != nil {
@@ -114,6 +126,8 @@ func runRemoteTrigger(
 	}
 
 	switch {
+	case response.AcceptanceID != "":
+		pf(stdout, "accepted trigger %s (request=%s, workflow=%s, state=%s)\n", response.AcceptanceID, requestID, target.Workflow, response.State)
 	case response.Duplicate && response.RunID == "":
 		pf(stdout, "trigger request %s was already accepted (workflow=%s, dispatched via daemon API); its run is still being minted\n",
 			requestID, target.Workflow)
@@ -156,12 +170,16 @@ func submitRemoteTrigger(
 		return httpapi.TriggerResponse{}, nil, fmt.Errorf("build trigger request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(httpapi.HeaderIdempotencyKey, input.RequestID)
 	request.Header.Set("Accept", "application/json")
 	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	client := &http.Client{Timeout: remoteTriggerTimeout}
+	// A redirect would submit to a target whose root identity was not shown.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 	response, err := client.Do(request)
 	if err != nil {
 		return httpapi.TriggerResponse{}, nil, fmt.Errorf("call daemon API %s: %w", endpoint, err)

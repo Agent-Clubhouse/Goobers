@@ -16,6 +16,7 @@ import {
   UnsupportedSchemaVersionError,
 } from "./errors";
 import { HttpDaemonClient } from "./httpClient";
+import { onUpdateAvailability, resetUpdateAvailability } from "../updateNotice";
 import { API_VERSION, SCHEMA_VERSION, type Health } from "./types";
 
 const health: Health = {
@@ -40,6 +41,46 @@ afterEach(async () => {
 });
 
 describe("HttpDaemonClient", () => {
+  it("reads workflow-scoped queue evidence without a mutation", async () => {
+    const evidence = { gaggle: "core", workflow: "implementation", status: "not-observed", asOf: "2026-09-08T00:00:00Z" };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(evidence));
+    const client = new HttpDaemonClient({ fetch: fetcher });
+
+    await expect(client.getWorkflowQueueEligibility("core", "implementation")).resolves.toEqual(evidence);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(
+      "/api/v1/gaggles/core/workflows/implementation/queue-eligibility",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  // The update strip observes health responses rather than fetching its own,
+  // so this publish is the only thing that feeds it (#4920).
+  it("publishes update availability observed on a health response", async () => {
+    resetUpdateAvailability();
+    const withUpdate = {
+      ...health,
+      update: {
+        available: true,
+        latestVersion: "v9.9.9",
+        currentVersion: "v9.9.8",
+        channel: "stable",
+        checkedAt: "2026-09-11T12:00:00Z",
+      },
+    };
+    const observed: (unknown | undefined)[] = [];
+    const unsubscribe = onUpdateAvailability((update) => observed.push(update));
+    try {
+      const client = new HttpDaemonClient({
+        fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json(withUpdate)),
+      });
+      await client.getHealth();
+    } finally {
+      unsubscribe();
+    }
+
+    expect(observed).toEqual([withUpdate.update]);
+  });
+
   it("uses the same origin by default", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(health));
     const client = new HttpDaemonClient({ fetch: fetcher });
@@ -271,6 +312,187 @@ describe("HttpDaemonClient", () => {
       code: "telemetry_unavailable",
       message: "telemetry is not enabled",
     } satisfies Partial<DaemonApiError>);
+  });
+
+  it("coalesces simultaneous identical reads", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = vi.fn<typeof fetch>(async () => {
+      await blocked;
+      return Response.json(health);
+    });
+    const client = new HttpDaemonClient({ fetch: fetcher });
+
+    const first = client.getHealth();
+    const second = client.getHealth();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([health, health]);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not attach a remounted consumer to an aborted shared request", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      if (fetcher.mock.calls.length === 1) {
+        await new Promise<void>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      }
+      return Response.json(health);
+    });
+    const client = new HttpDaemonClient({ fetch: fetcher });
+    const firstController = new AbortController();
+
+    const first = client.getHealth({ signal: firstController.signal });
+    firstController.abort();
+    const remounted = client.getHealth();
+
+    await expect(first).rejects.toBeInstanceOf(RequestCancelledError);
+    await expect(remounted).resolves.toEqual(health);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds simultaneous reads across query families", async () => {
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let peak = 0;
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      const path = new URL(String(input), "http://localhost").pathname;
+      if (path === "/api/v1/health") return Response.json(health);
+      if (path === "/api/v1/instance") {
+        return Response.json({ apiVersion: API_VERSION, schemaVersion: SCHEMA_VERSION });
+      }
+      return Response.json({});
+    });
+    const client = new HttpDaemonClient({ fetch: fetcher, maxConcurrentRequests: 2 });
+
+    const requests = [client.getHealth(), client.getInstance(), client.getPortalConfig()];
+    await Promise.resolve();
+    expect(active).toBe(2);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    releases.shift()?.();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    while (releases.length > 0) releases.shift()?.();
+    await Promise.all(requests);
+
+    expect(peak).toBe(2);
+  });
+
+  it("backs off admission failures and reports one recoverable degraded state", async () => {
+    const admissionStates: Array<string | undefined> = [];
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json(
+          { error: { code: "class_saturated", message: "retry shortly" } },
+          { status: 429, headers: { "Retry-After": "0" } },
+        ),
+      )
+      .mockResolvedValueOnce(Response.json(health));
+    const client = new HttpDaemonClient({
+      fetch: fetcher,
+      admissionRetryBaseMs: 1,
+      onAdmissionState: (state) => admissionStates.push(state?.endpoint),
+    });
+
+    await expect(client.getHealth()).resolves.toEqual(health);
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(admissionStates).toEqual(["/api/v1/health", undefined]);
+  });
+
+  it("stops retrying a saturated request after the configured limit", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json(
+        { error: { code: "class_saturated", message: "retry shortly" } },
+        { status: 429, headers: { "Retry-After": "0" } },
+      ),
+    );
+    const client = new HttpDaemonClient({
+      fetch: fetcher,
+      admissionMaxRetries: 1,
+      admissionRetryBaseMs: 1,
+    });
+
+    await expect(client.getHealth()).rejects.toMatchObject({
+      status: 429,
+      code: "class_saturated",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps lightweight reads moving while an aggregate class honors Retry-After", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let runsAttempts = 0;
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url === "/api/v1/runs") {
+        runsAttempts += 1;
+        if (runsAttempts === 1) {
+          return Response.json(
+            { error: { code: "class_saturated", message: "retry later" } },
+            { status: 429, headers: { "Retry-After": "10" } },
+          );
+        }
+        return Response.json({ runs: [], page: { limit: 50, total: 0, hasMore: false, nextCursor: "" } });
+      }
+      return Response.json(health);
+    });
+    const client = new HttpDaemonClient({
+      fetch: fetcher,
+      admissionRetryBaseMs: 1,
+      maxConcurrentRequests: 2,
+    });
+
+    try {
+      const runs = client.listRuns();
+      await vi.waitFor(() => expect(runsAttempts).toBe(1));
+      await expect(client.getHealth()).resolves.toEqual(health);
+      expect(runsAttempts).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(runs).resolves.toMatchObject({ runs: [] });
+      expect(runsAttempts).toBe(2);
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels obsolete queued route work before it reaches the daemon", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = vi.fn<typeof fetch>(async () => {
+      await blocked;
+      return Response.json(health);
+    });
+    const client = new HttpDaemonClient({ fetch: fetcher, maxConcurrentRequests: 1 });
+    const obsolete = new AbortController();
+
+    const current = client.getHealth();
+    const queued = client.getInstance({ signal: obsolete.signal });
+    obsolete.abort();
+
+    await expect(queued).rejects.toBeInstanceOf(RequestCancelledError);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    release();
+    await current;
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces malformed JSON responses distinctly", async () => {

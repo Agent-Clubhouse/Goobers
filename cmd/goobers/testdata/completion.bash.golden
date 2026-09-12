@@ -14,6 +14,12 @@ _goobers_completion()
     command="${COMP_WORDS[1]}"
     flags="-h --help"
     case "${command}" in
+        roots)
+            case "${COMP_WORDS[2]:-}" in
+                discover) flags+=" --json" ;;
+                decommission) flags+=" --reason" ;;
+            esac
+            ;;
         version)
             flags+=" --json"
             ;;
@@ -21,7 +27,7 @@ _goobers_completion()
             flags+=" --json"
             ;;
         init)
-            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --provider --harness --source-tree --json"
+            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --dev-assets --workdir --demo --insecure --template --ci-command --required-capabilities --provider --repo --branch --issue-scope --assigned-to --pr-ci --workflows --repo-auth-kind --repo-token-env --work-tracking-token-env --pr-token-env --push-token-env --model-token-env --github-cli-user --harness --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
@@ -61,16 +67,16 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --instance --strict"
             ;;
         lint)
-            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --instance --strict"
             ;;
         fix)
             flags+=" --to --instance-schema --write"
             ;;
         doctor)
-            flags+=" --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
+            flags+=" --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
             ;;
         netpol-render)
             flags+=" --out --check --baseline --write-baseline --timeout --print-blob-endpoint"
@@ -118,11 +124,14 @@ _goobers_completion()
         worker)
             flags+=" --instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
+        config-seed)
+            flags+=" --mirror --instance"
+            ;;
         dashboard)
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
             ;;
         run)
-            flags+=" --gaggle --github-progress --pr --api --request-id --no-wait"
+            flags+=" --no-api --api-timeout --force --gaggle --github-progress --pr --api --request-id --no-wait"
             ;;
         approve)
             flags+=" --decision --actor --api"
@@ -145,7 +154,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=" --agents --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --agents --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
@@ -153,14 +162,26 @@ _goobers_completion()
         cost)
             flags+=" --pr --issue --provider --window --since --until --json --rebuild"
             ;;
+        work-items)
+            flags+=" --provider --repository --kind --id --limit --json --rebuild"
+            ;;
         features)
             flags+=" --json --dsl-version --used"
             ;;
         schema)
             flags+=" --list --human"
             ;;
+        queue-explain)
+            flags+=" --json --pr --gaggle --workflow"
+            ;;
         explain)
             flags+=" --human"
+            ;;
+        recovery-abandon)
+            flags+=" --run --ref --confirm-digest"
+            ;;
+        recovery-restore)
+            flags+=" --record --issue --repository-key --repository --branch"
             ;;
         blocked)
             case "${COMP_WORDS[2]:-}" in
@@ -191,6 +212,7 @@ _goobers_completion()
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
+                merges) flags+=" --compare-github --shared-identities --json --gaggle --instance-id --repository-api-url --since --until --rebuild" ;;
                 stats) flags+=" --json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
                 export) flags+=" --since --until" ;;
@@ -208,7 +230,7 @@ _goobers_completion()
             flags+=" --feedback"
             ;;
         backlog-query)
-            flags+=" --claim --debug --release --read-only --reconcile"
+            flags+=" --claim --resweep --debug --release --read-only --reconcile"
             ;;
         file-issues)
             flags+=" --check"
@@ -263,6 +285,11 @@ _goobers_completion()
 
     candidates=""
     case "${command}" in
+        roots)
+            if (( COMP_CWORD == 2 )); then
+                candidates="discover decommission"
+            fi
+            ;;
         onboarding)
             if (( COMP_CWORD == 2 )); then
                 candidates="stub-sample stub-agent-instructions"
@@ -382,7 +409,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="stats errors export prune prune-orphans compact"
+                candidates="merges stats errors export prune prune-orphans compact"
             fi
             ;;
         journal)

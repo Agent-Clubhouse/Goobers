@@ -650,9 +650,7 @@ func restoreInvisibleClaims(
 			continue
 		}
 		recordClaimObservation(ctx, ledger, entry, localscheduler.ClaimVerification{State: "missing", ObservedAt: time.Now()}, stderr)
-		result, err := provider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
-			Repository: repo, ID: itemID, RunID: entry.RunID,
-		})
+		result, err := restoreClaimVisibility(ctx, l, provider, repo, itemID, entry, stderr)
 		recordProviderClaimObservation(ctx, ledger, entry, repo, result, err, stderr)
 		if err != nil {
 			pf(stderr, "warning: could not restore the claim marker on item %s held by run %s: %v\n",
@@ -672,4 +670,12 @@ func restoreInvisibleClaims(
 		pf(stderr, "notice: restored the claim marker on item %s for its live ledger owner run %s\n", itemID, entry.RunID)
 	}
 	return restored, nil
+}
+
+func restoreClaimVisibility(ctx context.Context, l instance.Layout, provider *providers.GitHubProvider, repo providers.RepositoryRef, itemID string, entry claimsclient.Entry, stderr io.Writer) (providers.ClaimResult, error) {
+	if !entry.SharedDeadline.IsZero() {
+		labels := providers.GitHubSharedClaimVisibility{Provider: provider, Repository: repo}
+		return confirmSharedClaimVisibility(ctx, entry, stageSharedClaimResolver(l), labels, stderr)
+	}
+	return provider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: itemID, RunID: entry.RunID})
 }

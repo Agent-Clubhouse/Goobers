@@ -143,7 +143,7 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 // An empty input — a gaggle or goober with no workflows — resolves at the
 // newest LevelSupported version from the support matrix, never as an unpinned
 // Definition{}. The version router rewrites an unpinned probe to
-// CurrentDSLVersion, which is deprecated; the moment it turns unsupported,
+// V1DSLVersion, which is deprecated; the moment it turns unsupported,
 // every workflow-less object would fail validation with a migrate-your-pin
 // error its author cannot act on, because those specs deliberately have no
 // dslVersion field to edit (#3297).
@@ -160,7 +160,7 @@ func FeatureDefinitionsByDSLVersion(definitions []Definition) []Definition {
 			// No supported version declared at all — a matrix state the support
 			// policy rejects. Fall back to the transitional default rather than
 			// fabricate a version the router would refuse to route.
-			version = supportmatrix.CurrentDSLVersion
+			version = supportmatrix.V1DSLVersion
 		}
 		return []Definition{{DSLVersion: version}}
 	}

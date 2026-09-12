@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
 )
 
 // dispatchone.go is the transport half of decision 003 ruling 2: the seam by
@@ -29,11 +30,12 @@ import (
 // behind GOOBERS_STAGE_DISPATCH.
 
 // DispatchOneWorkflowID composes the per-attempt identity ruling 6 requires:
-// <runID>/<stage>/<attempt>. Exported as the ONE composer, so the daemon's
+// <runID>/<stage>/<attempt>. Callers pass the physical ordinal when PodAttempt
+// is separately supplied. Exported as the ONE composer, so the daemon's
 // runner (step 6/7) and the assertion below cannot disagree about the shape —
 // a second spelling is exactly the D15 drift that would make ruling 6's
 // restart safety silently untrue.
-func DispatchOneWorkflowID(runID, stage string, attempt int32) string {
+func DispatchOneWorkflowID(runID, stage string, attempt int) string {
 	return fmt.Sprintf("%s/%s/%d", runID, stage, attempt)
 }
 
@@ -89,7 +91,7 @@ func DispatchOneWorkflowID(runID, stage string, attempt int32) string {
 // classified through ClassifyDispatchFailure, which reads the same error
 // shapes off this workflow's failure that it reads off an activity's.
 func DispatchOne(ctx workflow.Context, in DispatchStageInput) (DispatchStageResult, error) {
-	if err := refuseUnboundAttemptIdentity(workflow.GetInfo(ctx).WorkflowExecution.ID, in.Envelope); err != nil {
+	if err := refuseUnboundAttemptIdentity(workflow.GetInfo(ctx).WorkflowExecution.ID, in.Envelope, in.PodAttempt); err != nil {
 		return DispatchStageResult{}, err
 	}
 	// The SAME options the engine's own remote arm applies (engine.go's
@@ -99,7 +101,7 @@ func DispatchOne(ctx workflow.Context, in DispatchStageInput) (DispatchStageResu
 	// declared duration limit plus the worker's enforcement grace, and a
 	// bounded ScheduleToStart so a queue no worker serves fails with a
 	// timeout naming it instead of hanging forever.
-	ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(in.Envelope.Limits, in.Placement.Queue))
+	ctx = dispatchActivityContext(ctx, in.Envelope.Limits, in.Placement.Queue)
 	// This execution is the attempt's driver, so it — not the caller who
 	// built the payload — states the id the orphan sweep describes. Assigned
 	// unconditionally: a caller-supplied value is overwritten rather than
@@ -128,9 +130,13 @@ func DispatchOne(ctx workflow.Context, in DispatchStageInput) (DispatchStageResu
 // infrastructure would spend the driver's infra budget on a caller bug and let
 // ClassifyDispatchFailure recommend a retry that can never succeed. Policy is
 // also the honest class: nothing about the substrate failed.
-func refuseUnboundAttemptIdentity(workflowID string, env apiv1.InvocationEnvelope) error {
+func refuseUnboundAttemptIdentity(workflowID string, env apiv1.InvocationEnvelope, podAttempt int) error {
+	if err := validatePodAttempt(podAttempt); err != nil {
+		return err
+	}
 	stage := strings.TrimPrefix(env.TaskID, env.RunID+":")
-	want := DispatchOneWorkflowID(env.RunID, stage, env.Attempt)
+	physical := (dispatcher.Attempt{Number: int(env.Attempt), PodAttempt: podAttempt}).IdentityAttempt()
+	want := DispatchOneWorkflowID(env.RunID, stage, physical)
 	if workflowID == want {
 		return nil
 	}

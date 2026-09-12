@@ -15,6 +15,24 @@ The remaining sections contain Windows-specific credential, WSL isolation,
 path-length, and service guidance. They supplement rather than duplicate either
 route.
 
+## Choose your host route first
+
+Native Windows and WSL 2 are two supported execution routes. **WSL is not
+required for the supported native deterministic route.** Pick by the workload
+you intend to run, before installing anything:
+
+| Route | Use it for | WSL required |
+|---|---|---|
+| Native Windows binary (this guide) | Officially supported deterministic workflows and foreground daemon operation | No |
+| WSL 2 with the Linux binary | The canonical quickstart's zero-credential demo, full Linux isolation, and agentic-stage confinement | Yes |
+
+Choose WSL only when the workflow you selected requires the full Linux
+isolation posture — the isolated demo, `network: none` enforcement, or
+agentic-stage confinement. OS sandboxing is a property of the workload, not a
+prerequisite for running Goobers on Windows. Sections 1 through 6 below are the
+native route; [Full isolation through WSL 2](#full-isolation-through-wsl-2) is
+the other.
+
 Windows is **officially supported for deterministic workloads**. The required
 Windows CI gate runs the real foreground daemon and the complete shipped
 implementation workflow through the local runner with a deterministic fake

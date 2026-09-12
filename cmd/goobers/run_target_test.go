@@ -461,6 +461,16 @@ func TestRunTargetCLIRejectsInvalidTargetedPullRequests(t *testing.T) {
 	}
 }
 
+func TestRunTargetCLIRejectsForceWithPullRequestSignal(t *testing.T) {
+	code, _, stderr := runArgs(t, "run", "merge-review", "--pr", "42", "--force", t.TempDir())
+	if code != 2 {
+		t.Fatalf("code = %d, want usage error 2; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "--force cannot be combined with --pr") {
+		t.Fatalf("stderr = %q, want actionable force/signal error", stderr)
+	}
+}
+
 func TestRunTargetCLIRejectsWorkflowWithoutPullRequestTrigger(t *testing.T) {
 	root := initDeterministicDemo(t)
 	code, _, stderr := runArgs(t, "run", "default-implement", "--pr", "42", root)

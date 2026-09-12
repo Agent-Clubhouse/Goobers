@@ -3,32 +3,8 @@ import {
   hasScopeFilters,
   hasScopeIdentity,
   scopeIdentity,
-  scopeLabel,
   scopeWindowLabel,
 } from "./scope";
-
-describe("scopeLabel", () => {
-  it("labels an unscoped filter set as the instance", () => {
-    expect(scopeLabel({})).toBe("Instance");
-  });
-
-  it("labels a gaggle-only scope", () => {
-    expect(scopeLabel({ gaggle: "core" })).toBe("Gaggle: core");
-  });
-
-  it("labels a gaggle/workflow scope", () => {
-    expect(scopeLabel({ gaggle: "core", workflow: "implementation" })).toBe(
-      "core / implementation",
-    );
-  });
-
-  it("labels a full gaggle/workflow/stage scope, filling in missing ancestors", () => {
-    expect(scopeLabel({ stage: "implement", workflow: "implementation" })).toBe(
-      "All gaggles / implementation / implement",
-    );
-    expect(scopeLabel({ stage: "implement" })).toBe("All gaggles / All workflows / implement");
-  });
-});
 
 describe("scopeWindowLabel", () => {
   it("renders nothing when no time range is set", () => {

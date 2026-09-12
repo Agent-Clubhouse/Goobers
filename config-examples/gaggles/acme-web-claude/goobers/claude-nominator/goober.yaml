@@ -26,8 +26,6 @@ spec:
     - label-issue
   conditionalPolicyActions:
     - approve-issue
-  skills:
-    - analysis
   # "github" has no claude-code tool-group mapping yet (internal/harness/
   # claude.go's claudeToolGroups doc comment) — Copilot resolves it to
   # github-mcp-server-* tools, claude-code passes it through unexpanded and

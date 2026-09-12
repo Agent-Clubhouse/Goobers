@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/sharedclaim"
 )
 
 // writeplanes.go implements the daemon write API's claims, trigger, and HITL
@@ -84,16 +85,19 @@ type ClaimResponse struct {
 // same reason internal/dispatcher restates MintedCredential: this package is
 // the server, and the ledger package has no business depending on it.
 type ClaimEntry struct {
-	Verification ClaimVerification `json:"verification"`
-	ItemID       string            `json:"itemId"`
-	Gaggle       string            `json:"gaggle,omitempty"`
-	Provider     string            `json:"provider,omitempty"`
-	ExternalID   string            `json:"externalId,omitempty"`
-	RunID        string            `json:"runId"`
-	Workflow     string            `json:"workflow"`
-	ClaimedAt    time.Time         `json:"claimedAt"`
-	ExpiresAt    time.Time         `json:"expiresAt"`
-	ReleasedAt   *time.Time        `json:"releasedAt,omitempty"`
+	Verification   ClaimVerification `json:"verification"`
+	ItemID         string            `json:"itemId"`
+	Gaggle         string            `json:"gaggle,omitempty"`
+	Provider       string            `json:"provider,omitempty"`
+	ExternalID     string            `json:"externalId,omitempty"`
+	RunID          string            `json:"runId"`
+	Workflow       string            `json:"workflow"`
+	ClaimedAt      time.Time         `json:"claimedAt"`
+	ExpiresAt      time.Time         `json:"expiresAt"`
+	SharedDeadline time.Time         `json:"sharedDeadline,omitzero"`
+	SharedOwner    sharedclaim.Owner `json:"sharedOwner,omitzero"`
+	SharedRevoked  bool              `json:"sharedRevoked,omitempty"`
+	ReleasedAt     *time.Time        `json:"releasedAt,omitempty"`
 }
 
 // ClaimVerification mirrors the ledger's bounded, lease-specific provider
@@ -126,6 +130,9 @@ type ClaimListRequest struct {
 	// Scope is ClaimListScopeRun or ClaimListScopeNamespace.
 	Scope          string `json:"scope"`
 	IncludeHistory bool   `json:"includeHistory,omitempty"`
+	// Execution requests the trusted pinned policy alongside own-run leases.
+	// It is read-only and may not be combined with a namespace listing.
+	Execution bool `json:"execution,omitempty"`
 	// PodScoped is set by the route, never decoded from the body: the caller
 	// is a pod principal, so a namespace listing must be confined to the
 	// gaggle the caller's run belongs to (the service verifies RunID lives
@@ -135,8 +142,10 @@ type ClaimListRequest struct {
 
 // ClaimListResponse is the ledger slice the list route answers with.
 type ClaimListResponse struct {
-	Entries []ClaimEntry `json:"entries"`
-	History []ClaimEntry `json:"history,omitempty"`
+	Entries         []ClaimEntry `json:"entries"`
+	History         []ClaimEntry `json:"history,omitempty"`
+	ClaimVisibility string       `json:"claimVisibility,omitempty"`
+	ObservedAt      time.Time    `json:"observedAt,omitzero"`
 }
 
 // ClaimRecoverRequest asks the daemon to run its own stale-claim recovery
@@ -187,25 +196,7 @@ type ClaimService interface {
 // caller's delivery identity: redelivering the same RequestID never mints a
 // second run (the webhook handler's bounded in-memory dedupe, applied to the
 // generic trigger plane — daemon-local is sound under DS1).
-type TriggerRequest struct {
-	Gaggle    string `json:"gaggle,omitempty"`
-	Workflow  string `json:"workflow"`
-	RequestID string `json:"requestId,omitempty"`
-	// SourceRun names the run whose newly-published durable state is the
-	// reason for this trigger. Non-empty makes it a PRIORITY re-tick
-	// (Scheduler.TriggerPriority) rather than an ordinary mint — the plane's
-	// form of apply-verdict's crowned-lander file drop
-	// (writePriorityTriggerRequest), which a stage pod has no scheduler
-	// directory to write. It is an output-driven signal, not a bypass: normal
-	// readiness admission still applies.
-	SourceRun string `json:"sourceRun,omitempty"`
-	// PodScoped and PodRunID are set by the route, never decoded from the
-	// body: the caller is a pod principal, so the trigger must name the
-	// gaggle the caller's run belongs to (the service verifies it) and a
-	// priority re-tick must name the caller's own run as its source.
-	PodScoped bool   `json:"-"`
-	PodRunID  string `json:"-"`
-}
+type TriggerRequest = apicontract.TriggerRequest
 
 // MaxTriggerRequestIDBytes caps the caller-supplied delivery identity — the
 // same 256-byte bound the webhook handler puts on GitHub delivery ids
@@ -217,12 +208,7 @@ const MaxTriggerRequestIDBytes = 256
 // TriggerResponse reports the minted run, or the original run when RequestID
 // deduplicated a redelivery (the run id may still be empty when the
 // deduplicated delivery is concurrent with the winning delivery's mint).
-type TriggerResponse struct {
-	RunID string `json:"runId,omitempty"`
-	// Duplicate marks a response answered from the dedupe record rather than
-	// a fresh mint.
-	Duplicate bool `json:"duplicate,omitempty"`
-}
+type TriggerResponse = apicontract.TriggerResponse
 
 // TriggerService ingests external triggers through the same
 // validate/dedupe/mint path the daemon's pending-triggers sweep uses.
@@ -263,35 +249,29 @@ type EscalationService interface {
 }
 
 // Cancel dispositions, the wire form of the daemon's existing cancel-response
-// codes: the run was cancelled and finalized aborted, it finished on its own
-// before the cancel landed, or this daemon is not executing it.
+// codes: a local run was finalized aborted, an engine cancellation was
+// requested, the run already finished, or the daemon does not own a live run.
 const (
+	// CancelCodeRequested means the engine accepted a request, not a terminal outcome.
+	CancelCodeRequested  = "cancellation_requested"
 	CancelCodeAborted    = "aborted"
 	CancelCodeTerminal   = "already_terminal"
 	CancelCodeNotRunning = "not_running"
 )
 
-// CancelRunRequest asks the daemon to stop a run it is actively executing
-// (#3807). Workflow and Gaggle are the run's own identity, read from its
-// journal by the caller; the daemon uses them to resolve the owning Runner and
-// release the scheduler's concurrency slot, exactly as the file-drop seam does.
-type CancelRunRequest struct {
-	RunID    string `json:"-"`
-	Workflow string `json:"workflow,omitempty"`
-	Gaggle   string `json:"gaggle,omitempty"`
-	Actor    string `json:"actor,omitempty"`
-}
+// CancelRunRequest asks the daemon to stop an owned run (#3807, decision 005
+// D2). Workflow and Gaggle are optional identity constraints; an engine run is
+// routed using its retained identity and current daemon ownership.
+type CancelRunRequest = apicontract.CancelRunRequest
 
 // CancelRunResult reports the cancel disposition. A refusal the operator can
 // act on (already terminal, not running under this daemon) is a 200 carrying a
 // Code rather than an HTTP error: the request was well-formed and the daemon
-// answered it, and the CLI maps the code to its own exit code the same way the
+// answered it. An engine cancellation returns cancellation_requested without
+// Phase; the engine reports its eventual terminal outcome. The CLI maps the
+// code to its own exit code the same way the
 // local file-drop path does.
-type CancelRunResult struct {
-	Phase string `json:"phase,omitempty"`
-	Code  string `json:"code,omitempty"`
-	Error string `json:"error,omitempty"`
-}
+type CancelRunResult = apicontract.CancelRunResult
 
 // CancelService cancels one live run through the Runner that owns it.
 type CancelService interface {
@@ -363,6 +343,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 	registerClaimVerificationRoute(router, config.claims, errorLog)
 	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
+	registerTriggerStatusRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
 	registerCancelRoute(router, config.cancels, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)
@@ -563,6 +544,16 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 				fmt.Sprintf("requestId must be no longer than %d bytes", MaxTriggerRequestIDBytes))
 			return
 		}
+		key, err := idempotencyKeyWithLimit(request, MaxTriggerRequestIDBytes)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, CodeIdempotencyKeyRequired, err.Error())
+			return
+		}
+		if bodyKey := strings.TrimSpace(input.RequestID); bodyKey != "" && bodyKey != key {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "requestId must match Idempotency-Key")
+			return
+		}
+		input.RequestID = key
 		// Pod containment (decision 005 ruling R3): a pod token proves "I am
 		// run X's stage pod". That authorizes minting a run in the gaggle X
 		// belongs to — apply-verdict's crowned-lander priority dispatch — and
@@ -591,12 +582,19 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 			input.PodScoped = true
 			input.PodRunID = runID
 		}
+		if principal, ok := PrincipalFromRequest(request); ok {
+			input.Actor = principal.Subject
+		}
 		response, err := triggers.Trigger(request.Context(), input)
 		if err != nil {
 			writePlaneError(w, errorLog, "ingest trigger", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, response)
+		status := http.StatusOK
+		if response.AcceptanceID != "" {
+			status = http.StatusAccepted
+		}
+		writeJSON(w, status, response)
 	})
 }
 
@@ -650,9 +648,8 @@ func registerEscalationRoute(router *Router, escalations EscalationService, life
 }
 
 // registerCancelRoute serves `run cancel`/`run abort` over the API (#3807).
-// The cancel itself stays the daemon's: the service resolves the Runner that
-// owns the run and calls the same CancelRun the pending-cancels sweep calls,
-// so a remote cancel and a local one are one code path with two ways in.
+// The service resolves the owning local runner or retained engine run; this
+// transport applies the same authentication and mutation admission to both.
 func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteCancelRun, func(w http.ResponseWriter, request *http.Request) {
 		if cancels == nil {
@@ -663,7 +660,8 @@ func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Lo
 			writeError(w, status, code, message)
 			return
 		}
-		if _, ok := requireIdempotencyKey(w, request); !ok {
+		key, ok := requireIdempotencyKey(w, request)
+		if !ok {
 			return
 		}
 		var input CancelRunRequest
@@ -671,6 +669,7 @@ func registerCancelRoute(router *Router, cancels CancelService, errorLog *log.Lo
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
+		input.IdempotencyKey = key
 		input.RunID = request.PathValue("run")
 		if strings.TrimSpace(input.RunID) == "" {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run is required")

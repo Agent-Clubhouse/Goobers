@@ -6,11 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/testdep"
 	"github.com/goobers/goobers/internal/testgit"
 )
 
@@ -23,17 +23,39 @@ func installRecordingGit(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "git.log")
-	script := "#!" + exec.Command("bash").Path + "\n" +
-		"{\n" +
-		"  echo \"ARGV: $*\"\n" +
-		"  for i in 0 1 2 3; do\n" +
-		"    k=\"GIT_CONFIG_KEY_$i\"; v=\"GIT_CONFIG_VALUE_$i\"\n" +
-		"    if [ -n \"${!k:-}\" ]; then echo \"CFG: ${!k}=${!v:-}\"; fi\n" +
-		"  done\n" +
-		"} >> \"$GOOBERS_TEST_GIT_LOG\"\n" +
-		"exit 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+	source := `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	log, err := os.OpenFile(os.Getenv("GOOBERS_TEST_GIT_LOG"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		os.Exit(1)
+	}
+	defer log.Close()
+	fmt.Fprintf(log, "ARGV: %s\n", strings.Join(os.Args[1:], " "))
+	for i := 0; i < 4; i++ {
+		key := os.Getenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", i))
+		if key != "" {
+			fmt.Fprintf(log, "CFG: %s=%s\n", key, os.Getenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)))
+		}
+	}
+}
+`
+	src := filepath.Join(dir, "recordinggit.go")
+	if err := os.WriteFile(src, []byte(source), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	name := "git"
+	if runtime.GOOS == "windows" {
+		name = "git.exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", filepath.Join(dir, name), src).CombinedOutput(); err != nil {
+		t.Fatalf("build recording git: %v\n%s", err, out)
 	}
 	t.Setenv("GOOBERS_TEST_GIT_LOG", logFile)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -49,6 +71,19 @@ func readGitLog(t *testing.T, path string) string {
 	return string(raw)
 }
 
+func testFileURL(t *testing.T, path string) string {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return "file://" + p
+}
+
 // TestGitRepositoryReachableProbesGiteaForge is the regression test for the
 // REPO001 failure: `goobers validate --check-repos` refused a Gitea repo
 // outright ("provider %q does not support repository preflight"), so a
@@ -58,7 +93,6 @@ func readGitLog(t *testing.T, path string) string {
 // target the CONFIGURED forge root (never github.com), and it must carry
 // Gitea's credential shape.
 func TestGitRepositoryReachableProbesGiteaForge(t *testing.T) {
-	testdep.Require(t, "bash")
 	logFile := installRecordingGit(t)
 
 	repo := instance.RepoRef{
@@ -95,7 +129,6 @@ func TestGitRepositoryReachableProbesGiteaForge(t *testing.T) {
 // TestGitRepositoryReachableKeepsGitHubProbe is the retained GitHub coverage:
 // the GitHub arm must still probe github.com with its own auth shape.
 func TestGitRepositoryReachableKeepsGitHubProbe(t *testing.T) {
-	testdep.Require(t, "bash")
 	logFile := installRecordingGit(t)
 
 	repo := instance.RepoRef{Provider: "github", Owner: "acme", Name: "app"}
@@ -117,7 +150,6 @@ func TestGitRepositoryReachableKeepsGitHubProbe(t *testing.T) {
 // refusal for kinds that genuinely have no preflight, so adding the Gitea arm
 // did not turn an unknown provider into a silent github.com probe.
 func TestGitRepositoryReachableRejectsUnsupportedProvider(t *testing.T) {
-	testdep.Require(t, "bash")
 	logFile := installRecordingGit(t)
 
 	repo := instance.RepoRef{Provider: "bitbucket", Owner: "acme", Name: "app"}
@@ -137,7 +169,6 @@ func TestGitRepositoryReachableRejectsUnsupportedProvider(t *testing.T) {
 // has no forge to probe. Fail with that diagnosis rather than building a
 // nonsense URL and blaming the network.
 func TestGitRepositoryReachableRequiresGiteaBaseURL(t *testing.T) {
-	testdep.Require(t, "bash")
 	installRecordingGit(t)
 
 	repo := instance.RepoRef{Provider: "gitea", Owner: "acme", Name: "widgets"}
@@ -188,7 +219,6 @@ func TestGiteaPreflightRootURLNormalization(t *testing.T) {
 // genuinely missing repo is reported unreachable. It uses a file:// baseUrl so
 // no network or Gitea server is required.
 func TestGitRepositoryReachableAgainstRealGiteaStyleRemote(t *testing.T) {
-	testdep.Require(t, "git")
 
 	root := t.TempDir()
 	// Lay the bare repo out exactly as the preflight addresses it:
@@ -220,7 +250,7 @@ func TestGitRepositoryReachableAgainstRealGiteaStyleRemote(t *testing.T) {
 
 	t.Run("existing repo is reachable", func(t *testing.T) {
 		err := gitRepositoryReachable(context.Background(), instance.RepoRef{
-			Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: "file://" + root,
+			Provider: "gitea", Owner: "acme", Name: "widgets", BaseURL: testFileURL(t, root),
 		}, "", nil)
 		if err != nil {
 			t.Fatalf("expected the real remote to be reachable: %v", err)
@@ -229,7 +259,7 @@ func TestGitRepositoryReachableAgainstRealGiteaStyleRemote(t *testing.T) {
 
 	t.Run("missing repo is unreachable", func(t *testing.T) {
 		err := gitRepositoryReachable(context.Background(), instance.RepoRef{
-			Provider: "gitea", Owner: "acme", Name: "does-not-exist", BaseURL: "file://" + root,
+			Provider: "gitea", Owner: "acme", Name: "does-not-exist", BaseURL: testFileURL(t, root),
 		}, "", nil)
 		if err == nil {
 			t.Fatal("expected a missing repo to be reported unreachable")

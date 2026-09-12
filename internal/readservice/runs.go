@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readprobe"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -243,8 +244,11 @@ type OperatorClaim struct {
 
 // OperatorReview summarizes the latest review verdict driving a repass.
 type OperatorReview struct {
-	Verdict   string `json:"verdict"`
-	Rationale string `json:"rationale,omitempty"`
+	Verdict             string                  `json:"verdict"`
+	Rationale           string                  `json:"rationale,omitempty"`
+	ReasonCode          apiv1.VerdictReasonCode `json:"reasonCode,omitempty"`
+	Findings            []apiv1.Finding         `json:"findings,omitempty"`
+	LegacyFailAmbiguous bool                    `json:"legacyFailAmbiguous,omitempty"`
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
@@ -440,6 +444,10 @@ type StageAttempt struct {
 	Number int    `json:"number"`
 	Class  string `json:"class"`
 	Status string `json:"status"`
+	// Failure metadata describes the outcome; Class describes why the attempt started.
+	RetryFailureClass string `json:"retryFailureClass,omitempty"`
+	ErrorCode         string `json:"errorCode,omitempty"`
+	ErrorClass        string `json:"errorClass,omitempty"`
 	// Model is the requested/selected model (e.g. "auto") indexed from the
 	// attempt's agent-invocation span, when the telemetry rollup has ingested
 	// it. Empty when telemetry is unavailable or the attempt has no matching
@@ -732,7 +740,7 @@ func (s *Local) workflowRunActivity(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	counts, err := s.activeRunCounts()
+	counts, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1335,9 +1343,13 @@ func (s *Local) Transcript(ctx context.Context, runID string, seq uint64) (Trans
 	if err != nil {
 		return TranscriptContent{}, err
 	}
+	completed := completedTranscriptCaptures(run)
 	for _, record := range run.records {
 		if record.Event.Seq != seq {
 			continue
+		}
+		if supersededTranscriptCheckpoint(record.Event, completed) {
+			break
 		}
 		recordedStage, ok := transcriptStage(record.Event, runID, "")
 		if !ok {
@@ -1359,11 +1371,15 @@ func (s *Local) RunTranscripts(ctx context.Context, runID, stage string) ([]Tran
 		return nil, err
 	}
 	transcripts := make([]TranscriptContent, 0)
+	completed := completedTranscriptCaptures(run)
 	for _, record := range run.records {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		event := record.Event
+		if supersededTranscriptCheckpoint(event, completed) {
+			continue
+		}
 		recordedStage, ok := transcriptStage(event, runID, stage)
 		if !ok {
 			continue
@@ -1381,7 +1397,7 @@ func transcriptStage(event journal.Event, runID, stage string) (string, bool) {
 	recordedStage := strings.TrimPrefix(event.Stage, runID+":")
 	if !event.KnownSchema() ||
 		event.Type != journal.EventSpanRecorded ||
-		(event.Name != "transcript" && !strings.HasSuffix(event.Name, ".transcript")) ||
+		(event.Name != "transcript" && !strings.HasSuffix(event.Name, ".transcript") && !isTranscriptCheckpoint(event)) ||
 		(stage != "" && recordedStage != stage) {
 		return "", false
 	}
@@ -1396,7 +1412,13 @@ func readTranscript(run runRead, event journal.Event, recordedStage string) (Tra
 			event.Seq,
 		)
 	}
-	data, err := run.reader.SpanBytes(*event.Ref)
+	var data []byte
+	var err error
+	if isTranscriptCheckpoint(event) {
+		data, err = run.reader.ArtifactBytesBounded(*event.Ref, journal.MaxCheckpointScrubBytes)
+	} else {
+		data, err = run.reader.SpanBytes(*event.Ref)
+	}
 	if err != nil {
 		return TranscriptContent{}, fmt.Errorf(
 			"transcript for stage %q at seq %d is unavailable: %w",
@@ -1404,6 +1426,15 @@ func readTranscript(run runRead, event journal.Event, recordedStage string) (Tra
 			event.Seq,
 			err,
 		)
+	}
+	if isTranscriptCheckpoint(event) {
+		reason, _ := event.Runner["reason"].(string)
+		stream, _ := event.Runner["transcriptStream"].(string)
+		if len(data) == 0 {
+			data = []byte("[checkpoint contains no newly safe transcript bytes]\n")
+		}
+		return TranscriptContent{Seq: event.Seq, Stage: recordedStage,
+			Name: fmt.Sprintf("%s [%s; %s]", event.Name, stream, reason), Bytes: data}, nil
 	}
 	if len(data) == 0 {
 		return TranscriptContent{}, fmt.Errorf(
@@ -1601,7 +1632,7 @@ func summarizeRunForStage(
 	var lastActivityAt time.Time
 	currentStage := ""
 	operator := OperatorRunSummary{
-		Trajectory:        "parked",
+		Trajectory:        "terminal",
 		Liveness:          "no-heartbeat",
 		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
 		PotentialBlockers: []string{},
@@ -1694,7 +1725,7 @@ func summarizeRunForStage(
 			if event.Gate != "review" {
 				continue
 			}
-			review := &OperatorReview{Verdict: event.Verdict}
+			review := &OperatorReview{Verdict: event.Verdict, LegacyFailAmbiguous: event.Verdict == string(apiv1.VerdictFail)}
 			if event.Ref != nil {
 				data, err := run.reader.ArtifactBytes(*event.Ref)
 				if err != nil {
@@ -1706,16 +1737,13 @@ func summarizeRunForStage(
 						operator.PotentialBlockers = append(operator.PotentialBlockers,
 							fmt.Sprintf("review rationale is invalid: %v", err))
 					} else {
-						review.Rationale = strings.TrimSpace(verdict.Rationale)
-						if review.Rationale == "" {
-							review.Rationale = strings.TrimSpace(verdict.Summary)
-						}
+						populateOperatorReview(review, verdict)
 					}
 				}
 			}
 			operator.Review = review
-		case journal.EventRefTouched:
-			if event.ExternalRef == nil {
+		case journal.EventRefTouched, journal.EventRunnerMutationRecovered:
+			if !event.IsReferenceTouch() {
 				continue
 			}
 			switch event.ExternalRef.Kind {
@@ -2917,6 +2945,17 @@ func finishAttempt(
 	attempt.FinishedAt = &finished
 	attempt.Outputs = scalarOutputs(outputs)
 	attempt.Error = detail
+	if detail != nil {
+		attempt.ErrorCode = detail.Code
+		if code, ok := event.Runner["errorCode"].(string); ok && code != "" {
+			attempt.ErrorCode = code
+		}
+		attempt.ErrorClass = string(telemetry.ClassifyError(attempt.ErrorCode))
+		if class, ok := event.Runner["errorClass"].(string); ok && class != "" {
+			attempt.ErrorClass = class
+		}
+		attempt.RetryFailureClass, _ = event.Runner["retryFailureClass"].(string)
+	}
 	if attempt.StartedAt != nil && !finished.Before(*attempt.StartedAt) {
 		attempt.DurationMillis = finished.Sub(*attempt.StartedAt).Milliseconds()
 	}

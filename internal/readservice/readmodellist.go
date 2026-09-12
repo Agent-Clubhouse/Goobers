@@ -182,8 +182,11 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 	}
 	if facts.ReviewVerdict != "" {
 		operator.Review = &OperatorReview{
-			Verdict:   facts.ReviewVerdict,
-			Rationale: facts.ReviewRationale,
+			Verdict:             facts.ReviewVerdict,
+			Rationale:           facts.ReviewRationale,
+			ReasonCode:          facts.ReviewReasonCode,
+			Findings:            facts.ReviewFindings,
+			LegacyFailAmbiguous: facts.ReviewVerdict == "fail" && facts.ReviewReasonCode == "",
 		}
 	}
 	if facts.ReviewProblem != "" {

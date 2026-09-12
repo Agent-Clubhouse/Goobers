@@ -4,18 +4,38 @@ import { hasScopeFilters, type ScopeFilters } from "./scope";
 export type Route =
   | { page: "overview" }
   | { page: "workflows" }
-  | { page: "goobers" }
+  | { page: "goobers"; gaggle?: string }
   | { page: "gaggle"; id: string }
   | { page: "runs"; filters?: RunRouteFilters }
   | { page: "errors"; filters: ErrorRouteFilters }
-  | { page: "insight"; filters?: ScopeFilters }
+  | { page: "insight"; filters?: InsightRouteFilters }
+  | { page: "cost"; filters?: ScopeFilters }
+  | {
+      page: "work-items";
+      kind?: "pr" | "issue";
+      gaggle?: string;
+      query?: string;
+      provider?: string;
+      repository?: string;
+      id?: string;
+    }
   | { page: "workflow"; id: string; gaggle?: string }
   | { page: "run"; id: string };
 
 // The Runs and Insight route filters are exactly the shared scope model
 // (#2528) — kept as named aliases so call sites read in terms of the view
 // they're for, without three parallel field-by-field type declarations.
-export type RunRouteFilters = ScopeFilters;
+export type RunStatusFilter = "active" | "attention" | "complete" | "all";
+
+export interface RunRouteFilters extends ScopeFilters {
+  status?: RunStatusFilter;
+}
+
+export type InsightSection = "contributors" | "usage" | "failures" | "latency";
+
+export interface InsightRouteFilters extends ScopeFilters {
+  section?: InsightSection;
+}
 
 export interface ErrorRouteFilters extends ScopeFilters {
   code?: string;
@@ -27,7 +47,9 @@ export type PrimaryArea =
   | "workflows"
   | "goobers"
   | "runs"
-  | "insight";
+  | "work-items"
+  | "insight"
+  | "cost";
 
 export function parseRoute(hash = window.location.hash): Route {
   const fragment = hash.replace(/^#\/?/, "");
@@ -47,15 +69,39 @@ export function parseRoute(hash = window.location.hash): Route {
   if (area === "run" && id) {
     return { page: "run", id };
   }
+  if (area === "work-items") {
+    const segments = path.split("/");
+    const detailKind = segments[4] === "pr" || segments[4] === "issue" ? segments[4] : undefined;
+    if (first && second && segments[3] && detailKind && segments[5]) {
+      return {
+        page: "work-items",
+        provider: decodeURIComponent(first),
+        repository: `${decodeURIComponent(second)}/${decodeURIComponent(segments[3])}`,
+        kind: detailKind,
+        id: decodeURIComponent(segments[5]),
+      };
+    }
+    const filterKind = optionalQuery(search, "kind");
+    return {
+      page: "work-items",
+      kind: filterKind === "pr" || filterKind === "issue" ? filterKind : undefined,
+      gaggle: optionalQuery(search, "gaggle"),
+      query: optionalQuery(search, "q"),
+    };
+  }
   if (area === "workflows") {
     return { page: "workflows" };
   }
   if (area === "goobers") {
-    return { page: "goobers" };
+    const gaggle = optionalQuery(search, "gaggle");
+    return gaggle ? { page: "goobers", gaggle } : { page: "goobers" };
   }
   if (area === "runs") {
-    const filters = parseScopeFilters(search);
-    return hasScopeFilters(filters) ? { page: "runs", filters } : { page: "runs" };
+    const filters: RunRouteFilters = {
+      ...parseScopeFilters(search),
+      status: runStatusQuery(search),
+    };
+    return hasScopeFilters(filters) || filters.status ? { page: "runs", filters } : { page: "runs" };
   }
   if (area === "errors") {
     return {
@@ -68,8 +114,17 @@ export function parseRoute(hash = window.location.hash): Route {
     };
   }
   if (area === "insight") {
+    const filters = {
+      ...parseScopeFilters(search),
+      section: insightSectionQuery(search),
+    };
+    return hasScopeFilters(filters) || filters.section
+      ? { page: "insight", filters }
+      : { page: "insight" };
+  }
+  if (area === "cost") {
     const filters = parseScopeFilters(search);
-    return hasScopeFilters(filters) ? { page: "insight", filters } : { page: "insight" };
+    return hasScopeFilters(filters) ? { page: "cost", filters } : { page: "cost" };
   }
   return { page: "overview" };
 }
@@ -87,9 +142,27 @@ export function routeHash(route: Route): string {
   if (route.page === "run") {
     return `#/run/${encodeURIComponent(route.id)}`;
   }
+  if (route.page === "work-items") {
+    if (route.provider && route.repository && route.kind && route.id) {
+      const [owner, name] = route.repository.split("/", 2);
+      if (owner && name) {
+        return `#/work-items/${encodeURIComponent(route.provider)}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${route.kind}/${encodeURIComponent(route.id)}`;
+      }
+    }
+    const search = new URLSearchParams();
+    writeQuery(search, "kind", route.kind);
+    writeQuery(search, "gaggle", route.gaggle);
+    writeQuery(search, "q", route.query);
+    return `#/work-items${search.size > 0 ? `?${search.toString()}` : ""}`;
+  }
+  if (route.page === "goobers" && route.gaggle) {
+    const search = new URLSearchParams({ gaggle: route.gaggle });
+    return `#/goobers?${search.toString()}`;
+  }
   if (route.page === "runs" && route.filters) {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
+    writeQuery(search, "status", route.filters.status);
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/runs${suffix}`;
   }
@@ -102,11 +175,14 @@ export function routeHash(route: Route): string {
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/errors${suffix}`;
   }
-  if (route.page === "insight" && route.filters) {
+  if ((route.page === "insight" || route.page === "cost") && route.filters) {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
+    if (route.page === "insight") {
+      writeQuery(search, "section", route.filters.section);
+    }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
-    return `#/insight${suffix}`;
+    return `#/${route.page}${suffix}`;
   }
   return `#/${route.page}`;
 }
@@ -153,6 +229,26 @@ function populationQuery(search: URLSearchParams): ScopeFilters["population"] {
   value === "premium-measured" ||
   value === "cost-measured" ||
     value === "retry-waste"
+    ? value
+    : undefined;
+}
+
+function insightSectionQuery(search: URLSearchParams): InsightSection | undefined {
+  const value = optionalQuery(search, "section");
+  return value === "contributors" ||
+    value === "usage" ||
+    value === "failures" ||
+    value === "latency"
+    ? value
+    : undefined;
+}
+
+function runStatusQuery(search: URLSearchParams): RunStatusFilter | undefined {
+  const value = optionalQuery(search, "status");
+  return value === "active" ||
+    value === "attention" ||
+    value === "complete" ||
+    value === "all"
     ? value
     : undefined;
 }

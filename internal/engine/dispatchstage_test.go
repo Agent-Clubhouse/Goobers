@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1424,21 +1425,9 @@ func TestModeThreeNamesNoCheckoutCapabilityForScratch(t *testing.T) {
 	}
 }
 
-// TestStagePlacementAccompaniesSettledAttemptsOnly pins the contract
-// StagePlacement's doc now states, because that doc is what the step-6 runner
-// will code against and a comment cannot fail.
-//
-// Two halves, and the second is the one that was previously mis-documented:
-//
-//   - a SETTLED attempt (success, or ErrStageFailed with surrender confirmed)
-//     carries provenance with ALL FIVE fields populated — so a caller may read
-//     Pod/Image/PodStartedAt without a nil-ish branch;
-//   - an attempt refused BEFORE its pod existed carries none at all, even
-//     though the dispatcher's report already names the runner and the image.
-//     DispatchStage discards that report. The evidence that survives is the
-//     classified error's text, so the runner and the skew subject are asserted
-//     there instead — that is what §11 acceptance 6 has to be journalled from
-//     for a refused placement.
+// TestStagePlacementAccompaniesSettledAttemptsOnly checks that successful
+// activity results carry settled placement, while failures retain only actual
+// observations in typed error details. A refusal never invents a pod.
 func TestStagePlacementAccompaniesSettledAttemptsOnly(t *testing.T) {
 	settled := func(t *testing.T, dispatchErr error, phase corev1.PodPhase) *StagePlacement {
 		t.Helper()
@@ -1477,10 +1466,8 @@ func TestStagePlacementAccompaniesSettledAttemptsOnly(t *testing.T) {
 	} {
 		t.Run("settled: "+tc.name+" populates every field", func(t *testing.T) {
 			got := settled(t, tc.dispatchErr, tc.phase)
-			// Field by field rather than a DeepEqual against a want: the
-			// claim under test is "no field is ever zero", and a struct
-			// comparison would still pass if the contract later grew a
-			// sixth field nobody populated.
+			// These five established fields are always populated. The additive
+			// Node/OS observations remain optional, including for older workers.
 			if got.Runner == "" || got.Pod == "" || got.Image == "" ||
 				got.QueuedAt.IsZero() || got.PodStartedAt.IsZero() {
 				t.Fatalf("placement = %+v; a settled attempt must populate runner, pod, image, queuedAt and podStartedAt — "+
@@ -1525,15 +1512,18 @@ func TestStagePlacementAccompaniesSettledAttemptsOnly(t *testing.T) {
 				t.Fatal("DispatchStage returned no error for a refused placement")
 			}
 			if result.Placement != nil {
-				t.Fatalf("placement = %+v, want nil: DispatchStage discards the report on an unsettled "+
-					"dispatcher error, so provenance cannot accompany a refusal", result.Placement)
+				t.Fatalf("failed activity result unexpectedly carries placement: %+v", result.Placement)
 			}
-			// Not a gap left silent: the runner (and the skew subject) reach
-			// the driver in the classified error's message, which is the
-			// evidence a refused placement is journalled from.
+			var wantPlacement *StagePlacement
+			if tc.report.Runner != "" {
+				wantPlacement = placementProvenance(tc.report)
+			}
+			if got := DispatchFailurePlacement(err); !reflect.DeepEqual(got, wantPlacement) {
+				t.Fatalf("refusal evidence = %+v, want %+v", got, wantPlacement)
+			}
 			for _, want := range tc.wantInError {
 				if !strings.Contains(err.Error(), want) {
-					t.Fatalf("classified error %q does not name %q; a refused placement's only provenance is this text", err, want)
+					t.Fatalf("classified error %q does not name %q; refusal diagnostics must remain intact", err, want)
 				}
 			}
 		})

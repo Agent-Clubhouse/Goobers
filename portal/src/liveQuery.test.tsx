@@ -35,9 +35,9 @@ describe("useLiveQuery", () => {
         client.stream.push(invalidation(`evt-${index}`));
       }
     });
-    // The controller batches events into notification passes, so the count is
-    // a lower bound; what matters is that every one of them reached the query.
-    await waitFor(() => expect(result.current.invalidations).toBeGreaterThanOrEqual(2));
+    // The controller may coalesce the burst into one notification pass; what
+    // matters is that the invalidation reaches the query without aborting it.
+    await waitFor(() => expect(result.current.invalidations).toBeGreaterThanOrEqual(1));
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     });

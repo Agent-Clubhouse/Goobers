@@ -141,9 +141,24 @@ type CopilotAdapter struct {
 	Command []string
 	// RequireLauncherContract rejects unverified launcher overrides before
 	// dispatch. The built-in direct Copilot command keeps its existing contract.
-	RequireLauncherContract bool
-	launcherMu              sync.Mutex
-	launcherContract        *launcherContract
+	RequireLauncherContract  bool
+	launcherMu               sync.Mutex
+	launcherContract         *launcherContract
+	launcherContractVerified bool
+	// AllowAdapterManagedFallback permits a launcher that does not implement
+	// the handshake to prove direct Copilot-compatible session forwarding
+	// during the normal authentication preflight.
+	AllowAdapterManagedFallback bool
+	// VerifyAdapterManagedSession requires the authentication preflight to prove
+	// that the configured launcher honors Copilot's local --session-id contract
+	// by writing the expected native session log.
+	VerifyAdapterManagedSession bool
+	// RequiredTools are adapter-owned tools that must remain visible even when
+	// the goober declares a restrictive tool allowlist.
+	RequiredTools []string
+	// DisableUsageOutput omits the optional version-gated usage-file flag for
+	// launchers whose reported version does not prove that they forward it.
+	DisableUsageOutput bool
 	// PromptFlag precedes the rendered prompt text in the built argv.
 	// Defaults to "-p" if empty.
 	PromptFlag string
@@ -265,7 +280,7 @@ func (c *CopilotAdapter) Name() string { return "copilot-cli" }
 // preflight (#2197) checks the surface a session actually receives rather
 // than a re-derived copy of the expansion.
 func (c *CopilotAdapter) AvailableTools(declared []string) []string {
-	return copilotAvailableTools(RunRequest{Tools: declared})
+	return copilotAvailableTools(RunRequest{Tools: appendRequiredTools(declared, c.RequiredTools)})
 }
 
 // ValidateConfig rejects model and option values the Copilot CLI adapter does
@@ -518,8 +533,13 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if len(c.Command) == 0 {
 		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
-	if _, err := c.launcherSessionContract(ctx); err != nil {
+	sessionContract, err := c.launcherSessionContract(ctx)
+	if err != nil {
 		return PreflightInfo{}, err
+	}
+	verifyAdapterManagedSession := c.VerifyAdapterManagedSession && sessionContract.SessionMode == "adapter-managed"
+	if verifyAdapterManagedSession && len(c.AuthCheckArgs) == 0 {
+		return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: launcher session verification requires an authentication probe")
 	}
 	bin := c.Command[0]
 	if _, err := exec.LookPath(bin); err != nil {
@@ -574,17 +594,59 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 		if tok != "" {
 			authEnv = overrideEnv(authEnv, "COPILOT_GITHUB_TOKEN", tok)
 		}
+		authCommand := append(command, c.AuthCheckArgs...)
+		sessionTranscript := ""
+		sessionCleanup := func() {}
+		if verifyAdapterManagedSession {
+			sessionID, err := newHarnessSessionID()
+			if err != nil {
+				return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: create launcher session probe id: %w", err)
+			}
+			home, ok := copilotConfigHome(authEnv)
+			if !ok {
+				return PreflightInfo{}, fmt.Errorf("harness: copilot-cli: cannot verify launcher session compatibility without a Copilot home")
+			}
+			sessionTranscript = copilotSessionLogPath(home, sessionID)
+			sessionCleanup = func() { _ = os.RemoveAll(filepath.Dir(sessionTranscript)) }
+			authCommand = append(authCommand, "--session-id", sessionID)
+		}
+		defer sessionCleanup()
 		authProbe := fmt.Sprintf("harness: copilot-cli: %q %v (sign-in check)", bin, c.AuthCheckArgs)
 		res, err := c.runner().Run(ctx, ProcessRequest{
-			Command:            append(command, c.AuthCheckArgs...),
+			Command:            authCommand,
 			Env:                authEnv,
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		})
 		if err != nil || res.ExitCode != 0 {
 			return PreflightInfo{}, preflightProbeError(authProbe, res, err, "if this is an authentication failure, run the Copilot CLI and sign in")
 		}
+		if sessionTranscript != "" {
+			if err := verifyCopilotSessionTranscript(sessionTranscript); err != nil {
+				return PreflightInfo{}, fmt.Errorf(
+					"harness: copilot-cli: configured launcher did not honor the local --session-id contract: %w",
+					err,
+				)
+			}
+			c.cacheLauncherContract(launcherContract{Version: 1, SessionMode: "adapter-managed"})
+		}
 	}
 	return PreflightInfo{Version: version}, nil
+}
+
+func verifyCopilotSessionTranscript(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("native session transcript is empty")
+	}
+	return nil
 }
 
 // copilotModelToken resolves the token the config-time Copilot probes (the
@@ -660,6 +722,26 @@ func copilotAvailableTools(req RunRequest) []string {
 		}
 	}
 	return tools
+}
+
+func appendRequiredTools(tools, required []string) []string {
+	if len(tools) == 0 || len(required) == 0 {
+		return tools
+	}
+	result := append([]string(nil), tools...)
+	for _, requiredTool := range required {
+		found := false
+		for _, tool := range result {
+			if strings.EqualFold(tool, requiredTool) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, requiredTool)
+		}
+	}
+	return result
 }
 
 func validateCopilotTools(tools []string) error {
@@ -744,6 +826,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			return Outcome{}, err
 		}
 	}
+	declaredTools := append([]string(nil), req.Tools...)
+	req.Tools = appendRequiredTools(req.Tools, c.RequiredTools)
 	if err := validateCopilotTools(req.Tools); err != nil {
 		return Outcome{}, err
 	}
@@ -844,18 +928,13 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			argv = append(argv, "--disable-builtin-mcps")
 		}
 	}
-	nativeTranscriptPath := ""
-	usageOutputArg := filepath.Join(".goobers", "copilot-usage.json")
-	usageOutputPath := filepath.Join(req.Workspace, usageOutputArg)
-	_ = os.Remove(usageOutputPath)
-	argv = append(argv, "--usage-output-file", usageOutputArg)
-	defer func() { _ = os.Remove(usageOutputPath) }()
-	var cleanupSession func()
-	argv, env, nativeTranscriptPath, cleanupSession, err = c.prepareLauncherSession(ctx, req.Workspace, argv, env)
+	captures, err := c.prepareCopilotCaptures(ctx, req, argv, env)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
-	defer cleanupSession()
+	defer captures.cleanup()
+	argv, env = captures.argv, captures.env
+	nativeTranscriptPath, usageOutputPath := captures.transcriptPath, captures.usagePath
 
 	if req.Sandbox != nil {
 		// Wrap last, once argv is final (session id included), so the whole
@@ -876,7 +955,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// unanswerable after the fact, because the invocation was never kept.
 	// Only permission-relevant flags are recorded; the prompt and environment
 	// are deliberately excluded (they carry task content and credentials).
-	if err := writeCopilotInvocationDiagnostics(req, argv); err != nil {
+	if err := writeCopilotInvocationDiagnostics(req, argv, declaredTools, c.DisableUsageOutput); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
@@ -888,6 +967,12 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: start agent telemetry: %w", err)
 	}
 	defer agentTelemetry.finish(&out, &runErr)
+	nativeCheckpoints, err := startCopilotTranscriptCheckpoints(&req, nativeTranscriptPath, env)
+	if err != nil {
+		return Outcome{}, err
+	}
+	// Finish while the wrapper-owned log still exists, before cleanupSession.
+	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
 	runner := c.runner()
 	started := time.Now()
@@ -898,17 +983,22 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		stdoutCapture = responseCapture
 	}
 	result, processErr := runner.Run(ctx, ProcessRequest{
-		Command:            argv,
-		Dir:                req.Workspace,
-		Env:                env,
-		Timeout:            req.Timeout,
-		MaxTranscriptBytes: req.MaxTranscriptBytes,
-		StdoutCapture:      stdoutCapture,
+		Command:                      argv,
+		Dir:                          req.Workspace,
+		Env:                          env,
+		Timeout:                      req.Timeout,
+		MaxTranscriptBytes:           req.MaxTranscriptBytes,
+		StdoutCapture:                stdoutCapture,
+		TranscriptCheckpoint:         req.processTranscriptCheckpoint(1),
+		TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 		// #4179: the session this observes is the one that burned a whole
 		// 5400s budget on a stalled `go mod download` while its journal held
 		// a single lifecycle event.
 		Activity: agentTelemetry.activityObserver(),
 	})
+	// A native-log read/write failure observed during this process is not a
+	// missing completion contract. Preserve it and do not launch recovery.
+	processErr = errors.Join(processErr, nativeCheckpoints.worker.observedError())
 	runErr = processErr
 	var payload []byte
 	var completionErr error
@@ -950,12 +1040,14 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 				}
 				recoveryArgv[promptArg] = recoveryPrompt
 				recovery, err := runner.Run(ctx, ProcessRequest{
-					Command:            recoveryArgv,
-					Dir:                req.Workspace,
-					Env:                env,
-					Timeout:            remaining,
-					MaxTranscriptBytes: req.MaxTranscriptBytes,
-					StdoutCapture:      recoveryStdout,
+					Command:                      recoveryArgv,
+					Dir:                          req.Workspace,
+					Env:                          env,
+					Timeout:                      remaining,
+					MaxTranscriptBytes:           req.MaxTranscriptBytes,
+					StdoutCapture:                recoveryStdout,
+					TranscriptCheckpoint:         req.processTranscriptCheckpoint(2),
+					TranscriptCheckpointInterval: req.TranscriptCheckpointInterval,
 					// The recovery turn runs on what is LEFT of the budget,
 					// so a stall here is if anything more urgent to see than
 					// one in the main session (#4179).

@@ -1508,6 +1508,79 @@ func TestGitHubProviderCancelPendingChecksStopsWhenHeadMoved(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderRerunFailedChecksOnlyRerunsFailedRuns is #4750's
+// provider-level acceptance for the mechanical-retry rerun call: only the
+// actions runs at headSHA whose conclusion is a genuine failure get a
+// rerun-failed-jobs POST — a passing, pending, or unrelated-head run must not.
+func TestGitHubProviderRerunFailedChecksOnlyRerunsFailedRuns(t *testing.T) {
+	var reran []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		if got := r.URL.Query().Get("head_sha"); got != "reviewed" {
+			t.Fatalf("head_sha = %q, want reviewed", got)
+		}
+		writeJSON(t, w, map[string]interface{}{"workflow_runs": []map[string]interface{}{
+			{"id": 201, "status": "completed", "conclusion": "failure", "head_sha": "reviewed"},
+			{"id": 202, "status": "completed", "conclusion": "success", "head_sha": "reviewed"},
+			{"id": 203, "status": "in_progress", "head_sha": "reviewed"},
+			{"id": 204, "status": "completed", "conclusion": "failure", "head_sha": "newer"},
+		}})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs/201/rerun-failed-jobs", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		reran = append(reran, "201")
+		w.WriteHeader(http.StatusCreated)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	err := provider.RerunFailedChecks(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "reviewed")
+	if err != nil {
+		t.Fatalf("RerunFailedChecks: %v", err)
+	}
+	if !reflect.DeepEqual(reran, []string{"201"}) {
+		t.Fatalf("rerun requests = %v, want exactly [201]", reran)
+	}
+}
+
+// TestGitHubProviderRerunFailedChecksAggregatesErrors proves a rerun failure
+// on one run does not silently swallow — and does not stop — rerunning the
+// PR's other failed runs (a head commit can carry more than one failing
+// workflow run, #4750's "reruns all failed jobs in the run, not a single
+// check" design note).
+func TestGitHubProviderRerunFailedChecksAggregatesErrors(t *testing.T) {
+	var reran []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"workflow_runs": []map[string]interface{}{
+			{"id": 301, "status": "completed", "conclusion": "failure", "head_sha": "reviewed"},
+			{"id": 302, "status": "completed", "conclusion": "timed_out", "head_sha": "reviewed"},
+		}})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs/301/rerun-failed-jobs", func(w http.ResponseWriter, r *http.Request) {
+		reran = append(reran, "301")
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(t, w, map[string]string{"message": "Resource not accessible by integration"})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs/302/rerun-failed-jobs", func(w http.ResponseWriter, r *http.Request) {
+		reran = append(reran, "302")
+		w.WriteHeader(http.StatusCreated)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	err := provider.RerunFailedChecks(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "reviewed")
+	if err == nil {
+		t.Fatal("expected an error from the 403'd rerun call")
+	}
+	if !reflect.DeepEqual(reran, []string{"301", "302"}) {
+		t.Fatalf("rerun requests = %v, want [301 302] — one run's failure must not stop the others", reran)
+	}
+}
+
 // TestGitHubProviderCheckDetailsDoesNotFallBackOnUnrelated403 guards
 // IsForbiddenPATError's narrowness: an ordinary 403 (rate limit, org SSO
 // block, wrong scope) must surface as a normal error, not be silently
@@ -2452,7 +2525,7 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 		}),
 		mutation: map[string]interface{}{
 			"enqueuePullRequest": map[string]interface{}{
-				"mergeQueueEntry": map[string]interface{}{"state": "QUEUED", "position": 2},
+				"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "enqueuedAt": "2026-09-01T12:00:00Z", "state": "QUEUED", "position": 2},
 			},
 		},
 	}
@@ -2470,7 +2543,7 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 	}
 	// Enqueueing never merges inline, so Merged is false by construction —
 	// the queue entry is what the caller polls next.
-	if result.Merged || result.Number != 9 {
+	if result.Merged || result.Number != 9 || result.QueueEntryID != "MQE_accepted" {
 		t.Fatalf("result = %#v, want Merged=false Number=9", result)
 	}
 	if len(stub.bodies) != 2 {
@@ -2480,6 +2553,9 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 		t.Fatalf("lookup number = %v, want 9", got)
 	}
 	mutationVars := stub.variables(1)
+	if query, _ := stub.bodies[1]["query"].(string); !strings.Contains(query, "mergeQueueEntry{ id enqueuedAt state position }") {
+		t.Fatalf("enqueue mutation did not request its receipt identity: %s", query)
+	}
 	if got := mutationVars["pullRequestId"]; got != "PR_node" {
 		t.Fatalf("mutation pullRequestId = %v, want the node id from the lookup", got)
 	}
@@ -2495,6 +2571,9 @@ func TestGitHubProviderEnqueuePullRequestUsesGraphQLMutation(t *testing.T) {
 	}
 	if ref.Operation != "enqueue" {
 		t.Fatalf("Operation = %q, want enqueue (not merge — this pull request is not yet merged)", ref.Operation)
+	}
+	if ref.QueueAdmission == nil || ref.QueueAdmission.EntryID != result.QueueEntryID || ref.QueueAdmission.RepositoryAPIURL != server.URL+"/repos/acme/app" || ref.QueueAdmission.PullID != "9" || ref.QueueAdmission.ExpectedHeadSHA != "deadbeef" || ref.QueueAdmission.EnqueuedAt.Format(time.RFC3339) != "2026-09-01T12:00:00Z" || ref.MergeConfirmation != nil {
+		t.Fatalf("queue receipt missing or falsely promoted to a merge: %+v", ref)
 	}
 }
 
@@ -2540,7 +2619,7 @@ func TestGitHubProviderEnqueuePullRequestAlreadyEnqueuedIsIdempotent(t *testing.
 		t: t,
 		lookup: lookupResponse(map[string]interface{}{
 			"id": "PR_node", "merged": false, "mergeCommit": nil,
-			"mergeQueueEntry": map[string]interface{}{"state": "AWAITING_CHECKS", "position": 0},
+			"mergeQueueEntry": map[string]interface{}{"id": "MQE_someone_else", "state": "AWAITING_CHECKS", "position": 0},
 		}),
 	}
 	server := stub.server()
@@ -2560,12 +2639,11 @@ func TestGitHubProviderEnqueuePullRequestAlreadyEnqueuedIsIdempotent(t *testing.
 	if len(stub.bodies) != 1 {
 		t.Fatalf("made %d graphql requests, want 1 (no mutation for an already-enqueued pull request)", len(stub.bodies))
 	}
-	ref, ok := rec.last()
-	if !ok {
-		t.Fatalf("expected a recorded external ref for the already-enqueued pull request")
+	if ref, ok := rec.last(); ok {
+		t.Fatalf("observation of an existing queue entry recorded a mutation: %+v", ref)
 	}
-	if ref.Operation != "enqueue" {
-		t.Fatalf("Operation = %q, want enqueue", ref.Operation)
+	if result.QueueEntryID != "" {
+		t.Fatalf("observed entry claimed as this caller's receipt: %+v", result)
 	}
 }
 

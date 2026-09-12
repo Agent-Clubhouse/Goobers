@@ -13,6 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/goobers/goobers/internal/flake"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -22,6 +23,32 @@ type fakeLedgerProvider struct {
 	creates       []providers.CreateWorkItemRequest
 	updates       []providers.UpdateWorkItemRequest
 	comments      map[string][]providers.Comment
+}
+
+func TestDistinguishingSignatureRejectsOnlyRunnerAndPackageSummaries(t *testing.T) {
+	for _, signature := range []string{
+		flake.NoStableSignature,
+		"coverage: 89.7% of statements",
+		"coverage: 89.7% of statements in ./...",
+		"coverage: [no statements]",
+		"ok github.com/goobers/goobers/internal/bootstrap 120.228s coverage: 89.7% of statements",
+		"ok github.com/goobers/goobers/internal/bootstrap (cached) coverage: [no statements]",
+		"-test.shuffle=<value> | coverage: 89.7% of statements | ok example/pkg 1.2s",
+	} {
+		if distinguishingSignature(signature) {
+			t.Errorf("distinguishingSignature(%q) = true, want false", signature)
+		}
+	}
+	if !distinguishingSignature("start Temporal dev server: context deadline exceeded | coverage: 89.7% of statements") {
+		t.Fatal("underlying failure was rejected with its coverage summary")
+	}
+	const exact4333Body = "FAIL\ncoverage: 89.7% of statements\nFAIL\tgithub.com/goobers/goobers/internal/bootstrap\t120.228s"
+	if signature := flake.NormalizeSignature(exact4333Body); distinguishingSignature(signature) {
+		t.Fatalf("normalized #4333 signature %q was accepted as distinguishing", signature)
+	}
+	if !distinguishingSignature("ok this is meaningful output") {
+		t.Fatal("unprefixed meaningful output beginning with ok was rejected")
+	}
 }
 
 func (f *fakeLedgerProvider) EnsureWorkItemLabels(

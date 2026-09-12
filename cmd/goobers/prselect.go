@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/prqueue"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/providers"
 )
@@ -163,7 +165,11 @@ func runPRSelectCore(
 		}
 	}
 	now := time.Now().UTC()
-	expectedAuthorLogin := source.expectedAuthorLogin(ctx, root)
+	expectedAuthorLogin, err := source.expectedAuthorLogin(ctx, root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
 	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
 	if err != nil {
@@ -201,6 +207,8 @@ func runPRSelectCore(
 		return 1
 	}
 	exclusions := newPRSelectExclusions()
+	exclusions.report.ObservedAt = now
+	exclusions.report.CompleteSnapshot = bool(completeness)
 	for _, pr := range prs {
 		if pr.State != "open" || pr.Base != base ||
 			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
@@ -210,15 +218,15 @@ func runPRSelectCore(
 		// every exit below is an exclusion worth counting (#2969).
 		exclusions.matching++
 		if pr.Draft {
-			exclusions.record(exclusionDraft)
+			exclusions.recordPR(pr.Number, exclusionDraft)
 			continue
 		}
 		if !mergeReviewCheckStateEligible(pr.CheckState, allowPendingChecks) {
-			exclusions.record(exclusionChecks)
+			exclusions.recordPR(pr.Number, exclusionChecks)
 			continue
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
-			exclusions.record(exclusionLabel)
+			exclusions.recordPR(pr.Number, exclusionLabel)
 			continue
 		}
 
@@ -227,13 +235,13 @@ func runPRSelectCore(
 			advisoryAlreadyDispatched(advisedHeads, pr) {
 			pf(stdout, "skipped PR #%d: advisory verdict already published for head %s\n",
 				pr.Number, shortBaselineSHA(pr.HeadSHA))
-			exclusions.record(exclusionAdvisoryPublished)
+			exclusions.recordPR(pr.Number, exclusionAdvisoryPublished)
 			continue
 		}
 		if !eligibleByMergeReviewPolicy(pr, requiredOptInLabel, respectAssignee, selfIdentity) {
 			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
 				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
-			exclusions.record(exclusionPolicy)
+			exclusions.recordPR(pr.Number, exclusionPolicy)
 			continue
 		}
 		blocked, blockCode, blockReason, gateCode := prSelectSafetyGatesBlock(
@@ -245,17 +253,19 @@ func runPRSelectCore(
 		}
 		if blocked {
 			pf(stdout, "excluded PR #%d: %s\n", pr.Number, blockReason)
-			exclusions.record(blockCode)
+			exclusions.recordPR(pr.Number, blockCode)
 			continue
 		}
+		exclusions.report.Add(pr.Number, "")
 		eligible = append(eligible, pr)
 	}
 	if len(eligible) == 0 {
 		pf(stdout, "%s\n", exclusions.summary())
 	}
+	observePRQueueClaims(root, repo, prs, &exclusions.report)
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
-		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr)
+		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr, &exclusions.report)
 }
 
 // completePRSelection is the provider-neutral selection decision after a
@@ -281,7 +291,12 @@ func completePRSelection(
 	// a redacted diagnostics bundle cannot carry (#2968).
 	noEligibleReason string,
 	stdout, stderr io.Writer,
+	reports ...*prqueue.Report,
 ) int {
+	var report *prqueue.Report
+	if len(reports) > 0 {
+		report = reports[0]
+	}
 	observation, err := observePRSelectEligibility(root, repo, prs, eligible, completeness, now)
 	if err != nil {
 		pf(stderr, "error: update PR fairness state: %v\n", err)
@@ -291,7 +306,7 @@ func completePRSelection(
 		if strings.TrimSpace(noEligibleReason) == "" {
 			noEligibleReason = "no eligible PR to select this cycle"
 		}
-		return writeNoWorkResult(stdout, stderr, noEligibleReason)
+		return writePRQueueNoWork(stdout, stderr, noEligibleReason, report)
 	}
 	eligible, priorities, fairness := rankEligiblePullRequests(
 		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
@@ -299,7 +314,7 @@ func completePRSelection(
 	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	if observation.CurrentRunHasLiveClaim {
 		if len(observation.CurrentRunClaimEligible) == 0 {
-			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
+			return writePRQueueNoWork(stdout, stderr, "current run already holds a live claim outside the eligible snapshot", report)
 		}
 		eligible, priorities, _ = rankEligiblePullRequests(
 			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
@@ -307,7 +322,7 @@ func completePRSelection(
 		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
 	}
 	if len(eligible) == 0 {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+		return writePRQueueNoWork(stdout, stderr, "every eligible PR is already claimed by another run", report)
 	}
 
 	claimed, err := claimEligiblePullRequestInOrder(root, repo, eligible)
@@ -316,7 +331,7 @@ func completePRSelection(
 		return 1
 	}
 	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+		return writePRQueueNoWork(stdout, stderr, "every eligible PR is already claimed by another run", report)
 	}
 	selected := *claimed
 	advisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selected.Author, selected.Head, headPrefixes, expectedAuthorLogin)
@@ -333,7 +348,7 @@ func completePRSelection(
 	priority := priorities[selected.Number]
 
 	resultFile := providerInput("resultFile", "selected-pr.json")
-	data, err := json.Marshal(map[string]string{
+	result := map[string]any{
 		"number":                 strconv.Itoa(selected.Number),
 		"head":                   selected.Head,
 		"base":                   selected.Base,
@@ -348,7 +363,12 @@ func completePRSelection(
 		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
 		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
 		"eligibilityPolicy":      mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity),
-	})
+	}
+	if report != nil {
+		result["queueEligibility"] = report
+		result["queueEligibilityVersion"] = "1"
+	}
+	data, err := json.Marshal(result)
 	if err != nil {
 		pf(stderr, "error: marshal selected PR: %v\n", err)
 		return 1
@@ -425,7 +445,7 @@ func pullRequestsForSelection(
 // fairness, claims, and result handling outside this adapter.
 type prSelectSource interface {
 	pullRequests(context.Context, providers.RepositoryRef, prSelectSourceRequest) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error)
-	expectedAuthorLogin(context.Context, string) string
+	expectedAuthorLogin(context.Context, string) (string, error)
 }
 
 // prSelectSelfIdentitySource is implemented only where the configured
@@ -492,7 +512,7 @@ func (s refCheckPRSelectSource) resolveSelfIdentity(ctx context.Context) (string
 	return s.provider.AuthenticatedLogin(ctx)
 }
 
-func (s refCheckPRSelectSource) expectedAuthorLogin(ctx context.Context, root string) string {
+func (s refCheckPRSelectSource) expectedAuthorLogin(ctx context.Context, root string) (string, error) {
 	return daemonIdentityAuthorLogin(ctx, root, s.provider)
 }
 
@@ -511,22 +531,24 @@ func (s branchPolicyPRSelectSource) pullRequests(ctx context.Context, repo provi
 	)
 }
 
-func (branchPolicyPRSelectSource) expectedAuthorLogin(context.Context, string) string { return "" }
+func (branchPolicyPRSelectSource) expectedAuthorLogin(context.Context, string) (string, error) {
+	return "", nil
+}
 
 // Normalized exclusion reasons (#2969). These are the vocabulary the no-work
 // summary counts by, deliberately stable and few: an operator reading "7
 // escalated" must be able to act on it without reading pr-select's source.
 const (
-	exclusionDraft             = "draft"
-	exclusionChecks            = "checks not passing"
-	exclusionLabel             = "excluded by label"
-	exclusionAdvisoryPublished = "advisory verdict already published"
-	exclusionPolicy            = "merge-review eligibility policy"
-	exclusionScopeGate         = "scope gate"
-	exclusionEscalated         = "escalated, human action required"
-	exclusionDemoted           = "merge-demoted"
-	exclusionSiblingBlocked    = "blocked on a sibling"
-	exclusionTutorSignoff      = "awaiting human signoff"
+	exclusionDraft             = prqueue.Draft
+	exclusionChecks            = prqueue.Checks
+	exclusionLabel             = prqueue.Label
+	exclusionAdvisoryPublished = prqueue.AdvisoryPublished
+	exclusionPolicy            = prqueue.Policy
+	exclusionScopeGate         = prqueue.ScopeGate
+	exclusionEscalated         = prqueue.Escalated
+	exclusionDemoted           = prqueue.Demoted
+	exclusionSiblingBlocked    = prqueue.SiblingBlocked
+	exclusionTutorSignoff      = prqueue.TutorSignoff
 )
 
 // prSelectExclusions tallies why the pull requests this workflow is
@@ -545,13 +567,22 @@ const (
 // prefix, base and author scope — because that is what makes "nothing to do"
 // separable from "everything is parked".
 type prSelectExclusions struct {
+	report   prqueue.Report
 	matching int
 	counts   map[string]int
 	order    []string
 }
 
 func newPRSelectExclusions() *prSelectExclusions {
-	return &prSelectExclusions{counts: make(map[string]int)}
+	return &prSelectExclusions{counts: make(map[string]int), report: prqueue.Report{Version: 1, Items: []prqueue.Item{}}}
+}
+
+func (e *prSelectExclusions) recordPR(number int, reason string) {
+	e.record(reason)
+	if reason == "" {
+		reason = "excluded"
+	}
+	e.report.Add(number, reason)
 }
 
 func (e *prSelectExclusions) record(reason string) {
@@ -945,39 +976,69 @@ func isOwnPullRequest(author, head string, headPrefixes []string, expectedAuthor
 
 // daemonIdentityAuthorLogin resolves the login merge-review's "is this ours"
 // check should compare pr.Author against, or "" to fall back to the
-// branch-prefix heuristic unchanged (#1780). Loads instance.yaml directly
-// (the same fallback path providerRepo already uses) rather than requiring a
-// new runner-injected env var — root is already available to every
-// provider-chain stage.
+// branch-prefix heuristic unchanged (#1780).
 //
-// PAT: github:pr:write already resolves to the DaemonIdentity's own token
-// once configured (buildCredentials, runnerwiring.go), so provider — built
-// from that exact token — reports the daemon identity's own login for free.
-// GitHub App: an installation token cannot self-report a login (no
-// equivalent of GET /user), so this requires Slug to be explicitly declared;
-// unset (the default until #1779 lands) returns "" like no DaemonIdentity at
-// all, not an error.
+// TWO SUBSTRATES, and the difference is which question can be answered here.
 //
-// A resolution failure (e.g. a transient network error on the live
-// AuthenticatedLogin call) fails OPEN to the branch-prefix heuristic rather
-// than failing the whole stage — a momentary identity-lookup hiccup must
-// never block a merge-review cycle outright.
-func daemonIdentityAuthorLogin(ctx context.Context, root string, provider remediationProvider) string {
-	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
-	if err != nil || cfg.DaemonIdentity == nil {
-		return ""
-	}
-	if cfg.DaemonIdentity.GitHubApp() {
-		if cfg.DaemonIdentity.Slug == "" {
-			return ""
+// LOCAL: instance.yaml is readable and authoritative, so the daemon identity
+// is read from it directly — unchanged. PAT: github:pr:write already resolves
+// to the DaemonIdentity's own token once configured (buildCredentials,
+// runnerwiring.go), so provider — built from that exact token — reports the
+// daemon identity's own login for free. GitHub App: an installation token
+// cannot self-report a login (no equivalent of GET /user), so this requires
+// Slug to be explicitly declared; unset (the default until #1779 lands)
+// returns "" like no DaemonIdentity at all, and is NOT an error — that
+// configuration is valid and must keep falling back to branch prefixes.
+//
+// POD: instance.yaml does not exist (and GOOBERS_INSTANCE_ROOT is unset —
+// the same signal stageProviderConfiguredLogin keys off), and the old code
+// returned "" the moment LoadConfig failed — so both this stage and gather-sibling-context silently
+// dropped to branch-prefix ownership in a pod while the same workflow used
+// identity ownership on self (#4345). The provider handed in here has already
+// been built through the pod-safe seam (stageProviderConfiguredLogin, #3914):
+// the dispatcher's stamped login wins, an unstamped pod is a refusal, and a
+// PAT still self-reports. So the pod answer is simply to ASK IT.
+//
+// The two failure modes are deliberately not the same:
+//   - A refusal (LoginSelfReportRefusedError) is a platform wiring fault —
+//     the stage is in a pod and nothing resolved its identity. Branch-prefix
+//     ownership is not a safe default there, because it would classify the
+//     same PR differently than the identical run on self. Fail CLOSED.
+//   - Any other error (a transient network failure on the live GET /user, or
+//     an App installation token that has no self-report to give) fails OPEN
+//     to the branch-prefix heuristic exactly as before — a momentary
+//     identity-lookup hiccup must never block a merge-review cycle outright.
+func daemonIdentityAuthorLogin(ctx context.Context, root string, provider remediationProvider) (string, error) {
+	cfg, cfgErr := instance.LoadConfig(layoutFor(root).ConfigFile())
+	switch {
+	case cfgErr == nil:
+		if cfg.DaemonIdentity == nil {
+			return "", nil
 		}
-		return cfg.DaemonIdentity.Slug + "[bot]"
+		if cfg.DaemonIdentity.GitHubApp() {
+			if cfg.DaemonIdentity.Slug == "" {
+				return "", nil
+			}
+			return cfg.DaemonIdentity.Slug + "[bot]", nil
+		}
+	case strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) != "":
+		// An instance root IS declared and its config did not load: the
+		// local substrate with a config problem, not a pod. Unchanged — ""
+		// and the branch-prefix heuristic. Asking the provider here would
+		// answer a DIFFERENT question (whose credential is this, not who is
+		// the daemon), and a PAT that is not the daemon identity would then
+		// reject the daemon's own PRs and stall merge-review outright.
+		return "", nil
 	}
 	login, err := provider.AuthenticatedLogin(ctx)
-	if err != nil {
-		return ""
+	if err == nil {
+		return login, nil
 	}
-	return login
+	var refused *providers.LoginSelfReportRefusedError
+	if errors.As(err, &refused) {
+		return "", fmt.Errorf("resolve the automation identity PR ownership is decided by: %w", err)
+	}
+	return "", nil
 }
 
 func splitLabelList(value string) []string {

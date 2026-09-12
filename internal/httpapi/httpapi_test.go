@@ -26,12 +26,15 @@ type fakeReader struct {
 	signatures   readservice.TelemetryErrorSignaturesResult
 	errors       readservice.TelemetryErrorsPage
 	outcomes     readservice.TelemetryImplementationOutcomesResult
+	workItems    readservice.WorkItemPage
+	workItem     readservice.WorkItemDetail
 	telemetryErr error
 	costReq      readservice.TelemetryCostRequest
 	statsReq     readservice.TelemetryStatsRequest
 	signatureReq readservice.TelemetryErrorSignaturesRequest
 	errorsReq    readservice.TelemetryErrorsRequest
 	outcomesReq  readservice.TelemetryImplementationOutcomesRequest
+	workItemsReq readservice.WorkItemListOptions
 	runs         readservice.RunList
 	run          readservice.RunDetail
 	events       readservice.EventList
@@ -100,6 +103,19 @@ func (f *fakeReader) TelemetryErrors(_ context.Context, req readservice.Telemetr
 func (f *fakeReader) TelemetryImplementationOutcomes(_ context.Context, req readservice.TelemetryImplementationOutcomesRequest) (readservice.TelemetryImplementationOutcomesResult, error) {
 	f.outcomesReq = req
 	return f.outcomes, f.telemetryErr
+}
+
+func (f *fakeReader) WorkItems(_ context.Context, req readservice.WorkItemListOptions) (readservice.WorkItemPage, error) {
+	f.workItemsReq = req
+	return f.workItems, f.telemetryErr
+}
+
+func (f *fakeReader) WorkItem(_ context.Context, provider, repository, kind, externalID string) (readservice.WorkItemDetail, error) {
+	f.workItem.Provider = provider
+	f.workItem.Repository = repository
+	f.workItem.Kind = kind
+	f.workItem.ExternalID = externalID
+	return f.workItem, f.telemetryErr
 }
 
 func (f *fakeReader) ListRuns(_ context.Context, options readservice.RunListOptions) (readservice.RunList, error) {
@@ -178,10 +194,17 @@ func (f *fakeReader) Workflow(_ context.Context, gaggle, workflow string) (reads
 	return f.workflow, f.err
 }
 
+func (f *fakeReader) QueueEligibility(_ context.Context, gaggle, workflow string) (readservice.QueueEligibilityView, error) {
+	f.called++
+	f.lastGaggle, f.lastWorkflow = gaggle, workflow
+	return readservice.QueueEligibilityView{Gaggle: gaggle, Workflow: workflow, Status: "not-observed"}, f.err
+}
+
 func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	reader := &fakeReader{health: readservice.Health{
 		APIVersion:    readservice.APIVersion,
 		SchemaVersion: readservice.SchemaVersion,
+		Build:         readservice.BuildMetadata{Version: "v1.2.3", Commit: "abc1234", Date: "2026-09-10T01:02:03Z"},
 		Ready:         true,
 		Instance:      readservice.InstanceIdentity{Name: "example"},
 	}}
@@ -202,7 +225,8 @@ func TestHealthHandlerUsesSharedReadService(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatal(err)
 	}
-	if reader.called != 1 || !health.Ready || health.Instance.Name != "example" {
+	if reader.called != 1 || !health.Ready || health.Instance.Name != "example" ||
+		health.Build != reader.health.Build {
 		t.Fatalf("reader called %d times, health = %+v", reader.called, health)
 	}
 }

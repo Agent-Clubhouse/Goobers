@@ -3,13 +3,16 @@ import type { DaemonClient, Gaggle, Goober } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { type OperationalSnapshot, useOperationalSnapshot } from "../operationalData";
+import { routeHash } from "../routing";
 import { Icon } from "../ui/Icon";
 
 export function GoobersPage({
   client,
+  gaggleName,
   standalone,
 }: {
   client: DaemonClient;
+  gaggleName?: string;
   standalone: boolean;
 }) {
   const query = useOperationalSnapshot(client);
@@ -24,7 +27,15 @@ export function GoobersPage({
     return null;
   }
 
-  return <GooberRoster snapshot={query.state.data} standalone={standalone} />;
+  return (
+    <GooberRoster
+      gaggleName={gaggleName}
+      inventoryError={query.state.status === "stale" ? query.state.error : undefined}
+      retry={query.retry}
+      snapshot={query.state.data}
+      standalone={standalone}
+    />
+  );
 }
 
 interface RosterEntry {
@@ -33,35 +44,59 @@ interface RosterEntry {
 }
 
 function GooberRoster({
+  gaggleName,
+  inventoryError,
+  retry,
   snapshot,
   standalone,
 }: {
+  gaggleName?: string;
+  inventoryError?: Error;
+  retry: () => void;
   snapshot: OperationalSnapshot;
   standalone: boolean;
 }) {
-  const entries: RosterEntry[] = snapshot.inventories.flatMap((inventory) =>
+  const inventories = gaggleName
+    ? snapshot.inventories.filter((inventory) => inventory.gaggle.name === gaggleName)
+    : snapshot.inventories;
+  const entries: RosterEntry[] = inventories.flatMap((inventory) =>
     inventory.goobers.map((goober) => ({ gaggle: inventory.gaggle, goober })),
   );
+  const filteredGaggle = gaggleName ? inventories[0]?.gaggle : undefined;
 
   return (
     <>
-      <header className="page-heading page-heading-row">
+      <header className="page-heading">
         <div>
-          <p className="page-kicker">Roster</p>
           <h1>Goobers</h1>
           <p>
-            {standalone
-              ? "Every configured agent persona across gaggles, read from this instance."
-              : "Every configured agent persona across gaggles, read from the daemon."}
+            {filteredGaggle
+              ? `Configured personas owned by ${filteredGaggle.displayName}.`
+              : "Goobers are the agent personas that do the actual work."}
           </p>
-        </div>
-        <div className="scope-chip">
-          <span className="scope-mark">G</span>
-          {entries.length} {entries.length === 1 ? "goober" : "goobers"}
+          {filteredGaggle && (
+            <a className="text-link" href={routeHash({ page: "goobers" })}>
+              View all gaggles
+            </a>
+          )}
         </div>
       </header>
 
-      {entries.length === 0 ? (
+      {inventoryError && entries.length === 0 ? (
+        <div className="run-stale-state run-stale-state-error" role="alert">
+          <span>
+            <strong>Goober inventory is unavailable</strong>
+            <small>{inventoryError.message}</small>
+          </span>
+          <button className="text-button" onClick={retry} type="button">
+            Retry
+          </button>
+        </div>
+      ) : snapshot.loadingSections?.inventory && entries.length === 0 ? (
+        <div className="inline-empty section-loading" role="status">
+          Goober inventory is loading. The roster will fill in as definitions arrive.
+        </div>
+      ) : entries.length === 0 ? (
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
@@ -71,13 +106,63 @@ function GooberRoster({
           </div>
         </section>
       ) : (
-        <div aria-label="Goober roster" className="goober-roster goober-roster-page">
-          {entries.map(({ gaggle, goober }) => (
-            <GooberRosterCard gaggle={gaggle} goober={goober} key={`${gaggle.name}/${goober.name}`} />
+        <div aria-label="Goobers by owning gaggle" className="goober-groups">
+          {inventories.map((inventory) => (
+            <GooberGroup inventory={inventory} key={inventory.gaggle.name} />
           ))}
         </div>
       )}
     </>
+  );
+}
+
+function GooberGroup({
+  inventory,
+}: {
+  inventory: OperationalSnapshot["inventories"][number];
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const contentId = `goober-group-${inventory.gaggle.name}`;
+
+  return (
+    <section className="goober-group">
+      <button
+        aria-controls={contentId}
+        aria-expanded={expanded}
+        className="goober-group-summary"
+        onClick={() => setExpanded((current) => !current)}
+        type="button"
+      >
+        <span>
+          <strong>{inventory.gaggle.displayName}</strong>
+          <code>{inventory.gaggle.name}</code>
+        </span>
+        <span className="goober-group-summary-meta">
+          <span className="section-count">
+            {inventory.goobers.length} {inventory.goobers.length === 1 ? "goober" : "goobers"}
+          </span>
+          <span aria-hidden="true" className="goober-group-chevron">
+            <Icon name="chevron" size={16} />
+          </span>
+        </span>
+      </button>
+      {expanded && (
+        <div
+          aria-label={`${inventory.gaggle.displayName} goober personas`}
+          className="goober-roster goober-roster-page"
+          id={contentId}
+          role="region"
+        >
+          {inventory.goobers.map((goober) => (
+            <GooberRosterCard
+              gaggle={inventory.gaggle}
+              goober={goober}
+              key={`${inventory.gaggle.name}/${goober.name}`}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -98,33 +183,53 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
       >
         <span className="goober-card-toggle-label">
           <h4 id={headingId}>{goober.displayName}</h4>
-          <p>
-            {gaggle.displayName} · {goober.role}
-          </p>
+          <p>{goober.role}</p>
+          <code className="goober-identity">{gaggle.name}/{goober.name}</code>
         </span>
         <span className="goober-card-toggle-meta">
-          <span className="definition-status">{goober.status}</span>
           <span aria-hidden="true" className="goober-card-chevron">
             <Icon name="chevron" size={14} />
           </span>
         </span>
       </button>
 
-      <dl>
+      <dl className="goober-summary">
         <div>
           <dt>Harness</dt>
           <dd>{goober.harness}</dd>
         </div>
         <div>
           <dt>Skills</dt>
-          <dd>{goober.skills.length > 0 ? goober.skills.join(", ") : "None declared"}</dd>
+          <dd>
+            {goober.skills.length > 0 ? (
+              <ul className="goober-field-list">
+                {goober.skills.map((skill) => <li key={skill}>{skill}</li>)}
+              </ul>
+            ) : "None declared"}
+          </dd>
         </div>
         <div>
-          <dt>Workflow ownership</dt>
+          <dt>Workflow / stage ownership</dt>
           <dd>
-            {goober.workflows.length > 0
-              ? goober.workflows.map((workflow) => `${workflow.gaggle}/${workflow.name}`).join(", ")
-              : "None declared"}
+            {goober.workflows.length > 0 || goober.stages.length > 0 ? (
+              <ul className="goober-ownership-list">
+                {goober.workflows.map((workflow) => (
+                  <li key={`${workflow.gaggle}/${workflow.name}`}>
+                    {workflow.gaggle}/{workflow.name}
+                  </li>
+                ))}
+                {goober.stages.map((stage) => (
+                  <li
+                    className="goober-stage-ownership"
+                    key={`${stage.workflow.gaggle}/${stage.workflow.name}/${stage.stage}`}
+                  >
+                    {stage.workflow.gaggle}/{stage.workflow.name}/{stage.stage} ({stage.kind})
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              "None declared"
+            )}
           </dd>
         </div>
       </dl>
@@ -154,32 +259,15 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
           {view === "fields" ? (
             <dl className="property-list">
               <div>
-                <dt>Persona</dt>
-                <dd>{goober.role}</dd>
-              </div>
-              <div>
                 <dt>Capabilities</dt>
                 <dd>
-                  {goober.capabilities.length > 0 ? goober.capabilities.join(", ") : "None declared"}
-                </dd>
-              </div>
-              <div>
-                <dt>Stage ownership</dt>
-                <dd>
-                  {goober.stages.length > 0
-                    ? goober.stages
-                        .map(
-                          (stage) =>
-                            `${stage.workflow.gaggle}/${stage.workflow.name}/${stage.stage} (${stage.kind})`,
-                        )
-                        .join(", ")
-                    : "None declared"}
-                </dd>
-              </div>
-              <div>
-                <dt>Provisioning</dt>
-                <dd>
-                  {gaggle.name}/{goober.name} · {goober.harness}
+                  {goober.capabilities.length > 0 ? (
+                    <ul className="goober-field-list">
+                      {goober.capabilities.map((capability) => (
+                        <li key={capability}>{capability}</li>
+                      ))}
+                    </ul>
+                  ) : "None declared"}
                 </dd>
               </div>
               <div>

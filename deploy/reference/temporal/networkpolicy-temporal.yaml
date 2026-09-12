@@ -2,18 +2,27 @@
 # workers, operator and the scheduling daemon"). Apply alongside the Helm
 # release in goobers-temporal; control-plane egress grants live in
 # ../goobers-system/networkpolicies.yaml.
+#
+# #4827: this policy grants EXTERNAL control-plane access to the frontend
+# only — it must not also govern history/matching/worker, which need their
+# own intra-cluster ports admitted instead (networkpolicy-temporal-
+# intracluster.yaml). The upstream OSS Temporal Helm chart labels every
+# server pod app.kubernetes.io/name=temporal AND stamps a per-component
+# app.kubernetes.io/component (frontend/history/matching/worker/web/
+# admintools); pinning both here — not name alone — is what keeps this
+# policy from silently becoming the SOLE ingress rule for history/matching/
+# worker pods too, which denied their own required RPC and ringpop gossip
+# ports (#4827's bug).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: temporal-frontend-ingress
   namespace: goobers-temporal
 spec:
-  # The chart labels the frontend pods app.kubernetes.io/name=temporal; scope
-  # further with app.kubernetes.io/component=frontend if your chart version
-  # sets it.
   podSelector:
     matchLabels:
       app.kubernetes.io/name: temporal
+      app.kubernetes.io/component: frontend
   policyTypes:
     - Ingress
   ingress:

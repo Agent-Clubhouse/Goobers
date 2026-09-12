@@ -176,7 +176,7 @@ func TestWindowsInstallStatusAndUninstall(t *testing.T) {
 		{},
 		{},
 		{},
-		{output: running, repeat: serviceReadinessChecks},
+		{output: running, repeat: 1000},
 		{output: stopped},
 		{},
 	}}
@@ -214,6 +214,8 @@ func TestWindowsInstallStatusAndUninstall(t *testing.T) {
 		t.Fatalf("create args = %q", createArgs)
 	}
 
+	// End the indefinitely healthy startup fixture before testing uninstall.
+	runner.responses = []commandResponse{{output: stopped}, {}}
 	if err := manager.Uninstall(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -684,12 +686,12 @@ func TestWindowsStopAndStart(t *testing.T) {
 	const stopped = "TYPE               : 10  WIN32_OWN_PROCESS\nSTATE              : 1  STOPPED\n"
 	const running = "TYPE               : 10  WIN32_OWN_PROCESS\nSTATE              : 4  RUNNING\n"
 	runner := &fakeRunner{responses: []commandResponse{
-		{output: running}, // Stop(): Status() precheck
-		{},                // sc.exe stop
-		{output: stopped}, // wait-until-stopped
-		{output: stopped}, // Start(): Status() precheck
-		{},                // sc.exe start
-		{output: running, repeat: serviceReadinessChecks}, // wait-until-running
+		{output: running},               // Stop(): Status() precheck
+		{},                              // sc.exe stop
+		{output: stopped},               // wait-until-stopped
+		{output: stopped},               // Start(): Status() precheck
+		{},                              // sc.exe start
+		{output: running, repeat: 1000}, // wait-until-running
 	}}
 	manager := newTestManager(t, Config{
 		GOOS:         "windows",

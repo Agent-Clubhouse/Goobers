@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,10 +12,16 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt time.Time, phase journal.RunPhase) {
+type statsCommandMutation struct {
+	kind      string
+	operation string
+}
+
+func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt time.Time, phase journal.RunPhase, extraMutations ...statsCommandMutation) {
 	t.Helper()
 	now := startedAt
 	clock := func() time.Time {
@@ -41,13 +49,12 @@ func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt 
 	if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)}); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutation := range []struct {
-		kind      string
-		operation string
-	}{
+	mutations := []statsCommandMutation{
 		{kind: "pr", operation: "open"},
 		{kind: "issue", operation: "claim"},
-	} {
+	}
+	mutations = append(mutations, extraMutations...)
+	for _, mutation := range mutations {
 		if err := run.Append(journal.Event{
 			Type:        journal.EventRefTouched,
 			ExternalRef: &journal.ExternalRef{Provider: "github", Kind: mutation.kind, ID: runID},
@@ -57,6 +64,23 @@ func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt 
 		}
 	}
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeStatsReadModel(t *testing.T, root string, runs ...readmodel.RunRow) {
+	t.Helper()
+	store, err := readmodel.Open(instance.NewLayout(root).ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	for _, run := range runs {
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: run}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.MarkReady(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -100,6 +124,103 @@ func TestStatsJSONAndSinceWindow(t *testing.T) {
 		got.TimeToFirstPR.Milliseconds == nil ||
 		*got.TimeToFirstPR.Milliseconds != got.TimeToFirstPR.FirstPROpenAt.Sub(*got.TimeToFirstPR.InitCompletedAt).Milliseconds() {
 		t.Fatalf("timeToFirstPR = %#v, want source timestamps and their millisecond interval", got.TimeToFirstPR)
+	}
+}
+
+func TestStatsMergedCountUsesReadyReadModelOutcome(t *testing.T) {
+	root := initDemo(t)
+	now := time.Now().UTC()
+	writeStatsCommandRun(t, root, "old-merged", "merge-review", now.Add(-48*time.Hour), journal.PhaseCompleted)
+	writeStatsCommandRun(t, root, "recent-merged", "merge-review", now.Add(-time.Hour), journal.PhaseCompleted)
+	layout := instance.NewLayout(root)
+	if err := rollup.Rebuild(context.Background(), layout.TelemetryDB(), layout.RunsDir(), layout.SchedulerDir()); err != nil {
+		t.Fatal(err)
+	}
+	writeStatsReadModel(t, root,
+		readmodel.RunRow{RunID: "old-merged", Gaggle: "example", Workflow: "merge-review", Phase: journal.PhaseCompleted, Terminal: true, StartedAt: now.Add(-48 * time.Hour), LastActivity: now.Add(-48 * time.Hour), LastSeq: 1, OutcomeVerdict: "merged"},
+		readmodel.RunRow{RunID: "recent-merged", Gaggle: "example", Workflow: "merge-review", Phase: journal.PhaseCompleted, Terminal: true, StartedAt: now.Add(-time.Hour), LastActivity: now.Add(-time.Hour), LastSeq: 1, OutcomeVerdict: "merged"},
+	)
+
+	code, stdout, stderr := runArgs(t, "stats", "--json", root)
+	if code != 0 {
+		t.Fatalf("stats: code=%d stderr=%q", code, stderr)
+	}
+	var lifetime statsJSONSummary
+	if err := json.Unmarshal([]byte(stdout), &lifetime); err != nil {
+		t.Fatal(err)
+	}
+	if lifetime.PullRequests.Merged != 2 {
+		t.Fatalf("lifetime merged = %d, want read-model outcomes 2", lifetime.PullRequests.Merged)
+	}
+
+	code, stdout, stderr = runArgs(t, "stats", "--since", "24h", "--json", root)
+	if code != 0 {
+		t.Fatalf("windowed stats: code=%d stderr=%q", code, stderr)
+	}
+	var windowed statsJSONSummary
+	if err := json.Unmarshal([]byte(stdout), &windowed); err != nil {
+		t.Fatal(err)
+	}
+	if windowed.PullRequests.Merged != 1 {
+		t.Fatalf("windowed merged = %d, want read-model outcomes 1", windowed.PullRequests.Merged)
+	}
+}
+
+func TestStatsMergedCountFallsBackForUnavailableReadModel(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T, instance.Layout)
+	}{
+		{
+			name: "schema from prior binary",
+			setup: func(t *testing.T, layout instance.Layout) {
+				store, err := readmodel.Open(layout.ReadDB())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				db, err := sql.Open("sqlite", layout.ReadDB())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = db.Close() }()
+				if _, err := db.Exec("UPDATE projection_state SET schema_version = schema_version - 1 WHERE id = 1"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "uninitialized database",
+			setup: func(t *testing.T, layout instance.Layout) {
+				if err := os.WriteFile(layout.ReadDB(), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := initDemo(t)
+			writeStatsCommandRun(t, root, "mutation-only", "merge-review", time.Now().Add(-time.Hour), journal.PhaseCompleted,
+				statsCommandMutation{kind: "pr", operation: "merge"})
+			layout := instance.NewLayout(root)
+			if err := rollup.Rebuild(context.Background(), layout.TelemetryDB(), layout.RunsDir(), layout.SchedulerDir()); err != nil {
+				t.Fatal(err)
+			}
+			test.setup(t, layout)
+			code, stdout, stderr := runArgs(t, "stats", "--json", root)
+			if code != 0 {
+				t.Fatalf("stats did not fall back: code=%d stderr=%q", code, stderr)
+			}
+			var got statsJSONSummary
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.PullRequests.Merged != 1 {
+				t.Fatalf("fallback merged = %d, want mutation count 1", got.PullRequests.Merged)
+			}
+		})
 	}
 }
 

@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"math"
 	"os"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
@@ -118,6 +121,10 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	if err := reconcileStatsMergedCount(context.Background(), l, since, &summary); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	timeToFirstPR, err := db.TimeToFirstPR(context.Background())
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -184,6 +191,51 @@ func runStats(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "%-18s no duration data\n", "Agentic stages")
 	}
 	return 0
+}
+
+func reconcileStatsMergedCount(ctx context.Context, layout instance.Layout, since time.Time, summary *rollup.InstanceSummary) error {
+	merged, authoritative, err := statsMergedOutcomeCount(ctx, layout, since)
+	if err != nil {
+		return err
+	}
+	if authoritative {
+		summary.PullRequestsMerged = merged
+	}
+	return nil
+}
+
+// A merge queue is a mutation when Goobers enqueues the PR and an outcome when
+// the forge lands it later. Counting only operation=merge receipts therefore
+// misses the normal queued path. A ready read model is the authoritative
+// projection of both direct and queued terminal outcomes; old/offline instances
+// without one retain the mutation-ledger fallback.
+func statsMergedOutcomeCount(ctx context.Context, layout instance.Layout, since time.Time) (int, bool, error) {
+	if _, err := os.Stat(layout.ReadDB()); err != nil {
+		if os.IsNotExist(err) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("inspect run read model %s: %w", layout.ReadDB(), err)
+	}
+	reader, err := readmodel.OpenExistingReader(ctx, layout.ReadDB())
+	if err != nil {
+		if errors.Is(err, readmodel.ErrExistingProjectionUnavailable) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("open run read model %s: %w", layout.ReadDB(), err)
+	}
+	defer func() { _ = reader.Close() }()
+	state, err := reader.State(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("inspect run read model state: %w", err)
+	}
+	if !state.Ready {
+		return 0, false, nil
+	}
+	count, err := reader.CountOutcomeVerdict(ctx, "merged", since)
+	if err != nil {
+		return 0, false, err
+	}
+	return count, true, nil
 }
 
 func newStatsJSONSummary(

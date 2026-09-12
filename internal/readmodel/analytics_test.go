@@ -1,6 +1,9 @@
 package readmodel
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestAnalyzeGraphFindsWeightedCriticalPathAndCentrality(t *testing.T) {
 	graph := AnalyticsGraph{
@@ -85,5 +88,60 @@ func TestAnalyzeGraphDeduplicatesParallelDeclaredEdges(t *testing.T) {
 	}
 	if duplicate.CriticalPath.Weight != unique.CriticalPath.Weight {
 		t.Fatalf("duplicate edge changed critical path: %+v / %+v", duplicate.CriticalPath, unique.CriticalPath)
+	}
+}
+
+// TestAnalyzeGraphNeverReturnsNilSlices is #4825's core regression: Centrality,
+// Cycles, and CriticalPath.Nodes have no `omitempty` and no nullable
+// TypeScript type on the client, so a nil Go slice marshals to JSON null and
+// crashes the portal. An empty graph is the extreme case (no nodes, so
+// betweenness/longestPath/stronglyConnectedCycles all have nothing to loop
+// over), but a cyclic graph also leaves CriticalPath unset by AnalyzeGraph.
+func TestAnalyzeGraphNeverReturnsNilSlices(t *testing.T) {
+	for name, graph := range map[string]AnalyticsGraph{
+		"empty": {},
+		"single node, no edges": {
+			Nodes: []AnalyticsNode{{ID: "solo"}},
+		},
+		"cyclic": {
+			Nodes: []AnalyticsNode{{ID: "a"}, {ID: "b"}},
+			Edges: []AnalyticsEdge{{Source: "a", Target: "b"}, {Source: "b", Target: "a"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := AnalyzeGraph(graph)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Centrality == nil {
+				t.Fatal("Centrality is nil, want a non-nil (possibly empty) slice")
+			}
+			if result.Cycles == nil {
+				t.Fatal("Cycles is nil, want a non-nil (possibly empty) slice")
+			}
+			if result.CriticalPath.Nodes == nil {
+				t.Fatal("CriticalPath.Nodes is nil, want a non-nil (possibly empty) slice")
+			}
+			data, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded map[string]json.RawMessage
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"centrality", "cycles"} {
+				if string(decoded[field]) == "null" {
+					t.Fatalf("%s marshaled as JSON null, want []", field)
+				}
+			}
+			var criticalPath map[string]json.RawMessage
+			if err := json.Unmarshal(decoded["criticalPath"], &criticalPath); err != nil {
+				t.Fatal(err)
+			}
+			if string(criticalPath["nodes"]) == "null" {
+				t.Fatal("criticalPath.nodes marshaled as JSON null, want []")
+			}
+		})
 	}
 }

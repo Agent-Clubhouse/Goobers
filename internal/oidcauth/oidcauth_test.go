@@ -1,10 +1,13 @@
 package oidcauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -529,5 +532,175 @@ func TestCheckJWKSURIRejectsWeakerTransport(t *testing.T) {
 				t.Fatalf("checkJWKSURI(%q) with issuer %q = %v, want nil", tc.jwksURI, tc.issuer, err)
 			}
 		})
+	}
+}
+
+func TestCachedSigningKeysExpireAndRevocationFailsClosed(t *testing.T) {
+	for _, outage := range []bool{false, true} {
+		t.Run(fmt.Sprintf("issuer_outage=%t", outage), func(t *testing.T) {
+			key, _ := testKeys(t)
+			issuer := newFakeIssuer(t)
+			issuer.addKey("revoked", key)
+			a := newTestAuthenticator(t, issuer, nil)
+			token := mintToken(t, key, jwt.SigningMethodRS256, "revoked", issuer.baseClaims())
+			if _, err := authenticate(t, a, token); err != nil {
+				t.Fatal(err)
+			}
+			issuer.mu.Lock()
+			delete(issuer.keys, "revoked")
+			if outage {
+				issuer.jwksStatus = http.StatusServiceUnavailable
+			}
+			issuer.mu.Unlock()
+			a.mu.Lock()
+			a.keysFetchedAt = time.Now().Add(-2 * a.keyCacheTTL)
+			a.lastAttempt = time.Now().Add(-2 * a.refreshInterval)
+			a.mu.Unlock()
+			if _, err := authenticate(t, a, token); err == nil {
+				t.Fatal("expired cached signing key remained trusted")
+			}
+			if _, err := authenticate(t, a, token); err == nil {
+				t.Fatal("refresh throttle fell back to expired signing key")
+			}
+			if got := issuer.jwksFetches.Load(); got != 2 {
+				t.Fatalf("JWKS fetches = %d, want initial and one throttled refresh", got)
+			}
+		})
+	}
+}
+
+func TestExpiredSigningKeysRefreshForKnownKey(t *testing.T) {
+	key, _ := testKeys(t)
+	issuer := newFakeIssuer(t)
+	issuer.addKey("stable", key)
+	a := newTestAuthenticator(t, issuer, nil)
+	token := mintToken(t, key, jwt.SigningMethodRS256, "stable", issuer.baseClaims())
+	if _, err := authenticate(t, a, token); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.keysFetchedAt = time.Now().Add(-2 * a.keyCacheTTL)
+	a.lastAttempt = time.Now().Add(-2 * a.refreshInterval)
+	a.mu.Unlock()
+	if _, err := authenticate(t, a, token); err != nil {
+		t.Fatalf("known key failed after successful refresh: %v", err)
+	}
+	if got := issuer.jwksFetches.Load(); got != 2 {
+		t.Fatalf("JWKS fetches = %d, want 2", got)
+	}
+}
+
+func TestOIDCFetchRejectsHTTPSRedirectDowngrade(t *testing.T) {
+	var plaintextFetches atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		plaintextFetches.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer plain.Close()
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL, http.StatusFound)
+	}))
+	defer secure.Close()
+	client := secure.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return nil }
+	a, err := New(Config{Issuer: secure.URL, Audience: "a", HTTPClient: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/.well-known/openid-configuration", "/jwks"} {
+		var document map[string]any
+		if err := a.fetchJSON(context.Background(), secure.URL+path, &document); err == nil || !strings.Contains(err.Error(), "must not downgrade") {
+			t.Fatalf("fetch %s error = %v, want redirect downgrade refusal", path, err)
+		}
+	}
+	if got := plaintextFetches.Load(); got != 0 {
+		t.Fatalf("contacted plaintext endpoint %d times", got)
+	}
+	// The supplied client keeps its original policy; New must not change a
+	// shared client's behavior for callers outside authentication.
+	response, err := client.Get(secure.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+}
+
+func TestOIDCFetchPreservesSecureRedirectsAndCallerPolicy(t *testing.T) {
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/keys" {
+			http.Redirect(w, r, "/keys", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"keys":[]}`))
+	}))
+	defer secure.Close()
+	for _, refuse := range []bool{false, true} {
+		client := *secure.Client()
+		if refuse {
+			client.CheckRedirect = func(*http.Request, []*http.Request) error {
+				return errors.New("caller refused redirect")
+			}
+		}
+		a, err := New(Config{Issuer: secure.URL, Audience: "a", HTTPClient: &client})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document jwksDocument
+		err = a.fetchJSON(context.Background(), secure.URL+"/redirect", &document)
+		if refuse {
+			if err == nil || !strings.Contains(err.Error(), "caller refused redirect") {
+				t.Fatalf("caller policy not preserved: %v", err)
+			}
+		} else if err != nil {
+			t.Fatalf("secure redirect refused: %v", err)
+		}
+	}
+}
+
+func TestDisconnectedRefreshCallerCannotPoisonExpiredKeyCache(t *testing.T) {
+	key, _ := testKeys(t)
+	issuer := newFakeIssuer(t)
+	issuer.addKey("stable", key)
+	a := newTestAuthenticator(t, issuer, nil)
+	token := mintToken(t, key, jwt.SigningMethodRS256, "stable", issuer.baseClaims())
+	if _, err := authenticate(t, a, token); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.keysFetchedAt = time.Now().Add(-2 * a.keyCacheTTL)
+	a.lastAttempt = time.Now().Add(-2 * a.refreshInterval)
+	a.mu.Unlock()
+	gate, entered := make(chan struct{}), make(chan struct{})
+	issuer.stallJWKS(gate, entered)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer "+token)
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Authenticate(request)
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		close(gate)
+		t.Fatal("refresh did not reach issuer")
+	}
+	cancel() // An unauthenticated caller disconnects during the shared refresh.
+	close(gate)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("caller cancellation aborted shared refresh: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared refresh did not complete")
+	}
+	if _, err := authenticate(t, a, token); err != nil {
+		t.Fatalf("legitimate caller denied by poisoned refresh throttle: %v", err)
+	}
+	if got := issuer.jwksFetches.Load(); got != 2 {
+		t.Fatalf("JWKS fetches = %d, want one initial and one shared refresh", got)
 	}
 }

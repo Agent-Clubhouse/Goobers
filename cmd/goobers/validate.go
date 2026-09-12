@@ -38,6 +38,9 @@ import (
 // auth error otherwise. `--available-tools=` (empty allowlist) disables every
 // tool so the probe can never touch the filesystem or run shell commands;
 // `--allow-all-tools` is still required to enable non-interactive mode.
+// Configured forwarding launchers use a headless completion posture
+// (`--silent --no-ask-user --autopilot`) and expose only `view` plus
+// `task_complete`; no filesystem mutation or shell tool is exposed.
 //
 // This runs in BOTH the operator-invoked `goobers validate --check-harness` and
 // the automatic daemon-startup preflight (adapterFor wires it into every
@@ -55,18 +58,21 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 const harnessPreflightTimeout = 90 * time.Second
 
 const placeholderFindingCode = "PLACEHOLDER001"
+const sourceTreeAdvisoryCode = "SOURCE001"
+
+const sourceTreeAdvisoryMessage = "--instance was not supplied; placement and capability solving uses instance.yaml.example and is advisory-only"
 
 var templateMarkers = []string{"your-org", "your-repo"}
 
-const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
+const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). Placement findings (RNR001/RNR003) are errors when\n" +
 	"instance.yaml declares a runners: inventory that cannot satisfy some\n" +
 	"stage, and warnings otherwise. --source-tree validates a checked-in\n" +
-	"config source tree using instance.yaml.example and the path itself as\n" +
-	"config/; because the tree carries no real instance.yaml, its placement\n" +
-	"solve runs against the example inventory and is advisory-only\n" +
-	"(warnings, never errors). " +
+	"config source tree and the path itself as config/. With --instance, its\n" +
+	"placement and capability solve uses that real instance document. Without\n" +
+	"--instance, the solve uses instance.yaml.example, is advisory-only\n" +
+	"(warnings, never errors), and the output states that limitation. " +
 	"--strict treats config warnings as validation errors. " +
 	"--json emits a versioned findings envelope instead of human-readable output. " +
 	"--github-annotations additionally writes each finding to stderr as a\n" +
@@ -144,13 +150,18 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
+	instancePath := fs.String("instance", "", "with --source-tree, solve placement and capabilities against this real instance.yaml")
 	strict := fs.Bool("strict", false, "treat config warnings as validation errors")
 	fs.Usage = helpUsage(stderr, name)
-	if err := fs.Parse(args); err != nil {
+	if !parseFlagsBeforePath(fs, args, stderr) {
 		return 2
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
+		return 2
+	}
+	if *instancePath != "" && !*sourceTree {
+		pf(stderr, "error: --instance requires --source-tree\n")
 		return 2
 	}
 	root := "."
@@ -170,6 +181,7 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 	code := runValidateConfig(validateOptions{
 		root:                root,
 		sourceTree:          *sourceTree,
+		instancePath:        *instancePath,
 		checkHarness:        *checkHarness,
 		checkRepos:          *checkRepos,
 		strict:              *strict,
@@ -192,6 +204,7 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 type validateOptions struct {
 	root         string
 	sourceTree   bool
+	instancePath string
 	checkHarness bool
 	checkRepos   bool
 	strict       bool
@@ -206,13 +219,7 @@ type validateOptions struct {
 
 func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagnostics *diagnosticCollector) int {
 	root := options.root
-	l := instance.NewLayout(root)
-	configFile := l.ConfigFile()
-	configDir := l.ConfigDir()
-	if options.sourceTree {
-		configFile = filepath.Join(root, "instance.yaml.example")
-		configDir = sourceTreeDefinitionDir(root)
-	}
+	configFile, configDir := validateConfigPaths(options, stdout, diagnostics)
 	if _, err := os.Stat(configFile); err != nil {
 		if options.sourceTree {
 			pf(stderr, "error: %s not found (not a config source tree)\n", configFile)
@@ -375,19 +382,17 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// the report like the
 	// harness/skill warnings above (--strict and the JSON report treat them
 	// as ordinary config warnings); error-severity placement findings fail
-	// validation below. --source-tree solves against instance.yaml.example
-	// (the tree carries no real inventory), so its findings are advisory-only
-	// warnings by definition — see appendStaticRealityWarnings.
-	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, cfg, set, goobers, report,
-		options.sourceTree || options.startupPreflight)
-	placementErrors := 0
-	for _, finding := range staticRealityWarnings {
-		diagnostics.add(finding.file, finding.path, string(finding.warning.Code),
-			string(finding.warning.Severity), finding.warning.Explanation)
-		pln(stdout, finding.warning.String())
-		if finding.warning.Severity == validate.Error {
-			placementErrors++
-		}
+	// validation below. --source-tree without --instance solves against
+	// instance.yaml.example, so its findings are advisory-only warnings by
+	// definition — see appendStaticRealityWarnings.
+	advisorySourceSolve := options.sourceTree && options.instancePath == ""
+	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, configFile, cfg, set, goobers, report,
+		advisorySourceSolve || options.startupPreflight,
+		options.sourceTree && options.instancePath != "")
+	placementErrors, capabilityErrors := emitStaticRealityFindings(stdout, diagnostics, staticRealityWarnings)
+	if capabilityErrors > 0 {
+		pf(stdout, "\nthe real instance cannot satisfy the configuration (%d capability error(s))\n", capabilityErrors)
+		return 1
 	}
 	if placementErrors > 0 {
 		pf(stdout, "\nthe declared runners: inventory cannot satisfy the configuration (%d placement error(s))\n", placementErrors)
@@ -489,6 +494,42 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+func validateConfigPaths(options validateOptions, stdout io.Writer, diagnostics *diagnosticCollector) (configFile, configDir string) {
+	l := instance.NewLayout(options.root)
+	if !options.sourceTree {
+		return l.ConfigFile(), l.ConfigDir()
+	}
+	configDir = sourceTreeDefinitionDir(options.root)
+	if options.instancePath != "" {
+		return options.instancePath, configDir
+	}
+	configFile = filepath.Join(options.root, "instance.yaml.example")
+	pf(stdout, "NOTE: %s\n", sourceTreeAdvisoryMessage)
+	diagnostics.add(diagnosticFile(options.root, configFile), "/", sourceTreeAdvisoryCode, diagnosticSeverityInfo, sourceTreeAdvisoryMessage)
+	return configFile, configDir
+}
+
+func emitStaticRealityFindings(
+	stdout io.Writer,
+	diagnostics *diagnosticCollector,
+	findings []realityWarning,
+) (placementErrors, capabilityErrors int) {
+	for _, finding := range findings {
+		diagnostics.add(finding.file, finding.path, string(finding.warning.Code),
+			string(finding.warning.Severity), finding.warning.Explanation)
+		pln(stdout, finding.warning.String())
+		if finding.warning.Severity != validate.Error {
+			continue
+		}
+		if finding.warning.Code == validate.WarningUnclaimedRunnerCapability {
+			capabilityErrors++
+		} else {
+			placementErrors++
+		}
+	}
+	return placementErrors, capabilityErrors
 }
 
 // isStrictNeutralWarning reports whether code is one of the warnings
@@ -1057,7 +1098,7 @@ func printDSLVersionSummary(stdout io.Writer, workflows []apiv1.Workflow) {
 		version := w.DSLVersion
 		defaulted := ""
 		if version == "" {
-			version = supportmatrix.CurrentDSLVersion
+			version = supportmatrix.V1DSLVersion
 			defaulted = " (defaulted; no dslVersion pin)"
 		}
 		support, ok := matrix.Lookup(version)

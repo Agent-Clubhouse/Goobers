@@ -185,6 +185,7 @@ func TestCopilotAdapterPrefersAuthoritativeUsageDocument(t *testing.T) {
 		},
 	}
 	out, err := (&CopilotAdapter{Command: []string{"copilot"}, Runner: runner}).Run(context.Background(), RunRequest{
+		HarnessVersion: "GitHub Copilot CLI 1.0.83.",
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,
@@ -550,6 +551,7 @@ func TestCopilotAdapterSkipsNativeTranscriptForSelectedSession(t *testing.T) {
 	}
 
 	out, err := adapter.Run(context.Background(), RunRequest{
+		HarnessVersion: "GitHub Copilot CLI 1.0.83.",
 		Envelope:       testEnvelope(workspace),
 		Workspace:      workspace,
 		CompletionPath: DefaultResultPath,

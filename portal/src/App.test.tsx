@@ -3,12 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { FixtureDaemonClient } from "./api/fixtureClient";
+import { defaultPortalConfig } from "./cobrand";
+import { bootstrapPortalTheme } from "./cobrand";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
 
 beforeEach(() => {
   storedValues.clear();
+  window.sessionStorage.clear();
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: {
@@ -23,6 +26,7 @@ beforeEach(() => {
     } satisfies Storage,
   });
   delete document.documentElement.dataset.theme;
+  document.getElementById("cobrand-theme")?.remove();
   document.querySelector('meta[name="goobers-dashboard-mode"]')?.remove();
 });
 
@@ -43,7 +47,49 @@ describe("portal foundation", () => {
     expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
   });
 
-  it("labels standalone read-only mode in the portal chrome", async () => {
+  it("renders cached branding immediately while refreshing it in the background", async () => {
+    const fixtures = populatedDaemonFixtures();
+    window.sessionStorage.setItem(
+      "goobers-portal-config",
+      JSON.stringify({
+        ...defaultPortalConfig,
+        brand: {
+          ...defaultPortalConfig.brand,
+          name: "Cached Goobers",
+        },
+      }),
+    );
+    const client = new FixtureDaemonClient(fixtures);
+    vi.spyOn(client, "getPortalConfig").mockImplementation(() => new Promise(() => {}));
+
+    render(<App client={client} />);
+
+    expect(screen.getByText("Cached Goobers")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+  });
+
+  it("applies cached cobrand colors before React renders", () => {
+    window.sessionStorage.setItem(
+      "goobers-portal-config",
+      JSON.stringify({
+        ...defaultPortalConfig,
+        theme: {
+          ...defaultPortalConfig.theme,
+          accentLight: "#123456",
+        },
+      }),
+    );
+
+    bootstrapPortalTheme();
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(document.getElementById("cobrand-theme")).toHaveTextContent("--accent: #123456");
+  });
+
+  it("uses local-instance copy in standalone mode", async () => {
     const mode = document.createElement("meta");
     mode.name = "goobers-dashboard-mode";
     mode.content = "standalone";
@@ -52,9 +98,9 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
-    expect(await screen.findByText("Standalone read-only")).toBeInTheDocument();
-    expect(screen.getByText("Daemon not running; reading this instance locally")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Instance is ready." })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Instance is ready — Healthy." }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Local instance loaded")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
@@ -111,7 +157,7 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await user.click(await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }));
+    await openAttentionRun(user, "01JZ402DASHBOARD");
 
     expect(await screen.findByRole("heading", { name: "Loading run" })).toBeInTheDocument();
     expect(
@@ -124,9 +170,7 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     renderLiveApp();
 
-    await user.click(
-      await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
-    );
+    await openAttentionRun(user, "01JZ402DASHBOARD");
     expect(
       await screen.findByRole("heading", { name: "Run 01JZ402DASHBOARD" }),
     ).toBeInTheDocument();
@@ -140,9 +184,7 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     renderLiveApp();
 
-    await user.click(
-      await screen.findByRole("link", { name: "Open run 01JZ402DASHBOARD" }),
-    );
+    await openAttentionRun(user, "01JZ402DASHBOARD");
     expect(
       await screen.findByText("sha256:core", { selector: ".run-graph-pin .mono" }),
     ).toBeInTheDocument();
@@ -168,6 +210,7 @@ describe("portal foundation", () => {
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
     { hash: "#/insight", heading: "Insight" },
+    { hash: "#/cost", heading: "Cost" },
   ])("renders the $hash shell route from daemon fixtures", async ({ hash, heading }) => {
     window.location.hash = hash;
     renderLiveApp();
@@ -186,7 +229,7 @@ describe("portal foundation", () => {
     renderLiveApp();
 
     expect(document.documentElement).toHaveAttribute("data-theme", "dark");
-    await user.click(screen.getByRole("button", { name: "Use light theme" }));
+    await user.click(await screen.findByRole("button", { name: "Use light theme" }));
 
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
     expect(window.localStorage.getItem("goobers-theme")).toBe("light");
@@ -195,7 +238,7 @@ describe("portal foundation", () => {
   it("operates primary navigation from the keyboard and moves focus to the route content", async () => {
     const user = userEvent.setup();
     renderLiveApp();
-    const workflowsButton = screen.getByRole("button", { name: "Workflows" });
+    const workflowsButton = await screen.findByRole("button", { name: "Workflows" });
 
     workflowsButton.focus();
     await user.keyboard("{Enter}");
@@ -225,7 +268,9 @@ describe("portal foundation", () => {
     await user.click(screen.getByRole("button", { name: "Overview" }));
 
     expect(screen.getByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Connecting to daemon" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
+    ).not.toBeInTheDocument();
   });
 
   it("skips to main content without changing the active hash route", async () => {
@@ -233,7 +278,7 @@ describe("portal foundation", () => {
     const user = userEvent.setup();
     renderLiveApp();
 
-    await user.click(screen.getByRole("link", { name: "Skip to main content" }));
+    await user.click(await screen.findByRole("link", { name: "Skip to main content" }));
 
     expect(window.location.hash).toBe("#/workflows");
     expect(screen.getByRole("heading", { name: "Workflows" })).toBeInTheDocument();
@@ -292,5 +337,16 @@ describe("portal foundation", () => {
 
   function renderLiveApp() {
     return render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+  }
+
+  async function openAttentionRun(
+    user: ReturnType<typeof userEvent.setup>,
+    runId: string,
+  ): Promise<void> {
+    const expanders = await screen.findAllByRole("button", { name: "Show runs" });
+    for (const expander of expanders) {
+      await user.click(expander);
+    }
+    await user.click(screen.getByRole("link", { name: new RegExp(runId) }));
   }
 });

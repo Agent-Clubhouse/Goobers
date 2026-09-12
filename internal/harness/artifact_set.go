@@ -9,11 +9,20 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/artifactset"
 	"github.com/goobers/goobers/internal/investigation"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // InputArtifactManifestFile requests runner-authored multi-file lifting. It is
 // mutually exclusive with artifactFile and forbids self-reported pointers.
 const InputArtifactManifestFile = "artifactManifestFile"
+
+// PreparedArtifactRecorder is an optional durable path for recorders whose
+// ordinary diagnostics are best effort. Data has already passed the complete
+// artifact-set validation and media-aware sanitizer. Implementations preserve
+// those exact bytes and return only after durable publication succeeds.
+type PreparedArtifactRecorder interface {
+	RecordPreparedArtifact(ctx context.Context, name, mediaType string, data []byte) (journal.Ref, error)
+}
 
 func (e *Executor) liftArtifacts(ctx context.Context, env apiv1.InvocationEnvelope, reported []apiv1.ArtifactPointer) ([]apiv1.ArtifactPointer, error) {
 	value, manifestMode := env.Inputs[InputArtifactManifestFile]
@@ -37,12 +46,19 @@ func (e *Executor) liftArtifacts(ctx context.Context, env apiv1.InvocationEnvelo
 		return nil, err
 	}
 	return prepared.Publish(ctx, func(name, media string, data []byte) (apiv1.ArtifactPointer, error) {
-		ref, err := e.artifacts.RecordArtifact(env.TaskID+"/"+name, data)
+		ref, err := e.recordPreparedArtifact(ctx, env.TaskID+"/"+name, media, data)
 		if err != nil {
 			return apiv1.ArtifactPointer{}, err
 		}
 		return refToPointer(ref, media), nil
 	})
+}
+
+func (e *Executor) recordPreparedArtifact(ctx context.Context, name, media string, data []byte) (journal.Ref, error) {
+	if recorder, ok := e.artifacts.(PreparedArtifactRecorder); ok {
+		return recorder.RecordPreparedArtifact(ctx, name, media, data)
+	}
+	return e.artifacts.RecordArtifact(name, data)
 }
 
 func (e *Executor) prepareArtifactSet(ctx context.Context, env apiv1.InvocationEnvelope, manifest string) (prepared *artifactset.Prepared, retErr error) {

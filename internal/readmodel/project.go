@@ -7,26 +7,23 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
 // Disposition values for RunRow.Disposition (§5.3).
 //
-// Only two of the three reserved enum values are ever written here.
-// DispositionProduced is deliberately absent: defining "did this run produce
-// something" for every workflow shape is #1429's contract, not this
-// projector's to guess at. DispositionUnknown is the safe default for
-// everything this projector cannot classify — including a real productive
-// run — until #1429 lands.
+// Unknown is reserved for a live run whose terminal outcome is not yet known.
+// Every terminal run is classified into one of the two accounting buckets:
+// no-work for the explicit first-stage short circuit, produced otherwise.
 const (
-	DispositionUnknown = "unknown"
-	// DispositionNoWork marks a run that touched exactly one stage and that
-	// stage's terminal status was apiv1.ResultNoWork (#2188). Expressed as a
-	// bare string rather than importing api/v1alpha1: event.Status is already
-	// a bare string by the time it reaches the projector, and this package
-	// has no other reason to depend on the API layer.
-	DispositionNoWork = "no-work"
+	DispositionUnknown  = journal.RunDispositionUnknown
+	DispositionProduced = journal.RunDispositionProduced
+	// DispositionNoWork marks a run whose first execution step reported
+	// no-work (#2188). The terminal journal event carries that authoritative
+	// runner decision; the legacy fallback reconstructs it from attempts.
+	DispositionNoWork = journal.RunDispositionNoWork
 )
 
 // Projection: journal events to a run row.
@@ -82,12 +79,9 @@ type RunRow struct {
 	OutcomeVerdict string
 	OutcomeTarget  string
 
-	// Disposition is the reserved semantic-work-disposition column (§5.3):
-	// 'no-work' when this run touched exactly one stage and that stage's
-	// terminal status was no-work (#2188), 'unknown' otherwise. It never
-	// claims 'produced' — that half of the enum, and the rest of the
-	// contract, is #1429/#1439's to define; this only ever asserts the one
-	// classification the existing no-work signal already answers cleanly.
+	// Disposition is the semantic-work-disposition column (§5.3): 'unknown'
+	// while the run is live, 'no-work' for an explicit first-stage no-work
+	// short circuit, and 'produced' for every other terminal outcome.
 	Disposition string
 
 	// Stages is every stage or gate the run has touched, sorted. It backs the
@@ -114,6 +108,7 @@ type RunRow struct {
 // OperatorFacts are journal-derived facts needed by operator run summaries.
 // They are stored with the run row so bounded list reads never reopen journals.
 type OperatorFacts struct {
+	QueueEligibility      *QueueEligibilityEvidence
 	Activity              StageActivity
 	EngineFallback        *EngineFallback
 	IssueNumber           string
@@ -124,6 +119,8 @@ type OperatorFacts struct {
 	LatestError           *journal.ErrorDetail
 	ReviewVerdict         string
 	ReviewRationale       string
+	ReviewReasonCode      apiv1.VerdictReasonCode
+	ReviewFindings        []apiv1.Finding
 	ReviewProblem         string
 	PROpenerStage         string
 }
@@ -474,6 +471,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			if event.Gate == "review" {
 				row.Operator.ReviewVerdict = event.Verdict
 				row.Operator.ReviewRationale = ""
+				row.Operator.ReviewReasonCode = ""
+				row.Operator.ReviewFindings = nil
 				row.Operator.ReviewProblem = ""
 			}
 			// An executed gate that selects a reserved terminal target is itself
@@ -494,8 +493,8 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 					row.CurrentStage = ""
 				}
 			}
-		case journal.EventRefTouched:
-			if event.ExternalRef == nil {
+		case journal.EventRefTouched, journal.EventRunnerMutationRecovered:
+			if !event.IsReferenceTouch() {
 				continue
 			}
 			switch event.ExternalRef.Kind {
@@ -573,18 +572,52 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	// Recomputed from the full fold every time (not carried from prev), so
 	// incremental and whole-history projection agree (§14.9) exactly like
 	// row.Stages above.
-	row.Disposition = DispositionUnknown
-	if row.Phase == journal.PhaseCompleted && len(out) == 1 && out[0].LastStatus == DispositionNoWork {
-		row.Disposition = DispositionNoWork
-	}
+	row.Disposition = runDisposition(row, out, outNodes, events)
 
 	return Projection{Run: row, Stages: out, Nodes: outNodes}
+}
+
+func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []journal.Event) string {
+	if !row.Terminal {
+		return DispositionUnknown
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != journal.EventRunFinished {
+			continue
+		}
+		switch events[i].Disposition {
+		case DispositionNoWork, DispositionProduced:
+			return events[i].Disposition
+		}
+		break
+	}
+	// Legacy journals predate the authoritative terminal field. Reconstruct
+	// their engine/runner steps from attempt-bearing nodes, not the unique
+	// stage-name map: a same-stage re-entry and a gate-before-poll both have
+	// more than one execution step even though only one task reports no-work.
+	steps := 0
+	for _, node := range nodes {
+		steps += node.Attempts
+	}
+	// Entering a parallel is itself an engine step but is not represented by a
+	// run_node row. Full rebuilds (including the migration replay) have the
+	// immutable event history available, so preserve that part explicitly.
+	for _, event := range events {
+		if event.Type == journal.EventParallelStarted {
+			steps++
+		}
+	}
+	if row.Phase == journal.PhaseCompleted && steps == 1 && len(stages) == 1 && stages[0].LastStatus == DispositionNoWork {
+		return DispositionNoWork
+	}
+	return DispositionProduced
 }
 
 // ProjectRunFromJournal adds facts that require resolving immutable journal
 // blobs to the otherwise pure event projection.
 func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity, events []journal.Event) (Projection, error) {
 	projection := ProjectRun(identity, Projection{}, events)
+	projection.Run.Operator.QueueEligibility = projectQueueEligibility(reader, identity, events)
 	projection.Remediation = projectRemediationExamples(identity, projection.Run, events)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
@@ -600,15 +633,14 @@ func ProjectRunFromJournal(reader *journal.Reader, identity journal.RunIdentity,
 			projection.Run.Operator.ReviewProblem = fmt.Sprintf("review rationale unavailable: %v", err)
 			break
 		}
-		var verdict struct {
-			Rationale string `json:"rationale"`
-			Summary   string `json:"summary"`
-		}
+		var verdict apiv1.Verdict
 		if err := json.Unmarshal(data, &verdict); err != nil {
 			projection.Run.Operator.ReviewProblem = fmt.Sprintf("review rationale is invalid: %v", err)
 			break
 		}
-		projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Rationale)
+		projection.Run.Operator.ReviewReasonCode = verdict.ReasonCode
+		projection.Run.Operator.ReviewFindings = verdict.Findings
+		projection.Run.Operator.ReviewRationale = verdict.Rationale
 		if projection.Run.Operator.ReviewRationale == "" {
 			projection.Run.Operator.ReviewRationale = strings.TrimSpace(verdict.Summary)
 		}
@@ -905,7 +937,7 @@ func declaredNodeParents(runID string, nodes []NodeRow, graph *workflow.Graph) [
 // OperatorTrajectory classifies a run's current stage for operator-facing status.
 func OperatorTrajectory(stage string, phase journal.RunPhase) string {
 	if phase != journal.PhaseRunning {
-		return "parked"
+		return "terminal"
 	}
 	stage = strings.ToLower(stage)
 	switch {

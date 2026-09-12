@@ -16,6 +16,8 @@ repository="Agent-Clubhouse/Goobers"
 usage() {
 	printf 'Usage: install.sh vMAJOR.MINOR.PATCH\n' >&2
 	printf 'Installs the binary and documentation without configuring an instance.\n' >&2
+	printf 'Pre-release tags are intentionally not installed by this script.\n' >&2
+	printf 'For a beta or RC, download its platform archive and SHA256SUMS, verify the checksum, then extract the archive.\n' >&2
 }
 
 fail() {
@@ -34,12 +36,13 @@ fi
 
 version=$1
 shift
-stable_version=${version#v}
+base_version=${version%%-*}
+stable_version=${base_version#v}
 major=${stable_version%%.*}
 remaining=${stable_version#*.}
 minor=${remaining%%.*}
 patch=${remaining#*.}
-if [ "$stable_version" = "$version" ] ||
+if [ "$stable_version" = "$base_version" ] ||
 	[ "$remaining" = "$stable_version" ] ||
 	[ "$patch" = "$remaining" ]; then
 	fail "release must be an exact stable tag such as v1.2.3"
@@ -54,6 +57,21 @@ for component in "$major" "$minor" "$patch"; do
 			;;
 	esac
 done
+
+if [ "$base_version" != "$version" ]; then
+	identifiers=${version#*-}
+	while :; do
+		identifier=${identifiers%%.*}
+		case "$identifier" in
+			'' | *[!0-9A-Za-z-]*) fail "release must be an exact stable tag such as v1.2.3" ;;
+			*[!0-9]*) ;;
+			0[0-9]*) fail "release must be an exact stable tag such as v1.2.3" ;;
+		esac
+		[ "$identifier" != "$identifiers" ] || break
+		identifiers=${identifiers#*.}
+	done
+	fail "pre-release tags are intentionally not installable by this script (requires an exact stable tag). Download the ${version} platform archive and SHA256SUMS from https://github.com/${repository}/releases/tag/${version}, verify the checksum, then extract the archive."
+fi
 
 if [ "$#" -gt 0 ]; then
 	case "$1" in

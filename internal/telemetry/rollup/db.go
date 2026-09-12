@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -146,6 +147,69 @@ func Open(path string) (*DB, error) {
 	// opening it earlier would either fail or race the schema it depends on.
 	db.reader = openReaderPool(path)
 	return db, nil
+}
+
+// OpenExistingReader opens an existing telemetry rollup without creating,
+// migrating, or writing it. It is used by offline readers that must leave the
+// instance unchanged.
+func OpenExistingReader(ctx context.Context, path string) (*DB, error) {
+	uri := fileURI(path)
+	if uri == "" {
+		return nil, errors.New("rollup: existing database path is required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: open existing %s: %w", path, err)
+	}
+	if info.Size() == 0 {
+		return nil, fmt.Errorf("rollup: open existing %s: %w", path, os.ErrNotExist)
+	}
+	sqlDB, err := sql.Open("sqlite", uri+existingReaderDSNParams)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: open existing %s: %w", path, err)
+	}
+	sqlDB.SetMaxOpenConns(readerPoolSize())
+	sqlDB.SetMaxIdleConns(readerPoolSize())
+
+	db := &DB{
+		sql:                    sqlDB,
+		readerClosed:           true,
+		schedulerIngestTimeout: defaultSchedulerIngestTimeout,
+		path:                   path,
+	}
+	if err := db.validateExistingSchema(ctx); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// immutable=1 prevents SQLite from creating or updating WAL shared-memory
+// files. This opener is only used after standalone mode has established that
+// no daemon owns the instance, so a fixed on-disk snapshot is the intended
+// view.
+const existingReaderDSNParams = "?mode=ro&immutable=1"
+
+func (db *DB) validateExistingSchema(ctx context.Context) error {
+	var count, version int
+	if err := db.sql.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(MIN(version), 0)
+		FROM schema_meta`).Scan(&count, &version); err != nil {
+		return fmt.Errorf("rollup: read existing schema version: %w", err)
+	}
+	if count != 1 {
+		return fmt.Errorf(
+			"rollup: schema_meta must contain exactly one version row, found %d; restore telemetry.db from backup",
+			count,
+		)
+	}
+	if version != len(migrations) {
+		return fmt.Errorf(
+			"rollup: existing schema %d does not match this build (%d); let the matching daemon migrate its projection",
+			version, len(migrations),
+		)
+	}
+	return nil
 }
 
 // readerDSNParams configures the read-only pool.

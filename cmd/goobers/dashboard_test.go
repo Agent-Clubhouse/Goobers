@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 const dashboardTestIndex = `<!doctype html><html><head><meta name="goobers-dashboard-mode" content="daemon" /></head><body>portal</body></html>`
@@ -1091,6 +1092,13 @@ func TestDashboardAttachesToLiveDaemonWithEphemeralAPIAddress(t *testing.T) {
 func TestStandaloneDashboardAPILeavesInstanceUnchanged(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
+	telemetry, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := telemetry.Close(); err != nil {
+		t.Fatal(err)
+	}
 	config, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
 		t.Fatal(err)
@@ -1108,6 +1116,48 @@ func TestStandaloneDashboardAPILeavesInstanceUnchanged(t *testing.T) {
 	after := snapshotDashboardInstance(t, root)
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("standalone dashboard changed instance files\nbefore: %#v\nafter:  %#v", before, after)
+	}
+}
+
+func TestStandaloneDashboardAPIServesExistingTelemetryReadOnly(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	telemetry, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := telemetry.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotDashboardInstance(t, root)
+
+	api, err := standaloneDashboardAPI(layout, config, log.New(io.Discard, "", 0), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{
+		httpapi.TelemetryStatsPath,
+		httpapi.TelemetryErrorSignaturesPath,
+		httpapi.TelemetryCostsPath + "?scope=summary&since=2026-08-01T00:00:00Z&until=2026-09-01T00:00:00Z",
+	} {
+		response := httptest.NewRecorder()
+		api.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, route, nil))
+		if response.Code != http.StatusOK {
+			_ = api.close()
+			t.Fatalf("%s status = %d, body = %q", route, response.Code, response.Body.String())
+		}
+	}
+	if err := api.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	after := snapshotDashboardInstance(t, root)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("standalone telemetry reads changed instance files\nbefore: %#v\nafter:  %#v", before, after)
 	}
 }
 

@@ -105,8 +105,8 @@ func TestFeedStreamDeliversCommittedChanges(t *testing.T) {
 
 	select {
 	case event := <-events:
-		if event.Type != "update" {
-			t.Errorf("event type = %q, want update", event.Type)
+		if event.Type != "invalidate" {
+			t.Errorf("event type = %q, want invalidate", event.Type)
 		}
 		if len(event.Data.RunIDs) != 1 {
 			t.Errorf("event carried %d run ids, want 1", len(event.Data.RunIDs))

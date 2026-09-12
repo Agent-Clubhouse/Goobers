@@ -218,8 +218,8 @@ func TestInitDemoInsecureScaffoldsOnUnsupportedPlatform(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init --demo --insecure: code = %d, stderr = %q", code, stderr.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("init --demo --insecure stderr = %q, want empty", stderr.String())
+	if stderr.String() != manualServiceRootHeader(t, root) {
+		t.Fatalf("init --demo --insecure stderr = %q, want identity banner", stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "created  config") {
 		t.Fatalf("init --demo --insecure did not scaffold config:\n%s", stdout.String())
@@ -323,8 +323,8 @@ func TestInitDemoInsecureScaffoldsOnLinuxRestrictedUserNS(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init --demo --insecure (restricted userns): code = %d, stderr = %q", code, stderr.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("init --demo --insecure stderr = %q, want empty", stderr.String())
+	if stderr.String() != manualServiceRootHeader(t, root) {
+		t.Fatalf("init --demo --insecure stderr = %q, want identity banner", stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "created  config") {
 		t.Fatalf("init --demo --insecure did not scaffold config:\n%s", stdout.String())

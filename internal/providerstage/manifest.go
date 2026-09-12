@@ -1,5 +1,7 @@
-// Package providerstage describes the capabilities used by built-in
-// provider-chain commands.
+// Package providerstage describes the capabilities and workflow-input
+// contracts of built-in provider-chain commands. Input lifecycle metadata is
+// additive and retains retired names so validation can reject obsolete config
+// before a stage runs; see inputs.go.
 //
 // # DSL-version linkage
 //
@@ -418,6 +420,16 @@ var commands = map[string]Command{
 	"push-branch": {
 		Capabilities: []CapabilityUse{
 			required(capability.RepoPush, "the capability-scoped credential is not injected, so branch publication fails at runtime"),
+		},
+	},
+	"recovery-resume": {
+		Capabilities: []CapabilityUse{
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so recovery cannot fetch current main for restoration"),
+		},
+	},
+	"recovery-restore": {
+		Capabilities: []CapabilityUse{
+			required(capability.RepoPush, "the capability-scoped credential is not injected, so stage recovery cannot fetch current main for restoration"),
 		},
 	},
 	"preflight-repo-write": {

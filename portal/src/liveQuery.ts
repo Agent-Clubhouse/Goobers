@@ -48,6 +48,7 @@ export interface LiveQueryOptions<T> {
 }
 
 export interface LiveQuery<T> {
+  refreshing: boolean;
   retry: () => void;
   state: QueryState<T>;
 }
@@ -64,6 +65,7 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
     const cached = cache.get<T>(cacheKey);
     return cached ? { status: "ready", data: cached } : { status: "loading" };
   });
+  const [refreshing, setRefreshing] = useState(false);
   const family = useRef<QueryFamily | undefined>(undefined);
 
   const publish = useCallback(
@@ -78,6 +80,7 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
       const { cacheKey: key, dependencies, errorMessage, isCurrent } = latest.current;
       const retains = (data: T): boolean => (isCurrent ? isCurrent(data) : true);
       const cacheRevision = cache.beginWrite(key, dependencies);
+      setRefreshing(true);
       setState((current) =>
         (current.status === "ready" || current.status === "stale") && retains(current.data)
           ? { status: "stale", data: current.data }
@@ -105,6 +108,10 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
             ? { status: "stale", data: current.data, error: queryError }
             : { status: "error", error: queryError },
         );
+      } finally {
+        if (!signal.aborted) {
+          setRefreshing(false);
+        }
       }
     },
     [cache, publish],
@@ -134,8 +141,9 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
         // Through the family, not straight to the loader: an event arriving
         // while a read is already running queues one follow-up pass rather
         // than cancelling the read that was about to answer the question.
-        owned.request(reason === "initial" ? "initial" : "event");
-        return true;
+        return owned
+          .request(reason === "initial" ? "initial" : "event")
+          .then(() => true);
       },
       latest.current.scope,
     );
@@ -174,8 +182,8 @@ export function useLiveQuery<T>(options: LiveQueryOptions<T>): LiveQuery<T> {
     // already moves ready/stale data to "stale" and keeps it visible while the
     // refetch runs.
     cache.remove(cacheKey);
-    family.current?.request("retry");
+    void family.current?.request("retry");
   }, [cache, cacheKey]);
 
-  return { retry, state };
+  return { refreshing, retry, state };
 }

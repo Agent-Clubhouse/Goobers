@@ -10,8 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -21,11 +20,53 @@ jobs:
   build:
     name: Build release artifacts
     runs-on: ubuntu-latest
+    outputs:
+      source-commit: ${{ steps.release-source.outputs.commit }}
+      version: ${{ steps.archive-build.outputs.version }}
+      commit: ${{ steps.archive-build.outputs.commit }}
+      date: ${{ steps.archive-build.outputs.date }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Manual reruns are supported on release tags, never branch refs. Peeling
+      # both identities supports annotated tags without trusting short stamps.
+      - name: Authorize release source
+        id: release-source
+        shell: bash
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT" != push && "$RELEASE_EVENT" != workflow_dispatch ]]; then
+            echo '::error::Release requires a tag push or a manual run on a release tag.'
+            exit 1
+          fi
+          core='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          release_ref="^refs/tags/v${core}\.${core}\.${core}(-${identifier}(\.${identifier})*)?$"
+          if [[ ! "$RELEASE_REF" =~ $release_ref ]]; then
+            echo '::error::Release requires a canonical vMAJOR.MINOR.PATCH tag with an optional SemVer prerelease suffix.'
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Release event source must be a full Git object identity.'
+            exit 1
+          fi
+          tag_commit="$(git rev-parse --verify "${RELEASE_REF}^{commit}")"
+          event_commit="$(git rev-parse --verify "${EXPECTED_SOURCE}^{commit}")"
+          checkout_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [[ "$tag_commit" != "$event_commit" || "$checkout_commit" != "$event_commit" ]]; then
+            echo '::error::Release tag, event source, and checked-out commit must agree.'
+            exit 1
+          fi
+          echo "commit=$event_commit" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -42,7 +83,7 @@ jobs:
 
       - name: Build Portal asset artifact
         env:
-          GOOBERS_PORTAL_COMMIT: ${{ github.sha }}
+          GOOBERS_PORTAL_COMMIT: ${{ steps.release-source.outputs.commit }}
           GOOBERS_PORTAL_VERSION: ${{ github.ref_name }}
         run: |
           npm --prefix portal ci --no-audit --no-fund
@@ -81,8 +122,9 @@ jobs:
           fi
 
       - name: Build release artifacts
+        id: archive-build
         env:
-          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_SHA: ${{ steps.release-source.outputs.commit }}
           FIRST_FEATURE_SNAPSHOT: ${{ steps.feature-baseline.outputs.first }}
           PREVIOUS_FEATURES: ${{ steps.feature-baseline.outputs.path }}
           PREVIOUS_SUPPORT_MATRIX: ${{ steps.feature-baseline.outputs.support-path }}
@@ -103,13 +145,30 @@ jobs:
             -commit "$commit" \
             -date "$date" \
             -output dist \
+            -image-contexts original-image-inputs \
+            -image-targets linux/amd64,linux/arm64,windows/amd64 \
             "${baseline[@]}"
+          # Export the exact embedded stamps, not a later recomputation.
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "date=$date" >> "$GITHUB_OUTPUT"
 
       - name: Upload unsigned artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-unsigned
           path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+      # Preserve the original operator build and pinned image recipes. The
+      # operator is not part of Authenticode signing; only goobers.exe is signed.
+      - name: Upload original image inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: original-image-inputs
+          path: original-image-inputs/
+          include-hidden-files: true
           retention-days: 1
           if-no-files-found: error
 
@@ -207,6 +266,12 @@ jobs:
               --team-id "$APPLE_TEAM_ID" \
               --wait --timeout 20m
 
+            # Signing and notarization only prove the binary's bytes are
+            # trusted, not that it runs (#4269) — the arm64 runner image
+            # carries Rosetta 2 preinstalled, so amd64 executes natively
+            # under translation the same as on a real Intel Mac.
+            "$WORKDIR/goobers" --version | grep --fixed-strings "$TAG"
+
             rm -f "$ARCHIVE"
             tar -czf "$ARCHIVE" -C "$WORKDIR" $(ls -A "$WORKDIR")
             rm -rf "$WORKDIR" "$NOTARIZE_ZIP"
@@ -242,6 +307,11 @@ jobs:
 
   sign-windows:
     name: Sign Windows binary
+    outputs:
+      signed-artifact-id: ${{ steps.final-signed-artifacts.outputs.artifact-id }}
+    permissions:
+      contents: read
+      id-token: write
     needs: sign-macos
     runs-on: windows-latest
     timeout-minutes: 30
@@ -319,6 +389,17 @@ jobs:
             throw "Authenticode signature is not valid: $($signature.Status) ($($signature.StatusMessage))"
           }
 
+      # A valid Authenticode signature only proves the exe's bytes are
+      # trusted, not that it runs (#4269).
+      - name: Execute signed goobers.exe
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = & winsign\goobers.exe --version
+          if ($version -notmatch [regex]::Escape($env:TAG)) {
+            throw "goobers.exe --version output ($version) does not contain tag $env:TAG"
+          }
+
       # bash on the windows-latest image has no `zip`; Compress-Archive is
       # built into Windows and needs no extra install.
       - name: Repackage signed archive
@@ -353,6 +434,7 @@ jobs:
           rm SHA256SUMS.new
 
       - name: Upload fully-signed artifacts
+        id: final-signed-artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-signed
@@ -361,9 +443,340 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
-  verify-and-publish:
-    name: Verify and publish ${{ github.ref_name }}
+  native-smoke:
+    name: Smoke signed ${{ matrix.target }} artifact
     needs: sign-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin_arm64
+          - runner: macos-15-intel
+            target: darwin_amd64
+          - runner: windows-latest
+            target: windows_amd64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
+      - name: Download fully signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
+          path: dist
+      - name: Execute native release binary
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          extension=tar.gz
+          binary=goobers
+          if [[ "$TARGET" == windows_* ]]; then
+            extension=zip
+            binary=goobers.exe
+          fi
+          archive="goobers_${TAG}_${TARGET}.${extension}"
+          cd dist
+          awk -v name="$archive" '$2 == name { print; found=1 } END { if (!found) exit 1 }' SHA256SUMS > selected-checksum
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check selected-checksum
+          else
+            shasum -a 256 --check selected-checksum
+          fi
+          mkdir native-smoke
+          if [[ "$extension" == zip ]]; then
+            unzip -q "$archive" -d native-smoke
+          else
+            tar -xzf "$archive" -C native-smoke
+          fi
+          chmod +x "native-smoke/$binary"
+          "./native-smoke/$binary" --version | grep --fixed-strings "$TAG"
+          "./native-smoke/$binary" init --allow-ephemeral --template=quickstart native-smoke/instance
+          "./native-smoke/$binary" validate native-smoke/instance
+
+  # Native verification imports the final signed archives and the original
+  # same-build operator inputs. It never rebuilds product binaries or publishes
+  # container images. Distributed/authenticated acceptance remains a separate gate.
+  native-linux-images:
+    name: Verify signed inputs in native ${{ matrix.target }} images
+    needs: [build, sign-windows]
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux/amd64
+            platform: linux-amd64
+          - runner: ubuntu-24.04-arm
+            target: linux/arm64
+            platform: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      RELEASE_SOURCE_COMMIT: ${{ needs.build.outputs.source-commit }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+      RELEASE_DATE: ${{ needs.build.outputs.date }}
+      IMAGE_TARGET: ${{ matrix.target }}
+      IMAGE_PLATFORM: ${{ matrix.platform }}
+    steps:
+      - name: Checkout authorized image tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.build.outputs.source-commit }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
+      - name: Download fully signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
+          path: dist
+      - name: Download original image inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: original-image-inputs
+          path: original-image-inputs
+      - name: Verify native images from final release artifacts
+        id: image-verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-image-evidence
+          prefix="goobers-release-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${IMAGE_PLATFORM}"
+          echo "IMAGE_VERIFY_PREFIX=$prefix" >> "$GITHUB_ENV"
+          cp dist/SHA256SUMS native-image-evidence/final-archive-SHA256SUMS
+          jq -n --arg source "$RELEASE_SOURCE_COMMIT" --arg version "$RELEASE_VERSION" \
+            --arg commit "$RELEASE_COMMIT" --arg date "$RELEASE_DATE" --arg target "$IMAGE_TARGET" \
+            '{sourceCommit:$source,version:$version,embeddedCommit:$commit,date:$date,target:$target,operatorOrigin:"original same-build context"}' \
+            > native-image-evidence/release-source.json
+          docker version 2>&1 | tee native-image-evidence/docker-version.txt
+          go run ./release \
+            -version "$RELEASE_VERSION" -commit "$RELEASE_COMMIT" -date "$RELEASE_DATE" \
+            -targets "$IMAGE_TARGET" -image-artifacts dist -image-inputs original-image-inputs \
+            -image-contexts verified-image-contexts -build-images -image-prefix "$prefix" \
+            2>&1 | tee native-image-evidence/release-image-verification.txt
+          jq -e --arg target "$IMAGE_TARGET" \
+            '.schemaVersion == 1 and .native == true and .enginePlatform == $target and (.images | length) == 3' \
+            verified-image-contexts/image-evidence.json
+      - name: Retain native image provenance and failure evidence
+        if: always()
+        env:
+          IMAGE_VERIFICATION_OUTCOME: ${{ steps.image-verification.outcome }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Evidence loss after successful verification must block publication.
+          # For an already-failed verification, keep whatever diagnostics exist.
+          if [[ "$IMAGE_VERIFICATION_OUTCOME" == success ]]; then set -e; else set +e; fi
+          mkdir -p native-image-evidence
+          for directory in original-image-inputs verified-image-contexts; do
+            if [[ -d "$directory" ]]; then
+              find "$directory" -type f \( -name SHA256SUMS -o -name '*.json' -o -name source -o -name version -o -name Dockerfile \) -print0 |
+                while IFS= read -r -d '' file; do
+                  destination="native-image-evidence/$file"
+                  mkdir -p "${destination%/*}"
+                  cp "$file" "$destination"
+                done
+            fi
+          done
+          if [[ -n "${IMAGE_VERIFY_PREFIX:-}" ]]; then
+            docker image ls --no-trunc --filter "reference=${IMAGE_VERIFY_PREFIX}/*" > native-image-evidence/image-list.txt 2>&1
+            ids="$(docker image ls --quiet --no-trunc --filter "reference=${IMAGE_VERIFY_PREFIX}/*")"
+            image_ids=()
+            while IFS= read -r image_id; do
+              if [[ -n "$image_id" ]]; then image_ids+=("$image_id"); fi
+            done <<< "$ids"
+            if [[ ${#image_ids[@]} -gt 0 ]]; then
+              docker image inspect "${image_ids[@]}" > native-image-evidence/image-inspect.json
+            fi
+          fi
+          if [[ "$IMAGE_VERIFICATION_OUTCOME" == success ]]; then
+            required=(release-source.json final-archive-SHA256SUMS release-image-verification.txt image-inspect.json
+              verified-image-contexts/image-evidence.json
+              "original-image-inputs/$IMAGE_PLATFORM/SHA256SUMS" "original-image-inputs/$IMAGE_PLATFORM/release.json"
+              "verified-image-contexts/$IMAGE_PLATFORM/SHA256SUMS" "verified-image-contexts/$IMAGE_PLATFORM/release.json"
+              "verified-image-contexts/$IMAGE_PLATFORM/artifact-import.json")
+            for harness in copilot claude; do
+              required+=("verified-image-contexts/harness-$harness/SHA256SUMS"
+                "verified-image-contexts/harness-$harness/source" "verified-image-contexts/harness-$harness/version")
+            done
+            for file in "${required[@]}"; do
+              if [[ ! -s "native-image-evidence/$file" ]]; then
+                echo "::error::Required native image evidence missing: $file" >&2
+                exit 1
+              fi
+            done
+          fi
+          exit 0
+      - name: Upload native image verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-images-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: native-image-evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+  native-windows-image:
+    name: Verify signed inputs in native Windows Server 2022 image
+    needs: [build, sign-windows]
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_SOURCE_COMMIT: ${{ needs.build.outputs.source-commit }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+      RELEASE_DATE: ${{ needs.build.outputs.date }}
+      # Windows containers use the native legacy builder.
+      DOCKER_BUILDKIT: '0'
+    steps:
+      - name: Checkout authorized image tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.build.outputs.source-commit }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: pwsh
+        run: |
+          if ($env:ARTIFACT_ID -cnotmatch '\A[1-9][0-9]*\z') {
+            throw 'Expected one positive decimal artifact ID; refusing download-all fallback.'
+          }
+      - name: Download fully signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
+          path: dist
+      - name: Download original image inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: original-image-inputs
+          path: original-image-inputs
+      - name: Verify native image from final release artifacts
+        id: image-verification
+        run: |
+          $evidenceDir = 'native-image-evidence'
+          New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+          $prefix = "goobers-release-verify-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-windows-amd64"
+          "IMAGE_VERIFY_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Copy-Item -LiteralPath dist/SHA256SUMS -Destination "$evidenceDir/final-archive-SHA256SUMS"
+          [ordered]@{ sourceCommit = $env:RELEASE_SOURCE_COMMIT; version = $env:RELEASE_VERSION; embeddedCommit = $env:RELEASE_COMMIT; date = $env:RELEASE_DATE; target = 'windows/amd64'; operatorOrigin = 'original same-build context; not Authenticode-signed by this workflow' } |
+            ConvertTo-Json | Set-Content "$evidenceDir/release-source.json"
+          docker version 2>&1 | Tee-Object -FilePath "$evidenceDir/docker-version.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'Native Docker engine unavailable' }
+          go run ./release `
+            -version $env:RELEASE_VERSION -commit $env:RELEASE_COMMIT -date $env:RELEASE_DATE `
+            -targets windows/amd64 -image-artifacts dist -image-inputs original-image-inputs `
+            -image-contexts verified-image-contexts -build-images -image-prefix $prefix `
+            2>&1 | Tee-Object -FilePath "$evidenceDir/release-image-verification.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows image build or verification failed' }
+          $proof = Get-Content -Raw verified-image-contexts/image-evidence.json | ConvertFrom-Json
+          $images = @($proof.images)
+          if ($proof.schemaVersion -ne 1 -or $proof.native -isnot [bool] -or $proof.native -ne $true -or $proof.enginePlatform -ne 'windows/amd64' -or $images.Count -ne 1 -or $images[0].family -ne 'goobers-base-windows') { throw 'Expected one verified native Windows base image' }
+      - name: Retain native image provenance and failure evidence
+        if: always()
+        env:
+          IMAGE_VERIFICATION_OUTCOME: ${{ steps.image-verification.outcome }}
+        run: |
+          $requiredEvidence = $env:IMAGE_VERIFICATION_OUTCOME -eq 'success'
+          $ErrorActionPreference = if ($requiredEvidence) { 'Stop' } else { 'Continue' }
+          $evidenceDir = 'native-image-evidence'
+          New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+          foreach ($directory in @('original-image-inputs', 'verified-image-contexts')) {
+            if (Test-Path -LiteralPath $directory) {
+              $source = (Resolve-Path -LiteralPath $directory).Path
+              Get-ChildItem -LiteralPath $directory -Recurse -File | Where-Object { $_.Extension -eq '.json' -or $_.Name -in @('SHA256SUMS', 'source', 'version', 'Dockerfile') } | ForEach-Object {
+                $relative = [IO.Path]::GetRelativePath($source, $_.FullName)
+                $destination = Join-Path $evidenceDir (Join-Path $directory $relative)
+                New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+                Copy-Item -LiteralPath $_.FullName -Destination $destination
+              }
+            }
+          }
+          if ($env:IMAGE_VERIFY_PREFIX) {
+            docker image ls --no-trunc --filter "reference=$($env:IMAGE_VERIFY_PREFIX)/*" 2>&1 | Set-Content "$evidenceDir/image-list.txt"
+            if ($requiredEvidence -and $LASTEXITCODE -ne 0) { throw 'Cannot retain verified image list' }
+            $images = @(docker image ls --quiet --no-trunc --filter "reference=$($env:IMAGE_VERIFY_PREFIX)/*")
+            if ($requiredEvidence -and $LASTEXITCODE -ne 0) { throw 'Cannot enumerate verified images' }
+            if ($LASTEXITCODE -eq 0 -and $images.Count -gt 0) {
+              docker image inspect @images | Set-Content "$evidenceDir/image-inspect.json"
+              if ($requiredEvidence -and $LASTEXITCODE -ne 0) { throw 'Cannot retain verified image inspection' }
+            }
+          }
+          if ($requiredEvidence) {
+            $requiredFiles = @('release-source.json', 'final-archive-SHA256SUMS', 'release-image-verification.txt', 'image-inspect.json',
+              'verified-image-contexts/image-evidence.json', 'original-image-inputs/windows-amd64/SHA256SUMS',
+              'original-image-inputs/windows-amd64/release.json', 'verified-image-contexts/windows-amd64/SHA256SUMS',
+              'verified-image-contexts/windows-amd64/release.json', 'verified-image-contexts/windows-amd64/artifact-import.json',
+              'verified-image-contexts/windows-amd64/dependencies.json')
+            foreach ($file in $requiredFiles) {
+              $path = Join-Path $evidenceDir $file
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) { throw "Required native image evidence missing: $file" }
+            }
+          }
+          exit 0
+      - name: Upload native image verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-images-windows-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: native-image-evidence/
+          retention-days: 14
+          if-no-files-found: error
+
+  validate-release:
+    name: Validate signed release ${{ github.ref_name }}
+    outputs:
+      notes-artifact-id: ${{ steps.release-notes-upload.outputs.artifact-id }}
+    permissions:
+      contents: read
+    needs: [sign-windows, native-smoke, native-linux-images, native-windows-image]
     runs-on: ubuntu-latest
     steps:
       # "Generate release notes" below shells out to real git commands for
@@ -374,6 +787,43 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Manual reruns are supported on release tags, never branch refs. Peeling
+      # both identities supports annotated tags without trusting short stamps.
+      - name: Authorize release source
+        id: release-source
+        shell: bash
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT" != push && "$RELEASE_EVENT" != workflow_dispatch ]]; then
+            echo '::error::Release requires a tag push or a manual run on a release tag.'
+            exit 1
+          fi
+          core='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          release_ref="^refs/tags/v${core}\.${core}\.${core}(-${identifier}(\.${identifier})*)?$"
+          if [[ ! "$RELEASE_REF" =~ $release_ref ]]; then
+            echo '::error::Release requires a canonical vMAJOR.MINOR.PATCH tag with an optional SemVer prerelease suffix.'
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Release event source must be a full Git object identity.'
+            exit 1
+          fi
+          tag_commit="$(git rev-parse --verify "${RELEASE_REF}^{commit}")"
+          event_commit="$(git rev-parse --verify "${EXPECTED_SOURCE}^{commit}")"
+          checkout_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [[ "$tag_commit" != "$event_commit" || "$checkout_commit" != "$event_commit" ]]; then
+            echo '::error::Release tag, event source, and checked-out commit must agree.'
+            exit 1
+          fi
+          echo "commit=$event_commit" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
@@ -381,10 +831,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
       - name: Download signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: dist-signed
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
           path: dist
 
       - name: Restore executable bits
@@ -399,17 +860,13 @@ jobs:
             -feature-notes dist/RELEASE_NOTES.md \
             -output dist/RELEASE_NOTES.md
 
-      # Runs and exercises the linux/amd64 archive only — checksum-verified
-      # and executed. windows/amd64 gets its own runtime smoke on a real
-      # Windows runner (windows-smoke, ci.yml). linux/arm64 and darwin/amd64
-      # ship in DefaultTargets (release/pack.go) but are never executed
-      # anywhere, by a recorded decision, not an oversight — see
-      # docs/guides/releases.md "linux/arm64 and darwin/amd64 (shipped, never
-      # executed)" (#2039) for the rationale and promotion trigger.
+      # Native signed artifacts must pass native-smoke before this job starts.
+      # This leg exercises linux/amd64, the packaged demo, and portal payload.
       - name: Verify release artifacts
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           (cd dist && sha256sum --check SHA256SUMS)
           grep --fixed-strings "## Changelog" dist/RELEASE_NOTES.md
           grep --fixed-strings "## DSL feature-support delta" dist/RELEASE_NOTES.md
@@ -423,10 +880,37 @@ jobs:
           tar -xzf "dist/goobers_${TAG}_linux_amd64.tar.gz" -C smoke
           export PATH="$PWD/smoke:$PATH"
           goobers --version | grep --fixed-strings "$TAG"
+          # #4829: a per-candidate readiness scratchpad (citing one author's
+          # own /tmp evidence trail, asserting a promotion status that goes
+          # stale the moment a later candidate ships) must never reach a
+          # release archive — its home is git history, not the archive.
+          if compgen -G "smoke/docs/releases/*-readiness.md" > /dev/null; then
+            echo "release archive shipped a readiness record: $(ls smoke/docs/releases/*-readiness.md)" >&2
+            exit 1
+          fi
           grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
-          grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
+          # The packaged quickstart is rewritten differently for a pre-release
+          # (#4978): install.sh refuses pre-release tags, so the guide points at
+          # the extracted archive's ./goobers rather than a PATH-installed
+          # goobers-<tag>. These assertions were written for the stable wording
+          # only, which made them unsatisfiable for exactly the tags an RC uses
+          # and blocked the release rather than catching anything.
+          #
+          # Both branches assert the NEGATIVE as well: the wording that belongs
+          # to the other shape must be absent, so a generator that stops
+          # distinguishing them fails here instead of silently telling
+          # pre-release users to run a binary install.sh never installed.
+          if [[ "$TAG" == *-* ]]; then
+            grep --fixed-strings "This pre-release \`${TAG}\`" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "./goobers --version" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "./goobers init --demo ./demo-instance" smoke/docs/guides/quickstart.md
+            ! grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
+          else
+            grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
+            ! grep --fixed-strings "This pre-release \`${TAG}\`" smoke/docs/guides/quickstart.md
+          fi
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
           test -f smoke/onboarding/manifest.json
@@ -440,6 +924,55 @@ jobs:
           diff --recursive smoke/onboarding onboarding-asset
           goobers init --allow-ephemeral --template=quickstart smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
+          # The shipped, credential-free mock demo is trusted test content.
+          # --insecure governs init's own host check only; it does not relax the
+          # runtime network isolation asserted below.
+          goobers init --allow-ephemeral --demo --insecure smoke/demo-instance
+          # Run the DEFAULT isolated-network path, with no opt-out (#4888).
+          # Release smoke previously passed GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1
+          # unconditionally, so the path that actually ships as the default was
+          # never exercised here and a regression in it could not fail this job.
+          #
+          # On Linux that variable is only consulted when the host RESTRICTS
+          # unprivileged user namespaces (internal/executor/network_linux.go):
+          # a hosted runner that permits them runs genuinely isolated without
+          # it. Measured on this runner, it does — so requiring success here
+          # asserts real isolation rather than the degraded fallback.
+          #
+          # If a future runner image restricts user namespaces this fails
+          # loudly, which is the correct direction for a release gate: the
+          # documented escape (GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1) is then
+          # an explicit edit someone makes knowingly, not a silent degradation
+          # that quietly stops testing the shipped default.
+          goobers run demo smoke/demo-instance | tee smoke/demo-result.txt
+          grep --fixed-strings "phase=completed" smoke/demo-result.txt
+          grep --fixed-strings "  goobers_portal_${TAG}.tar.gz" dist/SHA256SUMS
+          mkdir smoke/portal
+          tar -xzf "dist/goobers_portal_${TAG}.tar.gz" -C smoke/portal
+          # `test -s index.html` was the ONLY assertion this artifact ever got
+          # (#4888): a non-empty check on one file, while the onboarding zip
+          # above gets a real recursive diff. The packer now verifies the
+          # archive against the assets it collected; this checks the published
+          # artifact is internally coherent, which is what only a consumer can
+          # see - every local asset index.html references must be present, so a
+          # truncated archive or a dropped hashed-asset directory fails here.
+          test -s smoke/portal/index.html
+          portal_refs="$(grep -o -E '(src|href)="[^"]+\.(js|css)"' smoke/portal/index.html \
+            | sed -E 's/^(src|href)="//; s/"$//' | sort -u)"
+          if [[ -z "$portal_refs" ]]; then
+            echo "portal index.html references no local script or stylesheet" >&2
+            exit 1
+          fi
+          while IFS= read -r ref; do
+            case "$ref" in
+              *://*) continue ;;
+            esac
+            if [[ ! -f "smoke/portal/${ref#/}" ]]; then
+              echo "portal archive is missing an asset index.html references: $ref" >&2
+              exit 1
+            fi
+          done <<< "$portal_refs"
+          echo "portal archive: every local asset index.html references is present"
           test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
           mkdir generated-docs
           goobers __generate-docs generated-docs
@@ -447,11 +980,239 @@ jobs:
           diff --recursive smoke/docs/man generated-docs/man
           diff --recursive smoke/docs/completion generated-docs/completion
 
+      - name: Exercise installer against staged release assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" == *-* ]]; then
+            if sh dist/install.sh "$TAG" > smoke/installer.txt 2>&1; then
+              echo "Pre-release installer unexpectedly succeeded" >&2
+              exit 1
+            fi
+            grep --fixed-strings "pre-release tags are intentionally not installable" smoke/installer.txt
+            grep --fixed-strings "SHA256SUMS" smoke/installer.txt
+          else
+            # Intercept only the download transport; install.sh still verifies
+            # checksums, executes the real binary, and installs the real payload.
+            mkdir smoke/download-tools
+            cat > smoke/download-tools/curl <<'CURL'
+          #!/bin/sh
+          set -eu
+          [ "$#" -eq 4 ] && [ "$1" = -fsSL ] && [ "$3" = -o ]
+          case "$2" in
+            "https://github.com/Agent-Clubhouse/Goobers/releases/download/${TAG}/"*) ;;
+            *) exit 1 ;;
+          esac
+          cp "$GOOBERS_SMOKE_ASSETS/${2##*/}" "$4"
+          CURL
+            chmod +x smoke/download-tools/curl
+            PATH="$PWD/smoke/download-tools:$PATH" \
+              GOOBERS_SMOKE_ASSETS="$PWD/dist" \
+              GOOBERS_INSTALL_DIR="$PWD/smoke/installed/bin" \
+              GOOBERS_DOCS_DIR="$PWD/smoke/installed/docs" \
+              sh dist/install.sh "$TAG"
+            "./smoke/installed/bin/goobers-$TAG" --version | grep --fixed-strings "$TAG"
+            test -s "smoke/installed/docs/$TAG/onboarding/manifest.json"
+          fi
+
+      - name: Upload validated release notes
+        id: release-notes-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: validated-release-notes-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/RELEASE_NOTES.md
+          retention-days: 1
+          if-no-files-found: error
+
+  verify-and-publish:
+    name: Verify and publish ${{ github.ref_name }}
+    permissions:
+      contents: write
+    needs: [sign-windows, native-smoke, native-linux-images, native-windows-image, validate-release]
+    runs-on: ubuntu-latest
+    steps:
+      # This job never executes downloaded binaries, installers, generated
+      # docs tooling, or repository build tools. Checkout is only for the
+      # canonical Git source guard; all release content remains inert data.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Manual reruns are supported on release tags, never branch refs. Peeling
+      # both identities supports annotated tags without trusting short stamps.
+      - name: Authorize release source
+        id: release-source
+        shell: bash
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_EVENT" != push && "$RELEASE_EVENT" != workflow_dispatch ]]; then
+            echo '::error::Release requires a tag push or a manual run on a release tag.'
+            exit 1
+          fi
+          core='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          release_ref="^refs/tags/v${core}\.${core}\.${core}(-${identifier}(\.${identifier})*)?$"
+          if [[ ! "$RELEASE_REF" =~ $release_ref ]]; then
+            echo '::error::Release requires a canonical vMAJOR.MINOR.PATCH tag with an optional SemVer prerelease suffix.'
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Release event source must be a full Git object identity.'
+            exit 1
+          fi
+          tag_commit="$(git rev-parse --verify "${RELEASE_REF}^{commit}")"
+          event_commit="$(git rev-parse --verify "${EXPECTED_SOURCE}^{commit}")"
+          checkout_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          if [[ "$tag_commit" != "$event_commit" || "$checkout_commit" != "$event_commit" ]]; then
+            echo '::error::Release tag, event source, and checked-out commit must agree.'
+            exit 1
+          fi
+          echo "commit=$event_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Validate final signed artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
+      - name: Download immutable final signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
+          path: dist
+      - name: Validate generated notes artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.validate-release.outputs.notes-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
+      - name: Download validated release notes as data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.validate-release.outputs.notes-artifact-id }}
+          merge-multiple: true
+          path: release-notes
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          # System Python in isolated mode cannot import artifact/repository
+          # modules or PYTHONPATH hooks. No downloaded code runs with this token.
+          python3 -I - <<'PYVERIFY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import stat
+
+
+          def refuse(message):
+              raise SystemExit("Release asset verification failed: " + message)
+
+
+          def regular_file(file, limit):
+              info = file.lstat()
+              if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
+                  refuse("expected a bounded regular nonsymlink file")
+              return info.st_size
+
+
+          def bounded_read(file, limit):
+              size = regular_file(file, limit)
+              with file.open("rb") as stream:
+                  data = stream.read(limit + 1)
+              if len(data) != size:
+                  refuse("file changed or exceeded its bound")
+              return data
+
+
+          tag = os.environ["TAG"]
+          core = r"(?:0|[1-9][0-9]*)"
+          identifier = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+          if not re.fullmatch(rf"v{core}\.{core}\.{core}(?:-{identifier}(?:\.{identifier})*)?", tag):
+              refuse("noncanonical release tag")
+          expected = {
+              f"goobers_{tag}_{target}.{extension}"
+              for target, extension in (
+                  ("linux_amd64", "tar.gz"), ("linux_arm64", "tar.gz"),
+                  ("darwin_amd64", "tar.gz"), ("darwin_arm64", "tar.gz"),
+                  ("windows_amd64", "zip"),
+              )
+          }
+          expected.update((f"goobers_portal_{tag}.tar.gz", f"goobers-agent-toolkit_{tag}.zip",
+                           f"goobers-onboarding_{tag}.zip", "install.sh",
+                           "feature-registry.json", "dsl-support-matrix.json"))
+          directory, notes = Path("dist"), Path("release-notes")
+          for root in (directory, notes):
+              if not stat.S_ISDIR(root.lstat().st_mode):
+                  refuse("artifact root must be a nonsymlink directory")
+          if {file.name for file in directory.iterdir()} != expected | {"SHA256SUMS", "RELEASE_NOTES.md"}:
+              refuse("signed artifact has missing or unexpected assets")
+          if {file.name for file in notes.iterdir()} != {"RELEASE_NOTES.md"}:
+              refuse("notes artifact must contain only RELEASE_NOTES.md")
+          manifest = bounded_read(directory / "SHA256SUMS", 65536).decode("ascii")
+          entries = {}
+          for line in manifest.splitlines():
+              match = re.fullmatch(r"([0-9a-fA-F]{64})  ([A-Za-z0-9_.-]+)", line)
+              if not match or match[2] not in expected or match[2] in entries:
+                  refuse("malformed, unexpected, or duplicate checksum entry")
+              entries[match[2]] = match[1].lower()
+          if set(entries) != expected:
+              refuse("checksums do not cover the exact release asset set")
+          for name in sorted(expected):
+              file = directory / name
+              size = regular_file(file, 1 << 30)
+              digest, consumed = hashlib.sha256(), 0
+              with file.open("rb") as stream:
+                  while chunk := stream.read(1 << 20):
+                      consumed += len(chunk)
+                      if consumed > size:
+                          refuse("asset grew while verifying")
+                      digest.update(chunk)
+              if consumed != size or digest.hexdigest() != entries[name]:
+                  refuse("asset checksum mismatch")
+          # Original notes are part of the signer artifact but aren't checksummed or
+          # published. Only the separate validation job's generated notes are attached.
+          bounded_read(directory / "RELEASE_NOTES.md", 1 << 20).decode("utf-8")
+          published_notes = bounded_read(notes / "RELEASE_NOTES.md", 1 << 20).decode("utf-8")
+          # Cover the PUBLISHED notes in the manifest (#4886). This has to
+          # happen here, after validation, and against notes/ rather than
+          # dist/: the two files differ. The signer artifact's copy is an
+          # earlier draft that is never attached, while the one consumers
+          # download is regenerated by the validation job. Checksumming the
+          # dist/ copy would publish a digest for a file nobody receives.
+          #
+          # Appending after the exact-set check above is deliberate too: that
+          # check proves the manifest covers precisely the signed asset set,
+          # and adding the notes entry beforehand would make it refuse.
+          notes_digest = hashlib.sha256((notes / "RELEASE_NOTES.md").read_bytes()).hexdigest()
+          with (directory / "SHA256SUMS").open("a", encoding="ascii") as manifest_file:
+              manifest_file.write(f"{notes_digest}  RELEASE_NOTES.md\n")
+          assets = [str(directory / name) for name in sorted(expected)]
+          assets.extend((str(directory / "SHA256SUMS"), str(notes / "RELEASE_NOTES.md")))
+          Path("publish-assets.txt").write_text("\n".join(assets) + "\n", encoding="utf-8")
+          PYVERIFY
+          mapfile -t assets < publish-assets.txt
           # Stable tags never contain a literal "-"; a SemVer pre-release
           # suffix always does (v1.2.3-beta.2), so this is enough to tell
           # them apart without re-implementing the full grammar in bash.
@@ -461,12 +1222,12 @@ jobs:
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md "${prerelease[@]}"
-            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "$TAG" --notes-file release-notes/RELEASE_NOTES.md "${prerelease[@]}"
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$TAG" dist/* \
+            gh release create "$TAG" "${assets[@]}" \
               --verify-tag \
               --title "$TAG" \
-              --notes-file dist/RELEASE_NOTES.md \
+              --notes-file release-notes/RELEASE_NOTES.md \
               "${prerelease[@]}"
           fi

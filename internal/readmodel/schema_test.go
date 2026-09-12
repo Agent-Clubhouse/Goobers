@@ -32,13 +32,56 @@ func migrationPrefixDigest(prefix []string) string {
 // catch: every upgraded store silently stops applying the inserted DDL
 // forever while fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "d2eb068d5c75c2287389b62fc7e1387581d4ccaeeeb76861c0eb0ed6a89db518"
+	const wantDigest = "67a46ecf7ff307c19cdb35e03d9af77bb3abb985d5854576a69386d21b97839a"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+
 			"migration to the end of the list, update wantDigest to the value\n"+
 			"above. If it did anything else to an existing entry, that is the\n"+
 			"bug #2049 exists to catch.", got, wantDigest)
+	}
+}
+
+func TestDispositionMigrationMarksExistingProjectionUnready(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", path+dsnParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, migration := range migrations[:len(migrations)-1] {
+		if _, err := tx.ExecContext(ctx, migration); err != nil {
+			t.Fatalf("apply migration %d: %v", i+1, err)
+		}
+		if err := seedState(ctx, tx, i+1); err != nil {
+			t.Fatalf("seed migration %d: %v", i+1, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE projection_state SET ready = 1 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	state, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Ready {
+		t.Fatal("disposition migration left the projection ready; historical terminal unknown rows would not be replayed")
 	}
 }
 

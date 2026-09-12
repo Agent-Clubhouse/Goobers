@@ -118,7 +118,7 @@ export function WorkflowTopologyGraph({
     width: FALLBACK_VIEWPORT_WIDTH,
     height: FALLBACK_VIEWPORT_HEIGHT,
   });
-  const [fitActive, setFitActive] = useState(preview);
+  const [fitActive, setFitActive] = useState(true);
   const [zoom, setZoom] = useState(1);
   const zoomRef = useRef(zoom);
   const [dragging, setDragging] = useState(false);
@@ -580,6 +580,20 @@ export function WorkflowTopologyGraph({
             >
               {fullscreenMode === "none" ? "Fullscreen" : "Exit fullscreen"}
             </button>
+            <span aria-label="Pan graph" className="graph-pan-controls" role="group">
+              <button aria-label="Pan graph left" onClick={() => pan(-PAN_DISTANCE, 0)} type="button">
+                ←
+              </button>
+              <button aria-label="Pan graph up" onClick={() => pan(0, -PAN_DISTANCE)} type="button">
+                ↑
+              </button>
+              <button aria-label="Pan graph down" onClick={() => pan(0, PAN_DISTANCE)} type="button">
+                ↓
+              </button>
+              <button aria-label="Pan graph right" onClick={() => pan(PAN_DISTANCE, 0)} type="button">
+                →
+              </button>
+            </span>
             {fullscreenError && (
               <span className="sr-only" role="status">
                 {fullscreenError}
@@ -701,9 +715,9 @@ export function WorkflowTopologyGraph({
               // ("review, gate, Running at sequence 6"); on the definition page
               // it stays the richer configured-topology label.
               const causalSuffix = causalNodeId === node.id ? ", escalation cause" : "";
-              const centrality = analytics?.centrality.find((item) => item.node === node.id);
-              const critical = analytics?.criticalPath.nodes.includes(node.id);
-              const cycle = analytics?.cycles.some((component) => component.includes(node.id));
+              const centrality = analytics?.centrality?.find((item) => item.node === node.id);
+              const critical = analytics?.criticalPath?.nodes?.includes(node.id);
+              const cycle = analytics?.cycles?.some((component) => component.includes(node.id));
               const analyticsSuffix = [
                 centrality && `centrality ${centrality.score.toFixed(2)}`,
                 critical && "critical path",

@@ -215,11 +215,13 @@ func TestManagerReapGitTimeoutOnOneOrphanDoesNotAbortOthers(t *testing.T) {
 	repo := newSourceRepo(t)
 	m := newTestManager(t)
 
-	stuck, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "stuck", BaseRef: "main"})
+	// Reap visits marker filenames in lexical order. The timed-out orphan
+	// must precede the healthy one to prove the pass continues after failure.
+	stuck, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "00-stuck", BaseRef: "main"})
 	if err != nil {
 		t.Fatalf("Create(stuck): %v", err)
 	}
-	fine, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "fine", BaseRef: "main"})
+	fine, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "10-fine", BaseRef: "main"})
 	if err != nil {
 		t.Fatalf("Create(fine): %v", err)
 	}
@@ -241,14 +243,15 @@ func TestManagerReapGitTimeoutOnOneOrphanDoesNotAbortOthers(t *testing.T) {
 	}
 
 	binDir := buildSelectivelyHangingGit(t, filepath.Base(stuck.Path))
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	// A generous (but still test-fast) timeout: the "fine" worktree's
-	// removal now goes through two extra exec layers (this process's own
-	// wrapper, which re-execs the real git), so it needs enough headroom to
-	// comfortably finish under load — cleanupGitTimeout only needs to be
-	// shorter than the artificial 1-hour hang, not razor-thin.
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+	// Exercise a real timeout without imposing a five-second performance
+	// requirement on the healthy Git subprocess and its forwarding shim.
+	// That deadline also expired for healthy cleanup under full-suite load.
+	// Thirty seconds remains far shorter than the injected hour-long hang;
+	// the lower-level tests separately prove the tight bounded-wait behavior.
 	originalTimeout, originalWait := cleanupGitTimeout, cleanupKillWaitDelay
-	cleanupGitTimeout = 5 * time.Second
+	cleanupGitTimeout = 30 * time.Second
 	cleanupKillWaitDelay = 500 * time.Millisecond
 	t.Cleanup(func() { cleanupGitTimeout, cleanupKillWaitDelay = originalTimeout, originalWait })
 
@@ -259,7 +262,7 @@ func TestManagerReapGitTimeoutOnOneOrphanDoesNotAbortOthers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reap: %v (a single git-subprocess timeout must not abort the whole pass)", err)
 	}
-	if len(results) != 1 || results[0].RunID != "fine" || results[0].Reason != ReapReasonOrphaned {
+	if len(results) != 1 || results[0].RunID != fine.RunID || results[0].Reason != ReapReasonOrphaned {
 		t.Fatalf("Reap results = %+v, want exactly the fine orphan reaped", results)
 	}
 	if len(warnings) != 1 {
@@ -270,11 +273,28 @@ func TestManagerReapGitTimeoutOnOneOrphanDoesNotAbortOthers(t *testing.T) {
 		t.Fatalf("Reap warning = %v, want a *GitCleanupTimeoutError", warnings[0].Err)
 	}
 
+	if warnings[0].Path != stuck.Path || timeoutErr.Op != "worktree remove" || timeoutErr.Elapsed != cleanupGitTimeout {
+		t.Fatalf("timeout warning = %+v (%+v), want the stuck orphan's worktree-remove deadline", warnings[0], timeoutErr)
+	}
+
 	if _, err := os.Stat(fine.Path); !os.IsNotExist(err) {
 		t.Fatalf("fine worktree should have been removed, stat err = %v", err)
 	}
 	if _, err := os.Stat(stuck.Path); err != nil {
 		t.Fatalf("stuck worktree should still exist for a later retry, stat err = %v", err)
+	}
+	// The timed-out orphan must retain its marker and Git registration so a
+	// later sweep can retry it after the blocking condition clears.
+	if _, err := readMarker(m.markerPath(stuck.key, stuck.RunID)); err != nil {
+		t.Fatalf("stuck orphan lost its retry marker: %v", err)
+	}
+	t.Setenv("PATH", originalPath)
+	results, warnings, err = m.Reap(ctx, ReapOptions{})
+	if err != nil || len(warnings) != 0 || len(results) != 1 || results[0].RunID != stuck.RunID || results[0].Reason != ReapReasonOrphaned {
+		t.Fatalf("retry Reap = %+v, warnings=%+v, err=%v; want the previously stuck orphan reaped", results, warnings, err)
+	}
+	if _, err := os.Stat(stuck.Path); !os.IsNotExist(err) {
+		t.Fatalf("retried worktree should have been removed, stat err = %v", err)
 	}
 }
 

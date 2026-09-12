@@ -232,7 +232,7 @@ func TestPRSelectDispatchesADOAndSelectsPolicyGreenPR(t *testing.T) {
 		t.Fatalf("read selected-pr.json: %v", err)
 	}
 	var selected map[string]string
-	if err := json.Unmarshal(data, &selected); err != nil {
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
 		t.Fatalf("unmarshal selected-pr.json: %v", err)
 	}
 	if selected["number"] != "359" {

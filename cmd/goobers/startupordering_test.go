@@ -34,7 +34,7 @@ func TestUpAPIReadyBeforeRetentionSweepCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read instance.yaml: %v", err)
 	}
-	updated := strings.Replace(string(raw), "retention: {}", "retention:\n  enabled: true\n  maxRetainedWorktreeBytes: 1\n", 1)
+	updated := strings.Replace(string(raw), "retention: {}", "retention:\n  enabled: true\n  maxRetainedWorktreeBytes: 1\n  firstEnable: immediate\n", 1)
 	if updated == string(raw) {
 		t.Fatalf("instance.yaml scaffold did not contain expected retention: {} placeholder:\n%s", raw)
 	}

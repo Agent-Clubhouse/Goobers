@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,7 +73,12 @@ func TestUpPreflightRejectsElectLanderDefectBeforeSchedulerState(t *testing.T) {
 	if code := runUpContext(context.Background(), []string{root}, &stdout, &stderr); code != 1 {
 		t.Fatalf("up code = %d, want 1; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
-	if got, want := stderr.String(), validateOut+validateErr; got != want {
+	id, err := instance.ReadRootIdentity(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	banner := fmt.Sprintf("Instance root: %q; instance ID: %q\n", canonicalStatusRoot(root), id)
+	if got, want := stderr.String(), banner+validateOut+validateErr; got != want {
 		t.Fatalf("up validation output differs from validate:\nup:       %q\nvalidate: %q", got, want)
 	}
 	if !strings.Contains(stderr.String(), `task "elect-lander"`) {
@@ -87,11 +93,9 @@ func TestUpSkipPreflightStartsWithNamedValidationWarning(t *testing.T) {
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "up-preflight-fixture-token")
 	root := initDeterministicDemo(t)
 	installInvalidElectLanderWorkflow(t, root)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 
 	var stdout, stderr bytes.Buffer
-	if code := runUpContext(ctx, []string{"--quiet", "--skip-preflight", root}, &stdout, &stderr); code != 0 {
+	if code := runUpThroughStartup(t, []string{"--quiet", "--skip-preflight", root}, &stdout, &stderr); code != 0 {
 		t.Fatalf("up code = %d, want 0; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 	for _, want := range []string{

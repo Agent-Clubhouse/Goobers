@@ -12,7 +12,7 @@ import (
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 )
 
-// applyNextToV3 is the DSL 2.0→3.0 migration edge (dsl-3.0.md §6, decision
+// applyV20ToV30 is the DSL 2.0→3.0 migration edge (dsl-3.0.md §6, decision
 // record D12/D13/D16, Goobernetes-Delivery decisions 001/002). It rewrites a
 // 2.0 workflow (or gaggle) document into its 3.0 form, per-rule and
 // deterministic:
@@ -46,7 +46,7 @@ import (
 // an author's opt-in that must name cpu and memory explicitly (WF023), so a
 // migrated agentic gate stays control-plane — exactly its 2.0 behaviour —
 // until an author declares the block.
-func applyNextToV3(source []byte, root *yaml.Node) (bool, []string, error) {
+func applyV20ToV30(source []byte, root *yaml.Node) (bool, []string, error) {
 	kind := ""
 	if kindNode, _ := mapValue(root, "kind"); kindNode != nil {
 		kind = kindNode.Value

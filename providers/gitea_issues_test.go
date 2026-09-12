@@ -468,6 +468,25 @@ func TestGiteaUpdateWorkItemStatusSwapsStatusLabelOnly(t *testing.T) {
 	}
 }
 
+func TestGiteaUpdateWorkItemStatusDoneRecordsClose(t *testing.T) {
+	m := newGiteaIssueMock()
+	recorder := &recordingRecorder{}
+	provider, repo := newGiteaIssueProvider(t, m, WithGiteaMutationRecorder(recorder))
+	item, err := provider.UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: repo, ID: "7", Status: WorkItemStatusDone,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItemStatus: %v", err)
+	}
+	if item.State != "closed" {
+		t.Fatalf("state = %q, want closed", item.State)
+	}
+	ref, ok := recorder.last()
+	if !ok || ref.Provider != ProviderGitea || ref.Ref != "acme/app#7" || ref.Operation != "close" {
+		t.Fatalf("close mutation = %+v (ok=%v)", ref, ok)
+	}
+}
+
 // --- ClaimWorkItem / ReleaseWorkItemClaim ---
 
 func TestGiteaClaimWorkItemSingleWinnerUnderConcurrency(t *testing.T) {

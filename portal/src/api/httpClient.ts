@@ -7,15 +7,18 @@ import {
   RequestCancelledError,
   RequestTimeoutError,
   assertSupportedContractVersion,
+  isAdmissionFailure,
   isRecord,
 } from "./errors";
 import { apiRoutes, type ApiRoute } from "./contract.generated";
+import { publishUpdateAvailability } from "../updateNotice";
 import type {
   PortalDiagnostics,
   PortalRequestStatus,
 } from "../portalDiagnostics";
 import type {
   ApiErrorEnvelope,
+  AdmissionDegradedState,
   ArtifactContent,
   AttemptList,
   DaemonClient,
@@ -44,7 +47,12 @@ import type {
   TelemetryStatsResult,
   TranscriptContent,
   WorkflowDetail,
+  QueueEligibilityView,
   WorkflowPage,
+  WorkItemDetail,
+  WorkItemKind,
+  WorkItemListOptions,
+  WorkItemPage,
   ReadState,
 } from "./types";
 
@@ -62,6 +70,7 @@ const clientRoutes = {
   gaggleWorkflows: apiRoutes.gaggleWorkflows,
   gaggleConnections: apiRoutes.gaggleConnections,
   workflowDetail: apiRoutes.workflowDetail,
+  workflowQueueEligibility: apiRoutes.workflowQueueEligibility,
   runs: apiRoutes.runs,
   runDetail: apiRoutes.runDetail,
   runReveal: apiRoutes.runReveal,
@@ -73,6 +82,8 @@ const clientRoutes = {
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
+  workItems: apiRoutes.workItems,
+  workItemDetail: apiRoutes.workItemDetail,
   // The telemetry read plane's curation evidence (decision 005 R4 / finding
   // 002 C3). A stage pod's `backlog-health --feedback` is the only consumer;
   // the portal has no surface for it yet, but the exhaustiveness check
@@ -108,6 +119,11 @@ const clientRoutes = {
   // recovery gate, none of which exist in a pod. Pod-only like the rest of
   // the claims plane; the portal never calls it.
   claimRecover: apiRoutes.claimRecover,
+  // Recovery clients stream a verified archive through the claims-scoped
+  // route. The Portal does not consume this binary response, but tracks the
+  // complete daemon route contract here.
+  runRecovery: apiRoutes.runRecovery,
+  runRecoveryPublish: apiRoutes.runRecoveryPublish,
   triggerIngest: apiRoutes.triggerIngest,
   resolveEscalation: apiRoutes.resolveEscalation,
   // Remote run cancellation (#3807): the CLI's `goobers run cancel --api` asks
@@ -115,6 +131,7 @@ const clientRoutes = {
   // surface yet, but the exhaustiveness check requires the full contract here
   // as it grows.
   cancelRun: apiRoutes.cancelRun,
+  triggerStatus: apiRoutes.triggerStatus,
   journalEmit: apiRoutes.journalEmit,
   credentialResolve: apiRoutes.credentialResolve,
   // The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
@@ -163,6 +180,10 @@ const clientRoutes = {
   // same reason they are — the exhaustiveness check below requires the full
   // contract as it grows.
   configDigest: apiRoutes.configDigest,
+  // Workers report config-tree comparison transitions through this mutation
+  // route. It is worker-authenticated and has no portal UI caller, but belongs
+  // here so the compile-time contract inventory remains exhaustive.
+  workerConfigDivergence: apiRoutes.workerConfigDivergence,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
@@ -170,6 +191,11 @@ export interface HttpDaemonClientConfig {
   timeoutMs?: number;
   fetch?: typeof fetch;
   diagnostics?: PortalDiagnostics;
+  maxConcurrentRequests?: number;
+  admissionMaxRetries?: number;
+  admissionRetryBaseMs?: number;
+  admissionRetryMaxMs?: number;
+  onAdmissionState?: (state: AdmissionDegradedState | undefined) => void;
   /**
    * Called with the readState envelope on every JSON response that carries one
    * (#1928).
@@ -189,6 +215,8 @@ export class HttpDaemonClient implements DaemonClient {
   private readonly timeoutMs: number;
   private readonly fetch: typeof fetch;
   private readonly onReadState: ((state: ReadState) => void) | undefined;
+  private readonly requests: RequestCoordinator;
+  private readonly sharedJSON = new Map<string, SharedJSONRequest>();
 
   constructor(config: HttpDaemonClientConfig = {}) {
     const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -198,6 +226,14 @@ export class HttpDaemonClient implements DaemonClient {
     this.baseUrl = normalizeBaseUrl(config.baseUrl ?? "");
     this.diagnostics = config.diagnostics;
     this.onReadState = config.onReadState;
+    this.requests = new RequestCoordinator({
+      diagnostics: config.diagnostics,
+      maxConcurrent: config.maxConcurrentRequests ?? 2,
+      maxRetries: config.admissionMaxRetries ?? 1,
+      retryBaseMs: config.admissionRetryBaseMs ?? 1_000,
+      retryMaxMs: config.admissionRetryMaxMs ?? 30_000,
+      onAdmissionState: config.onAdmissionState,
+    });
     this.timeoutMs = timeoutMs;
     const fetcher = config.fetch ?? globalThis.fetch;
     if (typeof fetcher !== "function") {
@@ -221,10 +257,7 @@ export class HttpDaemonClient implements DaemonClient {
       controller.abort();
     };
     options?.signal?.addEventListener("abort", cancel, { once: true });
-    const timer = globalThis.setTimeout(() => {
-      abortKind = "timeout";
-      controller.abort();
-    }, this.timeoutMs);
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     const requestUrl = this.url(clientRoutes.events);
     const trace = this.diagnostics?.startRequest({
       endpoint: requestUrl,
@@ -284,6 +317,10 @@ export class HttpDaemonClient implements DaemonClient {
   async getHealth(options?: RequestOptions): Promise<Health> {
     const health = await this.getJSON<Health>(clientRoutes.health, undefined, options);
     assertSupportedContractVersion(health);
+    // Observed, not polled (#4920): the update strip reads whatever health
+    // responses the app already makes, so it adds no request of its own and
+    // cannot perturb the order consumers of this endpoint depend on.
+    publishUpdateAvailability(health.update);
     return health;
   }
 
@@ -335,6 +372,10 @@ export class HttpDaemonClient implements DaemonClient {
       options,
       { gaggle, workflow },
     );
+  }
+
+  getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView> {
+    return this.getJSON(clientRoutes.workflowQueueEligibility, undefined, options, { gaggle, workflow });
   }
 
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
@@ -544,22 +585,128 @@ export class HttpDaemonClient implements DaemonClient {
     );
   }
 
+  listWorkItems(
+    request?: WorkItemListOptions,
+    options?: RequestOptions,
+  ): Promise<WorkItemPage> {
+    return this.getJSON(
+      clientRoutes.workItems,
+      request && {
+        provider: request.provider,
+        kind: request.kind,
+        limit: request.limit,
+      },
+      options,
+    );
+  }
+
+  getWorkItem(
+    provider: string,
+    repository: string,
+    kind: WorkItemKind,
+    externalId: string,
+    options?: RequestOptions,
+  ): Promise<WorkItemDetail> {
+    return this.getJSON(
+      clientRoutes.workItemDetail,
+      { repository },
+      options,
+      { provider, kind, id: externalId },
+    );
+  }
+
   private async getJSON<T>(
     route: ApiRoute,
     query?: Record<string, QueryValue>,
     options?: RequestOptions,
     pathParameters?: PathParameters,
   ): Promise<T> {
-    return this.withResponse(route, query, options, "application/json", async (response) => {
-      let value: unknown;
-      try {
-        value = JSON.parse(await response.text());
-      } catch (error) {
-        throw new MalformedResponseError(undefined, { cause: error });
-      }
-      this.observeReadState(value);
-      return value as T;
-    }, pathParameters);
+    const requestUrl = this.url(route, query, pathParameters);
+    return this.coalesceJSON<T>(requestUrl, options?.signal, (signal) =>
+      this.withResponse(
+        route,
+        query,
+        { signal },
+        "application/json",
+        async (response) => {
+          let value: unknown;
+          try {
+            value = JSON.parse(await response.text());
+          } catch (error) {
+            throw new MalformedResponseError(undefined, { cause: error });
+          }
+          this.observeReadState(value);
+          return value as T;
+        },
+        pathParameters,
+      ),
+    );
+  }
+
+  private coalesceJSON<T>(
+    key: string,
+    signal: AbortSignal | undefined,
+    load: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    if (signal?.aborted) {
+      return Promise.reject(new RequestCancelledError());
+    }
+    let shared = this.sharedJSON.get(key);
+    if (shared) {
+      this.diagnostics?.recordRequestQueue?.({
+        endpoint: key,
+        event: "coalesced",
+        inFlight: 0,
+        queueDepth: shared.subscribers.size,
+        requestClass: requestClassFor(key),
+      });
+    }
+    if (!shared) {
+      const controller = new AbortController();
+      const promise = load(controller.signal);
+      shared = { controller, promise, subscribers: new Set() };
+      this.sharedJSON.set(key, shared);
+      void promise.then(
+        () => {
+          if (this.sharedJSON.get(key) === shared) this.sharedJSON.delete(key);
+        },
+        () => {
+          if (this.sharedJSON.get(key) === shared) this.sharedJSON.delete(key);
+        },
+      );
+    }
+
+    const token = Symbol(key);
+    shared.subscribers.add(token);
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return false;
+        settled = true;
+        signal?.removeEventListener("abort", cancel);
+        shared!.subscribers.delete(token);
+        return true;
+      };
+      const cancel = () => {
+        if (!finish()) return;
+        if (shared!.subscribers.size === 0) {
+          if (this.sharedJSON.get(key) === shared) {
+            this.sharedJSON.delete(key);
+          }
+          shared!.controller.abort();
+        }
+        reject(new RequestCancelledError());
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      void (shared!.promise as Promise<T>).then(
+        (value) => {
+          if (finish()) resolve(value);
+        },
+        (error: unknown) => {
+          if (finish()) reject(error);
+        },
+      );
+    });
   }
 
   /**
@@ -605,10 +752,7 @@ export class HttpDaemonClient implements DaemonClient {
       controller.abort();
     };
     options?.signal?.addEventListener("abort", cancel, { once: true });
-    const timer = globalThis.setTimeout(() => {
-      abortKind = "timeout";
-      controller.abort();
-    }, this.timeoutMs);
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     const requestUrl = this.url(route, query, pathParameters);
     const trace = this.diagnostics?.startRequest({
       endpoint: requestUrl,
@@ -617,16 +761,29 @@ export class HttpDaemonClient implements DaemonClient {
     let responseStatus: number | undefined;
 
     try {
-      const response = await this.fetch(requestUrl, {
-        method: route.method,
-        headers: { Accept: accept },
-        signal: controller.signal,
+      return await this.requests.run(requestUrl, controller.signal, async () => {
+        timer = globalThis.setTimeout(() => {
+          abortKind = "timeout";
+          controller.abort();
+        }, this.timeoutMs);
+        try {
+          const next = await this.fetch(requestUrl, {
+            method: route.method,
+            headers: { Accept: accept },
+            signal: controller.signal,
+          });
+          responseStatus = next.status;
+          if (!next.ok) {
+            throw await apiError(next);
+          }
+          return await read(next);
+        } finally {
+          if (timer !== undefined) {
+            globalThis.clearTimeout(timer);
+            timer = undefined;
+          }
+        }
       });
-      responseStatus = response.status;
-      if (!response.ok) {
-        throw await apiError(response);
-      }
-      return await read(response);
     } catch (error) {
       if (abortKind === "cancelled" || options?.signal?.aborted) {
         throw new RequestCancelledError({ cause: error });
@@ -639,7 +796,9 @@ export class HttpDaemonClient implements DaemonClient {
       }
       throw new DaemonUnavailableError({ cause: error });
     } finally {
-      globalThis.clearTimeout(timer);
+      if (timer !== undefined) {
+        globalThis.clearTimeout(timer);
+      }
       options?.signal?.removeEventListener("abort", cancel);
       trace?.finish(responseStatus ?? diagnosticStatus(abortKind));
     }
@@ -690,7 +849,211 @@ async function apiError(
   if (!isApiErrorEnvelope(value)) {
     return new MalformedResponseError("The daemon returned a malformed error response.");
   }
-  return new DaemonApiError(response.status, value.error.code, value.error.message);
+  return new DaemonApiError(
+    response.status,
+    value.error.code,
+    value.error.message,
+    retryAfterMilliseconds(response.headers.get("Retry-After")),
+  );
+}
+
+function retryAfterMilliseconds(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1_000;
+  }
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
+}
+
+interface SharedJSONRequest {
+  controller: AbortController;
+  promise: Promise<unknown>;
+  subscribers: Set<symbol>;
+}
+
+interface CoordinatedRequest<T> {
+  endpoint: string;
+  requestClass: RequestClass;
+  queuedAt: number;
+  signal: AbortSignal;
+  attempt: () => Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+  failures: number;
+  cancelled: boolean;
+  cancel: () => void;
+}
+
+type RequestClass = "aggregate" | "interactive";
+
+interface RequestCoordinatorConfig {
+  diagnostics?: PortalDiagnostics;
+  maxConcurrent: number;
+  maxRetries: number;
+  retryBaseMs: number;
+  retryMaxMs: number;
+  onAdmissionState?: (state: AdmissionDegradedState | undefined) => void;
+}
+
+class RequestCoordinator {
+  private active = 0;
+  private readonly blockedUntil = new Map<RequestClass, number>();
+  private readonly blockTimers = new Map<RequestClass, ReturnType<typeof setTimeout>>();
+  private readonly degraded = new Set<RequestClass>();
+  private readonly probes = new Set<RequestClass>();
+  private readonly queue: CoordinatedRequest<unknown>[] = [];
+
+  constructor(private readonly config: RequestCoordinatorConfig) {
+    if (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1) {
+      throw new RangeError("Maximum concurrent daemon requests must be a positive integer.");
+    }
+    if (!Number.isInteger(config.maxRetries) || config.maxRetries < 0) {
+      throw new RangeError("Maximum admission retries must be a non-negative integer.");
+    }
+  }
+
+  run<T>(endpoint: string, signal: AbortSignal, attempt: () => Promise<T>): Promise<T> {
+    if (signal.aborted) {
+      return Promise.reject(new RequestCancelledError());
+    }
+    return new Promise<T>((resolve, reject) => {
+      const request: CoordinatedRequest<T> = {
+        endpoint,
+        requestClass: requestClassFor(endpoint),
+        queuedAt: performance.now(),
+        signal,
+        attempt,
+        resolve,
+        reject,
+        failures: 0,
+        cancelled: false,
+        cancel: () => {
+          request.cancelled = true;
+          signal.removeEventListener("abort", request.cancel);
+          reject(new RequestCancelledError());
+        },
+      };
+      signal.addEventListener("abort", request.cancel, { once: true });
+      this.queue.push(request as CoordinatedRequest<unknown>);
+      this.config.diagnostics?.recordRequestQueue?.({
+        endpoint,
+        event: "queued",
+        inFlight: this.active,
+        queueDepth: this.queue.length,
+        requestClass: request.requestClass,
+      });
+      this.drain();
+    });
+  }
+
+  private drain(): void {
+    while (this.active < this.config.maxConcurrent) {
+      const index = this.queue.findIndex((candidate) => this.canStart(candidate));
+      if (index < 0) return;
+      const [request] = this.queue.splice(index, 1);
+      if (request.cancelled || request.signal.aborted) continue;
+      if (this.degraded.has(request.requestClass)) {
+        this.probes.add(request.requestClass);
+      }
+      this.active += 1;
+      this.config.diagnostics?.recordRequestQueue?.({
+        endpoint: request.endpoint,
+        event: "started",
+        inFlight: this.active,
+        queueDepth: this.queue.length,
+        queueWaitMs: Math.max(0, performance.now() - request.queuedAt),
+        requestClass: request.requestClass,
+      });
+      void this.start(request);
+    }
+  }
+
+  private canStart(request: CoordinatedRequest<unknown>): boolean {
+    if (request.cancelled || request.signal.aborted) {
+      return true;
+    }
+    const deadline = this.blockedUntil.get(request.requestClass) ?? 0;
+    if (deadline > Date.now()) {
+      this.armBlockTimer(request.requestClass, deadline);
+      return false;
+    }
+    return !this.probes.has(request.requestClass);
+  }
+
+  private armBlockTimer(requestClass: RequestClass, deadline: number): void {
+    if (this.blockTimers.has(requestClass)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.blockTimers.delete(requestClass);
+      this.drain();
+    }, Math.max(0, deadline - Date.now()));
+    this.blockTimers.set(requestClass, timer);
+  }
+
+  private async start(request: CoordinatedRequest<unknown>): Promise<void> {
+    try {
+      const value = await request.attempt();
+      if (!request.cancelled) {
+        request.signal.removeEventListener("abort", request.cancel);
+        request.resolve(value);
+        if (this.degraded.delete(request.requestClass)) {
+          this.blockedUntil.delete(request.requestClass);
+          this.config.onAdmissionState?.(undefined);
+        }
+      }
+    } catch (error) {
+      if (!request.cancelled && isAdmissionFailure(error)) {
+        request.failures += 1;
+        const exponential = Math.min(
+          this.config.retryBaseMs * 2 ** Math.max(0, request.failures - 1),
+          this.config.retryMaxMs,
+        );
+        const requiredDelay = Math.max(error.retryAfterMs ?? 0, exponential);
+        const delay = requiredDelay + Math.floor(requiredDelay * 0.1 * Math.random());
+        const deadline = Math.max(
+          this.blockedUntil.get(request.requestClass) ?? 0,
+          Date.now() + delay,
+        );
+        this.blockedUntil.set(request.requestClass, deadline);
+        this.degraded.add(request.requestClass);
+        this.config.onAdmissionState?.({
+          endpoint: request.endpoint,
+          retryAt: new Date(deadline).toISOString(),
+        });
+        this.config.diagnostics?.recordRequestQueue?.({
+          endpoint: request.endpoint,
+          event: "backoff",
+          inFlight: this.active,
+          queueDepth: this.queue.length,
+          requestClass: request.requestClass,
+          retryAt: new Date(deadline).toISOString(),
+        });
+        if (request.failures > this.config.maxRetries) {
+          request.signal.removeEventListener("abort", request.cancel);
+          request.reject(error);
+        } else {
+          this.queue.unshift(request);
+        }
+      } else if (!request.cancelled) {
+        request.signal.removeEventListener("abort", request.cancel);
+        request.reject(error);
+      }
+    } finally {
+      this.probes.delete(request.requestClass);
+      this.active -= 1;
+      this.drain();
+    }
+  }
+}
+
+function requestClassFor(endpoint: string): RequestClass {
+  const path = endpoint.split("?", 1)[0].toLowerCase();
+  return path.includes("/telemetry/") || path.endsWith("/runs")
+    ? "aggregate"
+    : "interactive";
 }
 
 function isApiErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
@@ -888,8 +1251,9 @@ function parseUpdateEvent(event: RawServerEvent): DaemonUpdateEvent {
   if (event.type === "heartbeat") {
     return { type: "heartbeat", data: { cursor: data.cursor } };
   }
+  const eventType = event.type === "update" ? "invalidate" : event.type;
   if (
-    (event.type !== "snapshot" && event.type !== "invalidate") ||
+    (eventType !== "snapshot" && eventType !== "invalidate") ||
     !event.id ||
     event.id !== data.cursor ||
     !Array.isArray(data.models) ||
@@ -902,7 +1266,7 @@ function parseUpdateEvent(event: RawServerEvent): DaemonUpdateEvent {
   const workflows = optionalWorkflowReferences(data.workflows);
   return {
     id: event.id,
-    type: event.type,
+    type: eventType,
     data: {
       cursor: data.cursor,
       models: [...new Set(data.models)],

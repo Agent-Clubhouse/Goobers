@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -156,6 +155,24 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --config-history-depth must not be negative\n")
 		return 2
 	}
+	// Validate mode-3 authority before starting background work or printing
+	// endpoints. Invalid URLs may contain credentials and must never be echoed.
+	if *dispatchNamespace != "" {
+		if *instanceRoot == "" {
+			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
+			return 2
+		}
+		cfg, err := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
+		if err != nil {
+			pf(stderr, "error: stage dispatch: load instance config: %v\n", err)
+			return 2
+		}
+		if _, err := validateStageDispatchConfig(cfg, *daemonAPI, os.Getenv("GOOBERS_BLOB_ENDPOINT")); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+	}
+
 	engineConfig, err := resolveEngineConfig(*instanceRoot)
 	if err != nil {
 		pf(stderr, "error: load engine config: %v\n", err)
@@ -169,6 +186,15 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(queues) == 0 {
 		queues = repeatableFlag{engineConfig.TaskQueue}
+	}
+	// Instance-backed workers write staging artifacts beneath this root as
+	// well as their separate work root. Identify it before either allocation,
+	// and never activate a root that an operator marked historical.
+	if *instanceRoot != "" {
+		if err := prepareManualRoot(instance.NewLayout(*instanceRoot), stderr); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
 	}
 
 	root := *workRoot
@@ -229,19 +255,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		builtSeams.historyDepth = *configHistoryDepth
 		seams = builtSeams
-		engineRuntime.deps.Goober = seams.Agentic()
-		engineRuntime.deps.Det = seams.Deterministic()
-		engineRuntime.deps.Auto = seams.Automated()
-		// The #2931 dispatch canary asserts envelopes against the SAME shared
-		// registry the seams' executors register every resolved credential
-		// with — so a value that leaks into a dispatch payload after being
-		// resolved anywhere in this process refuses the stage instead of
-		// executing with it.
-		engineRuntime.deps.Canary = seams.SharedRegistry()
-		// Replace the uncredentialed provisioner too: workerEngineDeps builds
-		// its worktree manager before any instance is known, so it has no git
-		// auth and cannot clone a private repo.
-		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
+		wireWorkerRuntimeSeams(&engineRuntime.deps, seams, filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
 
 		// #3912: the worker's config tree is otherwise frozen at pod start for
@@ -290,6 +304,13 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		engineRuntime.deps.Journal = emitter
+		if seams != nil {
+			seams.recoveryEmitter = emitter
+			seams.checkpointEmitter = emitter
+			seams.executionFence = remoteSharedExecutionFence(*daemonAPI, func(runID string) (string, error) {
+				return workerExecutionBearer(emitter, runID)
+			})
+		}
 		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
 
 	}
@@ -300,10 +321,6 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// runner-type) dispatch queues beside the workflow queue(s). Requires
 		// --instance: the runner inventory is what names the queues and the
 		// eligible runners.
-		if *instanceRoot == "" {
-			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
-			return 2
-		}
 		// The dispatcher's owner identity: this worker's hostname, which
 		// in-cluster is its pod name. It is stamped on every stage pod and is
 		// the scope the orphan sweep below sweeps within, so a sibling
@@ -354,27 +371,18 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// the operator to wait for a reload that is not coming. Ask the daemon
 	// which tree is in force and say so.
 	//
-	// The read needs a bearer, and this plane is NOT run-scoped while every
-	// pod bearer is. A worker holding a static GOOBERS_POD_TOKEN (the
-	// single-pod posture) can make the call. A split deployment, which mints
-	// per-run bearers instead and holds no standing token, cannot — and is
-	// told so plainly rather than left to assume it is being checked. Giving
-	// the worker an identity of its own is a change to the pod-auth model
-	// (every pod bearer today proves "I am run X's stage pod"), not something
-	// to infer here.
+	// A shared-key worker authenticates as itself with a short-lived credential
+	// confined to the digest read and divergence-report planes. A legacy static
+	// GOOBERS_POD_TOKEN remains usable for the digest read only: it authenticates
+	// a stage run, not this worker host, so it cannot author durable health.
 	if seams != nil && *daemonAPI != "" {
-		podToken := workerEnvOr("GOOBERS_POD_TOKEN", "")
-		if podToken == "" {
-			pf(stderr, "warning: goobers worker: config-divergence checking is NOT ACTIVE — this read needs a static "+
-				"GOOBERS_POD_TOKEN and none is set. This worker cannot tell whether its config tree matches the "+
-				"daemon's, so remember that a goober-content change merged to the config repo requires a DEPLOY, "+
-				"not just a merge (#4153)\n")
-		} else {
-			divergence := startWorkerDivergenceWatcher(ctx, seams, http.DefaultClient,
-				*daemonAPI, podToken, workerDivergenceCheckInterval)
+		divergence, err := configureWorkerDivergence(ctx, seams, *instanceRoot, *daemonAPI, stdout, stderr)
+		if err != nil {
+			pf(stderr, "error: configure worker config-divergence authentication: %v\n", err)
+			return 2
+		}
+		if divergence != nil {
 			defer divergence.Stop()
-			pf(stdout, "goobers worker: checking config-tree divergence against %s every %s\n",
-				*daemonAPI, workerDivergenceCheckInterval)
 		}
 	}
 
@@ -391,6 +399,19 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "goobers worker: drained cleanly\n")
 	return 0
+}
+
+func wireWorkerRuntimeSeams(deps *bootstrap.EngineDeps, seams *workerSeams, scratchRoot string) {
+	deps.Goober = seams.Agentic()
+	deps.Det = seams.Deterministic()
+	deps.Auto = seams.Automated()
+	// The #2931 dispatch canary asserts envelopes against the SAME shared
+	// registry the seams' executors register every resolved credential with.
+	deps.Canary = seams.SharedRegistry()
+	deps.Scrubber = seams.Scrubber()
+	// Replace the uncredentialed provisioner too: the initial manager has no
+	// instance credentials and therefore cannot clone a private repository.
+	deps.Workspaces = seams.Workspaces(scratchRoot)
 }
 
 type workerEngineRuntime struct {

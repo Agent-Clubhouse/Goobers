@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,6 +12,48 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+func TestBacklogRecoveryClaimDoesNotRequireFreshReadyLabel(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Recover retained implementation", "trusted", "goobers:needs-remediation")
+	server.addIssue(8, "Needs human decision", "trusted", "goobers:needs-remediation", "goobers:needs-human")
+	server.addIssue(9, "Blocked by sibling", "trusted", "goobers:needs-remediation", "goobers:blocked-on-sibling")
+	server.addIssue(10, "Fresh work", "trusted", "goobers:ready")
+	server.addIssue(11, "Untrusted recovery", "goobers:needs-remediation")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recovery-claim-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "trusted")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:needs-remediation")
+	t.Setenv("GOOBERS_INPUT_FILTERPARKLABELS", "false")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers:needs-human,goobers:blocked-on-sibling,goobers/status:in-review")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "1")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("recovery claim: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(data, &item); err != nil || item.ID != "7" {
+		t.Fatalf("recovery claim output: %+v %v", item, err)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if !hasAnyLabel(server.issues[7].labels, []string{"goobers:claimed"}) || hasAnyLabel(server.issues[7].labels, []string{"goobers:ready"}) {
+		t.Fatalf("recovery did not claim directly: %v", server.issues[7].labels)
+	}
+	for _, id := range []int{8, 9, 10, 11} {
+		if hasAnyLabel(server.issues[id].labels, []string{"goobers:claimed"}) {
+			t.Fatalf("ineligible item %d was claimed", id)
+		}
+	}
+}
 
 func TestBacklogQueryParkLabelFiltering(t *testing.T) {
 	for _, tc := range []struct {

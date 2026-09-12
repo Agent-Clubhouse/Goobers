@@ -162,6 +162,7 @@ workflow.spec.parallels.join                       2.0          ga              
 workflow.spec.parallels.maxConcurrentBranches      2.0          ga               supported        dev
 workflow.spec.parallels.onFailure                  2.0          ga               supported        dev
 workflow.spec.readiness                            2.0          ga               supported        dev
+workflow.spec.readiness.claimVisibility            2.0          ga               supported        dev
 workflow.spec.readiness.desiredConcurrentRuns      2.0          ga               supported        dev
 workflow.spec.readiness.maxChainDepth              2.0          ga               supported        dev
 workflow.spec.readiness.maxConcurrentRuns          2.0          ga               supported        dev
@@ -183,4 +184,4 @@ workflow.terminal.abort                            2.0          ga              
 workflow.terminal.complete                         2.0          ga               supported        dev
 workflow.terminal.escalate                         2.0          ga               supported        dev
 
-183 feature/version row(s)
+184 feature/version row(s)

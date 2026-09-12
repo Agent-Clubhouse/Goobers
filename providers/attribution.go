@@ -28,16 +28,19 @@ type attributionContextKey struct{}
 // Values are encoded before entering the HTML comment so untrusted names can
 // never terminate or corrupt the marker.
 type Attribution struct {
-	Schema   int          `json:"schema"`
-	Goobers  bool         `json:"goobers"`
-	Instance string       `json:"instance"`
-	Gaggle   string       `json:"gaggle"`
-	Workflow string       `json:"workflow"`
-	Task     string       `json:"task"`
-	Goober   string       `json:"goober"`
-	Run      string       `json:"run"`
-	Action   string       `json:"action"`
-	Cost     *CostReceipt `json:"cost,omitempty"`
+	Schema   int    `json:"schema"`
+	Goobers  bool   `json:"goobers"`
+	Instance string `json:"instance"`
+	// InstanceID is the durable root identity, not its mutable display name.
+	// Empty identifies a legacy or unverified source, never a unique daemon.
+	InstanceID string       `json:"instanceId,omitempty"`
+	Gaggle     string       `json:"gaggle"`
+	Workflow   string       `json:"workflow"`
+	Task       string       `json:"task"`
+	Goober     string       `json:"goober"`
+	Run        string       `json:"run"`
+	Action     string       `json:"action"`
+	Cost       *CostReceipt `json:"cost,omitempty"`
 }
 
 // CostReceipt is the cumulative measured AI usage known for one run when a
@@ -178,13 +181,14 @@ func validateAttribution(attribution Attribution) error {
 		}
 	}
 	for name, value := range map[string]string{
-		"instance": attribution.Instance,
-		"gaggle":   attribution.Gaggle,
-		"workflow": attribution.Workflow,
-		"task":     attribution.Task,
-		"goober":   attribution.Goober,
-		"run":      attribution.Run,
-		"action":   attribution.Action,
+		"instance":   attribution.Instance,
+		"instanceId": attribution.InstanceID,
+		"gaggle":     attribution.Gaggle,
+		"workflow":   attribution.Workflow,
+		"task":       attribution.Task,
+		"goober":     attribution.Goober,
+		"run":        attribution.Run,
+		"action":     attribution.Action,
 	} {
 		if !utf8.ValidString(value) || strings.ContainsAny(value, "\r\n\x00") {
 			return fmt.Errorf("comment attribution %s contains invalid control text", name)

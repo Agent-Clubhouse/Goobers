@@ -4,10 +4,12 @@ import react from "@vitejs/plugin-react";
 import type { Plugin, ProxyOptions } from "vite";
 
 const DEFAULT_DAEMON_URL = "http://127.0.0.1:8080";
+const DEFAULT_DASHBOARD_URL = "http://127.0.0.1:8085";
 const DEFAULT_GUIDED_URL = "http://127.0.0.1:8081";
 
 interface PortalEnvironment {
   GOOBERS_DAEMON_URL?: string;
+  GOOBERS_DASHBOARD_URL?: string;
   GOOBERS_GUIDED_URL?: string;
   GOOBERS_PORTAL_COMMIT?: string;
   GOOBERS_PORTAL_VERSION?: string;
@@ -83,6 +85,10 @@ export function createViteConfig(
       proxy: {
         "/api": {
           target: environment.GOOBERS_DAEMON_URL ?? DEFAULT_DAEMON_URL,
+          changeOrigin: true,
+        },
+        "/assets": {
+          target: environment.GOOBERS_DASHBOARD_URL ?? DEFAULT_DASHBOARD_URL,
           changeOrigin: true,
         },
         "/guided": guidedProxy,

@@ -102,6 +102,24 @@ up, owns, and operates — at any of the three deployment tiers, without a produ
   workflow — and MUST NOT fire on a timer. It MUST NOT interrupt an in-flight run:
   the handoff requests the daemon's ordinary graceful drain rather than killing
   work (see the drain contract in `../guides/supervision.md`).
+- **INST-020 (MUST, Shipped):** The daemon MUST tell the operator when a newer
+  release exists. A running daemon checks the configured release channel at
+  startup and on a configured interval (default 24h) and reports a target ahead
+  of the running build — once per distinct version, not once per tick — naming
+  the command that would act on it; `goobers status` renders the same answer
+  from the daemon's cache without making a request of its own. This is
+  **notify-only** and does not weaken INST-019: nothing here stages, activates,
+  or applies anything. The check MUST NOT delay startup, and a failed or
+  unreachable release source MUST NOT affect the daemon's health or exit
+  status. It MUST be disableable (`updateCheck.enabled: false`), after which
+  this path makes no network request at all. Because the report is a
+  **condition** rather than an event, it MUST remain visible for as long as the
+  build is behind — a single line in a log stream the heartbeat scrolls past is
+  not a surface an operator can be expected to catch (#4920) — and MUST clear
+  once the running build is current. This requirement exists because
+  INST-019's operator-invoked model has no awareness half: an unattended
+  instance could otherwise sit on a stale binary indefinitely with nothing in
+  the system noticing or saying so. *(Tiers 1–2)*
 - **INST-013 (MUST):** After a crash or restart, the local runner MUST recover by
   replaying each run's `state.json` + journal and resuming in-flight runs from the
   last completed stage; recovery MUST never rewrite journal history. Owning

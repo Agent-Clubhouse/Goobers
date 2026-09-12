@@ -18,6 +18,7 @@ import (
 const (
 	defaultTelemetryErrorSignaturesLimit = 20
 	maxTelemetryErrorsPageSize           = 200
+	defaultWorkItemsPageSize             = 100
 )
 
 func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader, podRunGaggle func(context.Context, string) (string, error), errorLog *log.Logger) {
@@ -99,6 +100,67 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 		}
 		writeJSON(w, http.StatusOK, result)
 	})
+
+	workItems, workItemsAvailable := reader.(readservice.WorkItemReader)
+	router.Handle(apicontract.RouteWorkItems, func(w http.ResponseWriter, request *http.Request) {
+		if !workItemsAvailable {
+			writeTelemetryReadError(w, errorLog, "work items", readservice.ErrTelemetryUnavailable)
+			return
+		}
+		query, err := parseWorkItemsQuery(request.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+			return
+		}
+		result, err := workItems.WorkItems(request.Context(), query)
+		if err != nil {
+			writeTelemetryReadError(w, errorLog, "work items", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+
+	router.Handle(apicontract.RouteWorkItemDetail, func(w http.ResponseWriter, request *http.Request) {
+		if !workItemsAvailable {
+			writeTelemetryReadError(w, errorLog, "work item", readservice.ErrTelemetryUnavailable)
+			return
+		}
+		result, err := workItems.WorkItem(
+			request.Context(),
+			request.PathValue("provider"),
+			request.URL.Query().Get("repository"),
+			request.PathValue("kind"),
+			request.PathValue("id"),
+		)
+		if err != nil {
+			writeTelemetryReadError(w, errorLog, "work item", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+}
+
+func parseWorkItemsQuery(values url.Values) (readservice.WorkItemListOptions, error) {
+	if err := validateQueryValues(values, "provider", "kind", "limit"); err != nil {
+		return readservice.WorkItemListOptions{}, err
+	}
+	limit := defaultWorkItemsPageSize
+	if raw := values.Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > readservice.MaxWorkItemsPageSize {
+			return readservice.WorkItemListOptions{}, errors.New("limit must be between 1 and 200")
+		}
+		limit = parsed
+	}
+	kind := strings.TrimSpace(values.Get("kind"))
+	if kind != "" && kind != "pr" && kind != "issue" {
+		return readservice.WorkItemListOptions{}, errors.New("kind must be pr or issue")
+	}
+	return readservice.WorkItemListOptions{
+		Provider: strings.TrimSpace(values.Get("provider")),
+		Kind:     kind,
+		Limit:    limit,
+	}, nil
 }
 
 func parseTelemetryCostQuery(values url.Values) (readservice.TelemetryCostRequest, error) {
@@ -414,6 +476,8 @@ func writeTelemetryReadError(w http.ResponseWriter, errorLog *log.Logger, projec
 		writeError(w, http.StatusBadRequest, "invalid_query", "telemetry query is invalid")
 	case errors.Is(err, readservice.ErrTelemetryUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "telemetry_unavailable", "telemetry is not enabled")
+	case errors.Is(err, readservice.ErrWorkItemNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "work item was not found")
 	default:
 		errorLog.Printf("telemetry %s read failed: %v", projection, err)
 		writeError(w, http.StatusInternalServerError, "read_error", "telemetry could not be read")

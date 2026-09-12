@@ -40,6 +40,7 @@ type featureDelta struct {
 
 type releaseNotesData struct {
 	Version         string
+	Prerelease      bool
 	PreviousRelease string
 	Delta           featureDelta
 	SupportDelta    string
@@ -130,7 +131,7 @@ func validateFeatureSnapshot(snapshot featureSnapshot) error {
 		return fmt.Errorf("feature snapshot must contain at least one feature")
 	}
 	if _, err := workflow.NewFeatureRegistry(
-		workflow.Definition{DSLVersion: supportmatrix.NextDSLVersion},
+		workflow.Definition{DSLVersion: supportmatrix.V2DSLVersion},
 		snapshot.Features,
 	); err != nil {
 		return fmt.Errorf("invalid feature registry: %w", err)
@@ -188,6 +189,7 @@ func renderReleaseNotes(current featureSnapshot, previous *featureSnapshot, supp
 	data := releaseNotesData{
 		Version:      current.Release,
 		SupportDelta: strings.TrimSpace(supportDelta),
+		Prerelease:   strings.HasPrefix(current.Release, "v") && strings.Contains(current.Release, "-"),
 	}
 	if previous != nil {
 		data.PreviousRelease = previous.Release

@@ -6,11 +6,49 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/livejournal"
 )
+
+func TestJournalEmitLargeBodyOnlyAllowsSingleInlineFinal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action string
+		inline bool
+		count  int
+		want   int
+	}{
+		{"inline final", "final", true, 1, http.StatusOK},
+		{"append", "append", true, 1, http.StatusBadRequest},
+		{"blob final", "final", false, 1, http.StatusBadRequest},
+		{"multiple finals", "final", true, 2, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &fakeJournalService{}
+			handler := writePlaneHandler(t, nil, AllowAll, WithJournalService(service))
+			input := livejournal.EmitRequest{RunID: "run-1", Gaggle: "web"}
+			for range tc.count {
+				input.Ops = append(input.Ops, livejournal.Op{Kind: livejournal.OpTranscriptCheckpoint,
+					Checkpoint: &livejournal.TranscriptCheckpointOp{Action: tc.action, InlineFinal: tc.inline, Data: []byte(strings.Repeat("a", maxJournalEmitBody))}})
+			}
+			body, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, jsonRequest(http.MethodPost, "/api/v1/runs/run-1/journal/emit", string(body)))
+			if response.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", response.Code, tc.want, response.Body)
+			}
+			if tc.want != http.StatusOK && len(service.requests) != 0 {
+				t.Fatal("oversized batch reached writer")
+			}
+		})
+	}
+}
 
 type fakeJournalService struct {
 	response livejournal.EmitResponse

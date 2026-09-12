@@ -192,6 +192,57 @@ func TestDiagnosticsBundleCarriesNoCredentialValue(t *testing.T) {
 // Two collections of the same instance state must be byte-identical apart from
 // the collection timestamp, which is what makes "reproduce it over there" a
 // claim rather than a hope. This runs on every platform CI covers.
+// TestDiagnosticsBundleDistinguishesForegroundRunFromDaemonCrash is #4833's
+// end-to-end regression: a foreground `goobers run` (acquireInstanceLock with
+// a nil identity, exactly like cmd/goobers/run.go:197) leaves its up.lock
+// file behind on release without a daemon ever starting — the demo
+// onboarding path (`init --demo` then `run demo`). `diagnostics bundle` must
+// not read that as a crashed daemon.
+func TestDiagnosticsBundleDistinguishesForegroundRunFromDaemonCrash(t *testing.T) {
+	root := initDemo(t)
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	lockPath := filepath.Join(layoutFor(root).SchedulerDir(), "up.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release, err := acquireInstanceLock(lockPath)
+	if err != nil {
+		t.Fatalf("acquire manual lock: %v", err)
+	}
+	release()
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("lock file did not persist after release, want it to (matching a real foreground run): %v", err)
+	}
+
+	out := filepath.Join(workDir, "bundle.tar.gz")
+	if code, _, stderr := runArgs(t, "diagnostics", "bundle", "--output", out, root); code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	entries := readDiagnosticsArchive(t, out)
+	var doc struct {
+		Daemon struct {
+			Running        bool   `json:"running"`
+			LockPresent    bool   `json:"lockPresent"`
+			LockHolderKind string `json:"lockHolderKind"`
+		} `json:"daemon"`
+	}
+	if err := json.Unmarshal(entries[diagnostics.FileJSON], &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Daemon.Running || !doc.Daemon.LockPresent || doc.Daemon.LockHolderKind != "manual" {
+		t.Fatalf("daemon info = %+v, want running=false lockPresent=true lockHolderKind=manual", doc.Daemon)
+	}
+	summary := string(entries[diagnostics.FileSummary])
+	if strings.Contains(summary, "previous daemon exited") {
+		t.Fatalf("summary falsely claims a daemon crashed:\n%s", summary)
+	}
+	if !strings.Contains(summary, "no daemon crash indicated") {
+		t.Fatalf("summary does not state the manual-lock case:\n%s", summary)
+	}
+}
+
 func TestDiagnosticsBundleIsReproducibleOnThisPlatform(t *testing.T) {
 	root := initDemo(t)
 	seedDiagnosticsRun(t, root, "run-stable", "no eligible PR", "")

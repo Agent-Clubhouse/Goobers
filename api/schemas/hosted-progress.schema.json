@@ -15,6 +15,7 @@
       "description": "Canonical immutable identity pinned when the Goobers run started.",
       "required": ["schema", "runId", "workflow", "workflowVersion", "gaggle", "trigger", "startedAt"],
       "properties": {
+        "instanceId": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Durable owning-instance identity pinned at run creation; absent on legacy or unverified runs." },
         "schema": { "type": "string", "description": "Canonical run identity schema version." },
         "runId": { "type": "string", "minLength": 1, "description": "Stable Goobers run identifier." },
         "workflow": { "type": "string", "minLength": 1, "description": "Pinned workflow name." },

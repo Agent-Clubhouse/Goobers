@@ -20,12 +20,15 @@ func TestVersionPinning(t *testing.T) {
 	}
 
 	// A run started now pins v1.
-	in1, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web"})
+	in1, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "web", InstanceID: "e62c1c105fdc4273a72d199394b41cb0"})
 	if err != nil {
 		t.Fatalf("start v1: %v", err)
 	}
 	if in1.Version != 1 {
 		t.Errorf("pinned version = %d, want 1", in1.Version)
+	}
+	if in1.InstanceID != "e62c1c105fdc4273a72d199394b41cb0" {
+		t.Fatalf("instance identity lost at registry boundary: %q", in1.InstanceID)
 	}
 	if in1.PreviewFeaturesEnabled == nil || !*in1.PreviewFeaturesEnabled {
 		t.Error("pinned input did not carry the registry preview-feature policy")

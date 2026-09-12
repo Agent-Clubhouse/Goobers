@@ -11,15 +11,6 @@ import (
 // old eligibility observations; eviction removes the oldest inserted workflow.
 const maxEngineFallbackWorkflows = 1024
 
-func (s SchedulerStatus) engineFallbackFor(gaggle, workflow string) *readmodel.EngineFallback {
-	for _, fallback := range s.EngineFallbacks {
-		if fallback.Gaggle == gaggle && fallback.Workflow == workflow {
-			return &fallback
-		}
-	}
-	return nil
-}
-
 type engineFallbackFold struct {
 	items map[localscheduler.WorkflowIdentity]readmodel.EngineFallback
 	order []localscheduler.WorkflowIdentity

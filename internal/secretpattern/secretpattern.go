@@ -47,6 +47,8 @@ type pattern struct {
 // defense-in-depth net for provider tokens that reach the journal without going
 // through the resolver. Patterns are intentionally specific to keep false
 // positives low; the registry is the primary mechanism.
+var privateKeyPattern = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
+
 var defaultPatterns = []pattern{
 	// GitHub tokens: ghp_, gho_, ghu_, ghs_, ghr_, github_pat_.
 	{regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`), Redacted},
@@ -61,7 +63,7 @@ var defaultPatterns = []pattern{
 	// JWTs: require the conventional base64url-encoded JSON header prefix.
 	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), Redacted},
 	// PEM private key blocks.
-	{regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`), Redacted},
+	{privateKeyPattern, Redacted},
 	// Bearer/authorization header values with a long opaque token. The scheme
 	// is captured and restored: only the value is a credential, and a reviewer
 	// judging a diff must still be able to see that the header is well formed.

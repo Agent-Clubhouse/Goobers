@@ -2,7 +2,9 @@ package rollup
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -141,6 +143,21 @@ func TestFileURIHandlesPlatformPaths(t *testing.T) {
 	spaced := fileURI(filepath.Join(t.TempDir(), "my instance", "telemetry.db"))
 	if spaced != "" && contains(spaced, " ") {
 		t.Errorf("fileURI left an unescaped space: %q", spaced)
+	}
+}
+
+func TestOpenExistingReaderTreatsEmptyPlaceholderAsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenExistingReader(context.Background(), path)
+	if db != nil {
+		_ = db.Close()
+		t.Fatal("OpenExistingReader returned a database for an empty placeholder")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenExistingReader error = %v, want os.ErrNotExist", err)
 	}
 }
 

@@ -76,14 +76,15 @@ func recordItemRepository(annotations stageAnnotator, runID, itemID, kind string
 		Type:  journal.EventRunnerAnnotation,
 		RunID: runID,
 		Runner: map[string]any{
-			"annotation": itemRepoAnnotation,
-			"key":        itemRepoKey(runID, itemID),
-			"itemId":     itemID,
-			"kind":       kind,
-			"provider":   string(repo.Provider),
-			"owner":      repo.Owner,
-			"project":    repo.Project,
-			"name":       repo.Name,
+			"annotation":    itemRepoAnnotation,
+			"key":           itemRepoKey(runID, itemID),
+			"itemId":        itemID,
+			"kind":          kind,
+			"provider":      string(repo.Provider),
+			"owner":         repo.Owner,
+			"project":       repo.Project,
+			"name":          repo.Name,
+			"repositoryKey": repo.CanonicalKey(),
 		},
 	})
 }
@@ -134,43 +135,9 @@ type recordedItemRepo struct {
 	kind string
 }
 
-// loadItemRepositories scans the instance log for item-repo annotations
-// matching runID and any of itemIDs — the same newest-wins scan
-// loadFailureStreakCount uses, so a re-claim across attempts of the same run
-// (which re-records the identity) always resolves to the latest write.
+// loadItemRepositories reads the incremental instance-annotation fold for
+// item-repo annotations matching runID and any of itemIDs. Newest wins, so a
+// re-claim across attempts of the same run resolves to the latest write.
 func loadItemRepositories(l instance.Layout, runID string, itemIDs []string) (map[string]recordedItemRepo, error) {
-	events, err := journal.ReadInstanceLog(l.SchedulerDir())
-	if err != nil {
-		return nil, fmt.Errorf("read instance log for item repositories: %w", err)
-	}
-	want := make(map[string]struct{}, len(itemIDs))
-	for _, id := range itemIDs {
-		want[itemRepoKey(runID, id)] = struct{}{}
-	}
-	found := make(map[string]recordedItemRepo, len(itemIDs))
-	for _, event := range events {
-		if event.Type != journal.EventRunnerAnnotation || event.Runner["annotation"] != itemRepoAnnotation {
-			continue
-		}
-		key, _ := event.Runner["key"].(string)
-		if _, ok := want[key]; !ok {
-			continue
-		}
-		itemID, _ := event.Runner["itemId"].(string)
-		provider, _ := event.Runner["provider"].(string)
-		owner, _ := event.Runner["owner"].(string)
-		project, _ := event.Runner["project"].(string)
-		name, _ := event.Runner["name"].(string)
-		kind, _ := event.Runner["kind"].(string)
-		found[itemID] = recordedItemRepo{
-			repo: providers.RepositoryRef{
-				Provider: providers.ProviderKind(provider),
-				Owner:    owner,
-				Project:  project,
-				Name:     name,
-			},
-			kind: kind,
-		}
-	}
-	return found, nil
+	return annotationsForInstance(l.SchedulerDir()).itemRepositories(l.SchedulerDir(), runID, itemIDs)
 }

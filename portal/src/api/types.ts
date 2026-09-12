@@ -6,6 +6,39 @@ export const SCHEMA_VERSION = "v1";
 export type JsonScalar = string | number | boolean | null;
 export type JsonValue = JsonScalar | JsonValue[] | { [key: string]: JsonValue };
 
+export interface PRQueueClaimObservation {
+  state: "unknown" | "unclaimed" | "expired" | "held-by-this-run" | "held-by-other-run" | "held-in-legacy-namespace";
+  ownerRunId?: string;
+  expiresAt?: string;
+  providerClaimLabel: boolean;
+  comparison: "unavailable" | "no-local-lease-or-provider-label" | "local-lease-and-provider-label" | "provider-label-without-live-local-lease" | "local-lease-without-provider-label";
+  nextStep: string;
+}
+
+export interface PRQueueEligibilityReport {
+  version: 1;
+  repositoryKey: string;
+  gaggle: string;
+  workflow: string;
+  runId: string;
+  observedAt: string;
+  completeSnapshot: boolean;
+  matchingItems: number;
+  omittedItems: number;
+  items: Array<{ number: number; eligible: boolean; reason?: string; nextStep: string; claim: PRQueueClaimObservation }>;
+}
+
+export interface QueueEligibilityView extends WithReadState {
+  gaggle: string;
+  workflow: string;
+  asOf: string;
+  status: "unavailable" | "not-observed" | "observed";
+  sourceRunId?: string;
+  sourceStage?: string;
+  report?: PRQueueEligibilityReport;
+  problem?: string;
+}
+
 export type Environment = "dev" | "staging" | "prod";
 export type Provider = "github" | "ado";
 export type InstanceStatus = "starting" | "ready" | "degraded";
@@ -17,6 +50,41 @@ export type BranchStatus = "succeeded" | "failed" | "timed-out" | "cancelled" | 
 export type GraphTerminal = "complete" | "abort" | "escalate";
 export type RunPhase = "running" | "completed" | "failed" | "aborted" | "escalated";
 export type RunTriggerKind = "manual" | "schedule" | "signal" | "item";
+
+export interface TriggerRequest {
+  workflow: string;
+  gaggle?: string;
+  requestId?: string;
+  force?: boolean;
+  sourceRun?: string;
+}
+
+export interface TriggerResponse {
+  acceptanceId?: string;
+  state?: string;
+  runId?: string;
+  duplicate?: boolean;
+}
+
+export interface TriggerStatusResponse {
+  acceptanceId: string;
+  state: string;
+  runId?: string;
+  reason?: string;
+  acceptedAt: string;
+}
+
+export interface CancelRunRequest {
+  workflow?: string;
+  gaggle?: string;
+  actor?: string;
+}
+
+export interface CancelRunResult {
+  phase?: string;
+  code?: string;
+  error?: string;
+}
 export type AttemptClass = "initial" | "policy" | "infra" | "human";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
 export type OutcomeFilter = "finished" | "terminal" | "success" | "failure" | "other";
@@ -33,6 +101,11 @@ export type UpdateModel = "instance" | "run" | "workflow";
 
 export interface RequestOptions {
   signal?: AbortSignal;
+}
+
+export interface AdmissionDegradedState {
+  endpoint: string;
+  retryAt: string;
 }
 
 export interface EventStreamRequest {
@@ -252,10 +325,33 @@ export interface ConfigAuthoringErrorEnvelope {
 
 export interface Health extends ContractVersion {
 	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+  build?: BuildMetadata;
+  readState?: ReadState;
   ready: boolean;
   healthy: boolean;
   instance: InstanceIdentity;
   freshness: Freshness;
+  /**
+   * The daemon's last notify-only release check. Absent means no check has run
+   * yet, or the operator set updateCheck.enabled: false — deliberately not the
+   * same as a check that confirmed the build is current.
+   */
+  update?: UpdateAvailability;
+}
+
+export interface UpdateAvailability {
+  available: boolean;
+  latestVersion: string;
+  /** The build the verdict was computed against — always the running build. */
+  currentVersion: string;
+  channel: string;
+  checkedAt: string;
+}
+
+export interface BuildMetadata {
+  version: string;
+  commit: string;
+  date: string;
 }
 
 export interface InstanceIdentity {
@@ -273,18 +369,39 @@ export interface Freshness {
 
 export interface Instance extends ContractVersion {
   name: string;
+  version?: string;
   environment: Environment;
+  computerName?: string;
   instanceRoot: string;
+  rootIdentity?: {
+    id?: string;
+    identityProblem?: string;
+    decommissionedAt?: string;
+    decommissionReason?: string;
+    lifecycleProblem?: string;
+  };
   ready: boolean;
   status: InstanceStatus;
   concurrency: Concurrency;
   counts: InventoryCounts;
   warnings: ValidationWarning[];
   maintenance?: MaintenanceStatus;
+  telemetryRetention?: TelemetryRetentionStatus;
   memoryHighWater?: number;
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
   fleetEnrolled: boolean;
+}
+
+export interface TelemetryRetentionStatus {
+  enabled: boolean;
+  window: string;
+  maxRuns: number;
+  firstEnable: string;
+  enforceAt?: string;
+  lastPassAt?: string;
+  lastPassMode?: string;
+  candidateCount: number;
 }
 
 export type MaintenanceState = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -957,6 +1074,8 @@ export interface TelemetryCostRunAggregate {
 
 export interface TelemetryCostAggregate {
   provider: string;
+  repository?: string;
+  url?: string;
   externalKind: "pr" | "issue";
   externalId: string;
   totalRuns: number;
@@ -1296,6 +1415,75 @@ export interface PortalConfig {
   };
 }
 
+export type WorkItemKind = "pr" | "issue";
+
+export interface WorkItemListOptions {
+  provider?: string;
+  kind?: WorkItemKind;
+  limit?: number;
+}
+
+export interface WorkItemSummary {
+  provider: string;
+  repository?: string;
+  kind: WorkItemKind;
+  externalId: string;
+  url?: string;
+  actionCount: number;
+  lastOperation: string;
+  lastActionAt: string;
+  lastRunId: string;
+  gaggle?: string;
+  workflow?: string;
+  runStatus?: string;
+}
+
+export interface WorkItemPage {
+  items: WorkItemSummary[];
+  hasMore: boolean;
+}
+
+export interface WorkItemAction {
+  runId: string;
+  sequence: number;
+  url?: string;
+  operation: string;
+  occurredAt: string;
+  gaggle?: string;
+  workflow?: string;
+  runStatus?: string;
+}
+
+export interface WorkItemDetail {
+  provider: string;
+  repository?: string;
+  kind: WorkItemKind;
+  externalId: string;
+  url?: string;
+  cost?: WorkItemCost;
+  relatedPullRequests: RelatedWorkItem[];
+  actions: WorkItemAction[];
+  truncated: boolean;
+}
+
+export interface WorkItemCost {
+  costUSD?: number;
+  nanoAIU?: number;
+  totalRuns: number;
+  measuredRuns: number;
+  totalAttempts: number;
+  measuredAttempts: number;
+  lowerBound: boolean;
+}
+
+export interface RelatedWorkItem {
+  provider: string;
+  repository?: string;
+  kind: WorkItemKind;
+  externalId: string;
+  url?: string;
+}
+
 export interface DaemonClient {
   connectEvents(
     request?: EventStreamRequest,
@@ -1309,6 +1497,7 @@ export interface DaemonClient {
   listWorkflows(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<WorkflowPage>;
   getGaggleConnections(gaggle: string, options?: RequestOptions): Promise<GaggleConnections>;
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
+  getWorkflowQueueEligibility(gaggle: string, workflow: string, options?: RequestOptions): Promise<QueueEligibilityView>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
   revealRun(runId: string, options?: RequestOptions): Promise<void>;
@@ -1332,6 +1521,17 @@ export interface DaemonClient {
     request?: TelemetryErrorsOptions,
     options?: RequestOptions,
   ): Promise<TelemetryErrorsPage>;
+  listWorkItems(
+    request?: WorkItemListOptions,
+    options?: RequestOptions,
+  ): Promise<WorkItemPage>;
+  getWorkItem(
+    provider: string,
+    repository: string,
+    kind: WorkItemKind,
+    externalId: string,
+    options?: RequestOptions,
+  ): Promise<WorkItemDetail>;
 }
 
 /**

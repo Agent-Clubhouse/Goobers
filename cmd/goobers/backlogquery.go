@@ -126,7 +126,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
-const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]\n\n" +
+const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | --claim [--resweep] | --reconcile | --release] [path]\n\n" +
 	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
@@ -147,6 +147,8 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"and uses only the github:issues:read capability. When inputs.resultFile\n" +
 	"is declared, it also writes a read-only candidate report with scan coverage;\n" +
 	"candidates are for inspection, not claims or permission to re-ready work.\n\n" +
+	"The --resweep modifier requires --claim and selects only re-sweep work;\n" +
+	"its calling workflow owns cadence through schedule/readiness controls.\n\n" +
 	"--debug writes candidate eligibility, exclusion, and claim-loss details to\n" +
 	"stderr. Diagnostics contain item IDs and selection metadata only; normal\n" +
 	"output and claim behavior are unchanged.\n\n" +
@@ -177,10 +179,12 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"whichever appears earliest in selectionPriority. Unset (the default)\n" +
 	"preserves plain FIFO exactly. fieldOrder is an optional comma-separated\n" +
 	"field[:asc|desc] list applied within each label-priority tier before FIFO.\n\n" +
-	"backlog-curation may opt into a bounded ready-item re-sweep with\n" +
-	"resweepMaxItems. Forward candidates always consume maxItems first; a\n" +
-	"re-sweep uses only leftover capacity, no more often than resweepInterval\n" +
-	"(default 24h), and rotates within selectionPriority tiers. Ready items\n" +
+	"A separate scheduled workflow uses --claim --resweep with bounded\n" +
+	"resweepMaxItems to recheck blocked dependencies and ready items. Forward\n" +
+	"candidates reserve maxItems capacity first but are never claimed by this\n" +
+	"mode. The sweep uses leftover capacity and rotates within selectionPriority\n" +
+	"tiers. Cadence belongs to workflow schedule/readiness; resweepInterval and\n" +
+	"inline re-sweep inputs on ordinary --claim runs are retired. Ready items\n" +
 	"already in implementation/review are emitted as read-only context and are\n" +
 	"never claimed.\n\n" +
 	"respectAssignee (#1820) is an opt-in claim-scoping flag, default off (the\n" +
@@ -203,6 +207,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	fs.SetOutput(stderr)
 	readOnly := fs.Bool("read-only", false, "list backlog items without mutating provider or scheduler state")
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
+	resweep := fs.Bool("resweep", false, "claim only re-sweep candidates; cadence is owned by the calling workflow")
 	reconcile := fs.Bool("reconcile", false, "repair drifted backlog metadata and report the correction count")
 	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
 	debug := fs.Bool("debug", false, "explain candidate eligibility, exclusions, and lost claim attempts on stderr")
@@ -215,6 +220,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return 2
 	}
 	mode, ok := selectBacklogQueryMode(*readOnly, *claim, *reconcile, *release)
+	if *resweep {
+		if mode != backlogQueryModeClaim {
+			ok = false
+		}
+		mode = backlogQueryModeResweep
+	}
 	if !ok {
 		fs.Usage()
 		return 2
@@ -256,6 +267,7 @@ const (
 	backlogQueryModeClaim
 	backlogQueryModeReconcile
 	backlogQueryModeRelease
+	backlogQueryModeResweep
 )
 
 func selectBacklogQueryMode(readOnly, claim, reconcile, release bool) (backlogQueryMode, bool) {
@@ -328,7 +340,7 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
 	root, repo := env.root, env.repo
 	ghIssueProvider, stderr := env.ghIssueProvider, env.stderr
-	claim := mode == backlogQueryModeClaim
+	claim := mode == backlogQueryModeClaim || mode == backlogQueryModeResweep
 	reconcile := mode == backlogQueryModeReconcile
 	readOnly := mode == backlogQueryModeReadOnly
 	// ADO splits the code repository (where branches/PRs land) from the backlog
@@ -380,34 +392,14 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// a dead input everywhere (the query hardcoded a limit and --claim took
 	// exactly one), so a documented input was silently ignored — the #130 class
 	// of gap. Default 1 (the single-item implementation shape).
-	maxItems := 1
-	if s := providerInput("maxItems", ""); s != "" {
-		n, perr := strconv.Atoi(s)
-		if perr != nil || n < 1 {
-			pf(stderr, "error: invalid maxItems %q (want a positive integer)\n", s)
-			return 1
-		}
-		maxItems = n
-	}
-	curationRun := claim && providerInput("curation", "false") == "true"
-	reconcileBeforeClaim := curationRun && providerInput("reconcileMetadata", "true") != "false"
-	var stalenessPolicy backlogStalenessPolicy
-	if reconcileBeforeClaim || reconcile {
-		stalenessPolicy, err = readBacklogStalenessPolicy()
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-	}
-	resweepPolicy, resweepEnabled, err := readBacklogResweepPolicy(maxItems)
+	policies, err := readBacklogQueryPolicies(mode)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if resweepEnabled && !curationRun {
-		pln(stderr, "error: re-sweep inputs are only valid for backlog-curation --claim runs")
-		return 1
-	}
+	maxItems, curationRun := policies.maxItems, policies.curation
+	stalenessPolicy := policies.staleness
+	resweepPolicy, resweepEnabled := policies.resweep, policies.resweepEnabled
 	// How many candidates to SCAN is deliberately decoupled from how many to
 	// CLAIM (#532): the old scan window was max(maxItems, 20), so once
 	// maxItems reached 20 (curation's batch size) the two were the same
@@ -465,7 +457,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	if reconcile {
 		return runReconcileBacklogQuery(ctx, env, trustLabel, stalenessPolicy, observedAt)
 	}
-	if curationRun {
+	if curationRun && mode != backlogQueryModeResweep {
 		if code := reconcileBacklogQueryMetadata(ctx, env, trustLabel, stalenessPolicy, observedAt, "claimed-items.json"); code != 0 {
 			return code
 		}
@@ -551,6 +543,12 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		return code
 	}
 	eligible = resweep.eligible
+	if mode == backlogQueryModeResweep {
+		// Forward work reserves capacity but belongs to the ordinary curation
+		// workflow. Never turn this scheduled sweep into a second forward claimant.
+		eligible = eligible[forwardEligibleCount:]
+		forwardEligibleCount = 0
+	}
 	readOnlyResweep := resweep.readOnly
 	curationModeByID := resweep.modeByID
 	persistResweepState := resweep.persist
@@ -1343,7 +1341,7 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 	if err != nil {
 		return false, fmt.Errorf("read claim namespace: %w", err)
 	}
-	if current, held := listing.Lookup(session.claimKey(item)); held && current.RunID == holder {
+	if current, held := listing.Lookup(session.claimKey(item)); held && (current.RunID == holder || !current.SharedDeadline.IsZero()) {
 		return false, nil
 	}
 	surrendered := false
@@ -1381,11 +1379,18 @@ func (session *backlogClaimSession) forgetNewClaim(itemID string) {
 }
 
 func (session *backlogClaimSession) rollback(ctx context.Context, item providers.WorkItem) error {
-	_, providerErr := session.env.issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
-		Repository: session.env.backlogRepo,
-		ID:         item.ID,
-		RunID:      session.runID,
-	})
+	legacy, err := legacyClaimMarkerAllowed(ctx, session.ledger, session.claimKey(item), session.runID)
+	if err != nil {
+		return err
+	}
+	var providerErr error
+	if legacy {
+		_, providerErr = session.env.issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+			Repository: session.env.backlogRepo,
+			ID:         item.ID,
+			RunID:      session.runID,
+		})
+	}
 	ledgerErr := session.releaseLedger(ctx, item)
 	return errors.Join(providerErr, ledgerErr)
 }
@@ -1467,9 +1472,6 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 		return result, 1
 	}
 	result.observed = result.state.Generation
-	if !backlogResweepDue(result.state, opts.observedAt, opts.policy.interval) {
-		return result, 0
-	}
 	result.modeByID = make(map[string]string)
 	selected, code := appendBlockedResweepCandidates(ctx, env, opts, &result)
 	if code != 0 {
@@ -1480,7 +1482,7 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 		return result, code
 	}
 	selected = append(selected, ready...)
-	result.state = recordBacklogResweep(result.state, selected, opts.observedAt, opts.policy.interval)
+	result.state = recordBacklogResweep(result.state, selected, opts.observedAt)
 	result.state.Cursor = nextCursor.Cursor
 	result.dirty = true
 	return result, 0
@@ -1558,9 +1560,7 @@ func appendBlockedResweepCandidates(
 	for _, item := range items {
 		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.repo, item.ID)
 		if err != nil {
-			pf(env.stderr, "warning: dependency recheck item %s: %v\n", item.ID, err)
-			env.debugf("excluded %s: native issue dependency check unavailable: %v", item.ID, err)
-			continue
+			return nil, failProviderStage(env.stderr, "recheck blocked-item dependencies", fmt.Errorf("dependency recheck item %s: %w", item.ID, err), "claimed-items.json")
 		}
 		if len(blockers) == 0 {
 			pf(env.stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
@@ -1612,6 +1612,13 @@ func appendReadyResweepCandidates(
 	opts backlogResweepOptions,
 	result *backlogResweepResult,
 ) ([]providers.WorkItem, backlogScanCursor, int) {
+	// Both lanes share one re-sweep allowance. Forward candidates reserve
+	// total-batch slots but do not spend the re-sweep-specific allowance.
+	selected := len(result.eligible) - len(opts.eligible) + len(result.readOnly)
+	budget := min(opts.policy.maxItems-selected, opts.maxItems-len(result.eligible)-len(result.readOnly))
+	if budget <= 0 {
+		return nil, backlogScanCursor{Cursor: result.state.Cursor}, 0
+	}
 	items, readyWindow, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
@@ -1666,7 +1673,6 @@ func appendReadyResweepCandidates(
 		pf(env.stderr, "error: order backlog re-sweep: %v\n", err)
 		return nil, readyWindow.Cursor, 1
 	}
-	budget := min(opts.policy.maxItems, opts.maxItems-len(result.eligible))
 	if len(items) > budget {
 		for _, item := range items[budget:] {
 			env.debugf("excluded %s: ready re-sweep selection capacity exhausted", item.ID)
@@ -2802,6 +2808,24 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		if lerr != nil {
 			return fmt.Errorf("read this run's claims: %w", lerr)
 		}
+		if len(entries) == 0 {
+			return nil
+		}
+		// Shared release needs only coordination credentials. Do it before
+		// constructing the legacy issue writer; missing label credentials must
+		// not retain a successfully released shared lease.
+		var localEntries []claimsclient.Entry
+		for _, entry := range entries {
+			if entry.SharedDeadline.IsZero() {
+				localEntries = append(localEntries, entry)
+				continue
+			}
+			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); err != nil {
+				return fmt.Errorf("release shared claim %s: %w", entry.ItemID, err)
+			}
+			released = append(released, entry.ItemID)
+		}
+		entries = localEntries
 		if len(entries) == 0 {
 			return nil
 		}

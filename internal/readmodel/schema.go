@@ -675,4 +675,24 @@ CREATE TABLE IF NOT EXISTS monitor_nomination (
 	`
 ALTER TABLE monitor_nomination ADD COLUMN improvement_claimed_at TEXT;
 `,
+
+	// v19: refresh existing reviewer evidence without discarding run rows or
+	// retention/nomination state. Startup rebuild upgrades each row once.
+	`
+ALTER TABLE run ADD COLUMN projection_version INTEGER NOT NULL DEFAULT 0;
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+`,
+	// v20: populate compact queue-report references from existing selection
+	// artifacts once; payloads remain in bounded, digest-verified journal blobs.
+	`
+CREATE INDEX IF NOT EXISTS idx_run_queue_eligibility
+ON run(gaggle, workflow, json_extract(operator_json, '$.QueueEligibility.RecordedAt') DESC, run_id DESC)
+WHERE json_type(operator_json, '$.QueueEligibility') = 'object';
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+`,
+	// v21: replay existing journals so terminal rows receive the complete
+	// produced/no-work disposition classification introduced by #4882.
+	`
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+`,
 }

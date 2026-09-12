@@ -305,8 +305,8 @@ func TestNextFeatureRegistryDoesNotRevalidateWithCurrentInterpreter(t *testing.T
 
 func TestGooberFeaturesRouteThroughPinnedInterpreter(t *testing.T) {
 	const nextOnly FeatureID = "goober.spec.next-only"
-	original := nextInterpreter.featuresForGoober
-	nextInterpreter.featuresForGoober = func(apiv1.GooberSpec) ([]Feature, error) {
+	original := v20Interpreter.featuresForGoober
+	v20Interpreter.featuresForGoober = func(apiv1.GooberSpec) ([]Feature, error) {
 		return []Feature{{
 			ID:           nextOnly,
 			Level:        SupportPreview,
@@ -317,7 +317,7 @@ func TestGooberFeaturesRouteThroughPinnedInterpreter(t *testing.T) {
 			}},
 		}}, nil
 	}
-	t.Cleanup(func() { nextInterpreter.featuresForGoober = original })
+	t.Cleanup(func() { v20Interpreter.featuresForGoober = original })
 
 	spec := apiv1.GooberSpec{}
 	current, err := FeaturesForGoober(Definition{DSLVersion: v30.DSLVersion}, spec)

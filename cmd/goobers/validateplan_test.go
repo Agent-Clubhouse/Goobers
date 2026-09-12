@@ -72,7 +72,7 @@ func validDecompositionPlan(selection decomposition.Selection) decomposition.Pla
 // its real selection.json into validate-plan, matching the acceptance
 // boundary's "tested against DEC-1's actual output" requirement.
 func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
-	root := t.TempDir()
+	root := initDemo(t)
 	buildSelectSourceRun(t, root, selectSourceRunOptions{
 		runID:          "escalated-1",
 		startedAt:      time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC),
@@ -135,7 +135,7 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 }
 
 func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
-	root := t.TempDir()
+	root := initDemo(t)
 	buildSelectSourceRun(t, root, selectSourceRunOptions{
 		runID:          "escalated-2",
 		startedAt:      time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC),

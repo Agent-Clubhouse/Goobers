@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -14,8 +15,12 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/version"
 )
+
+const configGenerationMismatchCode = "config_generation_mismatch"
 
 const (
 	ansiReset      = "\x1b[0m"
@@ -61,12 +66,51 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+	if err := enforceAppliedStageConfig(); err != nil {
+		if reportErr := writeBuiltinStageError(configGenerationMismatchCode, err); reportErr != nil {
+			pf(stderr, "error: report %s: %v\n", configGenerationMismatchCode, reportErr)
+		}
+		pf(stderr, "error: %s: %v\n", configGenerationMismatchCode, err)
+		return 1
+	}
 	if command, ok := findCLICommand(args[0]); ok {
 		return command.dispatch(args[1:], stdout, stderr)
 	}
 	pf(stderr, "goobers: unknown command %q\n\n", args[0])
 	usage(stderr)
 	return 2
+}
+
+func enforceAppliedStageConfig() error {
+	expected := strings.TrimSpace(os.Getenv(executor.AppliedConfigDigestEnvVar))
+	if expected == "" {
+		return nil
+	}
+	root := os.Getenv(executor.InstanceRootEnvVar)
+	current, err := configDirectoryDigest(instance.NewLayout(root).ConfigDir())
+	if err != nil {
+		return fmt.Errorf("read deterministic-stage config generation: %w", err)
+	}
+	if current != expected {
+		return fmt.Errorf("on-disk config digest %s differs from runner-applied digest %s; refusing to read a config generation this runner did not apply", current, expected)
+	}
+	return nil
+}
+
+func writeBuiltinStageError(code string, cause error) error {
+	path := strings.TrimSpace(os.Getenv(executor.BuiltinErrorFileEnvVar))
+	if path == "" {
+		return nil
+	}
+	data, err := json.Marshal(map[string]any{
+		executor.OutputErrorCode:      code,
+		executor.OutputErrorMessage:   cause.Error(),
+		executor.OutputErrorRetryable: false,
+	})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 // usage renders the core operator surface. Advanced operator and runner-invoked
@@ -188,6 +232,7 @@ var coreCommandIndexDescriptions = map[string]string{
 	"up":            "Start the local daemon.",
 	"validate":      "Validate an instance or configuration source.",
 	"version":       "Show build version information.",
+	"work-items":    "List pull requests and issues changed by Goobers.",
 	"workflow show": "Show a workflow as a text DAG.",
 }
 

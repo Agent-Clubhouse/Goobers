@@ -139,6 +139,47 @@ describe("ConfigurationWarnings", () => {
     expect(screen.getByText("1 active warning")).toBeInTheDocument();
     expect(screen.getByText("goobers validate")).toBeInTheDocument();
     expect(screen.getByText(/The portal is read-only/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dismiss all 1 warning for Goober/coder" }))
+      .toBeInTheDocument();
+  });
+
+  it("presents shared remediation once and supports group expansion and dismissal", async () => {
+    const user = userEvent.setup();
+
+    function GroupHarness() {
+      const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
+      return (
+        <ConfigurationWarnings
+          context="instance"
+          dismissedWarningKeys={dismissed}
+          onDismiss={(warning) =>
+            setDismissed((current) => new Set(current).add(configurationWarningKey(warning)))
+          }
+          onRefresh={() => setDismissed(new Set())}
+          state={{
+            status: "ready",
+            data: [
+              modelWarning,
+              { ...modelWarning, explanation: "A second model fallback is active." },
+            ],
+          }}
+        />
+      );
+    }
+
+    render(<GroupHarness />);
+    expect(screen.getAllByText("goobers validate")).toHaveLength(1);
+    const toggle = screen.getByRole("button", { name: /Goober\/coder.*2 warnings/ });
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryAllByTestId("configuration-warning")).toHaveLength(0);
+
+    await user.click(toggle);
+    await user.click(
+      screen.getByRole("button", { name: "Dismiss all 2 warnings for Goober/coder" }),
+    );
+    expect(screen.getByText("Warnings dismissed for this portal session.")).toBeInTheDocument();
+    expect(screen.getByText("0 active warnings")).toBeInTheDocument();
   });
 
   it("groups and orders multiple warnings by scope, code, then explanation", () => {
@@ -339,7 +380,7 @@ describe("ConfigurationWarnings", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Instance API unavailable.");
-    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByText(modelWarning.explanation)).toBeInTheDocument();
     expect(getInstance).toHaveBeenCalledTimes(2);

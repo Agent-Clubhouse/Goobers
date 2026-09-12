@@ -68,7 +68,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	stage := os.Getenv(dispatcher.EnvStage)
 	daemonAPI := os.Getenv(dispatcher.EnvDaemonAPI)
 	podToken := os.Getenv(dispatcher.EnvPodToken)
-	attempt, attemptErr := strconv.Atoi(os.Getenv(dispatcher.EnvAttempt))
+	attempt, attemptErr := podSurrenderAttempt()
 
 	// Nothing to surrender to: fail loud immediately rather than run the
 	// stage for nothing. The disposal gate already treats "pod terminated,
@@ -100,10 +100,39 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// heartbeat must cover exactly the window in which there is something alive
 	// to report on, and no longer. Stop() waits for the goroutine, so nothing
 	// is still emitting when the surrender PUT below runs.
-	stageCtx, heartbeat := startPodStageHeartbeat(ctx, stderr)
+	fence := remoteSharedExecutionFence(daemonAPI, func(string) (string, error) { return podToken, nil })
+	stageCtx, stopFence, fenceErr := fence(ctx, apiv1.InvocationEnvelope{RunID: runID})
+	defer stopFence()
+	if fenceErr != nil {
+		pf(stderr, "dispatch-exec: shared execution admission: %v\n", fenceErr)
+		return 1
+	}
+	stageCtx, heartbeat := startPodStageHeartbeat(stageCtx, stderr)
 	outcome := runStage(stageCtx, stdout, stderr)
 	heartbeat.Stop()
+	if cause := context.Cause(stageCtx); cause != nil {
+		outcome.Verdict = nil
+		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: &apiv1.ErrorInfo{Code: "execution_authority_ended", Message: cause.Error()}}
+	}
+	stopFence()
+	// Surrender authorizes pod disposal. Include the complete receipt set,
+	// even when the stage failed, so the engine can project it after disposal.
+	mutations, receiptErr := podMutationReceipts()
+	if receiptErr != nil {
+		pf(stderr, "dispatch-exec: preserve mutation receipts before surrender: %v\n", receiptErr)
+		return 1
+	}
 	envelope := outcome.Result
+	// Recovery is independent of stage success: a failed attempt can contain
+	// the only copy of reviewed implementation work. Surrender must follow the
+	// host's durable custody acknowledgment, even when the stage was canceled.
+	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), 90*time.Second)
+	recoveryErr := publishPodRecovery(recoveryCtx, ".")
+	cancelRecovery()
+	if recoveryErr != nil {
+		pf(stderr, "dispatch-exec: recovery custody: %v\n", recoveryErr)
+		return 1
+	}
 	// Carry whatever this stage committed to the next one (#3763). This pod is
 	// about to be disposed, so a commit that does not leave here does not exist
 	// downstream — on the worker the shared branch ref does this for free.
@@ -135,7 +164,9 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 	}
 	data, err := json.Marshal(dispatcher.SurrenderedResult{
-		Result: envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		RecoveryAcknowledged: true,
+		Mutations:            mutations,
+		Result:               envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
 		WorkspaceDeltaUnchanged: delta.Unchanged,
 		Verdict:                 outcome.Verdict,
 	})
@@ -880,6 +911,8 @@ func recordStageArtifactsTyped(
 	if err != nil || attempt < 1 {
 		attempt = 1
 	}
+	// Absent on legacy pods means initial; never infer lineage from the ordinal.
+	class := journal.AttemptClass(os.Getenv(dispatcher.EnvAttemptClass))
 	names := make([]string, 0, len(streams))
 	for name := range streams {
 		names = append(names, name)
@@ -917,7 +950,7 @@ func recordStageArtifactsTyped(
 		}
 		ops = append(ops, livejournal.Op{
 			Kind: livejournal.OpArtifact,
-			Key:  stage + "/" + name,
+			Key:  podJournalOpKey(stage + "/" + name),
 			// See podArtifactRecorder.Append (dispatchagentic.go): the daemon's
 			// replayClock adopts this field verbatim, so an unstamped op here
 			// durably persists the artifact's op at 0001-01-01T00:00:00Z (#3774).
@@ -925,6 +958,7 @@ func recordStageArtifactsTyped(
 			Artifact: &livejournal.ArtifactOp{
 				Stage:   stage,
 				Attempt: attempt,
+				Class:   class,
 				Name:    stage + "/" + name,
 				Data:    data,
 			},
@@ -955,10 +989,11 @@ func recordStageArtifactsTyped(
 			strings.Join(putFailures, "\n") + "\n"
 		ops = append(ops, livejournal.Op{
 			Kind: livejournal.OpArtifact,
-			Key:  stage + "/" + blobWriteThroughFailureArtifact,
+			Key:  podJournalOpKey(stage + "/" + blobWriteThroughFailureArtifact),
 			Artifact: &livejournal.ArtifactOp{
 				Stage:   stage,
 				Attempt: attempt,
+				Class:   class,
 				Name:    stage + "/" + blobWriteThroughFailureArtifact,
 				Data:    []byte(body),
 			},

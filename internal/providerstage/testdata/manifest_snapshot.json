@@ -417,6 +417,24 @@
     ]
   },
   {
+    "command": "recovery-restore",
+    "capabilities": [
+      {
+        "capability": "repo:push",
+        "consequence": "the capability-scoped credential is not injected, so stage recovery cannot fetch current main for restoration"
+      }
+    ]
+  },
+  {
+    "command": "recovery-resume",
+    "capabilities": [
+      {
+        "capability": "repo:push",
+        "consequence": "the capability-scoped credential is not injected, so recovery cannot fetch current main for restoration"
+      }
+    ]
+  },
+  {
     "command": "remediation-checkpoint",
     "resultFile": "checkpoint-result.json",
     "capabilities": [

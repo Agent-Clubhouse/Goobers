@@ -113,6 +113,11 @@ func renderVerdicts(stdout io.Writer, verdicts []verdictView) {
 			pf(stdout, " diffDigest=%s", verdict.DiffDigest)
 		}
 		pln(stdout, "")
+		if verdict.Content != nil {
+			if reason := publishedVerdictReason(*verdict.Content); reason != "" {
+				pf(stdout, "    reason: %s\n", reason)
+			}
+		}
 		if verdict.ArtifactError != "" {
 			pf(stdout, "    artifact: unavailable (%s)\n", singleLine(verdict.ArtifactError))
 		}

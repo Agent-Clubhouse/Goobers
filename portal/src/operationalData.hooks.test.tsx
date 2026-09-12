@@ -185,6 +185,25 @@ describe("operational hooks coalesce in-flight refreshes (#1367)", () => {
     client.release(1);
   });
 
+  it("keeps the partial snapshot when a cold inventory read fails", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(client, "listGaggles").mockRejectedValue(new Error("Inventory unavailable."));
+
+    const { result, unmount } = renderHook(() => useOperationalSnapshot(client), {
+      wrapper: wrapper(client),
+    });
+
+    await waitFor(() => expect(result.current.state.status).toBe("stale"));
+    if (result.current.state.status !== "stale") {
+      throw new Error("Expected a stale partial snapshot.");
+    }
+    expect(result.current.state.data.health.ready).toBe(true);
+    expect(result.current.state.data.instance.name).toBeTruthy();
+    expect(result.current.state.data.inventories).toEqual([]);
+    expect(result.current.state.error).toHaveProperty("message", "Inventory unavailable.");
+    unmount();
+  });
+
   it("keeps replacement-client work out of a detached operation", async () => {
     const firstClient = new GatedRunsClient(populatedDaemonFixtures());
     const replacementClient = new GatedRunsClient(populatedDaemonFixtures());

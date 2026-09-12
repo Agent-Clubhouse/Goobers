@@ -89,8 +89,9 @@ The smoke cannot run before these v1 deliverables exist; it is their first end-t
 
 Each criterion is falsifiable and names its observer. All must pass in **one procedure** (a small
 number of runs on one cluster, one evidence bundle); cherry-picking passes across rebuilt clusters
-is a fail. Attempt-class assertions follow the #3361 contract: infrastructure faults journal as
-`attemptClass: infra` on the bounded infra budget, conformance-excluded, never charging the work
+is a fail. Failure assertions follow the #3361 contract: infrastructure faults carry structured
+`runner.retryFailureClass: infra` and typed `runner.errorCode` / `runner.errorClass`, and their
+retries start with `attemptClass: infra` on the bounded infra budget, never charging the work
 budget (docs/stage-contract.md:751–756; #2840 AC2, #2878).
 
 ### S1 — Fresh pod per stage attempt, never reused
@@ -151,16 +152,24 @@ present is a fail (it "worked" by losing the gate's context).
 ### S6 — Kill matrix: pod-kill and node-kill, per stage class
 
 Six injections, each recorded per D5: **pod-kill** and **node-kill** during (a) a builtin stage,
-(b) an agentic stage, (c) local-ci. After each, the attempt journals as `attemptClass: infra`, the
-retry runs in a fresh pod (S1), and **the run completes successfully**.
+(b) an agentic stage, (c) local-ci. After each, the interrupted attempt journals an infrastructure
+failure outcome, the retry starts with `attemptClass: infra` in a fresh pod (S1), and **the run
+completes successfully**.
 
 **Observer:** per injection — the evidence bundle's injection record (what was killed, when), the
-interrupted attempt's `attemptClass: infra` journal entry with a typed `infra*` error class, the
-successor attempt's fresh `runner.*` identity, and the run's successful terminal event. Two
+interrupted attempt's structured `retryFailureClass: infra` outcome and typed infrastructure
+`errorCode` / `errorClass`, both attempts' observed placement, the successor's `attemptClass: infra`
+and fresh `runner.*` identity, and the run's successful terminal event. Two
 explicit fail conditions: an interrupted attempt classified as a policy/work failure (charging
 `Task.Retry` or the failure-streak breaker — the #3361 regression class), or a run that never
-completes. Conformance check: the infra attempts are absent from the conformance view
-(infra retries are non-normative — v2-cloud-scale §2 A1.5/A2).
+completes. `attemptClass` describes why an attempt started; an interrupted initial attempt remains
+initial.
+The stable `error.code: executor_error` marks its failed dispatch boundary, while the typed cause
+lives in `runner.*` and is also exposed on StageAttempt. Message text alone is insufficient.
+Conformance check: infra-tagged retry events are absent from the conformance view
+(infra retries are non-normative — v2-cloud-scale §2 A1.5/A2). The current convention retains
+initial-attempt events, including their dispatch failure; this check does not assert equivalence
+between a fault-free run and a recovered run.
 
 ### S7 — Triggers and HITL through the write API
 

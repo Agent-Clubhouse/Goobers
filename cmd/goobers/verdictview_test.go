@@ -17,19 +17,25 @@ func TestTraceVerdictsCoversGateDecisionsAndEscalation(t *testing.T) {
 		name     string
 		decision apiv1.VerdictDecision
 		target   string
+		reason   apiv1.VerdictReasonCode
 	}{
 		{name: "pass", decision: apiv1.VerdictPass, target: workflow.TerminalComplete},
 		{name: "needs-changes", decision: apiv1.VerdictNeedsChanges, target: "implement"},
 		{name: "fail", decision: apiv1.VerdictFail, target: workflow.TargetAbort},
 		{name: "escalate", decision: apiv1.VerdictNeedsChanges, target: workflow.TargetEscalate},
+		{name: "ordering", decision: apiv1.VerdictDefer, reason: apiv1.VerdictReasonOrdering, target: "park-ordering"},
+		{name: "no-lander", decision: apiv1.VerdictDefer, reason: apiv1.VerdictReasonNoLander, target: "park-ordering"},
+		{name: "mechanical-stop", decision: apiv1.VerdictEscalate, reason: apiv1.VerdictReasonRepassBudget, target: workflow.TargetEscalate},
+		{name: "rejection", decision: apiv1.VerdictFail, reason: apiv1.VerdictReasonImplementationRejected, target: workflow.TargetAbort},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			runID := "verdict-" + tt.name
 			recordTraceVerdict(t, root, runID, tt.decision, tt.target, apiv1.Verdict{
-				Decision:  tt.decision,
-				Rationale: "review rationale for " + tt.name,
+				Decision:   tt.decision,
+				ReasonCode: tt.reason,
+				Rationale:  "review rationale for " + tt.name,
 				Findings: []apiv1.Finding{{
 					Severity: apiv1.SeverityError,
 					Location: "widget.go:42",
@@ -52,6 +58,13 @@ func TestTraceVerdictsCoversGateDecisionsAndEscalation(t *testing.T) {
 				}
 			}
 
+			wantReason := string(tt.reason)
+			if tt.decision == apiv1.VerdictFail && wantReason == "" {
+				wantReason = legacyFailAmbiguous
+			}
+			if wantReason != "" && !strings.Contains(stdout, "reason: "+wantReason) {
+				t.Fatalf("trace omitted structured reason %q: %s", wantReason, stdout)
+			}
 			code, stdout, stderr = runArgs(t, "trace", "--json", runID, root)
 			if code != 0 {
 				t.Fatalf("trace --json: code = %d, stderr = %q", code, stderr)
@@ -67,7 +80,7 @@ func TestTraceVerdictsCoversGateDecisionsAndEscalation(t *testing.T) {
 			if verdict.Gate != "review" || verdict.Decision != string(tt.decision) ||
 				verdict.Target != tt.target || !verdict.Cached ||
 				verdict.DiffDigest != "sha256:reviewed-diff" ||
-				verdict.Content == nil || verdict.Content.Rationale != "review rationale for "+tt.name ||
+				verdict.Content == nil || verdict.Content.Rationale != "review rationale for "+tt.name || verdict.Content.ReasonCode != tt.reason ||
 				len(verdict.Findings) != 1 {
 				t.Fatalf("verdict = %+v", verdict)
 			}

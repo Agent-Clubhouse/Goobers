@@ -1,0 +1,14 @@
+# #4827: deploy/reference/temporal/ was never rendered or schema-checked by
+# `make deploy-validate` — this kustomization is what wires it in. values.yaml
+# is Helm chart values, not a kubectl-applyable manifest, so it is
+# deliberately NOT listed here; it stays a plain file the README's `helm
+# install ... -f values.yaml` command reads directly.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goobers-temporal
+
+resources:
+  - namespace-job.yaml
+  - networkpolicy-temporal.yaml
+  - networkpolicy-temporal-intracluster.yaml

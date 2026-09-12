@@ -110,7 +110,7 @@ func TestRun_WorkflowWarningPreservesCLIOutput(t *testing.T) {
 			stderr := outputFile(t)
 			code := run([]string{"--config", cfg, "--out", t.TempDir()}, devnull(t), stderr)
 			if code != tc.wantCode {
-				t.Fatalf("exit = %d, want %d", code, tc.wantCode)
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, tc.wantCode, readOutput(t, stderr))
 			}
 			output := readOutput(t, stderr)
 			var compatibilityOutput strings.Builder

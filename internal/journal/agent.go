@@ -126,7 +126,7 @@ func ScrubAgentEvent(scrubber Scrubber, event Event) (Event, error) {
 // live journals, so unfinished agents remain visible to callers.
 func AgentTree(events []Event) (map[string]AgentProvenance, error) {
 	tree := make(map[string]AgentProvenance)
-	for _, event := range events {
+	for _, event := range latestPodAgentEvents(events) {
 		if event.Type != EventAgentLifecycle {
 			continue
 		}
@@ -152,7 +152,7 @@ func ActiveAgentTreeForStage(events []Event, runID, stage string, attempt int) (
 
 func activeAgentTree(events []Event, runID, stage string, attempt int) (map[string]AgentProvenance, error) {
 	scoped := make([]Event, 0, len(events))
-	for _, event := range events {
+	for _, event := range latestPodAgentEvents(events) {
 		if event.Type != EventAgentLifecycle || event.Agent == nil ||
 			event.Agent.RunID != runID || event.Agent.Stage != stage ||
 			(attempt > 0 && event.Agent.Attempt != attempt) {
@@ -231,6 +231,7 @@ func RollupRunAgentUsage(events []Event, runID string) AgentUsage {
 }
 
 func rollupAgentUsage(events []Event, runID, stage string) AgentUsage {
+	events = latestPodAgentEvents(events)
 	latestAttempt := 0
 	for _, event := range events {
 		if event.Type == EventAgentLifecycle && event.Agent != nil &&

@@ -285,21 +285,27 @@ func TestBaseEnvPassesThroughWindowsRuntimeWithoutSecrets(t *testing.T) {
 		"ComSpec":      `C:\Windows\System32\cmd.exe`,
 		"PATHEXT":      `.COM;.EXE;.BAT;.CMD`,
 		"PSModulePath": `C:\Program Files\PowerShell\Modules`,
+		// SystemDrive (#4706): tools such as pip consult it to resolve
+		// machine-level configuration locations (C:\ProgramData\pip\pip.ini);
+		// without it the lookup silently falls back to a relative path under
+		// the stage's working directory instead of the host's real config.
+		"SystemDrive": `C:`,
 	}
 	for name, value := range runtimeVars {
 		t.Setenv(name, value)
 	}
 	t.Setenv("AZURE_DEVOPS_EXT_PAT", "must-not-pass")
 
-	env := BaseEnv()
-	for name, value := range runtimeVars {
-		if !contains(env, name+"="+value) {
-			t.Fatalf("Windows runtime var %s did not pass through BaseEnv(): %v", name, env)
+	for _, env := range [][]string{BaseEnv(), BaseEnvWith(nil)} {
+		for name, value := range runtimeVars {
+			if !contains(env, name+"="+value) {
+				t.Fatalf("Windows runtime var %s did not pass through: %v", name, env)
+			}
 		}
-	}
-	for _, entry := range env {
-		if strings.HasPrefix(entry, "AZURE_DEVOPS_EXT_PAT=") {
-			t.Fatalf("ambient token leaked through runtime allowlist: %v", env)
+		for _, entry := range env {
+			if strings.HasPrefix(entry, "AZURE_DEVOPS_EXT_PAT=") {
+				t.Fatalf("ambient token leaked through runtime allowlist: %v", env)
+			}
 		}
 	}
 }

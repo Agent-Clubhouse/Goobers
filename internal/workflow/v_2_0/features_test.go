@@ -635,6 +635,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{Type: apiv1.TriggerWebhook, Events: []string{"issues"}},
 		},
 		Readiness: apiv1.ReadinessConditions{
+			ClaimVisibility:       "shared",
 			DesiredConcurrentRuns: 1,
 			MaxConcurrentRuns:     1,
 			MaxRunsPerHour:        2,
@@ -1037,6 +1038,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"workflow.spec.displayName",
 		"workflow.spec.triggers",
 		"workflow.spec.readiness",
+		"workflow.spec.readiness.claimVisibility",
 		"workflow.spec.runControls",
 		"workflow.spec.readiness.desiredConcurrentRuns",
 		"workflow.spec.readiness.maxConcurrentRuns",

@@ -173,7 +173,7 @@ func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 			// dslVersion is not in the schema's `required` set, but since the §8.3
 			// cutover (#3507) dropped DSL 1.4 an omitted pin is a hard error, not a
 			// default — so an offline-authored workflow must pin a loadable version.
-			workflow["dslVersion"] = supportmatrix.NextDSLVersion
+			workflow["dslVersion"] = supportmatrix.V2DSLVersion
 			writeJSONDocument(t, filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml"), workflow)
 			code, stdout, stderr := runArgs(t, "validate", root)
 			if code != 0 || !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
@@ -268,7 +268,7 @@ func assertAuthoringStamp(t *testing.T, stamp authoringStamp, schemaVersion stri
 	t.Helper()
 	info := buildversion.Get()
 	// The stamp names the newest supported version, never the dropped
-	// CurrentDSLVersion (#3565).
+	// V1DSLVersion (#3565).
 	wantDSLVersion, ok := supportmatrix.GetDSL().NewestSupported()
 	if !ok {
 		t.Fatal("support matrix declares no supported DSL version")
@@ -283,7 +283,7 @@ func assertAuthoringStamp(t *testing.T, stamp authoringStamp, schemaVersion stri
 
 func TestAuthoringStampNamesNewestSupportedDSLVersion(t *testing.T) {
 	stamp := newAuthoringStamp(explainOutputVersion)
-	if stamp.DSLVersion == supportmatrix.CurrentDSLVersion {
+	if stamp.DSLVersion == supportmatrix.V1DSLVersion {
 		t.Fatalf("authoring stamp names the dropped DSL version %q", stamp.DSLVersion)
 	}
 	support, ok := supportmatrix.GetDSL().Lookup(stamp.DSLVersion)

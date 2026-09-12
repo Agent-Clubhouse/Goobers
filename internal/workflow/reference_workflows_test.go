@@ -76,6 +76,21 @@ func TestReferenceWorkflowsREADMEInventoryAndMergePosture(t *testing.T) {
 	if !strings.Contains(readme, validationOutput) {
 		t.Errorf("README validation sample does not match loaded definitions; want %q", validationOutput)
 	}
+	wantRoles := append([]string(nil), roles...)
+	sort.Strings(wantRoles)
+	gotRoles := markdownRosterColumn(t, readme, "| Goober role | Purpose |")
+	if !slices.Equal(gotRoles, wantRoles) {
+		t.Errorf("README goober roster = %q, want loaded roles %q", gotRoles, wantRoles)
+	}
+	wantWorkflows := make([]string, 0, len(workflows))
+	for _, definition := range workflows {
+		wantWorkflows = append(wantWorkflows, definition.Name)
+	}
+	sort.Strings(wantWorkflows)
+	gotWorkflows := markdownRosterColumn(t, readme, "| Workflow | Purpose |")
+	if !slices.Equal(gotWorkflows, wantWorkflows) {
+		t.Errorf("README workflow roster = %q, want loaded workflows %q", gotWorkflows, wantWorkflows)
+	}
 
 	// The V0 acceptance runbook restates the same expected `goobers validate`
 	// line. It sat at the pre-#4519 "6 goober(s), 4 workflow(s)" for months
@@ -89,15 +104,25 @@ func TestReferenceWorkflowsREADMEInventoryAndMergePosture(t *testing.T) {
 	if !strings.Contains(string(acceptanceRaw), validationOutput) {
 		t.Errorf("docs/V0-ACCEPTANCE.md validation sample does not match loaded definitions; want %q", validationOutput)
 	}
-	for _, role := range roles {
-		if !strings.Contains(readme, "`"+role+"`") {
-			t.Errorf("README inventory omits goober role %q", role)
+	acceptanceSummary := fmt.Sprintf("today loads **%d goobers and %d workflows**", len(roles), len(workflows))
+	if !strings.Contains(string(acceptanceRaw), acceptanceSummary) {
+		t.Errorf("docs/V0-ACCEPTANCE.md summary does not match loaded definitions; want %q", acceptanceSummary)
+	}
+
+	// Architecture states the current count but delegates the detailed roster
+	// to the checked inventory. Pin both facts so neither can drift silently.
+	architectureRaw, err := os.ReadFile(filepath.Join("..", "..", "docs", "ARCHITECTURE.md"))
+	if err != nil {
+		t.Fatalf("read architecture: %v", err)
+	}
+	for _, want := range []string{"reference-workflows/README.md", "is the count and roster of record"} {
+		if !strings.Contains(string(architectureRaw), want) {
+			t.Errorf("docs/ARCHITECTURE.md omits checked inventory ownership %q", want)
 		}
 	}
-	for _, definition := range workflows {
-		if !strings.Contains(readme, "`"+definition.Name+"`") {
-			t.Errorf("README inventory omits workflow %q", definition.Name)
-		}
+	architectureSummary := fmt.Sprintf("currently loads **%d goobers and %d workflows**", len(roles), len(workflows))
+	if !strings.Contains(string(architectureRaw), architectureSummary) {
+		t.Errorf("docs/ARCHITECTURE.md summary does not match loaded definitions; want %q", architectureSummary)
 	}
 	for _, credential := range []string{
 		"GOOBERS_GITHUB_TOKEN",
@@ -147,6 +172,41 @@ func TestReferenceWorkflowsREADMEInventoryAndMergePosture(t *testing.T) {
 			t.Errorf("README merge posture omits %q", claim)
 		}
 	}
+}
+
+func markdownRosterColumn(t *testing.T, document, header string) []string {
+	t.Helper()
+	start := strings.Index(document, header)
+	if start < 0 {
+		t.Fatalf("README omits roster table header %q", header)
+	}
+	lines := strings.Split(document[start:], "\n")
+	if len(lines) < 3 || !strings.HasPrefix(strings.TrimSpace(lines[1]), "|---") {
+		t.Fatalf("README roster %q has no separator row", header)
+	}
+	var entries []string
+	seen := make(map[string]bool)
+	for _, line := range lines[2:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 3 {
+			t.Fatalf("README roster %q has malformed row %q", header, line)
+		}
+		entry := strings.Trim(strings.TrimSpace(cells[1]), "`")
+		if entry == "" {
+			t.Fatalf("README roster %q has empty name in row %q", header, line)
+		}
+		if seen[entry] {
+			t.Errorf("README roster %q repeats %q", header, entry)
+		}
+		seen[entry] = true
+		entries = append(entries, entry)
+	}
+	sort.Strings(entries)
+	return entries
 }
 
 // TestReferenceWorkflowsCompile is #124's divergence guard: it compiles the

@@ -1,4 +1,4 @@
-// Package safeopen provides cross-platform, symlink-safe read-only opens.
+// Package safeopen provides cross-platform, symlink-safe reads and appends.
 //
 // It exists so security-sensitive call sites (e.g. internal/gooberassets, which
 // materializes a goober's asset bundle from an untrusted-content directory)
@@ -11,6 +11,8 @@
 //     component.
 //   - OpenAt opens a name relative to an already-open directory, with the same
 //     no-follow guarantee.
+//   - AppendAt creates or appends a single regular, singly-linked child with
+//     the same no-follow guarantee; it never truncates existing contents.
 //   - ErrSymlink reports the no-follow refusal, so callers can attach their own
 //     context and fail closed.
 //
@@ -28,7 +30,7 @@
 // seam is CreateFile with FILE_FLAG_OPEN_REPARSE_POINT, rejecting any handle
 // whose FILE_ATTRIBUTE_REPARSE_POINT is set. Two windows differences are
 // documented at their call sites and are tracked hardening, not silent gaps:
-// OpenAt resolves against the directory's path rather than a directory handle
+// OpenAt and AppendAt resolve against the directory's path rather than a directory handle
 // (x/sys/windows exposes no fd-relative open without NtCreateFile), so it keeps
 // the atomic per-leaf no-follow guarantee but not the fd-relative parent-swap
 // guarantee; and the windows implementation is compiled but not yet exercised

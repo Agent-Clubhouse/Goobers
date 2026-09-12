@@ -25,9 +25,8 @@ import (
 )
 
 // TestUpHandsTheDaemonBlobStoreToBothSpanConsumers runs the real startup path
-// (a pre-cancelled context, the same shape TestUpDisableReadModelReadsFlag
-// StartsCleanly uses) with both constructors wrapped, and asserts what up.go
-// passed them.
+// through readiness with both constructors wrapped, and asserts what up.go
+// passed them before requesting shutdown.
 //
 // ONE store, not two equal ones: DS5 verifies a live-authored journal against
 // a re-projection, so a source given to the writer and not to the reconciler
@@ -61,10 +60,8 @@ func TestUpHandsTheDaemonBlobStoreToBothSpanConsumers(t *testing.T) {
 	}
 	t.Cleanup(func() { startEngineProjection = originalProjection })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	var stdout, stderr bytes.Buffer
-	if code := runUpContext(ctx, []string{"--quiet", root}, &stdout, &stderr); code != 0 {
+	if code := runUpThroughStartup(t, []string{"--quiet", root}, &stdout, &stderr); code != 0 {
 		t.Fatalf("runUpContext code = %d, stderr = %q", code, stderr.String())
 	}
 

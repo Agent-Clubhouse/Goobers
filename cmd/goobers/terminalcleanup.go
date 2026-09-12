@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -50,7 +49,13 @@ func finalizeTerminalRunWithClaimMarkers(
 }
 
 func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.InstanceLog, wtMgr *worktree.Manager, runID string, release func(instance.Layout, *journal.InstanceLog, string) error) error {
+	if err := installTerminalRecoveryGuard(l, wtMgr); err != nil {
+		return err
+	}
 	results, worktreeErr := wtMgr.FinalizeRun(context.Background(), runID)
+	if renewErr := renewTerminalRecovery(l, runID); renewErr != nil {
+		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: renew terminal recovery for %s: %w", worktree.ErrCleanupDeferred, runID, renewErr))
+	}
 
 	var annotationErr error
 	annotationLog := log
@@ -105,19 +110,5 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 }
 
 func keptWorktreeJournaled(schedulerDir, runID, worktreeID string) (bool, error) {
-	events, err := journal.ReadInstanceLog(schedulerDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	for _, event := range events {
-		if event.Type == journal.EventRunnerAnnotation && event.RunID == runID &&
-			event.Runner["worktreeID"] == worktreeID &&
-			event.Runner["worktreeStatus"] == "kept" {
-			return true, nil
-		}
-	}
-	return false, nil
+	return annotationsForInstance(schedulerDir).worktreeKept(schedulerDir, runID, worktreeID)
 }

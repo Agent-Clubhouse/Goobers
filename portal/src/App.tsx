@@ -1,29 +1,38 @@
-import { useEffect, useRef, useState } from "react";
-import { publishReadState } from "./liveData";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { publishAdmissionState, publishReadState } from "./liveData";
 import { HttpDaemonClient } from "./api/httpClient";
 import { bindUIActions } from "./api/surfaceActions";
 import type { DaemonClient, PortalConfig, ValidationWarning } from "./api/types";
-import { applyThemeOverrides, CobrandContext, defaultPortalConfig } from "./cobrand";
+import {
+  applyThemeOverrides,
+  CobrandContext,
+  defaultPortalConfig,
+  readCachedPortalConfig,
+  writeCachedPortalConfig,
+} from "./cobrand";
 import {
   type ConfigurationWarningClient,
   type ConfigurationWarningSource,
   useConfigurationWarnings,
 } from "./configurationWarnings";
-import { LiveDataProvider } from "./liveData";
+import { LiveDataProvider, type LiveDataConfig } from "./liveData";
 import {
   createPortalDiagnostics,
   type PortalDiagnostics,
 } from "./portalDiagnostics";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
 import { GettingStartedPage } from "./pages/GettingStartedPage";
 import { GoobersPage } from "./pages/GoobersPage";
+import { CostPage } from "./pages/CostPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
+import { WorkItemsPage } from "./pages/WorkItemsPage";
 import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { scopeIdentity } from "./scope";
@@ -34,6 +43,7 @@ import { useTheme } from "./theme";
 const portalDiagnostics = createPortalDiagnostics();
 const daemonClient = new HttpDaemonClient({
   diagnostics: portalDiagnostics,
+  onAdmissionState: publishAdmissionState,
   onReadState: publishReadState,
 });
 const noWarnings: readonly ValidationWarning[] = [];
@@ -46,19 +56,29 @@ export function App({
   client = daemonClient,
   warningClient = client,
   diagnostics = portalDiagnostics,
+  mode = dashboardMode(),
+  cursorScope,
+  liveDataConfig,
 }: {
   client?: DaemonClient;
   warningClient?: ConfigurationWarningClient;
   diagnostics?: PortalDiagnostics;
+  mode?: DashboardMode;
+  cursorScope?: string;
+  liveDataConfig?: Partial<LiveDataConfig>;
 } = {}) {
-  const mode = dashboardMode();
-
   if (mode === "getting-started") {
     return <GettingStartedApplication />;
   }
 
   return (
-    <LiveDataProvider client={client} diagnostics={diagnostics}>
+    <LiveDataProvider
+      client={client}
+      diagnostics={diagnostics}
+      cursorScope={cursorScope}
+      config={liveDataConfig}
+      standalone={mode === "standalone"}
+    >
       <Portal client={client} mode={mode} warningClient={warningClient} />
     </LiveDataProvider>
   );
@@ -94,6 +114,28 @@ function GettingStartedApplication() {
   );
 }
 
+// The error boundary must remount to clear a prior crash when navigating to
+// genuinely different content, but must NOT remount on every filter/query
+// change within the same page — several pages (Runs, Insight, Cost,
+// Work Items) intentionally keep one component instance across filter
+// changes and manage the transition internally. This mirrors exactly the
+// per-route `key` each page below already opts into (WorkflowPage/RunPage by
+// identity, ErrorsPage by full route including filters); every other page
+// keeps its existing no-remount-across-filters behavior by falling back to
+// route.page alone.
+function routeErrorBoundaryKey(route: Route): string {
+  switch (route.page) {
+    case "errors":
+      return routeHash(route);
+    case "workflow":
+      return `${route.gaggle ?? ""}/${route.id}`;
+    case "run":
+      return route.id;
+    default:
+      return route.page;
+  }
+}
+
 function activeRouteGaggle(route: Route): string | undefined {
   if (route.page === "gaggle") {
     return route.id;
@@ -116,8 +158,9 @@ function Portal({
   const standalone = mode !== "daemon";
   const { theme, toggleTheme } = useTheme();
   const [route, setRoute] = useState<Route>(() => parseRoute());
-  const [config, setConfig] = useState<PortalConfig>(defaultPortalConfig);
-  const [loading, setLoading] = useState(true);
+  const cachedConfig = useMemo(readCachedPortalConfig, []);
+  const [config, setConfig] = useState<PortalConfig>(cachedConfig ?? defaultPortalConfig);
+  const [loading, setLoading] = useState(cachedConfig === undefined);
   const initialRoute = useRef(true);
 
   useEffect(() => {
@@ -126,22 +169,32 @@ function Portal({
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (initialRoute.current) {
       initialRoute.current = false;
       return;
+    }
+    const scrollPane = document.querySelector<HTMLElement>(".portal-main");
+    if (typeof scrollPane?.scrollTo === "function") {
+      scrollPane.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    } else if (scrollPane) {
+      scrollPane.scrollTop = 0;
+      scrollPane.scrollLeft = 0;
     }
     document.getElementById("main-content")?.focus();
   }, [route]);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    if (!cachedConfig) {
+      setLoading(true);
+    }
     void client
       .getPortalConfig()
       .then((nextConfig) => {
         if (cancelled) return;
         setConfig(nextConfig);
+        writeCachedPortalConfig(nextConfig);
       })
       .catch(() => {
         if (cancelled) return;
@@ -154,9 +207,12 @@ function Portal({
     return () => {
       cancelled = true;
     };
-  }, [client]);
+  }, [cachedConfig, client]);
 
   useEffect(() => {
+    if (loading) {
+      return;
+    }
     applyThemeOverrides(config, theme);
     document.title = config.brand.name;
 
@@ -174,7 +230,7 @@ function Portal({
     if (icon?.dataset.cobrand === "true") {
       icon.remove();
     }
-  }, [config, theme]);
+  }, [config, loading, theme]);
 
   // approve/override/rerun (HITL-7/#469): registered now so the UI surface
   // participates in the CLI/API/UI runtime-mutation parity check alongside
@@ -202,13 +258,20 @@ function Portal({
     revealRun: (runId: string) => client.revealRun(runId),
   });
 
-  // The gaggle/workflow/stage identity behind the current route, independent
-  // of any page-specific refinement (outcome, population, window). Carried
-  // forward by the primary-nav Runs/Insight buttons so switching views does
-  // not reset an active scope back to "all" (#2528 acceptance criterion 4).
+  // Shared identity and time window carried by the Runs / Insight / Cost
+  // workspace pivots. Outcome and population remain page-specific refinements.
   const currentScope =
-    (route.page === "runs" || route.page === "insight" || route.page === "errors") && route.filters
-      ? scopeIdentity(route.filters)
+    (route.page === "runs" ||
+      route.page === "insight" ||
+      route.page === "cost" ||
+      route.page === "errors") &&
+    route.filters
+      ? {
+          ...scopeIdentity(route.filters),
+          since: route.filters.since,
+          until: route.filters.until,
+          window: route.filters.window,
+        }
       : {};
 
   let warningSource: ConfigurationWarningSource = { kind: "none" };
@@ -241,66 +304,90 @@ function Portal({
         theme={theme}
         toggleTheme={toggleTheme}
       >
-        {route.page === "overview" && (
-          <OverviewPage
-            client={client}
-            configurationWarnings={configurationWarnings}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
-        {route.page === "goobers" && <GoobersPage client={client} standalone={standalone} />}
-        {route.page === "gaggle" && (
-          <GagglePage
-            client={client}
-            gaggleName={route.id}
-            navigate={navigate}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "runs" && (
-          <RunsPage client={client} filters={route.filters} standalone={standalone} />
-        )}
-        {route.page === "insight" && (
-          <InsightPage
-            client={client}
-            filters={route.filters}
-            navigate={navigate}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "errors" && (
-          <ErrorsPage
-            client={client}
-            filters={route.filters}
-            key={routeHash(route)}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "workflow" && route.gaggle && (
-          <WorkflowPage
-            client={client}
-            configurationWarnings={configurationWarnings}
-            gaggle={route.gaggle}
-            key={`${route.gaggle}/${route.id}`}
-            navigate={navigate}
-            standalone={standalone}
-            workflowName={route.id}
-          />
-        )}
-        {route.page === "run" && (
-          <RunPage
-            client={client}
-            key={route.id}
-            navigate={navigate}
-            revealRun={revealRun}
-            runId={route.id}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "workflow" && !route.gaggle && (
-          <p role="alert">Workflow routes require both a gaggle and workflow name.</p>
-        )}
+        <RouteErrorBoundary key={routeErrorBoundaryKey(route)}>
+          {route.page === "overview" && (
+            <OverviewPage
+              client={client}
+              configurationWarnings={configurationWarnings}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+          {route.page === "goobers" && (
+            <GoobersPage
+              client={client}
+              gaggleName={route.gaggle}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "gaggle" && (
+            <GagglePage
+              client={client}
+              gaggleName={route.id}
+              navigate={navigate}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "runs" && (
+            <RunsPage
+              client={client}
+              filters={route.filters}
+              navigate={navigate}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "work-items" && (
+            <WorkItemsPage client={client} navigate={navigate} route={route} standalone={standalone} />
+          )}
+          {route.page === "insight" && (
+            <InsightPage
+              client={client}
+              filters={route.filters}
+              navigate={navigate}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "cost" && (
+            <CostPage
+              client={client}
+              filters={route.filters}
+              navigate={navigate}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "errors" && (
+            <ErrorsPage
+              client={client}
+              filters={route.filters}
+              key={routeHash(route)}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "workflow" && route.gaggle && (
+            <WorkflowPage
+              client={client}
+              configurationWarnings={configurationWarnings}
+              gaggle={route.gaggle}
+              key={`${route.gaggle}/${route.id}`}
+              navigate={navigate}
+              standalone={standalone}
+              workflowName={route.id}
+            />
+          )}
+          {route.page === "run" && (
+            <RunPage
+              client={client}
+              key={route.id}
+              navigate={navigate}
+              revealRun={revealRun}
+              runId={route.id}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "workflow" && !route.gaggle && (
+            <p role="alert">Workflow routes require both a gaggle and workflow name.</p>
+          )}
+        </RouteErrorBoundary>
       </PortalShell>
     </CobrandContext.Provider>
   );

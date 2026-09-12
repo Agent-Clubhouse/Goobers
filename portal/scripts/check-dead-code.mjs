@@ -51,13 +51,18 @@ const exemptions = [
     symbol: "e2e/fixture-daemon.mjs",
     reason: "Playwright web-server entry point invoked from playwright.config.ts.",
   },
+  {
+    type: "files",
+    file: "e2e/real-daemon.mjs",
+    symbol: "e2e/real-daemon.mjs",
+    reason: "Playwright real-dashboard web-server entry point invoked from playwright.config.ts.",
+  },
 ];
 
 const testOnlyExports = {
   "src/api/errors.ts": ["UnsupportedApiVersionError", "UnsupportedSchemaVersionError"],
   "src/api/contract.generated.ts": ["configAuthoringErrorCodes", "configAuthoringRoutes"],
-  "src/api/types.ts": ["CONFIG_AUTHORING_SCHEMA_VERSION"],
-  "src/api/queryFamily.ts": ["emptyStats", "positionOf", "comparePosition"],
+  "src/api/queryFamily.ts": ["emptyStats", "comparePosition"],
   "src/api/surfaceActions.ts": ["uiSurfaceActions"],
   "src/attentionCollapse.ts": [
     "attentionCollapsedStorageKey",
@@ -76,6 +81,7 @@ const testOnlyExports = {
     "insightWindowFilters",
     "insightErrorSignatureFilters",
     "selectInsightCostTrendBuckets",
+    "serializeInsightAggregate",
   ],
   "src/liveData.tsx": [
     "LiveDataController",
@@ -97,8 +103,14 @@ const testOnlyExports = {
   "src/runDetailData.ts": ["loadRunDetail", "isVerdictArtifact"],
   "src/runsHistory.ts": ["RUNS_PAGE_SIZE"],
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
-  "src/theme.ts": ["themeStorageKey", "readStoredTheme", "persistTheme"],
+  "src/theme.ts": ["themeStorageKey", "persistTheme"],
   "src/ui/Inspector.tsx": ["InspectorHeading"],
+  "src/updateNotice.ts": [
+    "updateDismissalStorageKey",
+    "readStoredUpdateDismissal",
+    "onUpdateAvailability",
+    "resetUpdateAvailability",
+  ],
   "src/workflowDetailData.ts": ["loadWorkflowDetail"],
 };
 

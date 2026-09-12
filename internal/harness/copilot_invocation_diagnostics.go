@@ -32,6 +32,9 @@ type copilotInvocationDiagnostics struct {
 	// CLIVersion is the version startup preflight reported, or "" when
 	// preflight did not run or reported nothing.
 	CLIVersion string `json:"cliVersion"`
+	// UsageCapture identifies the negotiated capture path, not a claim that
+	// the CLI emitted usage. ModelUsage.CostBasis reports the actual evidence.
+	UsageCapture string `json:"usageCapture"`
 	// DeclaredTools is the goober's default-deny tool allowlist as configured.
 	DeclaredTools []string `json:"declaredTools"`
 	// AvailableTools is the tool set actually advertised to the CLI, which is
@@ -52,10 +55,15 @@ type copilotInvocationDiagnostics struct {
 // version or tool list is recorded as such) but fail-closed on IO: the same
 // .goobers directory was just proven writable by the prompt write, so a
 // failure here means the workspace is broken and the session should not start.
-func writeCopilotInvocationDiagnostics(req RunRequest, argv []string) error {
+func writeCopilotInvocationDiagnostics(req RunRequest, argv, declaredTools []string, disableUsageOutput bool) error {
+	usageCapture := copilotUsageCapture(req.HarnessVersion)
+	if disableUsageOutput {
+		usageCapture = "session-transcript"
+	}
 	diagnostics := copilotInvocationDiagnostics{
 		CLIVersion:      req.HarnessVersion,
-		DeclaredTools:   append([]string(nil), req.Tools...),
+		UsageCapture:    usageCapture,
+		DeclaredTools:   append([]string(nil), declaredTools...),
 		PermissionArgs:  copilotPermissionArgs(argv),
 		ToolConstrained: len(req.Tools) > 0,
 		Sandboxed:       req.Sandbox != nil,

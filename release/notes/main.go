@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -25,6 +26,15 @@ var (
 	tagPattern         = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$`)
 	conventionalCommit = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9-]*)(?:\(([^)]+)\))?(!)?:[[:space:]]+(.+)$`)
 	breakingFooter     = regexp.MustCompile(`(?m)^BREAKING(?: CHANGE|-CHANGE):[ \t]*(.+)$`)
+
+	// curatedCommitCountPattern matches a curated note's own claim about how
+	// many commits it covers (#4272), e.g. "58 commits since v0.4.0-beta.1".
+	// A curated note that makes no such claim (the current convention: a
+	// prose "Highlights" list with no counts) has nothing to validate.
+	curatedCommitCountPattern = regexp.MustCompile(`(?i)(\d+)\s+commits?\s+since\s+(\S+)`)
+	// curatedKindCountPattern matches an optional per-Conventional-Commit-type
+	// breakdown in the same claim, e.g. "(20 fix, 6 refactor, ...)".
+	curatedKindCountPattern = regexp.MustCompile(`(?i)(\d+)\s+(feat|fix|perf|docs|refactor|test|build|ci|chore|revert)\b`)
 )
 
 const gitLogFormat = "%H%x1f%B%x1e"
@@ -286,6 +296,9 @@ func generate(tag string, git gitClient, readFile func(string) ([]byte, error)) 
 	if err != nil {
 		return "", err
 	}
+	if err := validateCuratedCounts(curated, tag, git); err != nil {
+		return "", err
+	}
 	previous, err := previousTag(tag, git)
 	if err != nil {
 		return "", err
@@ -295,6 +308,86 @@ func generate(tag string, git gitClient, readFile func(string) ([]byte, error)) 
 		return "", err
 	}
 	return render(tag, previous, curated, changes), nil
+}
+
+// validateCuratedCounts fails loudly when a curated note's own commit-count
+// claim disagrees with the real range (#4272): a release re-tagged after a
+// failed attempt at an earlier commit otherwise leaves a stale, curated
+// claim that nothing else in the pipeline re-derives or checks — the one
+// paragraph a reader trusts most because it was hand-authored, describing
+// commits that were never actually released. A curated note that states no
+// count (the current convention: a prose "Highlights" list) has nothing to
+// validate; this is a defense against a stated claim going stale, not a
+// requirement to make one.
+func validateCuratedCounts(curated, tag string, git gitClient) error {
+	match := curatedCommitCountPattern.FindStringSubmatchIndex(curated)
+	if match == nil {
+		return nil
+	}
+	statedCount, err := strconv.Atoi(curated[match[2]:match[3]])
+	if err != nil {
+		return nil // the pattern only captures digits; unreachable in practice
+	}
+	// (\S+) is greedy, so it captures the whole token up to whitespace —
+	// trim trailing sentence/parenthetical punctuation a version-like token
+	// never legitimately ends with (its own internal '.' separators must
+	// survive, unlike a "since v0.4.0-beta.1)" or "...beta.1." trailer).
+	ref := strings.TrimRight(curated[match[4]:match[5]], ",.();:")
+	revision := ref + ".." + tag
+	out, err := git.output("rev-list", "--count", revision)
+	if err != nil {
+		return fmt.Errorf("verify curated note's commit-count claim (%s): %w", revision, err)
+	}
+	actualCount, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return fmt.Errorf("git rev-list --count %s returned non-numeric output %q", revision, out)
+	}
+	if statedCount != actualCount {
+		return fmt.Errorf(
+			"curated release note claims %d commits since %s, but git rev-list --count %s reports %d — "+
+				"the curated note was written against a different commit (likely a re-tag after a failed run); regenerate it for the commit that actually shipped",
+			statedCount, ref, revision, actualCount)
+	}
+
+	// Narrow the per-type breakdown search to the claim's own sentence (up to
+	// the next '.' or end of string) so unrelated prose elsewhere in the
+	// curated note cannot spuriously match an "N fix"-shaped phrase.
+	sentence := curated[match[1]:]
+	if end := strings.IndexByte(sentence, '.'); end >= 0 {
+		sentence = sentence[:end]
+	}
+	kindMatches := curatedKindCountPattern.FindAllStringSubmatch(sentence, -1)
+	if len(kindMatches) == 0 {
+		return nil
+	}
+	logOutput, err := git.output("log", "--format=%s", revision)
+	if err != nil {
+		return fmt.Errorf("verify curated note's per-type commit counts (%s): %w", revision, err)
+	}
+	actualKindCounts := map[string]int{}
+	for _, subject := range strings.Split(logOutput, "\n") {
+		subject = strings.TrimSpace(subject)
+		if subject == "" {
+			continue
+		}
+		if m := conventionalCommit.FindStringSubmatch(subject); m != nil {
+			actualKindCounts[strings.ToLower(m[1])]++
+		}
+	}
+	for _, kindMatch := range kindMatches {
+		statedKindCount, err := strconv.Atoi(kindMatch[1])
+		if err != nil {
+			continue
+		}
+		kindName := strings.ToLower(kindMatch[2])
+		if statedKindCount != actualKindCounts[kindName] {
+			return fmt.Errorf(
+				"curated release note claims %d %q commits since %s, but %s has %d — "+
+					"the curated note was written against a different commit (likely a re-tag after a failed run); regenerate it for the commit that actually shipped",
+				statedKindCount, kindName, ref, revision, actualKindCounts[kindName])
+		}
+	}
+	return nil
 }
 
 func curatedNote(tag string, git gitClient, readFile func(string) ([]byte, error)) (string, error) {
@@ -312,9 +405,20 @@ func curatedNote(tag string, git gitClient, readFile func(string) ([]byte, error
 		return "", fmt.Errorf("inspect release tag %s: %w", tag, err)
 	}
 	if objectType == "tag" {
-		message, err := git.output("for-each-ref", "--format=%(contents)", "refs/tags/"+tag)
+		// %(contents) includes the full signature block on a signed
+		// annotated tag; %(contents:subject) and %(contents:body) exist
+		// specifically to exclude it (#4830). \x1e delimits the two fields
+		// so an empty body is distinguishable from a one-line message.
+		raw, err := git.output("for-each-ref", "--format=%(contents:subject)\x1e%(contents:body)", "refs/tags/"+tag)
 		if err != nil {
 			return "", fmt.Errorf("read annotated tag %s: %w", tag, err)
+		}
+		subject, body, _ := strings.Cut(raw, "\x1e")
+		subject = strings.TrimSpace(subject)
+		body = strings.TrimSpace(body)
+		message := subject
+		if body != "" {
+			message = subject + "\n\n" + body
 		}
 		if message = strings.TrimSpace(message); message != "" {
 			return message, nil

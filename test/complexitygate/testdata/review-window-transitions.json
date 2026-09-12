@@ -1,0 +1,58 @@
+[
+  {
+    "commit": "5188525d4281aaa03b239975e6f460107fd4ee2a",
+    "pattern": "initial-baseline",
+    "wantError": false,
+    "before": null,
+    "after": {"ratchetBudget": 188, "entries": {"cmd/goobers/daemon.go\tbuildSchedulerDefinitions": 52}}
+  },
+  {
+    "commit": "a3f3bb7aee2c65832e03e0432c47352613857bcb",
+    "pattern": "mixed-tightening-and-score-growth",
+    "wantError": true,
+    "before": {"ratchetBudget": 188, "entries": {"cmd/goobers/daemon.go\tbuildSchedulerDefinitions": 52, "cmd/goobers/prsiblingcontext.go\trunGatherSiblingContextCore": 70, "internal/runner/resume.go\t(*Runner).resumeOwned": 119}},
+    "after": {"ratchetBudget": 187, "entries": {"cmd/goobers/daemon.go\tbuildSchedulerDefinitions": 53, "cmd/goobers/prsiblingcontext.go\trunGatherSiblingContextCore": 71}}
+  },
+  {
+    "commit": "d71e6b9c64856574315673ce28b5592daac84ed0",
+    "pattern": "score-decrease",
+    "wantError": false,
+    "before": {"ratchetBudget": 187, "entries": {"internal/readservice/runs.go\tsummarizeRunForStage": 74}},
+    "after": {"ratchetBudget": 187, "entries": {"internal/readservice/runs.go\tsummarizeRunForStage": 72}}
+  },
+  {
+    "commit": "bc57b193e702f15042b47a730a85baeed868e276",
+    "pattern": "path-move",
+    "wantError": false,
+    "before": {"ratchetBudget": 187, "entries": {"internal/workflow/v_next/compile.go\tadmissionProblems": 60}},
+    "after": {"ratchetBudget": 187, "entries": {"internal/workflow/v_2_0/compile.go\tadmissionProblems": 60}}
+  },
+  {
+    "commit": "666deaa8c7585d0e4b8aad026d24a1a9547bba0f",
+    "pattern": "budget-increase-and-new-entry",
+    "wantError": true,
+    "before": {"ratchetBudget": 187, "entries": {}},
+    "after": {"ratchetBudget": 188, "entries": {"internal/workflow/ir/ir.go\tValidate": 69}}
+  },
+  {
+    "commit": "52f280aa9ffb5e9d2af6ada4bf764bf6c0734d8f",
+    "pattern": "paired-score-growth",
+    "wantError": true,
+    "before": {"ratchetBudget": 188, "entries": {"internal/workflow/v_2_0/compile.go\tadmissionProblems": 60, "internal/workflow/v_3_0/compile.go\tadmissionProblems": 60}},
+    "after": {"ratchetBudget": 188, "entries": {"internal/workflow/v_2_0/compile.go\tadmissionProblems": 61, "internal/workflow/v_3_0/compile.go\tadmissionProblems": 61}}
+  },
+  {
+    "commit": "fff551c0b2ffd7082fcf46c4fd9606d08ec1fdd5",
+    "pattern": "repeated-paired-score-growth",
+    "wantError": true,
+    "before": {"ratchetBudget": 188, "entries": {"internal/workflow/v_2_0/compile.go\tadmissionProblems": 61, "internal/workflow/v_3_0/compile.go\tadmissionProblems": 61}},
+    "after": {"ratchetBudget": 188, "entries": {"internal/workflow/v_2_0/compile.go\tadmissionProblems": 62, "internal/workflow/v_3_0/compile.go\tadmissionProblems": 62}}
+  },
+  {
+    "commit": "e416e78ac7457b77368d859787f958aa01da39c1",
+    "pattern": "entry-removal",
+    "wantError": false,
+    "before": {"ratchetBudget": 188, "entries": {"cmd/goobers/backlogquery.go\trunBacklogQueryMode": 41}},
+    "after": {"ratchetBudget": 188, "entries": {}}
+  }
+]

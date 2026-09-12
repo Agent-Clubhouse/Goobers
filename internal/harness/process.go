@@ -97,13 +97,25 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 // hit. Safe to call concurrently with Write (see the type doc for why that
 // matters here).
 func (b *syncBuffer) Bytes() []byte {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	out := append([]byte(nil), b.buf.Bytes()...)
-	if b.dropped > 0 {
-		out = append(out, transcriptTruncationMarker(b.dropped)...)
+	out, _, dropped := b.delta(0)
+	if dropped > 0 {
+		out = append(out, transcriptTruncationMarker(dropped)...)
 	}
 	return out
+}
+
+// delta copies only retained bytes after offset. The returned offset advances
+// over actual data, never the changing truncation marker. Checkpoint callers
+// must commit their offset only after the corresponding write is durable.
+func (b *syncBuffer) delta(offset int) (data []byte, next int, dropped int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if offset < 0 || offset > b.buf.Len() {
+		// The buffer never shrinks. An invalid cursor must not silently
+		// restart from zero and duplicate previously committed bytes.
+		return nil, offset, b.dropped
+	}
+	return append([]byte(nil), b.buf.Bytes()[offset:]...), b.buf.Len(), b.dropped
 }
 
 func transcriptTruncationMarker(dropped int64) []byte {
@@ -163,6 +175,11 @@ type ProcessRequest struct {
 	// MaxTranscriptBytes caps the combined stdout+stderr transcript retained
 	// in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64
+	// TranscriptCheckpoint receives raw combined-output deltas on a separate
+	// goroutine. The runner-owned sink must redact before durable storage.
+	TranscriptCheckpoint func(TranscriptDelta) error
+	// TranscriptCheckpointInterval defaults to DefaultTranscriptCheckpointInterval.
+	TranscriptCheckpointInterval time.Duration
 	// StdoutCapture receives stdout before transcript truncation. The caller
 	// must keep this sink bounded; capture errors do not affect the subprocess.
 	StdoutCapture io.Writer
@@ -237,15 +254,17 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	if len(req.Command) == 0 {
 		return ProcessResult{}, fmt.Errorf("harness: empty command")
 	}
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = DefaultTimeout
-	}
+	timeout := effectiveProcessTimeout(ctx, req.Timeout, time.Now())
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.Command(req.Command[0], req.Command[1:]...)
 	cmd.Dir = req.Dir
+	// A launcher can exit successfully after spawning helpers that inherited
+	// its stdout/stderr handles. Without WaitDelay, cmd.Wait blocks until every
+	// helper closes those pipes, turning a completed launcher session into a
+	// harness timeout while its child services are still shutting down.
+	cmd.WaitDelay = groupKillWaitDelay
 	// A nil Env would make os/exec inherit the daemon's full environment —
 	// exactly the SEC-045 fail-open default #122 flags. An explicit non-nil,
 	// possibly-empty slice always wins instead, so "no Env supplied" means
@@ -283,6 +302,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	// below, so no liveness mark can land after the stage's terminal event.
 	sampler := startActivitySampler(runCtx, tracker, req.ActivityInterval, buf.observedBytes, req.Activity)
 	defer sampler.stop()
+	checkpoints := startTranscriptCheckpoints(buf, req.TranscriptCheckpointInterval, req.TranscriptCheckpoint)
 
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- cmd.Wait() }()
@@ -319,6 +339,7 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	// arriving after "completed" would be worse than none at all. stop is
 	// idempotent, so the defer above remains the safety net for early returns.
 	sampler.stop()
+	checkpointErr := checkpoints.finish(transcriptEndReason(timedOut, canceled))
 
 	result := ProcessResult{
 		Transcript:             buf.Bytes(),
@@ -333,18 +354,32 @@ func (ExecProcessRunner) Run(ctx context.Context, req ProcessRequest) (ProcessRe
 	switch {
 	case err == nil && !timedOut && !canceled:
 		result.ExitCode = 0
+	case errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success():
+		_ = tree.Kill()
+		result.ExitCode = 0
+		err = nil
 	case errors.As(err, &exitErr):
 		result.ExitCode = exitErr.ExitCode()
 	}
 
 	if timedOut {
-		return result, fmt.Errorf("%w after %s: %s", ErrTimeout, timeout, req.Command[0])
+		return result, errors.Join(fmt.Errorf("%w after %s: %s", ErrTimeout, timeout, req.Command[0]), checkpointErr)
 	}
 	if canceled {
-		return result, fmt.Errorf("%w: %s", ErrCanceled, req.Command[0])
+		return result, errors.Join(fmt.Errorf("%w: %s", ErrCanceled, req.Command[0]), checkpointErr)
 	}
 	if err != nil {
-		return result, fmt.Errorf("harness: run %v: %w", req.Command, err)
+		return result, errors.Join(fmt.Errorf("harness: run %v: %w", req.Command, err), checkpointErr)
 	}
-	return result, nil
+	return result, checkpointErr
+}
+
+func effectiveProcessTimeout(ctx context.Context, requested time.Duration, now time.Time) time.Duration {
+	if requested <= 0 {
+		requested = DefaultTimeout
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		return min(requested, max(deadline.Sub(now), 0))
+	}
+	return requested
 }

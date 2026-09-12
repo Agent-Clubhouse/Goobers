@@ -12,8 +12,6 @@ spec:
   harnessOptions: {}
   capabilities:
     - agent:model
-  skills:
-    - review
   tools:
     - shell
   scaleFactor: 1
