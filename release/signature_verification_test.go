@@ -10,8 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/internal/testgit"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 const (
