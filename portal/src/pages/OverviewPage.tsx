@@ -708,6 +708,7 @@ function InstanceStrip({
           <strong>Telemetry retention {telemetryRetention.enabled ? "enabled" : "disabled"}</strong>
           <span>{telemetryRetention.window} window, maximum {telemetryRetention.maxRuns} runs</span>
           <span>first enable: {telemetryRetention.firstEnable}</span>
+          <span>instance.yaml retention changes require a daemon restart; watch-config only reloads the materialized config directory</span>
           {telemetryRetention.lastPassAt ? (
             <span>
               last pass {telemetryRetention.lastPassMode} at {formatTimestamp(telemetryRetention.lastPassAt)}, {telemetryRetention.candidateCount} candidates
