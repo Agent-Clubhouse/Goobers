@@ -170,13 +170,14 @@ kubelet pulls via the AcrPull identity, dispatcher only names the image).
 - **Orphan cleanup — NOT a cross-namespace ownerReference (constraint (a)):** the dispatcher
   is in goobers-system, pods in gaggle namespaces, and k8s GC deletes a dependent whose
   namespaced owner is in another namespace (silent-delete-reads-as-eviction). v1 mechanism:
-  **`activeDeadlineSeconds` as the always-on backstop** (every stage pod carries one, derived
-  from the stage timeout + a margin, so a dispatcher crash between create and the stage's own
-  completion cannot leak the pod past its deadline) **plus a label + reconcile sweep** (the
+  **`activeDeadlineSeconds` as the always-on execution backstop** (every stage pod carries one,
+  derived from the stage timeout + a margin, so a dispatcher crash between create and the
+  stage's own completion cannot leave its container executing indefinitely) **plus a label +
+  reconcile sweep** (the
   dispatcher labels every pod it creates with the run/attempt identity and its own owner
   identity and, on restart, reconciles the pods carrying ITS owner label). No ownerReference.
-  This is a per-attempt-leak-bounded design, not a zero-leak one — acceptable for v1 since
-  activeDeadlineSeconds caps the leak window.
+  The deadline does not delete the Pod API object. The current owner-scoped sweep also cannot
+  select objects left by a worker that a rollout replaced, so object retention is not bounded.
 
   **The sweep's direction was reversed by decision 003** (graft: "owner label on
   dispatcher-created pods; `SweepOrphans` wired on the WORKER only, with a RunStates over
@@ -188,8 +189,9 @@ kubelet pulls via the AcrPull identity, dispatcher only names the image).
   merge-pr). The rule is now the other way round: a pod is disposed only when the sweep
   POSITIVELY establishes that no workflow is executing its attempt (Completed, Failed, or no
   such execution); a Running attempt is ADOPTED, and an unreachable engine, an unaddressable
-  pod or any other uncertainty leaves the pod to `activeDeadlineSeconds`. Leaving a settled
-  pod costs one stage timeout of capacity; deleting a live one cannot be undone.
+  pod or any other uncertainty leaves the pod in place. `activeDeadlineSeconds` stops its
+  container but does not delete the object. Leaving a settled pod retains that object until a
+  safe explicit deletion; deleting a live one cannot be undone.
 
   **The attempt's driver is stamped, never composed.** Each stage pod carries
   `goobers.dev/owning-workflow-id`: the id of the Temporal workflow execution whose activity
@@ -233,8 +235,10 @@ With topology decided (goobers-system, §1) the held (b) render is unblocked:
    surrender; no pod serves two attempts.
 2. The runner-class label on every created pod is derived from the resolved restriction set;
    a workflow attempting to set it is refused at dispatch.
-3. A dispatcher crash between create and stage completion leaks no pod past
-   `activeDeadlineSeconds`; the restart reconcile sweep deletes any labeled orphan.
+3. A dispatcher crash between create and stage completion leaves no container executing past
+   `activeDeadlineSeconds`; the restart reconcile sweep deletes addressable terminal orphans
+   carrying the current worker's owner label. Pods from replaced worker owners remain outside
+   that sweep until cross-generation reconciliation is implemented.
 4. On a Windows pod, `readOnlyRootFilesystem` is NOT stamped; the fs restriction binds to
    ContainerUser (decision 007), proven by the denied-attempt test the restrictions epic owns.
 5. The dispatcher's egress reaches only the §4 set, proven by the exit-code TRIPLE (not a

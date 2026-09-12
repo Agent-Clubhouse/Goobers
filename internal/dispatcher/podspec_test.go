@@ -405,8 +405,9 @@ func TestRenderPodTmpfsSizeLimitAlwaysExplicit(t *testing.T) {
 	t.Fatal("tmp volume missing")
 }
 
-// The always-on orphan backstop: every pod carries activeDeadlineSeconds =
-// stage timeout + margin, including stages that declared no timeout.
+// The always-on orphan-execution bound: every pod carries
+// activeDeadlineSeconds = stage timeout + margin, including stages that
+// declared no timeout. This stops the container; it does not delete the Pod.
 func TestRenderPodActiveDeadlineAlwaysOn(t *testing.T) {
 	attempt := testAttempt()
 	attempt.Timeout = 30 * time.Minute
@@ -636,7 +637,7 @@ func TestRenderFromTemplate(t *testing.T) {
 		t.Fatal("template instantiation must force restartPolicy Never (fresh pod per attempt)")
 	}
 	if pod.Spec.ActiveDeadlineSeconds == nil {
-		t.Fatal("template instantiation must stamp the activeDeadlineSeconds backstop")
+		t.Fatal("template instantiation must stamp the activeDeadlineSeconds execution bound")
 	}
 	// Deny-first (DI-9): the template path must disable SA-token automount just
 	// like the image path, or a deployment whose template/SA leaves automount

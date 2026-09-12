@@ -42,10 +42,9 @@ func seedStagePod(t *testing.T, cfg Config, pods *fakePodAPI, run, name string) 
 // §8 item 3, the reconcile half, under decision 003's rule: on restart the
 // sweep disposes a labeled pod only when its attempt is POSITIVELY settled.
 // A live attempt is adopted, and an attempt the resolver could not resolve is
-// left alone. (The other half of item 3 — no pod outlives
-// activeDeadlineSeconds even if the dispatcher crashes — is stamped per pod
-// and asserted in TestRenderPodActiveDeadlineAlwaysOn; the kubelet enforces
-// it, so the unit surface is the stamp.)
+// left alone. The pod's execution cannot outlive activeDeadlineSeconds even
+// if the dispatcher crashes, but the Pod object can; the execution bound is
+// stamped per pod and asserted in TestRenderPodActiveDeadlineAlwaysOn.
 func TestSweepOrphans(t *testing.T) {
 	pods := &fakePodAPI{}
 	d, err := New(testConfig(), pods, nil, confirmGate{confirmed: true}, nil)

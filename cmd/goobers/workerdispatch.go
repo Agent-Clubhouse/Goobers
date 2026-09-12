@@ -37,8 +37,8 @@ type stageDispatch struct {
 	Queues     []string
 	// Sweeper is the SAME *dispatcher.Dispatcher as Dispatcher, named through
 	// the narrow sweep interface. Two fields rather than a type assertion so
-	// the wiring says out loud that the sweep reclaims pods created by THIS
-	// dispatcher — which is exactly what its owner scope enforces.
+	// the wiring says out loud that the current boot sweep can select only pods
+	// stamped with THIS dispatcher's owner label.
 	Sweeper stageOrphanSweeper
 }
 
@@ -74,9 +74,9 @@ var newStageDispatcher = dispatcher.New
 // store — see dispatcher/surrender.go), which keeps one operator-provided
 // volume backing both planes.
 // owner is this worker's dispatcher identity (its hostname; in-cluster, its
-// pod name): stamped on every pod it creates and the scope its orphan sweep
-// sweeps within. See dispatcher.Config.Owner for why it must be stable across
-// a restart and distinct between workers.
+// pod name): stamped on every pod it creates and used by the current boot
+// sweep. It is stable across a process restart inside one worker pod and
+// distinct between workers, but changes when a rollout replaces that pod.
 // seams is the worker's own config-snapshot store, shared so the mode-3 kit
 // writer resolves a stage pod's kit through the SAME current-plus-retained
 // config trees the self-execution path resolves against (#3884). Nil disables
@@ -89,7 +89,7 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 		return stageDispatch{}, fmt.Errorf("stage dispatch: a surrender plane is required — pass --blob-store")
 	}
 	if strings.TrimSpace(owner) == "" {
-		return stageDispatch{}, fmt.Errorf("stage dispatch: a dispatcher owner identity is required — without it a stage pod carries no owner label and no worker can reclaim it")
+		return stageDispatch{}, fmt.Errorf("stage dispatch: a dispatcher owner identity is required to stamp the label selected by the current boot sweep")
 	}
 	l := instance.NewLayout(instanceRoot)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
