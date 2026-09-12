@@ -334,6 +334,7 @@ const (
 	errorPathSimulation           WarningCode = "WF017"
 	errorCapabilityRuntimeSupport WarningCode = "WF019"
 	errorWorkflowCompile          WarningCode = "WF025"
+	errorProviderStageInput       WarningCode = "WF026"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorOutbox                   WarningCode = "OUT001"
 	errorUnsupportedFeature       WarningCode = "VER005"
@@ -2284,6 +2285,12 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// error: the stage fails on every run, unconditionally.
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// Provider-stage input lifecycle (#4879). Runtime parsers retain their
+	// defensive refusals, but a retired input is visible in the workflow and
+	// must be rejected here before the stage can claim work and fail a run.
+	for _, msg := range wf.CheckProviderStageInputs(def) {
+		r.add(errorProviderStageInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	// Bounded waits must finish before the executor can terminate their stage;
 	// command-specific clamps are modeled by the workflow check itself.
