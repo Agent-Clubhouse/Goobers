@@ -20,7 +20,7 @@ func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 	// A second workflow at a DIFFERENT loadable interpreter version, which the
 	// coder goober does NOT reference, proves the goober resolver routes by the
 	// goober's own referenced-workflow version — not by every workflow in the
-	// gaggle. CurrentDSLVersion (1.4) is dropped (#3507), so the other loadable
+	// gaggle. V1DSLVersion (1.4) is dropped (#3507), so the other loadable
 	// version is V3DSLVersion (3.0); it is preview, so opt the instance in.
 	optInPreviewFeatures(t, instance.NewLayout(root))
 	writeLegacyV3Workflow(t, filepath.Dir(defaultWorkflowPath(root)))
@@ -33,13 +33,13 @@ func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 		workflow.FeaturesForGaggle,
 		func(def workflow.Definition, _ apiv1.GooberSpec) ([]workflow.Feature, error) {
 			versions = append(versions, def.DSLVersion)
-			if def.DSLVersion != supportmatrix.NextDSLVersion {
+			if def.DSLVersion != supportmatrix.V2DSLVersion {
 				return nil, nil
 			}
 			return []workflow.Feature{{
 				ID: nextOnly,
 				DSLVersions: []workflow.DSLFeatureSupport{{
-					Version: supportmatrix.NextDSLVersion,
+					Version: supportmatrix.V2DSLVersion,
 					Level:   workflow.SupportPreview,
 				}},
 			}}, nil
@@ -48,8 +48,8 @@ func TestInstanceUsedFeaturesRoutesGooberByWorkflowDSLVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("instanceUsedFeaturesWithResolver code = %d", code)
 	}
-	if len(versions) != 1 || versions[0] != supportmatrix.NextDSLVersion {
-		t.Fatalf("resolver versions = %v, want only %q", versions, supportmatrix.NextDSLVersion)
+	if len(versions) != 1 || versions[0] != supportmatrix.V2DSLVersion {
+		t.Fatalf("resolver versions = %v, want only %q", versions, supportmatrix.V2DSLVersion)
 	}
 	if !slices.ContainsFunc(features, func(feature workflow.Feature) bool {
 		return feature.ID == nextOnly
@@ -86,11 +86,11 @@ func TestFeaturesListsBuildMatrix(t *testing.T) {
 }
 
 func TestFeaturesScopesToDSLVersion(t *testing.T) {
-	// CurrentDSLVersion (1.4) is dropped (#3507): its interpreter is gone and
+	// V1DSLVersion (1.4) is dropped (#3507): its interpreter is gone and
 	// the feature registry carries no 1.4 rows, so scope over the two versions
-	// the registry still enumerates — NextDSLVersion (2.0) and V3DSLVersion
+	// the registry still enumerates — V2DSLVersion (2.0) and V3DSLVersion
 	// (3.0).
-	for _, version := range []string{supportmatrix.NextDSLVersion, supportmatrix.V3DSLVersion} {
+	for _, version := range []string{supportmatrix.V2DSLVersion, supportmatrix.V3DSLVersion} {
 		t.Run(version, func(t *testing.T) {
 			code, stdout, stderr := runArgs(t, "features", "--dsl-version", version)
 			if code != 0 {
@@ -183,7 +183,7 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 	layout := instance.NewLayout(root)
-	// The starter scaffold pins NextDSLVersion (2.0). CurrentDSLVersion (1.4)
+	// The starter scaffold pins V2DSLVersion (2.0). V1DSLVersion (1.4)
 	// is dropped (#3507) and no longer loads, so the second interpreter row
 	// comes from a V3DSLVersion (3.0) workflow — the other loadable version.
 	// 3.0 is preview, so opt the instance in on the Manifest (DVL011 otherwise)
@@ -206,7 +206,7 @@ func TestFeaturesUsedPreservesMixedWorkflowVersions(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("%s versions = %v, want one row per interpreter version:\n%s", feature, seen, stdout)
 	}
-	for _, version := range []string{supportmatrix.NextDSLVersion, supportmatrix.V3DSLVersion} {
+	for _, version := range []string{supportmatrix.V2DSLVersion, supportmatrix.V3DSLVersion} {
 		if !seen[version] {
 			t.Errorf("output missing %s row for DSL %s:\n%s", feature, version, stdout)
 		}

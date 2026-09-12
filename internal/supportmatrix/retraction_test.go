@@ -11,9 +11,9 @@ import (
 // a matching Retraction it must be refused, not silently accepted.
 func TestEffectiveInWithoutRetractionIsRefused(t *testing.T) {
 	matrix := GetDSL()
-	row := matrix[CurrentDSLVersion]
+	row := matrix[V1DSLVersion]
 	row.Retraction = nil
-	matrix[CurrentDSLVersion] = row
+	matrix[V1DSLVersion] = row
 
 	err := ValidateSupportPolicy(matrix)
 	if err == nil || !strings.Contains(err.Error(), "requires a declared retraction") {
@@ -26,13 +26,13 @@ func TestEffectiveInWithoutRetractionIsRefused(t *testing.T) {
 // It cannot be used to excuse an early drop that was never actually promised.
 func TestRetractionMustMatchPublishedCommitment(t *testing.T) {
 	matrix := GetDSL()
-	row := matrix[CurrentDSLVersion]
+	row := matrix[V1DSLVersion]
 	row.Retraction = &Retraction{
 		UnsupportedAfter: "v0.9.0", // never the published date (v0.5.0)
 		Release:          "v0.4.0",
 		Rationale:        "not the real promise",
 	}
-	matrix[CurrentDSLVersion] = row
+	matrix[V1DSLVersion] = row
 
 	err := ValidateSupportPolicy(matrix)
 	if err == nil || !strings.Contains(err.Error(), `but "v0.5.0" was published`) {
@@ -45,13 +45,13 @@ func TestRetractionMustMatchPublishedCommitment(t *testing.T) {
 // event (when the corrected level actually took effect).
 func TestRetractionReleaseMustMatchEffectiveIn(t *testing.T) {
 	matrix := GetDSL()
-	row := matrix[CurrentDSLVersion]
+	row := matrix[V1DSLVersion]
 	row.Retraction = &Retraction{
 		UnsupportedAfter: "v0.5.0",
 		Release:          "v0.3.9", // does not match effectiveIn (v0.4.0)
 		Rationale:        "mismatched release",
 	}
-	matrix[CurrentDSLVersion] = row
+	matrix[V1DSLVersion] = row
 
 	err := ValidateSupportPolicy(matrix)
 	if err == nil || !strings.Contains(err.Error(), "does not match effectiveIn") {
@@ -64,13 +64,13 @@ func TestRetractionReleaseMustMatchEffectiveIn(t *testing.T) {
 // existence.
 func TestRetractionRequiresRationale(t *testing.T) {
 	matrix := GetDSL()
-	row := matrix[CurrentDSLVersion]
+	row := matrix[V1DSLVersion]
 	row.Retraction = &Retraction{
 		UnsupportedAfter: "v0.5.0",
 		Release:          "v0.4.0",
 		Rationale:        "   ",
 	}
-	matrix[CurrentDSLVersion] = row
+	matrix[V1DSLVersion] = row
 
 	err := ValidateSupportPolicy(matrix)
 	if err == nil || !strings.Contains(err.Error(), "must declare a rationale") {
@@ -82,7 +82,7 @@ func TestRetractionRequiresRationale(t *testing.T) {
 // the same way any other release string in this package is.
 func TestRetractionRequiresValidReleaseFormat(t *testing.T) {
 	matrix := GetDSL()
-	row := matrix[CurrentDSLVersion]
+	row := matrix[V1DSLVersion]
 	row.EffectiveIn = "v0.4.0"
 	row.Retraction = &Retraction{
 		UnsupportedAfter: "v0.5.0",
@@ -92,7 +92,7 @@ func TestRetractionRequiresValidReleaseFormat(t *testing.T) {
 	// Corrupt Release AFTER matching effectiveIn so the mismatch check
 	// doesn't mask the format check this test targets.
 	row.EffectiveIn = "not-a-version"
-	matrix[CurrentDSLVersion] = row
+	matrix[V1DSLVersion] = row
 
 	err := ValidateSupportPolicy(matrix)
 	if err == nil {
@@ -106,13 +106,13 @@ func TestRetractionRequiresValidReleaseFormat(t *testing.T) {
 // must not be editable after publication.
 func TestPublishedRetractionCannotChange(t *testing.T) {
 	released, current := GetDSL(), GetDSL()
-	row := current[CurrentDSLVersion]
+	row := current[V1DSLVersion]
 	row.Retraction = &Retraction{
 		UnsupportedAfter: row.Retraction.UnsupportedAfter,
 		Release:          row.Retraction.Release,
 		Rationale:        "a different rationale than what was published",
 	}
-	current[CurrentDSLVersion] = row
+	current[V1DSLVersion] = row
 
 	err := validateSupportMatrixEvolution(released, current, "v0.4.0",
 		map[string]releaseVersion{"1.4": {minor: 1}, "2.0": {minor: 1}})
@@ -135,12 +135,12 @@ func TestEffectiveInAtOrAfterItsTransitionIsRefused(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			matrix := GetDSL()
-			row := matrix[CurrentDSLVersion]
+			row := matrix[V1DSLVersion]
 			row.EffectiveIn = tc.effectiveIn
 			// Keep the real (mismatched) retraction: this must be refused by
 			// the "nothing to correct" check before retraction is even
 			// considered.
-			matrix[CurrentDSLVersion] = row
+			matrix[V1DSLVersion] = row
 
 			err := ValidateSupportPolicy(matrix)
 			if err == nil || !strings.Contains(err.Error(), "must be earlier than the published transition") {

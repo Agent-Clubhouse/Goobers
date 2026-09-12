@@ -131,7 +131,7 @@ func validateFeatureSnapshot(snapshot featureSnapshot) error {
 		return fmt.Errorf("feature snapshot must contain at least one feature")
 	}
 	if _, err := workflow.NewFeatureRegistry(
-		workflow.Definition{DSLVersion: supportmatrix.NextDSLVersion},
+		workflow.Definition{DSLVersion: supportmatrix.V2DSLVersion},
 		snapshot.Features,
 	); err != nil {
 		return fmt.Errorf("invalid feature registry: %w", err)

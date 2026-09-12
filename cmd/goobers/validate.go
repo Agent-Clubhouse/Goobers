@@ -1060,7 +1060,7 @@ func printDSLVersionSummary(stdout io.Writer, workflows []apiv1.Workflow) {
 		version := w.DSLVersion
 		defaulted := ""
 		if version == "" {
-			version = supportmatrix.CurrentDSLVersion
+			version = supportmatrix.V1DSLVersion
 			defaulted = " (defaulted; no dslVersion pin)"
 		}
 		support, ok := matrix.Lookup(version)
