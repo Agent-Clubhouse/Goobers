@@ -24,8 +24,10 @@
 //	//complexitygate:allow <justification>
 //
 // comment in its doc comment or body. The justification text is mandatory —
-// a bare directive fails the gate — and an allowed function is exempt from
-// the hard cap while still counting toward the ratchet budget.
+// a bare directive fails the gate — and an allowed function without a baseline
+// entry is exempt from the hard cap while still counting toward the ratchet
+// budget. Once an allowed function is baselined, its recorded score remains a
+// ceiling and the ordinary growth and stale-entry checks apply.
 //
 // Unlike test/coveragegate this gate does NOT exclude cmd/: command mains are
 // where complexity has grown fastest.
@@ -33,6 +35,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -53,8 +56,10 @@ const (
 	defaultRatchet      = 25
 	defaultReport       = 15
 
-	allowDirective  = "//complexitygate:allow"
-	budgetDirective = "!ratchet-budget"
+	allowDirective               = "//complexitygate:allow"
+	budgetDirective              = "!ratchet-budget"
+	entryJustificationDirective  = "!entry-justification"
+	budgetJustificationDirective = "!ratchet-budget-justification"
 )
 
 // skippedDirectories are trees that hold no first-party Go code worth scoring.
@@ -76,8 +81,15 @@ type function struct {
 }
 
 type baseline struct {
-	Entries       map[string]int
-	RatchetBudget int
+	Entries              map[string]int
+	EntryJustifications  map[string]justification
+	RatchetBudget        int
+	RatchetJustification *justification
+}
+
+type justification struct {
+	Target int
+	Reason string
 }
 
 type thresholds struct {
@@ -120,7 +132,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *update {
-		if err := writeBaseline(resolved, functions, limits); err != nil {
+		var current *baseline
+		parsed, err := readBaseline(resolved)
+		switch {
+		case err == nil:
+			current = &parsed
+		case !errors.Is(err, os.ErrNotExist):
+			_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for update: %v\n", err)
+			return 1
+		}
+		if err := writeBaseline(resolved, functions, limits, current); err != nil {
 			_, _ = fmt.Fprintf(stderr, "complexitygate: write baseline: %v\n", err)
 			return 1
 		}
@@ -329,7 +350,11 @@ func readBaseline(path string) (baseline, error) {
 }
 
 func parseBaseline(reader io.Reader) (baseline, error) {
-	result := baseline{Entries: make(map[string]int), RatchetBudget: -1}
+	result := baseline{
+		Entries:             make(map[string]int),
+		EntryJustifications: make(map[string]justification),
+		RatchetBudget:       -1,
+	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for lineNumber := 1; scanner.Scan(); lineNumber++ {
@@ -337,7 +362,14 @@ func parseBaseline(reader io.Reader) (baseline, error) {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if strings.HasPrefix(line, budgetDirective) {
+		handled, err := parseJustificationLine(line, lineNumber, &result)
+		if err != nil {
+			return baseline{}, err
+		}
+		if handled {
+			continue
+		}
+		if strings.HasPrefix(line, budgetDirective+" ") {
 			raw := strings.TrimSpace(strings.TrimPrefix(line, budgetDirective))
 			budget, err := strconv.Atoi(raw)
 			if err != nil || budget < 0 {
@@ -369,6 +401,49 @@ func parseBaseline(reader io.Reader) (baseline, error) {
 	return result, nil
 }
 
+func parseJustificationLine(line string, lineNumber int, result *baseline) (bool, error) {
+	if strings.HasPrefix(line, entryJustificationDirective+"\t") {
+		fields := strings.SplitN(strings.TrimPrefix(line, entryJustificationDirective+"\t"), "\t", 4)
+		if len(fields) != 4 {
+			return true, fmt.Errorf("line %d: want %s\\t<path>\\t<symbol>\\t<target>\\t<why>", lineNumber, entryJustificationDirective)
+		}
+		target, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if err != nil || target < 1 {
+			return true, fmt.Errorf("line %d: justification target %q is not a positive integer", lineNumber, fields[2])
+		}
+		reason := strings.TrimSpace(fields[3])
+		if reason == "" {
+			return true, fmt.Errorf("line %d: %s needs a justification", lineNumber, entryJustificationDirective)
+		}
+		entryKey := key(fields[0], fields[1])
+		if _, duplicate := result.EntryJustifications[entryKey]; duplicate {
+			return true, fmt.Errorf("line %d: duplicate justification for %s %s", lineNumber, fields[0], fields[1])
+		}
+		result.EntryJustifications[entryKey] = justification{Target: target, Reason: reason}
+		return true, nil
+	}
+	if !strings.HasPrefix(line, budgetJustificationDirective+"\t") {
+		return false, nil
+	}
+	fields := strings.SplitN(strings.TrimPrefix(line, budgetJustificationDirective+"\t"), "\t", 2)
+	if len(fields) != 2 {
+		return true, fmt.Errorf("line %d: want %s\\t<target>\\t<why>", lineNumber, budgetJustificationDirective)
+	}
+	target, err := strconv.Atoi(strings.TrimSpace(fields[0]))
+	if err != nil || target < 0 {
+		return true, fmt.Errorf("line %d: budget justification target %q is not a non-negative integer", lineNumber, fields[0])
+	}
+	reason := strings.TrimSpace(fields[1])
+	if reason == "" {
+		return true, fmt.Errorf("line %d: %s needs a justification", lineNumber, budgetJustificationDirective)
+	}
+	if result.RatchetJustification != nil {
+		return true, fmt.Errorf("line %d: duplicate %s", lineNumber, budgetJustificationDirective)
+	}
+	result.RatchetJustification = &justification{Target: target, Reason: reason}
+	return true, nil
+}
+
 func evaluate(functions []function, base baseline, limits thresholds) (problems, notes []string) {
 	seen := make(map[string]bool)
 	for _, current := range functions {
@@ -382,11 +457,11 @@ func evaluate(functions []function, base baseline, limits thresholds) (problems,
 			continue
 		}
 		entryKey := key(current.Path, current.Symbol)
-		seen[entryKey] = true
-		if current.Allowed {
+		recorded, baselined := base.Entries[entryKey]
+		if current.Allowed && !baselined {
 			continue
 		}
-		recorded, baselined := base.Entries[entryKey]
+		seen[entryKey] = true
 		switch {
 		case !baselined:
 			problems = append(problems, fmt.Sprintf(
@@ -429,7 +504,11 @@ func evaluate(functions []function, base baseline, limits thresholds) (problems,
 	return problems, notes
 }
 
-func writeBaseline(path string, functions []function, limits thresholds) error {
+func writeBaseline(path string, functions []function, limits thresholds, current *baseline) error {
+	next := baselineForFunctions(functions, limits, current)
+	if err := validateBaselineUpdate(current, next); err != nil {
+		return err
+	}
 	var builder strings.Builder
 	builder.WriteString("# Cyclomatic-complexity baseline for test/complexitygate (#4231).\n")
 	builder.WriteString("# Generated by `make complexity-update`; do not hand-edit the scores.\n")
@@ -438,12 +517,99 @@ func writeBaseline(path string, functions []function, limits thresholds) error {
 	builder.WriteString("# <path>\\t<symbol>\\t<complexity>. The key is path+symbol, so moving a\n")
 	builder.WriteString("# function to another file does not create headroom.\n")
 	fmt.Fprintf(&builder, "# %s is how many functions may sit at or above %d.\n", budgetDirective, limits.ratchet)
-	fmt.Fprintf(&builder, "%s %d\n", budgetDirective, countAtLeast(functions, limits.ratchet))
-	for _, current := range functions {
-		if current.Complexity < limits.hardCap || current.Allowed {
+	builder.WriteString("# Score or budget increases require an exact-target justification directive.\n")
+	fmt.Fprintf(&builder, "# %s\\t<path>\\t<symbol>\\t<target>\\t<why>\n", entryJustificationDirective)
+	fmt.Fprintf(&builder, "# %s\\t<target>\\t<why>\n", budgetJustificationDirective)
+	if next.RatchetJustification != nil {
+		fmt.Fprintf(&builder, "%s\t%d\t%s\n", budgetJustificationDirective, next.RatchetJustification.Target, next.RatchetJustification.Reason)
+	}
+	fmt.Fprintf(&builder, "%s %d\n", budgetDirective, next.RatchetBudget)
+	for _, scored := range functions {
+		entryKey := key(scored.Path, scored.Symbol)
+		score, included := next.Entries[entryKey]
+		if !included {
 			continue
 		}
-		fmt.Fprintf(&builder, "%s\t%s\t%d\n", current.Path, current.Symbol, current.Complexity)
+		if reason, ok := next.EntryJustifications[entryKey]; ok {
+			fmt.Fprintf(&builder, "%s\t%s\t%s\t%d\t%s\n", entryJustificationDirective, scored.Path, scored.Symbol, reason.Target, reason.Reason)
+		}
+		fmt.Fprintf(&builder, "%s\t%s\t%d\n", scored.Path, scored.Symbol, score)
 	}
 	return os.WriteFile(path, []byte(builder.String()), 0o644)
+}
+
+func baselineForFunctions(functions []function, limits thresholds, current *baseline) baseline {
+	next := baseline{
+		Entries:             make(map[string]int),
+		EntryJustifications: make(map[string]justification),
+		RatchetBudget:       countAtLeast(functions, limits.ratchet),
+	}
+	for _, scored := range functions {
+		if scored.Complexity < limits.hardCap {
+			continue
+		}
+		entryKey := key(scored.Path, scored.Symbol)
+		_, alreadyBaselined := baselineEntry(current, entryKey)
+		if scored.Allowed && !alreadyBaselined {
+			continue
+		}
+		next.Entries[entryKey] = scored.Complexity
+	}
+	if current == nil {
+		return next
+	}
+	if reason := current.RatchetJustification; reason != nil && reason.Target == next.RatchetBudget {
+		copy := *reason
+		next.RatchetJustification = &copy
+	}
+	for entryKey, reason := range current.EntryJustifications {
+		if score, ok := next.Entries[entryKey]; ok && reason.Target == score {
+			next.EntryJustifications[entryKey] = reason
+		}
+	}
+	return next
+}
+
+func baselineEntry(current *baseline, entryKey string) (int, bool) {
+	if current == nil {
+		return 0, false
+	}
+	score, ok := current.Entries[entryKey]
+	return score, ok
+}
+
+func validateBaselineUpdate(current *baseline, next baseline) error {
+	if current == nil {
+		return nil
+	}
+	var problems []string
+	if next.RatchetBudget > current.RatchetBudget && !justifies(current.RatchetJustification, next.RatchetBudget) {
+		problems = append(problems, fmt.Sprintf(
+			"ratchet budget would grow from %d to %d without %s\\t%d\\t<why>",
+			current.RatchetBudget, next.RatchetBudget, budgetJustificationDirective, next.RatchetBudget,
+		))
+	}
+	for entryKey, nextScore := range next.Entries {
+		previousScore, existed := current.Entries[entryKey]
+		if !existed || nextScore <= previousScore {
+			continue
+		}
+		if reason, ok := current.EntryJustifications[entryKey]; ok && reason.Target == nextScore && strings.TrimSpace(reason.Reason) != "" {
+			continue
+		}
+		path, symbol, _ := strings.Cut(entryKey, "\t")
+		problems = append(problems, fmt.Sprintf(
+			"%s %s would grow from %d to %d without %s\\t%s\\t%s\\t%d\\t<why>",
+			path, symbol, previousScore, nextScore, entryJustificationDirective, path, symbol, nextScore,
+		))
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return errors.New(strings.Join(problems, "\n"))
+}
+
+func justifies(reason *justification, target int) bool {
+	return reason != nil && reason.Target == target && strings.TrimSpace(reason.Reason) != ""
 }

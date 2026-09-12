@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,7 +128,7 @@ func Bare() {
 
 func testBaseline(t *testing.T, budget int, entries map[string]int) baseline {
 	t.Helper()
-	return baseline{Entries: entries, RatchetBudget: budget}
+	return baseline{Entries: entries, EntryJustifications: make(map[string]justification), RatchetBudget: budget}
 }
 
 func TestEvaluateFailsUnbaselinedFunctionAboveHardCap(t *testing.T) {
@@ -192,6 +193,34 @@ func TestEvaluateHonoursJustifiedEscapeHatch(t *testing.T) {
 	}
 }
 
+func TestEvaluateEnforcesAllowedBaselinedFunctionAndStaleSemantics(t *testing.T) {
+	t.Parallel()
+	limits := thresholds{hardCap: 40, ratchet: 25, report: 15}
+	entryKey := key("internal/executor/shell.go", "(*ShellExecutor).Run")
+	base := testBaseline(t, 1, map[string]int{entryKey: 87})
+	functions := []function{{
+		Path: "internal/executor/shell.go", Symbol: "(*ShellExecutor).Run",
+		Complexity: 90, Allowed: true,
+	}}
+
+	problems, notes := evaluate(functions, base, limits)
+	if len(problems) != 1 || !strings.Contains(problems[0], "grew from the baselined 87 to 90") {
+		t.Fatalf("problems = %v, want allowed+baselined growth failure", problems)
+	}
+	if len(notes) != 0 {
+		t.Fatalf("notes = %v, want no stale note while the allowed function remains above the cap", notes)
+	}
+
+	functions[0].Complexity = 39
+	problems, notes = evaluate(functions, base, limits)
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none after tightening below the cap", problems)
+	}
+	if !strings.Contains(strings.Join(notes, "\n"), "stale baseline entry internal/executor/shell.go (*ShellExecutor).Run") {
+		t.Fatalf("notes = %v, want the ordinary stale-entry note", notes)
+	}
+}
+
 func TestEvaluateRatchetBudget(t *testing.T) {
 	t.Parallel()
 	limits := thresholds{hardCap: 40, ratchet: 25, report: 15}
@@ -217,11 +246,14 @@ func TestEvaluateRatchetBudget(t *testing.T) {
 func TestParseBaselineRejectsMalformedInput(t *testing.T) {
 	t.Parallel()
 	for name, content := range map[string]string{
-		"missing budget": "a.go\tfn\t41\n",
-		"bad budget":     "!ratchet-budget many\n",
-		"short row":      "!ratchet-budget 1\na.go\tfn\n",
-		"bad score":      "!ratchet-budget 1\na.go\tfn\tzero\n",
-		"duplicate":      "!ratchet-budget 1\na.go\tfn\t41\na.go\tfn\t42\n",
+		"missing budget":                "a.go\tfn\t41\n",
+		"bad budget":                    "!ratchet-budget many\n",
+		"short row":                     "!ratchet-budget 1\na.go\tfn\n",
+		"bad score":                     "!ratchet-budget 1\na.go\tfn\tzero\n",
+		"duplicate":                     "!ratchet-budget 1\na.go\tfn\t41\na.go\tfn\t42\n",
+		"blank entry justification":     "!ratchet-budget 1\n!entry-justification\ta.go\tfn\t42\t\n",
+		"blank budget justification":    "!ratchet-budget-justification\t2\t\n!ratchet-budget 1\n",
+		"duplicate entry justification": "!ratchet-budget 1\n!entry-justification\ta.go\tfn\t42\tone\n!entry-justification\ta.go\tfn\t42\ttwo\n",
 	} {
 		if _, err := parseBaseline(strings.NewReader(content)); err == nil {
 			t.Errorf("%s: parseBaseline succeeded, want an error", name)
@@ -231,7 +263,7 @@ func TestParseBaselineRejectsMalformedInput(t *testing.T) {
 
 func TestParseBaselineReadsEntriesAndBudget(t *testing.T) {
 	t.Parallel()
-	parsed, err := parseBaseline(strings.NewReader("# comment\n\n!ratchet-budget 177\ncmd/goobers/init.go\trunInit\t57\n"))
+	parsed, err := parseBaseline(strings.NewReader("# comment\n\n!ratchet-budget-justification\t177\tnew command family\n!ratchet-budget 177\n!entry-justification\tcmd/goobers/init.go\trunInit\t57\tlegacy generated form\ncmd/goobers/init.go\trunInit\t57\n"))
 	if err != nil {
 		t.Fatalf("parseBaseline: %v", err)
 	}
@@ -241,6 +273,100 @@ func TestParseBaselineReadsEntriesAndBudget(t *testing.T) {
 	if got := parsed.Entries[key("cmd/goobers/init.go", "runInit")]; got != 57 {
 		t.Errorf("entry = %d, want 57", got)
 	}
+	if parsed.RatchetJustification == nil || parsed.RatchetJustification.Reason != "new command family" {
+		t.Errorf("ratchet justification = %+v, want parsed reason", parsed.RatchetJustification)
+	}
+	if got := parsed.EntryJustifications[key("cmd/goobers/init.go", "runInit")]; got.Target != 57 || got.Reason != "legacy generated form" {
+		t.Errorf("entry justification = %+v, want target and reason", got)
+	}
+}
+
+func TestValidateBaselineUpdateRequiresExactTargetJustifications(t *testing.T) {
+	t.Parallel()
+	entryKey := key("pkg/sample.go", "Branchy")
+	current := testBaseline(t, 1, map[string]int{entryKey: 5})
+	next := testBaseline(t, 2, map[string]int{entryKey: 6})
+
+	err := validateBaselineUpdate(&current, next)
+	if err == nil || !strings.Contains(err.Error(), "would grow from 5 to 6") || !strings.Contains(err.Error(), "budget would grow from 1 to 2") {
+		t.Fatalf("validateBaselineUpdate error = %v, want score and budget justification failures", err)
+	}
+
+	current.EntryJustifications[entryKey] = justification{Target: 7, Reason: "wrong target"}
+	current.RatchetJustification = &justification{Target: 3, Reason: "wrong target"}
+	if err := validateBaselineUpdate(&current, next); err == nil {
+		t.Fatal("validateBaselineUpdate accepted justifications for different targets")
+	}
+
+	current.EntryJustifications[entryKey] = justification{Target: 6, Reason: "generated switch gained a required case"}
+	current.RatchetJustification = &justification{Target: 2, Reason: "new command remains above the ratchet"}
+	if err := validateBaselineUpdate(&current, next); err != nil {
+		t.Fatalf("validateBaselineUpdate rejected exact-target justifications: %v", err)
+	}
+}
+
+func TestBaselineForFunctionsKeepsRecordedAllowedFunction(t *testing.T) {
+	t.Parallel()
+	limits := thresholds{hardCap: 40, ratchet: 25, report: 15}
+	recordedKey := key("internal/executor/shell.go", "(*ShellExecutor).Run")
+	current := testBaseline(t, 1, map[string]int{recordedKey: 90})
+	current.EntryJustifications[recordedKey] = justification{Target: 90, Reason: "explicit legacy exception"}
+	functions := []function{
+		{Path: "internal/executor/shell.go", Symbol: "(*ShellExecutor).Run", Complexity: 90, Allowed: true},
+		{Path: "generated.go", Symbol: "Generated", Complexity: 50, Allowed: true},
+	}
+
+	next := baselineForFunctions(functions, limits, &current)
+	if got := next.Entries[recordedKey]; got != 90 {
+		t.Fatalf("recorded allowed score = %d, want 90", got)
+	}
+	if _, exists := next.Entries[key("generated.go", "Generated")]; exists {
+		t.Fatal("unbaselined allowed function was added to the baseline")
+	}
+	if got := next.EntryJustifications[recordedKey]; got.Reason != "explicit legacy exception" {
+		t.Fatalf("recorded justification = %+v, want it preserved", got)
+	}
+}
+
+func TestReviewWindowBaselineTransitions(t *testing.T) {
+	t.Parallel()
+	type fixtureBaseline struct {
+		RatchetBudget int            `json:"ratchetBudget"`
+		Entries       map[string]int `json:"entries"`
+	}
+	type transition struct {
+		Commit    string           `json:"commit"`
+		Pattern   string           `json:"pattern"`
+		WantError bool             `json:"wantError"`
+		Before    *fixtureBaseline `json:"before"`
+		After     fixtureBaseline  `json:"after"`
+	}
+	data, err := os.ReadFile(filepath.Join("testdata", "review-window-transitions.json"))
+	if err != nil {
+		t.Fatalf("read fixtures: %v", err)
+	}
+	var fixtures []transition
+	if err := json.Unmarshal(data, &fixtures); err != nil {
+		t.Fatalf("decode fixtures: %v", err)
+	}
+	if len(fixtures) != 8 {
+		t.Fatalf("fixtures = %d, want all 8 review-window baseline commits", len(fixtures))
+	}
+	for _, fixture := range fixtures {
+		fixture := fixture
+		t.Run(fixture.Commit+"/"+fixture.Pattern, func(t *testing.T) {
+			var before *baseline
+			if fixture.Before != nil {
+				parsed := testBaseline(t, fixture.Before.RatchetBudget, fixture.Before.Entries)
+				before = &parsed
+			}
+			after := testBaseline(t, fixture.After.RatchetBudget, fixture.After.Entries)
+			err := validateBaselineUpdate(before, after)
+			if (err != nil) != fixture.WantError {
+				t.Fatalf("validateBaselineUpdate error = %v, wantError=%t", err, fixture.WantError)
+			}
+		})
+	}
 }
 
 func TestRunUpdateThenEnforceRoundTrips(t *testing.T) {
@@ -248,7 +374,9 @@ func TestRunUpdateThenEnforceRoundTrips(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "pkg", "sample.go"), branchyFunction)
 	baselinePath := filepath.Join("test", "complexitygate", "baseline.txt")
-	writeFile(t, filepath.Join(root, baselinePath), "")
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, baselinePath)), 0o755); err != nil {
+		t.Fatalf("mkdir baseline directory: %v", err)
+	}
 
 	var stdout, stderr bytes.Buffer
 	args := []string{"-root", root, "-hard", "5", "-ratchet", "4", "-report", "3"}
@@ -270,6 +398,42 @@ func TestRunUpdateThenEnforceRoundTrips(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "baselined") {
 		t.Errorf("stdout = %q, want the tier summary", stdout.String())
+	}
+}
+
+func TestRunUpdateRefusesGrowthUntilBaselineCarriesJustification(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "pkg", "sample.go"), branchyFunction)
+	baselinePath := filepath.Join(root, defaultBaselinePath)
+	writeFile(t, baselinePath, "!ratchet-budget 1\npkg/sample.go\tBranchy\t5\n")
+	args := []string{"-root", root, "-hard", "5", "-ratchet", "4", "-report", "3", "-update"}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(args, &stdout, &stderr); code != 1 {
+		t.Fatalf("unjustified update exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "would grow from 5 to 6") {
+		t.Fatalf("stderr = %q, want score-growth refusal", stderr.String())
+	}
+
+	writeFile(t, baselinePath, "!ratchet-budget 1\n!entry-justification\tpkg/sample.go\tBranchy\t6\tbranch table gained a required case\npkg/sample.go\tBranchy\t5\n")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("justified update exit = %d, stderr=%q", code, stderr.String())
+	}
+	written, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatalf("read updated baseline: %v", err)
+	}
+	for _, want := range []string{
+		"!entry-justification\tpkg/sample.go\tBranchy\t6\tbranch table gained a required case",
+		"pkg/sample.go\tBranchy\t6",
+	} {
+		if !strings.Contains(string(written), want) {
+			t.Fatalf("updated baseline = %q, want %q", written, want)
+		}
 	}
 }
 
@@ -324,6 +488,15 @@ func TestRepositoryBaselineIsCurrent(t *testing.T) {
 			path, symbol, _ := strings.Cut(entryKey, "\t")
 			t.Errorf("baseline entry %s %s no longer exists; run `make complexity-update`", path, symbol)
 		}
+	}
+	for entryKey, reason := range base.EntryJustifications {
+		score, exists := base.Entries[entryKey]
+		if !exists || reason.Target != score {
+			t.Errorf("entry justification %q targets %d, want an existing baseline entry at that exact score", entryKey, reason.Target)
+		}
+	}
+	if reason := base.RatchetJustification; reason != nil && reason.Target != base.RatchetBudget {
+		t.Errorf("ratchet justification targets %d, want current budget %d", reason.Target, base.RatchetBudget)
 	}
 	if commands == 0 {
 		t.Error("no cmd/ function is over the hard cap; the gate must not be excluding cmd/")
