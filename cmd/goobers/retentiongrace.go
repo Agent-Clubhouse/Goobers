@@ -52,10 +52,16 @@ type retentionGraceState struct {
 }
 
 type telemetryRetentionPass struct {
-	At             time.Time `json:"at"`
-	DryRun         bool      `json:"dryRun"`
-	CandidateCount int       `json:"candidateCount"`
-	EnforceAt      time.Time `json:"enforceAt,omitempty"`
+	ID               string        `json:"id"`
+	Phase            string        `json:"phase"`
+	At               time.Time     `json:"at"`
+	DryRun           bool          `json:"dryRun"`
+	CandidateCount   int           `json:"candidateCount"`
+	EnforceAt        time.Time     `json:"enforceAt,omitempty"`
+	PolicyWindow     time.Duration `json:"policyWindow,omitempty"`
+	PolicyMaxRuns    int           `json:"policyMaxRuns,omitempty"`
+	TotalRuns        int           `json:"totalRuns,omitempty"`
+	OldestRetainedAt time.Time     `json:"oldestRetainedAt,omitempty"`
 }
 
 // normalizeRetentionGraceState rejects clocks that cannot have been produced
