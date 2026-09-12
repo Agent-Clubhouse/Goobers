@@ -321,10 +321,12 @@ func TestEvaluateBodyLengthHasNoAllowExemption(t *testing.T) {
 		t.Fatalf("problems = %v, want unbaselined body-length failure despite allow directive", problems)
 	}
 
-	base.BodyLengths[entryKey] = 1560
-	functions[0].BodyLines = 1561
+	seedCeiling := bodyLengthSeedCeilings[entryKey]
+	base.BodyLengths[entryKey] = seedCeiling
+	functions[0].BodyLines = seedCeiling + 1
 	problems, _ = evaluate(functions, base, limits)
-	if len(problems) != 1 || !strings.Contains(problems[0], "grew from the baselined 1560 to 1561") {
+	wantGrowth := fmt.Sprintf("grew from the baselined %d to %d", seedCeiling, seedCeiling+1)
+	if len(problems) != 1 || !strings.Contains(problems[0], wantGrowth) {
 		t.Fatalf("problems = %v, want body-length growth failure", problems)
 	}
 }
@@ -718,7 +720,8 @@ func TestRunRejectsCommittedBodyReboundBelowOriginalSeedCeiling(t *testing.T) {
 	if code := run(args, &stdout, &stderr); code != 1 {
 		t.Fatalf("committed rebound exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "does not match the sealed current ceiling 1560") {
+	wantCeiling := fmt.Sprintf("does not match the sealed current ceiling %d", bodyLengthSeedCeilings[key("cmd/goobers/up.go", "runUpContextWithForce")])
+	if !strings.Contains(stderr.String(), wantCeiling) {
 		t.Fatalf("stderr = %q, want sealed-current-ceiling refusal", stderr.String())
 	}
 }
