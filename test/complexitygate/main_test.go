@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -22,7 +23,7 @@ func writeFile(t *testing.T, path, content string) {
 
 func gitCommand(t *testing.T, root string, args ...string) {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	command := testgit.Command(append([]string{"-C", root}, args...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
