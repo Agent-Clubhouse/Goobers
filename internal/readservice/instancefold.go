@@ -93,31 +93,7 @@ func (s *instanceState) apply(event journal.Event) {
 		s.resetRefusals()
 		s.refillBlocked = nil
 	case journal.EventWorkerConfigDivergence:
-		worker := runnerString(event.Runner, "worker")
-		if worker == "" {
-			break
-		}
-		// The daemon-owned capability sentinel describes the period before any
-		// authenticated worker has reported. A later real worker report proves
-		// that reporting is active, so retaining "awaiting" beside that report
-		// would be false. Removing it in the fold makes replay and restart obey
-		// the same event ordering without requiring a synthetic clear event.
-		if worker != journal.WorkerConfigDivergenceReportingCapability {
-			s.clearWorkerDivergence(journal.WorkerConfigDivergenceReportingCapability)
-		}
-		if s.workerDivergence == nil {
-			s.workerDivergence = make(map[string]WorkerConfigDivergenceStatus)
-		}
-		if _, known := s.workerDivergence[worker]; !known {
-			s.workerDivergenceOrder = append(s.workerDivergenceOrder, worker)
-		}
-		s.workerDivergence[worker] = WorkerConfigDivergenceStatus{
-			Worker: worker, State: journal.WorkerConfigDivergenceState(runnerString(event.Runner, "state")),
-			WorkerDigest: runnerString(event.Runner, "workerDigest"),
-			DaemonDigest: runnerString(event.Runner, "daemonDigest"),
-			Reason:       runnerString(event.Runner, "reason"),
-			Message:      runnerString(event.Runner, "message"), At: event.Time,
-		}
+		s.applyWorkerDivergence(event)
 	case journal.EventTickSkipped:
 		if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
 			candidate = candidate.UTC()
@@ -183,6 +159,34 @@ func (s *instanceState) apply(event journal.Event) {
 			!containsString(s.restart.RunIDs, event.RunID) {
 			s.restart.RunIDs = append(s.restart.RunIDs, event.RunID)
 		}
+	}
+}
+
+func (s *instanceState) applyWorkerDivergence(event journal.Event) {
+	worker := runnerString(event.Runner, "worker")
+	if worker == "" {
+		return
+	}
+	// The daemon-owned capability sentinel describes the period before any
+	// authenticated worker has reported. A later real worker report proves
+	// that reporting is active, so retaining "awaiting" beside that report
+	// would be false. Removing it in the fold makes replay and restart obey
+	// the same event ordering without requiring a synthetic clear event.
+	if worker != journal.WorkerConfigDivergenceReportingCapability {
+		s.clearWorkerDivergence(journal.WorkerConfigDivergenceReportingCapability)
+	}
+	if s.workerDivergence == nil {
+		s.workerDivergence = make(map[string]WorkerConfigDivergenceStatus)
+	}
+	if _, known := s.workerDivergence[worker]; !known {
+		s.workerDivergenceOrder = append(s.workerDivergenceOrder, worker)
+	}
+	s.workerDivergence[worker] = WorkerConfigDivergenceStatus{
+		Worker: worker, State: journal.WorkerConfigDivergenceState(runnerString(event.Runner, "state")),
+		WorkerDigest: runnerString(event.Runner, "workerDigest"),
+		DaemonDigest: runnerString(event.Runner, "daemonDigest"),
+		Reason:       runnerString(event.Runner, "reason"),
+		Message:      runnerString(event.Runner, "message"), At: event.Time,
 	}
 }
 
