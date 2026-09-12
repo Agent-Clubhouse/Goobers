@@ -201,12 +201,12 @@ vulncheck:
 deadcode:
 	$(GO) run ./test/deadcode -go $(GO)
 
-## complexity: Enforce the cyclomatic-complexity caps against the pinned baseline.
+## complexity: Enforce cyclomatic-complexity and body-length caps against the pinned baseline.
 .PHONY: complexity
 complexity:
 	$(GO) run ./test/complexitygate
 
-## complexity-update: Re-pin the complexity baseline to the current tree.
+## complexity-update: Re-pin existing complexity and body-length baselines.
 # Run after a deliberate decomposition (or when a new offender is genuinely
 # unavoidable and carries a //complexitygate:allow justification).
 .PHONY: complexity-update

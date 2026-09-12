@@ -59,6 +59,21 @@ func Branchy(values []int) int {
 }
 `
 
+const longSequentialFunction = `package sample
+
+func NewOversized() int {
+	value := 1
+	value++
+	value++
+	value++
+	value++
+	value++
+	value++
+	value++
+	return value
+}
+`
+
 func TestComplexityMatchesGocycloScoring(t *testing.T) {
 	t.Parallel()
 	functions, err := scanFile("sample/sample.go", []byte(branchyFunction))
@@ -74,6 +89,9 @@ func TestComplexityMatchesGocycloScoring(t *testing.T) {
 	}
 	if functions[0].Symbol != "Branchy" {
 		t.Errorf("symbol = %q, want Branchy", functions[0].Symbol)
+	}
+	if got, want := functions[0].BodyLines, 15; got != want {
+		t.Errorf("body lines = %d, want %d", got, want)
 	}
 }
 
@@ -149,7 +167,10 @@ func Bare() {
 
 func testBaseline(t *testing.T, budget int, entries map[string]int) baseline {
 	t.Helper()
-	return baseline{Entries: entries, EntryJustifications: make(map[string]justification), RatchetBudget: budget}
+	return baseline{
+		Entries: entries, EntryJustifications: make(map[string]justification), RatchetBudget: budget,
+		BodyLengths: make(map[string]int), BodyJustifications: make(map[string]justification), BodyLengthCap: -1,
+	}
 }
 
 func TestEvaluateFailsUnbaselinedFunctionAboveHardCap(t *testing.T) {
@@ -264,6 +285,30 @@ func TestEvaluateRatchetBudget(t *testing.T) {
 	}
 }
 
+func TestEvaluateBodyLengthHasNoAllowExemption(t *testing.T) {
+	t.Parallel()
+	limits := thresholds{hardCap: 40, ratchet: 25, report: 15, body: 200}
+	entryKey := key("cmd/goobers/up.go", "runUpContextWithForce")
+	base := testBaseline(t, 0, map[string]int{})
+	base.BodyLengthCap = 200
+	functions := []function{{
+		Path: "cmd/goobers/up.go", Symbol: "runUpContextWithForce", Line: 320,
+		BodyLines: 200, Allowed: true,
+	}}
+
+	problems, _ := evaluate(functions, base, limits)
+	if len(problems) != 1 || !strings.Contains(problems[0], "body length 200") || !strings.Contains(problems[0], "not in the baseline") {
+		t.Fatalf("problems = %v, want unbaselined body-length failure despite allow directive", problems)
+	}
+
+	base.BodyLengths[entryKey] = 1560
+	functions[0].BodyLines = 1561
+	problems, _ = evaluate(functions, base, limits)
+	if len(problems) != 1 || !strings.Contains(problems[0], "grew from the baselined 1560 to 1561") {
+		t.Fatalf("problems = %v, want body-length growth failure", problems)
+	}
+}
+
 func TestParseBaselineRejectsMalformedInput(t *testing.T) {
 	t.Parallel()
 	for name, content := range map[string]string{
@@ -276,6 +321,9 @@ func TestParseBaselineRejectsMalformedInput(t *testing.T) {
 		"blank entry justification":     "!ratchet-budget 1\n!entry-justification\ta.go\tfn\t42\t\n",
 		"blank budget justification":    "!ratchet-budget-justification\t2\t\n!ratchet-budget 1\n",
 		"duplicate entry justification": "!ratchet-budget 1\n!entry-justification\ta.go\tfn\t42\tone\n!entry-justification\ta.go\tfn\t42\ttwo\n",
+		"duplicate body-length cap":     "!ratchet-budget 1\n!body-length-cap 200\n!body-length-cap 201\n",
+		"duplicate body-length entry":   "!ratchet-budget 1\n!body-length\ta.go\tfn\t200\n!body-length\ta.go\tfn\t201\n",
+		"blank body justification":      "!ratchet-budget 1\n!body-length-justification\ta.go\tfn\t201\t\n",
 	} {
 		if _, err := parseBaseline(strings.NewReader(content)); err == nil {
 			t.Errorf("%s: parseBaseline succeeded, want an error", name)
@@ -308,10 +356,13 @@ func TestValidateBaselineUpdateRequiresExactTargetJustifications(t *testing.T) {
 	entryKey := key("pkg/sample.go", "Branchy")
 	current := testBaseline(t, 1, map[string]int{entryKey: 5})
 	next := testBaseline(t, 2, map[string]int{entryKey: 6})
+	current.BodyLengthCap, next.BodyLengthCap = 200, 200
+	current.BodyLengths[entryKey] = 200
+	next.BodyLengths[entryKey] = 201
 
 	err := validateBaselineUpdate(&current, next)
-	if err == nil || !strings.Contains(err.Error(), "would grow from 5 to 6") || !strings.Contains(err.Error(), "budget would grow from 1 to 2") {
-		t.Fatalf("validateBaselineUpdate error = %v, want score and budget justification failures", err)
+	if err == nil || !strings.Contains(err.Error(), "would grow from 5 to 6") || !strings.Contains(err.Error(), "budget would grow from 1 to 2") || !strings.Contains(err.Error(), "body length would grow from 200 to 201") {
+		t.Fatalf("validateBaselineUpdate error = %v, want score, budget, and body-length justification failures", err)
 	}
 
 	next.EntryJustifications[entryKey] = justification{Target: 7, Reason: "wrong target"}
@@ -322,8 +373,30 @@ func TestValidateBaselineUpdateRequiresExactTargetJustifications(t *testing.T) {
 
 	next.EntryJustifications[entryKey] = justification{Target: 6, Reason: "generated switch gained a required case"}
 	next.RatchetJustification = &justification{Target: 2, Reason: "new command remains above the ratchet"}
+	next.BodyJustifications[entryKey] = justification{Target: 201, Reason: "startup sequencing requires one more cleanup block"}
 	if err := validateBaselineUpdate(&current, next); err != nil {
 		t.Fatalf("validateBaselineUpdate rejected exact-target justifications: %v", err)
+	}
+}
+
+func TestBaselineForFunctionsDoesNotAdmitNewOversizedFunction(t *testing.T) {
+	t.Parallel()
+	limits := thresholds{hardCap: 40, ratchet: 25, report: 15, body: 200}
+	existingKey := key("existing.go", "Existing")
+	previous := testBaseline(t, 0, map[string]int{})
+	previous.BodyLengthCap = 200
+	previous.BodyLengths[existingKey] = 220
+	functions := []function{
+		{Path: "existing.go", Symbol: "Existing", BodyLines: 210},
+		{Path: "new.go", Symbol: "New", BodyLines: 250, Allowed: true},
+	}
+
+	next := baselineForFunctions(functions, limits, &previous, &previous)
+	if got := next.BodyLengths[existingKey]; got != 210 {
+		t.Fatalf("existing body-length baseline = %d, want tightened 210", got)
+	}
+	if _, exists := next.BodyLengths[key("new.go", "New")]; exists {
+		t.Fatal("updater admitted a new oversized function into the body-length baseline")
 	}
 }
 
@@ -422,6 +495,9 @@ func TestRunUpdateThenEnforceRoundTrips(t *testing.T) {
 	if !strings.Contains(stdout.String(), "baselined") {
 		t.Errorf("stdout = %q, want the tier summary", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "body lines") {
+		t.Errorf("stdout = %q, want body-length tier summary", stdout.String())
+	}
 }
 
 func TestRunUpdateRefusesGrowthUntilBaselineCarriesJustification(t *testing.T) {
@@ -502,6 +578,39 @@ func TestRunUpdateRejectsPreEditedBudgetWithoutJustification(t *testing.T) {
 	}
 }
 
+func TestRunUpdateCannotBaselineNewOversizedFunction(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	initGitRepository(t, root)
+	writeFile(t, filepath.Join(root, "pkg", "sample.go"), branchyFunction)
+	baselinePath := filepath.Join(root, defaultBaselinePath)
+	writeFile(t, baselinePath, "!ratchet-budget 0\n!body-length-cap 10\n!body-length\tpkg/sample.go\tBranchy\t15\n")
+	commitAll(t, root)
+	writeFile(t, filepath.Join(root, "pkg", "new.go"), longSequentialFunction)
+
+	args := []string{"-root", root, "-hard", "100", "-ratchet", "99", "-report", "98", "-body-length", "10"}
+	var stdout, stderr bytes.Buffer
+	if code := run(append(args, "-update"), &stdout, &stderr); code != 0 {
+		t.Fatalf("update exit = %d, stderr=%q", code, stderr.String())
+	}
+	written, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	if strings.Contains(string(written), "NewOversized") {
+		t.Fatalf("updater admitted new oversized function: %s", written)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(args, &stdout, &stderr); code != 1 {
+		t.Fatalf("enforce exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "NewOversized") || !strings.Contains(stderr.String(), "not in the baseline") {
+		t.Fatalf("stderr=%q, want new oversized-function refusal", stderr.String())
+	}
+}
+
 func TestRunFailsWhenBaselineIsMissing(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -536,17 +645,40 @@ func TestRepositoryBaselineIsCurrent(t *testing.T) {
 	if base.RatchetBudget <= 0 {
 		t.Fatalf("ratchet budget = %d, want a positive pinned value", base.RatchetBudget)
 	}
+	if base.BodyLengthCap != defaultBodyLength {
+		t.Fatalf("body-length cap = %d, want fixed default %d", base.BodyLengthCap, defaultBodyLength)
+	}
 	functions, err := scanTree(root)
 	if err != nil {
 		t.Fatalf("scanTree: %v", err)
 	}
 	present := make(map[string]bool, len(functions))
+	measuredBodyLengths := make(map[string]int, len(functions))
 	commands := 0
 	for _, current := range functions {
 		present[key(current.Path, current.Symbol)] = true
+		measuredBodyLengths[key(current.Path, current.Symbol)] = current.BodyLines
 		if current.Complexity >= defaultHardCap && strings.HasPrefix(current.Path, "cmd/") {
 			commands++
 		}
+	}
+	for entryKey, lines := range base.BodyLengths {
+		measured, exists := measuredBodyLengths[entryKey]
+		if !exists || measured > lines || lines < base.BodyLengthCap {
+			t.Errorf("body-length baseline %q = %d, measured %d, exists=%t", entryKey, lines, measured, exists)
+		}
+	}
+	for entryKey, measured := range measuredBodyLengths {
+		if measured < base.BodyLengthCap {
+			continue
+		}
+		if _, exists := base.BodyLengths[entryKey]; !exists {
+			t.Errorf("oversized function %q at %d lines is missing from body-length baseline", entryKey, measured)
+		}
+	}
+	upKey := key("cmd/goobers/up.go", "runUpContextWithForce")
+	if base.BodyLengths[upKey] == 0 {
+		t.Error("runUpContextWithForce must remain visible in the body-length baseline")
 	}
 	for entryKey := range base.Entries {
 		if !present[entryKey] {

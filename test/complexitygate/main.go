@@ -2,7 +2,7 @@
 // it has been paid down by hand (#4231).
 //
 // It parses every Go file in the tree, scores each function the way gocyclo
-// does (1 + branch points), and enforces three tiers:
+// does (1 + branch points), measures declaration length, and enforces four tiers:
 //
 //	hard cap (default 40)  a function at or above the cap must be listed in
 //	                       test/complexitygate/baseline.txt at no more than
@@ -13,6 +13,9 @@
 //	                       baseline. Dropping below it prints a note that the
 //	                       budget can be tightened.
 //	report (default 15)    counted and printed only; never fails.
+//	body length (default   functions at or above 200 lines must be in the
+//	200 lines)             length baseline at no more than their recorded size.
+//	                       New oversized functions cannot be baselined.
 //
 // The baseline is keyed by file path plus symbol, so moving a function to
 // another file does not hand it fresh headroom: the moved copy is an unknown
@@ -28,6 +31,7 @@
 // entry is exempt from the hard cap while still counting toward the ratchet
 // budget. Once an allowed function is baselined, its recorded score remains a
 // ceiling and the ordinary growth and stale-entry checks apply.
+// This escape hatch never exempts a function from the body-length tier.
 //
 // Unlike test/coveragegate this gate does NOT exclude cmd/: command mains are
 // where complexity has grown fastest.
@@ -57,11 +61,15 @@ const (
 	defaultHardCap      = 40
 	defaultRatchet      = 25
 	defaultReport       = 15
+	defaultBodyLength   = 200
 
 	allowDirective               = "//complexitygate:allow"
 	budgetDirective              = "!ratchet-budget"
 	entryJustificationDirective  = "!entry-justification"
 	budgetJustificationDirective = "!ratchet-budget-justification"
+	bodyLengthCapDirective       = "!body-length-cap"
+	bodyLengthDirective          = "!body-length"
+	bodyLengthJustification      = "!body-length-justification"
 )
 
 // skippedDirectories are trees that hold no first-party Go code worth scoring.
@@ -77,6 +85,7 @@ type function struct {
 	Path       string
 	Symbol     string
 	Complexity int
+	BodyLines  int
 	Line       int
 	Allowed    bool
 	AllowBlank bool
@@ -87,6 +96,9 @@ type baseline struct {
 	EntryJustifications  map[string]justification
 	RatchetBudget        int
 	RatchetJustification *justification
+	BodyLengths          map[string]int
+	BodyJustifications   map[string]justification
+	BodyLengthCap        int
 }
 
 type justification struct {
@@ -98,6 +110,7 @@ type thresholds struct {
 	hardCap int
 	ratchet int
 	report  int
+	body    int
 }
 
 func main() {
@@ -113,11 +126,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	hardCap := flags.Int("hard", defaultHardCap, "complexity at or above which a function must be baselined")
 	ratchet := flags.Int("ratchet", defaultRatchet, "complexity counted against the baseline's budget")
 	report := flags.Int("report", defaultReport, "complexity counted for the report-only tier")
+	bodyLength := flags.Int("body-length", defaultBodyLength, "function body length at or above which an existing baseline entry is required")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	limits := thresholds{hardCap: *hardCap, ratchet: *ratchet, report: *report}
-	if limits.hardCap < 1 || limits.ratchet < 1 || limits.report < 1 {
+	limits := thresholds{hardCap: *hardCap, ratchet: *ratchet, report: *report, body: *bodyLength}
+	if limits.hardCap < 1 || limits.ratchet < 1 || limits.report < 1 || limits.body < 1 {
 		_, _ = fmt.Fprintln(stderr, "complexitygate: thresholds must be positive")
 		return 2
 	}
@@ -161,6 +175,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline: %v\n", err)
 		return 1
 	}
+	if base.BodyLengthCap < 0 {
+		_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline: missing %s directive\n", bodyLengthCapDirective)
+		return 1
+	}
 
 	problems, notes := evaluate(functions, base, limits)
 	for _, note := range notes {
@@ -171,16 +189,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintln(stderr, problem)
 		}
 		_, _ = fmt.Fprintf(stderr,
-			"complexitygate: decompose the function, or record a deliberate exception with `%s <why>`; `make complexity-update` re-pins the baseline after a decomposition\n",
+			"complexitygate: decompose the function; CC-only generated exceptions may use `%s <why>`, while the body-length cap has no exemption; `make complexity-update` records decreases and justified growth of existing entries\n",
 			allowDirective)
 		return 1
 	}
 
 	_, _ = fmt.Fprintf(stdout,
-		"complexitygate: %d functions >= %d (report-only), %d >= %d (budget %d), %d >= %d (baselined)\n",
+		"complexitygate: %d functions >= %d (report-only), %d >= %d (budget %d), %d >= %d (baselined), %d functions >= %d body lines (%d baselined)\n",
 		countAtLeast(functions, limits.report), limits.report,
 		countAtLeast(functions, limits.ratchet), limits.ratchet, base.RatchetBudget,
 		countAtLeast(functions, limits.hardCap), limits.hardCap,
+		countBodyLengthAtLeast(functions, limits.body), limits.body, len(base.BodyLengths),
 	)
 	return 0
 }
@@ -279,6 +298,7 @@ func scanFile(path string, source []byte) ([]function, error) {
 			Path:       path,
 			Symbol:     symbolName(declared),
 			Complexity: complexity(declared),
+			BodyLines:  fileSet.Position(declared.End()).Line - fileSet.Position(declared.Pos()).Line + 1,
 			Line:       fileSet.Position(declared.Pos()).Line,
 			Allowed:    allowed,
 			AllowBlank: blank,
@@ -384,6 +404,16 @@ func countAtLeast(functions []function, threshold int) int {
 	return count
 }
 
+func countBodyLengthAtLeast(functions []function, threshold int) int {
+	count := 0
+	for _, current := range functions {
+		if current.BodyLines >= threshold {
+			count++
+		}
+	}
+	return count
+}
+
 func readBaseline(path string) (baseline, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -398,6 +428,9 @@ func parseBaseline(reader io.Reader) (baseline, error) {
 		Entries:             make(map[string]int),
 		EntryJustifications: make(map[string]justification),
 		RatchetBudget:       -1,
+		BodyLengths:         make(map[string]int),
+		BodyJustifications:  make(map[string]justification),
+		BodyLengthCap:       -1,
 	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -407,6 +440,13 @@ func parseBaseline(reader io.Reader) (baseline, error) {
 			continue
 		}
 		handled, err := parseJustificationLine(line, lineNumber, &result)
+		if err != nil {
+			return baseline{}, err
+		}
+		if handled {
+			continue
+		}
+		handled, err = parseBodyLengthLine(line, lineNumber, &result)
 		if err != nil {
 			return baseline{}, err
 		}
@@ -446,6 +486,58 @@ func parseBaseline(reader io.Reader) (baseline, error) {
 		return baseline{}, fmt.Errorf("missing %s directive", budgetDirective)
 	}
 	return result, nil
+}
+
+func parseBodyLengthLine(line string, lineNumber int, result *baseline) (bool, error) {
+	if strings.HasPrefix(line, bodyLengthCapDirective+" ") {
+		if result.BodyLengthCap >= 0 {
+			return true, fmt.Errorf("line %d: duplicate %s", lineNumber, bodyLengthCapDirective)
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(line, bodyLengthCapDirective))
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 {
+			return true, fmt.Errorf("line %d: %s wants a positive integer, got %q", lineNumber, bodyLengthCapDirective, raw)
+		}
+		result.BodyLengthCap = value
+		return true, nil
+	}
+	if strings.HasPrefix(line, bodyLengthDirective+"\t") {
+		fields := strings.Split(strings.TrimPrefix(line, bodyLengthDirective+"\t"), "\t")
+		if len(fields) != 3 {
+			return true, fmt.Errorf("line %d: want %s\\t<path>\\t<symbol>\\t<lines>", lineNumber, bodyLengthDirective)
+		}
+		lines, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if err != nil || lines < 1 {
+			return true, fmt.Errorf("line %d: body length %q is not a positive integer", lineNumber, fields[2])
+		}
+		entryKey := key(fields[0], fields[1])
+		if _, duplicate := result.BodyLengths[entryKey]; duplicate {
+			return true, fmt.Errorf("line %d: duplicate body-length entry %s %s", lineNumber, fields[0], fields[1])
+		}
+		result.BodyLengths[entryKey] = lines
+		return true, nil
+	}
+	if !strings.HasPrefix(line, bodyLengthJustification+"\t") {
+		return false, nil
+	}
+	fields := strings.SplitN(strings.TrimPrefix(line, bodyLengthJustification+"\t"), "\t", 4)
+	if len(fields) != 4 {
+		return true, fmt.Errorf("line %d: want %s\\t<path>\\t<symbol>\\t<target>\\t<why>", lineNumber, bodyLengthJustification)
+	}
+	target, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+	if err != nil || target < 1 {
+		return true, fmt.Errorf("line %d: body-length justification target %q is not a positive integer", lineNumber, fields[2])
+	}
+	reason := strings.TrimSpace(fields[3])
+	if reason == "" {
+		return true, fmt.Errorf("line %d: %s needs a justification", lineNumber, bodyLengthJustification)
+	}
+	entryKey := key(fields[0], fields[1])
+	if _, duplicate := result.BodyJustifications[entryKey]; duplicate {
+		return true, fmt.Errorf("line %d: duplicate body-length justification for %s %s", lineNumber, fields[0], fields[1])
+	}
+	result.BodyJustifications[entryKey] = justification{Target: target, Reason: reason}
+	return true, nil
 }
 
 func parseJustificationLine(line string, lineNumber int, result *baseline) (bool, error) {
@@ -533,6 +625,9 @@ func evaluate(functions []function, base baseline, limits thresholds) (problems,
 			path, symbol,
 		))
 	}
+	bodyProblems, bodyNotes := evaluateBodyLengths(functions, base, limits.body)
+	problems = append(problems, bodyProblems...)
+	notes = append(notes, bodyNotes...)
 
 	ratchetCount := countAtLeast(functions, limits.ratchet)
 	switch {
@@ -551,13 +646,54 @@ func evaluate(functions []function, base baseline, limits thresholds) (problems,
 	return problems, notes
 }
 
+func evaluateBodyLengths(functions []function, base baseline, limit int) (problems, notes []string) {
+	if base.BodyLengthCap < 0 {
+		return nil, nil
+	}
+	if base.BodyLengthCap != limit {
+		return []string{fmt.Sprintf("complexitygate: body-length cap is %d in the baseline, but the configured fixed cap is %d", base.BodyLengthCap, limit)}, nil
+	}
+	seen := make(map[string]bool)
+	for _, current := range functions {
+		if current.BodyLines < limit {
+			continue
+		}
+		entryKey := key(current.Path, current.Symbol)
+		recorded, baselined := base.BodyLengths[entryKey]
+		seen[entryKey] = true
+		switch {
+		case !baselined:
+			problems = append(problems, fmt.Sprintf(
+				"%s:%d: %s: body length %d is at or above the fixed cap of %d and is not in the baseline",
+				current.Path, current.Line, current.Symbol, current.BodyLines, limit,
+			))
+		case current.BodyLines > recorded:
+			problems = append(problems, fmt.Sprintf(
+				"%s:%d: %s: body length grew from the baselined %d to %d",
+				current.Path, current.Line, current.Symbol, recorded, current.BodyLines,
+			))
+		}
+	}
+	for entryKey := range base.BodyLengths {
+		if seen[entryKey] {
+			continue
+		}
+		path, symbol, _ := strings.Cut(entryKey, "\t")
+		notes = append(notes, fmt.Sprintf(
+			"complexitygate: stale body-length baseline entry %s %s is now below the cap; drop it with `make complexity-update`",
+			path, symbol,
+		))
+	}
+	return problems, notes
+}
+
 func writeBaseline(path string, functions []function, limits thresholds, previous, candidate *baseline) error {
 	next := baselineForFunctions(functions, limits, previous, candidate)
 	if err := validateBaselineUpdate(previous, next); err != nil {
 		return err
 	}
 	var builder strings.Builder
-	builder.WriteString("# Cyclomatic-complexity baseline for test/complexitygate (#4231).\n")
+	builder.WriteString("# Complexity and body-length baseline for test/complexitygate (#4231, #4847).\n")
 	builder.WriteString("# Generated by `make complexity-update`; do not hand-edit the scores.\n")
 	builder.WriteString("#\n")
 	fmt.Fprintf(&builder, "# Entries are every function at or above the hard cap of %d, keyed by\n", limits.hardCap)
@@ -567,6 +703,11 @@ func writeBaseline(path string, functions []function, limits thresholds, previou
 	builder.WriteString("# Score or budget increases require an exact-target justification directive.\n")
 	fmt.Fprintf(&builder, "# %s\\t<path>\\t<symbol>\\t<target>\\t<why>\n", entryJustificationDirective)
 	fmt.Fprintf(&builder, "# %s\\t<target>\\t<why>\n", budgetJustificationDirective)
+	fmt.Fprintf(&builder, "# Functions at or above %d lines are frozen in a separate path+symbol baseline.\n", limits.body)
+	builder.WriteString("# Once this tier exists, newly oversized functions cannot be added by the updater.\n")
+	fmt.Fprintf(&builder, "# %s <lines>\n", bodyLengthCapDirective)
+	fmt.Fprintf(&builder, "# %s\\t<path>\\t<symbol>\\t<lines>\n", bodyLengthDirective)
+	fmt.Fprintf(&builder, "# %s\\t<path>\\t<symbol>\\t<target>\\t<why>\n", bodyLengthJustification)
 	if next.RatchetJustification != nil {
 		fmt.Fprintf(&builder, "%s\t%d\t%s\n", budgetJustificationDirective, next.RatchetJustification.Target, next.RatchetJustification.Reason)
 	}
@@ -582,6 +723,18 @@ func writeBaseline(path string, functions []function, limits thresholds, previou
 		}
 		fmt.Fprintf(&builder, "%s\t%s\t%d\n", scored.Path, scored.Symbol, score)
 	}
+	fmt.Fprintf(&builder, "%s %d\n", bodyLengthCapDirective, next.BodyLengthCap)
+	for _, scored := range functions {
+		entryKey := key(scored.Path, scored.Symbol)
+		lines, included := next.BodyLengths[entryKey]
+		if !included {
+			continue
+		}
+		if reason, ok := next.BodyJustifications[entryKey]; ok {
+			fmt.Fprintf(&builder, "%s\t%s\t%s\t%d\t%s\n", bodyLengthJustification, scored.Path, scored.Symbol, reason.Target, reason.Reason)
+		}
+		fmt.Fprintf(&builder, "%s\t%s\t%s\t%d\n", bodyLengthDirective, scored.Path, scored.Symbol, lines)
+	}
 	return os.WriteFile(path, []byte(builder.String()), 0o644)
 }
 
@@ -590,6 +743,9 @@ func baselineForFunctions(functions []function, limits thresholds, previous, can
 		Entries:             make(map[string]int),
 		EntryJustifications: make(map[string]justification),
 		RatchetBudget:       countAtLeast(functions, limits.ratchet),
+		BodyLengths:         make(map[string]int),
+		BodyJustifications:  make(map[string]justification),
+		BodyLengthCap:       limits.body,
 	}
 	for _, scored := range functions {
 		if scored.Complexity < limits.hardCap {
@@ -601,6 +757,17 @@ func baselineForFunctions(functions []function, limits thresholds, previous, can
 			continue
 		}
 		next.Entries[entryKey] = scored.Complexity
+	}
+	seedBodyLengths := previous == nil || previous.BodyLengthCap < 0
+	for _, measured := range functions {
+		if measured.BodyLines < limits.body {
+			continue
+		}
+		entryKey := key(measured.Path, measured.Symbol)
+		_, alreadyBaselined := bodyLengthEntry(previous, entryKey)
+		if seedBodyLengths || alreadyBaselined {
+			next.BodyLengths[entryKey] = measured.BodyLines
+		}
 	}
 	if candidate == nil {
 		return next
@@ -614,6 +781,11 @@ func baselineForFunctions(functions []function, limits thresholds, previous, can
 			next.EntryJustifications[entryKey] = reason
 		}
 	}
+	for entryKey, reason := range candidate.BodyJustifications {
+		if lines, ok := next.BodyLengths[entryKey]; ok && reason.Target == lines {
+			next.BodyJustifications[entryKey] = reason
+		}
+	}
 	return next
 }
 
@@ -625,11 +797,22 @@ func baselineEntry(current *baseline, entryKey string) (int, bool) {
 	return score, ok
 }
 
+func bodyLengthEntry(current *baseline, entryKey string) (int, bool) {
+	if current == nil {
+		return 0, false
+	}
+	lines, ok := current.BodyLengths[entryKey]
+	return lines, ok
+}
+
 func validateBaselineUpdate(current *baseline, next baseline) error {
 	if current == nil {
 		return nil
 	}
 	var problems []string
+	if current.BodyLengthCap >= 0 && next.BodyLengthCap != current.BodyLengthCap {
+		problems = append(problems, fmt.Sprintf("body-length cap is fixed at %d and cannot change to %d", current.BodyLengthCap, next.BodyLengthCap))
+	}
 	if next.RatchetBudget > current.RatchetBudget && !justifies(next.RatchetJustification, next.RatchetBudget) {
 		problems = append(problems, fmt.Sprintf(
 			"ratchet budget would grow from %d to %d without %s\\t%d\\t<why>",
@@ -648,6 +831,20 @@ func validateBaselineUpdate(current *baseline, next baseline) error {
 		problems = append(problems, fmt.Sprintf(
 			"%s %s would grow from %d to %d without %s\\t%s\\t%s\\t%d\\t<why>",
 			path, symbol, previousScore, nextScore, entryJustificationDirective, path, symbol, nextScore,
+		))
+	}
+	for entryKey, nextLines := range next.BodyLengths {
+		previousLines, existed := current.BodyLengths[entryKey]
+		if !existed || nextLines <= previousLines {
+			continue
+		}
+		if reason, ok := next.BodyJustifications[entryKey]; ok && reason.Target == nextLines && strings.TrimSpace(reason.Reason) != "" {
+			continue
+		}
+		path, symbol, _ := strings.Cut(entryKey, "\t")
+		problems = append(problems, fmt.Sprintf(
+			"%s %s body length would grow from %d to %d without %s\\t%s\\t%s\\t%d\\t<why>",
+			path, symbol, previousLines, nextLines, bodyLengthJustification, path, symbol, nextLines,
 		))
 	}
 	if len(problems) == 0 {
