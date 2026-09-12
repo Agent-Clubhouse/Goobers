@@ -52,6 +52,18 @@ describe("data freshness derivation", () => {
     }
   });
 
+  it("treats no sweep as expected on a fresh standalone instance", async () => {
+    const state = deriveDataFreshness(
+      readState({ lagSeconds: 0, degraded: ["no_sweep_completed"] }),
+      "standalone",
+    );
+    expect(state).toEqual({ kind: "current", lagSeconds: 0 });
+    const { PortalShellDataFreshnessProbe } = await import("./DataFreshnessProbe");
+    render(<PortalShellDataFreshnessProbe state={state} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Data current");
+    expect(screen.queryByText("Data degraded")).toBeNull();
+  });
+
   // Partial outranks lagging: a named missing partition is a stronger statement
   // than a number. The user needs to know something is absent before they need
   // to know how old the rest is.

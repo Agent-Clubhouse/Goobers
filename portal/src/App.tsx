@@ -72,7 +72,13 @@ export function App({
   }
 
   return (
-    <LiveDataProvider client={client} diagnostics={diagnostics} cursorScope={cursorScope} config={liveDataConfig}>
+    <LiveDataProvider
+      client={client}
+      diagnostics={diagnostics}
+      cursorScope={cursorScope}
+      config={liveDataConfig}
+      standalone={mode === "standalone"}
+    >
       <Portal client={client} mode={mode} warningClient={warningClient} />
     </LiveDataProvider>
   );

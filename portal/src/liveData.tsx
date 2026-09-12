@@ -198,12 +198,14 @@ export function LiveDataProvider({
   config,
   diagnostics,
   cursorScope,
+	standalone = false,
 }: {
   children: ReactNode;
   client: DaemonClient;
   config?: Partial<LiveDataConfig>;
   diagnostics?: PortalDiagnostics;
   cursorScope?: string;
+	standalone?: boolean;
 }) {
   const cache = useMemo(() => new SessionDataCache(), [client]);
   const controller = useMemo(
@@ -236,8 +238,8 @@ export function LiveDataProvider({
   const [admissionState, setAdmissionState] = useState<AdmissionDegradedState | undefined>();
 
   const reportReadState = useCallback((state: ReadState) => {
-    setDataFreshness(deriveDataFreshness(state));
-  }, []);
+		setDataFreshness(deriveDataFreshness(state, standalone ? "standalone" : "daemon"));
+	}, [standalone]);
 
   // Registered in a layout effect so the sink is live before the first paint,
   // and torn down with the provider — a stale sink would keep a dead
@@ -1473,12 +1475,18 @@ export function publishAdmissionState(state: AdmissionDegradedState | undefined)
   admissionStateSink?.(state);
 }
 
-export function deriveDataFreshness(state: ReadState): DataFreshness {
+export function deriveDataFreshness(
+	state: ReadState,
+	mode: "daemon" | "standalone" = "daemon",
+): DataFreshness {
   if (state.completeness === "partial" && state.missing && state.missing.length > 0) {
     return { kind: "partial", lagSeconds: state.lagSeconds, missing: state.missing };
   }
-  if (state.lagSeconds > LAGGING_THRESHOLD_SECONDS || state.degraded.length > 0) {
-    return { kind: "lagging", lagSeconds: state.lagSeconds, degraded: state.degraded };
+	const degraded = mode === "standalone"
+		? state.degraded.filter((reason) => reason !== "no_sweep_completed")
+		: state.degraded;
+	if (state.lagSeconds > LAGGING_THRESHOLD_SECONDS || degraded.length > 0) {
+		return { kind: "lagging", lagSeconds: state.lagSeconds, degraded };
   }
   return { kind: "current", lagSeconds: state.lagSeconds };
 }
