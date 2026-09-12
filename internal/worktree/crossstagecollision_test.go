@@ -361,7 +361,7 @@ func TestManagerReapRetriesCleanupPendingWithLiveDaemonPID(t *testing.T) {
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("Reap = %+v warnings=%+v err=%v", results, warnings, err)
 	}
-	if len(results) != 1 || results[0].RunID != wt.RunID || results[0].Reason != ReapReasonOrphaned {
+	if len(results) != 1 || results[0].RunID != wt.RunID || results[0].Reason != ReapReasonCleanupPending {
 		t.Fatalf("Reap results = %+v, want cleanup-pending worktree", results)
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
