@@ -1039,6 +1039,36 @@ func TestApplyRuntimeTogglesKeepsRaceByDefault(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeTogglesDropsCoverageWhenDisabled(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	env := func(name string) string {
+		if name == "GOOBERS_CI_COVERAGE" {
+			return "0"
+		}
+		return ""
+	}
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), env)
+	args := labelArgs(unit, "test")
+	for _, coverageArg := range []string{"-covermode=atomic", "-coverprofile=coverage.out"} {
+		if slices.Contains(args, coverageArg) {
+			t.Errorf("unit test retained %s with GOOBERS_CI_COVERAGE=0: %q", coverageArg, args)
+		}
+	}
+}
+
+func TestApplyRuntimeTogglesKeepsCoverageByDefault(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(string) string { return "" })
+	args := labelArgs(unit, "test")
+	for _, coverageArg := range []string{"-covermode=atomic", "-coverprofile=coverage.out"} {
+		if !slices.Contains(args, coverageArg) {
+			t.Errorf("unit test dropped %s by default: %q", coverageArg, args)
+		}
+	}
+}
+
 func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
 	t.Parallel()
 	all := mergeGateChecks()
