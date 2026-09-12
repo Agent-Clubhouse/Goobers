@@ -101,6 +101,19 @@ func daemonChangeFeedHandlerOptions(setup *schedulerSetup) []httpapi.HandlerOpti
 	return []httpapi.HandlerOption{httpapi.WithChangeFeedStream(setup.ReadModel)}
 }
 
+func appendWorkerDivergenceHandlerOption(options []httpapi.HandlerOption, setup *schedulerSetup) ([]httpapi.HandlerOption, error) {
+	option, err := newWorkerDivergenceHandlerOption(setup.InstanceLog, setup.Config)
+	if err != nil {
+		return options, err
+	}
+	return append(options, option), nil
+}
+
+func reportDaemonStartupError(stderr io.Writer, operation string, err error) int {
+	pf(stderr, "error: %s: %v\n", operation, err)
+	return 1
+}
+
 // diagnosticsMode is set true by `goobers up --diagnostics`. Read in
 // buildRunnerConfig to arm the executor's per-stage diagnostics watchdog and
 // un-truncate stage output. A package var (like runProcessExits) so it threads
@@ -861,12 +874,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// its own has diverged instead of finding out when an agentic gate refuses.
 	configDigests := newConfigDigestPublisher(setup.ConfigDigest)
 	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithConfigDigest(configDigests.Get))
-	workerDivergenceOption, err := newWorkerDivergenceHandlerOption(setup.InstanceLog, setup.Config)
-	if err != nil {
-		pf(stderr, "error: initialize worker config-divergence reporting: %v\n", err)
-		return 1
+	if apiHandlerOpts, err = appendWorkerDivergenceHandlerOption(apiHandlerOpts, setup); err != nil {
+		return reportDaemonStartupError(stderr, "initialize worker config-divergence reporting", err)
 	}
-	apiHandlerOpts = append(apiHandlerOpts, workerDivergenceOption)
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)
