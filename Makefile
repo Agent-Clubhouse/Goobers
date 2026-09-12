@@ -102,11 +102,12 @@ manifests:
 manifests-check: manifests
 	git diff --exit-code -- config/crd/bases
 
-## docs: Regenerate all committed documentation derived from runtime registries.
+## docs: Regenerate committed documentation and corpus indexes.
 .PHONY: docs
 docs:
 	$(GO) run ./cmd/goobers __generate-docs docs
 	$(GO) run ./test/designstatus -write
+	$(GO) run ./test/markdownlinks -write
 
 ## test-integration: Run declared-dependency integration tests (missing tools skip locally).
 .PHONY: test-integration
@@ -200,12 +201,12 @@ vulncheck:
 deadcode:
 	$(GO) run ./test/deadcode -go $(GO)
 
-## complexity: Enforce the cyclomatic-complexity caps against the pinned baseline.
+## complexity: Enforce cyclomatic-complexity and body-length caps against the pinned baseline.
 .PHONY: complexity
 complexity:
 	$(GO) run ./test/complexitygate
 
-## complexity-update: Re-pin the complexity baseline to the current tree.
+## complexity-update: Re-pin existing complexity and body-length baselines.
 # Run after a deliberate decomposition (or when a new offender is genuinely
 # unavoidable and carries a //complexitygate:allow justification).
 .PHONY: complexity-update
@@ -348,7 +349,11 @@ portal-ci: portal-audit portal-build portal-test portal-e2e portal-deadcode port
 ## extension-test: Run the canvas extension Node --test suites for goobers-portal.
 .PHONY: extension-test
 extension-test:
-	node --test .github/extensions/goobers-portal/*.test.mjs
+	node --test --experimental-test-coverage \
+		'--test-coverage-include=.github/extensions/goobers-portal/*.mjs' \
+		'--test-coverage-exclude=.github/extensions/goobers-portal/*.test.mjs' \
+		--test-coverage-lines=68 --test-coverage-branches=73 --test-coverage-functions=64 \
+		.github/extensions/goobers-portal/*.test.mjs
 
 ## cover: Show total test coverage.
 .PHONY: cover

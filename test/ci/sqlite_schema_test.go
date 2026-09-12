@@ -21,6 +21,7 @@ import (
 var auditedSQLOpeners = []string{
 	"internal/cancelreceipt/store.go:Open:Open",
 	"internal/readmodel/existing_reader.go:OpenExistingReader:Open",
+	"internal/readmodel/intake/existing_reader.go:OpenExistingReader:Open",
 	"internal/readmodel/intake/intake.go:Open:Open",
 	"internal/readmodel/rebuild.go:reopenLocked:Open",
 	"internal/readmodel/store.go:Open:Open",

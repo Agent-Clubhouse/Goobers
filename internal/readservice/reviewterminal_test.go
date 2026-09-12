@@ -51,7 +51,7 @@ func TestTerminalReviewPreservesDispositionAndEvidence(t *testing.T) {
 				}
 				finishFixtureRun(t, run, clock, phase)
 				service.now = func() time.Time { return fixedTime.Add(time.Hour) }
-				rows, err := service.ListStatusRuns(context.Background())
+				rows, err := service.ListStatusRuns(context.Background(), StatusRunOptions{})
 				if err != nil {
 					t.Fatal(err)
 				}

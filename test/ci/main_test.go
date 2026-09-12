@@ -445,7 +445,24 @@ func TestExtensionTestCheckUsesNodeAndCoversAllTestFiles(t *testing.T) {
 	if len(current.args) == 0 || current.args[0] != "--test" {
 		t.Fatalf("extension-test args = %q, first arg must be --test", current.args)
 	}
-	testFiles := current.args[1:]
+	for _, want := range []string{
+		"--experimental-test-coverage",
+		"--test-coverage-include=.github/extensions/goobers-portal/*.mjs",
+		"--test-coverage-exclude=.github/extensions/goobers-portal/*.test.mjs",
+		"--test-coverage-lines=68",
+		"--test-coverage-branches=73",
+		"--test-coverage-functions=64",
+	} {
+		if !slices.Contains(current.args, want) {
+			t.Errorf("extension-test args omit coverage ratchet %q: %q", want, current.args)
+		}
+	}
+	var testFiles []string
+	for _, arg := range current.args[1:] {
+		if !strings.HasPrefix(arg, "--") && strings.HasSuffix(arg, ".test.mjs") {
+			testFiles = append(testFiles, arg)
+		}
+	}
 	dir := ".github/extensions/goobers-portal/"
 	seen := map[string]bool{}
 	for _, arg := range testFiles {
@@ -1019,6 +1036,36 @@ func TestApplyRuntimeTogglesKeepsRaceByDefault(t *testing.T) {
 	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(string) string { return "" })
 	if !slices.Contains(labelArgs(unit, "test"), "-race") {
 		t.Errorf("unit test dropped -race by default: %q", labelArgs(unit, "test"))
+	}
+}
+
+func TestApplyRuntimeTogglesDropsCoverageWhenDisabled(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	env := func(name string) string {
+		if name == "GOOBERS_CI_COVERAGE" {
+			return "0"
+		}
+		return ""
+	}
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), env)
+	args := labelArgs(unit, "test")
+	for _, coverageArg := range []string{"-covermode=atomic", "-coverprofile=coverage.out"} {
+		if slices.Contains(args, coverageArg) {
+			t.Errorf("unit test retained %s with GOOBERS_CI_COVERAGE=0: %q", coverageArg, args)
+		}
+	}
+}
+
+func TestApplyRuntimeTogglesKeepsCoverageByDefault(t *testing.T) {
+	t.Parallel()
+	all := mergeGateChecks()
+	unit := applyRuntimeToggles(groupChecksOnly(all, groupUnit), func(string) string { return "" })
+	args := labelArgs(unit, "test")
+	for _, coverageArg := range []string{"-covermode=atomic", "-coverprofile=coverage.out"} {
+		if !slices.Contains(args, coverageArg) {
+			t.Errorf("unit test dropped %s by default: %q", coverageArg, args)
+		}
 	}
 }
 

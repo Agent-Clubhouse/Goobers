@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -515,33 +516,78 @@ func (c Collector) scrub(bundle Bundle) Bundle {
 	if c.Scrubber == nil {
 		return bundle
 	}
-	clean := func(s string) string {
-		if s == "" {
-			return s
+	return scrubBundleValue(reflect.ValueOf(bundle), c.Scrubber).Interface().(Bundle)
+}
+
+// scrubBundleValue returns a scrubbed copy of v. Reflection is deliberate: the
+// Bundle contract grows over time, and a newly added string must be protected
+// on arrival rather than waiting for a second hand-maintained field list.
+func scrubBundleValue(v reflect.Value, scrubber Scrubber) reflect.Value {
+	if !v.IsValid() {
+		return v
+	}
+	switch v.Kind() {
+	case reflect.String:
+		if v.Len() == 0 {
+			return v
 		}
-		return string(c.Scrubber.Scrub([]byte(s)))
-	}
-	for i := range bundle.Notes {
-		bundle.Notes[i] = clean(bundle.Notes[i])
-	}
-	for i := range bundle.Credentials {
-		bundle.Credentials[i].SourceName = clean(bundle.Credentials[i].SourceName)
-	}
-	for i := range bundle.Runs {
-		run := &bundle.Runs[i]
-		if run.DecisiveError != nil {
-			run.DecisiveError.Message = clean(run.DecisiveError.Message)
+		return reflect.ValueOf(string(scrubber.Scrub([]byte(v.String())))).Convert(v.Type())
+	case reflect.Pointer:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
 		}
-		for j := range run.Stages {
-			if run.Stages[j].Error != nil {
-				run.Stages[j].Error.Message = clean(run.Stages[j].Error.Message)
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(scrubBundleValue(v.Elem(), scrubber))
+		return out
+	case reflect.Interface:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.New(v.Type()).Elem()
+		out.Set(scrubBundleValue(v.Elem(), scrubber))
+		return out
+	case reflect.Struct:
+		out := reflect.New(v.Type()).Elem()
+		out.Set(v)
+		for i := 0; i < v.NumField(); i++ {
+			// Bundle fields are exported. Preserve an unexported field unchanged
+			// if a future nested implementation type introduces one.
+			if v.Type().Field(i).PkgPath == "" {
+				out.Field(i).Set(scrubBundleValue(v.Field(i), scrubber))
 			}
 		}
-		for j := range run.Decisions {
-			run.Decisions[j].Reason = clean(run.Decisions[j].Reason)
+		return out
+	case reflect.Slice:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
 		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Cap())
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(scrubBundleValue(v.Index(i), scrubber))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(v.Type()).Elem()
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(scrubBundleValue(v.Index(i), scrubber))
+		}
+		return out
+	case reflect.Map:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.MakeMapWithSize(v.Type(), v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(
+				scrubBundleValue(iter.Key(), scrubber),
+				scrubBundleValue(iter.Value(), scrubber),
+			)
+		}
+		return out
+	default:
+		return v
 	}
-	return bundle
 }
 
 // CredentialPresenceFor builds a presence record without resolving anything.

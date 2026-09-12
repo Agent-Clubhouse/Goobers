@@ -50,6 +50,46 @@ func decodeInto(t *testing.T, d map[string]any, out any) {
 	}
 }
 
+func TestReferenceNamespaceGuidanceStatesCurrentRoutingWithoutChoosingPolicy(t *testing.T) {
+	for path, required := range map[string][]string{
+		"worker-deployment.yaml": {
+			"all loaded gaggles share this", "race nondeterministically",
+			"dedicated queue", "dynamic gaggle-to-namespace mapping", "demoting", "isolation field",
+		},
+		"../README.md": {
+			"All loaded gaggles", "race nondeterministically",
+			"dedicated queue", "dynamic gaggle-to-namespace mapping", "demoting the isolation field",
+		},
+		"NETWORKING.md": {
+			"one worker-wide flag", "race nondeterministically", "does not enforce",
+		},
+		"../gaggle-namespace/base/dispatcher-rbac.yaml": {
+			"All loaded gaggles share", "race nondeterministically", "does not enforce",
+		},
+		"../../../docs/design/k8s-infra-shape.md": {
+			"race nondeterministically", "does not enforce per-gaggle isolation",
+			"dedicated queue", "dynamic gaggle-to-namespace mapping", "demotion of the isolation field",
+		},
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := strings.Join(strings.Fields(string(data)), " ")
+		for _, phrase := range required {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s: missing current-behavior phrase %q", path, phrase)
+			}
+		}
+		lower := strings.ToLower(content)
+		for _, policyClaim := range []string{"safe only", "supported topology", "recommended future"} {
+			if strings.Contains(lower, policyClaim) {
+				t.Errorf("%s: contains policy-bearing claim %q", path, policyClaim)
+			}
+		}
+	}
+}
+
 // matchLabelsSatisfiedBy reports whether every key/value in want is present
 // and equal in have — a MatchLabels selector is satisfied by a superset.
 func matchLabelsSatisfiedBy(want, have map[string]string) bool {

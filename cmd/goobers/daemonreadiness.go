@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -30,4 +31,43 @@ func prepareDaemonReadiness(ctx context.Context, reads *readservice.Local, addre
 		return fmt.Errorf("initialize active-run counts: %w", err)
 	}
 	return publishDaemonAPIAddress(addressPath, address)
+}
+
+// daemonStartupStoppedByShutdown distinguishes cancellation of the daemon's
+// root lifecycle from a failure of a startup operation itself. A private
+// operation timeout while the root context is still live, or an unrelated
+// error that happens while shutdown is also in progress, must continue to fail
+// startup.
+func daemonStartupStoppedByShutdown(ctx context.Context, err error) bool {
+	shutdownErr := ctx.Err()
+	if shutdownErr == nil {
+		return false
+	}
+	return errors.Is(err, shutdownErr)
+}
+
+// daemonStartupFailure turns a failed startup operation into the daemon's
+// documented exit status. Keeping this classification beside the predicate
+// prevents each startup phase from growing its own cancellation branch while
+// still leaving phase-specific diagnostics at the call site.
+func daemonStartupFailure(ctx context.Context, err error, report func()) int {
+	if daemonStartupStoppedByShutdown(ctx, err) {
+		return 0
+	}
+	report()
+	return 1
+}
+
+// daemonStartupWarning reports a degraded startup operation, unless the
+// operation stopped because daemon shutdown was already requested. The return
+// value tells the caller to stop startup cleanly in that latter case.
+func daemonStartupWarning(ctx context.Context, err error, report func()) bool {
+	if err == nil {
+		return false
+	}
+	if daemonStartupStoppedByShutdown(ctx, err) {
+		return true
+	}
+	report()
+	return false
 }

@@ -103,6 +103,65 @@ func TestPruneAppliesBothBoundsProtectsLiveRunsAndRebuilds(t *testing.T) {
 	)
 }
 
+func TestPruneCandidatesDoesNotExpandPreparedManifest(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	runLayout := layout.ForGaggle("example")
+	if err := layout.EnsureGaggleRuntime("example"); err != nil {
+		t.Fatal(err)
+	}
+	preparedDir := createRetentionRun(t, runLayout, "prepared", now.Add(-48*time.Hour), "terminal")
+	lateDir := createRetentionRun(t, runLayout, "late-terminal", now.Add(-48*time.Hour), "active")
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	for _, dir := range []string{preparedDir, lateDir} {
+		if err := db.IngestRun(context.Background(), dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manifest, _, err := Prune(
+		layout,
+		db,
+		Policy{Window: 24 * time.Hour, MaxRuns: 500},
+		Options{Now: now, DryRun: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest) != 1 || manifest[0].RunID != "prepared" || manifest[0].StartedAt.IsZero() {
+		t.Fatalf("prepared manifest = %+v", manifest)
+	}
+	late, _, err := journal.Recover(lateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	pruned, err := PruneCandidates(layout, db, manifest, Options{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 1 || pruned[0].RunID != "prepared" {
+		t.Fatalf("pruned manifest = %+v", pruned)
+	}
+	if _, err := os.Stat(preparedDir); !os.IsNotExist(err) {
+		t.Fatalf("prepared candidate remains: %v", err)
+	}
+	if _, err := os.Stat(lateDir); err != nil {
+		t.Fatalf("newly eligible run was absorbed into prepared pass: %v", err)
+	}
+	assertRollupRunIDs(t, db, "late-terminal")
+}
+
 func TestPrunePreservesTimeToFirstPRMilestone(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()

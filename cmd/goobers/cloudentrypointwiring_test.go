@@ -28,6 +28,7 @@ import (
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -124,6 +125,15 @@ func TestRunWorkerWiresResolvedRuntimeIntoTheWorkerHost(t *testing.T) {
 	}
 	if want := workerScratchDir(workRoot); workspaces.scratchRoot != want {
 		t.Errorf("scratch root = %q, want %q", workspaces.scratchRoot, want)
+	}
+	registry, ok := got.Deps.Canary.(*journal.RegistryScrubber)
+	if !ok {
+		t.Fatalf("canary = %T, want the worker's live registry", got.Deps.Canary)
+	}
+	const secret = "SUPER-SECRET-CANARY-9f8e7d6c5b4a3210"
+	registry.Register([]byte(secret))
+	if scrubbed := got.Deps.Scrubber.Scrub([]byte(secret)); bytes.Contains(scrubbed, []byte(secret)) {
+		t.Fatalf("worker host scrubber does not share its live registry: %q", scrubbed)
 	}
 
 	// --daemon-api: the live-journal emitter carries the base URL, so a

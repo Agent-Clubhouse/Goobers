@@ -100,12 +100,17 @@ runConditions:
 # `retainedWorktreeMaxAge` means the 168h default, not "no age rule" — say
 # `retainedWorktreeMaxAge: 0s` to turn the age rule off, in which case
 # `maxRetainedWorktreeBytes` has to carry the bound on its own.
+# A retained worktree whose run journal disappears gets its own clock from
+# the first pass that observes the absence. `journalGraceAge` defaults to 24h;
+# raise it to preserve journal-less debugging evidence longer, or set `0s` to
+# disable only this rule.
 # retention:
 #   enabled: true
 #   dryRun: false
 #   firstEnable: gracePeriod
 #   maxRetainedWorktreeBytes: 10737418240
 #   retainedWorktreeMaxAge: 168h
+#   journalGraceAge: 24h
 # Optional runner block. `capabilities` are the toolchains/platform properties
 # this runner advertises as preinstalled (RRQ-1); a gaggle/stage requiring one
 # the runner does not claim fails to schedule. `envPassthrough` names extra

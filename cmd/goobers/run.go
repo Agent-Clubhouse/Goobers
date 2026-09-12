@@ -871,7 +871,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	if err := prepareAbortedRunBranch(runLayout, runID, run, registrar); err != nil {
 		pf(stderr, "warning: terminal branch cleanup for run %s: %v\n", runID, err)
 	}
-	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted)}); err != nil {
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseAborted), Disposition: journal.RunDispositionProduced}); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}

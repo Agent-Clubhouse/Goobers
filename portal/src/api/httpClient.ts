@@ -180,6 +180,10 @@ const clientRoutes = {
   // same reason they are — the exhaustiveness check below requires the full
   // contract as it grows.
   configDigest: apiRoutes.configDigest,
+  // Workers report config-tree comparison transitions through this mutation
+  // route. It is worker-authenticated and has no portal UI caller, but belongs
+  // here so the compile-time contract inventory remains exhaustive.
+  workerConfigDivergence: apiRoutes.workerConfigDivergence,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {

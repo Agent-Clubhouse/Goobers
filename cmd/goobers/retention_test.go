@@ -136,6 +136,37 @@ func TestPruneConfiguredRetentionDefaultsOnAndHoldsAGraceWindow(t *testing.T) {
 	}
 }
 
+func TestPruneConfiguredRetentionPersistsConservativeClockRepair(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	state := retentionGraceState{
+		DetectedAt: now.Add(time.Hour),
+		EnforceAt:  now.Add(time.Hour).Add(retentionGraceWindow),
+	}
+	if err := writeRetentionGraceState(layout, worktreeRetentionStateFile, worktreeRetentionStateSchema, state); err != nil {
+		t.Fatal(err)
+	}
+	restore := retentionNow
+	retentionNow = func() time.Time { return now }
+	t.Cleanup(func() { retentionNow = restore })
+
+	var stdout, stderr bytes.Buffer
+	setup := &schedulerSetup{Config: &instance.Config{}}
+	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "corrected invalid worktree retention grace state") {
+		t.Fatalf("repair emitted no operator warning: %q", stderr.String())
+	}
+	got, ok, err := readRetentionGraceState(layout, worktreeRetentionStateFile)
+	if err != nil || !ok {
+		t.Fatalf("read repaired state: ok=%v err=%v", ok, err)
+	}
+	if !got.DetectedAt.Equal(now) || !got.EnforceAt.Equal(now.Add(retentionGraceWindow)) {
+		t.Fatalf("persisted repair = (%s, %s), want fresh window from %s", got.DetectedAt, got.EnforceAt, now)
+	}
+}
+
 // TestPruneConfiguredRetentionExplicitOptOutDoesNothing keeps the escape hatch
 // honest: #4253 flipped the default, it did not remove the ability to say no.
 func TestPruneConfiguredRetentionExplicitOptOutDoesNothing(t *testing.T) {
@@ -190,9 +221,15 @@ func TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow(t *
 	layout := instance.NewLayout(root)
 	manager, repo := commandWorktreeFixture(t, layout)
 	setup := &schedulerSetup{
-		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: boolPtr(true), FirstEnable: "immediate"}},
+		Config: &instance.Config{Retention: instance.RetentionConfig{
+			Enabled: boolPtr(true), FirstEnable: "immediate", JournalGraceAge: "24h",
+		}},
 		LegacyWorktrees: manager,
 	}
+	now := time.Date(2026, time.September, 12, 12, 0, 0, 0, time.UTC)
+	previousNow := retentionNow
+	retentionNow = func() time.Time { return now }
+	t.Cleanup(func() { retentionNow = previousNow })
 
 	makeJournalLessRetainedWorktree := func(runID string) *worktree.Worktree {
 		t.Helper()
@@ -214,11 +251,7 @@ func TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow(t *
 		return wt
 	}
 
-	prevGraceAge := journalGraceAge
-	t.Cleanup(func() { journalGraceAge = prevGraceAge })
-
-	// Still inside a real 24h grace window: left in place.
-	journalGraceAge = prevGraceAge
+	// The first pass starts a real 24h grace window and leaves it in place.
 	insideWindow := makeJournalLessRetainedWorktree("journal-less-fresh")
 	var stdout, stderr bytes.Buffer
 	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
@@ -228,10 +261,8 @@ func TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow(t *
 		t.Fatalf("journal-grace reclaimed a worktree still inside its grace window: %v", err)
 	}
 
-	// Shrunk to effectively zero (any positive value): the fixture above was
-	// already created before this point, so its real retainedAt is already
-	// in the past relative to a nanosecond-scale window.
-	journalGraceAge = time.Nanosecond
+	// A later pass uses the persisted observation, including after restart.
+	now = now.Add(24 * time.Hour)
 	stdout.Reset()
 	stderr.Reset()
 	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
@@ -470,7 +501,8 @@ func TestReportWorktreeRetentionPolicySurfacesTheGraceWindow(t *testing.T) {
 		t.Fatalf("reported with no state: %q", stdout.String())
 	}
 
-	enforceAt := now.Add(48 * time.Hour)
+	detectedAt := now.Add(-time.Hour)
+	enforceAt := detectedAt.Add(retentionGraceWindow)
 	write := func(state retentionGraceState) {
 		t.Helper()
 		if err := writeRetentionGraceState(layout, worktreeRetentionStateFile, worktreeRetentionStateSchema, state); err != nil {
@@ -478,11 +510,11 @@ func TestReportWorktreeRetentionPolicySurfacesTheGraceWindow(t *testing.T) {
 		}
 	}
 
-	write(retentionGraceState{LastPassAt: now.Add(-time.Minute), LastPassDryRun: true, EnforceAt: enforceAt, CandidateCount: 3})
+	write(retentionGraceState{DetectedAt: detectedAt, LastPassAt: now.Add(-time.Minute), LastPassDryRun: true, EnforceAt: enforceAt, CandidateCount: 3})
 	stdout.Reset()
 	reportWorktreeRetentionPolicy(layout, now, &stdout)
 	got := stdout.String()
-	for _, want := range []string{"grace period active until", enforceAt.UTC().Format(time.RFC3339), "3 candidate(s)", "nothing deleted yet"} {
+	for _, want := range []string{"grace period active until", enforceAt.UTC().Format(time.RFC3339), "3 candidate(s)", "nothing deleted yet", "instance.yaml retention changes require a daemon restart", "materialized config directory"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("grace-window line missing %q: %q", want, got)
 		}

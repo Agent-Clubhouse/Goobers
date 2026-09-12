@@ -40,6 +40,16 @@ const preflightRepoWriteHelp = "Usage: goobers preflight-repo-write [path]\n\n" 
 	"Exit codes: 0 = pushable, 1 = a known preflight failure, 2 = usage/IO error.\n"
 
 func runPreflightRepoWrite(args []string, stdout, stderr io.Writer) int {
+	return runPreflightRepoWriteWithProvider(args, stdout, stderr, func(root string, repo providers.RepositoryRef) (providers.Provider, error) {
+		return newProviderForStage(root, repo, true, withStageProviderCapability(capability.RepoPush))
+	})
+}
+
+func runPreflightRepoWriteWithProvider(
+	args []string,
+	stdout, stderr io.Writer,
+	providerForStage func(string, providers.RepositoryRef) (providers.Provider, error),
+) int {
 	fs := newCLIFlagSet("preflight-repo-write", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "preflight-repo-write")
@@ -58,7 +68,7 @@ func runPreflightRepoWrite(args []string, stdout, stderr io.Writer) int {
 	}
 	branch := providerInput("branch", providerBranchNamespace()+"preflight-check")
 
-	provider, err := newProviderForStage(root, repo, true, withStageProviderCapability(capability.RepoPush))
+	provider, err := providerForStage(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

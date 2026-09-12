@@ -1233,13 +1233,14 @@ func TestBuildDeterministicExecutorIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := buildDeterministicExecutor(deterministicExecutorInput{
-		Config:           &instance.Config{},
-		Resolver:         resolver,
-		SharedRegistry:   journal.NewRegistryScrubber(),
-		InstanceRoot:     t.TempDir(),
-		SelfBin:          "goobers",
-		ArtifactRecorder: runnerWiringArtifactRecorder{},
-		SecretRegistrar:  journal.NewRegistryScrubber(),
+		Config:              &instance.Config{},
+		Resolver:            resolver,
+		SharedRegistry:      journal.NewRegistryScrubber(),
+		InstanceRoot:        t.TempDir(),
+		AppliedConfigDigest: "sha256:applied",
+		SelfBin:             "goobers",
+		ArtifactRecorder:    runnerWiringArtifactRecorder{},
+		SecretRegistrar:     journal.NewRegistryScrubber(),
 	})
 	if err != nil {
 		t.Fatalf("buildDeterministicExecutor: %v", err)
@@ -2359,6 +2360,9 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	}
 
 	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, gaggle := range []string{"alpha", "beta"} {
 		if err := layout.EnsureGaggleRuntime(gaggle); err != nil {
 			t.Fatal(err)
