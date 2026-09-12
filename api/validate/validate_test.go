@@ -2096,6 +2096,31 @@ func TestWorkflowWarningPreservesLegacyCLIRepresentation(t *testing.T) {
 	}
 }
 
+func TestCLIStringDoesNotRepeatGaggleSubject(t *testing.T) {
+	issue := Issue{
+		Code: errorUnsupportedFeature, Severity: Error, File: "gaggles/demo/gaggle.yaml",
+		Gaggle: "demo", Kind: "Gaggle", Name: "demo", Message: "feature validation failed",
+	}
+	got := issue.CLIString()
+	if strings.Count(got, "Gaggle/demo") != 1 {
+		t.Fatalf("CLIString() = %q, want Gaggle/demo exactly once", got)
+	}
+	if strings.Count(issue.Scope(), "Gaggle/demo") != 2 {
+		t.Fatalf("Scope() = %q, want structured gaggle provenance preserved", issue.Scope())
+	}
+}
+
+func TestCLIStringPreservesDistinctGaggleContext(t *testing.T) {
+	issue := Issue{
+		Severity: Error, File: "gaggles/demo/workflows/deploy.yaml",
+		Gaggle: "demo", Kind: "Workflow", Name: "deploy", Message: "feature validation failed",
+	}
+	got := issue.CLIString()
+	if !strings.Contains(got, "Gaggle/demo Workflow/deploy") {
+		t.Fatalf("CLIString() = %q, want distinct gaggle and workflow context", got)
+	}
+}
+
 func TestCLIReportPreservesIssuesSliceShape(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

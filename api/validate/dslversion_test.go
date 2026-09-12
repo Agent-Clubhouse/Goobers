@@ -27,12 +27,14 @@ func TestUnsupportedDSLVersionDoesNotCascadeAcrossSemanticRules(t *testing.T) {
 				t.Fatal(err)
 			}
 			var workflowVersion, gaggleVersion, graph, schema int
+			var versionMessage string
 			for _, issue := range report.Issues {
 				if issue.Kind == "Workflow" && (strings.Contains(issue.Message, "DSL version") || strings.Contains(issue.Message, "dslVersion")) {
 					workflowVersion++
 					if issue.Code != ErrorUnsupportedDSLVersion {
 						t.Errorf("cascaded version error: %+v", issue)
 					}
+					versionMessage = issue.Message
 				}
 				if issue.Kind == "Gaggle" && issue.Name == "web" && strings.Contains(issue.Message, "DSL version") {
 					gaggleVersion++
@@ -44,8 +46,13 @@ func TestUnsupportedDSLVersionDoesNotCascadeAcrossSemanticRules(t *testing.T) {
 					schema++
 				}
 			}
-			if workflowVersion != 1 || gaggleVersion != 1 || graph != 1 || schema == 0 {
+			if workflowVersion != 1 || gaggleVersion != 0 || graph != 1 || schema == 0 {
 				t.Fatalf("findings workflow-version=%d gaggle-version=%d graph=%d schema=%d: %+v", workflowVersion, gaggleVersion, graph, schema, report.Issues)
+			}
+			for _, want := range []string{"Gaggle/web in objects.yaml", "derivative findings on those files are suppressed"} {
+				if !strings.Contains(versionMessage, want) {
+					t.Errorf("primary version message %q does not summarize %q", versionMessage, want)
+				}
 			}
 		})
 	}
