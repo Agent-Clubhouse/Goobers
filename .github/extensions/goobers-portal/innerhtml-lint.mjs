@@ -100,7 +100,7 @@ function builderExpressions(source, sinkIndex, name) {
     const expressions = [];
     for (const match of prefix.matchAll(assignment)) {
         if (match[1] === "=") expressions.length = 0;
-        expressions.push(match[2]);
+        expressions.push({ operator: match[1], expression: match[2] });
     }
     return expressions;
 }
@@ -113,8 +113,8 @@ export function lintInnerHTMLAssignments(source) {
         if (!unsafe) {
             const bareBuilder = /^\s*([A-Za-z_$][\w$]*(?:Html|Markup))\s*$/.exec(rhs);
             if (bareBuilder) {
-                for (const expression of builderExpressions(source, match.index, bareBuilder[1])) {
-                    unsafe = unsafeInterpolation(expression);
+                for (const assignment of builderExpressions(source, match.index, bareBuilder[1])) {
+                    unsafe = unsafeInterpolation((assignment.operator === "+=" ? "+ " : "") + assignment.expression);
                     if (unsafe) break;
                 }
             }

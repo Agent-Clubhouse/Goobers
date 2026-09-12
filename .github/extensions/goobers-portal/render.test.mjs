@@ -194,6 +194,8 @@ test("innerHTML lint rejects direct unescaped property interpolation", async () 
         'element.innerHTML = "<p>" + (run.workflow ? run.workflow : "") + "</p>";',
         'element.innerHTML = `<p>${run.workflow}</p>`;',
         'let runDetailHtml = "<p>" + run.workflow; element.innerHTML = runDetailHtml;',
+        'let runDetailHtml = "<p>"; runDetailHtml += run.workflow; element.innerHTML = runDetailHtml;',
+        'let rowMarkup = "<p>"; rowMarkup += run.workflow; element.innerHTML = rowMarkup;',
     ]) {
         assert.equal(lintInnerHTMLAssignments(mutation).length, 1, mutation);
     }
