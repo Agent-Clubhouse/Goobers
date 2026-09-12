@@ -334,7 +334,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		if retErr == nil {
 			return
 		}
-		if err := m.forceClear(context.WithoutCancel(ctx), key, path, opts.RunID); err != nil {
+		if err := m.cleanupFailedCreate(context.WithoutCancel(ctx), key, path, opts.RunID); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("worktree: clean up failed create for run %s: %w", opts.RunID, err))
 		}
 	}()
@@ -815,6 +815,41 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 		return fmt.Errorf("remove stale ownership record: %w", err)
 	}
 	return nil
+}
+
+// cleanupFailedCreate removes the provisional metadata written immediately
+// before git worktree add. When git failed without creating or registering the
+// target path, there is no workspace state for a cleanup guard to preserve;
+// invoking one against the absent path would manufacture a second recovery
+// failure and strand the provisional marker forever. A path on disk or a Git
+// registration is possible source state, so those cases retain forceClear's
+// fail-closed guard path unchanged. An indeterminate registration check also
+// fails closed and leaves the metadata for a later retry.
+func (m *Manager) cleanupFailedCreate(ctx context.Context, key, path, runID string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return m.forceClear(ctx, key, path, runID)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect failed worktree path: %w", err)
+	}
+
+	registered, err := worktreeRegistered(ctx, m.repoDirForKey(key), path)
+	if err != nil {
+		return fmt.Errorf("inspect failed worktree registration: %w", err)
+	}
+	if registered {
+		return m.forceClear(ctx, key, path, runID)
+	}
+
+	markerPath := m.markerPath(key, runID)
+	var cleanupErr error
+	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove failed-create marker: %w", err))
+	}
+	ownershipPath := m.ownershipPath(key, filepath.Base(path))
+	if err := os.Remove(ownershipPath); err != nil && !os.IsNotExist(err) {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove failed-create ownership record: %w", err))
+	}
+	return cleanupErr
 }
 
 // RemoveOptions configures worktree teardown.
