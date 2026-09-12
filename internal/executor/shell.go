@@ -835,18 +835,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	stageEnv = append(stageEnv, commandEnv...)
 	if injectRunContext {
-		task := strings.TrimPrefix(env.TaskID, env.RunID+":")
-		if task == "" {
-			task = env.TaskID
-		}
-		goober := env.Goober
-		if goober == "" {
-			goober = "deterministic"
-		}
-		stageEnv = append(stageEnv, TaskEnvVar+"="+task, GooberEnvVar+"="+goober, InstanceIDEnvVar+"="+env.InstanceID)
-		if e.AppliedConfigDigest != "" {
-			stageEnv = append(stageEnv, AppliedConfigDigestEnvVar+"="+e.AppliedConfigDigest)
-		}
+		stageEnv = append(stageEnv, e.runContextEnv(env)...)
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
@@ -1754,4 +1743,33 @@ func (d *diagBuffer) Bytes() []byte {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]byte(nil), d.buf.Bytes()...)
+}
+
+// runContextEnv is the run-identity block injected into a stage that opts into
+// run context. Extracted from Run (#4962 follow-up): Run sits at the
+// complexity gate's baseline, so a single added conditional there fails the
+// gate for the whole repository. Decomposition is the fix the gate asks for,
+// and this block is self-contained — it reads nothing but the executor and the
+// run environment.
+func (e *ShellExecutor) runContextEnv(env apiv1.InvocationEnvelope) []string {
+	task := strings.TrimPrefix(env.TaskID, env.RunID+":")
+	if task == "" {
+		task = env.TaskID
+	}
+	goober := env.Goober
+	if goober == "" {
+		goober = "deterministic"
+	}
+	runEnv := []string{
+		TaskEnvVar + "=" + task,
+		GooberEnvVar + "=" + goober,
+		InstanceIDEnvVar + "=" + env.InstanceID,
+	}
+	// Injected only when the daemon knows which config generation it was built
+	// from: an empty digest must not become an empty env var, which a stage
+	// would read as "the digest is the empty string" rather than "unknown".
+	if e.AppliedConfigDigest != "" {
+		runEnv = append(runEnv, AppliedConfigDigestEnvVar+"="+e.AppliedConfigDigest)
+	}
+	return runEnv
 }
