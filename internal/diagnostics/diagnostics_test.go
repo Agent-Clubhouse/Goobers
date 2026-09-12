@@ -262,8 +262,19 @@ func TestBundleRedactsEveryStringField(t *testing.T) {
 	}
 
 	bundle := value.Interface().(Bundle)
+	original, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
 	scrubbed := (Collector{Scrubber: realScrubber()}).scrub(bundle)
 	assertNoBundleStringContains(t, reflect.ValueOf(scrubbed), leaked, "Bundle")
+	after, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("scrubbing mutated its input graph:\n got %s\nwant %s", after, original)
+	}
 
 	encoded, err := json.Marshal(scrubbed)
 	if err != nil {

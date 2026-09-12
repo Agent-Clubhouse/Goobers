@@ -28,7 +28,7 @@ const RedactedToken = secretpattern.RedactedToken
 // Its layer attribute is one of RedactionLayerRegistry or
 // RedactionLayerPattern, so operators can distinguish exact-value protection
 // from the pattern backstop.
-const MetricRedactionsTotal = "journal.redactions_total"
+const MetricRedactionsTotal = "goobers.journal.redactions_total"
 
 // RedactionLayer identifies the scrubber layer that removed secret material.
 type RedactionLayer string

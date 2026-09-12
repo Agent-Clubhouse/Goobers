@@ -143,7 +143,7 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 		apimetric.WithUnit("{escalation}"), apimetric.WithDescription("Stages and gates escalated to a human."))
 	record(err)
 	inst.redactions, err = meter.Int64Counter(MetricRedactionsTotal,
-		apimetric.WithUnit("{redaction}"), apimetric.WithDescription("Scrub operations that removed secret material by layer."))
+		apimetric.WithUnit("{event}"), apimetric.WithDescription("Scrub events that removed secret material, separated by layer."))
 	record(err)
 	inst.activeWork, err = meter.Int64UpDownCounter(MetricWorkActive,
 		apimetric.WithUnit("{span}"), apimetric.WithDescription("In-flight runs and stages."))

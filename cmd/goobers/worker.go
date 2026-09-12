@@ -256,20 +256,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		builtSeams.historyDepth = *configHistoryDepth
 		seams = builtSeams
-		engineRuntime.deps.Goober = seams.Agentic()
-		engineRuntime.deps.Det = seams.Deterministic()
-		engineRuntime.deps.Auto = seams.Automated()
-		// The #2931 dispatch canary asserts envelopes against the SAME shared
-		// registry the seams' executors register every resolved credential
-		// with — so a value that leaks into a dispatch payload after being
-		// resolved anywhere in this process refuses the stage instead of
-		// executing with it.
-		engineRuntime.deps.Canary = seams.SharedRegistry()
-		engineRuntime.deps.Scrubber = seams.Scrubber()
-		// Replace the uncredentialed provisioner too: workerEngineDeps builds
-		// its worktree manager before any instance is known, so it has no git
-		// auth and cannot clone a private repo.
-		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
+		wireWorkerRuntimeSeams(&engineRuntime.deps, seams, filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
 
 		// #3912: the worker's config tree is otherwise frozen at pod start for
@@ -419,6 +406,19 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "goobers worker: drained cleanly\n")
 	return 0
+}
+
+func wireWorkerRuntimeSeams(deps *bootstrap.EngineDeps, seams *workerSeams, scratchRoot string) {
+	deps.Goober = seams.Agentic()
+	deps.Det = seams.Deterministic()
+	deps.Auto = seams.Automated()
+	// The #2931 dispatch canary asserts envelopes against the SAME shared
+	// registry the seams' executors register every resolved credential with.
+	deps.Canary = seams.SharedRegistry()
+	deps.Scrubber = seams.Scrubber()
+	// Replace the uncredentialed provisioner too: the initial manager has no
+	// instance credentials and therefore cannot clone a private repository.
+	deps.Workspaces = seams.Workspaces(scratchRoot)
 }
 
 type workerEngineRuntime struct {

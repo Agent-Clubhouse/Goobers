@@ -243,6 +243,35 @@ func TestRedactionsTotalRecordsRegistryAndPatternLayersWithoutChangingBytes(t *t
 	}
 }
 
+// The default provider-pattern net used by Redact is package-global. Metric
+// observers belong to clients, so default clients must receive private
+// scrubbers: constructing one client may neither redirect another's events nor
+// make an unrelated Redact call count against either client.
+func TestDefaultScrubberRedactionMetricsAreIsolatedPerClient(t *testing.T) {
+	const patterned = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
+	firstReader := metric.NewManualReader()
+	first := newMetricsClient(t, Config{MetricReader: firstReader})
+	secondReader := metric.NewManualReader()
+	second := newMetricsClient(t, Config{MetricReader: secondReader})
+
+	first.scrubber.Scrub([]byte(patterned))
+	_ = Redact(patterned)
+
+	firstPoints := metricPoints(t, collectMetrics(t, firstReader), MetricRedactionsTotal)
+	if len(firstPoints) != 1 || firstPoints[0].value != 1 {
+		t.Fatalf("first client redactions = %+v, want its one scrub event", firstPoints)
+	}
+	if points := metricPoints(t, collectMetrics(t, secondReader), MetricRedactionsTotal); len(points) != 0 {
+		t.Fatalf("second client received first/global scrub events: %+v", points)
+	}
+
+	second.scrubber.Scrub([]byte(patterned))
+	secondPoints := metricPoints(t, collectMetrics(t, secondReader), MetricRedactionsTotal)
+	if len(secondPoints) != 1 || secondPoints[0].value != 1 {
+		t.Fatalf("second client redactions = %+v, want its one scrub event", secondPoints)
+	}
+}
+
 // Callers pair `defer span.End()` with an explicit Complete/Fail, so a span is
 // routinely ended twice; only the first terminal call may record metrics.
 func TestSpanEndedTwiceRecordsMetricsOnce(t *testing.T) {

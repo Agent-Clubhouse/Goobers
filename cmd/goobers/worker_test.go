@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/testgit"
@@ -85,6 +86,23 @@ func TestWorkerSeamScrubberUsesItsLiveRegistry(t *testing.T) {
 	got := seams.Scrubber().Scrub([]byte("worker result: " + secret))
 	if bytes.Contains(got, []byte(secret)) || !bytes.Contains(got, []byte(journal.Redacted)) {
 		t.Fatalf("live worker seam scrubber did not use its registry: %q", got)
+	}
+}
+
+func TestWireWorkerRuntimeSeamsAssignsLiveScrubber(t *testing.T) {
+	const secret = "SUPER-SECRET-CANARY-9f8e7d6c5b4a3210"
+	registry, scrubber := journal.DefaultScrubber()
+	seams := &workerSeams{shared: registry, scrubber: scrubber}
+	var deps bootstrap.EngineDeps
+	wireWorkerRuntimeSeams(&deps, seams, t.TempDir())
+	registry.Register([]byte(secret))
+
+	got := deps.Scrubber.Scrub([]byte("worker result: " + secret))
+	if bytes.Contains(got, []byte(secret)) || !bytes.Contains(got, []byte(journal.Redacted)) {
+		t.Fatalf("wired engine scrubber did not use the worker's live registry: %q", got)
+	}
+	if deps.Canary != registry {
+		t.Fatal("wired canary and scrubber do not share the worker registry")
 	}
 }
 
