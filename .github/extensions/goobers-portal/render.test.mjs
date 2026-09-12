@@ -237,11 +237,18 @@ test("operator panel falls back to plain labels when no safe ref exists", () => 
     const html = renderOperatorPanel(
         {
             issue: { number: 42, title: "<script>alert(1)</script>" },
-            pullRequest: { number: 7, title: "PR <b>title</b>" },
+            pullRequest: {
+                provider: "github",
+                kind: "pull-request",
+                id: "7",
+                url: "javascript:alert(1)",
+            },
+            pullRequestTitle: "PR <b>title</b>",
         },
         [],
     );
     assert.match(html, /#42/);
+    assert.match(html, /github pull-request #7: PR &lt;b&gt;title&lt;\/b&gt;/);
     assert.doesNotMatch(html, /<a href=/);
     // The unlinked path must still escape — it is the branch an attacker
     // reaches by simply not supplying a resolvable URL.
@@ -253,19 +260,33 @@ test("operator panel links an issue and pull request when refs resolve", () => {
     const html = renderOperatorPanel(
         {
             issue: { number: 42, title: "Issue title" },
-            pullRequest: { number: 7, title: "PR title", url: "https://example.com/pull/7" },
+            pullRequest: {
+                provider: "github",
+                kind: "pull-request",
+                id: "7",
+                url: "https://example.com/pull/7",
+            },
+            pullRequestTitle: "PR title",
         },
         [
             { id: "42", kind: "issue", url: "https://example.com/issues/42" },
         ],
     );
     assert.match(html, /href="https:\/\/example\.com\/issues\/42"/);
-    assert.match(html, /rel="noopener noreferrer"/);
+    assert.match(html, /href="https:\/\/example\.com\/pull\/7"/);
+    assert.match(html, /github pull-request #7: PR title/);
+    assert.equal((html.match(/rel="noopener noreferrer"/g) || []).length, 2);
 });
 
 test("operator panel renders an escaped pull request description", () => {
     const html = renderOperatorPanel({
-        pullRequest: { number: 7, title: "PR" },
+        pullRequest: {
+            provider: "github",
+            kind: "pull-request",
+            id: "7",
+            url: "https://example.com/pull/7",
+        },
+        pullRequestTitle: "PR",
         pullRequestBody: "body with <img src=x onerror=1>",
     });
     assert.match(html, /Pull request description/);
