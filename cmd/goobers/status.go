@@ -635,6 +635,32 @@ func buildStatusFleetSummary(
 	return summary, nil
 }
 
+func newStatusFleetSummaryLoader(
+	layout instance.Layout,
+	runLoader *statusRunLoader,
+	location *time.Location,
+) func([]apiv1.Workflow, []runSummary, readservice.SchedulerStatus, time.Time) (statusFleetSummary, error) {
+	return func(
+		workflows []apiv1.Workflow,
+		runs []runSummary,
+		schedulerStatus readservice.SchedulerStatus,
+		now time.Time,
+	) (statusFleetSummary, error) {
+		if runLoader.projected {
+			runs = runLoader.fleetRuns
+		}
+		lastEvals, err := statusWorkflowLastEvals(layout)
+		if err != nil {
+			return statusFleetSummary{}, err
+		}
+		refill := make(map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus, len(schedulerStatus.RefillOccupancy))
+		for _, occupancy := range schedulerStatus.RefillOccupancy {
+			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
+		}
+		return buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, location)
+	}
+}
+
 func statusWorkflowLastEvals(
 	layout instance.Layout,
 ) (map[localscheduler.WorkflowIdentity]time.Time, error) {
@@ -1075,25 +1101,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		layout: l, sources: sources, journal: reads, options: options, needFleet: supportsWatch && !agentsMode,
 	}
 	loadRuns := runLoader.Load
-	loadFleetSummary := func(
-		workflows []apiv1.Workflow,
-		runs []runSummary,
-		schedulerStatus readservice.SchedulerStatus,
-		now time.Time,
-	) (statusFleetSummary, error) {
-		if runLoader.projected {
-			runs = runLoader.fleetRuns
-		}
-		lastEvals, err := statusWorkflowLastEvals(l)
-		if err != nil {
-			return statusFleetSummary{}, err
-		}
-		refill := make(map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus, len(schedulerStatus.RefillOccupancy))
-		for _, occupancy := range schedulerStatus.RefillOccupancy {
-			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
-		}
-		return buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, statusLocation)
-	}
+	loadFleetSummary := newStatusFleetSummaryLoader(l, runLoader, statusLocation)
 	prLabelCounts := newStatusPRLabelCountCache()
 	parkedBacklog := newStatusParkedBacklogCache()
 	loadTimeToFirstPR := reads.TimeToFirstPR
@@ -1168,13 +1176,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		printValidationWarnings(stdout, textWarnings)
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
-		loadChangedRuns := func(context.Context) (map[string]struct{}, error) {
-			if !runLoader.projected {
-				return nil, nil
-			}
-			return runLoader.changed, nil
-		}
-		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText), loadChangedRuns); err != nil {
+		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText), runLoader.loadChangedRuns); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}

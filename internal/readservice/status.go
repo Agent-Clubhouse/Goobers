@@ -174,32 +174,41 @@ func (s *Local) ListStatusRuns(ctx context.Context, options StatusRunOptions) ([
 	return s.runSummaries(ctx, true)
 }
 
-func (s *Local) listStatusRunsFromReadModel(ctx context.Context, options StatusRunOptions) ([]RunSummary, error) {
-	observedAt := s.now()
-	queryGaggle := options.Gaggle
-	queryWorkflow := options.Workflow
-	queryPhases := options.Phases
-	residualWorkflow := ""
-	residualPhases := map[journal.RunPhase]struct{}(nil)
+type statusRunQuery struct {
+	gaggle           string
+	workflow         string
+	phases           []journal.RunPhase
+	residualWorkflow string
+	residualPhases   map[journal.RunPhase]struct{}
+}
+
+func normalizeStatusRunQuery(options StatusRunOptions) statusRunQuery {
+	query := statusRunQuery{gaggle: options.Gaggle, workflow: options.Workflow, phases: options.Phases}
 	// The read model's closed indexed set does not contain workflow by itself
 	// or gaggle+workflow+phase. Keep those predicates correct by paging an
 	// indexed supported subset until the requested number of matches is found.
 	switch {
-	case queryWorkflow != "" && queryGaggle == "":
-		residualWorkflow = queryWorkflow
-		queryWorkflow = ""
-	case queryWorkflow != "" && len(queryPhases) > 0:
-		residualPhases = make(map[journal.RunPhase]struct{}, len(queryPhases))
-		for _, phase := range queryPhases {
-			residualPhases[phase] = struct{}{}
+	case query.workflow != "" && query.gaggle == "":
+		query.residualWorkflow = query.workflow
+		query.workflow = ""
+	case query.workflow != "" && len(query.phases) > 0:
+		query.residualPhases = make(map[journal.RunPhase]struct{}, len(query.phases))
+		for _, phase := range query.phases {
+			query.residualPhases[phase] = struct{}{}
 		}
-		queryPhases = nil
+		query.phases = nil
 	}
-	if len(queryPhases) == 0 {
-		queryPhases = []journal.RunPhase{""}
+	if len(query.phases) == 0 {
+		query.phases = []journal.RunPhase{""}
 	}
+	return query
+}
+
+func (s *Local) listStatusRunsFromReadModel(ctx context.Context, options StatusRunOptions) ([]RunSummary, error) {
+	observedAt := s.now()
+	query := normalizeStatusRunQuery(options)
 	out := make([]RunSummary, 0, options.Limit)
-	for _, phase := range queryPhases {
+	for _, phase := range query.phases {
 		var (
 			cursor     readmodel.ListCursor
 			phaseCount int
@@ -213,18 +222,18 @@ func (s *Local) listStatusRunsFromReadModel(ctx context.Context, options StatusR
 				pageLimit = 200
 			}
 			page, err := s.sources.ReadModel.ListRuns(ctx, readmodel.ListOptions{
-				Gaggle: queryGaggle, Workflow: queryWorkflow, Phase: phase,
+				Gaggle: query.gaggle, Workflow: query.workflow, Phase: phase,
 				Limit: pageLimit, Cursor: cursor, IncludeNoWork: true,
 			})
 			if err != nil {
 				return nil, err
 			}
 			for _, row := range page.Runs {
-				if residualWorkflow != "" && row.Workflow != residualWorkflow {
+				if query.residualWorkflow != "" && row.Workflow != query.residualWorkflow {
 					continue
 				}
-				if len(residualPhases) > 0 {
-					if _, ok := residualPhases[row.Phase]; !ok {
+				if len(query.residualPhases) > 0 {
+					if _, ok := query.residualPhases[row.Phase]; !ok {
 						continue
 					}
 				}

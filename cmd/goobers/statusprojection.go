@@ -92,6 +92,13 @@ type statusRunLoader struct {
 	afterProjectedQueries func()
 }
 
+func (l *statusRunLoader) loadChangedRuns(context.Context) (map[string]struct{}, error) {
+	if !l.projected {
+		return nil, nil
+	}
+	return l.changed, nil
+}
+
 func (l *statusRunLoader) Load() ([]runSummary, error) {
 	ctx := context.Background()
 	for attempt := 0; attempt < 2; attempt++ {
