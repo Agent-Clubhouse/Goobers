@@ -190,6 +190,84 @@ export function renderRunEventItems(displayedEvents = [], sourceId = "", runId =
     }).join("");
 }
 
+export function renderTransitions(transitions = []) {
+    if (!transitions.length) return '<p class="muted">No transitions recorded.</p>';
+    const items = transitions.map((transition = {}) => {
+        const verdict = transition.verdict ? escapeAssociationHtml(transition.verdict) : "";
+        const verdictClass = verdict ? " badge-" + verdict : "";
+        const arrow = transition.terminal ? "\u25a0" : "\u2192";
+        const verdictText = verdict
+            ? ' <span class="' + verdictClass.trim() + '">[' + verdict +
+              (transition.repass ? ", repass" : "") + "]</span>"
+            : "";
+        const target = transition.target
+            ? " " + arrow + " <code>" + escapeAssociationHtml(transition.target) + "</code>"
+            : (transition.status ? " (" + escapeAssociationHtml(transition.status) + ")" : "");
+        return '<li><span class="seq">#' + escapeAssociationHtml(transition.seq ?? "") +
+            "</span><code>" + escapeAssociationHtml(transition.source || "") + "</code>" +
+            target + verdictText + "</li>";
+    });
+    return '<ul class="transitions-list">' + items.join("") + "</ul>";
+}
+
+export function renderOperatorPanel(operator, refs = [], options = {}) {
+    if (!operator) return "";
+    const safeUrl = options.safeUrl || safeAssociationUrl;
+    const parts = [];
+    if (operator.issue) {
+        const issueNumber = String(operator.issue.number ?? "");
+        const issueRef = refs.find((ref) =>
+            String(ref.id) === issueNumber &&
+            ["issue", "work-item", "workitem"].includes(String(ref.kind || "").toLowerCase()) &&
+            safeUrl(ref.url),
+        );
+        const issueLabel = escapeAssociationHtml("#" + issueNumber + " " + (operator.issue.title || ""));
+        parts.push(["Issue", issueRef
+            ? '<a href="' + escapeAssociationHtml(safeUrl(issueRef.url)) +
+              '" target="_blank" rel="noopener noreferrer">' + issueLabel + "</a>"
+            : issueLabel]);
+    }
+    if (operator.pullRequest) {
+        const pullUrl = safeUrl(operator.pullRequest.url);
+        const pullTitle = String(operator.pullRequestTitle || "").trim();
+        const pullLabel = escapeAssociationHtml(
+            (operator.pullRequest.provider || "") + " " + (operator.pullRequest.kind || "") + " #" +
+            (operator.pullRequest.id || "") + (pullTitle ? ": " + pullTitle : ""),
+        );
+        parts.push(["Pull request", pullUrl
+            ? '<a href="' + escapeAssociationHtml(pullUrl) +
+              '" target="_blank" rel="noopener noreferrer">' + pullLabel + "</a>"
+            : pullLabel]);
+    }
+    if (operator.liveness) parts.push(["Liveness", escapeAssociationHtml(operator.liveness)]);
+    if (operator.trajectory) parts.push(["Trajectory", escapeAssociationHtml(operator.trajectory)]);
+    if (operator.latestError) {
+        parts.push(["Latest error", "<code>" + escapeAssociationHtml(operator.latestError.code || "") +
+            "</code> " + escapeAssociationHtml(operator.latestError.message || "")]);
+    }
+    let markup = '<div class="kv-grid">' + parts.map(([label, value]) =>
+        '<div class="kv' + (label === "Latest error" ? " kv-wide" : "") +
+        '"><div class="label">' + escapeAssociationHtml(label) +
+        '</div><div class="value">' + value + "</div></div>").join("") + "</div>";
+    if (operator.review) {
+        const verdict = escapeAssociationHtml(operator.review.verdict || "");
+        markup += '<h3>Review</h3><p><span class="badge-' + verdict + '">' + verdict + "</span></p>";
+        if (operator.review.rationale) {
+            markup += '<p class="rationale">' + escapeAssociationHtml(operator.review.rationale) + "</p>";
+        }
+    }
+    if (operator.pullRequest && operator.pullRequestBody) {
+        markup += '<h3>Pull request description</h3><div class="pr-description">' +
+            escapeAssociationHtml(operator.pullRequestBody) + "</div>";
+    }
+    if (operator.potentialBlockers && operator.potentialBlockers.length) {
+        markup += '<h3>Potential blockers</h3><ul class="blockers-list">' +
+            operator.potentialBlockers.map((blocker) => "<li>" + escapeAssociationHtml(blocker) + "</li>").join("") +
+            "</ul>";
+    }
+    return markup;
+}
+
 export function renderGraphLegend() {
     return '<div class="graph-legend" aria-label="Workflow state legend">' +
         '<strong>State legend:</strong> ' +
@@ -2061,18 +2139,6 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     });
   }
 
-  function renderTransitions(transitions) {
-    if (!transitions || transitions.length === 0) return '<p class="muted">No transitions recorded.</p>';
-    const items = transitions.map((t) => {
-      const verdictCls = t.verdict ? " badge-" + t.verdict : "";
-      const arrow = t.terminal ? "\\u25a0" : "\\u2192";
-      const verdictTxt = t.verdict ? ' <span class="' + verdictCls.trim() + '">[' + t.verdict + (t.repass ? ", repass" : "") + "]</span>" : "";
-      const target = t.target ? " " + arrow + " <code>" + escapeHtml(t.target) + "</code>" : (t.status ? " (" + escapeHtml(t.status) + ")" : "");
-      return '<li><span class="seq">#' + t.seq + '</span><code>' + escapeHtml(t.source) + "</code>" + target + verdictTxt + "</li>";
-    });
-    return '<ul class="transitions-list">' + items.join("") + "</ul>";
-  }
-
   function safeExternalUrl(value) {
     try {
       const url = new URL(value);
@@ -2094,6 +2160,11 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderRunEventItems = ${renderRunEventItems.toString()
         .replaceAll("formatRunDetailTime", "fmtTime")
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderTransitions = ${renderTransitions.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderOperatorPanel = ${renderOperatorPanel.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const BOOLEAN_FILTER_KEYS = new Set(["showNoWork"]);
@@ -2142,49 +2213,6 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const label = (ref.provider || "external") + " " + (ref.kind || "ref") + " #" + (ref.id || "");
       return '<a href="' + escapeHtml(safeExternalUrl(ref.url)) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + "</a>";
     }).join("") + "</div>";
-  }
-
-  function renderOperatorPanel(op, refs) {
-    if (!op) return "";
-    const parts = [];
-    if (op.issue) {
-      const issueRef = (refs || []).find((ref) =>
-        String(ref.id) === String(op.issue.number) &&
-        ["issue", "work-item", "workitem"].includes(String(ref.kind || "").toLowerCase()) &&
-        safeExternalUrl(ref.url),
-      );
-      const issueLabel = "#" + op.issue.number + " " + escapeHtml(op.issue.title || "");
-      parts.push(["Issue", issueRef
-        ? '<a href="' + escapeHtml(safeExternalUrl(issueRef.url)) + '" target="_blank" rel="noopener noreferrer">' + issueLabel + "</a>"
-        : issueLabel]);
-    }
-    if (op.pullRequest) {
-      const pullUrl = safeExternalUrl(op.pullRequest.url);
-      const pullTitle = String(op.pullRequestTitle || "").trim();
-      const pullLabel = escapeHtml(op.pullRequest.provider + " " + op.pullRequest.kind + " #" +
-        op.pullRequest.id + (pullTitle ? ": " + pullTitle : ""));
-      parts.push(["Pull request", pullUrl
-        ? '<a href="' + escapeHtml(pullUrl) + '" target="_blank" rel="noopener noreferrer">' + pullLabel + "</a>"
-        : pullLabel]);
-    }
-    if (op.liveness) parts.push(["Liveness", op.liveness]);
-    if (op.trajectory) parts.push(["Trajectory", op.trajectory]);
-    if (op.latestError) parts.push(["Latest error", "<code>" + escapeHtml(op.latestError.code) + "</code> " + escapeHtml(op.latestError.message || "")]);
-    let html = '<div class="kv-grid">' + parts.map(([label, value]) =>
-      '<div class="kv' + (label === "Latest error" ? " kv-wide" : "") + '"><div class="label">' +
-      label + '</div><div class="value">' + value + "</div></div>").join("") + "</div>";
-    if (op.review) {
-      html += '<h3>Review</h3><p><span class="badge-' + op.review.verdict + '">' + op.review.verdict + "</span></p>";
-      if (op.review.rationale) html += '<p class="rationale">' + escapeHtml(op.review.rationale) + "</p>";
-    }
-    if (op.pullRequest && op.pullRequestBody) {
-      html += '<h3>Pull request description</h3><div class="pr-description">' +
-        escapeHtml(op.pullRequestBody) + "</div>";
-    }
-    if (op.potentialBlockers && op.potentialBlockers.length) {
-      html += '<h3>Potential blockers</h3><ul class="blockers-list">' + op.potentialBlockers.map((b) => "<li>" + escapeHtml(b) + "</li>").join("") + "</ul>";
-    }
-    return html;
   }
 
   function renderRunEvents(events, sourceId, runId) {

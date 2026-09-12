@@ -10,8 +10,10 @@ import {
     renderHtml,
     renderRunDetailSummary,
     renderRunEventItems,
+    renderOperatorPanel,
     renderRunRowCells,
     renderSnapshotCard,
+    renderTransitions,
 } from "./render.mjs";
 
 test("causal diagnosis renders attempts and escaped failure breadcrumbs", () => {
@@ -136,6 +138,35 @@ test("run event items escape hostile metadata and preserve safe links", () => {
     assert.match(html, /%3Cimg%20src%3Dx/);
 });
 
+test("run transitions escape hostile sequence, verdict, and state metadata", () => {
+    const html = renderTransitions([{
+        seq: HOSTILE,
+        source: HOSTILE,
+        target: HOSTILE,
+        verdict: HOSTILE,
+        status: HOSTILE,
+        terminal: false,
+    }]);
+    assert.doesNotMatch(html, /<img/);
+    assert.match(html, /&lt;img/);
+    assert.doesNotMatch(html, /class="[^"]*<img/);
+});
+
+test("operator panel escapes hostile issue, liveness, trajectory, and review metadata", () => {
+    const html = renderOperatorPanel({
+        issue: { number: HOSTILE, title: HOSTILE },
+        pullRequest: { provider: HOSTILE, kind: HOSTILE, id: HOSTILE },
+        liveness: HOSTILE,
+        trajectory: HOSTILE,
+        review: { verdict: HOSTILE, rationale: HOSTILE },
+        latestError: { code: HOSTILE, message: HOSTILE },
+        potentialBlockers: [HOSTILE],
+    });
+    assert.doesNotMatch(html, /<img/);
+    assert.match(html, /&lt;img/);
+    assert.doesNotMatch(html, /class="[^"]*<img/);
+});
+
 test("run-detail time fallback escapes values when date conversion throws", () => {
     const hostile = { toString() { return HOSTILE; }, valueOf() { throw new Error("no conversion"); } };
     const formatted = formatRunDetailTime(hostile);
@@ -158,6 +189,18 @@ test("innerHTML lint rejects direct unescaped property interpolation", async () 
         lintInnerHTMLAssignments('element.innerHTML = "<p>" + workflow + "</p>";'),
         ["line 1: innerHTML concatenates unescaped workflow"],
     );
+    for (const mutation of [
+        'element.innerHTML = "<p>" + String(run.workflow) + "</p>";',
+        'element.innerHTML = "<p>" + (run.workflow ? run.workflow : "") + "</p>";',
+        'element.innerHTML = `<p>${run.workflow}</p>`;',
+        'let runDetailHtml = "<p>" + run.workflow; element.innerHTML = runDetailHtml;',
+    ]) {
+        assert.equal(lintInnerHTMLAssignments(mutation).length, 1, mutation);
+    }
+    assert.deepEqual(
+        lintInnerHTMLAssignments('let runDetailHtml = "<p>" + escapeHtml(run.workflow); element.innerHTML = runDetailHtml;'),
+        [],
+    );
 });
 
 test("the browser script receives the escaping helpers, not raw interpolation", () => {
@@ -167,6 +210,8 @@ test("the browser script receives the escaping helpers, not raw interpolation", 
     assert.match(page, /const renderRunRowCells = function renderRunRowCells/);
     assert.match(page, /const renderRunDetailSummary = function renderRunDetailSummary/);
     assert.match(page, /const renderRunEventItems = function renderRunEventItems/);
+    assert.match(page, /const renderTransitions = function renderTransitions/);
+    assert.match(page, /const renderOperatorPanel = function renderOperatorPanel/);
     // ...remapped onto the client's own escapeHtml, so no stale identifier
     // survives to throw at runtime.
     assert.ok(!page.includes("escapeAssociationHtml"), "escapeAssociationHtml leaked into the page");
