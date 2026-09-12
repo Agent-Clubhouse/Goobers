@@ -1469,7 +1469,7 @@ gathered (possibly empty — no siblings is not an error), 1 = business
 error, 2 = usage/IO error.
 
 ### init
-Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--provider=github|ado] --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--repo <repository>] [--branch <name>] [--issue-scope=all|assigned] [--assigned-to <identity>] [--pr-ci | --ci-command <JSON-argv> --required-capabilities <list>] [--workflows <list>] [--provider=github|ado] [--repo-auth-kind <kind>] [--repo-token-env <name>] [--work-tracking-token-env <name>] [--pr-token-env <name>] [--push-token-env <name>] [--github-cli-user <name>] [--model-token-env <name>] [--harness <name>]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
@@ -1486,8 +1486,12 @@ For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new
 select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=standard non-interactively seeds backlog-curation and implementation
-with their three canonical personas. It requires an explicit --ci-command
-JSON argv array and comma-separated --required-capabilities (e.g. node@24).
+with their three canonical personas by default. Use --workflows to select
+implementation, backlog-curation, and/or work-nomination. --repo accepts a
+GitHub owner/name or Azure DevOps identity; --branch defaults to main.
+Implementation requires either --pr-ci or an explicit --ci-command JSON argv
+array plus comma-separated --required-capabilities (e.g. node@24).
+Use --issue-scope=assigned with --assigned-to to limit implementation work.
 Use --provider=ado for Azure DevOps placeholders and GOOBERS_ADO_TOKEN;
 the default provider is github. See docs/guides/ado-authentication.md.
 It creates placeholders: configure repository identity and credential refs
