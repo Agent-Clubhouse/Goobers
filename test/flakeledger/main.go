@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/goobers/goobers/internal/flake"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -46,7 +47,9 @@ var (
 	// runnerFlagEcho matches a normalized signature segment that is only the Go
 	// test runner repeating one of its own flags, such as `-test.shuffle
 	// <value>`. A signature made of nothing else names no failure.
-	runnerFlagEcho = regexp.MustCompile(`^-test\.[A-Za-z0-9_.]+(?:[= ]\S+)?$`)
+	runnerFlagEcho  = regexp.MustCompile(`^-test\.[A-Za-z0-9_.]+(?:[= ]\S+)?$`)
+	packageSummary  = regexp.MustCompile(`^ok\s+\S+\s+(?:\(cached\)|\d+(?:\.\d+)?s)(?:\s+coverage:\s+(?:\d+(?:\.\d+)?%\s+of statements(?:\s+in\s+.+)?|\[no statements\]))?$`)
+	coverageSummary = regexp.MustCompile(`^coverage:\s+(?:\d+(?:\.\d+)?%\s+of statements(?:\s+in\s+.+)?|\[no statements\])$`)
 )
 
 type options struct {
@@ -370,9 +373,12 @@ func indexIssues(items []providers.WorkItem) (map[string]providers.WorkItem, err
 // identifies nothing, so filing an issue for it would create a fresh, useless
 // issue for every run instead of one issue for one defect.
 func distinguishingSignature(signature string) bool {
+	if signature == flake.NoStableSignature {
+		return false
+	}
 	for _, segment := range strings.Split(signature, "|") {
 		segment = strings.TrimSpace(segment)
-		if segment == "" || runnerFlagEcho.MatchString(segment) {
+		if segment == "" || runnerFlagEcho.MatchString(segment) || packageSummary.MatchString(segment) || coverageSummary.MatchString(segment) {
 			continue
 		}
 		return true
