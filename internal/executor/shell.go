@@ -760,6 +760,13 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 	return paths
 }
 
+func appendAppliedConfigDigest(environment []string, digest string) []string {
+	if digest == "" {
+		return environment
+	}
+	return append(environment, AppliedConfigDigestEnvVar+"="+digest)
+}
+
 // Run implements invoke.Deterministic. It executes run.Command, or run.Script
 // through the host's native command interpreter, in env.Workspace with a
 // capability-scoped, non-ambient environment. It enforces a timeout by killing
@@ -844,9 +851,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			goober = "deterministic"
 		}
 		stageEnv = append(stageEnv, TaskEnvVar+"="+task, GooberEnvVar+"="+goober, InstanceIDEnvVar+"="+env.InstanceID)
-		if e.AppliedConfigDigest != "" {
-			stageEnv = append(stageEnv, AppliedConfigDigestEnvVar+"="+e.AppliedConfigDigest)
-		}
+		stageEnv = appendAppliedConfigDigest(stageEnv, e.AppliedConfigDigest)
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
