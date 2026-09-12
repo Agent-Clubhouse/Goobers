@@ -72,21 +72,14 @@ type Config struct {
 	// Namespace is the gaggle namespace stage pods are created in.
 	Namespace string
 	// Owner identifies THIS dispatcher process among the workers sharing a
-	// namespace. It is stamped on every pod as LabelOwner and is the scope
-	// SweepOrphans sweeps within, so it must be stable across a restart of
-	// the same worker and distinct between workers. The worker wires its
-	// hostname — in-cluster, its pod name: stable while the pod lives, unique
-	// per replica.
+	// namespace. It is stamped on every pod as LabelOwner for diagnostics and
+	// must be distinct between workers. The worker wires its hostname —
+	// in-cluster, its pod name: stable while the pod lives, unique per replica.
 	//
-	// A rollout gives the replacement worker a NEW pod name, so stage pods
-	// left by the outgoing one fall outside every sweep's scope. That is the
-	// intended trade: the sweep's job is to reclaim ITS OWN interrupted
-	// attempts, and the always-on activeDeadlineSeconds stamp (dispatcher §5)
-	// is what bounds every other leak. Deleting a pod on a guess is the
-	// failure this whole path is built to avoid.
-	//
-	// Empty stamps no owner label and makes SweepOrphans refuse: an ownerless
-	// fleet cannot be swept safely by one of its members.
+	// SweepOrphans does not select by this label: rollouts change the worker pod
+	// name, so owner scoping would make the outgoing worker's stage pods
+	// permanently unreachable. Instead it resolves every labeled stage pod's
+	// owning workflow and deletes only positively terminal attempts.
 	Owner string
 	// EmbeddedCommit is this dispatcher binary's embedded commit sha
 	// (internal/version.Commit at wiring) — the left side of the decision-009
