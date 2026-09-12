@@ -336,6 +336,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// Validates design/ADR lifecycle metadata AND that docs/design/README.md
 		// is current. Regenerate the index with `make docs` (#4518).
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
+		// Also drift-checks the generated guides index and requires every guide
+		// to be reachable from that index, docs/cli, or docs/man (#4854).
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
 		// A workflow whose schedule is commented out never runs, and nothing
 		// else distinguishes it from an enforced gate (#4224).

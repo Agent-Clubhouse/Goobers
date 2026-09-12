@@ -82,6 +82,7 @@
       "Makefile#deploy-validate::go-modules",
       "Makefile#docs::go-modules",
       "Makefile#docs:[2]:go-modules",
+      "Makefile#docs:[3]:go-modules",
       "Makefile#flake-policy::go-modules",
       "Makefile#linux-node-validation::go-modules",
       "Makefile#linux-node-validation:[2]:go-modules",
