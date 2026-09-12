@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 )
@@ -29,6 +31,48 @@ func (r *recordingDivergenceAppender) Append(event journal.Event) error {
 		r.events <- event
 	}
 	return nil
+}
+
+type failFirstDivergenceAppender struct {
+	calls    atomic.Int32
+	attempts chan string
+}
+
+func (a *failFirstDivergenceAppender) Append(event journal.Event) error {
+	a.attempts <- divergenceRunnerString(event, "state")
+	if a.calls.Add(1) == 1 {
+		return errors.New("response lost")
+	}
+	return nil
+}
+
+func TestWorkerDivergenceRetriesFailedTransitionBeforeNewerState(t *testing.T) {
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		digest := "sha256:worker"
+		if reads.Add(1) > 1 {
+			digest = "sha256:new"
+		}
+		_, _ = fmt.Fprintf(w, `{"digest":%q}`, digest)
+	}))
+	t.Cleanup(server.Close)
+	seams := &workerSeams{logf: func(string, ...any) {}}
+	seams.snapshot.Store(&workerConfigSnapshot{digest: "sha256:worker"})
+	appender := &failFirstDivergenceAppender{attempts: make(chan string, 8)}
+	watcher := startWorkerDivergenceWatcher(context.Background(), seams, server.Client(), server.URL,
+		func() (string, error) { return "token", nil }, 10*time.Millisecond, "worker:a", appender)
+	t.Cleanup(watcher.Stop)
+	want := []string{workerDivergenceInSync, workerDivergenceInSync, workerDivergenceDiverged}
+	for i, expected := range want {
+		select {
+		case got := <-appender.attempts:
+			if got != expected {
+				t.Fatalf("attempt %d state = %q, want %q", i, got, expected)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("missing attempt %d", i)
+		}
+	}
 }
 
 func TestWorkerDigestMintFailureReportsUnavailableAndRecovers(t *testing.T) {
@@ -173,6 +217,40 @@ func TestWorkerDigestTokenSourceKeepsStaticAndUnconfiguredPostures(t *testing.T)
 	}
 }
 
+func TestStaticPodTokenMayReadDigestButCannotForgeWorkerDivergence(t *testing.T) {
+	registry := podauth.NewRegistry()
+	token, err := registry.Mint("stage-run", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := podauth.NewAuthenticator(registry, httpapi.DenyAllAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
+		httpapi.WithAuthenticator(auth),
+		httpapi.WithConfigDigest(func() string { return "sha256:daemon" }),
+		httpapi.WithWorkerConfigDivergence(func(journal.Event) error { t.Fatal("stage token appended worker state"); return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := httptest.NewRequest(http.MethodGet, apicontract.ConfigDigestPath, nil)
+	get.Header.Set("Authorization", "Bearer "+token)
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, get)
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("config digest status = %d, body=%s", getResponse.Code, getResponse.Body.String())
+	}
+	post := httptest.NewRequest(http.MethodPost, apicontract.WorkerConfigDivergencePath,
+		bytes.NewBufferString(`{"state":"not-checked","reason":"forged"}`))
+	post.Header.Set("Authorization", "Bearer "+token)
+	postResponse := httptest.NewRecorder()
+	handler.ServeHTTP(postResponse, post)
+	if postResponse.Code != http.StatusForbidden {
+		t.Fatalf("worker divergence status = %d, body=%s", postResponse.Code, postResponse.Body.String())
+	}
+}
+
 func TestWorkerDigestFetchRefusesRedirectAndOversizedPayload(t *testing.T) {
 	var targetCalls atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +275,7 @@ func TestWorkerDigestFetchRefusesRedirectAndOversizedPayload(t *testing.T) {
 }
 
 func TestRemoteWorkerDivergenceAppenderUsesAuthoritativeDaemonPlane(t *testing.T) {
-	var got journal.Event
+	var got map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != apicontract.WorkerConfigDivergencePath || request.Header.Get("Authorization") != "Bearer worker-token" {
 			t.Fatalf("request = %s %s auth=%q", request.Method, request.URL.Path, request.Header.Get("Authorization"))
@@ -209,11 +287,13 @@ func TestRemoteWorkerDivergenceAppenderUsesAuthoritativeDaemonPlane(t *testing.T
 	}))
 	t.Cleanup(server.Close)
 	appender := &remoteWorkerDivergenceAppender{client: server.Client(), baseURL: server.URL, tokenSource: func() (string, error) { return "worker-token", nil }}
-	if err := appender.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{"worker": "worker-a", "state": "not-active"}}); err != nil {
+	if err := appender.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+		"worker": "worker-a", "state": "not-checked", "reason": "digest unavailable",
+	}}); err != nil {
 		t.Fatal(err)
 	}
-	if got.Type != journal.EventWorkerConfigDivergence || got.Runner["state"] != "not-active" {
-		t.Fatalf("event = %+v", got)
+	if got["state"] != "not-checked" || got["reason"] != "digest unavailable" || got["worker"] != "" || got["message"] != "" {
+		t.Fatalf("request = %+v", got)
 	}
 }
 
@@ -227,4 +307,58 @@ func TestInactiveWorkerDivergenceIsAFirstClassTransition(t *testing.T) {
 		t.Fatalf("message = %q", message)
 	}
 	assertDivergenceEvent(t, events, "worker-a", workerDivergenceNotActive)
+}
+
+func TestWorkerDivergenceJournalRecorderDeduplicatesAcrossRestart(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	recorder, err := newWorkerDivergenceJournalRecorder(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+		"worker": "worker:a", "state": workerDivergenceInSync,
+		"workerDigest": "sha256:a", "daemonDigest": "sha256:a", "message": "in sync",
+	}}
+	if err := recorder.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := newWorkerDivergenceJournalRecorder(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	event.Runner["state"] = workerDivergenceDiverged
+	event.Runner["daemonDigest"] = "sha256:b"
+	event.Runner["message"] = "diverged"
+	if err := restarted.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Runner["state"] != workerDivergenceInSync || events[1].Runner["state"] != workerDivergenceDiverged {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestDaemonRecordsRemoteReportingNotActiveWithoutWorkerKey(t *testing.T) {
+	events := make(chan journal.Event, 1)
+	cfg := &instance.Config{Engine: &instance.EngineConfig{HostPort: "temporal:7233"}}
+	if err := recordDaemonWorkerDivergenceAvailability(&recordingDivergenceAppender{events: events}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	assertDivergenceEvent(t, events, "worker:remote-reporting", workerDivergenceNotActive)
+	cfg.API.PodTokenKeyFile = "/var/run/goobers/pod.key"
+	if err := recordDaemonWorkerDivergenceAvailability(&recordingDivergenceAppender{events: events}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	assertDivergenceEvent(t, events, "worker:remote-reporting", workerDivergenceNotChecked)
 }

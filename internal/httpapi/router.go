@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -391,9 +393,14 @@ func RequireRoles() Authorizer {
 		if !ok {
 			return errors.New("no authenticated principal")
 		}
+		if request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath {
+			if principal.Issuer == WorkerPrincipalIssuer {
+				return nil
+			}
+			return errors.New("only an authenticated worker may report config divergence")
+		}
 		if principal.Issuer == WorkerPrincipalIssuer {
-			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath ||
-				request.Method == http.MethodPost && request.URL.Path == apicontract.WorkerConfigDivergencePath {
+			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
 				return nil
 			}
 			return errors.New("worker principal may only read config digest or report config divergence")
@@ -936,26 +943,32 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 			writeError(w, http.StatusServiceUnavailable, "worker_config_divergence_unavailable", "worker config-divergence journal is unavailable")
 			return
 		}
-		var event journal.Event
-		if err := decodeWriteRequestBounded(request, &event, 16<<10); err != nil {
+		principal, ok := PrincipalFromRequest(request)
+		if !ok || principal.Issuer != WorkerPrincipalIssuer || strings.TrimSpace(principal.Subject) == "" {
+			writeError(w, http.StatusForbidden, "worker_identity_required", "only an authenticated worker may report config divergence")
+			return
+		}
+		var input struct {
+			State        string `json:"state"`
+			WorkerDigest string `json:"workerDigest,omitempty"`
+			DaemonDigest string `json:"daemonDigest,omitempty"`
+			Reason       string `json:"reason,omitempty"`
+		}
+		if err := decodeWriteRequestBounded(request, &input, 16<<10); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		worker, workerOK := event.Runner["worker"].(string)
-		state, stateOK := event.Runner["state"].(string)
-		if event.Type != journal.EventWorkerConfigDivergence || event.Runner == nil || !workerOK || worker == "" || !stateOK || !validWorkerConfigDivergenceState(state) {
-			writeError(w, http.StatusBadRequest, "invalid_worker_config_divergence", "a typed worker config-divergence event with worker and state is required")
+		if err := validateWorkerConfigDivergenceInput(input.State, input.WorkerDigest, input.DaemonDigest, input.Reason); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_worker_config_divergence", err.Error())
 			return
 		}
-		if principal, ok := PrincipalFromRequest(request); ok && principal.Issuer == WorkerPrincipalIssuer {
-			worker = principal.Subject
-		}
-		event = journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
-			"worker": worker, "state": state,
-			"workerDigest": stringRunnerValue(event.Runner, "workerDigest"),
-			"daemonDigest": stringRunnerValue(event.Runner, "daemonDigest"),
-			"reason":       stringRunnerValue(event.Runner, "reason"),
-			"message":      stringRunnerValue(event.Runner, "message"),
+		message := workerConfigDivergenceMessage(input.State, input.WorkerDigest, input.DaemonDigest, input.Reason)
+		event := journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+			"worker": principal.Subject, "state": input.State,
+			"workerDigest": input.WorkerDigest,
+			"daemonDigest": input.DaemonDigest,
+			"reason":       input.Reason,
+			"message":      message,
 		}}
 		if err := config.workerConfigDivergence(event); err != nil {
 			errorLog.Printf("worker config-divergence append failed: %v", err)
@@ -1001,17 +1014,52 @@ func validWorkerConfigDivergenceState(state string) bool {
 	switch state {
 	case string(journal.WorkerConfigDivergenceInSync),
 		string(journal.WorkerConfigDivergenceDiverged),
-		string(journal.WorkerConfigDivergenceNotChecked),
-		string(journal.WorkerConfigDivergenceNotActive):
+		string(journal.WorkerConfigDivergenceNotChecked):
 		return true
 	default:
 		return false
 	}
 }
 
-func stringRunnerValue(fields map[string]any, key string) string {
-	value, _ := fields[key].(string)
-	return value
+func validateWorkerConfigDivergenceInput(state, workerDigest, daemonDigest, reason string) error {
+	if !validWorkerConfigDivergenceState(state) {
+		return errors.New("state must be in-sync, diverged, or not-checked")
+	}
+	for name, value := range map[string]string{"workerDigest": workerDigest, "daemonDigest": daemonDigest, "reason": reason} {
+		if len(value) > 2048 || !utf8.ValidString(value) || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("%s must be valid bounded text without control characters", name)
+		}
+	}
+	switch state {
+	case string(journal.WorkerConfigDivergenceInSync):
+		if workerDigest == "" || workerDigest != daemonDigest || reason != "" {
+			return errors.New("in-sync requires equal nonempty digests and no reason")
+		}
+	case string(journal.WorkerConfigDivergenceDiverged):
+		if workerDigest == "" || daemonDigest == "" || workerDigest == daemonDigest || reason != "" {
+			return errors.New("diverged requires distinct nonempty digests and no reason")
+		}
+	case string(journal.WorkerConfigDivergenceNotChecked):
+		if reason == "" {
+			return errors.New("not-checked requires a reason")
+		}
+	}
+	return nil
+}
+
+func workerConfigDivergenceMessage(state, workerDigest, daemonDigest, reason string) string {
+	switch state {
+	case string(journal.WorkerConfigDivergenceInSync):
+		return fmt.Sprintf("worker config divergence: none; worker and daemon both have config tree %s in force", workerDigest)
+	case string(journal.WorkerConfigDivergenceDiverged):
+		return fmt.Sprintf("worker config divergence: this worker serves config tree %s but the daemon has %s in force. "+
+			"Every agentic gate is pinned to the daemon's tree and served from this one, so gates will be REFUSED "+
+			"(gate_pin_missing) until they agree. The worker's tree is seeded at deploy time and has no live writer: "+
+			"a goober-content change merged to the config repo requires a DEPLOY, not just a merge (#4153)",
+			workerDigest, daemonDigest)
+	default:
+		return fmt.Sprintf("worker config divergence: NOT CHECKED (%s); worker cannot tell whether its config tree matches the daemon's", reason)
+	}
 }
 
 func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {

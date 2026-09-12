@@ -857,7 +857,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// its own has diverged instead of finding out when an agentic gate refuses.
 	configDigests := newConfigDigestPublisher(setup.ConfigDigest)
 	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithConfigDigest(configDigests.Get))
-	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithWorkerConfigDivergence(setup.InstanceLog.Append))
+	workerDivergenceRecorder, err := newWorkerDivergenceJournalRecorder(setup.InstanceLog)
+	if err != nil {
+		pf(stderr, "error: initialize worker config-divergence journal: %v\n", err)
+		return 1
+	}
+	if err := recordDaemonWorkerDivergenceAvailability(workerDivergenceRecorder, setup.Config); err != nil {
+		pf(stderr, "error: record worker config-divergence availability: %v\n", err)
+		return 1
+	}
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithWorkerConfigDivergence(workerDivergenceRecorder.Append))
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)

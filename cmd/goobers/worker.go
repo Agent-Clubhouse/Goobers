@@ -372,9 +372,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// which tree is in force and say so.
 	//
 	// A shared-key worker authenticates as itself with a short-lived credential
-	// confined to the digest read and divergence-report planes. No synthetic
-	// run or standing pod bearer is needed; existing static-token deployments
-	// keep their explicit token.
+	// confined to the digest read and divergence-report planes. A legacy static
+	// GOOBERS_POD_TOKEN remains usable for the digest read only: it authenticates
+	// a stage run, not this worker host, so it cannot author durable health.
 	if seams != nil && *daemonAPI != "" {
 		divergence, err := configureWorkerDivergence(ctx, seams, *instanceRoot, *daemonAPI, stdout, stderr)
 		if err != nil {
