@@ -79,16 +79,6 @@ func startDeferredRetentionSweep(ctx context.Context, l instance.Layout, setup *
 	return done
 }
 
-// journalGraceAge bounds how long a retained worktree whose owning run
-// journal has vanished entirely (e.g. telemetry retention deleted it first)
-// is tolerated before it becomes prunable under RetentionRuleJournalGrace
-// (#2052). Unlike MaxRetainedWorktreeBytes/RetainedWorktreeMaxAge, this is
-// not operator-configurable: a journal-less retained worktree is always a
-// bug (nothing can ever authorize it via IsTerminalFailure again), so
-// there's no legitimate reason for an operator to want it kept forever. Var,
-// not const, so tests can shrink it rather than waiting out a real 24 hours.
-var journalGraceAge = 24 * time.Hour
-
 // sweepWorktreeRetention re-runs crash-orphan reaping (Manager.Reap) and
 // configured retention (pruneConfiguredRetention) for every gaggle plus the
 // legacy manager. It is the periodic counterpart to the synchronous startup
@@ -130,9 +120,9 @@ func sweepMigrationBackups(l instance.Layout, setup *schedulerSetup, now time.Ti
 }
 
 // retentionNow is the clock the retention sweep reads. Var, not a direct
-// time.Now call, for the same reason journalGraceAge below is a var: the
-// first-enable grace window (#4253) and the default 7-day worktree age bound
-// are both week-scale, and a test cannot wait them out.
+// time.Now call: the first-enable grace window (#4253), journal-absence grace,
+// and the default 7-day worktree age bound are all long-lived policies, and a
+// test cannot wait them out.
 var retentionNow = time.Now
 
 // worktreeRetentionStateFile records the first-enable grace window for
@@ -147,6 +137,10 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 		return nil
 	}
 	maxAge, err := cfg.RetainedWorktreeMaxAgeDuration()
+	if err != nil {
+		return err
+	}
+	journalGraceAge, err := cfg.JournalGraceAgeDuration()
 	if err != nil {
 		return err
 	}

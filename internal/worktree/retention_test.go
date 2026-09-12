@@ -230,22 +230,20 @@ func TestPruneRetainedReportsBranchDeletionFailureWithoutReclamation(t *testing.
 // authorize it again since there is nothing left to read, so without a
 // dedicated rule it stays retained forever regardless of MaxAge or
 // MaxRetainedBytes. JournalMissing+JournalGraceAge are independent of both:
-// this proves a journal-less candidate is left alone before the grace
-// window and reclaimed once past it, while a candidate whose journal simply
-// hasn't reached terminal-failure yet (JournalMissing false) is untouched
-// even past the same window.
+// this proves a long-retained candidate receives a fresh grace window on the
+// first pass that observes the journal absent, that the observation survives
+// a subsequent pass, and that a present journal clears/avoids that clock.
 func TestPruneRetainedJournalGraceReclaimsOnlyPastGraceWindow(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
 	manager := newTestManager(t)
 	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
 
-	fresh := retainedFixture(t, manager, repo, "fresh-stage", "fresh-run", now.Add(-time.Hour))
 	stale := retainedFixture(t, manager, repo, "stale-stage", "stale-run", now.Add(-48*time.Hour))
 	nonTerminal := retainedFixture(t, manager, repo, "live-stage", "live-run", now.Add(-48*time.Hour))
 
-	journalMissing := map[string]bool{"fresh-run": true, "stale-run": true, "live-run": false}
-	results, warnings, err := PruneRetained(ctx, []*Manager{manager}, RetentionOptions{
+	journalMissing := map[string]bool{"stale-run": true, "live-run": false}
+	opts := RetentionOptions{
 		Delete: true,
 		Now:    now,
 		IsTerminalFailure: func(_, _, _ string) (bool, error) {
@@ -255,21 +253,34 @@ func TestPruneRetainedJournalGraceReclaimsOnlyPastGraceWindow(t *testing.T) {
 			return journalMissing[ownerRunID], nil
 		},
 		JournalGraceAge: 24 * time.Hour,
-	})
+	}
+	results, warnings, err := PruneRetained(ctx, []*Manager{manager}, opts)
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("PruneRetained = warnings %+v, err %v", warnings, err)
 	}
-	if len(results) != 1 || results[0].WorktreeID != stale.RunID || results[0].Rule != RetentionRuleJournalGrace || !results[0].Deleted {
-		t.Fatalf("results = %+v, want exactly the stale journal-less candidate deleted under journal-grace", results)
+	if len(results) != 0 {
+		t.Fatalf("first missing-journal pass results = %+v, want no deletion despite old retainedAt", results)
 	}
-	if _, err := os.Stat(fresh.Path); err != nil {
-		t.Fatalf("journal-grace reclaimed a candidate still inside its grace window: %v", err)
+	markerPath := manager.markerPath(stale.key, stale.RunID)
+	mk, err := readMarker(markerPath)
+	if err != nil || !mk.JournalMissingSince.Equal(now) {
+		t.Fatalf("persisted first-missing observation = %s, err %v; want %s", mk.JournalMissingSince, err, now)
 	}
 	if _, err := os.Stat(nonTerminal.Path); err != nil {
 		t.Fatalf("journal-grace reclaimed a candidate whose journal is not missing: %v", err)
 	}
+
+	// A new pass reconstructs candidates from disk, modeling daemon restart.
+	opts.Now = now.Add(24 * time.Hour)
+	results, warnings, err = PruneRetained(ctx, []*Manager{manager}, opts)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("PruneRetained after restart = warnings %+v, err %v", warnings, err)
+	}
+	if len(results) != 1 || results[0].WorktreeID != stale.RunID || results[0].Rule != RetentionRuleJournalGrace || !results[0].Deleted {
+		t.Fatalf("results = %+v, want persisted journal-grace deletion", results)
+	}
 	if _, err := os.Stat(stale.Path); !os.IsNotExist(err) {
-		t.Fatalf("journal-grace left the stale journal-less candidate in place: %v", err)
+		t.Fatalf("journal-grace left the past-grace candidate in place: %v", err)
 	}
 }
 
@@ -299,6 +310,113 @@ func TestPruneRetainedJournalGraceDisabledByDefault(t *testing.T) {
 	}
 	if _, err := os.Stat(wt.Path); err != nil {
 		t.Fatalf("disabled journal-grace reclaimed a worktree: %v", err)
+	}
+}
+
+func TestPruneRetainedJournalGraceResetsWhenJournalReturns(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	manager := newTestManager(t)
+	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	wt := retainedFixture(t, manager, repo, "restored-stage", "restored-run", now.Add(-30*24*time.Hour))
+	missing := true
+	opts := RetentionOptions{
+		Delete: true, Now: now, JournalGraceAge: 24 * time.Hour,
+		JournalMissing: func(_, _, _ string) (bool, error) { return missing, nil },
+	}
+
+	if results, warnings, err := PruneRetained(ctx, []*Manager{manager}, opts); err != nil || len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("first missing pass = results %+v, warnings %+v, err %v", results, warnings, err)
+	}
+	missing = false
+	opts.Now = now.Add(time.Hour)
+	if results, warnings, err := PruneRetained(ctx, []*Manager{manager}, opts); err != nil || len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("journal-return pass = results %+v, warnings %+v, err %v", results, warnings, err)
+	}
+	mk, err := readMarker(manager.markerPath(wt.key, wt.RunID))
+	if err != nil || !mk.JournalMissingSince.IsZero() {
+		t.Fatalf("journal-return clock = %s, err %v; want cleared", mk.JournalMissingSince, err)
+	}
+
+	missing = true
+	opts.Now = now.Add(48 * time.Hour)
+	if results, warnings, err := PruneRetained(ctx, []*Manager{manager}, opts); err != nil || len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("second missing pass = results %+v, warnings %+v, err %v; want fresh grace", results, warnings, err)
+	}
+	mk, err = readMarker(manager.markerPath(wt.key, wt.RunID))
+	if err != nil || !mk.JournalMissingSince.Equal(opts.Now) {
+		t.Fatalf("second first-missing observation = %s, err %v; want %s", mk.JournalMissingSince, err, opts.Now)
+	}
+}
+
+func TestPruneRetainedJournalGraceDisableClearsClockBeforeReenable(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	manager := newTestManager(t)
+	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	wt := retainedFixture(t, manager, repo, "toggle-stage", "toggle-run", now.Add(-30*24*time.Hour))
+	missing := true
+	opts := RetentionOptions{
+		Delete: true, Now: now, JournalGraceAge: 24 * time.Hour,
+		JournalMissing: func(_, _, _ string) (bool, error) { return missing, nil },
+	}
+	if results, warnings, err := PruneRetained(ctx, []*Manager{manager}, opts); err != nil || len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("initial missing pass = results %+v, warnings %+v, err %v", results, warnings, err)
+	}
+
+	missing = false
+	opts.Now = now.Add(48 * time.Hour)
+	opts.JournalGraceAge = 0
+	if results, warnings, err := PruneRetained(ctx, []*Manager{manager}, opts); err != nil || len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("disabled pass = results %+v, warnings %+v, err %v", results, warnings, err)
+	}
+	mk, err := readMarker(manager.markerPath(wt.key, wt.RunID))
+	if err != nil || !mk.JournalMissingSince.IsZero() {
+		t.Fatalf("disabled policy retained observation = %s, err %v", mk.JournalMissingSince, err)
+	}
+
+	missing = true
+	opts.Now = now.Add(72 * time.Hour)
+	opts.JournalGraceAge = 24 * time.Hour
+	if results, warnings, err := PruneRetained(ctx, []*Manager{manager}, opts); err != nil || len(warnings) != 0 || len(results) != 0 {
+		t.Fatalf("reenabled first-missing pass = results %+v, warnings %+v, err %v; want fresh grace", results, warnings, err)
+	}
+	mk, err = readMarker(manager.markerPath(wt.key, wt.RunID))
+	if err != nil || !mk.JournalMissingSince.Equal(opts.Now) {
+		t.Fatalf("reenabled observation = %s, err %v; want %s", mk.JournalMissingSince, err, opts.Now)
+	}
+}
+
+func TestObserveJournalMissingRepairsFutureClock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marker.json")
+	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	mk := marker{RunID: "future", JournalMissingSince: now.Add(24 * time.Hour)}
+	if err := writeMarker(path, mk); err != nil {
+		t.Fatal(err)
+	}
+	missing, observed, err := observeJournalMissing("root", "wt", path, &mk, RetentionOptions{
+		Now: now, JournalGraceAge: time.Hour,
+		JournalMissing: func(_, _, _ string) (bool, error) { return true, nil },
+	})
+	if err != nil || !missing || !observed.Equal(now) {
+		t.Fatalf("future-clock repair = missing %t observed %s err %v; want true, %s, nil", missing, observed, err, now)
+	}
+	persisted, err := readMarker(path)
+	if err != nil || !persisted.JournalMissingSince.Equal(now) {
+		t.Fatalf("persisted repair = %s, err %v; want %s", persisted.JournalMissingSince, err, now)
+	}
+}
+
+func TestObserveJournalMissingPersistenceFailureExcludesCandidate(t *testing.T) {
+	markerPath := t.TempDir() // a directory cannot be atomically replaced by the marker writer
+	now := time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC)
+	mk := marker{RunID: "unwritable"}
+	missing, observed, err := observeJournalMissing("root", "wt", markerPath, &mk, RetentionOptions{
+		Now: now, JournalGraceAge: time.Hour,
+		JournalMissing: func(_, _, _ string) (bool, error) { return true, nil },
+	})
+	if err == nil || missing || !observed.IsZero() {
+		t.Fatalf("persistence failure = missing %t observed %s err %v; want excluded with error", missing, observed, err)
 	}
 }
 
