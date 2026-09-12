@@ -93,7 +93,7 @@ func (s *daemonEngineCancelService) resolve(input httpapi.CancelRunRequest) (*jo
 	for gaggle := range owned {
 		gaggles = append(gaggles, gaggle)
 	}
-	found, err := locateOwnedRun(s.layout, gaggles, input.RunID)
+	found, err := locateOwnedRun(s.layout, gaggles, input.RunID, true)
 	if err != nil {
 		return nil, journal.RunIdentity{}, err
 	}
