@@ -2286,17 +2286,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	// Provider-stage input lifecycle (#4879). Runtime parsers retain their
-	// defensive refusals, but a retired input is visible in the workflow and
-	// must be rejected here before the stage can claim work and fail a run.
-	for _, msg := range wf.CheckProviderStageInputs(def) {
-		r.add(errorProviderStageInput, Error, file, "Workflow", w.Name, "%s", msg)
-	}
-	// Bounded waits must finish before the executor can terminate their stage;
-	// command-specific clamps are modeled by the workflow check itself.
-	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
-		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
-	}
+	checkProviderInputsAndTimeouts(r, def, file, w)
 	// A stage's own subprocess can carry a longer wall-clock ceiling than the
 	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
 	// under a 25-minute stage timeout. Warning, not error: detection only
@@ -2312,6 +2302,20 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
+}
+
+func checkProviderInputsAndTimeouts(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+	// Provider-stage input lifecycle (#4879). Runtime parsers retain their
+	// defensive refusals, but a retired input is visible in the workflow and
+	// must be rejected here before the stage can claim work and fail a run.
+	for _, msg := range wf.CheckProviderStageInputs(def) {
+		r.add(errorProviderStageInput, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// Bounded waits must finish before the executor can terminate their stage;
+	// command-specific clamps are modeled by the workflow check itself.
+	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
+		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
+	}
 }
 
 func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {

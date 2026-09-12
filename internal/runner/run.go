@@ -3591,8 +3591,7 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		return "", stalledResult, false, stalledErr
 	}
 
-	if result.Status == apiv1.ResultBlocked && result.Error != nil &&
-		result.Error.Code == ContextNotInspectedCode {
+	if isContextNotInspectedResult(result) {
 		// runTask validates before stage.finished is journaled, so the retry
 		// reason survives a crash and is available as the prior result.
 		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
@@ -3873,6 +3872,10 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		return "", res, false, err
 	}
 	return t.Next, Result{}, true, nil
+}
+
+func isContextNotInspectedResult(result apiv1.ResultEnvelope) bool {
+	return result.Status == apiv1.ResultBlocked && result.Error != nil && result.Error.Code == ContextNotInspectedCode
 }
 
 func journalToleratedFailure(jr executionJournal, stage string) error {

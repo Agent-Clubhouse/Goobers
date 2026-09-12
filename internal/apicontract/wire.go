@@ -126,6 +126,29 @@ func queueEligibilityWireFixture(at time.Time) readservice.QueueEligibilityView 
 	return readservice.QueueEligibilityView{Gaggle: report.Gaggle, Workflow: report.Workflow, AsOf: at, Status: "observed", SourceRunID: report.RunID, SourceStage: "select", Report: &report}
 }
 
+func instanceWireFixture(warning validate.CodedWarning) readservice.Instance {
+	return readservice.Instance{
+		APIVersion:    readservice.APIVersion,
+		SchemaVersion: readservice.SchemaVersion,
+		Name:          "fixture",
+		Environment:   apiv1.EnvironmentDev,
+		InstanceRoot:  "/instances/fixture",
+		Ready:         true,
+		Status:        readservice.InstanceStatusDegraded,
+		Concurrency: readservice.Concurrency{
+			ActiveRuns:        1,
+			MaxConcurrentRuns: 4,
+		},
+		Counts: readservice.InventoryCounts{
+			Gaggles:    1,
+			Goobers:    1,
+			Workflows:  1,
+			ActiveRuns: 1,
+		},
+		Warnings: []validate.CodedWarning{warning},
+	}
+}
+
 func newWireFixtures() wireFixtures {
 	timestamp := time.Date(2026, time.July, 18, 12, 34, 56, 0, time.UTC)
 	finishedAt := timestamp.Add(2 * time.Minute)
@@ -332,26 +355,7 @@ func newWireFixtures() wireFixtures {
 				CheckedAt:      timestamp,
 			},
 		},
-		Instance: readservice.Instance{
-			APIVersion:    readservice.APIVersion,
-			SchemaVersion: readservice.SchemaVersion,
-			Name:          "fixture",
-			Environment:   apiv1.EnvironmentDev,
-			InstanceRoot:  "/instances/fixture",
-			Ready:         true,
-			Status:        readservice.InstanceStatusDegraded,
-			Concurrency: readservice.Concurrency{
-				ActiveRuns:        1,
-				MaxConcurrentRuns: 4,
-			},
-			Counts: readservice.InventoryCounts{
-				Gaggles:    1,
-				Goobers:    1,
-				Workflows:  1,
-				ActiveRuns: 1,
-			},
-			Warnings: []validate.CodedWarning{warning},
-		},
+		Instance: instanceWireFixture(warning),
 		PortalConfig: readservice.PortalConfig{
 			Brand: readservice.PortalBrandResponse{
 				Name:       "goobers",
