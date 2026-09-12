@@ -906,23 +906,26 @@ jobs:
           goobers init --allow-ephemeral --template=quickstart smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
           # The shipped, credential-free mock demo is trusted test content.
-          # Exercise the documented opt-in on CI hosts without user namespaces.
+          # --insecure governs init's own host check only; it does not relax the
+          # runtime network isolation asserted below.
           goobers init --allow-ephemeral --demo --insecure smoke/demo-instance
-          # First WITHOUT the opt-out (#4888). A GitHub-hosted runner has no
-          # user namespaces, so the product's DEFAULT isolated-network path
-          # must refuse here - and that refusal is the only way CI ever reaches
-          # the runtime isolation error #4267 added. Running only the degraded
-          # path left that diagnostic shipped but never executed, so a
-          # regression turning it into a silent success, a crash, or an
-          # unrecognisable message would have reached users unchallenged.
-          if goobers run demo smoke/demo-instance > smoke/demo-isolated.txt 2>&1; then
-            echo "demo unexpectedly succeeded without GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE" >&2
-            cat smoke/demo-isolated.txt >&2
-            exit 1
-          fi
-          grep --fixed-strings "GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE" smoke/demo-isolated.txt
-          # Then the documented opt-out, which is what this runner can complete.
-          GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo smoke/demo-instance | tee smoke/demo-result.txt
+          # Run the DEFAULT isolated-network path, with no opt-out (#4888).
+          # Release smoke previously passed GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1
+          # unconditionally, so the path that actually ships as the default was
+          # never exercised here and a regression in it could not fail this job.
+          #
+          # On Linux that variable is only consulted when the host RESTRICTS
+          # unprivileged user namespaces (internal/executor/network_linux.go):
+          # a hosted runner that permits them runs genuinely isolated without
+          # it. Measured on this runner, it does — so requiring success here
+          # asserts real isolation rather than the degraded fallback.
+          #
+          # If a future runner image restricts user namespaces this fails
+          # loudly, which is the correct direction for a release gate: the
+          # documented escape (GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1) is then
+          # an explicit edit someone makes knowingly, not a silent degradation
+          # that quietly stops testing the shipped default.
+          goobers run demo smoke/demo-instance | tee smoke/demo-result.txt
           grep --fixed-strings "phase=completed" smoke/demo-result.txt
           grep --fixed-strings "  goobers_portal_${TAG}.tar.gz" dist/SHA256SUMS
           mkdir smoke/portal
