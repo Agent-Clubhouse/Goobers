@@ -27,8 +27,9 @@ const (
 	// rule such a worktree is permanently unprunable once its journal is
 	// gone — e.g. telemetry retention deleted it first. Independent of
 	// MaxAge/MaxRetainedBytes: it fires once a candidate has been
-	// journal-less for JournalGraceAge, regardless of whether either other
-	// limit is configured.
+	// observed journal-less for JournalGraceAge, regardless of whether either
+	// other limit is configured. The observation time is persisted on the
+	// retained marker, so an old worktree receives the full configured grace.
 	RetentionRuleJournalGrace RetentionRule = "journal-grace"
 )
 
@@ -42,8 +43,9 @@ const (
 )
 
 // RetentionOptions configures an instance-wide retention pass. Delete must be
-// explicitly true for the pass to mutate anything; false is candidate-reporting
-// mode.
+// explicitly true for the pass to remove anything; false is candidate-reporting
+// mode. A pass may still durably record or clear the non-destructive timestamp
+// at which journal absence was observed so grace semantics survive restarts.
 type RetentionOptions struct {
 	Delete           bool
 	MaxRetainedBytes int64
@@ -98,15 +100,16 @@ type RetentionWarning struct {
 }
 
 type retainedWorktree struct {
-	manager        *Manager
-	key            string
-	markerPath     string
-	marker         marker
-	path           string
-	bytes          int64
-	retainedAt     time.Time
-	eligible       bool
-	journalMissing bool
+	manager             *Manager
+	key                 string
+	markerPath          string
+	marker              marker
+	path                string
+	bytes               int64
+	retainedAt          time.Time
+	eligible            bool
+	journalMissing      bool
+	journalMissingSince time.Time
 }
 
 type localBranch struct {
@@ -198,7 +201,7 @@ func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptio
 			if !candidate.journalMissing || attempted[candidate.markerPath] {
 				continue
 			}
-			if opts.Now.Sub(candidate.retainedAt) < opts.JournalGraceAge {
+			if opts.Now.Sub(candidate.journalMissingSince) < opts.JournalGraceAge {
 				continue
 			}
 			attempted[candidate.markerPath] = true
@@ -303,23 +306,58 @@ func inventoryRetainedWorktrees(managers []*Manager, opts RetentionOptions) ([]r
 						eligible = false
 					}
 				}
-				journalMissing := false
-				if opts.JournalMissing != nil {
-					journalMissing, err = opts.JournalMissing(manager.Root, worktreeID, mk.OwnerRunID)
-					if err != nil {
-						warnings = append(warnings, RetentionWarning{Path: path, Err: err})
-						journalMissing = false
-					}
+				journalMissing, journalMissingSince, observationErr := observeJournalMissing(manager.Root, worktreeID, markerPath, &mk, opts)
+				if observationErr != nil {
+					warnings = append(warnings, RetentionWarning{Path: markerPath, Err: observationErr})
 				}
 				retained = append(retained, retainedWorktree{
 					manager: manager, key: key, markerPath: markerPath, marker: mk,
 					path: path, bytes: bytes, retainedAt: mk.retainedAt(), eligible: eligible,
-					journalMissing: journalMissing,
+					journalMissing: journalMissing, journalMissingSince: journalMissingSince,
 				})
 			}
 		}
 	}
 	return retained, totalBytes, warnings, nil
+}
+
+func observeJournalMissing(managerRoot, worktreeID, markerPath string, mk *marker, opts RetentionOptions) (bool, time.Time, error) {
+	if opts.JournalMissing == nil {
+		return false, time.Time{}, nil
+	}
+	missing, err := opts.JournalMissing(managerRoot, worktreeID, mk.OwnerRunID)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	if opts.JournalGraceAge <= 0 {
+		return missing, time.Time{}, nil
+	}
+	observed, err := updateJournalMissingObservation(markerPath, mk, missing, opts.Now)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	return missing, observed, nil
+}
+
+func updateJournalMissingObservation(markerPath string, mk *marker, missing bool, now time.Time) (time.Time, error) {
+	observed := mk.JournalMissingSince
+	changed := false
+	switch {
+	case !missing && !observed.IsZero():
+		observed = time.Time{}
+		changed = true
+	case missing && (observed.IsZero() || observed.After(now)):
+		observed = now
+		changed = true
+	}
+	if !changed {
+		return observed, nil
+	}
+	mk.JournalMissingSince = observed
+	if err := writeMarker(markerPath, *mk); err != nil {
+		return time.Time{}, fmt.Errorf("persist journal-missing observation: %w", err)
+	}
+	return observed, nil
 }
 
 func directorySize(root string) (int64, error) {

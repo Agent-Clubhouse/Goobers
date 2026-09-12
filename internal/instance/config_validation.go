@@ -295,6 +295,9 @@ func (c RetentionConfig) validate() error {
 	if err != nil {
 		return err
 	}
+	if _, err := c.JournalGraceAgeDuration(); err != nil {
+		return err
+	}
 	if c.EnabledEffective() && c.MaxRetainedWorktreeBytes == 0 && age == 0 {
 		return fmt.Errorf("retention.retainedWorktreeMaxAge %q disables the age rule and retention.maxRetainedWorktreeBytes is unset, so retention would prune nothing: set a limit, or set retention.enabled: false", c.RetainedWorktreeMaxAge)
 	}

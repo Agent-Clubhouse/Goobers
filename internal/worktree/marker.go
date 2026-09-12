@@ -53,8 +53,13 @@ type marker struct {
 	PIDStartedAt time.Time `json:"pid_started_at,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	RetainedAt   time.Time `json:"retained_at,omitempty"`
-	Status       status    `json:"status"`
-	SizeBytes    *int64    `json:"size_bytes,omitempty"`
+	// JournalMissingSince starts RetentionRuleJournalGrace at the first
+	// retention pass that observes the owning run journal absent. It lives on
+	// the existing durable marker so the clock survives daemon restarts and
+	// remains bound to this exact retained worktree.
+	JournalMissingSince time.Time `json:"journal_missing_since,omitempty"`
+	Status              status    `json:"status"`
+	SizeBytes           *int64    `json:"size_bytes,omitempty"`
 }
 
 type branchAcquisition struct {

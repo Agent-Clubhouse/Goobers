@@ -221,9 +221,15 @@ func TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow(t *
 	layout := instance.NewLayout(root)
 	manager, repo := commandWorktreeFixture(t, layout)
 	setup := &schedulerSetup{
-		Config:          &instance.Config{Retention: instance.RetentionConfig{Enabled: boolPtr(true), FirstEnable: "immediate"}},
+		Config: &instance.Config{Retention: instance.RetentionConfig{
+			Enabled: boolPtr(true), FirstEnable: "immediate", JournalGraceAge: "24h",
+		}},
 		LegacyWorktrees: manager,
 	}
+	now := time.Date(2026, time.September, 12, 12, 0, 0, 0, time.UTC)
+	previousNow := retentionNow
+	retentionNow = func() time.Time { return now }
+	t.Cleanup(func() { retentionNow = previousNow })
 
 	makeJournalLessRetainedWorktree := func(runID string) *worktree.Worktree {
 		t.Helper()
@@ -245,11 +251,7 @@ func TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow(t *
 		return wt
 	}
 
-	prevGraceAge := journalGraceAge
-	t.Cleanup(func() { journalGraceAge = prevGraceAge })
-
-	// Still inside a real 24h grace window: left in place.
-	journalGraceAge = prevGraceAge
+	// The first pass starts a real 24h grace window and leaves it in place.
 	insideWindow := makeJournalLessRetainedWorktree("journal-less-fresh")
 	var stdout, stderr bytes.Buffer
 	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
@@ -259,10 +261,8 @@ func TestPruneConfiguredRetentionReclaimsJournalLessWorktreeAfterGraceWindow(t *
 		t.Fatalf("journal-grace reclaimed a worktree still inside its grace window: %v", err)
 	}
 
-	// Shrunk to effectively zero (any positive value): the fixture above was
-	// already created before this point, so its real retainedAt is already
-	// in the past relative to a nanosecond-scale window.
-	journalGraceAge = time.Nanosecond
+	// A later pass uses the persisted observation, including after restart.
+	now = now.Add(24 * time.Hour)
 	stdout.Reset()
 	stderr.Reset()
 	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
