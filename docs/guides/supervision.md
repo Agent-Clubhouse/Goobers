@@ -230,13 +230,11 @@ Logs go to the console the SCM captures; use the daemon's own journal
 service account (`sc.exe config goobers obj= …`) so the daemon runs as the user
 whose credentials the instance references.
 
-> **Status (#639 / #633 / #752).** The handler is build-tag-gated
-> (`//go:build windows`) and its compile is guaranteed on every PR by the
-> `linux node validation` CI job's `GOOS=windows go build ./internal/winsvc/...`
-> step. Full-binary Windows cross-compilation and live start/stop verification
-> ride the Windows POSIX-abstraction work (#620–#627), the Windows CI leg
-> (#633), and a live Windows environment (#752). Until then, treat the Windows
-> Service wiring as reviewed-and-compiling, runtime-pending.
+> **Status.** The required Windows CI gate builds and vets the full binary on a
+> native Windows runner and runs the `internal/winsvc` transition tests on
+> every push and pull request. Native Service Control Manager lifecycle
+> verification — install, start, query, stop, and uninstall of the packaged
+> service — remains open in [#2438](https://github.com/Agent-Clubhouse/Goobers/issues/2438).
 
 ---
 
