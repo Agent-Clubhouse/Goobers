@@ -34,8 +34,10 @@ const MetricRedactionsTotal = "goobers.journal.redactions_total"
 type RedactionLayer string
 
 const (
+	// RedactionLayerRegistry identifies exact-value redaction from the secret registry.
 	RedactionLayerRegistry RedactionLayer = "registry"
-	RedactionLayerPattern  RedactionLayer = "pattern"
+	// RedactionLayerPattern identifies heuristic redaction by the pattern backstop.
+	RedactionLayerPattern RedactionLayer = "pattern"
 )
 
 // RedactionObserver receives one notification for each Scrub call whose output
