@@ -1233,13 +1233,14 @@ func TestBuildDeterministicExecutorIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := buildDeterministicExecutor(deterministicExecutorInput{
-		Config:           &instance.Config{},
-		Resolver:         resolver,
-		SharedRegistry:   journal.NewRegistryScrubber(),
-		InstanceRoot:     t.TempDir(),
-		SelfBin:          "goobers",
-		ArtifactRecorder: runnerWiringArtifactRecorder{},
-		SecretRegistrar:  journal.NewRegistryScrubber(),
+		Config:              &instance.Config{},
+		Resolver:            resolver,
+		SharedRegistry:      journal.NewRegistryScrubber(),
+		InstanceRoot:        t.TempDir(),
+		AppliedConfigDigest: "sha256:applied",
+		SelfBin:             "goobers",
+		ArtifactRecorder:    runnerWiringArtifactRecorder{},
+		SecretRegistrar:     journal.NewRegistryScrubber(),
 	})
 	if err != nil {
 		t.Fatalf("buildDeterministicExecutor: %v", err)

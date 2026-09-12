@@ -159,6 +159,10 @@ type ShellExecutor struct {
 	// default: a caller that never sets it (e.g. an existing test) gets
 	// unchanged behavior — no such var is set.
 	InstanceRoot string
+	// AppliedConfigDigest is the config generation this executor was built
+	// from. It is injected only into goobers CLI stages; those stages fail
+	// closed if the on-disk tree has since diverged after a rejected reload.
+	AppliedConfigDigest string
 	// SelfBin, if set, is the absolute path substituted for a bare "goobers"
 	// command token before exec. Deterministic stages declare their command as
 	// e.g. ["goobers", "backlog-query", …], but a stage runs with cwd set to a
@@ -840,6 +844,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			goober = "deterministic"
 		}
 		stageEnv = append(stageEnv, TaskEnvVar+"="+task, GooberEnvVar+"="+goober, InstanceIDEnvVar+"="+env.InstanceID)
+		if e.AppliedConfigDigest != "" {
+			stageEnv = append(stageEnv, AppliedConfigDigestEnvVar+"="+e.AppliedConfigDigest)
+		}
 	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)

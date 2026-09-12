@@ -48,6 +48,9 @@ const (
 
 	// InstanceRootEnvVar carries the instance root to goobers CLI stages.
 	InstanceRootEnvVar = "GOOBERS_INSTANCE_ROOT"
+	// AppliedConfigDigestEnvVar pins a daemon-launched CLI stage to the config
+	// generation its runner was built from. The CLI refuses a different tree.
+	AppliedConfigDigestEnvVar = "GOOBERS_APPLIED_CONFIG_DIGEST"
 	// TaskEnvVar identifies the workflow task executing a goobers CLI stage.
 	TaskEnvVar = "GOOBERS_TASK"
 	// GooberEnvVar identifies the persona responsible for the task.

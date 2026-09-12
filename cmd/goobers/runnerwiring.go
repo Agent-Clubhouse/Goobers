@@ -104,6 +104,7 @@ type runnerCompositionInput struct {
 	CredentialStores     credentials.StoreResolver
 	SandboxPosture       instance.SandboxPosture
 	ProviderQuota        *localscheduler.ProviderQuotaState
+	AppliedConfigDigest  string
 }
 
 var runnerLookPath = exec.LookPath
@@ -127,6 +128,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	stores := input.CredentialStores
 	sandboxPosture := input.SandboxPosture
 	providerQuota := input.ProviderQuota
+	appliedConfigDigest := input.AppliedConfigDigest
 	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
 	// gaggle, so its stages are granted that gaggle's own project-repo token —
 	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
@@ -293,7 +295,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
 			exec, err := buildDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
-				InstanceRoot: instanceRoot, SelfBin: selfBin, ProjectConfigured: projectConfigured,
+				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
 				ScratchDir: deterministicScratchDir,
@@ -384,6 +386,14 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// (SetPathLengthLimits's own shape) is the wrong model here.
 	wtMgr.SetRunBranchNamespaces(branchNamespaces[l.Gaggle()])
 	return rc, wtMgr, nil
+}
+
+func deterministicStageConfigDigest(configDir string) (string, error) {
+	digest, err := configDirectoryDigest(configDir)
+	if err != nil {
+		return "", fmt.Errorf("digest deterministic-stage config: %w", err)
+	}
+	return digest, nil
 }
 
 func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) (map[string]worktree.PathLengthLimit, error) {

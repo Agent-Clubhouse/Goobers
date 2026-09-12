@@ -295,13 +295,14 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		// the first engine dispatches failed: a bare manager clones a public
 		// repo happily and dies on a private one with "could not read Username
 		// for 'https://github.com'".
-		SharedRegistry:   w.shared,
-		WorktreeManager:  nil,
-		BranchNamespaces: branchNamespacesByGaggle(set),
-		GaggleProject:    project,
-		HarnessInfo:      harnessInfo,
-		CredentialStores: stores,
-		SandboxPosture:   instance.EffectiveAgenticSandbox(cfg, nil),
+		SharedRegistry:      w.shared,
+		WorktreeManager:     nil,
+		BranchNamespaces:    branchNamespacesByGaggle(set),
+		GaggleProject:       project,
+		HarnessInfo:         harnessInfo,
+		CredentialStores:    stores,
+		SandboxPosture:      instance.EffectiveAgenticSandbox(cfg, nil),
+		AppliedConfigDigest: snapshot.digest,
 		// Provider quota is a scheduler-side concern, not the executor's.
 		ProviderQuota: nil,
 	})
