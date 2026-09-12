@@ -15,11 +15,13 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 type recordingDivergenceAppender struct {
@@ -365,10 +367,11 @@ func TestWorkerDivergenceRecorderReopensAwaitingPeriodOnDaemonRestart(t *testing
 	if err := recordDaemonWorkerDivergenceAvailability(recorder, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if err := recorder.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+	workerReport := journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
 		"worker": "worker:node-a", "state": workerDivergenceInSync,
 		"workerDigest": "sha256:a", "daemonDigest": "sha256:a", "message": "reported",
-	}}); err != nil {
+	}}
+	if err := recorder.Append(workerReport); err != nil {
 		t.Fatal(err)
 	}
 
@@ -379,13 +382,31 @@ func TestWorkerDivergenceRecorderReopensAwaitingPeriodOnDaemonRestart(t *testing
 	if err := recordDaemonWorkerDivergenceAvailability(restarted, cfg); err != nil {
 		t.Fatal(err)
 	}
+	// The worker's first report in this daemon lifetime must be durable even
+	// though it is byte-for-byte identical to the previous lifetime's report.
+	if err := restarted.Append(workerReport); err != nil {
+		t.Fatal(err)
+	}
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 || events[2].Runner["worker"] != journal.WorkerConfigDivergenceReportingCapability ||
-		events[2].Runner["state"] != workerDivergenceNotChecked {
-		t.Fatalf("restart events = %+v, want fresh trailing reporting sentinel", events)
+	if len(events) != 4 || events[2].Runner["worker"] != journal.WorkerConfigDivergenceReportingCapability ||
+		events[3].Runner["worker"] != "worker:node-a" {
+		t.Fatalf("restart events = %+v, want fresh sentinel followed by durable worker resolution", events)
+	}
+	service, err := readservice.NewLocal(readservice.LocalSources{
+		Layout: layout, Definitions: &instance.ConfigSet{Manifest: &apiv1.Manifest{}},
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.WorkerConfigDivergence) != 1 || status.WorkerConfigDivergence[0].Worker != "worker:node-a" {
+		t.Fatalf("post-restart status retained sentinel: %+v", status.WorkerConfigDivergence)
 	}
 }
 

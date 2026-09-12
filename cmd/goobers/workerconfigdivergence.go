@@ -236,9 +236,10 @@ func recordInactiveWorkerDivergence(appender workerDivergenceAppender, worker, w
 // repeat of the latest report for one worker is suppressed; A -> B -> A is
 // three real transitions and remains three events.
 type workerDivergenceJournalRecorder struct {
-	mu     sync.Mutex
-	log    *journal.InstanceLog
-	latest map[string]string
+	mu                    sync.Mutex
+	log                   *journal.InstanceLog
+	latest                map[string]string
+	reportingSentinelOpen bool
 }
 
 func newWorkerDivergenceJournalRecorder(log *journal.InstanceLog) (*workerDivergenceJournalRecorder, error) {
@@ -263,7 +264,8 @@ func (r *workerDivergenceJournalRecorder) Append(event journal.Event) error {
 	defer r.mu.Unlock()
 	worker := divergenceRunnerString(event, "worker")
 	fingerprint := workerDivergenceFingerprint(event)
-	if worker != "" && r.latest[worker] == fingerprint {
+	resolvesSentinel := r.reportingSentinelOpen && worker != "" && worker != journal.WorkerConfigDivergenceReportingCapability
+	if worker != "" && r.latest[worker] == fingerprint && !resolvesSentinel {
 		return nil
 	}
 	if err := r.log.Append(event); err != nil {
@@ -278,7 +280,10 @@ func (r *workerDivergenceJournalRecorder) remember(event journal.Event) {
 	// A real worker report resolves the daemon-lifetime capability sentinel.
 	// Forget its fingerprint as well as letting the read-model fold hide it,
 	// so the next daemon startup can author a genuinely new "awaiting" period.
-	if worker != "" && worker != journal.WorkerConfigDivergenceReportingCapability {
+	if worker == journal.WorkerConfigDivergenceReportingCapability {
+		r.reportingSentinelOpen = true
+	} else if worker != "" {
+		r.reportingSentinelOpen = false
 		delete(r.latest, journal.WorkerConfigDivergenceReportingCapability)
 	}
 	if worker != "" {
