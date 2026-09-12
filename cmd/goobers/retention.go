@@ -120,9 +120,9 @@ func sweepMigrationBackups(l instance.Layout, setup *schedulerSetup, now time.Ti
 }
 
 // retentionNow is the clock the retention sweep reads. Var, not a direct
-// time.Now call, for the same reason journalGraceAge below is a var: the
-// first-enable grace window (#4253) and the default 7-day worktree age bound
-// are both week-scale, and a test cannot wait them out.
+// time.Now call: the first-enable grace window (#4253), journal-absence grace,
+// and the default 7-day worktree age bound are all long-lived policies, and a
+// test cannot wait them out.
 var retentionNow = time.Now
 
 // worktreeRetentionStateFile records the first-enable grace window for
