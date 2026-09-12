@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 )
 
 // LivenessPath and ReadinessPath are the daemon's bare, version-free
@@ -46,8 +47,15 @@ type ReadinessCheck func() ReadinessStatus
 // second source of truth — Ready is never recomputed from Checks, precisely
 // to avoid the two surfaces disagreeing.
 type ReadinessStatus struct {
-	Ready  bool            `json:"ready"`
-	Checks map[string]bool `json:"checks,omitempty"`
+	Ready   bool            `json:"ready"`
+	Checks  map[string]bool `json:"checks,omitempty"`
+	Startup *StartupStatus  `json:"startup,omitempty"`
+}
+
+// StartupStatus identifies the operation currently blocking daemon readiness.
+type StartupStatus struct {
+	Phase string    `json:"phase"`
+	Since time.Time `json:"since"`
 }
 
 // probeHandler serves the two bare probe paths itself and forwards

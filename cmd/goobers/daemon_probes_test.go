@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -135,13 +136,20 @@ func TestDaemonProbeStateLivenessReflectsHeartbeatStaleness(t *testing.T) {
 // ready=false.
 func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 	var ready, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
+	started := time.Date(2026, time.September, 12, 19, 30, 0, 0, time.UTC)
+	tracker := &startupPhaseTracker{}
+	tracker.set("worktree-reap-crash-orphan", "efunhouse")
 	state := &daemonProbeState{
 		ready:          &ready,
 		configLoaded:   &configLoaded,
 		stateOpen:      &stateOpen,
 		resumeComplete: &resumeComplete,
 		sweepsStarted:  &sweepsStarted,
+		startup:        tracker,
 	}
+	tracker.mu.Lock()
+	tracker.started = started
+	tracker.mu.Unlock()
 
 	got := state.readiness()
 	if got.Ready {
@@ -151,6 +159,16 @@ func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 		if value {
 			t.Fatalf("check %q = true before anything ran, want false", name)
 		}
+	}
+	if got.Startup == nil || got.Startup.Phase != "worktree-reap-crash-orphan" ||
+		!got.Startup.Since.Equal(started) {
+		t.Fatalf("startup = %+v, want current worktree reap phase", got.Startup)
+	}
+	handler := httpapi.WrapWithProbes(http.NotFoundHandler(), nil, state.readiness)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, httpapi.ReadinessPath, nil))
+	if strings.Contains(response.Body.String(), "efunhouse") {
+		t.Fatalf("public readiness disclosed startup target: %s", response.Body.String())
 	}
 
 	ready.Store(true)
@@ -162,6 +180,9 @@ func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 	got = state.readiness()
 	if !got.Ready {
 		t.Fatal("readiness() must flip true once the ready gate is set")
+	}
+	if got.Startup != nil {
+		t.Fatalf("ready daemon reported startup phase: %+v", got.Startup)
 	}
 	for _, name := range []string{"configLoaded", "stateOpen", "resumeComplete", "sweepsStarted"} {
 		if !got.Checks[name] {
