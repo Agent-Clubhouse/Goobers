@@ -59,6 +59,13 @@ func RecordsFromEvents(events []journal.Event, runID string) ([]Record, error) {
 
 func recordFromEvent(event journal.Event) (Record, error) {
 	fields := map[string]any{"version": 1, "runId": event.RunID, "archiveBytes": event.Runner["recoveryArchiveBytes"]}
+	if value, exists := event.Runner["recoveryBaseRef"]; exists {
+		baseRef, ok := value.(string)
+		if !ok || len(baseRef) > 4096 {
+			return Record{}, fmt.Errorf("invalid recovery observation field recoveryBaseRef")
+		}
+		fields["baseRef"] = baseRef
+	}
 	for field, source := range map[string]string{
 		"repositoryKey": "recoveryRepositoryKey", "ref": "recoveryRef",
 		"baseSha": "recoveryBaseSHA", "snapshotSha": "recoverySnapshotSHA",

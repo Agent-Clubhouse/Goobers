@@ -29,9 +29,14 @@ func runDemoProvider(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	inputs := make(map[string]string, len(demoProviderInputKeys))
-	for _, key := range demoProviderInputKeys {
-		inputs[key] = providerInput(key, "")
+	inputs := map[string]string{
+		"itemID":         providerInput("itemID", ""),
+		"itemTitle":      providerInput("itemTitle", ""),
+		"pullNumber":     providerInput("pullNumber", ""),
+		"pullRequestURL": providerInput("pullRequestURL", ""),
+		"headSHA":        providerInput("headSHA", ""),
+		"baseSHA":        providerInput("baseSHA", ""),
+		"verdict":        providerInput("verdict", ""),
 	}
 	payload, summary, err := demoProviderPayload(phase, inputs)
 	if err != nil {

@@ -222,6 +222,12 @@ function Overview({
               ) : (
                 "Unavailable"
               )}
+              {overview.health.update?.available ? (
+                <span className="version-update-available">
+                  {" "}
+                  · {overview.health.update.latestVersion} available
+                </span>
+              ) : null}
             </dd>
           </div>
           <div>
@@ -644,6 +650,7 @@ function InstanceStrip({
   const tickAge = overview.health.freshness.lastTickAgeMillis;
   const lastTickAt = overview.health.freshness.lastSchedulerTickAt;
   const maintenance = overview.instance.maintenance;
+  const telemetryRetention = overview.instance.telemetryRetention;
 
   return (
     <section
@@ -696,6 +703,24 @@ function InstanceStrip({
         )}
       </div>
       {maintenance && renderMaintenanceStatus(maintenance)}
+      {telemetryRetention && (
+        <div className="maintenance-indicator" role="status">
+          <strong>Telemetry retention {telemetryRetention.enabled ? "enabled" : "disabled"}</strong>
+          <span>{telemetryRetention.window} window, maximum {telemetryRetention.maxRuns} runs</span>
+          <span>first enable: {telemetryRetention.firstEnable}</span>
+          <span>instance.yaml retention changes require a daemon restart; watch-config only reloads the materialized config directory</span>
+          {telemetryRetention.lastPassAt ? (
+            <span>
+              last pass {telemetryRetention.lastPassMode} at {formatTimestamp(telemetryRetention.lastPassAt)}, {telemetryRetention.candidateCount} candidates
+            </span>
+          ) : (
+            <span>no retention pass recorded</span>
+          )}
+          {telemetryRetention.enabled && telemetryRetention.enforceAt && (
+            <span>enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
+          )}
+        </div>
+      )}
       <dl>
         <div>
           <dt>Gaggles</dt>

@@ -126,10 +126,44 @@ func queueEligibilityWireFixture(at time.Time) readservice.QueueEligibilityView 
 	return readservice.QueueEligibilityView{Gaggle: report.Gaggle, Workflow: report.Workflow, AsOf: at, Status: "observed", SourceRunID: report.RunID, SourceStage: "select", Report: &report}
 }
 
-func newWireFixtures() wireFixtures {
+func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt time.Time) readservice.Instance {
+	return readservice.Instance{
+		APIVersion:    readservice.APIVersion,
+		SchemaVersion: readservice.SchemaVersion,
+		Name:          "fixture",
+		Environment:   apiv1.EnvironmentDev,
+		InstanceRoot:  "/instances/fixture",
+		Ready:         true,
+		Status:        readservice.InstanceStatusDegraded,
+		Concurrency: readservice.Concurrency{
+			ActiveRuns:        1,
+			MaxConcurrentRuns: 4,
+		},
+		Counts: readservice.InventoryCounts{
+			Gaggles:    1,
+			Goobers:    1,
+			Workflows:  1,
+			ActiveRuns: 1,
+		},
+		Warnings:           []validate.CodedWarning{warning},
+		TelemetryRetention: telemetryRetentionWireFixture(startedAt, finishedAt),
+	}
+}
+
+func telemetryRetentionWireFixture(startedAt, finishedAt time.Time) *readservice.TelemetryRetentionStatus {
+	return &readservice.TelemetryRetentionStatus{
+		Enabled: true, Window: "90d", MaxRuns: 500, FirstEnable: "gracePeriod",
+		EnforceAt: &finishedAt, LastPassAt: &startedAt, LastPassMode: "dry-run", CandidateCount: 7,
+	}
+}
+
+func wireFixtureTimes() (time.Time, time.Time, time.Time) {
 	timestamp := time.Date(2026, time.July, 18, 12, 34, 56, 0, time.UTC)
-	finishedAt := timestamp.Add(2 * time.Minute)
-	startedAt := timestamp.Add(-2 * time.Minute)
+	return timestamp, timestamp.Add(2 * time.Minute), timestamp.Add(-2 * time.Minute)
+}
+
+func newWireFixtures() wireFixtures {
+	timestamp, finishedAt, startedAt := wireFixtureTimes()
 	successRate := 0.75
 	averageDuration := 120000.5
 	minDuration := int64(100000)
@@ -244,7 +278,7 @@ func newWireFixtures() wireFixtures {
 			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status"},
 			CurrentStage:      "review",
 			Liveness:          "terminal",
-			Trajectory:        "parked",
+			Trajectory:        "terminal",
 			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
 			NextTransition:    "",
 			PotentialBlockers: []string{},
@@ -324,27 +358,15 @@ func newWireFixtures() wireFixtures {
 				LastSchedulerTickAt: &startedAt,
 				LastTickAgeMillis:   int64Pointer(timestamp.Sub(startedAt).Milliseconds()),
 			},
-		},
-		Instance: readservice.Instance{
-			APIVersion:    readservice.APIVersion,
-			SchemaVersion: readservice.SchemaVersion,
-			Name:          "fixture",
-			Environment:   apiv1.EnvironmentDev,
-			InstanceRoot:  "/instances/fixture",
-			Ready:         true,
-			Status:        readservice.InstanceStatusDegraded,
-			Concurrency: readservice.Concurrency{
-				ActiveRuns:        1,
-				MaxConcurrentRuns: 4,
+			Update: &readservice.UpdateAvailability{
+				Available:      true,
+				LatestVersion:  "v1.3.0",
+				CurrentVersion: "v1.2.3",
+				Channel:        "stable",
+				CheckedAt:      timestamp,
 			},
-			Counts: readservice.InventoryCounts{
-				Gaggles:    1,
-				Goobers:    1,
-				Workflows:  1,
-				ActiveRuns: 1,
-			},
-			Warnings: []validate.CodedWarning{warning},
 		},
+		Instance: instanceWireFixture(warning, startedAt, finishedAt),
 		PortalConfig: readservice.PortalConfig{
 			Brand: readservice.PortalBrandResponse{
 				Name:       "goobers",

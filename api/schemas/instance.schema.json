@@ -155,8 +155,12 @@
       }
     },
     "retention": {
-      "description": "Pruning of retained failure worktrees and merged local run branches, plus the portal projection window. Pruning is opt-out. Distinct from telemetry.retention, which bounds journals and rollups.",
+      "description": "Pruning of retained failure worktrees and ancestry-proven local run branches, plus the portal projection window. Pruning is opt-out. The rule has no alternate proof for squash, merge-queue, or legacy landings, so a branch whose tip is not an ancestor may remain. Distinct from telemetry.retention, which bounds journals and rollups.",
       "$ref": "#/$defs/retention"
+    },
+    "updateCheck": {
+      "description": "Notify-only release check: tells the operator when a newer release exists. Never applies an update.",
+      "$ref": "#/$defs/updateCheck"
     },
     "notifications": {
       "type": "boolean",
@@ -1055,15 +1059,37 @@
         }
       }
     },
+    "updateCheck": {
+      "description": "Notify-only release check (#4903). The daemon resolves the newest release on the configured channel and tells the operator when it is ahead of the running build \u2014 at startup and on the configured interval, announcing only when the resolved version changes. It NEVER applies an update: staging one stays an explicit operator action (INST-019). Enabled by default, because the daemon already queries the same GitHub API to do its work, so resolving a release tag discloses nothing new; set enabled to false for an instance that must make no release request at all.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true, "description": "Lets the daemon check whether a newer release exists. Defaults to true; set explicitly to false and this path performs no network request." },
+        "channel": {
+          "type": "string",
+          "enum": ["stable", "prerelease"],
+          "default": "stable",
+          "description": "Which releases to consider: \"stable\" resolves the newest stable release, \"prerelease\" resolves the newest release including pre-releases. These are the same two channels `goobers self-update` stages through, so the notice matches what acting on it would install."
+        },
+        "interval": {
+          "description": "How often a running daemon re-checks. Omitted uses 24h. A shorter interval does not repeat a notice: the daemon announces only when the resolved version changes.",
+          "$ref": "#/$defs/duration",
+          "default": "24h",
+          "examples": ["24h", "6h"]
+        },
+        "owner": { "type": "string", "description": "Product release source owner. Omitted resolves the canonical Goobers product repository, deliberately independent of the instance's configured workload repositories (#4324). Set with repository to track a private release mirror." },
+        "repository": { "type": "string", "description": "Product release source repository. Omitted resolves the canonical Goobers product repository. Set together with owner." }
+      }
+    },
     "retention": {
-      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning of retained failure worktrees and merged run branches is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h worktree age bound and a safe first-enable grace window, unless enabled is explicitly false.",
+      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h retained-worktree age bound and a safe first-enable grace window, unless enabled is explicitly false. Local run-branch cleanup currently requires Git ancestry; squash, merge-queue, and legacy landings may leave local branches behind.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Lets the daemon prune retained terminal-failure worktrees and merged local run branches. Defaults to true (#4253); set explicitly to false to keep automatic pruning off. Active runs are never candidates."
+          "description": "Lets the daemon prune retained terminal-failure worktrees and local run branches whose tip is an ancestor of another local branch. Defaults to true (#4253); set explicitly to false to keep automatic pruning off. Active runs are never candidates. Squash, merge-queue, and legacy landings may not satisfy the ancestry check and can remain."
         },
         "dryRun": { "type": "boolean", "default": false, "description": "Reports the deterministic candidate set without deleting anything." },
         "maxRetainedWorktreeBytes": { "type": "integer", "minimum": 0, "description": "Byte ceiling for retained failure worktrees; the oldest are removed first once exceeded. Zero or omitted disables the size rule." },
@@ -1072,6 +1098,12 @@
           "$ref": "#/$defs/duration",
           "default": "168h",
           "examples": ["168h", "0s"]
+        },
+        "journalGraceAge": {
+          "description": "Grace period measured from the first persisted observation that a retained worktree's owning run journal is missing. Omitted uses 24h; an explicit \"0s\" disables the journal-absence rule without changing age or byte-limit retention.",
+          "$ref": "#/$defs/duration",
+          "default": "24h",
+          "examples": ["24h", "168h", "0s"]
         },
         "firstEnable": {
           "type": "string",
@@ -1084,6 +1116,31 @@
           "minimum": 0,
           "default": 90,
           "description": "How many days of history stay INDIVIDUALLY LISTABLE in the portal. Defaults to 90 days (product policy decision per issue #3056 for unattended operation: opt-out with safe first-enable semantics). Set to 0 or negative to disable retention (UNBOUNDED — never a zero-day window). Independent of journal retention: the journal is the source of truth, this is only about what the derived projection lists, so aging a run out removes no evidence."
+        },
+        "recovery": {
+          "description": "Bounds the recovery-snapshot inventory that a worktree cleanup captures into before destroying a worktree (#4823). Omitted fields keep the pre-#4823 defaults: 128 snapshots, 512 MiB per archive, a 30-day retain-until floor.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxSnapshots": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 128,
+              "description": "Inventory entry cap. Omitted or zero uses the default of 128."
+            },
+            "maxArchiveBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 536870912,
+              "description": "Byte ceiling for a single captured recovery bundle. Omitted or zero uses the default of 512 MiB."
+            },
+            "retainWindow": {
+              "description": "How long a snapshot is protected from retirement purely by age, regardless of landing proof. Omitted uses 30 days.",
+              "$ref": "#/$defs/duration",
+              "default": "720h",
+              "examples": ["720h"]
+            }
+          }
         }
       }
     },

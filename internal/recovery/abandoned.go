@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -71,7 +73,19 @@ func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, l
 func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, prepared Record) (Record, string, error) {
 	entries, err := ReadInventory(ctx, request.InventoryRoot, request.MaxSnapshots)
 	if err != nil {
-		return Record{}, "", err
+		repaired, repairErr := repairAbandonedReservation(ctx, request, prepared)
+		if repairErr != nil {
+			return Record{}, "", errors.Join(err, fmt.Errorf("repair matching recovery reservation: %w", repairErr))
+		}
+		if !repaired {
+			return Record{}, "", err
+		}
+		// Preserve ReadInventory's all-or-nothing contract. Repairing this
+		// exact reservation must not hide a second partial or corrupt entry.
+		entries, err = ReadInventory(ctx, request.InventoryRoot, request.MaxSnapshots)
+		if err != nil {
+			return Record{}, "", err
+		}
 	}
 	for _, entry := range entries {
 		prior := entry.Record
@@ -86,10 +100,41 @@ func publishAbandonedPreparation(ctx context.Context, request RetentionRequest, 
 		prepared = prior
 		break
 	}
-	_, path, err := PublishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes)
+	_, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
 	if err != nil {
 		return Record{}, "", err
 	}
 	renewed, err := RenewRetention(ctx, path, request.RetainUntil, request.MaxArchiveBytes)
 	return renewed, path, err
+}
+
+// repairAbandonedReservation completes only the deterministic reservation for
+// the prepared snapshot. A crash may leave its verified bundle durable before
+// record.json is renamed into place. The live, exclusively owned preparation
+// supplies that missing identity, and PublishToInventory verifies any existing
+// archive before publishing metadata. Foreign and corrupt reservations remain
+// untouched and keep the subsequent whole-inventory read fail-closed.
+func repairAbandonedReservation(ctx context.Context, request RetentionRequest, prepared Record) (bool, error) {
+	directory := filepath.Join(request.InventoryRoot, inventoryDirectoryName(prepared))
+	info, err := os.Lstat(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || !info.IsDir() {
+		return false, nil
+	}
+	if _, err := ReadRecord(filepath.Join(directory, RecordFileName)); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	_, _, err = PublishToInventoryWithEviction(
+		ctx,
+		request.Repository,
+		request.InventoryRoot,
+		request.CleanupRoots,
+		prepared,
+		request.MaxSnapshots,
+		request.MaxArchiveBytes,
+		request.EvictFull,
+	)
+	return err == nil, err
 }

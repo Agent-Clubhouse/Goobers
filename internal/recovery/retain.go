@@ -30,6 +30,10 @@ type RetentionRequest struct {
 	// inventory before releasing source state. The path is the bundle, not
 	// its metadata sidecar. Failure preserves the source for an identical retry.
 	AcknowledgeArchive func(context.Context, Record, string) error
+	// EvictFull optionally retires a reclaimable entry when the inventory is
+	// full, so this capture is not refused when reclaimable capacity exists
+	// (#4823). Nil disables eviction; a full inventory then still refuses.
+	EvictFull EvictFunc
 }
 
 // PublicationJournal is the durable acknowledgement boundary. Production uses
@@ -61,7 +65,7 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 	if request.SkipEmpty && prepared.PatchDigest == "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
 		return Record{}, "", nil
 	}
-	retained, path, err := PublishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes)
+	retained, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
 	if err != nil {
 		return Record{}, "", err
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/sqliteschema"
 	"github.com/goobers/goobers/internal/sqliteuri"
 
 	_ "modernc.org/sqlite" // Registers the durable ledger driver.
@@ -61,6 +62,16 @@ type Record struct {
 // Store serializes transactions while SQLite arbitrates independent processes.
 type Store struct{ db *sql.DB }
 
+var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
+	id TEXT NOT NULL UNIQUE,
+	key TEXT PRIMARY KEY NOT NULL CHECK(length(CAST(key AS BLOB)) BETWEEN 1 AND 256),
+	actor TEXT NOT NULL CHECK(length(CAST(actor AS BLOB)) <= 1024),
+	payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 16384),
+	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
+	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
+	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
+)`}
+
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
 // synchronization makes COMMIT the acceptance boundary, not a later checkpoint.
@@ -87,15 +98,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS triggers (
-		id TEXT NOT NULL UNIQUE,
-		key TEXT PRIMARY KEY NOT NULL CHECK(length(CAST(key AS BLOB)) BETWEEN 1 AND 256),
-		actor TEXT NOT NULL CHECK(length(CAST(actor AS BLOB)) <= 1024),
-		payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 16384),
-		state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
-		run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
-		accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-	)`)
+	err = sqliteschema.Migrate(context.Background(), db, "triggerqueue", migrations)
 	if err != nil {
 		_ = db.Close()
 		return nil, err

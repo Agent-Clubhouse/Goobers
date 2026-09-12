@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -19,16 +19,20 @@ import (
 )
 
 func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber) (worktree.ManagerOption, error) {
-	callback, err := recoveryCleanupHandler(layout, cfg, cleanupRoot, cloneURL, scrubber, false)
+	identities, err := recoveryRepositoryIdentities(cfg, cloneURL)
 	if err != nil {
 		return nil, err
 	}
 	return func(manager *worktree.Manager) {
+		callback := recoveryCleanupHandler(layout, cfg, cleanupRoot, identities, scrubber, false, manager)
 		_ = manager.SetCleanupGuard("recovery", callback)
 	}, nil
 }
 
-func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber, terminal bool) (func(context.Context, worktree.CleanupTarget) error, error) {
+// recoveryRepositoryIdentities maps each configured repository's clone-URL
+// digest to its canonical identity, validated once so an ambiguous mapping
+// fails at wiring time rather than inside a live cleanup guard.
+func recoveryRepositoryIdentities(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error)) (map[string]string, error) {
 	identities := make(map[string]string)
 	for _, repo := range cfg.Repos {
 		project := apiv1.RepoRef{Provider: apiv1.Provider(repo.Provider), BaseURL: repo.BaseURL, Owner: repo.Owner, Project: repo.Project, Name: repo.Name}
@@ -43,7 +47,11 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		}
 		identities[digest] = key
 	}
-	callback := func(ctx context.Context, target worktree.CleanupTarget) error {
+	return identities, nil
+}
+
+func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, identities map[string]string, scrubber journal.Scrubber, terminal bool, manager *worktree.Manager) func(context.Context, worktree.CleanupTarget) error {
+	return func(ctx context.Context, target worktree.CleanupTarget) error {
 		key, ok := identities[target.RepositoryDigest]
 		if !ok || target.OwnerRunID == "" {
 			return fmt.Errorf("recovery cleanup requires verified repository and run ownership")
@@ -70,10 +78,21 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		if err != nil {
 			return err
 		}
+		recoveryCfg := cfg.Retention.RecoveryEffective()
+		retainWindow, err := recoveryCfg.RetainWindowEffective()
+		if err != nil {
+			return err
+		}
+		baseRef, err := recoveryCleanupBaseRef(target)
+		if err != nil {
+			return err
+		}
 		request := recovery.RetentionRequest{
 			Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID,
-			BaseRef: recoveryCleanupBaseRef(target), IdentityTime: captureAt, RetainUntil: captureAt.Add(30 * 24 * time.Hour),
-			InventoryRoot: root, CleanupRoots: []string{cleanupRoot}, MaxSnapshots: 128, MaxArchiveBytes: 512 << 20, SkipEmpty: true,
+			BaseRef: baseRef, IdentityTime: captureAt, RetainUntil: captureAt.Add(retainWindow),
+			InventoryRoot: root, CleanupRoots: []string{cleanupRoot},
+			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(), SkipEmpty: true,
+			EvictFull: recoveryEvictFunc(layout, cfg, manager, key),
 		}
 		publication := recoveryCleanupJournal{directory: layout.SchedulerDir(), scrubber: scrubber}
 		if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
@@ -82,14 +101,14 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		_, _, err = recovery.Retain(ctx, request, publication)
 		return err
 	}
-	return callback, nil
 }
 
-func recoveryCleanupBaseRef(target worktree.CleanupTarget) string {
-	if target.Pinned {
-		return "refs/remotes/mirror/main"
+func recoveryCleanupBaseRef(target worktree.CleanupTarget) (string, error) {
+	baseRef := strings.TrimSpace(target.BaseRef)
+	if baseRef == "" {
+		return "", fmt.Errorf("recovery cleanup requires the owning run's base reference")
 	}
-	return "refs/heads/main"
+	return baseRef, nil
 }
 
 // Standalone abort/startup/stall finalizers may construct their own Manager.
@@ -105,10 +124,11 @@ func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Mana
 		if cloneURL == nil {
 			cloneURL = runner.DefaultRepoCloneURL
 		}
-		callback, err := recoveryCleanupHandler(layout, cfg, manager.Root, cloneURL, journal.NewRegistryScrubber(), true)
+		identities, err := recoveryRepositoryIdentities(cfg, cloneURL)
 		if err != nil {
 			return err
 		}
+		callback := recoveryCleanupHandler(layout, cfg, manager.Root, identities, journal.NewRegistryScrubber(), true, manager)
 		return callback(ctx, target)
 	})
 }

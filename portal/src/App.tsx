@@ -20,6 +20,7 @@ import {
   createPortalDiagnostics,
   type PortalDiagnostics,
 } from "./portalDiagnostics";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
 import { GettingStartedPage } from "./pages/GettingStartedPage";
@@ -71,7 +72,13 @@ export function App({
   }
 
   return (
-    <LiveDataProvider client={client} diagnostics={diagnostics} cursorScope={cursorScope} config={liveDataConfig}>
+    <LiveDataProvider
+      client={client}
+      diagnostics={diagnostics}
+      cursorScope={cursorScope}
+      config={liveDataConfig}
+      standalone={mode === "standalone"}
+    >
       <Portal client={client} mode={mode} warningClient={warningClient} />
     </LiveDataProvider>
   );
@@ -105,6 +112,28 @@ function GettingStartedApplication() {
       <GettingStartedPage />
     </GettingStartedShell>
   );
+}
+
+// The error boundary must remount to clear a prior crash when navigating to
+// genuinely different content, but must NOT remount on every filter/query
+// change within the same page — several pages (Runs, Insight, Cost,
+// Work Items) intentionally keep one component instance across filter
+// changes and manage the transition internally. This mirrors exactly the
+// per-route `key` each page below already opts into (WorkflowPage/RunPage by
+// identity, ErrorsPage by full route including filters); every other page
+// keeps its existing no-remount-across-filters behavior by falling back to
+// route.page alone.
+function routeErrorBoundaryKey(route: Route): string {
+  switch (route.page) {
+    case "errors":
+      return routeHash(route);
+    case "workflow":
+      return `${route.gaggle ?? ""}/${route.id}`;
+    case "run":
+      return route.id;
+    default:
+      return route.page;
+  }
 }
 
 function activeRouteGaggle(route: Route): string | undefined {
@@ -275,88 +304,90 @@ function Portal({
         theme={theme}
         toggleTheme={toggleTheme}
       >
-        {route.page === "overview" && (
-          <OverviewPage
-            client={client}
-            configurationWarnings={configurationWarnings}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
-        {route.page === "goobers" && (
-          <GoobersPage
-            client={client}
-            gaggleName={route.gaggle}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "gaggle" && (
-          <GagglePage
-            client={client}
-            gaggleName={route.id}
-            navigate={navigate}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "runs" && (
-          <RunsPage
-            client={client}
-            filters={route.filters}
-            navigate={navigate}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "work-items" && (
-          <WorkItemsPage client={client} navigate={navigate} route={route} standalone={standalone} />
-        )}
-        {route.page === "insight" && (
-          <InsightPage
-            client={client}
-            filters={route.filters}
-            navigate={navigate}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "cost" && (
-          <CostPage
-            client={client}
-            filters={route.filters}
-            navigate={navigate}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "errors" && (
-          <ErrorsPage
-            client={client}
-            filters={route.filters}
-            key={routeHash(route)}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "workflow" && route.gaggle && (
-          <WorkflowPage
-            client={client}
-            configurationWarnings={configurationWarnings}
-            gaggle={route.gaggle}
-            key={`${route.gaggle}/${route.id}`}
-            navigate={navigate}
-            standalone={standalone}
-            workflowName={route.id}
-          />
-        )}
-        {route.page === "run" && (
-          <RunPage
-            client={client}
-            key={route.id}
-            navigate={navigate}
-            revealRun={revealRun}
-            runId={route.id}
-            standalone={standalone}
-          />
-        )}
-        {route.page === "workflow" && !route.gaggle && (
-          <p role="alert">Workflow routes require both a gaggle and workflow name.</p>
-        )}
+        <RouteErrorBoundary key={routeErrorBoundaryKey(route)}>
+          {route.page === "overview" && (
+            <OverviewPage
+              client={client}
+              configurationWarnings={configurationWarnings}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+          {route.page === "goobers" && (
+            <GoobersPage
+              client={client}
+              gaggleName={route.gaggle}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "gaggle" && (
+            <GagglePage
+              client={client}
+              gaggleName={route.id}
+              navigate={navigate}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "runs" && (
+            <RunsPage
+              client={client}
+              filters={route.filters}
+              navigate={navigate}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "work-items" && (
+            <WorkItemsPage client={client} navigate={navigate} route={route} standalone={standalone} />
+          )}
+          {route.page === "insight" && (
+            <InsightPage
+              client={client}
+              filters={route.filters}
+              navigate={navigate}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "cost" && (
+            <CostPage
+              client={client}
+              filters={route.filters}
+              navigate={navigate}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "errors" && (
+            <ErrorsPage
+              client={client}
+              filters={route.filters}
+              key={routeHash(route)}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "workflow" && route.gaggle && (
+            <WorkflowPage
+              client={client}
+              configurationWarnings={configurationWarnings}
+              gaggle={route.gaggle}
+              key={`${route.gaggle}/${route.id}`}
+              navigate={navigate}
+              standalone={standalone}
+              workflowName={route.id}
+            />
+          )}
+          {route.page === "run" && (
+            <RunPage
+              client={client}
+              key={route.id}
+              navigate={navigate}
+              revealRun={revealRun}
+              runId={route.id}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "workflow" && !route.gaggle && (
+            <p role="alert">Workflow routes require both a gaggle and workflow name.</p>
+          )}
+        </RouteErrorBoundary>
       </PortalShell>
     </CobrandContext.Provider>
   );

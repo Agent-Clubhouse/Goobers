@@ -61,12 +61,17 @@ func abandonRecoveryRecord(ctx context.Context, layout instance.Layout, runID, r
 	}
 	var selected *recovery.InventoryEntry
 	for _, entry := range entries {
-		if entry.Record.RunID != runID || entry.Record.Ref != ref || entry.Record.PatchDigest != digest {
+		current, err := recovery.ReadRetainedRecord(entry.RecordPath)
+		if err != nil {
+			return err
+		}
+		if current.RunID != runID || current.Ref != ref || current.PatchDigest != digest {
 			continue
 		}
 		if selected != nil {
 			return fmt.Errorf("ambiguous recovery snapshot; abandonment refused")
 		}
+		entry.Record = current
 		selected = &entry
 	}
 	if selected == nil {

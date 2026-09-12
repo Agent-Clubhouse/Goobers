@@ -163,7 +163,13 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 	if err != nil {
 		return "", err
 	}
-	main, err := recovery.FetchCurrentMain(ctx, destination, remoteURL, recoveryAuthenticationEnvironment(environment))
+	baseRef := record.BaseRef
+	if baseRef == "" {
+		// Version-1 records written before BaseRef was added were always
+		// captured and restored under the historical main-only assumption.
+		baseRef = "refs/heads/main"
+	}
+	base, err := recovery.FetchCurrentBase(ctx, destination, remoteURL, baseRef, recoveryAuthenticationEnvironment(environment))
 	if err != nil {
 		return "", err
 	}
@@ -172,7 +178,7 @@ func restoreConfiguredRecovery(ctx context.Context, layout instance.Layout, reco
 	if err := recovery.ImportSnapshotBundle(ctx, destination, archive, record, maxRecoveryBytes); err != nil {
 		return "", err
 	}
-	return recovery.RestoreSnapshot(ctx, destination, record, main, branch, maxRecoveryBytes)
+	return recovery.RestoreSnapshot(ctx, destination, record, base, branch, maxRecoveryBytes)
 }
 
 func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {

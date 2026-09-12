@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { DaemonClient } from "../api/types";
 import { useCobrand } from "../cobrand";
+import { UpdateNotice } from "../components/UpdateNotice";
 import {
   useLiveData,
   type DataFreshness,
@@ -11,6 +12,7 @@ import { useGaggleList } from "../operationalData";
 import { routeHash, type Navigate, type PrimaryArea } from "../routing";
 import { hasScopeIdentity, type ScopeFilters } from "../scope";
 import type { Theme } from "../theme";
+import { useUpdateNotice } from "../updateNotice";
 import { Icon } from "../ui/Icon";
 import { SupportFooter } from "./SupportFooter";
 
@@ -51,6 +53,7 @@ export function PortalShell({
       : undefined;
   const { config } = useCobrand();
   const { admissionState, dataFreshness, freshness, lastSSEFailure } = useLiveData();
+  const updateNotice = useUpdateNotice();
   const mainContent = useRef<HTMLElement>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const connectionStatus = describeConnectionStatus(freshness, lastSSEFailure);
@@ -209,6 +212,9 @@ export function PortalShell({
               Live refresh is backing off automatically. New navigation requests are not held
               behind unlimited retries.
             </div>
+          )}
+          {updateNotice.update && (
+            <UpdateNotice onDismiss={updateNotice.dismiss} update={updateNotice.update} />
           )}
           {children}
         </main>

@@ -54,9 +54,8 @@ type ListOptions struct {
 
 	// IncludeNoWork includes runs whose disposition is DispositionNoWork
 	// (#2188). False (the default) excludes them via a plain WHERE term
-	// alongside whatever covering index the other dims choose — not yet a
-	// dedicated covering index of its own, since that indexed contract is
-	// #1429/#1439's to design; see disposition's doc comment in schema.go.
+	// alongside whatever covering index the other dims choose. Terminal runs
+	// are closed over produced/no-work; unknown is reserved for live runs.
 	IncludeNoWork bool
 
 	// OrderBy selects the recency axis (#1777).

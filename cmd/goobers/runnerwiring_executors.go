@@ -360,6 +360,7 @@ type deterministicExecutorInput struct {
 	Grants              []credentials.Grant
 	SharedRegistry      *journal.RegistryScrubber
 	InstanceRoot        string
+	AppliedConfigDigest string
 	SelfBin             string
 	ProjectConfigured   bool
 	ConfiguredProject   instance.RepoRef
@@ -389,6 +390,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 		return nil, err
 	}
 	shell.InstanceRoot = input.InstanceRoot
+	shell.AppliedConfigDigest = input.AppliedConfigDigest
 	shell.ScratchDir = input.ScratchDir
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
 	// #4070: bound what one stage subprocess may take, so a heavy stage

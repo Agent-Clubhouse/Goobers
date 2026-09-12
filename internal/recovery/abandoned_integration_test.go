@@ -5,6 +5,7 @@ package recovery
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -39,6 +40,34 @@ func TestIntegrationAbandonedPreparationRequiresDurableHandoff(t *testing.T) {
 	if got := recoveryTestGit(t, repository, "rev-parse", "refs/heads/"+branch); got != commit {
 		t.Fatal("preparation deleted before acknowledgement")
 	}
+	entries, err := ReadInventory(context.Background(), inventory, 1)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("inspect interrupted publication fixture: %+v %v", entries, err)
+	}
+	if err := os.Remove(entries[0].RecordPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := RetainAbandonedPreparation(context.Background(), request, log); !errors.Is(err, blocked) {
+		t.Fatalf("missing record prevented deterministic publication repair: %v", err)
+	}
+	if repaired, err := ReadInventory(context.Background(), inventory, 1); err != nil || len(repaired) != 1 {
+		t.Fatalf("repaired inventory = %+v, error %v", repaired, err)
+	}
+	if got := recoveryTestGit(t, repository, "rev-parse", "refs/heads/"+branch); got != commit {
+		t.Fatal("preparation deleted before repaired publication acknowledgement")
+	}
+	foreign := filepath.Join(inventory, "foreign-partial")
+	if err := os.Mkdir(foreign, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	request.MaxSnapshots = 2
+	if err := RetainAbandonedPreparation(context.Background(), request, log); err == nil || errors.Is(err, blocked) {
+		t.Fatalf("foreign partial reservation did not remain fail-closed: %v", err)
+	}
+	if err := os.Remove(foreign); err != nil {
+		t.Fatal(err)
+	}
+	request.MaxSnapshots = 1
 	// Terminal cleanup may retry a failed stage acknowledgement with a new
 	// capture window. Reuse immutable custody metadata and extend retention.
 	request.IdentityTime = request.IdentityTime.Add(time.Hour)
@@ -76,7 +105,7 @@ func TestIntegrationAbandonedPreparationRequiresDurableHandoff(t *testing.T) {
 	if err := RetainAbandonedPreparation(context.Background(), request, log); err != nil {
 		t.Fatalf("cleanup retry: %v", err)
 	}
-	entries, err := ReadInventory(context.Background(), inventory, 1)
+	entries, err = ReadInventory(context.Background(), inventory, 1)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("bounded retained handoff: %d %v", len(entries), err)
 	}

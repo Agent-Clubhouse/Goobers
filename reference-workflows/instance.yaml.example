@@ -32,12 +32,27 @@ credentials:
       env: GOOBERS_GITHUB_REVIEW_TOKEN
 telemetry:
   enabled: true
-  # Automatic journal + rollup pruning is opt-out: it is ON by default at the
-  # 90-day/500-run policy even with this block absent, with a safe
-  # first-enable grace period (7 days of dry-run reporting) the first time
-  # existing data is found to already exceed it. Set enabled: false here to
-  # turn automatic pruning off; `goobers telemetry prune --dry-run` can still
-  # preview the policy at any time.
+  # Automatic journal + rollup pruning is opt-out: it is ON by default even
+  # with this block absent, at BOTH a 90-day window AND a 500-run cap — a
+  # run is pruned once EITHER bound is exceeded (they are OR'd, not AND'd),
+  # so on a busy instance the run-count cap can bind long before the
+  # documented 90-day window ever would (#4824). Raise maxRuns, or widen
+  # window, if 500 retained runs is not enough headroom for your run rate.
+  #
+  # Two independent safety nets exist before anything is ever deleted for
+  # real: (1) the first pass that finds existing data already exceeding
+  # policy only REPORTS candidates and starts a 7-day grace period; and (2)
+  # even once that window elapses, a first enforcement that would prune more
+  # than half of an instance's current run history stays a dry run too,
+  # until you explicitly set `firstEnable: immediate` below to acknowledge
+  # it. `goobers status` shows which safety net (if either) is currently
+  # holding your instance's pass dry, plus the effective cutoff age — how
+  # far back your run history currently reaches under the active policy.
+  #
+  # Set enabled: false here to turn automatic pruning off entirely;
+  # `goobers telemetry prune --dry-run` can still preview the policy at any
+  # time. A run that still owns a live (non-expired) recovery snapshot is
+  # never pruned regardless of policy, until that snapshot is retired.
   # retention:
   #   enabled: true
   #   window: 90d
@@ -85,12 +100,17 @@ runConditions:
 # `retainedWorktreeMaxAge` means the 168h default, not "no age rule" — say
 # `retainedWorktreeMaxAge: 0s` to turn the age rule off, in which case
 # `maxRetainedWorktreeBytes` has to carry the bound on its own.
+# A retained worktree whose run journal disappears gets its own clock from
+# the first pass that observes the absence. `journalGraceAge` defaults to 24h;
+# raise it to preserve journal-less debugging evidence longer, or set `0s` to
+# disable only this rule.
 # retention:
 #   enabled: true
 #   dryRun: false
 #   firstEnable: gracePeriod
 #   maxRetainedWorktreeBytes: 10737418240
 #   retainedWorktreeMaxAge: 168h
+#   journalGraceAge: 24h
 # Optional runner block. `capabilities` are the toolchains/platform properties
 # this runner advertises as preinstalled (RRQ-1); a gaggle/stage requiring one
 # the runner does not claim fails to schedule. `envPassthrough` names extra

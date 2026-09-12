@@ -50,6 +50,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		c.Telemetry.Retention.validate,
 		c.RunConditions.validate,
 		c.Retention.validate,
+		func() error { return c.UpdateCheckSettings().Validate() },
 		func() error { return c.validateRepos(stores) },
 		c.validateGitHubCLIIdentityRefs,
 		func() error { return c.validateDaemonIdentity(stores) },
@@ -292,6 +293,9 @@ func (c RetentionConfig) validate() error {
 	// pretending retention is running.
 	age, err := c.RetainedWorktreeMaxAgeDuration()
 	if err != nil {
+		return err
+	}
+	if _, err := c.JournalGraceAgeDuration(); err != nil {
 		return err
 	}
 	if c.EnabledEffective() && c.MaxRetainedWorktreeBytes == 0 && age == 0 {

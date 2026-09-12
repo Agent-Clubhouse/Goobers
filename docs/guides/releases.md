@@ -93,6 +93,17 @@ next planned stable release line, reviewed like any other change
 `TestDSLMatrixAgainstNextPlannedRelease`). Bump it when the plan changes; a PR
 that writes a lifecycle transition the declared release can't ship fails
 immediately, on that PR, rather than only at tag time (#4709).
+The declared version must remain later than the newest published stable tag;
+the same test names both values when the constant needs a post-release bump.
+
+A staged lifecycle transition also constrains release ordering. Because the
+matrix's declared level must match its last history transition, merging a
+transition effective in (for example) `v0.5.0` prevents an intermediate
+`v0.4.x` patch from passing release validation. If that hotfix must ship first,
+prepare its branch from the intended release base and edit the support matrix
+there to remove the not-yet-effective transition, then validate and publish the
+patch from that branch. Do not rewrite the already-merged transition on the
+main development line merely to cut the hotfix.
 
 Before publication, signed archives execute natively on Linux AMD64/ARM64,
 macOS AMD64/ARM64, and Windows AMD64. Each native leg checks its checksum,
@@ -316,16 +327,58 @@ expect); unix targets use `.tar.gz`.
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
 `<hex>  <filename>` line per binary archive, `install.sh`, portable agent
-toolkit, onboarding payload, and authoritative `feature-registry.json` and
-`dsl-support-matrix.json`, sorted by filename. The generated release note
-remains editable for curation and is not checksummed. The same file verifies on
-every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
+toolkit, onboarding payload, authoritative `feature-registry.json` and
+`dsl-support-matrix.json`, and the published `RELEASE_NOTES.md`. The same file
+verifies on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This
 integrity check is in addition to, not instead of, the Authenticode
 signature below — both `sign-macos` and `sign-windows` recompute this
 manifest after signing, so it always reflects the signed bytes actually
 published.
+
+## Verifying a release
+
+Every published release is verifiable two ways, and both need something the
+project publishes rather than something you already trust.
+
+**The tag signature.** Release tags are signed locally by the maintainer
+cutting them, not by CI. The signing key is published as
+[`.github/allowed_signers`](../../.github/allowed_signers), which is what makes
+`git tag -v` succeed for anyone other than the person who cut the tag. From a
+trusted current checkout, set `TAG` to the release you downloaded and run:
+
+```sh
+TAG=v0.4.0-rc.2
+git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v "${TAG}"
+```
+
+A good signature prints `Good "git" signature for <principal> with ED25519 key
+SHA256:...`. Anything else — including `No principal matched` — means the tag
+is not the one this repository published, or the signing identity changed
+without this file being updated in the same commit.
+
+That signature covers the **tag annotation**, which is the release's identity
+and message. It does not cover the generated changelog, DSL deltas, or support
+policy that `RELEASE_NOTES.md` appends below it; those are covered by the
+checksum manifest instead.
+
+**The artifacts.** `SHA256SUMS` covers every published asset, including
+`RELEASE_NOTES.md`:
+
+```sh
+# From a directory holding the downloaded assets and SHA256SUMS:
+sha256sum --check SHA256SUMS        # GNU coreutils
+shasum -a 256 --check SHA256SUMS    # macOS
+```
+
+`SHA256SUMS` itself is not self-covering, and the tag signature does not cover
+this separately generated file. Obtain the manifest and assets from the
+official GitHub Release over authenticated HTTPS, use the signature to verify
+the release's tag identity and source commit, and use the manifest to detect
+any change to the downloaded assets. Signing the generated manifest itself
+would require a separate publication mechanism.
 
 ## Signing posture
 

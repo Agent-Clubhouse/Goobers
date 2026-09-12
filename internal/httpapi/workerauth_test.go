@@ -9,7 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 )
 
-func TestWorkerIdentityIsConfinedToConfigDigestRead(t *testing.T) {
+func TestWorkerIdentityIsConfinedToConfigObservability(t *testing.T) {
 	paths := []string{apicontract.ConfigDigestPath, RunsPath, EventsPath, HealthPath, apicontract.ConfigDigestPath + "/", "/api/v1/unknown"}
 	for _, route := range podRouteTable() {
 		paths = append(paths, route.path)
@@ -21,7 +21,8 @@ func TestWorkerIdentityIsConfinedToConfigDigestRead(t *testing.T) {
 			principal := Principal{Subject: "worker:dispatcher", Issuer: WorkerPrincipalIssuer, Roles: []Role{RoleAdmin}, Scopes: knownPodScopes()}
 			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
 			err := RequireRoles().Authorize(request)
-			want := method == http.MethodGet && path == apicontract.ConfigDigestPath
+			want := method == http.MethodGet && path == apicontract.ConfigDigestPath ||
+				method == http.MethodPost && path == apicontract.WorkerConfigDivergencePath
 			if (err == nil) != want {
 				t.Fatalf("worker admitted %s %s=%v, want %v", method, path, err == nil, want)
 			}

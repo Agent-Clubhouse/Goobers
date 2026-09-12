@@ -27,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
@@ -78,6 +79,41 @@ func maintenanceStatusLine(status readservice.SchedulerStatus) string {
 	}
 	return fmt.Sprintf("Retention sweep %s: %d removed, %d candidates\n",
 		status.Maintenance.State, status.Maintenance.Removed, status.Maintenance.Candidates)
+}
+
+func telemetryRetentionStatusLine(status readservice.SchedulerStatus) string {
+	retention := status.TelemetryRetention
+	if retention == nil {
+		return ""
+	}
+	line := fmt.Sprintf("Telemetry retention: enabled=%t, window=%s, max-runs=%d, first-enable=%s",
+		retention.Enabled, retention.Window, retention.MaxRuns, retention.FirstEnable)
+	if retention.LastPassAt == nil {
+		return line + ", last-pass=none; instance.yaml changes require daemon restart\n"
+	}
+	line += fmt.Sprintf(", last-pass=%s at %s, candidates=%d",
+		retention.LastPassMode, retention.LastPassAt.UTC().Format(time.RFC3339), retention.CandidateCount)
+	if retention.EnforceAt != nil {
+		line += ", enforcement=" + retention.EnforceAt.UTC().Format(time.RFC3339)
+	}
+	return line + "; instance.yaml changes require daemon restart\n"
+}
+
+func renderSchedulerStatus(
+	text *strings.Builder,
+	summary statusFleetSummary,
+	status readservice.SchedulerStatus,
+	now time.Time,
+) {
+	renderStatusFleetSummary(text, summary, now)
+	text.WriteString(daemonRestartStatusLine(status, now))
+	text.WriteString(providerQuotaStatusLine(status, now))
+	text.WriteString(maintenanceStatusLine(status))
+	text.WriteString(telemetryRetentionStatusLine(status))
+	text.WriteString(workerConfigDivergenceStatusLines(status, now))
+	text.WriteString(refusedWorkflowStatusLines(status))
+	text.WriteString(isolationMandateStatusLines(status))
+	text.WriteString(engineFallbackStatusLines(status))
 }
 
 // refusedWorkflowStatusLines surfaces the workflows the startup constraint
@@ -269,14 +305,16 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
-	Root              *statusRootIdentity              `json:"root,omitempty"`
-	QueueEligibility  *statusQueueEvidence             `json:"queueEligibility,omitempty"`
-	EngineFallbacks   []readmodel.EngineFallback       `json:"engineFallbacks,omitempty"`
-	Warnings          []validate.CodedWarning          `json:"warnings"`
-	TimeToFirstPR     *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
-	DaemonRestart     *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
-	IsolationMandates map[string][]string              `json:"isolationMandates,omitempty"`
-	Maintenance       *readservice.MaintenanceStatus   `json:"maintenance,omitempty"`
+	Root                   *statusRootIdentity                        `json:"root,omitempty"`
+	QueueEligibility       *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
+	EngineFallbacks        []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
+	Warnings               []validate.CodedWarning                    `json:"warnings"`
+	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
+	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
+	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
+	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
+	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -316,6 +354,15 @@ func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) 
 			replacement.ReplacementRunID,
 			replacement.ItemID,
 		)
+	}
+	return text.String()
+}
+
+func workerConfigDivergenceStatusLines(status readservice.SchedulerStatus, now time.Time) string {
+	var text strings.Builder
+	for _, report := range status.WorkerConfigDivergence {
+		fmt.Fprintf(&text, "Worker %s config divergence [%s, %s]: %s\n",
+			report.Worker, strings.ToUpper(string(report.State)), formatLastActivity(now, report.At), report.Message)
 	}
 	return text.String()
 }
@@ -425,6 +472,67 @@ type statusWorkflowKey struct {
 	workflow string
 }
 
+func statusManualOnlyWorkflow(workflow apiv1.Workflow) bool {
+	return len(workflow.Spec.Triggers) == 1 && workflow.Spec.Triggers[0].Type == apiv1.TriggerManual
+}
+
+// statusTextWorkflows removes intentionally inert workflows from the default
+// operator board. They remain available through --all and an explicit
+// --workflow selection, and structured JSON remains exhaustive.
+func statusTextWorkflows(workflows []apiv1.Workflow, all bool, selectedWorkflow string) ([]apiv1.Workflow, int) {
+	visible := make([]apiv1.Workflow, 0, len(workflows))
+	hidden := 0
+	for _, workflow := range workflows {
+		if statusManualOnlyWorkflow(workflow) && !all && workflow.Name != selectedWorkflow {
+			hidden++
+			continue
+		}
+		visible = append(visible, workflow)
+	}
+	return visible, hidden
+}
+
+func statusTextWarnings(warnings []validate.CodedWarning, workflows []apiv1.Workflow, hidden int, all bool, selectedWorkflow string) []validate.CodedWarning {
+	hiddenMessages := make(map[string]bool, hidden)
+	for _, workflow := range workflows {
+		if !statusManualOnlyWorkflow(workflow) || all || workflow.Name == selectedWorkflow {
+			continue
+		}
+		hiddenMessages[fmt.Sprintf(
+			"workflow %q has no schedule trigger; it will not fire autonomously — run it with `goobers run %s`",
+			workflow.Name,
+			workflow.Name,
+		)] = true
+	}
+	visible := make([]validate.CodedWarning, 0, len(warnings)+1)
+	if hidden > 0 {
+		visible = append(visible, validate.CodedWarning{
+			Severity:    validate.Warning,
+			Scope:       "Workflows",
+			Explanation: fmt.Sprintf("%d manual-only workflows hidden from default status detail; use --all or --workflow <name> to inspect them", hidden),
+		})
+	}
+	for _, warning := range warnings {
+		if hiddenMessages[warning.Explanation] {
+			continue
+		}
+		visible = append(visible, warning)
+	}
+	return visible
+}
+
+func statusOptionalBool(value *bool) bool {
+	return value != nil && *value
+}
+
+func statusDaemonFlagConflict(jsonOutput bool, phase, workflow, gaggle string, limitSet, watch, agents, all bool) bool {
+	return jsonOutput || phase != "" || workflow != "" || gaggle != "" || limitSet || watch || agents || all
+}
+
+func statusAgentsFlagConflict(phase string, limitSet, watch, all bool) bool {
+	return phase != "" || limitSet || watch || all
+}
+
 func buildStatusFleetSummary(
 	workflows []apiv1.Workflow,
 	runs []runSummary,
@@ -525,6 +633,32 @@ func buildStatusFleetSummary(
 		summary.Workflows = append(summary.Workflows, workflowSummary)
 	}
 	return summary, nil
+}
+
+func newStatusFleetSummaryLoader(
+	layout instance.Layout,
+	runLoader *statusRunLoader,
+	location *time.Location,
+) func([]apiv1.Workflow, []runSummary, readservice.SchedulerStatus, time.Time) (statusFleetSummary, error) {
+	return func(
+		workflows []apiv1.Workflow,
+		runs []runSummary,
+		schedulerStatus readservice.SchedulerStatus,
+		now time.Time,
+	) (statusFleetSummary, error) {
+		if runLoader.projected {
+			runs = runLoader.fleetRuns
+		}
+		lastEvals, err := statusWorkflowLastEvals(layout)
+		if err != nil {
+			return statusFleetSummary{}, err
+		}
+		refill := make(map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus, len(schedulerStatus.RefillOccupancy))
+		for _, occupancy := range schedulerStatus.RefillOccupancy {
+			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
+		}
+		return buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, location)
+	}
 }
 
 func statusWorkflowLastEvals(
@@ -647,8 +781,20 @@ type statusOptions struct {
 	limit    int
 }
 
-func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runSummary, error) {
-	summaries, err := reads.ListStatusRuns(ctx)
+func listStatusRuns(ctx context.Context, reads readservice.StatusReader, options ...statusOptions) ([]runSummary, error) {
+	var request readservice.StatusRunOptions
+	if len(options) > 0 {
+		request.Gaggle = options[0].gaggle
+		request.Workflow = options[0].workflow
+		request.Limit = options[0].limit
+		if request.Limit > 0 {
+			request.Limit++ // one-row lookahead keeps the omitted-runs hint truthful
+		}
+		for phase := range options[0].phases {
+			request.Phases = append(request.Phases, phase)
+		}
+	}
+	summaries, err := reads.ListStatusRuns(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -668,6 +814,23 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runS
 	return runs, nil
 }
 
+func statusFleetRuns(facts []readservice.StatusFleetFact) []runSummary {
+	var runs []runSummary
+	for _, fact := range facts {
+		for _, terminal := range fact.TerminalRuns {
+			runs = append(runs, runSummary{
+				RunID: terminal.ID, Workflow: terminal.Workflow, Gaggle: terminal.Gaggle,
+				Phase: terminal.Phase, StartedAt: terminal.StartedAt, LastActivityAt: terminal.LastActivityAt,
+				Operator: terminal.Operator,
+			})
+		}
+		for i := 0; i < fact.ActiveRuns; i++ {
+			runs = append(runs, runSummary{Workflow: fact.Workflow, Gaggle: fact.Gaggle, Phase: journal.PhaseRunning})
+		}
+	}
+	return runs
+}
+
 func runStatus(args []string, stdout, stderr io.Writer) int {
 	return runRunTable(args, stdout, stderr, "status")
 }
@@ -676,7 +839,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 // runRunTable help: `status` supports --daemon/--watch and reports the extra
 // workflow/PR lines, while `runs list` is the flag-reduced alias. runRunTable
 // selects between them via helpUsage(stderr, command) (#1095).
-const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
+const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Normal and daemon status identify the root path, durable instance ID, and owning PID,\n" +
@@ -685,6 +848,8 @@ const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phas
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,\n" +
 	"and next steps from the existing daemon projection, never current claim authority.\n" +
+	"Manual-only workflows are summarized by default; use --all or --workflow to show\n" +
+	"their individual warnings, queue evidence, and workflow-summary rows. JSON stays exhaustive.\n" +
 	"At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle\n" +
 	"and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.\n" +
 	"It lists parked backlog items too — open issues carrying a park disposition without\n" +
@@ -761,16 +926,19 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	var interval *time.Duration
 	var daemon *bool
 	var agents *bool
+	var all *bool
 	if supportsWatch {
 		watch = fs.Bool("watch", false, "refresh the status board until interrupted")
 		interval = fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
 		daemon = fs.Bool("daemon", false, "report daemon health and identity")
 		agents = fs.Bool("agents", false, "list in-flight agentic stages by role, from the runner's own bookkeeping")
+		all = fs.Bool("all", false, "show individual detail for manual-only workflows")
 	}
 	fs.Usage = helpUsage(stderr, command)
-	if err := fs.Parse(args); err != nil {
+	if !parseFlagsBeforePath(fs, args, stderr) {
 		return 2
 	}
+	showAllWorkflows := statusOptionalBool(all)
 	limitSet := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "limit" {
@@ -789,7 +957,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
-	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || limitSet || *watch || *agents) {
+	if supportsWatch && *daemon && statusDaemonFlagConflict(*jsonOutput, *phaseFilter, *workflowFilter, *gaggleFilter, limitSet, *watch, *agents, showAllWorkflows) {
 		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
 		return 2
 	}
@@ -799,8 +967,8 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	// --workflow/--gaggle stay available: scoping the probe to one workflow is
 	// the same question asked of a smaller fleet.
 	agentsMode := supportsWatch && *agents
-	if agentsMode && (*phaseFilter != "" || limitSet || *watch) {
-		pf(stderr, "error: --agents cannot be combined with --phase, --limit, or --watch\n")
+	if agentsMode && statusAgentsFlagConflict(*phaseFilter, limitSet, *watch, showAllWorkflows) {
+		pf(stderr, "error: --agents cannot be combined with --all, --phase, --limit, or --watch\n")
 		return 2
 	}
 
@@ -871,6 +1039,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	warnings := report.CLIWarnings()
+	showManualWorkflowDetails := !supportsWatch || showAllWorkflows
+	textWorkflows, hiddenManualWorkflows := statusTextWorkflows(set.Workflows, showManualWorkflowDetails, *workflowFilter)
+	textWarnings := statusTextWarnings(warnings, set.Workflows, hiddenManualWorkflows, showManualWorkflowDetails, *workflowFilter)
 	sources := readservice.LocalSources{
 		Layout:      l,
 		Config:      cfg,
@@ -921,25 +1092,16 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		gaggle:   *gaggleFilter,
 		limit:    *limit,
 	}
+	if agentsMode {
+		options.limit = 0
+		options.phases = map[journal.RunPhase]struct{}{journal.PhaseRunning: {}}
+	}
 
-	loadRuns := func() ([]runSummary, error) {
-		return listStatusRuns(context.Background(), reads)
+	runLoader := &statusRunLoader{
+		layout: l, sources: sources, journal: reads, options: options, needFleet: supportsWatch && !agentsMode,
 	}
-	loadFleetSummary := func(
-		runs []runSummary,
-		schedulerStatus readservice.SchedulerStatus,
-		now time.Time,
-	) (statusFleetSummary, error) {
-		lastEvals, err := statusWorkflowLastEvals(l)
-		if err != nil {
-			return statusFleetSummary{}, err
-		}
-		refill := make(map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus, len(schedulerStatus.RefillOccupancy))
-		for _, occupancy := range schedulerStatus.RefillOccupancy {
-			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
-		}
-		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, refill, now, statusLocation)
-	}
+	loadRuns := runLoader.Load
+	loadFleetSummary := newStatusFleetSummaryLoader(l, runLoader, statusLocation)
 	prLabelCounts := newStatusPRLabelCountCache()
 	parkedBacklog := newStatusParkedBacklogCache()
 	loadTimeToFirstPR := reads.TimeToFirstPR
@@ -958,7 +1120,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		var text strings.Builder
 		text.WriteString(statusRootText(l, now))
-		queue := loadStatusQueueEvidence(ctx, sources, set.Workflows, *gaggleFilter, *workflowFilter)
+		queue := loadStatusQueueEvidence(ctx, sources, textWorkflows, *gaggleFilter, *workflowFilter)
 		text.WriteString(statusQueueText(queue))
 		timeToFirstPR, err := timeToFirstPRCache.Load(ctx)
 		if err != nil {
@@ -968,19 +1130,13 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		status, err := reads.SchedulerStatus(context.Background())
 		if err == nil {
-			summary, summaryErr := loadFleetSummary(runs, status, now)
+			summary, summaryErr := loadFleetSummary(textWorkflows, runs, status, now)
 			if summaryErr != nil {
 				return "", summaryErr
 			}
-			renderStatusFleetSummary(&text, summary, now)
-			text.WriteString(daemonRestartStatusLine(status, now))
-			text.WriteString(providerQuotaStatusLine(status, now))
-			text.WriteString(maintenanceStatusLine(status))
-			text.WriteString(refusedWorkflowStatusLines(status))
-			text.WriteString(isolationMandateStatusLines(status))
-			text.WriteString(engineFallbackStatusLines(status))
+			renderSchedulerStatus(&text, summary, status, now)
 		} else {
-			summary, summaryErr := loadFleetSummary(runs, readservice.SchedulerStatus{}, now)
+			summary, summaryErr := loadFleetSummary(textWorkflows, runs, readservice.SchedulerStatus{}, now)
 			if summaryErr != nil {
 				return "", summaryErr
 			}
@@ -1017,10 +1173,10 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		// Config warnings are a static, one-time-per-invocation check (unlike
 		// the provider-quota pause, which is live scheduler state) — printed
 		// once before entering the redraw loop, not re-shown every tick.
-		printValidationWarnings(stdout, warnings)
+		printValidationWarnings(stdout, textWarnings)
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
-		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText)); err != nil {
+		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText), runLoader.loadChangedRuns); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
@@ -1046,7 +1202,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		// Config warnings first, same as the run table: a workflow definition
 		// that failed to load is exactly what turns a known role into
 		// "unknown", so the reader must see the warning next to the answer.
-		printValidationWarnings(stdout, warnings)
+		printValidationWarnings(stdout, textWarnings)
 		renderAgentProbe(stdout, probe, now)
 		return 0
 	}
@@ -1056,7 +1212,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if statusErr != nil {
 			status = readservice.SchedulerStatus{}
 		}
-		summary, err := loadFleetSummary(allRuns, status, now)
+		summary, err := loadFleetSummary(set.Workflows, allRuns, status, now)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
@@ -1068,9 +1224,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
 		var maintenance *readservice.MaintenanceStatus
+		var telemetryRetention *readservice.TelemetryRetentionStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
 		var engineFallbacks []readmodel.EngineFallback
+		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
 		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
@@ -1080,34 +1238,33 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
 				maintenance = status.Maintenance
+				telemetryRetention = status.TelemetryRetention
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
 				engineFallbacks = status.EngineFallbacks
+				workerConfigDivergence = status.WorkerConfigDivergence
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
 				parked = &snapshot
 			}
 		}
-		var baselineBlockers *statusBaselineBlockers
-		// Omitted when nothing is parked, like the other optional sections: a
-		// healthy instance's JSON keeps exactly the shape it had before.
-		if snapshot, err := loadStatusBaselineBlockers(l); err == nil && snapshot.Total > 0 {
-			baselineBlockers = &snapshot
-		}
+		baselineBlockers := optionalStatusBaselineBlockers(l)
 		output := statusJSONOutput{
-			Root:              optionalStatusRoot(supportsWatch, l, now),
-			QueueEligibility:  optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
-			EngineFallbacks:   engineFallbacks,
-			Warnings:          warnings,
-			TimeToFirstPR:     timeToFirstPR,
-			DaemonRestart:     daemonRestart,
-			Maintenance:       maintenance,
-			RefusedWorkflows:  refusedWorkflows,
-			IsolationMandates: isolationMandates,
-			Summary:           fleetSummary,
-			ParkedBacklog:     parked,
-			BaselineBlockers:  baselineBlockers,
-			Runs:              statusRecoverySummaries(l, runs, now),
+			Root:                   optionalStatusRoot(supportsWatch, l, now),
+			QueueEligibility:       optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
+			EngineFallbacks:        engineFallbacks,
+			WorkerConfigDivergence: workerConfigDivergence,
+			Warnings:               warnings,
+			TimeToFirstPR:          timeToFirstPR,
+			DaemonRestart:          daemonRestart,
+			Maintenance:            maintenance,
+			TelemetryRetention:     telemetryRetention,
+			RefusedWorkflows:       refusedWorkflows,
+			IsolationMandates:      isolationMandates,
+			Summary:                fleetSummary,
+			ParkedBacklog:          parked,
+			BaselineBlockers:       baselineBlockers,
+			Runs:                   statusRecoverySummaries(l, runs, now),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)
@@ -1118,7 +1275,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 
 	// Skipped in --json mode since the structured summary has no plain-text
 	// side channel.
-	printValidationWarnings(stdout, warnings)
+	printValidationWarnings(stdout, textWarnings)
 	statusText, err := loadStatusText(context.Background(), allRuns, now)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -1241,7 +1398,7 @@ func truncateStatusCell(value string, width int) string {
 
 func renderOlderRunsHint(stdout io.Writer, olderRuns int) {
 	if olderRuns > 0 {
-		pf(stdout, "%d older runs; use --limit 0 for all\n", olderRuns)
+		pln(stdout, "older runs omitted; use --limit 0 for all")
 	}
 }
 
@@ -1263,6 +1420,7 @@ func watchStatus(
 	stdout io.Writer,
 	loadRuns func() ([]runSummary, error),
 	loadStatusText func(context.Context, []runSummary, time.Time) (string, error),
+	loadProjectedChanges ...func(context.Context) (map[string]struct{}, error),
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1286,7 +1444,17 @@ func watchStatus(
 			return err
 		}
 		runs, olderRuns := selectStatusRuns(allRuns, options)
-		renderStatusWatchFrame(stdout, statusText, runs, changedStatusRuns(previous, current), now)
+		changed := changedStatusRuns(previous, current)
+		if len(loadProjectedChanges) > 0 && loadProjectedChanges[0] != nil {
+			projected, err := loadProjectedChanges[0](ctx)
+			if err != nil {
+				return err
+			}
+			for runID := range projected {
+				changed[runID] = struct{}{}
+			}
+		}
+		renderStatusWatchFrame(stdout, statusText, runs, changed, now)
 		renderOlderRunsHint(stdout, olderRuns)
 		previous = current
 
@@ -1394,6 +1562,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
 			reportFleetEnrollment(l.Root, stdout)
+			reportUpdateCheck(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 			reportTelemetryRetentionPolicy(l, now, stdout)
 			reportWorktreeRetentionPolicy(l, now, stdout)
@@ -1405,6 +1574,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
 		reportFleetEnrollment(l.Root, stdout)
+		reportUpdateCheck(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
 		reportTelemetryRetentionPolicy(l, now, stdout)
 		reportWorktreeRetentionPolicy(l, now, stdout)
@@ -1437,25 +1607,40 @@ func reportPendingTriggerQueue(schedulerDir string, now time.Time, stdout io.Wri
 
 // reportTelemetryRetentionPolicy surfaces #4253/#3056's "status + portal
 // permanently surface: policy in force, last pass, candidate count"
-// acceptance criterion. Silent when no pass has ever recorded state —
-// retention explicitly disabled (telemetry.retention.enabled: false), or the
-// daemon has never ticked its retention sweep yet — same silent-when-
-// nothing-notable convention as reportPendingTriggerQueue.
+// acceptance criterion, plus #4824's addition: the effective cutoff age, not
+// only a raw candidate count — an operator staring at "14693 candidates"
+// cannot tell how much history that leaves without also knowing the total,
+// but "history retained back to 3 days ago" answers the question directly.
+// Silent when no pass has ever recorded state — retention explicitly
+// disabled (telemetry.retention.enabled: false), or the daemon has never
+// ticked its retention sweep yet — same silent-when-nothing-notable
+// convention as reportPendingTriggerQueue.
 func reportTelemetryRetentionPolicy(l instance.Layout, now time.Time, stdout io.Writer) {
 	state, ok, err := readTelemetryRetentionState(l)
 	if err != nil || !ok {
 		return
 	}
+	state, _ = normalizeRetentionGraceState(state, now)
 	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
-	switch {
-	case state.LastPassDryRun && !state.EnforceAt.IsZero():
-		pf(stdout, "telemetry retention: grace period active until %s (%d candidate(s) as of last pass %s ago) — nothing deleted yet\n",
-			state.EnforceAt.UTC().Format(time.RFC3339), state.CandidateCount, lastPassAgo)
-	case state.LastPassDryRun:
-		pf(stdout, "telemetry retention: policy in force, no candidates as of last pass %s ago\n", lastPassAgo)
-	default:
-		pf(stdout, "telemetry retention: policy in force, last pass %s ago pruned %d run(s)\n", lastPassAgo, state.PrunedCount)
+	cutoff := ""
+	if !state.OldestRetainedAt.IsZero() {
+		cutoff = fmt.Sprintf(", history retained back to %s ago", now.Sub(state.OldestRetainedAt).Truncate(time.Second))
+	} else if state.TotalRuns > 0 {
+		cutoff = ", no run would survive enforcing this policy right now"
 	}
+	switch {
+	case state.LastPassDryRun && state.LargeFirstEnforceBlocked:
+		pf(stdout, "telemetry retention: enforcement held for explicit acknowledgement — %d of %d run(s) as of last pass %s ago would be pruned (over the safety threshold); set telemetry.retention.firstEnable: immediate to proceed%s\n",
+			state.CandidateCount, state.TotalRuns, lastPassAgo, cutoff)
+	case state.LastPassDryRun && !state.EnforceAt.IsZero():
+		pf(stdout, "telemetry retention: grace period active until %s (%d of %d run(s) as of last pass %s ago) — nothing deleted yet%s\n",
+			state.EnforceAt.UTC().Format(time.RFC3339), state.CandidateCount, state.TotalRuns, lastPassAgo, cutoff)
+	case state.LastPassDryRun:
+		pf(stdout, "telemetry retention: policy in force, no candidates as of last pass %s ago%s\n", lastPassAgo, cutoff)
+	default:
+		pf(stdout, "telemetry retention: policy in force, last pass %s ago pruned %d run(s)%s\n", lastPassAgo, state.PrunedCount, cutoff)
+	}
+	pln(stdout, "  instance.yaml retention changes require a daemon restart; --watch-config watches only the materialized config directory")
 }
 
 // reportWorktreeRetentionPolicy is the operator-facing half of #4253's flip.
@@ -1473,6 +1658,7 @@ func reportWorktreeRetentionPolicy(l instance.Layout, now time.Time, stdout io.W
 	if err != nil || !ok {
 		return
 	}
+	state, _ = normalizeRetentionGraceState(state, now)
 	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
 	switch {
 	case state.LastPassDryRun && !state.EnforceAt.IsZero():
@@ -1483,6 +1669,7 @@ func reportWorktreeRetentionPolicy(l instance.Layout, now time.Time, stdout io.W
 	default:
 		pf(stdout, "worktree retention: policy in force, last pass %s ago pruned %d item(s)\n", lastPassAgo, state.PrunedCount)
 	}
+	pln(stdout, "  instance.yaml retention changes require a daemon restart; --watch-config watches only the materialized config directory")
 }
 
 func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {
@@ -1589,4 +1776,29 @@ func daemonLivenessLabel(liveness daemonstate.Liveness) string {
 		return "running"
 	}
 	return "unhealthy"
+}
+
+// reportUpdateCheck prints the daemon's last notify-only release check
+// (#4903). It reads only the cache the daemon wrote and makes no request of
+// its own: `goobers status` must stay a local, offline-safe read, and the
+// daemon is the one process that talks to the release source.
+func reportUpdateCheck(instanceRoot string, stdout io.Writer) {
+	result, err := selfupdate.ReadCheck(instanceRoot)
+	if err != nil {
+		// No cache means the check has not run yet (a daemon that just
+		// started, or one with the check disabled). That is not a problem to
+		// report, and a corrupt cache must not make status fail.
+		if !errors.Is(err, os.ErrNotExist) {
+			pf(stdout, "update check: unavailable (%v)\n", err)
+		}
+		return
+	}
+	age := time.Since(result.CheckedAt).Truncate(time.Second)
+	if !result.UpdateAvailable {
+		pf(stdout, "update check: up to date (%s, %s channel, checked %s ago)\n",
+			result.CurrentVersion, result.Channel, age)
+		return
+	}
+	pf(stdout, "update check: %s (%s channel, checked %s ago)\n",
+		selfupdate.Notice(result, selfupdate.Supervised(instanceRoot)), result.Channel, age)
 }

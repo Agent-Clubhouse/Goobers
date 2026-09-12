@@ -105,16 +105,12 @@ func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 // checkout happens to sit near the right tag.
 func TestDSLMatrixAgainstNextPlannedRelease(t *testing.T) {
 	current := GetDSL()
-	if err := ValidateSupportPolicyForRelease(current, NextPlannedRelease); err != nil {
-		t.Fatalf("compiled-in DSL support matrix cannot ship in the declared NextPlannedRelease %s: %v", NextPlannedRelease, err)
-	}
-
 	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
 	released, latestTag, _ := loadLatestReleasedSupportMatrix(t, root)
 	firstTag, _, _ := supportReleaseTagRange(t, root)
-	planned, err := parseSupportReleaseVersion(NextPlannedRelease, false)
+	planned, err := validateNextPlannedRelease(current, NextPlannedRelease, latestTag)
 	if err != nil {
-		t.Fatalf("parse NextPlannedRelease %q: %v", NextPlannedRelease, err)
+		t.Fatal(err)
 	}
 	var firstRelease releaseVersion
 	if firstTag != "" {
@@ -130,6 +126,99 @@ func TestDSLMatrixAgainstNextPlannedRelease(t *testing.T) {
 	if err := validateSupportMatrixAfterTag(released, current, latestTag, planned, releaseAnchor); err != nil {
 		t.Fatalf("compiled-in DSL support matrix would fail cutting the declared NextPlannedRelease %s: %v", NextPlannedRelease, err)
 	}
+}
+
+func validateNextPlannedRelease(matrix SupportMatrix, plannedTag, latestTag string) (releaseVersion, error) {
+	planned, err := parseSupportReleaseVersion(plannedTag, false)
+	if err != nil {
+		return releaseVersion{}, fmt.Errorf("parse NextPlannedRelease %q: %w", plannedTag, err)
+	}
+	// Freshness comes first so a staged transition cannot mask the diagnostic
+	// that tells the operator which published tag requires a constant bump.
+	if err := validateNextPlannedReleaseFreshness(planned, latestTag); err != nil {
+		return releaseVersion{}, err
+	}
+	if err := ValidateSupportPolicyForRelease(matrix, plannedTag); err != nil {
+		return releaseVersion{}, fmt.Errorf(
+			"compiled-in DSL support matrix cannot ship in the declared NextPlannedRelease %s: %w",
+			plannedTag,
+			err,
+		)
+	}
+	return planned, nil
+}
+
+func TestValidateNextPlannedReleaseFreshness(t *testing.T) {
+	tests := []struct {
+		name      string
+		planned   releaseVersion
+		latestTag string
+		wantError string
+	}{
+		{name: "no published release", planned: releaseVersion{major: 1}, latestTag: ""},
+		{name: "later release", planned: releaseVersion{major: 1, minor: 1}, latestTag: "v1.0.9"},
+		{
+			name:      "same release",
+			planned:   releaseVersion{major: 1, minor: 2, patch: 3},
+			latestTag: "v1.2.3",
+			wantError: "NextPlannedRelease v1.2.3 must be later than newest published release tag v1.2.3; bump NextPlannedRelease",
+		},
+		{
+			name:      "earlier release",
+			planned:   releaseVersion{major: 1, minor: 1},
+			latestTag: "v1.2.3",
+			wantError: "NextPlannedRelease v1.1.0 must be later than newest published release tag v1.2.3; bump NextPlannedRelease",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateNextPlannedReleaseFreshness(test.planned, test.latestTag)
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != test.wantError {
+				t.Fatalf("error = %v, want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestValidateNextPlannedReleaseReportsStalenessBeforePolicyFailure(t *testing.T) {
+	matrix := SupportMatrix{
+		"1.0": {
+			Level: LevelDeprecated,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v2.0.0"},
+			},
+		},
+	}
+	_, err := validateNextPlannedRelease(matrix, "v1.0.0", "v1.0.0")
+	const want = "NextPlannedRelease v1.0.0 must be later than newest published release tag v1.0.0; bump NextPlannedRelease"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want freshness error %q before the competing support-policy failure", err, want)
+	}
+}
+
+func validateNextPlannedReleaseFreshness(planned releaseVersion, latestTag string) error {
+	if latestTag == "" {
+		return nil
+	}
+	latest, err := parseSupportReleaseVersion(latestTag, false)
+	if err != nil {
+		return fmt.Errorf("parse newest published release tag %s: %w", latestTag, err)
+	}
+	if compareReleaseVersions(planned, latest) <= 0 {
+		return fmt.Errorf(
+			"NextPlannedRelease %s must be later than newest published release tag %s; bump NextPlannedRelease",
+			planned.String(),
+			latestTag,
+		)
+	}
+	return nil
 }
 
 func TestPreTagSimulationRejectsOffByOneSupportDeadline(t *testing.T) {

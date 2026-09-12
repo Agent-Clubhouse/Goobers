@@ -197,6 +197,31 @@ func TestDaemonEngineCancelHTTPRequestsWithoutTerminalizing(t *testing.T) {
 	}
 }
 
+// TestDaemonEngineCancelPrefersScopedRunOverLegacyProjection pins #4858 at
+// the remote cancellation surface. The flat projection is a distinct journal,
+// not a migration alias, and must not turn the owned scoped run into a 409.
+func TestDaemonEngineCancelPrefersScopedRunOverLegacyProjection(t *testing.T) {
+	const runID = "engine-cancel-dual-projection"
+	f := newEngineCancelFixture(t, runID, runID)
+	createDriverRun(t, f.layout.RunsDir(), runID, "implementation", "web", journal.DriverEngine, time.Now(), nil)
+
+	response := f.request(runID, `{"gaggle":"web","workflow":"implementation"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("cancel dual-projected engine run: status %d: %s", response.Code, response.Body)
+	}
+	var result httpapi.CancelRunResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Code != httpapi.CancelCodeRequested {
+		t.Fatalf("cancel result = %+v, want requested", result)
+	}
+	_, _, cancelled := f.temporal.snapshot()
+	if len(cancelled) != 1 || cancelled[0] != runID {
+		t.Fatalf("engine cancellations = %v, want [%s]", cancelled, runID)
+	}
+}
+
 func cancellationRunFiles(t *testing.T, dir string) map[string][]byte {
 	t.Helper()
 	files := map[string][]byte{}

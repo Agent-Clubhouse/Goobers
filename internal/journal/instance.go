@@ -1,12 +1,18 @@
 package journal
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/safeopen"
 	"github.com/goobers/goobers/internal/readprobe"
 )
 
@@ -50,6 +56,11 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	if err != nil {
 		return nil, RecoverReport{}, err
 	}
+	_, statErr := os.Stat(path)
+	eventsExisted := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, RecoverReport{}, fmt.Errorf("journal: stat instance log: %w", statErr)
+	}
 	events, tornBytes, err := readEvents(path)
 	if err != nil {
 		return nil, RecoverReport{}, err
@@ -57,6 +68,9 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	report := RecoverReport{TornBytes: tornBytes}
 	report.LastSeq = highestEventSeq(events)
 	if err := truncateTornTail(path, tornBytes); err != nil {
+		return nil, RecoverReport{}, err
+	}
+	if _, err := ensureInstanceLogID(dir, eventsExisted); err != nil {
 		return nil, RecoverReport{}, err
 	}
 
@@ -253,6 +267,127 @@ func ReadInstanceLogAfterSeq(dir string, seq uint64) ([]Event, error) {
 		return nil, err
 	}
 	return events, nil
+}
+
+// InstanceLogState identifies the current instance-journal file. The file
+// identity distinguishes removal and recreation at the same generation.
+type InstanceLogState struct {
+	Generation int
+	Exists     bool
+	identity   string
+	info       os.FileInfo
+}
+
+// SameJournal reports whether two states describe the same generation file.
+func (s InstanceLogState) SameJournal(other InstanceLogState) bool {
+	if !s.Exists || !other.Exists || s.Generation != other.Generation {
+		return false
+	}
+	if s.identity != "" || other.identity != "" {
+		if s.identity == "" || s.identity != other.identity {
+			return false
+		}
+	}
+	return s.info != nil && other.info != nil && os.SameFile(s.info, other.info)
+}
+
+// ReadInstanceLogState returns the current instance journal's identity.
+func ReadInstanceLogState(dir string) (InstanceLogState, error) {
+	identity, err := readInstanceLogID(dir)
+	if err != nil {
+		return InstanceLogState{}, err
+	}
+	path, generation, err := resolveInstanceEventsPath(dir)
+	if err != nil {
+		return InstanceLogState{}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return InstanceLogState{Generation: generation, identity: identity}, nil
+		}
+		return InstanceLogState{}, fmt.Errorf("journal: stat instance log generation: %w", err)
+	}
+	return InstanceLogState{Generation: generation, Exists: true, identity: identity, info: info}, nil
+}
+
+func ensureInstanceLogID(dir string, eventsExisted bool) (string, error) {
+	if eventsExisted {
+		identity, err := readInstanceLogID(dir)
+		if err != nil || identity != "" {
+			return identity, err
+		}
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("journal: generate instance log identity: %w", err)
+	}
+	identity := hex.EncodeToString(random[:])
+	if err := writeFileAtomic(filepath.Join(dir, fileInstanceLogID), []byte(identity+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("journal: persist instance log identity: %w", err)
+	}
+	return identity, nil
+}
+
+func readInstanceLogID(dir string) (string, error) {
+	return readInstanceLogIDWith(dir, safeopen.OpenAt)
+}
+
+func readInstanceLogIDWith(dir string, openAt func(*os.File, string) (*os.File, error)) (identity string, err error) {
+	path := filepath.Join(dir, fileInstanceLogID)
+	before, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("journal: stat instance log identity: %w", err)
+	}
+	if !before.Mode().IsRegular() || before.Size() != 33 {
+		return "", fmt.Errorf("journal: invalid instance log identity file %s", path)
+	}
+	// On Windows, FileInfo defers loading its stable volume/file identity until
+	// os.SameFile is called. Resolve it before opening the file: otherwise a
+	// pathname swap between Lstat and OpenAt can make both FileInfos resolve the
+	// replacement and falsely appear identical. Other platforms perform this
+	// comparison entirely from the metadata Lstat already captured.
+	if !os.SameFile(before, before) {
+		return "", fmt.Errorf("journal: instance log identity changed while opening %s", path)
+	}
+	directory, err := safeopen.Open(dir)
+	if err != nil {
+		return "", fmt.Errorf("journal: open instance log directory: %w", err)
+	}
+	defer func() {
+		if closeErr := directory.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	f, err := openAt(directory, fileInstanceLogID)
+	if err != nil {
+		return "", fmt.Errorf("journal: open instance log identity: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	after, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("journal: stat opened instance log identity: %w", err)
+	}
+	if !after.Mode().IsRegular() || after.Size() != 33 || !os.SameFile(before, after) {
+		return "", fmt.Errorf("journal: instance log identity changed while opening %s", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 34))
+	if err != nil {
+		return "", fmt.Errorf("journal: read instance log identity: %w", err)
+	}
+	identity = strings.TrimSuffix(string(data), "\n")
+	decoded, decodeErr := hex.DecodeString(identity)
+	if len(data) != 33 || decodeErr != nil || len(decoded) != 16 || identity != strings.ToLower(identity) || identity == strings.Repeat("0", 32) {
+		return "", fmt.Errorf("journal: invalid instance log identity in %s", path)
+	}
+	return identity, nil
 }
 
 func highestEventSeq(events []Event) uint64 {

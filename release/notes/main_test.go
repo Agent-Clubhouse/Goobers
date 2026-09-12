@@ -81,8 +81,8 @@ func TestGenerateUsesAnnotatedTagForInitialRelease(t *testing.T) {
 	git := fakeGit{
 		command("rev-parse", "--verify", "refs/tags/v1.0.0^{commit}"): {output: "release"},
 		command("cat-file", "-t", "refs/tags/v1.0.0"):                 {output: "tag"},
-		command("for-each-ref", "--format=%(contents)", "refs/tags/v1.0.0"): {
-			output: "The first curated release.",
+		command("for-each-ref", "--format=%(contents:subject)\x1e%(contents:body)", "refs/tags/v1.0.0"): {
+			output: "The first curated release.\x1e",
 		},
 		command("rev-list", "--parents", "-n", "1", "v1.0.0"):                {output: "release"},
 		command("log", "--first-parent", "--format="+gitLogFormat, "v1.0.0"): {output: ""},
@@ -122,14 +122,47 @@ func TestGenerateRequiresNonEmptyAnnotatedTagMessage(t *testing.T) {
 	git := fakeGit{
 		command("rev-parse", "--verify", "refs/tags/v2.0.0^{commit}"): {output: "release"},
 		command("cat-file", "-t", "refs/tags/v2.0.0"):                 {output: "tag"},
-		command("for-each-ref", "--format=%(contents)", "refs/tags/v2.0.0"): {
-			output: " \n",
+		command("for-each-ref", "--format=%(contents:subject)\x1e%(contents:body)", "refs/tags/v2.0.0"): {
+			output: " \n\x1e",
 		},
 	}
 
 	_, err := generate("v2.0.0", git, missingFile)
 	if err == nil || !strings.Contains(err.Error(), "curated release note is required") {
 		t.Fatalf("generate error = %v, want required curated note", err)
+	}
+}
+
+// TestGenerateStripsAnnotatedTagSignatureArmor is #4830's regression: a
+// signed annotated tag's %(contents) includes the full SSH/GPG signature
+// block, which the old fallback path copied verbatim into the middle of a
+// human-readable release note. %(contents:subject) and %(contents:body) are
+// the fields git documents specifically to exclude it — this fixture
+// supplies them as real git would (signature already absent from the body)
+// and asserts nothing in the pipeline reintroduces it.
+func TestGenerateStripsAnnotatedTagSignatureArmor(t *testing.T) {
+	git := fakeGit{
+		command("rev-parse", "--verify", "refs/tags/v3.0.0^{commit}"): {output: "release"},
+		command("cat-file", "-t", "refs/tags/v3.0.0"):                 {output: "tag"},
+		command("for-each-ref", "--format=%(contents:subject)\x1e%(contents:body)", "refs/tags/v3.0.0"): {
+			output: "v3.0.0 — release candidate\x1e" +
+				"Highlights.\n\nKnown issues and support boundaries\n\nSomething remains true.\n",
+		},
+		command("rev-list", "--parents", "-n", "1", "v3.0.0"):                {output: "release"},
+		command("log", "--first-parent", "--format="+gitLogFormat, "v3.0.0"): {output: ""},
+	}
+
+	got, err := generate("v3.0.0", git, missingFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "SIGNATURE") {
+		t.Errorf("generated note retains signature armor:\n%s", got)
+	}
+	for _, want := range []string{"v3.0.0 — release candidate", "Highlights.", "Known issues and support boundaries", "Something remains true."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notes missing %q:\n%s", want, got)
+		}
 	}
 }
 

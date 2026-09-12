@@ -259,11 +259,11 @@ func init() {
 		coreCommand("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
-			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos"),
+			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("lint", apicontract.ActionConfigTime, runLint).
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
-			withExamples("goobers lint", "goobers lint --json", "goobers lint --check-harness --check-repos"),
+			withExamples("goobers lint", "goobers lint --json", "goobers lint --check-harness --check-repos", "goobers lint --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("fix", apicontract.ActionConfigTime, runFix).
 			withSynopsis(synopsisByID["fix"]).
 			withHelp("mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)", fixHelp).
@@ -340,7 +340,11 @@ func init() {
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.1.0"),
+			// The manual example must name a target the ordering guard can
+			// actually accept (#4887). It previously pinned v0.1.0, which
+			// every build since has been newer than, so the shipped example
+			// failed verbatim for every reader who ran it.
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.0"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",
@@ -1056,6 +1060,21 @@ func (c cliCommand) dispatch(args []string, stdout, stderr io.Writer) int {
 		if subcommand, ok := findCLICommandIn(c.subcommands, args[0]); ok {
 			return subcommand.dispatch(args[1:], stdout, stderr)
 		}
+	}
+	// #4832: every command's `-h`/`--help` renders THIS node's own registered
+	// help text to stdout and exits 0 here, before any handler-specific flag
+	// parsing runs. Handlers built on flag.FlagSet never see -h/--help as an
+	// argument to parse: Go's flag package treats an undeclared -h/--help as
+	// a parse error (flag.ErrHelp) and every handler's uniform
+	// `if err := fs.Parse(args); err != nil { return 2 }` could not tell that
+	// case apart from a real usage error, so it wrote the (correct) help text
+	// to stderr and exited 2 — the exact bug this issue reports. Intercepting
+	// once here, at the single path every command's invocation already
+	// passes through, fixes every command without touching each handler's
+	// own flag parsing.
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		pf(stdout, "%s", c.long)
+		return 0
 	}
 	if c.providerStage {
 		return runProviderStageCommand(c.names[0], c.resultFile, c.run, args, stdout, stderr)

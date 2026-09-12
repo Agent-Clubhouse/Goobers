@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -164,7 +165,11 @@ func runPRSelectCore(
 		}
 	}
 	now := time.Now().UTC()
-	expectedAuthorLogin := source.expectedAuthorLogin(ctx, root)
+	expectedAuthorLogin, err := source.expectedAuthorLogin(ctx, root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
 	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
 	if err != nil {
@@ -440,7 +445,7 @@ func pullRequestsForSelection(
 // fairness, claims, and result handling outside this adapter.
 type prSelectSource interface {
 	pullRequests(context.Context, providers.RepositoryRef, prSelectSourceRequest) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error)
-	expectedAuthorLogin(context.Context, string) string
+	expectedAuthorLogin(context.Context, string) (string, error)
 }
 
 // prSelectSelfIdentitySource is implemented only where the configured
@@ -507,7 +512,7 @@ func (s refCheckPRSelectSource) resolveSelfIdentity(ctx context.Context) (string
 	return s.provider.AuthenticatedLogin(ctx)
 }
 
-func (s refCheckPRSelectSource) expectedAuthorLogin(ctx context.Context, root string) string {
+func (s refCheckPRSelectSource) expectedAuthorLogin(ctx context.Context, root string) (string, error) {
 	return daemonIdentityAuthorLogin(ctx, root, s.provider)
 }
 
@@ -526,7 +531,9 @@ func (s branchPolicyPRSelectSource) pullRequests(ctx context.Context, repo provi
 	)
 }
 
-func (branchPolicyPRSelectSource) expectedAuthorLogin(context.Context, string) string { return "" }
+func (branchPolicyPRSelectSource) expectedAuthorLogin(context.Context, string) (string, error) {
+	return "", nil
+}
 
 // Normalized exclusion reasons (#2969). These are the vocabulary the no-work
 // summary counts by, deliberately stable and few: an operator reading "7
@@ -969,39 +976,69 @@ func isOwnPullRequest(author, head string, headPrefixes []string, expectedAuthor
 
 // daemonIdentityAuthorLogin resolves the login merge-review's "is this ours"
 // check should compare pr.Author against, or "" to fall back to the
-// branch-prefix heuristic unchanged (#1780). Loads instance.yaml directly
-// (the same fallback path providerRepo already uses) rather than requiring a
-// new runner-injected env var — root is already available to every
-// provider-chain stage.
+// branch-prefix heuristic unchanged (#1780).
 //
-// PAT: github:pr:write already resolves to the DaemonIdentity's own token
-// once configured (buildCredentials, runnerwiring.go), so provider — built
-// from that exact token — reports the daemon identity's own login for free.
-// GitHub App: an installation token cannot self-report a login (no
-// equivalent of GET /user), so this requires Slug to be explicitly declared;
-// unset (the default until #1779 lands) returns "" like no DaemonIdentity at
-// all, not an error.
+// TWO SUBSTRATES, and the difference is which question can be answered here.
 //
-// A resolution failure (e.g. a transient network error on the live
-// AuthenticatedLogin call) fails OPEN to the branch-prefix heuristic rather
-// than failing the whole stage — a momentary identity-lookup hiccup must
-// never block a merge-review cycle outright.
-func daemonIdentityAuthorLogin(ctx context.Context, root string, provider remediationProvider) string {
-	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
-	if err != nil || cfg.DaemonIdentity == nil {
-		return ""
-	}
-	if cfg.DaemonIdentity.GitHubApp() {
-		if cfg.DaemonIdentity.Slug == "" {
-			return ""
+// LOCAL: instance.yaml is readable and authoritative, so the daemon identity
+// is read from it directly — unchanged. PAT: github:pr:write already resolves
+// to the DaemonIdentity's own token once configured (buildCredentials,
+// runnerwiring.go), so provider — built from that exact token — reports the
+// daemon identity's own login for free. GitHub App: an installation token
+// cannot self-report a login (no equivalent of GET /user), so this requires
+// Slug to be explicitly declared; unset (the default until #1779 lands)
+// returns "" like no DaemonIdentity at all, and is NOT an error — that
+// configuration is valid and must keep falling back to branch prefixes.
+//
+// POD: instance.yaml does not exist (and GOOBERS_INSTANCE_ROOT is unset —
+// the same signal stageProviderConfiguredLogin keys off), and the old code
+// returned "" the moment LoadConfig failed — so both this stage and gather-sibling-context silently
+// dropped to branch-prefix ownership in a pod while the same workflow used
+// identity ownership on self (#4345). The provider handed in here has already
+// been built through the pod-safe seam (stageProviderConfiguredLogin, #3914):
+// the dispatcher's stamped login wins, an unstamped pod is a refusal, and a
+// PAT still self-reports. So the pod answer is simply to ASK IT.
+//
+// The two failure modes are deliberately not the same:
+//   - A refusal (LoginSelfReportRefusedError) is a platform wiring fault —
+//     the stage is in a pod and nothing resolved its identity. Branch-prefix
+//     ownership is not a safe default there, because it would classify the
+//     same PR differently than the identical run on self. Fail CLOSED.
+//   - Any other error (a transient network failure on the live GET /user, or
+//     an App installation token that has no self-report to give) fails OPEN
+//     to the branch-prefix heuristic exactly as before — a momentary
+//     identity-lookup hiccup must never block a merge-review cycle outright.
+func daemonIdentityAuthorLogin(ctx context.Context, root string, provider remediationProvider) (string, error) {
+	cfg, cfgErr := instance.LoadConfig(layoutFor(root).ConfigFile())
+	switch {
+	case cfgErr == nil:
+		if cfg.DaemonIdentity == nil {
+			return "", nil
 		}
-		return cfg.DaemonIdentity.Slug + "[bot]"
+		if cfg.DaemonIdentity.GitHubApp() {
+			if cfg.DaemonIdentity.Slug == "" {
+				return "", nil
+			}
+			return cfg.DaemonIdentity.Slug + "[bot]", nil
+		}
+	case strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) != "":
+		// An instance root IS declared and its config did not load: the
+		// local substrate with a config problem, not a pod. Unchanged — ""
+		// and the branch-prefix heuristic. Asking the provider here would
+		// answer a DIFFERENT question (whose credential is this, not who is
+		// the daemon), and a PAT that is not the daemon identity would then
+		// reject the daemon's own PRs and stall merge-review outright.
+		return "", nil
 	}
 	login, err := provider.AuthenticatedLogin(ctx)
-	if err != nil {
-		return ""
+	if err == nil {
+		return login, nil
 	}
-	return login
+	var refused *providers.LoginSelfReportRefusedError
+	if errors.As(err, &refused) {
+		return "", fmt.Errorf("resolve the automation identity PR ownership is decided by: %w", err)
+	}
+	return "", nil
 }
 
 func splitLabelList(value string) []string {

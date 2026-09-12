@@ -379,7 +379,7 @@ func (s *daemonCredentialService) locateRun(defs credentialPlaneDefinitions, run
 	for gaggle := range defs.Scopes {
 		gaggles = append(gaggles, gaggle)
 	}
-	found, err := locateOwnedRun(s.layout, gaggles, runID)
+	found, err := locateOwnedRun(s.layout, gaggles, runID, true)
 	return found.dir, err
 }
 

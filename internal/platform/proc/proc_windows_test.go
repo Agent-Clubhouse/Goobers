@@ -3,6 +3,7 @@
 package proc
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,18 @@ import (
 
 	"golang.org/x/sys/windows"
 )
+
+func TestVanishedThreadOnlyAcceptsInvalidParameter(t *testing.T) {
+	if !vanishedThread(windows.ERROR_INVALID_PARAMETER) {
+		t.Fatal("vanished thread error was not recognized")
+	}
+	if vanishedThread(windows.ERROR_ACCESS_DENIED) {
+		t.Fatal("access denied was treated as a vanished thread")
+	}
+	if vanishedThread(errors.New("invalid parameter")) {
+		t.Fatal("untyped error was treated as a vanished thread")
+	}
+}
 
 func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")

@@ -722,10 +722,10 @@ async function artifactJSON(runDirectory, ref) {
     }
 }
 
-async function projectOperator(resolved, runDirectory, events, phase) {
+export async function projectOperator(resolved, runDirectory, events, phase) {
     const operator = {
         liveness: phase === "running" ? "recent" : "terminal",
-        trajectory: phase === "running" ? "running" : "parked",
+        trajectory: phase === "running" ? "running" : "terminal",
         claim: { leaseStatus: "none", providerMarker: "not-recorded" },
         potentialBlockers: [],
     };

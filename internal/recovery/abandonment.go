@@ -41,9 +41,18 @@ func ExplicitlyAbandoned(events []journal.Event, record Record) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("invalid recovery abandonment evidence: %w", err)
 		}
-		if observed == record {
+		if sameAbandonmentRecord(observed, record) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func sameAbandonmentRecord(observed, current Record) bool {
+	observedCreatedAt, observedRetainUntil := observed.CreatedAt, observed.RetainUntil
+	currentCreatedAt, currentRetainUntil := current.CreatedAt, current.RetainUntil
+	observed.CreatedAt, observed.RetainUntil = current.CreatedAt, current.RetainUntil
+	return observed == current &&
+		observedCreatedAt.Equal(currentCreatedAt) &&
+		observedRetainUntil.Equal(currentRetainUntil)
 }

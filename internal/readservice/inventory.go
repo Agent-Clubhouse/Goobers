@@ -69,19 +69,20 @@ const (
 // Instance is the overview inventory projection.
 type Instance struct {
 	ReadStateEnvelope
-	APIVersion    string                  `json:"apiVersion"`
-	SchemaVersion string                  `json:"schemaVersion"`
-	Name          string                  `json:"name"`
-	Environment   apiv1.Environment       `json:"environment"`
-	ComputerName  string                  `json:"computerName,omitempty"`
-	InstanceRoot  string                  `json:"instanceRoot"`
-	RootIdentity  *RootIdentity           `json:"rootIdentity,omitempty"`
-	Ready         bool                    `json:"ready"`
-	Status        InstanceStatus          `json:"status"`
-	Concurrency   Concurrency             `json:"concurrency"`
-	Counts        InventoryCounts         `json:"counts"`
-	Warnings      []validate.CodedWarning `json:"warnings"`
-	Maintenance   *MaintenanceStatus      `json:"maintenance,omitempty"`
+	APIVersion         string                    `json:"apiVersion"`
+	SchemaVersion      string                    `json:"schemaVersion"`
+	Name               string                    `json:"name"`
+	Environment        apiv1.Environment         `json:"environment"`
+	ComputerName       string                    `json:"computerName,omitempty"`
+	InstanceRoot       string                    `json:"instanceRoot"`
+	RootIdentity       *RootIdentity             `json:"rootIdentity,omitempty"`
+	Ready              bool                      `json:"ready"`
+	Status             InstanceStatus            `json:"status"`
+	Concurrency        Concurrency               `json:"concurrency"`
+	Counts             InventoryCounts           `json:"counts"`
+	Warnings           []validate.CodedWarning   `json:"warnings"`
+	Maintenance        *MaintenanceStatus        `json:"maintenance,omitempty"`
+	TelemetryRetention *TelemetryRetentionStatus `json:"telemetryRetention,omitempty"`
 	// MemoryHighWater, MemoryGateEnabled, and FsyncDisabled surface
 	// GOOBERS_MEMORY_HIGH_WATER and GOOBERS_DISABLE_FSYNC (#4218), settings
 	// that were previously invisible outside the daemon process's own
@@ -401,6 +402,11 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if s.sources.RetentionStats != nil {
 		maintenance = maintenanceStatus(s.sources.RetentionStats())
 	}
+	projected, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
+	if err != nil {
+		return Instance{}, err
+	}
+	telemetryRetention := telemetryRetentionStatus(s.sources.Config, projected.telemetryRetention)
 	computerName, _ := os.Hostname()
 	return Instance{
 		APIVersion:    APIVersion,
@@ -422,12 +428,13 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 			Workflows:  len(inventory.definitions.Workflows),
 			ActiveRuns: activeTotal,
 		},
-		Warnings:          append([]validate.CodedWarning{}, inventory.warnings...),
-		Maintenance:       maintenance,
-		MemoryHighWater:   memoryHighWater,
-		MemoryGateEnabled: !memoryGateDisabled,
-		FsyncDisabled:     journal.FsyncDisabled(),
-		FleetEnrolled:     fleetEnrolled,
+		Warnings:           append([]validate.CodedWarning{}, inventory.warnings...),
+		Maintenance:        maintenance,
+		TelemetryRetention: telemetryRetention,
+		MemoryHighWater:    memoryHighWater,
+		MemoryGateEnabled:  !memoryGateDisabled,
+		FsyncDisabled:      journal.FsyncDisabled(),
+		FleetEnrolled:      fleetEnrolled,
 	}, nil
 }
 

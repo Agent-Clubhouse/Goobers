@@ -12,7 +12,7 @@ name: CI
 #   checks     portal · extension · generated contracts · manifests
 #   lint       golangci-lint (staticcheck / govet / revive / errcheck / ...)
 #   unit       the -race unit suite, split into shards (Linux) — the long pole
-#   shipped    shipped-workflow contract suite on Linux, macOS, and Windows
+#   shipped    shipped-workflow contract suite on Linux and Windows
 #
 # dedicated jobs: darwin-build, deadcode, deploy-reference, integration,
 #   linux-validation, sandbox, unit-linux-coverage, unit-macos,
@@ -29,10 +29,11 @@ name: CI
 # (asserted by test/ci's group tests).
 #
 # Race posture: a data race is a source-level property, not OS behaviour, so the
-# full -race suite runs on Linux (sharded for wall-clock). macOS runs the same
-# behavioural suite without -race (GOOBERS_CI_RACE=0), preserving macOS-specific
-# behaviour while dropping the ~3-5x race instrumentation cost — there is no
-# darwin-tagged concurrent code for a second -race platform to cover.
+# full -race suite runs on Linux (sharded for wall-clock). One consolidated
+# macOS runtime job runs the same behavioural suite without race or coverage
+# instrumentation, then the macOS shipped-workflow and native Seatbelt checks.
+# That preserves macOS-specific behaviour while using one of the five hosted
+# macOS slots per PR instead of three.
 #
 # Windows is gated as a REQUIRED, GREEN build+vet+runtime smoke (#633) plus the
 # shipped-workflow contract suite. The broad Windows behavioural tier is NOT
@@ -99,9 +100,8 @@ jobs:
   #              the -run=^TestIntegration contract via a runtime AST scan.
   #   coverage   `make cover-check` -> `make test` emitted the literal same
   #              hermetic command as `test/ci group unit` minus --shard. The
-  #              threshold gate now runs as a step on `unit-macos`, which
-  #              already produced the whole-tree profile and uploaded it with
-  #              no consumer.
+  #              threshold gate and timing artifact now live on
+  #              `unit-linux-coverage`, the authoritative unsharded profile.
   #
   # Their Makefile targets (test-e2e, test-envtest, cover-check) are retained
   # for local and full-tier use; only the redundant PR-leg jobs are gone.
@@ -596,19 +596,69 @@ jobs:
             exit 1
           fi
 
+      - name: Find previous main timing run
+        id: previous-timing
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const {data} = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "ci.yml",
+              branch: "main",
+              status: "success",
+              per_page: 20,
+            });
+            const previous = data.workflow_runs.find(
+              run => run.id !== context.runId,
+            );
+            return previous ? String(previous.id) : "";
+          result-encoding: string
+
+      - name: Download previous timing artifact
+        if: ${{ steps.previous-timing.outputs.result != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: test-timings-${{ runner.os }}
+          path: previous-test-timings
+          run-id: ${{ steps.previous-timing.outputs.result }}
+          github-token: ${{ github.token }}
+
       - name: Unit suite and Linux coverage profile
         env:
           GOOBERS_CI_RACE: "0"
+          GOOBERS_TEST_TIMING_FILE: test-timings/unit-${{ runner.os }}.json
         run: go run ./test/ci group unit
 
       - name: Enforce the repository coverage threshold
         run: make cover-gate
 
-  # macOS runs the whole behavioural unit suite (no -race) in one process, so it
-  # owns the per-test timing budget artifact and a second OS-specific coverage
-  # profile. Race coverage is provided by the Linux shards above.
+      - name: Report test timing budget
+        if: ${{ !cancelled() && hashFiles(format('test-timings/unit-{0}.json', runner.os)) != '' }}
+        run: >-
+          go run ./test/testtiming report
+          -budget .github/test-timing-budgets.json
+          -current test-timings/unit-${{ runner.os }}.json
+          -previous previous-test-timings/unit-${{ runner.os }}.json
+
+      - name: Upload test timing
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-timings-${{ runner.os }}
+          path: test-timings/unit-${{ runner.os }}.json
+          if-no-files-found: warn
+
+  # One macOS allocation owns every required Darwin runtime check. The whole
+  # behavioural suite runs without race or coverage instrumentation (both are
+  # authoritative on Linux), followed on the same runner by shipped-workflow
+  # contracts and the PR-only native Seatbelt gate. Explicit !cancelled()
+  # conditions preserve independent failure evidence from the later checks.
   unit-macos:
-    name: unit behavioral suite (macos)
+    name: macOS runtime (unit · shipped · sandbox)
     needs: [preflight]
     runs-on: macos-latest
     timeout-minutes: 60
@@ -670,90 +720,25 @@ jobs:
             exit 1
           fi
 
-      - name: Find previous main timing run
-        id: previous-timing
-        continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
-        with:
-          script: |
-            const {data} = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: "ci.yml",
-              branch: "main",
-              status: "success",
-              per_page: 20,
-            });
-            const previous = data.workflow_runs.find(
-              run => run.id !== context.runId,
-            );
-            return previous ? String(previous.id) : "";
-          result-encoding: string
-
-      - name: Download previous timing artifact
-        if: ${{ steps.previous-timing.outputs.result != '' }}
-        continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: test-timings-${{ runner.os }}
-          path: previous-test-timings
-          run-id: ${{ steps.previous-timing.outputs.result }}
-          github-token: ${{ github.token }}
-
       - name: Unit suite (behavioral, no -race)
         env:
           GOOBERS_CI_RACE: "0"
-          GOOBERS_TEST_TIMING_FILE: test-timings/unit-${{ runner.os }}.json
+          GOOBERS_CI_COVERAGE: "0"
         run: go run ./test/ci group unit
 
-      # The coverage threshold gate. This job runs the unit suite UNSHARDED, so
-      # `test/ci`'s shard rewrite never strips the coverage flags and the step
-      # above has already written a complete whole-tree coverage.out — which
-      # this job was already uploading as an artifact nobody read. Enforcing the
-      # threshold here costs ~20s instead of the ~21 minutes the deleted
-      # `coverage` job spent re-running the identical suite to regenerate the
-      # identical profile.
-      #
-      # Measured delta to the reported figure when this moved: 79.0695% ->
-      # 79.1586%, +0.089pp, against a threshold of 70. Deliberately NOT
-      # continue-on-error and deliberately not `if: always()`: a failed gate must
-      # red unit-macos, which required-ci already depends on.
-      - name: Enforce the repository coverage threshold
-        run: make cover-gate
-
-      - name: Report test timing budget
-        if: ${{ !cancelled() && hashFiles(format('test-timings/unit-{0}.json', runner.os)) != '' }}
-        run: >-
-          go run ./test/testtiming report
-          -budget .github/test-timing-budgets.json
-          -current test-timings/unit-${{ runner.os }}.json
-          -previous previous-test-timings/unit-${{ runner.os }}.json
-
-      # Diagnostic artifacts, not gates. The reads of this same timing data
-      # already tolerate failure (see "Find previous main timing run" and
-      # "Download previous timing artifact"), so a failed WRITE must not fail
-      # the merge gate either. A transient artifact-service DNS error took main
-      # red on a669fc3a while the unit suite itself had passed.
-      - name: Upload test timing
+      - name: Shipped-workflow contracts (macOS)
         if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: test-timings-${{ runner.os }}
-          path: test-timings/unit-${{ runner.os }}.json
-          if-no-files-found: warn
+        env:
+          GOOBERS_CI_RACE: "0"
+          GOOBERS_CI_TEST_TIMEOUT: "20m"
+        run: go run ./test/ci group shipped
 
-      - name: Upload coverage profile
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: coverage-${{ runner.os }}
-          path: coverage.out
-          if-no-files-found: ignore
+      - name: Require native Seatbelt sandbox confinement (macOS)
+        if: ${{ !cancelled() && github.event_name != 'push' }}
+        run: make sandbox-check
 
-  # Shipped-workflow contract suite. Linux runs it with -race; macOS and Windows
-  # run the same behavioural suite without -race.
+  # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
+  # it without -race. The macOS leg is consolidated into unit-macos above.
   shipped:
     name: shipped workflow contracts (${{ matrix.os }})
     needs: [preflight]
@@ -763,9 +748,6 @@ jobs:
         include:
           - os: ubuntu-latest
             race: "1"
-            timeout: "20m"
-          - os: macos-latest
-            race: "0"
             timeout: "20m"
           - os: windows-latest
             race: "0"
@@ -1391,8 +1373,8 @@ jobs:
     # as jobs the day before by #3152), and conformance long predates both. All
     # four are now GONE — not un-required, but deleted as jobs, because each was
     # an unsharded re-run of a suite another required job already runs. Their
-    # distinct value moved rather than lapsed: the coverage thresholds onto
-    # unit-linux-coverage and unit-macos, the envtest control plane onto integration, and the
+    # distinct value moved rather than lapsed: the coverage threshold and
+    # timing capture onto unit-linux-coverage, the envtest control plane onto integration, and the
     # conformance and e2e tests were already executing unfiltered in the unit
     # shards. Nothing that this aggregate used to enforce stopped being enforced.
     #
@@ -1442,8 +1424,9 @@ jobs:
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
-          # unit-macos also carries the coverage threshold gate (cover-gate).
-          check "unit behavioral suite + coverage (macos)" "$UNIT_MACOS_RESULT"
+          # unit-macos also carries the macOS shipped-workflow and native
+          # Seatbelt validations on the same scarce runner allocation.
+          check "unit + shipped + sandbox runtime (macos)" "$UNIT_MACOS_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
           check "dead-code analysis"                 "$DEADCODE_RESULT"
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
@@ -1456,15 +1439,11 @@ jobs:
           exit "$fail"
 
   sandbox:
-    name: sandbox confinement (${{ matrix.os }})
+    name: sandbox confinement (ubuntu-latest)
     needs: [preflight]
     if: ${{ github.event_name != 'push' }}
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -1476,7 +1455,6 @@ jobs:
           cache: true
 
       - name: Install bubblewrap
-        if: runner.os == 'Linux'
         timeout-minutes: 10
         shell: bash
         run: |

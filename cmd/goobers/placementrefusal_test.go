@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -272,12 +273,10 @@ func TestStartupPreflightKeepsPlacementFindingsAdvisory(t *testing.T) {
 	}
 }
 
-// TestValidateSourceTreePlacementAdvisory: `goobers validate --source-tree`
-// has no real instance.yaml — it solves against instance.yaml.example — so
-// its placement findings are advisory-only warnings even when the example
-// declares an inventory that cannot satisfy a stage (RNR001's and RNR003's
-// warning branches).
-func TestValidateSourceTreePlacementAdvisory(t *testing.T) {
+// TestValidateSourceTreePlacementAdvisoryAndRealInstance proves the source-tree
+// gate names its example-based blind spot, while --instance turns the same
+// unsatisfied placement into an authoritative failure.
+func TestValidateSourceTreePlacementAdvisoryAndRealInstance(t *testing.T) {
 	root := initDeterministicDemo(t)
 	declareInventory(t, root)
 	writeSecondWorkflow(t, root, unsatisfiableV30WorkflowYAML)
@@ -299,6 +298,140 @@ func TestValidateSourceTreePlacementAdvisory(t *testing.T) {
 	}
 	if strings.Contains(stdout, "ERROR RNR001") {
 		t.Errorf("source-tree placement findings must never be errors:\n%s", stdout)
+	}
+	for _, want := range []string{"--instance was not supplied", "instance.yaml.example", "advisory-only"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("source-tree output must name its advisory solve limitation %q:\n%s", want, stdout)
+		}
+	}
+	jsonCode, jsonOut, jsonErr := runArgs(t, "validate", "--json", "--source-tree", tree)
+	if jsonCode != 0 || jsonErr != "" {
+		t.Fatalf("JSON source-tree validate code=%d stdout=%q stderr=%q", jsonCode, jsonOut, jsonErr)
+	}
+	envelope := decodeDiagnosticsEnvelope(t, jsonOut)
+	var advisory *diagnosticFinding
+	for i := range envelope.Findings {
+		if envelope.Findings[i].Code == sourceTreeAdvisoryCode {
+			advisory = &envelope.Findings[i]
+			break
+		}
+	}
+	if advisory == nil || advisory.Severity != diagnosticSeverityInfo || advisory.Message != sourceTreeAdvisoryMessage {
+		t.Fatalf("JSON source-tree advisory = %+v, findings=%+v", advisory, envelope.Findings)
+	}
+
+	realInstance := filepath.Join(root, "instance.yaml")
+	code, stdout, stderr = runArgs(t, "validate", "--source-tree", "--instance", realInstance, tree)
+	if code != 1 {
+		t.Fatalf("source-tree validate with real instance code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "ERROR RNR001 Workflow/win-build") {
+		t.Errorf("real-instance source-tree validate must enforce RNR001:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "--instance was not supplied") || strings.Contains(stdout, "advisory-only") {
+		t.Errorf("real-instance source-tree validate must not claim an advisory solve:\n%s", stdout)
+	}
+}
+
+// TestValidateSourceTreeLegacyCapabilitiesAdvisoryAndRealInstance covers the
+// inventory-less interpreter that reports CAP003 instead of a solver RNR001.
+// Its historical instance-root validation stays warning-only, but an explicit
+// --instance is the config-repository gate's request for an authoritative
+// answer and must fail when the real runner cannot dispatch any gaggle run.
+func TestValidateSourceTreeLegacyCapabilitiesAdvisoryAndRealInstance(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	appendToFile(t, gagglePath, "  requiredCapabilities:\n    - nosuchtoolchain@42\n")
+	tree := filepath.Join(root, "config")
+	realInstance := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(realInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "instance.yaml.example"), instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", "--source-tree", tree)
+	if code != 0 || stderr != "" {
+		t.Fatalf("advisory capability solve: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "WARNING CAP003 Gaggle/example") ||
+		!strings.Contains(stdout, sourceTreeAdvisoryMessage) {
+		t.Fatalf("example capability solve must be explicit and advisory:\n%s", stdout)
+	}
+
+	code, jsonOut, stderr := runArgs(t, "validate", "--json", "--source-tree", "--instance", realInstance, tree)
+	if code != 1 || stderr != "" {
+		t.Fatalf("authoritative capability solve: code=%d stdout=%q stderr=%q", code, jsonOut, stderr)
+	}
+	envelope := decodeDiagnosticsEnvelope(t, jsonOut)
+	if envelope.OK || envelope.Counts.Errors == 0 {
+		t.Fatalf("authoritative capability envelope did not fail: %+v", envelope)
+	}
+	var capability *diagnosticFinding
+	for i := range envelope.Findings {
+		if envelope.Findings[i].Code == string(validate.WarningUnclaimedRunnerCapability) {
+			capability = &envelope.Findings[i]
+			break
+		}
+	}
+	if capability == nil || capability.Severity != string(validate.Error) ||
+		capability.Path != "/spec/requiredCapabilities" {
+		t.Fatalf("authoritative CAP003 finding = %+v, findings=%+v", capability, envelope.Findings)
+	}
+}
+
+// TestValidateSourceTreeRealInstanceUsesInstanceRootForAssets proves that an
+// external instance document retains its own filesystem root. The config tree
+// is definition-only; co-brand assets live beside instance.yaml, exactly where
+// the daemon serves them from.
+func TestValidateSourceTreeRealInstanceUsesInstanceRootForAssets(t *testing.T) {
+	root := initDeterministicDemo(t)
+	tree := filepath.Join(root, "config")
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(tree, "gaggles", "example", "gaggle.yaml")
+	for _, path := range []string{instancePath, gagglePath} {
+		replaceInFile(t, path, "your-org", "acme")
+		replaceInFile(t, path, "your-repo", "widgets")
+	}
+	replaceInFile(t, gagglePath, "your-org/your-repo", "acme/widgets")
+	replaceInFile(t, instancePath, "  brand: {}", "  brand:\n    logoUrl: /assets/logo.svg")
+	if err := os.MkdirAll(filepath.Join(root, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "assets", "logo.svg"), []byte("<svg/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", "--source-tree", "--instance", instancePath, tree)
+	if code != 0 || stderr != "" || strings.Contains(stdout, "CBR001") {
+		t.Fatalf("present external asset must pass strict: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	replaceInFile(t, instancePath, "/assets/logo.svg", "/assets/missing.svg")
+	code, jsonOut, stderr := runArgs(t, "validate", "--json", "--source-tree", "--instance", instancePath, tree)
+	if code != 0 || stderr != "" {
+		t.Fatalf("missing asset warning must remain valid JSON: code=%d stdout=%q stderr=%q", code, jsonOut, stderr)
+	}
+	envelope := decodeDiagnosticsEnvelope(t, jsonOut)
+	var cobrand *diagnosticFinding
+	for i := range envelope.Findings {
+		if envelope.Findings[i].Code == string(validate.WarningCobrandMissingLogoAsset) {
+			cobrand = &envelope.Findings[i]
+			break
+		}
+	}
+	if cobrand == nil || cobrand.Path != "/portal/brand/logoUrl" ||
+		cobrand.File != filepath.ToSlash(instancePath) || !strings.Contains(cobrand.Message, filepath.Join(root, "assets", "missing.svg")) {
+		t.Fatalf("external CBR001 finding = %+v, findings=%+v", cobrand, envelope.Findings)
+	}
+}
+
+func TestValidateInstanceFlagRequiresSourceTree(t *testing.T) {
+	code, _, stderr := runArgs(t, "validate", "--instance", "instance.yaml")
+	if code != 2 || !strings.Contains(stderr, "--instance requires --source-tree") {
+		t.Fatalf("validate --instance without --source-tree: code=%d stderr=%q", code, stderr)
 	}
 }
 

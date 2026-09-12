@@ -18,13 +18,19 @@ func (m *Manager) WithExistingMirror(ctx context.Context, repoURL string, visit 
 	if repoURL == "" || visit == nil {
 		return false, fmt.Errorf("existing mirror requires repository identity and visitor")
 	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
 	key := repoKey(repoURL)
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
+	return m.withExistingMirrorLocked(ctx, key, visit)
+}
+
+// withExistingMirrorLocked is WithExistingMirror's body without acquiring
+// this repository's lock, for a caller that already holds it (#4823's
+// WithRecoveryRepositoriesLocked, used from inside a cleanup guard, which
+// already runs under this exact lock — calling WithExistingMirror itself
+// there would deadlock on Go's non-reentrant sync.Mutex).
+func (m *Manager) withExistingMirrorLocked(ctx context.Context, key string, visit func(string) error) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}

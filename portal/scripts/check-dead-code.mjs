@@ -51,6 +51,12 @@ const exemptions = [
     symbol: "e2e/fixture-daemon.mjs",
     reason: "Playwright web-server entry point invoked from playwright.config.ts.",
   },
+  {
+    type: "files",
+    file: "e2e/real-daemon.mjs",
+    symbol: "e2e/real-daemon.mjs",
+    reason: "Playwright real-dashboard web-server entry point invoked from playwright.config.ts.",
+  },
 ];
 
 const testOnlyExports = {
@@ -99,6 +105,12 @@ const testOnlyExports = {
   "src/shell/PortalShell.tsx": ["DataFreshnessIndicator"],
   "src/theme.ts": ["themeStorageKey", "persistTheme"],
   "src/ui/Inspector.tsx": ["InspectorHeading"],
+  "src/updateNotice.ts": [
+    "updateDismissalStorageKey",
+    "readStoredUpdateDismissal",
+    "onUpdateAvailability",
+    "resetUpdateAvailability",
+  ],
   "src/workflowDetailData.ts": ["loadWorkflowDetail"],
 };
 

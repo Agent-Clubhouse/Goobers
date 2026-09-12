@@ -24,7 +24,12 @@ const selfUpdateHelp = "Usage: goobers self-update [flags] [path]\n\n" +
 	"are manual, on-release (default), and on-main. Manual requires a release tag;\n" +
 	"on-main builds the configured branch. on-release resolves the newest stable\n" +
 	"release unless --include-prerelease is set, which considers all GitHub\n" +
-	"releases and only stages a target strictly newer than the running build.\n\n" +
+	"releases.\n\n" +
+	"EVERY policy refuses a target that is not strictly newer than the running\n" +
+	"build -- manual included. There is no downgrade flag and no rollback path\n" +
+	"here: self-update only moves forward, and a supervised update that turns\n" +
+	"out unhealthy is reverted by the supervisor's own rollback, not by staging\n" +
+	"an older tag. To move to an older build deliberately, install it directly.\n\n" +
 	"Releases are resolved from the canonical Goobers product repository\n" +
 	"(Agent-Clubhouse/Goobers) by default, independent of any workload\n" +
 	"repositories the instance is configured to operate on. Override the\n" +
@@ -121,11 +126,15 @@ func runSelfUpdateWith(
 		return failProviderStage(stderr, "self-update", err, resultFile)
 	}
 	if err := writeProviderStageResult(resultFile, map[string]interface{}{
-		"updateRequested": result.UpdateRequested,
-		"policy":          result.Policy,
-		"target":          result.Target,
+		"updateRequested":    result.UpdateRequested,
+		"policy":             result.Policy,
+		"target":             result.Target,
+		"skippedInvalidTags": result.SkippedInvalidTags,
 	}); err != nil {
 		return failProviderStage(stderr, "write self-update result", err, resultFile)
+	}
+	if result.SkippedInvalidTags > 0 {
+		pf(stdout, "self-update: skipped %d release tag(s) that did not parse as SemVer\n", result.SkippedInvalidTags)
 	}
 	if result.UpdateRequested {
 		pf(stdout, "self-update target %s staged; supervisor handoff requested\n", result.Target)

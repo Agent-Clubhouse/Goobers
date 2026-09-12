@@ -1256,9 +1256,10 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 		return outcome.result, outcome.err
 	}
 	if err := jr.Append(journal.Event{
-		Type:   journal.EventRunFinished,
-		Status: string(journal.PhaseFailed),
-		Error:  &journal.ErrorDetail{Code: code, Message: msg},
+		Type:        journal.EventRunFinished,
+		Status:      string(journal.PhaseFailed),
+		Disposition: journal.RunDispositionProduced,
+		Error:       &journal.ErrorDetail{Code: code, Message: msg},
 	}); err != nil {
 		return Result{}, fmt.Errorf("runner: %s (additionally failed to journal terminal refusal: %w)", msg, err)
 	}

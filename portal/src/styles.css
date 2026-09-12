@@ -2931,6 +2931,47 @@ summary:focus-visible {
   padding: 0.75rem 1rem;
 }
 
+/*
+ * Informational, not an alert. The adjacent .admission-degraded strip is built
+ * on --warning because a degraded daemon is a problem; an available update is
+ * news. Using the accent tokens keeps the two visually distinct in both
+ * themes, so the warning colour keeps meaning "something is wrong".
+ */
+.update-notice {
+  align-items: baseline;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 0.75rem;
+  color: var(--text);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+}
+
+.update-notice-dismiss {
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+  border-radius: 0.5rem;
+  color: var(--accent-ink);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  padding: 0.15rem 0.6rem;
+}
+
+.update-notice-dismiss:hover {
+  background: var(--accent-soft);
+}
+
+/* The pull surface beside the running build, paired with the chrome strip. */
+.version-update-available {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
 .section-query-spinner {
   animation: spin 0.8s linear infinite;
   border: 2px solid var(--line);

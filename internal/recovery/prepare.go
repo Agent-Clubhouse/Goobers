@@ -26,7 +26,7 @@ func PrepareRecord(ctx context.Context, repository, repositoryKey, runID, baseRe
 	}
 	var base boundedRefOutput
 	if err := recoveryGit(ctx, repository, &base, "merge-base", "--all", baseRef, "HEAD"); err != nil {
-		return Record{}, fmt.Errorf("resolve cumulative recovery base: %w", err)
+		return Record{}, fmt.Errorf("resolve cumulative recovery base against %q: %w", baseRef, err)
 	}
 	baseSHA := strings.TrimSpace(base.String())
 	// Multiple criss-cross merge bases require explicit resolution; picking
@@ -46,5 +46,18 @@ func PrepareRecord(ctx context.Context, repository, repositoryKey, runID, baseRe
 	if err != nil {
 		return Record{}, err
 	}
-	return Record{Version: 1, RunID: runID, RepositoryKey: repositoryKey, Ref: ref, BaseSHA: baseSHA, SnapshotSHA: snapshot, PatchDigest: digest, CreatedAt: identityTime, RetainUntil: retainUntil}, nil
+	return Record{Version: 1, RunID: runID, RepositoryKey: repositoryKey, Ref: ref, BaseRef: remoteRecoveryBaseRef(baseRef), BaseSHA: baseSHA, SnapshotSHA: snapshot, PatchDigest: digest, CreatedAt: identityTime, RetainUntil: retainUntil}, nil
+}
+
+// remoteRecoveryBaseRef converts the pinned workspace's local mirror-tracking
+// namespace into the source ref a later restore must fetch. Other fully
+// qualified refs and object IDs retain their exact identity.
+func remoteRecoveryBaseRef(baseRef string) string {
+	if branch, ok := strings.CutPrefix(baseRef, "refs/remotes/mirror/"); ok {
+		return "refs/heads/" + branch
+	}
+	if strings.HasPrefix(baseRef, "refs/") || gitObjectID.MatchString(baseRef) {
+		return baseRef
+	}
+	return "refs/heads/" + baseRef
 }

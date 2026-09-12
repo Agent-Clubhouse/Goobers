@@ -1,0 +1,23 @@
+# SSH allowed signers for Goobers release tags.
+#
+# Release tags are signed locally by the maintainer cutting them, not by CI,
+# so this file is the only published record of which key a consumer should
+# trust. Without it `git tag -v` cannot succeed for anyone outside the
+# machine that cut the tag, which is why nothing published let a consumer
+# verify a release signature before #4886.
+#
+# Verify a tag:
+#
+#   git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.4.0-rc.2
+#
+# A good signature prints:
+#
+#   Good "git" signature for <principal> with ED25519 key SHA256:...
+#
+# The entry below is the key that actually signed the published v0.4.x
+# release tags, recovered from the signature on v0.4.0-rc.2 and confirmed
+# against it. The principal matches the tagger identity git checks, so it
+# must be updated in the same commit as any change to the signing identity
+# or key — a stale entry here fails verification exactly as a forged tag
+# would, and the two are indistinguishable to a consumer.
+scratch@local namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHYykeYMvmgzLRIMb5oG8v24FUY1ed6UlXwT62EN0UQ9

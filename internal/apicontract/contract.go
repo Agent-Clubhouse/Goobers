@@ -121,10 +121,14 @@ const (
 	// reach the read-only navigation routes, and the bare /readyz probe is
 	// kept to booleans and timestamps so its unauthenticated fail-open
 	// exception cannot become an information-disclosure surface.
-	ConfigDigestPath         = V1Prefix + "/config/digest"
-	TriggerIngestPath        = V1Prefix + "/triggers"
-	TriggerStatusPath        = V1Prefix + "/triggers/{acceptance}"
-	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
+	ConfigDigestPath = V1Prefix + "/config/digest"
+	// WorkerConfigDivergencePath accepts the worker's transition reports into
+	// the daemon-owned instance journal; it is the write half of the same
+	// narrow config-observability capability.
+	WorkerConfigDivergencePath = V1Prefix + "/worker/config-divergence"
+	TriggerIngestPath          = V1Prefix + "/triggers"
+	TriggerStatusPath          = V1Prefix + "/triggers/{acceptance}"
+	RunEscalationResolvePath   = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunCancelPath is the run-control plane (#3807): ask the daemon to stop
 	// a run it is actively executing. The daemon-local seam is the
 	// <SchedulerDir>/pending-cancels/ file drop `goobers run cancel` writes,
@@ -234,6 +238,7 @@ type RouteID string
 // Stable V1 route IDs.
 const (
 	RouteConfigDigest             RouteID = "configDigest"
+	RouteWorkerConfigDivergence   RouteID = "workerConfigDivergence"
 	RouteHealth                   RouteID = "health"
 	RouteInstance                 RouteID = "instance"
 	RoutePortalConfig             RouteID = "portalConfig"
@@ -395,6 +400,10 @@ const (
 var v1Routes = []Route{
 	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	// A worker's divergence report is a machine-to-daemon journal seam, not an
+	// operator mutation that every product surface must expose. Class it with
+	// the journal emit plane and pool its append with mutations.
+	{ID: RouteWorkerConfigDivergence, Method: http.MethodPost, Path: WorkerConfigDivergencePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RoutePortalConfig, Method: http.MethodGet, Path: PortalConfigPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

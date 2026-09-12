@@ -18,13 +18,15 @@ const workerTokenPrefix = "goobers-worker."
 // is insufficient because it can itself be parsed as a base64 pod segment.
 const workerMACDomain = "goobers/worker-config-digest/v1\x00"
 
-// MaxWorkerTokenTTL bounds the read-only worker identity. Workers mint a fresh
-// bearer for each config-digest poll; this credential never enters a stage pod.
+// MaxWorkerTokenTTL bounds the config-observability worker identity. Workers
+// mint a fresh bearer for each digest poll or transition report; this
+// credential never enters a stage pod and reaches no run or config content.
 const MaxWorkerTokenTTL = 5 * time.Minute
 
 // MintWorkerConfigDigest authenticates the worker itself, without inventing a
 // run identity. The separate wire prefix and MAC domain prevent converting this
-// read-only credential into a run-scoped pod token by replacing its prefix.
+// narrow config-observability credential into a run-scoped pod token by
+// replacing its prefix.
 func (s *SignedKey) MintWorkerConfigDigest(workerID string, ttl time.Duration) (string, error) {
 	if !validWorkerID(workerID) {
 		return "", fmt.Errorf("podauth: a nonempty worker identity of at most 256 bytes without control characters is required")

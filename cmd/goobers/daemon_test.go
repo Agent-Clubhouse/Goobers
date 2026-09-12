@@ -1179,7 +1179,7 @@ func TestEmitHeartbeatsReadsConstantBytesPerTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	stdout := newDaemonOutput()
 	done := make(chan struct{})
-	go emitHeartbeats(ctx, stdout, dir, 1, tail, nil, 100*time.Millisecond, done)
+	go emitHeartbeats(ctx, stdout, dir, 1, tail, nil, 100*time.Millisecond, nil, done)
 
 	select {
 	case <-stdout.heartbeat:
@@ -1236,7 +1236,7 @@ func TestEmitHeartbeatsCarriesTheResourceFootprint(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			stdout := newDaemonOutput()
 			done := make(chan struct{})
-			go emitHeartbeats(ctx, stdout, tc.dir, 1, tc.tail, nil, 10*time.Millisecond, done)
+			go emitHeartbeats(ctx, stdout, tc.dir, 1, tc.tail, nil, 10*time.Millisecond, nil, done)
 
 			select {
 			case <-stdout.heartbeat:

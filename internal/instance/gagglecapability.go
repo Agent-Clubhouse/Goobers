@@ -166,14 +166,14 @@ func sortedKeys(set map[string]struct{}) []string {
 	return out
 }
 
-// CheckCapabilityRequirements fails closed at config-load when a gaggle or stage
-// requires a runner capability the runner does not claim (RRQ-1/#1101). It is
-// the static, whole-instance counterpart of the scheduler's per-run admit
-// check: it needs both the instance.yaml runner claims and the config-as-code
-// requirements together, so it runs at daemon startup once both are loaded,
-// rejecting an unsatisfiable config before any run is scheduled rather than
-// leaving it to fail every schedule tick at runtime. The diagnostic names each
-// unclaimed ("unknown") capability and the gaggle that requires it.
+// CheckCapabilityRequirements reports when a gaggle or stage requires a runner
+// capability the runner does not claim (RRQ-1/#1101). It is the static,
+// whole-instance counterpart of the scheduler's per-run admission check and
+// needs both the instance.yaml runner claims and config-as-code requirements.
+// The daemon calls it after loading both inputs, warns on an error, and
+// continues startup; the scheduler then refuses affected runs individually.
+// The diagnostic names each unclaimed ("unknown") capability and the gaggle
+// that requires it.
 func CheckCapabilityRequirements(runnerCaps []string, set *ConfigSet) error {
 	if set == nil {
 		return nil

@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/retention"
 )
 
 // retentionGraceWindow is how long a retention policy reports what it would
@@ -19,13 +20,13 @@ import (
 const retentionGraceWindow = 7 * 24 * time.Hour
 
 // retentionGraceState records where a retention policy is in its first-enable
-// grace window, and what its last pass did. It is derived, not authoritative:
-// deleting the file restarts grace detection from the next pass, exactly as on
-// a fresh instance.
+// grace window, and what its last pass did. The policy projection is derived;
+// PendingTelemetryPass is an authoritative deletion manifest until its
+// bounded summary reaches the instance journal.
 //
-// The shape mirrors telemetryRetentionState deliberately. That one predates
-// this file and still carries its own copy; this is the reusable form, and the
-// telemetry side can adopt it without a behavior change.
+// Both worktree and telemetry retention persist this common shape. The final
+// fields are telemetry-only status details; omitempty keeps them out of the
+// worktree state document.
 type retentionGraceState struct {
 	Schema string `json:"schema"`
 	// DetectedAt/EnforceAt stay zero until the first pass that actually finds
@@ -37,6 +38,51 @@ type retentionGraceState struct {
 	LastPassDryRun bool      `json:"lastPassDryRun"`
 	CandidateCount int       `json:"candidateCount"`
 	PrunedCount    int       `json:"prunedCount"`
+	// TotalRuns/OldestRetainedAt are telemetry retention's last-pass view,
+	// used to report the effective history cutoff rather than only a count.
+	TotalRuns        int       `json:"totalRuns,omitempty"`
+	OldestRetainedAt time.Time `json:"oldestRetainedAt,omitempty"`
+	// EnforceAcknowledged and LargeFirstEnforceBlocked belong to telemetry's
+	// additional large-first-enforcement safety gate.
+	EnforceAcknowledged      bool `json:"enforceAcknowledged,omitempty"`
+	LargeFirstEnforceBlocked bool `json:"largeFirstEnforceBlocked,omitempty"`
+	// PendingTelemetryPass is the durable outbox and exact deletion manifest
+	// for an automatic telemetry prune whose bounded instance-journal summary
+	// has not been acknowledged. Worktree retention never sets it.
+	PendingTelemetryPass *telemetryRetentionPass `json:"pendingTelemetryPass,omitempty"`
+}
+
+type telemetryRetentionPass struct {
+	ID               string             `json:"id"`
+	Phase            string             `json:"phase"`
+	At               time.Time          `json:"at"`
+	DryRun           bool               `json:"dryRun"`
+	CandidateCount   int                `json:"candidateCount"`
+	EnforceAt        time.Time          `json:"enforceAt,omitempty"`
+	PolicyWindow     time.Duration      `json:"policyWindow,omitempty"`
+	PolicyMaxRuns    int                `json:"policyMaxRuns,omitempty"`
+	TotalRuns        int                `json:"totalRuns,omitempty"`
+	OldestRetainedAt time.Time          `json:"oldestRetainedAt,omitempty"`
+	Candidates       []retention.Result `json:"candidates,omitempty"`
+}
+
+// normalizeRetentionGraceState rejects clocks that cannot have been produced
+// by recordRetentionPass. Resetting the window from now is the conservative
+// repair: malformed or future state can delay deletion, but can never make it
+// happen earlier than a fresh first-enable grace window.
+func normalizeRetentionGraceState(state retentionGraceState, now time.Time) (retentionGraceState, bool) {
+	detectedMissing := state.DetectedAt.IsZero()
+	enforceMissing := state.EnforceAt.IsZero()
+	valid := detectedMissing == enforceMissing
+	if !detectedMissing {
+		valid = valid && !state.DetectedAt.After(now) && state.EnforceAt.Equal(state.DetectedAt.Add(retentionGraceWindow))
+	}
+	if valid {
+		return state, false
+	}
+	state.DetectedAt = now
+	state.EnforceAt = now.Add(retentionGraceWindow)
+	return state, true
 }
 
 func retentionGraceStatePath(layout instance.Layout, file string) string {

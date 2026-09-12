@@ -31,6 +31,59 @@ func acceptTest(t *testing.T, s *Store, key string, now time.Time) Record {
 	return r
 }
 
+func TestOpenMigratesUnversionedStoreWithoutLosingRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-triggers.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(migrations[0]); err != nil {
+		t.Fatal(err)
+	}
+	accepted := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(
+		`INSERT INTO triggers(id,key,actor,payload,state,accepted_ns) VALUES(?,?,?,?,?,?)`,
+		"trigger-0123456789abcdef0123456789abcdef", "legacy", "operator", []byte("payload"), Accepted, accepted.UnixNano(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s := openTestStore(t, path)
+	got, err := s.Get(t.Context(), "trigger-0123456789abcdef0123456789abcdef", "operator")
+	if err != nil || got.Key != "legacy" || string(got.Payload) != "payload" || !got.AcceptedAt.Equal(accepted) {
+		t.Fatalf("migrated row = %+v, %v", got, err)
+	}
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta`).Scan(&version); err != nil || version != len(migrations) {
+		t.Fatalf("schema version = %d, %v; want %d", version, err, len(migrations))
+	}
+}
+
+func TestOpenRecordsSchemaVersionAndRejectsNewerStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "triggers.db")
+	s := openTestStore(t, path)
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version = %d, want %d", version, len(migrations))
+	}
+	if _, err := s.db.Exec(`UPDATE schema_meta SET version = ?`, len(migrations)+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(path)
+	if err == nil || !strings.Contains(err.Error(), "newer than this build supports") || !strings.Contains(err.Error(), "upgrade this binary") {
+		t.Fatalf("Open newer schema error = %v, want actionable refusal", err)
+	}
+}
+
 func TestAcceptanceSurvivesReopenAndBindsAuthority(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trigger?ledger.db")
 	s := openTestStore(t, path)

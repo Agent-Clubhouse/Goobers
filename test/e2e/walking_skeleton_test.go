@@ -7,9 +7,8 @@
 // Temporal adapter now lives in internal/engine's own test suite
 // (internal/engine/*_test.go); this file is V0's standing integration gate
 // and the seed of the V2 local↔Temporal conformance harness
-// (docs/ARCHITECTURE.md §3.3). test/e2e/integration_test.go is untouched: it
-// exercises the separate, still-compiling quarantined tier-3 wired path
-// (bootstrap/scheduler/engine) against its own fixture.
+// (docs/ARCHITECTURE.md §3.3). The former quarantined tier-3 wired path and
+// its test/e2e/integration_test.go fixture were removed in #3539.
 package e2e
 
 import (

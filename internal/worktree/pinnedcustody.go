@@ -22,7 +22,7 @@ func (m *Manager) preparePinnedWithCustody(ctx context.Context, key string, opts
 	if err != nil {
 		return nil, err
 	}
-	if err := m.recordPinnedCustody(key, opts); err != nil {
+	if err := m.recordPinnedCustody(ctx, key, opts); err != nil {
 		return nil, err
 	}
 	return workspace, nil
@@ -51,7 +51,7 @@ func (m *Manager) handoffPinnedState(ctx context.Context, key, expectedOwner str
 	// refuse cleanup. Never substitute the next run's identity for old work.
 	return m.preparePreservedTarget(ctx, CleanupTarget{
 		Path: path, WorktreeID: "pin-" + key, OwnerRunID: owner.OwnerRunID,
-		Gaggle: owner.Gaggle, RepositoryDigest: owner.RepositoryDigest,
+		Gaggle: owner.Gaggle, BaseRef: owner.BaseRef, RepositoryDigest: owner.RepositoryDigest,
 		CreatedAt: owner.CreatedAt, Pinned: true,
 	})
 }
@@ -91,14 +91,15 @@ func readPinnedCustody(root string) (marker, error) {
 	return owner, nil
 }
 
-func (m *Manager) recordPinnedCustody(key string, opts PinnedOptions) error {
+func (m *Manager) recordPinnedCustody(ctx context.Context, key string, opts PinnedOptions) error {
 	// An operator reset creates no implementation run. Keep the prior identity
 	// until a real run takes custody; its preserved archive is independent.
 	if opts.RunID == "workspace-reset" {
 		return nil
 	}
+	baseRef := pinnedBaseRef(ctx, filepath.Join(m.pinnedRoot, key, "pin"), opts.BaseRef)
 	return writeMarker(filepath.Join(m.pinnedRoot, key, pinnedCustodyFile), marker{
 		RunID: opts.RunID, OwnerRunID: opts.RunID,
-		RepositoryDigest: RepositoryDigest(opts.RepoURL), CreatedAt: time.Now().UTC(),
+		BaseRef: baseRef, RepositoryDigest: RepositoryDigest(opts.RepoURL), CreatedAt: time.Now().UTC(),
 	})
 }

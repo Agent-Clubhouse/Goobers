@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -256,19 +255,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		builtSeams.historyDepth = *configHistoryDepth
 		seams = builtSeams
-		engineRuntime.deps.Goober = seams.Agentic()
-		engineRuntime.deps.Det = seams.Deterministic()
-		engineRuntime.deps.Auto = seams.Automated()
-		// The #2931 dispatch canary asserts envelopes against the SAME shared
-		// registry the seams' executors register every resolved credential
-		// with — so a value that leaks into a dispatch payload after being
-		// resolved anywhere in this process refuses the stage instead of
-		// executing with it.
-		engineRuntime.deps.Canary = seams.SharedRegistry()
-		// Replace the uncredentialed provisioner too: workerEngineDeps builds
-		// its worktree manager before any instance is known, so it has no git
-		// auth and cannot clone a private repo.
-		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
+		wireWorkerRuntimeSeams(&engineRuntime.deps, seams, filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
 
 		// #3912: the worker's config tree is otherwise frozen at pod start for
@@ -385,23 +372,17 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// which tree is in force and say so.
 	//
 	// A shared-key worker authenticates as itself with a short-lived credential
-	// confined to this GET-only plane. No synthetic run or standing pod bearer
-	// is needed; existing static-token deployments keep their explicit token.
+	// confined to the digest read and divergence-report planes. A legacy static
+	// GOOBERS_POD_TOKEN remains usable for the digest read only: it authenticates
+	// a stage run, not this worker host, so it cannot author durable health.
 	if seams != nil && *daemonAPI != "" {
-		tokenSource, tokenErr := workerDigestTokenSource(*instanceRoot, workerEnvOr("GOOBERS_POD_TOKEN", ""))
-		if tokenErr != nil {
-			pf(stderr, "error: configure worker config-divergence authentication: %v\n", tokenErr)
+		divergence, err := configureWorkerDivergence(ctx, seams, *instanceRoot, *daemonAPI, stdout, stderr)
+		if err != nil {
+			pf(stderr, "error: configure worker config-divergence authentication: %v\n", err)
 			return 2
 		}
-		if tokenSource == nil {
-			pf(stderr, "warning: goobers worker: config-divergence checking is NOT ACTIVE — configure api.podTokenKeyFile or GOOBERS_POD_TOKEN; "+
-				"this worker cannot compare its config tree with the daemon's (#4153)\n")
-		} else {
-			divergence := startWorkerDivergenceWatcher(ctx, seams, http.DefaultClient,
-				*daemonAPI, tokenSource, workerDivergenceCheckInterval)
+		if divergence != nil {
 			defer divergence.Stop()
-			pf(stdout, "goobers worker: checking config-tree divergence against %s every %s\n",
-				*daemonAPI, workerDivergenceCheckInterval)
 		}
 	}
 
@@ -418,6 +399,19 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "goobers worker: drained cleanly\n")
 	return 0
+}
+
+func wireWorkerRuntimeSeams(deps *bootstrap.EngineDeps, seams *workerSeams, scratchRoot string) {
+	deps.Goober = seams.Agentic()
+	deps.Det = seams.Deterministic()
+	deps.Auto = seams.Automated()
+	// The #2931 dispatch canary asserts envelopes against the SAME shared
+	// registry the seams' executors register every resolved credential with.
+	deps.Canary = seams.SharedRegistry()
+	deps.Scrubber = seams.Scrubber()
+	// Replace the uncredentialed provisioner too: the initial manager has no
+	// instance credentials and therefore cannot clone a private repository.
+	deps.Workspaces = seams.Workspaces(scratchRoot)
 }
 
 type workerEngineRuntime struct {

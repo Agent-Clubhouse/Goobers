@@ -21,7 +21,7 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 | `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`) | §2, §3, §4, §5 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
-| `temporal/` | values for the OSS Temporal Helm chart + Temporal-isolation NetworkPolicy + the namespace-registration Job | §2, §4, §5 |
+| `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
 
 ## Hand-managed node-pool contract
 
@@ -52,9 +52,13 @@ namespace is a required step, not follow-up hardening; bring the stack up in thi
    (`temporal/values.yaml`'s `existingSecret:` references).
 2. Install the chart (`temporal/values.yaml` header carries the pinned `helm install`
    command).
-3. Apply `temporal/namespace-job.yaml` and wait for it to complete
+3. Apply `kubectl apply -k deploy/reference/temporal` (the namespace-registration Job
+   plus both Temporal-isolation NetworkPolicies — #4827 split frontend's external
+   control-plane grant from the intra-cluster RPC/ringpop grant every server component
+   needs from every other, so applying either alone leaves the other traffic denied)
+   and wait for the Job to complete
    (`kubectl wait --for=condition=complete -n goobers-temporal job/goobers-temporal-namespace`).
-   It is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
+   The Job is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
 4. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
    registered).
 
@@ -187,10 +191,15 @@ not demonstrate those runtime properties.
 
 ## Validation
 
-No cluster is required. The merge gate runs `make deploy-validate`, which renders all
-three kustomizations and passes them through strict kubeconform schema validation.
-The Go test suite also checks every Deployment's container arguments against the
-registered CLI flags and requires execution-critical worker flags such as `--instance`.
+No cluster is required. The merge gate runs `make deploy-validate`, which renders every
+kustomization under `deploy/reference/` — including `temporal/` (#4827: this tree had
+no `kustomization.yaml` and was never rendered or schema-checked, which is why its
+NetworkPolicy shipped denying Temporal's own intra-cluster RPC) — and passes them
+through strict kubeconform schema validation. The Go test suite also checks every
+Deployment's container arguments against the registered CLI flags, requires
+execution-critical worker flags such as `--instance`, and (#4827) asserts that no
+reference NetworkPolicy selects pods from a chart release without also admitting
+that release's own required intra-cluster traffic.
 Run the same render and schema gate locally with:
 
 ```sh
@@ -224,12 +233,16 @@ ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to
 get, delete and list pods in this gaggle's namespace, and read the worker's own
 Deployment (DI-9 template read). This is what lets a worker whose `--dispatch-namespace`
 names this gaggle actually dispatch pod-per-stage runs into it (#4286); stage pods
-themselves still get no token mount and no RBAC grants at all
-(`serviceaccount.yaml`). **One worker dispatches into one namespace** —
-`--dispatch-namespace` takes a single value, not a list — so stamping a second gaggle
-means either pointing a second worker Deployment at it, or copying
-`goobers-system/worker-deployment.yaml` per gaggle for the G2 dedicated-worker mode
-(#656).
+themselves still get no token mount and no RBAC grants at all. The included
+`goobers-stage` ServiceAccount is a target-topology template, not one the current
+dispatcher selects. `--dispatch-namespace` takes a single value, but the
+worker still polls every gaggle queue loaded from its config. All loaded
+gaggles therefore share that worker-wide namespace; `spec.isolation.namespace`
+does not enforce per-gaggle isolation. Copies with different namespace flags
+still poll the same unscoped queues and race nondeterministically, so whichever
+copy wins decides where a pod lands. Issue #4897 leaves the resolution open:
+possible choices include dedicated queue scoping, dynamic gaggle-to-namespace
+mapping, or demoting the isolation field.
 
 ## Operating notes from a real cluster
 

@@ -33,6 +33,12 @@ func TestExplicitAbandonmentBindsExactSnapshot(t *testing.T) {
 	if ok, err := ExplicitlyAbandoned(events, record); err != nil || !ok {
 		t.Fatalf("durable abandonment lost: %v %v", ok, err)
 	}
+	equivalent := record
+	equivalent.CreatedAt = equivalent.CreatedAt.In(time.FixedZone("fixture", -7*60*60))
+	equivalent.RetainUntil = equivalent.RetainUntil.In(time.FixedZone("fixture", -7*60*60))
+	if ok, err := ExplicitlyAbandoned(events, equivalent); err != nil || !ok {
+		t.Fatalf("equivalent time zones lost abandonment: %v %v", ok, err)
+	}
 	renewed := record
 	renewed.RetainUntil = renewed.RetainUntil.Add(time.Hour)
 	if ok, err := ExplicitlyAbandoned(events, renewed); err != nil || ok {

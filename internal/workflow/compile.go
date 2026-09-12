@@ -64,7 +64,7 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 	var problems []string
 	version := def.DSLVersion
 	if version == "" {
-		version = supportmatrix.CurrentDSLVersion
+		version = supportmatrix.V1DSLVersion
 	}
 	for _, task := range def.Spec.Tasks {
 		if task.RunsOn != nil {
@@ -121,7 +121,7 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 func preV30WindowsAdminProblems(def Definition, gaggleRequiredCapabilities []string) []string {
 	version := def.DSLVersion
 	if version == "" {
-		version = supportmatrix.CurrentDSLVersion
+		version = supportmatrix.V1DSLVersion
 	}
 	var problems []string
 	for _, task := range def.Spec.Tasks {
@@ -149,7 +149,7 @@ func noRepoHandoffProblems(Definition) []string { return nil }
 // say.
 func noGateRunsOnProblems(Definition) []string { return nil }
 
-var nextInterpreter = versionedInterpreter{
+var v20Interpreter = versionedInterpreter{
 	compile:                         compileNext,
 	checkWarnings:                   v20.CheckWarnings,
 	checkReachability:               v20.CheckReachability,
@@ -430,7 +430,7 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 		// programmatically-constructed Definition with no pin; it resolves to
 		// the back-compat contract version (2.0) rather than fabricating an
 		// interpreter for a version the build no longer carries.
-		version = supportmatrix.NextDSLVersion
+		version = supportmatrix.V2DSLVersion
 	}
 
 	support, ok := supportmatrix.GetDSL().Lookup(version)
@@ -446,7 +446,7 @@ func interpreterForVersion(version string) (*versionedInterpreter, error) {
 
 	switch version {
 	case v20.DSLVersion:
-		return &nextInterpreter, nil
+		return &v20Interpreter, nil
 	case v30.DSLVersion:
 		return &v30Interpreter, nil
 	default:

@@ -49,7 +49,7 @@ func AcceptArchive(ctx context.Context, source io.Reader, request RetentionReque
 	// creating a host ref. Failed imports leave a bounded retry reservation.
 	retained, path, err := publishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, record, request.MaxSnapshots, request.MaxArchiveBytes, func() error {
 		return ImportSnapshotBundle(ctx, request.Repository, filepath.Join(directory, BundleFileName), record, request.MaxArchiveBytes)
-	})
+	}, request.EvictFull)
 	if err != nil {
 		return Record{}, "", err
 	}

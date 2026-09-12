@@ -39,6 +39,7 @@ func (m *Manager) handoffPinnedReceipts(ctx context.Context, key string) error {
 		}
 		target.OwnerRunID = custody.OwnerRunID
 		target.Gaggle = custody.Gaggle
+		target.BaseRef = custody.BaseRef
 		target.RepositoryDigest = custody.RepositoryDigest
 		target.CreatedAt = custody.CreatedAt
 	}

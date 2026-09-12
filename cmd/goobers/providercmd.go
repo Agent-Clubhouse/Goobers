@@ -251,6 +251,14 @@ func providerInput(key, def string) string {
 	return def
 }
 
+// providerInputLookup is the presence-preserving form of providerInput for
+// the rare contract where declared-empty differs from undeclared. Keeping
+// both reads behind named helpers lets the schema audit discover every
+// command-level provider input consumer.
+func providerInputLookup(key string) (string, bool) {
+	return os.LookupEnv(executor.InputEnvVar(key))
+}
+
 // providerBranchNamespace resolves the run-branch namespace root the runner
 // injects for this stage's gaggle (GOOBERS_BRANCH_NAMESPACE, set from
 // GaggleSpec.BranchNamespace), falling back to providers.DefaultBranchNamespace

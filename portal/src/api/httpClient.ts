@@ -11,6 +11,7 @@ import {
   isRecord,
 } from "./errors";
 import { apiRoutes, type ApiRoute } from "./contract.generated";
+import { publishUpdateAvailability } from "../updateNotice";
 import type {
   PortalDiagnostics,
   PortalRequestStatus,
@@ -179,6 +180,10 @@ const clientRoutes = {
   // same reason they are — the exhaustiveness check below requires the full
   // contract as it grows.
   configDigest: apiRoutes.configDigest,
+  // Workers report config-tree comparison transitions through this mutation
+  // route. It is worker-authenticated and has no portal UI caller, but belongs
+  // here so the compile-time contract inventory remains exhaustive.
+  workerConfigDivergence: apiRoutes.workerConfigDivergence,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
@@ -312,6 +317,10 @@ export class HttpDaemonClient implements DaemonClient {
   async getHealth(options?: RequestOptions): Promise<Health> {
     const health = await this.getJSON<Health>(clientRoutes.health, undefined, options);
     assertSupportedContractVersion(health);
+    // Observed, not polled (#4920): the update strip reads whatever health
+    // responses the app already makes, so it adds no request of its own and
+    // cannot perturb the order consumers of this endpoint depend on.
+    publishUpdateAvailability(health.update);
     return health;
   }
 

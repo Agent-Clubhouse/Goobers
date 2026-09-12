@@ -46,8 +46,8 @@ type Edge struct {
 // mechanically carried forward one step at a time. A future version bump
 // registers its own Edge here rather than extending an existing one.
 var edges = []Edge{
-	{From: supportmatrix.CurrentDSLVersion, To: supportmatrix.NextDSLVersion, Apply: applyCurrentToNext},
-	{From: supportmatrix.NextDSLVersion, To: supportmatrix.V3DSLVersion, Apply: applyNextToV3},
+	{From: supportmatrix.V1DSLVersion, To: supportmatrix.V2DSLVersion, Apply: applyV14ToV20},
+	{From: supportmatrix.V2DSLVersion, To: supportmatrix.V3DSLVersion, Apply: applyV20ToV30},
 }
 
 // FindEdge returns the registered migration from from to to, if any.
@@ -99,7 +99,7 @@ func Migrate(source []byte, to string) (*Result, error) {
 		return nil, fmt.Errorf("dslmigrate: %w", err)
 	}
 
-	from := supportmatrix.CurrentDSLVersion
+	from := supportmatrix.V1DSLVersion
 	versionNode, _ := mapValue(root, "dslVersion")
 	if versionNode != nil && versionNode.Value != "" {
 		from = versionNode.Value

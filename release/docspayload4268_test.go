@@ -86,8 +86,8 @@ func TestPackagedReadmeLinksArePinnedAgainstThePayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := pinUnresolvableReadmeLinks(payloadDir, "v0.4.0-rc.1"); err != nil {
-		t.Fatalf("pinUnresolvableReadmeLinks: %v", err)
+	if err := pinUnresolvablePayloadLinks(payloadDir, "v0.4.0-rc.1"); err != nil {
+		t.Fatalf("pinUnresolvablePayloadLinks: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(payloadDir, "README.md"))
 	if err != nil {
@@ -117,9 +117,9 @@ func TestPackagedReadmeLinksArePinnedAgainstThePayload(t *testing.T) {
 		t.Fatalf("README rewrote an in-document anchor:\n%s", got)
 	}
 
-	broken, err := unresolvableReadmeLinks(payloadDir)
+	broken, err := unresolvablePayloadLinks(payloadDir)
 	if err != nil {
-		t.Fatalf("unresolvableReadmeLinks: %v", err)
+		t.Fatalf("unresolvablePayloadLinks: %v", err)
 	}
 	if len(broken) != 0 {
 		t.Fatalf("unresolvable links after pinning = %v, want none", broken)
@@ -137,11 +137,18 @@ func TestUnresolvableReadmeLinksReportsTheDanglingTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	broken, err := unresolvableReadmeLinks(payloadDir)
+	broken, err := unresolvablePayloadLinks(payloadDir)
 	if err != nil {
-		t.Fatalf("unresolvableReadmeLinks: %v", err)
+		t.Fatalf("unresolvablePayloadLinks: %v", err)
 	}
-	want := map[string]bool{"LICENSE": true, "CONTRIBUTING.md": true, "go.mod": true}
+	// The report names the linking document as well as the target: with the
+	// whole payload checked, "CONTRIBUTING.md is dangling" is not actionable
+	// without knowing which of 27 files says so.
+	want := map[string]bool{
+		"README.md -> LICENSE":         true,
+		"README.md -> CONTRIBUTING.md": true,
+		"README.md -> go.mod":          true,
+	}
 	if len(broken) != len(want) {
 		t.Fatalf("broken = %v, want the three dangling targets", broken)
 	}
@@ -164,15 +171,15 @@ func TestStagingGuardCatchesADanglingReferenceLink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := pinUnresolvableReadmeLinks(payloadDir, "v0.4.0-rc.1"); err != nil {
-		t.Fatalf("pinUnresolvableReadmeLinks: %v", err)
+	if err := pinUnresolvablePayloadLinks(payloadDir, "v0.4.0-rc.1"); err != nil {
+		t.Fatalf("pinUnresolvablePayloadLinks: %v", err)
 	}
-	broken, err := unresolvableReadmeLinks(payloadDir)
+	broken, err := unresolvablePayloadLinks(payloadDir)
 	if err != nil {
-		t.Fatalf("unresolvableReadmeLinks: %v", err)
+		t.Fatalf("unresolvablePayloadLinks: %v", err)
 	}
-	if len(broken) != 1 || broken[0] != "CONTRIBUTING.md" {
-		t.Fatalf("broken = %v, want [CONTRIBUTING.md]: a dangling reference definition must fail staging, "+
+	if len(broken) != 1 || broken[0] != "README.md -> CONTRIBUTING.md" {
+		t.Fatalf("broken = %v, want [README.md -> CONTRIBUTING.md]: a dangling reference definition must fail staging, "+
 			"not ship", broken)
 	}
 }

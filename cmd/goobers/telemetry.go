@@ -89,7 +89,7 @@ func runTelemetryPruneAt(args []string, stdout, stderr io.Writer, now time.Time)
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	results, err := pruneTelemetryRetention(layout, retentionConfig, nil, now, *dryRun)
+	results, _, err := pruneTelemetryRetention(layout, retentionConfig, nil, now, *dryRun)
 	if err != nil {
 		pf(stderr, "error: prune telemetry: %v\n", err)
 		return 1
