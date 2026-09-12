@@ -250,43 +250,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 // ClosePullRequest closes a GitHub pull request, detecting merged-vs-closed, and
 // optionally leaves a comment.
 func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	if req.PullID == "" {
-		return ClosePullRequestResult{}, errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
-	if err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	var out githubPullRequestDetail
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"state": "closed"}, &out); err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	if req.Comment != "" {
-		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
-			return ClosePullRequestResult{}, err
-		}
-	}
-	state := "closed"
-	operation := "close"
-	if out.Merged {
-		state = "merged"
-		operation = "merge"
-	}
-	fields := map[string]FieldDigest{"state": {After: digestString(state)}}
-	if req.Comment != "" {
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.PullID),
-		URL:       out.HTMLURL,
-		Operation: operation,
-		Fields:    fields,
-	})
-	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
+	return closeRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
 }
 
 // UpdateBranchError is a typed rejection from GitHub's update-branch endpoint.
@@ -1050,36 +1014,7 @@ func githubUserLogins(users []githubUser) []string {
 // change, for cross-PR conflict/drift detection. A read, so it does not
 // emit a mutation event.
 func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, pullID string) ([]ChangedFile, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return nil, err
-	}
-	if pullID == "" {
-		return nil, errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
-	if err != nil {
-		return nil, err
-	}
-	var files []githubPullRequestFile
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageOut []githubPullRequestFile
-		if err := json.Unmarshal(page, &pageOut); err != nil {
-			return fmt.Errorf("decode pull files page: %w", err)
-		}
-		files = append(files, pageOut...)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	out := make([]ChangedFile, 0, len(files))
-	for _, f := range files {
-		out = append(out, ChangedFile{
-			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
-			Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch,
-			Integrity: apiintegrity.Unapproved,
-		})
-	}
-	return out, nil
+	return restPullRequestFiles(ctx, p, p.BaseURL, repo, pullID, true)
 }
 
 // RepositoryFileContent returns one file's contents at ref.
@@ -1691,70 +1626,7 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 // associates the review with commit_id, allowing branch-protection
 // stale-dismissal to invalidate an approval when the pull request moves.
 func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRequestReviewRequest) (PullRequestReviewResult, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	if req.PullID == "" {
-		return PullRequestReviewResult{}, errPullIDRequired
-	}
-	if req.CommitSHA == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
-	}
-	if req.Body == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("review body is required")
-	}
-	reviewBody, err := withAttribution(req.Body, p.attribution, "pull-request-review")
-	if err != nil {
-		return PullRequestReviewResult{}, err
-	}
-
-	var event string
-	switch req.Decision {
-	case ReviewDecisionApproved:
-		event = "APPROVE"
-	case ReviewDecisionChangesRequested:
-		event = "REQUEST_CHANGES"
-	case ReviewDecisionComment:
-		event = "COMMENT"
-	default:
-		return PullRequestReviewResult{}, fmt.Errorf("unsupported review decision %q", req.Decision)
-	}
-
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "reviews")
-	if err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	body := map[string]string{
-		"body":      reviewBody,
-		"commit_id": req.CommitSHA,
-		"event":     event,
-	}
-	var out struct {
-		ID       int64  `json:"id"`
-		HTMLURL  string `json:"html_url"`
-		CommitID string `json:"commit_id"`
-		State    string `json:"state"`
-	}
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.PullID),
-		URL:       out.HTMLURL,
-		Operation: "review",
-		Fields: map[string]FieldDigest{
-			"body":      {After: digestString(req.Body)},
-			"commitSha": {After: digestString(req.CommitSHA)},
-			"decision":  {After: digestString(string(req.Decision))},
-		},
-	})
-	return PullRequestReviewResult{
-		ID:        out.ID,
-		URL:       out.HTMLURL,
-		CommitSHA: req.CommitSHA,
-		Decision:  req.Decision,
-	}, nil
+	return submitRESTPullRequestReview(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
 }
 
 // ListWorkItems lists GitHub issues as unified work items.

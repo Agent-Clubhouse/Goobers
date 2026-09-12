@@ -738,6 +738,48 @@ func TestGiteaProviderListPullRequestsSkipCheckState(t *testing.T) {
 	}
 }
 
+func TestGiteaProviderClosePullRequestPreservesRESTSemantics(t *testing.T) {
+	mux := http.NewServeMux()
+	var gotComment map[string]string
+	mux.HandleFunc("/api/v1/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		var body map[string]string
+		decodeJSON(t, r, &body)
+		if body["state"] != "closed" {
+			t.Fatalf("state = %q, want closed", body["state"])
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"number": 9, "merged": true, "html_url": "https://gitea.test/acme/app/pulls/9",
+		})
+	})
+	mux.HandleFunc("/api/v1/repos/acme/app/issues/9/comments", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		decodeJSON(t, r, &gotComment)
+		writeJSON(t, w, map[string]interface{}{})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	recorder := &recordingRecorder{}
+	provider := NewGiteaProvider(server.URL, "token", WithGiteaMutationRecorder(recorder))
+	result, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
+		Repository: RepositoryRef{Owner: "acme", Name: "app"}, PullID: "9", Comment: "landed, thanks!",
+	})
+	if err != nil {
+		t.Fatalf("ClosePullRequest: %v", err)
+	}
+	if !result.Merged || result.Number != 9 || result.State != "merged" {
+		t.Fatalf("result = %+v, want merged PR 9", result)
+	}
+	if gotComment["body"] != "landed, thanks!" {
+		t.Fatalf("comment body = %q", gotComment["body"])
+	}
+	ref, ok := recorder.last()
+	if !ok || ref.Provider != ProviderGitea || ref.Operation != "merge" || ref.Ref != "acme/app#9" {
+		t.Fatalf("recorded ref = (%+v, %v), want Gitea merge mutation", ref, ok)
+	}
+}
+
 func TestGiteaProviderPullRequestFilesListsTouchedFiles(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/acme/app/pulls/12/files" {
