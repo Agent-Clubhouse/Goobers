@@ -1557,8 +1557,8 @@ $ goobers engine-start default-implement
 list escalated runs newest first
 
 ~~~text
-Usage: goobers escalations [--json] [path]
-       goobers escalations show [--json] [--include-verdict] <run-id> [path]
+Usage: goobers escalations [--json] [--api=<url>] [path]
+       goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
        goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
@@ -1607,7 +1607,7 @@ $ goobers escalations resolve --resolution deny --rationale="not worth it" <run-
 show escalation cause, verdict, and per-stage artifact timeline
 
 ~~~text
-Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]
+Usage: goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
 
 Show an escalation's structured cause and per-stage artifact timeline.
 Use --include-verdict to include reviewer verdict rationale and findings.
@@ -3440,7 +3440,8 @@ $ goobers run cancel <run-id>
 list runs and report per-run disk usage
 
 ~~~text
-Usage: goobers runs <command> [flags] [path]
+Usage: goobers runs [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
+       goobers runs <command> [flags] [path]
 
 Commands:
   list    alias for the goobers status run table (same flags)
@@ -3471,7 +3472,7 @@ $ goobers runs du --json
 alias for the status run table (same flags, no --watch)
 
 ~~~text
-Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
+Usage: goobers runs list [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
 
 Alias for the goobers status run table, with the same flags (minus --daemon/--watch).
 Validate active config, show warnings, and list runs under an instance's
@@ -4070,7 +4071,7 @@ $ goobers stats --since 24h --json
 validate config, show warnings, list runs, report daemon health, or list live agentic stages
 
 ~~~text
-Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--api=<url>] [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
@@ -4337,7 +4338,7 @@ $ goobers telemetry-query --window 24h --format candidate-findings
 show a run's journal events or review verdicts, follow a live run, or show transcripts
 
 ~~~text
-Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+Usage: goobers trace [--api=<url>] [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
 
 Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,

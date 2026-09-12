@@ -1166,8 +1166,8 @@ reachable from every worker serving the run (worker --daemon-api).
 Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.
 
 ### escalations
-Usage: goobers escalations [--json] [path]
-       goobers escalations show [--json] [--include-verdict] <run-id> [path]
+Usage: goobers escalations [--json] [--api=<url>] [path]
+       goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
        goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
@@ -1192,7 +1192,7 @@ filesystem, such as one running in another pod.
 Exit codes: 0 = resolution accepted, 1 = resolution refused, 2 = usage/transport error.
 
 ### escalations show
-Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]
+Usage: goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
 
 Show an escalation's structured cause and per-stage artifact timeline.
 Use --include-verdict to include reviewer verdict rationale and findings.
@@ -2259,7 +2259,8 @@ terminal outcome later. Exit codes:
 2 = usage/IO error (unknown run).
 
 ### runs
-Usage: goobers runs <command> [flags] [path]
+Usage: goobers runs [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
+       goobers runs <command> [flags] [path]
 
 Commands:
   list    alias for the goobers status run table (same flags)
@@ -2273,7 +2274,7 @@ and artifacts, largest first (default path ".").
 Exit codes: 0 = OK, 2 = usage/IO error.
 
 ### runs list
-Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
+Usage: goobers runs list [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]
 
 Alias for the goobers status run table, with the same flags (minus --daemon/--watch).
 Validate active config, show warnings, and list runs under an instance's
@@ -2586,7 +2587,7 @@ and agentic-stage durations (default path "."). Exit codes: 0 = OK,
 2 = usage/IO error.
 
 ### status
-Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--api=<url>] [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
@@ -2729,7 +2730,7 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 
 ### trace
-Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
+Usage: goobers trace [--api=<url>] [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
 
 Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
