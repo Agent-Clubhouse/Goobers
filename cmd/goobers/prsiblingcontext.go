@@ -285,7 +285,14 @@ func runGatherSiblingContextCore(root string, repo providers.RepositoryRef, prov
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	expectedAuthorLogin := daemonIdentityAuthorLogin(ctx, root, provider)
+	expectedAuthorLogin, err := daemonIdentityAuthorLogin(ctx, root, provider)
+	if err != nil {
+		// #4345: in a pod with no resolved identity, advisory-mode
+		// classification would otherwise silently fall back to branch
+		// prefixes and disagree with the identical run on self.
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	// SkipCheckState: the list is the always-fresh probe (one request), but
 	// per-candidate check-state resolution is two more requests per PR. It is
 	// resolved below after file-list memoization so same-head CI reruns are
