@@ -31,6 +31,28 @@ func acceptTest(t *testing.T, s *Store, key string, now time.Time) Record {
 	return r
 }
 
+func TestOpenRecordsSchemaVersionAndRejectsNewerStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "triggers.db")
+	s := openTestStore(t, path)
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version = %d, want %d", version, len(migrations))
+	}
+	if _, err := s.db.Exec(`UPDATE schema_meta SET version = ?`, len(migrations)+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(path)
+	if err == nil || !strings.Contains(err.Error(), "newer than this build supports") || !strings.Contains(err.Error(), "upgrade this binary") {
+		t.Fatalf("Open newer schema error = %v, want actionable refusal", err)
+	}
+}
+
 func TestAcceptanceSurvivesReopenAndBindsAuthority(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trigger?ledger.db")
 	s := openTestStore(t, path)

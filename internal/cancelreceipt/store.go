@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/sqliteschema"
 	"github.com/goobers/goobers/internal/sqliteuri"
 
 	_ "modernc.org/sqlite" // Registers the durable receipt driver.
@@ -41,6 +42,15 @@ type Receipt struct {
 // Store uses SQLite transactions to arbitrate independent daemon connections.
 type Store struct{ db *sql.DB }
 
+var migrations = []string{`CREATE TABLE IF NOT EXISTS cancellations (
+	key TEXT PRIMARY KEY NOT NULL CHECK(length(CAST(key AS BLOB)) BETWEEN 1 AND 200),
+	actor TEXT NOT NULL CHECK(length(CAST(actor AS BLOB)) <= 1024),
+	payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 16384),
+	result BLOB CHECK(length(result) BETWEEN 1 AND 16384),
+	created_ns INTEGER NOT NULL, finished_ns INTEGER,
+	CHECK ((result IS NULL) = (finished_ns IS NULL))
+)`}
+
 // Open requires a private regular database under a daemon-owned directory.
 // FULL synchronization makes both reservation and completion durable on return.
 func Open(path string) (*Store, error) {
@@ -66,14 +76,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS cancellations (
-		key TEXT PRIMARY KEY NOT NULL CHECK(length(CAST(key AS BLOB)) BETWEEN 1 AND 200),
-		actor TEXT NOT NULL CHECK(length(CAST(actor AS BLOB)) <= 1024),
-		payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 16384),
-		result BLOB CHECK(length(result) BETWEEN 1 AND 16384),
-		created_ns INTEGER NOT NULL, finished_ns INTEGER,
-		CHECK ((result IS NULL) = (finished_ns IS NULL))
-	)`)
+	err = sqliteschema.Migrate(context.Background(), db, "cancelreceipt", migrations)
 	if err == nil {
 		err = durability.SyncDir(filepath.Dir(path))
 	}
