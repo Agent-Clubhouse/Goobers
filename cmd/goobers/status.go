@@ -426,6 +426,67 @@ type statusWorkflowKey struct {
 	workflow string
 }
 
+func statusManualOnlyWorkflow(workflow apiv1.Workflow) bool {
+	return len(workflow.Spec.Triggers) == 1 && workflow.Spec.Triggers[0].Type == apiv1.TriggerManual
+}
+
+// statusTextWorkflows removes intentionally inert workflows from the default
+// operator board. They remain available through --all and an explicit
+// --workflow selection, and structured JSON remains exhaustive.
+func statusTextWorkflows(workflows []apiv1.Workflow, all bool, selectedWorkflow string) ([]apiv1.Workflow, int) {
+	visible := make([]apiv1.Workflow, 0, len(workflows))
+	hidden := 0
+	for _, workflow := range workflows {
+		if statusManualOnlyWorkflow(workflow) && !all && workflow.Name != selectedWorkflow {
+			hidden++
+			continue
+		}
+		visible = append(visible, workflow)
+	}
+	return visible, hidden
+}
+
+func statusTextWarnings(warnings []validate.CodedWarning, workflows []apiv1.Workflow, hidden int, all bool, selectedWorkflow string) []validate.CodedWarning {
+	hiddenMessages := make(map[string]bool, hidden)
+	for _, workflow := range workflows {
+		if !statusManualOnlyWorkflow(workflow) || all || workflow.Name == selectedWorkflow {
+			continue
+		}
+		hiddenMessages[fmt.Sprintf(
+			"workflow %q has no schedule trigger; it will not fire autonomously — run it with `goobers run %s`",
+			workflow.Name,
+			workflow.Name,
+		)] = true
+	}
+	visible := make([]validate.CodedWarning, 0, len(warnings)+1)
+	if hidden > 0 {
+		visible = append(visible, validate.CodedWarning{
+			Severity:    validate.Warning,
+			Scope:       "Workflows",
+			Explanation: fmt.Sprintf("%d manual-only workflows hidden from default status detail; use --all or --workflow <name> to inspect them", hidden),
+		})
+	}
+	for _, warning := range warnings {
+		if hiddenMessages[warning.Explanation] {
+			continue
+		}
+		visible = append(visible, warning)
+	}
+	return visible
+}
+
+func statusOptionalBool(value *bool) bool {
+	return value != nil && *value
+}
+
+func statusDaemonFlagConflict(jsonOutput bool, phase, workflow, gaggle string, limitSet, watch, agents, all bool) bool {
+	return jsonOutput || phase != "" || workflow != "" || gaggle != "" || limitSet || watch || agents || all
+}
+
+func statusAgentsFlagConflict(phase string, limitSet, watch, all bool) bool {
+	return phase != "" || limitSet || watch || all
+}
+
 func buildStatusFleetSummary(
 	workflows []apiv1.Workflow,
 	runs []runSummary,
@@ -677,7 +738,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 // runRunTable help: `status` supports --daemon/--watch and reports the extra
 // workflow/PR lines, while `runs list` is the flag-reduced alias. runRunTable
 // selects between them via helpUsage(stderr, command) (#1095).
-const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
+const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Normal and daemon status identify the root path, durable instance ID, and owning PID,\n" +
@@ -686,6 +747,8 @@ const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phas
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,\n" +
 	"and next steps from the existing daemon projection, never current claim authority.\n" +
+	"Manual-only workflows are summarized by default; use --all or --workflow to show\n" +
+	"their individual warnings, queue evidence, and workflow-summary rows. JSON stays exhaustive.\n" +
 	"At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle\n" +
 	"and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.\n" +
 	"It lists parked backlog items too — open issues carrying a park disposition without\n" +
@@ -762,16 +825,19 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	var interval *time.Duration
 	var daemon *bool
 	var agents *bool
+	var all *bool
 	if supportsWatch {
 		watch = fs.Bool("watch", false, "refresh the status board until interrupted")
 		interval = fs.Duration("interval", defaultStatusWatchInterval, "watch refresh interval")
 		daemon = fs.Bool("daemon", false, "report daemon health and identity")
 		agents = fs.Bool("agents", false, "list in-flight agentic stages by role, from the runner's own bookkeeping")
+		all = fs.Bool("all", false, "show individual detail for manual-only workflows")
 	}
 	fs.Usage = helpUsage(stderr, command)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	showAllWorkflows := statusOptionalBool(all)
 	limitSet := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "limit" {
@@ -790,7 +856,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: --watch cannot be used with --json\n")
 		return 2
 	}
-	if supportsWatch && *daemon && (*jsonOutput || *phaseFilter != "" || *workflowFilter != "" || *gaggleFilter != "" || limitSet || *watch || *agents) {
+	if supportsWatch && *daemon && statusDaemonFlagConflict(*jsonOutput, *phaseFilter, *workflowFilter, *gaggleFilter, limitSet, *watch, *agents, showAllWorkflows) {
 		pf(stderr, "error: --daemon cannot be combined with run-listing flags\n")
 		return 2
 	}
@@ -800,8 +866,8 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	// --workflow/--gaggle stay available: scoping the probe to one workflow is
 	// the same question asked of a smaller fleet.
 	agentsMode := supportsWatch && *agents
-	if agentsMode && (*phaseFilter != "" || limitSet || *watch) {
-		pf(stderr, "error: --agents cannot be combined with --phase, --limit, or --watch\n")
+	if agentsMode && statusAgentsFlagConflict(*phaseFilter, limitSet, *watch, showAllWorkflows) {
+		pf(stderr, "error: --agents cannot be combined with --all, --phase, --limit, or --watch\n")
 		return 2
 	}
 
@@ -872,6 +938,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	warnings := report.CLIWarnings()
+	showManualWorkflowDetails := !supportsWatch || showAllWorkflows
+	textWorkflows, hiddenManualWorkflows := statusTextWorkflows(set.Workflows, showManualWorkflowDetails, *workflowFilter)
+	textWarnings := statusTextWarnings(warnings, set.Workflows, hiddenManualWorkflows, showManualWorkflowDetails, *workflowFilter)
 	sources := readservice.LocalSources{
 		Layout:      l,
 		Config:      cfg,
@@ -927,6 +996,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return listStatusRuns(context.Background(), reads)
 	}
 	loadFleetSummary := func(
+		workflows []apiv1.Workflow,
 		runs []runSummary,
 		schedulerStatus readservice.SchedulerStatus,
 		now time.Time,
@@ -939,7 +1009,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		for _, occupancy := range schedulerStatus.RefillOccupancy {
 			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
 		}
-		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, refill, now, statusLocation)
+		return buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, statusLocation)
 	}
 	prLabelCounts := newStatusPRLabelCountCache()
 	parkedBacklog := newStatusParkedBacklogCache()
@@ -959,7 +1029,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		var text strings.Builder
 		text.WriteString(statusRootText(l, now))
-		queue := loadStatusQueueEvidence(ctx, sources, set.Workflows, *gaggleFilter, *workflowFilter)
+		queue := loadStatusQueueEvidence(ctx, sources, textWorkflows, *gaggleFilter, *workflowFilter)
 		text.WriteString(statusQueueText(queue))
 		timeToFirstPR, err := timeToFirstPRCache.Load(ctx)
 		if err != nil {
@@ -969,7 +1039,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		status, err := reads.SchedulerStatus(context.Background())
 		if err == nil {
-			summary, summaryErr := loadFleetSummary(runs, status, now)
+			summary, summaryErr := loadFleetSummary(textWorkflows, runs, status, now)
 			if summaryErr != nil {
 				return "", summaryErr
 			}
@@ -981,7 +1051,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			text.WriteString(isolationMandateStatusLines(status))
 			text.WriteString(engineFallbackStatusLines(status))
 		} else {
-			summary, summaryErr := loadFleetSummary(runs, readservice.SchedulerStatus{}, now)
+			summary, summaryErr := loadFleetSummary(textWorkflows, runs, readservice.SchedulerStatus{}, now)
 			if summaryErr != nil {
 				return "", summaryErr
 			}
@@ -1018,7 +1088,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		// Config warnings are a static, one-time-per-invocation check (unlike
 		// the provider-quota pause, which is live scheduler state) — printed
 		// once before entering the redraw loop, not re-shown every tick.
-		printValidationWarnings(stdout, warnings)
+		printValidationWarnings(stdout, textWarnings)
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
 		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText)); err != nil {
@@ -1047,7 +1117,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		// Config warnings first, same as the run table: a workflow definition
 		// that failed to load is exactly what turns a known role into
 		// "unknown", so the reader must see the warning next to the answer.
-		printValidationWarnings(stdout, warnings)
+		printValidationWarnings(stdout, textWarnings)
 		renderAgentProbe(stdout, probe, now)
 		return 0
 	}
@@ -1057,7 +1127,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if statusErr != nil {
 			status = readservice.SchedulerStatus{}
 		}
-		summary, err := loadFleetSummary(allRuns, status, now)
+		summary, err := loadFleetSummary(set.Workflows, allRuns, status, now)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
@@ -1119,7 +1189,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 
 	// Skipped in --json mode since the structured summary has no plain-text
 	// side channel.
-	printValidationWarnings(stdout, warnings)
+	printValidationWarnings(stdout, textWarnings)
 	statusText, err := loadStatusText(context.Background(), allRuns, now)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

@@ -229,6 +229,7 @@ complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcom
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from list' -l limit -r -d 'Maximum runs'
 complete -c goobers -n '__fish_seen_subcommand_from runs; and __fish_seen_subcommand_from du' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from status' -l agents -d 'List in-flight agentic stages by role'
+complete -c goobers -n '__fish_seen_subcommand_from status' -l all -d 'Show individual detail for manual-only workflows'
 complete -c goobers -n '__fish_seen_subcommand_from status' -l daemon -d 'Report daemon health and identity'
 complete -c goobers -n '__fish_seen_subcommand_from status' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from status' -l phase -r -d 'Filter by phase'
