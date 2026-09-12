@@ -15,15 +15,21 @@
 # Publishing this image from CI on tagged releases is a follow-up; nothing in
 # .github/workflows builds or pushes it yet.
 
-# GO_IMAGE is pinned to the exact patch version go.mod declares, never a
+# Each image keeps a readable tag and pins the reviewed multi-architecture
+# manifest digest. Tags alone are mutable, including exact patch and Debian
+# variant tags, so the digest is what makes two builds of one commit resolve
+# the same inputs (#4891). Dependabot's /packaging/docker entry proposes pin
+# refreshes as reviewable changes.
+#
+# GO_IMAGE also stays on the exact patch version go.mod declares, never a
 # floating minor: a floating tag builds the shipped image with whatever 1.26.x
 # the registry serves that day, with no commit recording the change (#3452).
 # Bump trigger: a change to the `go` directive in go.mod — never a calendar.
 # `go run ./test/gotoolchain` (the go-toolchain merge-gate check) fails while
 # the two disagree, so the bump has to land in the same diff.
-ARG GO_IMAGE=docker.io/library/golang:1.26.6
-ARG PORTAL_NODE_IMAGE=docker.io/library/node:24-bookworm-slim
-ARG RUNTIME_IMAGE=docker.io/library/node:22-bookworm-slim
+ARG GO_IMAGE=docker.io/library/golang:1.26.6@sha256:0d1d3a794be25f809dd2cb3160d8c73276c4056a9f8242a138e908ddeee7b6b6
+ARG PORTAL_NODE_IMAGE=docker.io/library/node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+ARG RUNTIME_IMAGE=docker.io/library/node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 ARG COPILOT_VERSION=1.0.83
 
 FROM ${PORTAL_NODE_IMAGE} AS portal-build
