@@ -1632,7 +1632,7 @@ func summarizeRunForStage(
 	var lastActivityAt time.Time
 	currentStage := ""
 	operator := OperatorRunSummary{
-		Trajectory:        "parked",
+		Trajectory:        "terminal",
 		Liveness:          "no-heartbeat",
 		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
 		PotentialBlockers: []string{},

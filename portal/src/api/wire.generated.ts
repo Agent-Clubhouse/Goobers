@@ -598,7 +598,7 @@ export const goWireFixtures = {
           },
           "currentStage": "review",
           "liveness": "terminal",
-          "trajectory": "parked",
+          "trajectory": "terminal",
           "claim": {
             "leaseStatus": "released",
             "providerMarker": "recorded"
@@ -673,7 +673,7 @@ export const goWireFixtures = {
       },
       "currentStage": "review",
       "liveness": "terminal",
-      "trajectory": "parked",
+      "trajectory": "terminal",
       "claim": {
         "leaseStatus": "released",
         "providerMarker": "recorded"
