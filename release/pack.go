@@ -17,8 +17,10 @@ package main
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -146,7 +148,79 @@ func packagePortalAssets(root, version, outDir string) (string, error) {
 	if err := file.Close(); err != nil {
 		return "", fmt.Errorf("close Portal asset archive %s: %w", archivePath, err)
 	}
+	if err := verifyPortalArchive(archivePath, entries); err != nil {
+		return "", err
+	}
 	return archivePath, nil
+}
+
+// verifyPortalArchive reads the archive back and proves it carries exactly the
+// assets that were collected, byte for byte.
+//
+// Until #4888 the only assertion made on this artifact anywhere was
+// `test -s smoke/portal/index.html` in the release workflow — a non-empty-file
+// check on ONE file, while the onboarding zip a few lines away got a real
+// recursive diff. A portal archive that was truncated, that dropped its hashed
+// asset directory, or that carried a stale index would have satisfied that and
+// shipped.
+//
+// This compares against the entry set actually written rather than re-walking
+// the source directory: re-walking would re-derive the same list through the
+// same code that produced it and could agree with a bug in either. Reading the
+// archive back is the independent step — it exercises the tar writer's output
+// the way a consumer will, which is the part that was never checked.
+func verifyPortalArchive(archivePath string, want []archiveEntry) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("reopen Portal asset archive %s: %w", archivePath, err)
+	}
+	defer func() { _ = file.Close() }()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("read Portal asset archive %s: %w", archivePath, err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	got := map[string][]byte{}
+	reader := tar.NewReader(gz)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read Portal asset archive %s: %w", archivePath, err)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			return fmt.Errorf("read %s from Portal asset archive: %w", header.Name, err)
+		}
+		got[header.Name] = data
+	}
+
+	for _, entry := range want {
+		data, ok := got[entry.name]
+		if !ok {
+			return fmt.Errorf("portal asset archive %s is missing %s", filepath.Base(archivePath), entry.name)
+		}
+		if !bytes.Equal(data, entry.data) {
+			return fmt.Errorf("portal asset archive %s carries %s with different contents than the embedded asset",
+				filepath.Base(archivePath), entry.name)
+		}
+	}
+	if len(got) != len(want) {
+		return fmt.Errorf("portal asset archive %s carries %d file(s), want the %d embedded assets",
+			filepath.Base(archivePath), len(got), len(want))
+	}
+	// index.html is what the daemon serves at the portal root; an archive
+	// without it is not a portal, however many hashed assets it carries.
+	if _, ok := got["index.html"]; !ok {
+		return fmt.Errorf("portal asset archive %s carries no index.html", filepath.Base(archivePath))
+	}
+	return nil
 }
 
 func collectArchiveEntries(root string) ([]archiveEntry, error) {
