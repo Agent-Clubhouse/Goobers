@@ -105,18 +105,11 @@ func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 // checkout happens to sit near the right tag.
 func TestDSLMatrixAgainstNextPlannedRelease(t *testing.T) {
 	current := GetDSL()
-	if err := ValidateSupportPolicyForRelease(current, NextPlannedRelease); err != nil {
-		t.Fatalf("compiled-in DSL support matrix cannot ship in the declared NextPlannedRelease %s: %v", NextPlannedRelease, err)
-	}
-
 	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
 	released, latestTag, _ := loadLatestReleasedSupportMatrix(t, root)
 	firstTag, _, _ := supportReleaseTagRange(t, root)
-	planned, err := parseSupportReleaseVersion(NextPlannedRelease, false)
+	planned, err := validateNextPlannedRelease(current, NextPlannedRelease, latestTag)
 	if err != nil {
-		t.Fatalf("parse NextPlannedRelease %q: %v", NextPlannedRelease, err)
-	}
-	if err := validateNextPlannedReleaseFreshness(planned, latestTag); err != nil {
 		t.Fatal(err)
 	}
 	var firstRelease releaseVersion
@@ -133,6 +126,26 @@ func TestDSLMatrixAgainstNextPlannedRelease(t *testing.T) {
 	if err := validateSupportMatrixAfterTag(released, current, latestTag, planned, releaseAnchor); err != nil {
 		t.Fatalf("compiled-in DSL support matrix would fail cutting the declared NextPlannedRelease %s: %v", NextPlannedRelease, err)
 	}
+}
+
+func validateNextPlannedRelease(matrix SupportMatrix, plannedTag, latestTag string) (releaseVersion, error) {
+	planned, err := parseSupportReleaseVersion(plannedTag, false)
+	if err != nil {
+		return releaseVersion{}, fmt.Errorf("parse NextPlannedRelease %q: %w", plannedTag, err)
+	}
+	// Freshness comes first so a staged transition cannot mask the diagnostic
+	// that tells the operator which published tag requires a constant bump.
+	if err := validateNextPlannedReleaseFreshness(planned, latestTag); err != nil {
+		return releaseVersion{}, err
+	}
+	if err := ValidateSupportPolicyForRelease(matrix, plannedTag); err != nil {
+		return releaseVersion{}, fmt.Errorf(
+			"compiled-in DSL support matrix cannot ship in the declared NextPlannedRelease %s: %w",
+			plannedTag,
+			err,
+		)
+	}
+	return planned, nil
 }
 
 func TestValidateNextPlannedReleaseFreshness(t *testing.T) {
@@ -170,6 +183,23 @@ func TestValidateNextPlannedReleaseFreshness(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestValidateNextPlannedReleaseReportsStalenessBeforePolicyFailure(t *testing.T) {
+	matrix := SupportMatrix{
+		"1.0": {
+			Level: LevelDeprecated,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v2.0.0"},
+			},
+		},
+	}
+	_, err := validateNextPlannedRelease(matrix, "v1.0.0", "v1.0.0")
+	const want = "NextPlannedRelease v1.0.0 must be later than newest published release tag v1.0.0; bump NextPlannedRelease"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want freshness error %q before the competing support-policy failure", err, want)
 	}
 }
 
