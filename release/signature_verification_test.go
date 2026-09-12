@@ -3,10 +3,11 @@ package main
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 const (
@@ -19,7 +20,7 @@ git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v "${TAG}"`
 
 func gitCommand(t *testing.T, directory string, args ...string) []byte {
 	t.Helper()
-	command := exec.Command("git", args...)
+	command := testgit.Command(args...)
 	command.Dir = directory
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -32,9 +33,6 @@ func gitCommand(t *testing.T, directory string, args ...string) []byte {
 // Verify it against the exact published tag object from which the key was
 // recovered so a stale key, principal, namespace, or recipe fails CI.
 func TestPublishedReleaseKeyVerifiesKnownTag(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Fatalf("git is required to verify release signatures: %v", err)
-	}
 	repository := t.TempDir()
 	gitCommand(t, repository, "init", "--quiet")
 	fixture, err := filepath.Abs("testdata/v0.4.0-rc.2.tag")
@@ -66,7 +64,7 @@ func TestPublishedReleaseKeyVerifiesKnownTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	tamperedID := string(gitCommand(t, repository, "hash-object", "-t", "tag", "-w", tamperedPath))
-	command := exec.Command("git", "-c", "gpg.ssh.allowedSignersFile="+allowedSigners, "verify-tag", tamperedID)
+	command := testgit.Command("-c", "gpg.ssh.allowedSignersFile="+allowedSigners, "verify-tag", tamperedID)
 	command.Dir = repository
 	if output, err := command.CombinedOutput(); err == nil {
 		t.Fatalf("tampered tag verified successfully:\n%s", output)
