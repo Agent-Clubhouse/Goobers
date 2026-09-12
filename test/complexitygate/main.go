@@ -35,6 +35,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -44,6 +45,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -132,16 +134,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *update {
-		var current *baseline
+		var candidate *baseline
 		parsed, err := readBaseline(resolved)
 		switch {
 		case err == nil:
-			current = &parsed
+			candidate = &parsed
 		case !errors.Is(err, os.ErrNotExist):
 			_, _ = fmt.Fprintf(stderr, "complexitygate: read baseline for update: %v\n", err)
 			return 1
 		}
-		if err := writeBaseline(resolved, functions, limits, current); err != nil {
+		previous, err := readCommittedBaseline(*root, resolved)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "complexitygate: read committed baseline for update: %v\n", err)
+			return 1
+		}
+		if err := writeBaseline(resolved, functions, limits, previous, candidate); err != nil {
 			_, _ = fmt.Fprintf(stderr, "complexitygate: write baseline: %v\n", err)
 			return 1
 		}
@@ -176,6 +183,43 @@ func run(args []string, stdout, stderr io.Writer) int {
 		countAtLeast(functions, limits.hardCap), limits.hardCap,
 	)
 	return 0
+}
+
+func readCommittedBaseline(root, path string) (*baseline, error) {
+	prefixOutput, err := exec.Command("git", "-C", root, "rev-parse", "--show-prefix").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("locate repository: %w: %s", err, strings.TrimSpace(string(prefixOutput)))
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository root: %w", err)
+	}
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve baseline path: %w", err)
+	}
+	relativePath, err := filepath.Rel(absoluteRoot, absolutePath)
+	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("baseline %s is outside scan root %s", path, root)
+	}
+
+	if err := exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+		return nil, nil
+	}
+	repositoryPath := filepath.ToSlash(filepath.Join(strings.TrimSpace(string(prefixOutput)), relativePath))
+	object := "HEAD:" + repositoryPath
+	if err := exec.Command("git", "-C", root, "cat-file", "-e", object).Run(); err != nil {
+		return nil, nil
+	}
+	content, err := exec.Command("git", "-C", root, "show", object).Output()
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", object, err)
+	}
+	parsed, err := parseBaseline(bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", object, err)
+	}
+	return &parsed, nil
 }
 
 func scanTree(root string) ([]function, error) {
@@ -370,6 +414,9 @@ func parseBaseline(reader io.Reader) (baseline, error) {
 			continue
 		}
 		if strings.HasPrefix(line, budgetDirective+" ") {
+			if result.RatchetBudget >= 0 {
+				return baseline{}, fmt.Errorf("line %d: duplicate %s", lineNumber, budgetDirective)
+			}
 			raw := strings.TrimSpace(strings.TrimPrefix(line, budgetDirective))
 			budget, err := strconv.Atoi(raw)
 			if err != nil || budget < 0 {
@@ -504,9 +551,9 @@ func evaluate(functions []function, base baseline, limits thresholds) (problems,
 	return problems, notes
 }
 
-func writeBaseline(path string, functions []function, limits thresholds, current *baseline) error {
-	next := baselineForFunctions(functions, limits, current)
-	if err := validateBaselineUpdate(current, next); err != nil {
+func writeBaseline(path string, functions []function, limits thresholds, previous, candidate *baseline) error {
+	next := baselineForFunctions(functions, limits, previous, candidate)
+	if err := validateBaselineUpdate(previous, next); err != nil {
 		return err
 	}
 	var builder strings.Builder
@@ -538,7 +585,7 @@ func writeBaseline(path string, functions []function, limits thresholds, current
 	return os.WriteFile(path, []byte(builder.String()), 0o644)
 }
 
-func baselineForFunctions(functions []function, limits thresholds, current *baseline) baseline {
+func baselineForFunctions(functions []function, limits thresholds, previous, candidate *baseline) baseline {
 	next := baseline{
 		Entries:             make(map[string]int),
 		EntryJustifications: make(map[string]justification),
@@ -549,20 +596,20 @@ func baselineForFunctions(functions []function, limits thresholds, current *base
 			continue
 		}
 		entryKey := key(scored.Path, scored.Symbol)
-		_, alreadyBaselined := baselineEntry(current, entryKey)
+		_, alreadyBaselined := baselineEntry(previous, entryKey)
 		if scored.Allowed && !alreadyBaselined {
 			continue
 		}
 		next.Entries[entryKey] = scored.Complexity
 	}
-	if current == nil {
+	if candidate == nil {
 		return next
 	}
-	if reason := current.RatchetJustification; reason != nil && reason.Target == next.RatchetBudget {
+	if reason := candidate.RatchetJustification; reason != nil && reason.Target == next.RatchetBudget {
 		copy := *reason
 		next.RatchetJustification = &copy
 	}
-	for entryKey, reason := range current.EntryJustifications {
+	for entryKey, reason := range candidate.EntryJustifications {
 		if score, ok := next.Entries[entryKey]; ok && reason.Target == score {
 			next.EntryJustifications[entryKey] = reason
 		}
@@ -583,7 +630,7 @@ func validateBaselineUpdate(current *baseline, next baseline) error {
 		return nil
 	}
 	var problems []string
-	if next.RatchetBudget > current.RatchetBudget && !justifies(current.RatchetJustification, next.RatchetBudget) {
+	if next.RatchetBudget > current.RatchetBudget && !justifies(next.RatchetJustification, next.RatchetBudget) {
 		problems = append(problems, fmt.Sprintf(
 			"ratchet budget would grow from %d to %d without %s\\t%d\\t<why>",
 			current.RatchetBudget, next.RatchetBudget, budgetJustificationDirective, next.RatchetBudget,
@@ -594,7 +641,7 @@ func validateBaselineUpdate(current *baseline, next baseline) error {
 		if !existed || nextScore <= previousScore {
 			continue
 		}
-		if reason, ok := current.EntryJustifications[entryKey]; ok && reason.Target == nextScore && strings.TrimSpace(reason.Reason) != "" {
+		if reason, ok := next.EntryJustifications[entryKey]; ok && reason.Target == nextScore && strings.TrimSpace(reason.Reason) != "" {
 			continue
 		}
 		path, symbol, _ := strings.Cut(entryKey, "\t")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,25 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func gitCommand(t *testing.T, root string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
+func initGitRepository(t *testing.T, root string) {
+	t.Helper()
+	gitCommand(t, root, "init", "--quiet")
+}
+
+func commitAll(t *testing.T, root string) {
+	t.Helper()
+	gitCommand(t, root, "add", ".")
+	gitCommand(t, root, "-c", "user.name=Complexity Gate Test", "-c", "user.email=complexity@example.invalid", "commit", "--quiet", "-m", "fixture")
 }
 
 const branchyFunction = `package sample
@@ -251,6 +271,7 @@ func TestParseBaselineRejectsMalformedInput(t *testing.T) {
 		"short row":                     "!ratchet-budget 1\na.go\tfn\n",
 		"bad score":                     "!ratchet-budget 1\na.go\tfn\tzero\n",
 		"duplicate":                     "!ratchet-budget 1\na.go\tfn\t41\na.go\tfn\t42\n",
+		"duplicate ratchet budget":      "!ratchet-budget 1\n!ratchet-budget 2\n",
 		"blank entry justification":     "!ratchet-budget 1\n!entry-justification\ta.go\tfn\t42\t\n",
 		"blank budget justification":    "!ratchet-budget-justification\t2\t\n!ratchet-budget 1\n",
 		"duplicate entry justification": "!ratchet-budget 1\n!entry-justification\ta.go\tfn\t42\tone\n!entry-justification\ta.go\tfn\t42\ttwo\n",
@@ -292,14 +313,14 @@ func TestValidateBaselineUpdateRequiresExactTargetJustifications(t *testing.T) {
 		t.Fatalf("validateBaselineUpdate error = %v, want score and budget justification failures", err)
 	}
 
-	current.EntryJustifications[entryKey] = justification{Target: 7, Reason: "wrong target"}
-	current.RatchetJustification = &justification{Target: 3, Reason: "wrong target"}
+	next.EntryJustifications[entryKey] = justification{Target: 7, Reason: "wrong target"}
+	next.RatchetJustification = &justification{Target: 3, Reason: "wrong target"}
 	if err := validateBaselineUpdate(&current, next); err == nil {
 		t.Fatal("validateBaselineUpdate accepted justifications for different targets")
 	}
 
-	current.EntryJustifications[entryKey] = justification{Target: 6, Reason: "generated switch gained a required case"}
-	current.RatchetJustification = &justification{Target: 2, Reason: "new command remains above the ratchet"}
+	next.EntryJustifications[entryKey] = justification{Target: 6, Reason: "generated switch gained a required case"}
+	next.RatchetJustification = &justification{Target: 2, Reason: "new command remains above the ratchet"}
 	if err := validateBaselineUpdate(&current, next); err != nil {
 		t.Fatalf("validateBaselineUpdate rejected exact-target justifications: %v", err)
 	}
@@ -316,7 +337,7 @@ func TestBaselineForFunctionsKeepsRecordedAllowedFunction(t *testing.T) {
 		{Path: "generated.go", Symbol: "Generated", Complexity: 50, Allowed: true},
 	}
 
-	next := baselineForFunctions(functions, limits, &current)
+	next := baselineForFunctions(functions, limits, &current, &current)
 	if got := next.Entries[recordedKey]; got != 90 {
 		t.Fatalf("recorded allowed score = %d, want 90", got)
 	}
@@ -372,6 +393,7 @@ func TestReviewWindowBaselineTransitions(t *testing.T) {
 func TestRunUpdateThenEnforceRoundTrips(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
+	initGitRepository(t, root)
 	writeFile(t, filepath.Join(root, "pkg", "sample.go"), branchyFunction)
 	baselinePath := filepath.Join("test", "complexitygate", "baseline.txt")
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, baselinePath)), 0o755); err != nil {
@@ -404,9 +426,11 @@ func TestRunUpdateThenEnforceRoundTrips(t *testing.T) {
 func TestRunUpdateRefusesGrowthUntilBaselineCarriesJustification(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
+	initGitRepository(t, root)
 	writeFile(t, filepath.Join(root, "pkg", "sample.go"), branchyFunction)
 	baselinePath := filepath.Join(root, defaultBaselinePath)
 	writeFile(t, baselinePath, "!ratchet-budget 1\npkg/sample.go\tBranchy\t5\n")
+	commitAll(t, root)
 	args := []string{"-root", root, "-hard", "5", "-ratchet", "4", "-report", "3", "-update"}
 
 	var stdout, stderr bytes.Buffer
@@ -434,6 +458,46 @@ func TestRunUpdateRefusesGrowthUntilBaselineCarriesJustification(t *testing.T) {
 		if !strings.Contains(string(written), want) {
 			t.Fatalf("updated baseline = %q, want %q", written, want)
 		}
+	}
+}
+
+func TestRunUpdateRejectsPreEditedScoreWithoutJustification(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	initGitRepository(t, root)
+	writeFile(t, filepath.Join(root, "pkg", "sample.go"), branchyFunction)
+	baselinePath := filepath.Join(root, defaultBaselinePath)
+	writeFile(t, baselinePath, "!ratchet-budget 1\npkg/sample.go\tBranchy\t5\n")
+	commitAll(t, root)
+
+	writeFile(t, baselinePath, "!ratchet-budget 1\npkg/sample.go\tBranchy\t6\n")
+	var stdout, stderr bytes.Buffer
+	args := []string{"-root", root, "-hard", "5", "-ratchet", "4", "-report", "3", "-update"}
+	if code := run(args, &stdout, &stderr); code != 1 {
+		t.Fatalf("pre-edited score update exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "would grow from 5 to 6") {
+		t.Fatalf("stderr = %q, want score-growth refusal against HEAD", stderr.String())
+	}
+}
+
+func TestRunUpdateRejectsPreEditedBudgetWithoutJustification(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	initGitRepository(t, root)
+	writeFile(t, filepath.Join(root, "pkg", "sample.go"), branchyFunction)
+	baselinePath := filepath.Join(root, defaultBaselinePath)
+	writeFile(t, baselinePath, "!ratchet-budget 0\n")
+	commitAll(t, root)
+
+	writeFile(t, baselinePath, "!ratchet-budget 1\n")
+	var stdout, stderr bytes.Buffer
+	args := []string{"-root", root, "-hard", "7", "-ratchet", "4", "-report", "3", "-update"}
+	if code := run(args, &stdout, &stderr); code != 1 {
+		t.Fatalf("pre-edited budget update exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "budget would grow from 0 to 1") {
+		t.Fatalf("stderr = %q, want budget-growth refusal against HEAD", stderr.String())
 	}
 }
 
