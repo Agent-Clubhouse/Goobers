@@ -36,9 +36,8 @@ type stageDispatch struct {
 	Surrenders dispatcher.SurrenderPlane
 	Queues     []string
 	// Sweeper is the SAME *dispatcher.Dispatcher as Dispatcher, named through
-	// the narrow sweep interface. Two fields rather than a type assertion so
-	// the wiring says out loud that the sweep reclaims pods created by THIS
-	// dispatcher — which is exactly what its owner scope enforces.
+	// the narrow sweep interface. Two fields rather than a type assertion make
+	// the boot-time reconciliation wiring explicit.
 	Sweeper stageOrphanSweeper
 }
 
@@ -74,9 +73,8 @@ var newStageDispatcher = dispatcher.New
 // store — see dispatcher/surrender.go), which keeps one operator-provided
 // volume backing both planes.
 // owner is this worker's dispatcher identity (its hostname; in-cluster, its
-// pod name): stamped on every pod it creates and the scope its orphan sweep
-// sweeps within. See dispatcher.Config.Owner for why it must be stable across
-// a restart and distinct between workers.
+// pod name), stamped on every pod as rollout-scoped diagnostic provenance.
+// The durable identity read from instanceRoot scopes orphan sweeps.
 // seams is the worker's own config-snapshot store, shared so the mode-3 kit
 // writer resolves a stage pod's kit through the SAME current-plus-retained
 // config trees the self-execution path resolves against (#3884). Nil disables
@@ -100,6 +98,10 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 	signed, err := validateStageDispatchConfig(cfg, daemonAPI, blobEndpoint)
 	if err != nil {
 		return stageDispatch{}, err
+	}
+	instanceID, err := l.ReadIdentity()
+	if err != nil {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: read instance identity: %w", err)
 	}
 
 	set, report, err := loadConfigDirectory(l.ConfigDir())
@@ -145,6 +147,7 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 		// dispatch explicitly instead of creating a pod that would find no kit.
 		KitWriter:       agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
 		Namespace:       namespace,
+		InstanceID:      instanceID,
 		Owner:           owner,
 		EmbeddedCommit:  build.Commit,
 		EmbeddedVersion: build.Version,

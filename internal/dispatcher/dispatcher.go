@@ -71,22 +71,19 @@ var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 type Config struct {
 	// Namespace is the gaggle namespace stage pods are created in.
 	Namespace string
+	// InstanceID is the durable identity of the Goobers instance. It scopes
+	// orphan sweeps across worker generations without crossing into another
+	// instance that happens to share the Kubernetes namespace.
+	InstanceID string
 	// Owner identifies THIS dispatcher process among the workers sharing a
-	// namespace. It is stamped on every pod as LabelOwner and is the scope
-	// SweepOrphans sweeps within, so it must be stable across a restart of
-	// the same worker and distinct between workers. The worker wires its
-	// hostname — in-cluster, its pod name: stable while the pod lives, unique
-	// per replica.
+	// namespace. It is stamped on every pod as LabelOwner for diagnostics and
+	// must be distinct between workers. The worker wires its hostname —
+	// in-cluster, its pod name: stable while the pod lives, unique per replica.
 	//
-	// A rollout gives the replacement worker a NEW pod name, so stage pods
-	// left by the outgoing one fall outside every sweep's scope. That is the
-	// intended trade: the sweep's job is to reclaim ITS OWN interrupted
-	// attempts, and the always-on activeDeadlineSeconds stamp (dispatcher §5)
-	// is what bounds every other leak. Deleting a pod on a guess is the
-	// failure this whole path is built to avoid.
-	//
-	// Empty stamps no owner label and makes SweepOrphans refuse: an ownerless
-	// fleet cannot be swept safely by one of its members.
+	// SweepOrphans does not select by this label: rollouts change the worker pod
+	// name, so owner scoping would make the outgoing worker's stage pods
+	// permanently unreachable. Instead it resolves every labeled stage pod's
+	// owning workflow and deletes only positively terminal attempts.
 	Owner string
 	// EmbeddedCommit is this dispatcher binary's embedded commit sha
 	// (internal/version.Commit at wiring) — the left side of the decision-009
@@ -309,9 +306,9 @@ type Attempt struct {
 	//
 	// Distinct from two neighbours it is easy to confuse it with:
 	// Config.Owner / LabelOwner names the dispatcher PROCESS that created the
-	// pod (the sweep's scope), and Workflow above is the goobers workflow
-	// NAME from the DSL. This is a Temporal execution id, and it is the only
-	// field on the attempt that addresses one.
+	// pod, and Workflow above is the goobers workflow NAME from the DSL. This
+	// is a Temporal execution id, and it is the only field on the attempt that
+	// addresses one.
 	//
 	// Empty means the caller did not state a driver. The pod is then stamped
 	// without the annotation and the sweep leaves it alone forever rather
@@ -734,8 +731,8 @@ type Report struct {
 	// outcome (a confirmed success or a confirmed PodFailed), so Dispatch's
 	// returned error still reflects the settled result and this field carries
 	// the disposal failure alongside it. Disposed==false means DELETE failed;
-	// the leak is bounded by activeDeadlineSeconds and the restart reconcile
-	// sweep (dispatcher §5).
+	// activeDeadlineSeconds bounds any remaining execution; the restart
+	// reconcile sweep reclaims the Pod API object (dispatcher §5).
 	DisposeErr error
 	// QueuedAt and PodStartedAt bound the schedule-to-start wait for
 	// provenance.
@@ -878,8 +875,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// result and spending an infra retry re-dispatching an already-settled
 	// (possibly MUTATING) stage. So record the disposal failure on the report
 	// as the leak signal (Disposed is false for a refused DELETE; accepted
-	// deletion with unconfirmed disappearance sets DisposeErr too). Leaks are
-	// bounded by activeDeadlineSeconds and restart reconcile (dispatcher §5), and
+	// deletion with unconfirmed disappearance sets DisposeErr too). Execution is
+	// bounded by activeDeadlineSeconds and objects by restart reconcile (§5), and
 	// let the settled path fall through: PodFailed → ErrStageFailed, success →
 	// nil. When superviseErr is already non-nil there is no settled outcome to
 	// protect; that infra error is returned unchanged and DisposeErr rides

@@ -37,13 +37,12 @@ const (
 	LabelAttempt = "goobers.dev/attempt"
 	// LabelPodAttempt is the optional physical dispatch ordinal across visits.
 	LabelPodAttempt = "goobers.dev/pod-attempt"
+	// LabelInstance scopes orphan reconciliation to one durable Goobers
+	// instance even when several instances share a Kubernetes namespace.
+	LabelInstance = "goobers.dev/instance"
 	// LabelOwner names the dispatcher process that created the pod
-	// (Config.Owner, sanitized to label grammar). Decision 003 wires
-	// SweepOrphans on the WORKER, and a cluster legitimately runs more than
-	// one: without this the sweep's selector matches a sibling worker's live
-	// stage pods too, and one worker's restart would dispose another's
-	// in-flight attempts. Scoped by owner, a sweep can only ever reach pods
-	// it created.
+	// (Config.Owner, sanitized to label grammar). It is diagnostic provenance;
+	// the stable LabelInstance, not this rollout-scoped value, bounds sweeps.
 	LabelOwner = "goobers.dev/owner"
 )
 
@@ -75,8 +74,9 @@ const (
 	// a live, possibly mutating, stage. Composing is a lossy address on a
 	// DELETE path; this is the verbatim one.
 	//
-	// Absent = unaddressable, not disposable: podAttempt refuses the pod and
-	// the sweep leaves it to activeDeadlineSeconds.
+	// Absent = unaddressable, not disposable: podAttempt refuses the pod.
+	// activeDeadlineSeconds still stops execution, but the object remains for
+	// diagnosis because deletion cannot be authorized safely.
 	AnnotationOwningWorkflowID = "goobers.dev/owning-workflow-id"
 )
 
@@ -999,8 +999,8 @@ func restrictionSet(restrictions []string) map[string]bool {
 // exactly one runner-class label DERIVED from the resolved restriction set
 // via the single shared producer (runnercap.RunnerClassValue, delivery
 // decision 015), the role marker the baseline policies select on, the
-// run/attempt identity the reconcile sweep keys on, and — when this
-// dispatcher declares one — the owner the sweep scopes itself to.
+// run/attempt identity the reconcile sweep keys on, the stable instance sweep
+// domain, and — when this dispatcher declares one — its diagnostic owner.
 func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]string {
 	labels := map[string]string{
 		LabelManagedBy:             ManagedByValue,
@@ -1010,14 +1010,14 @@ func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]st
 		LabelStage:                 sanitizeNameSegment(attempt.Stage, 63),
 		LabelAttempt:               fmt.Sprintf("%d", attempt.Number),
 	}
+	if instance.ValidIdentity(cfg.InstanceID) {
+		labels[LabelInstance] = cfg.InstanceID
+	}
 	if attempt.PodAttempt > 0 {
 		labels[LabelPodAttempt] = fmt.Sprint(attempt.PodAttempt)
 	}
-	// Absent owner stamps nothing rather than an "unknown" placeholder: a
-	// placeholder is a value a second ownerless dispatcher would also match,
-	// which is the cross-worker disposal this label exists to prevent. An
-	// unlabeled pod is instead unreachable by any sweep, and SweepOrphans
-	// refuses to run without an owner at all.
+	// Absent owner stamps nothing rather than an "unknown" placeholder; owner
+	// is provenance, while LabelInstance is the sweep's stable safety scope.
 	if owner := cfg.ownerLabel(); owner != "" {
 		labels[LabelOwner] = owner
 	}

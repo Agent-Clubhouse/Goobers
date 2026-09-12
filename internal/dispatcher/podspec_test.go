@@ -22,6 +22,7 @@ import (
 func testConfig() Config {
 	return Config{
 		Namespace:       "gaggle-alpha",
+		InstanceID:      "0123456789abcdef0123456789abcdef",
 		Owner:           "goobers-worker-0",
 		EmbeddedCommit:  "0123456789abcdef0123456789abcdef01234567",
 		EmbeddedVersion: "v0.1.0",
@@ -1150,10 +1151,9 @@ func TestPodSpecOmitsTheBranchStampsWhenNothingWasDeclared(t *testing.T) {
 	}
 }
 
-// Decision 003's worker-hygiene graft, the stamp half: every dispatcher-created
-// stage pod carries the owner label its creator's orphan sweep scopes itself
-// to, plus the VERBATIM attempt identity that sweep needs to ADDRESS the
-// attempt on the engine.
+// Every dispatcher-created stage pod carries its stable instance sweep scope,
+// rollout-scoped owner provenance, and the VERBATIM attempt identity the sweep
+// needs to ADDRESS the attempt on the engine.
 //
 // The labels cannot serve as that address. sanitizeNameSegment lowercases,
 // maps every non-alphanumeric rune to '-' and truncates at 63, so it is not
@@ -1176,6 +1176,9 @@ func TestRenderPodStampsOwnerAndVerbatimIdentity(t *testing.T) {
 	}
 	if got := pod.Labels[LabelOwner]; got != "goobers-worker-7" {
 		t.Fatalf("%s = %q, want the creating worker's identity", LabelOwner, got)
+	}
+	if got := pod.Labels[LabelInstance]; got != cfg.InstanceID {
+		t.Fatalf("%s = %q, want stable instance identity %q", LabelInstance, got, cfg.InstanceID)
 	}
 	if got := pod.Annotations[AnnotationRunID]; got != attempt.RunID {
 		t.Fatalf("%s = %q, want the verbatim run id %q", AnnotationRunID, got, attempt.RunID)
@@ -1317,7 +1320,7 @@ func TestIdentityAnnotationsNonOverridable(t *testing.T) {
 	attempt = testAttempt()
 	attempt.ExtraLabels = map[string]string{LabelOwner: "goobers-worker-99"}
 	if _, err := RenderPod(testConfig(), attempt, linuxRunner()); err == nil {
-		t.Fatalf("workflow input set %s and the render accepted it — a pod could hide from its owner's sweep", LabelOwner)
+		t.Fatalf("workflow input set dispatcher-owned provenance label %s and the render accepted it", LabelOwner)
 	}
 }
 
