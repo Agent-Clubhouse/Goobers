@@ -35,7 +35,12 @@ const (
 	// ReapReasonStale means the worktree was intentionally kept
 	// (RemoveOptions.Keep) and has aged past ReapOptions.StaleAfter.
 	ReapReasonStale ReapReason = "stale"
+	// ReapReasonCleanupPending means a prior explicit teardown surrendered the
+	// worktree but one of its guarded cleanup steps deferred removal.
+	ReapReasonCleanupPending ReapReason = "cleanup-pending"
 )
+
+var errReapAuthorityChanged = errors.New("worktree: reap authority changed while waiting for repository lock")
 
 // ReapReasonMarkerless means the worktree had no marker at all — a crash
 // between `git worktree add` and the marker write (Manager.Create), which
@@ -165,7 +170,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 		case statusCleanupPending:
 			// Remove already recorded that the stage surrendered this tree.
 			// Retry immediately even while the owning daemon PID remains live.
-			reason = ReapReasonOrphaned
+			reason = ReapReasonCleanupPending
 		case statusKept:
 			if opts.StaleAfter <= 0 || time.Since(mk.retainedAt()) <= opts.StaleAfter {
 				continue
@@ -181,6 +186,9 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			// worktree — reported for retry on the next sweep — rather
 			// than aborting every other worktree still queued for reaping.
 			var timeoutErr *GitCleanupTimeoutError
+			if errors.Is(err, errReapAuthorityChanged) {
+				continue
+			}
 			if errors.As(err, &timeoutErr) || errors.Is(err, ErrCleanupDeferred) {
 				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)})
 				continue
@@ -269,6 +277,9 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 		markerPath := m.markerPath(key, worktreeID)
 		if err := m.reapOne(ctx, key, path, markerPath, ownershipMarker); err != nil {
 			var timeoutErr *GitCleanupTimeoutError
+			if errors.Is(err, errReapAuthorityChanged) {
+				continue
+			}
 			if errors.As(err, &timeoutErr) || errors.Is(err, ErrCleanupDeferred) {
 				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap markerless run %s: %w", worktreeID, err)})
 				continue
@@ -301,9 +312,36 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
+	if mk != nil && !m.reapAuthorityStillCurrent(key, path, markerPath, *mk) {
+		return errReapAuthorityChanged
+	}
+	return m.reapOneLocked(ctx, key, path, markerPath, mk)
+}
 
-	cleanupMarker := marker{OwnerRunID: ownerRunID}
+// reapAuthorityStillCurrent closes the scan-to-delete race. A prompt retry or
+// another cleanup can remove the scanned workspace while reap waits for the
+// repository lock, after which Create may put a new active workspace at the
+// same deterministic path. Re-read the primary record under lock; markerless
+// recovery falls back to its ownership record. Only the exact scanned
+// identity and status may authorize the destructive tail.
+func (m *Manager) reapAuthorityStillCurrent(key, path, markerPath string, scanned marker) bool {
+	current, err := readMarker(markerPath)
+	if os.IsNotExist(err) {
+		current, err = readMarker(m.ownershipPath(key, filepath.Base(path)))
+	}
+	return err == nil && current.Status == scanned.Status && sameWorkspaceIdentity(current, scanned)
+}
+
+// reapOneLocked performs the destructive half of reaping while the caller
+// holds the repository lock. Keeping this authority in one function lets the
+// prompt cleanup-pending retry path revalidate both durable ownership records
+// under that lock and then use exactly the same guards and Git cleanup as the
+// broad/startup reaper.
+func (m *Manager) reapOneLocked(ctx context.Context, key, path, markerPath string, mk *marker) error {
+	worktreeID := filepath.Base(path)
+	cleanupMarker := marker{}
 	if mk != nil {
+		worktreeID = mk.RunID
 		cleanupMarker = *mk
 	}
 	if err := m.prepareMarkerCleanup(ctx, path, worktreeID, cleanupMarker); err != nil {

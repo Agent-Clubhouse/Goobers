@@ -560,6 +560,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// ticker below (#4373's "share the same exclusion mechanism"): one
 	// error-rate-limiting reporter per failure class, not per call site.
 	worktreeRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "worktree_retention_sweep_failed")
+	terminalCleanupRetryErrors := newSweepErrorReporter(setup.InstanceLog, "terminal_cleanup_retry_failed")
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -1089,22 +1090,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// coalescing with the periodic 6h sweep via retentionGate so at most one
 	// ever runs at a time.
 	pf(stdout, "%s startup phase=retention-sweep status=deferred target=%q\n", startupTimestamp(), "runs after API readiness, not before (#4373)")
-	telemetryRetentionConfig := instance.TelemetryRetentionConfig{}
-	if setup.Config.Telemetry.Retention != nil {
-		telemetryRetentionConfig = *setup.Config.Telemetry.Retention
-	}
-	var telemetryPrunedCount int
-	var telemetryPrunedDryRun bool
-	telemetryErr := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
-		var err error
-		telemetryPrunedCount, telemetryPrunedDryRun, err = pruneAndRecordTelemetryRetention(setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, time.Now())
-		return err
-	})
+	telemetryRetentionConfig, telemetryErr := runStartupTelemetryRetention(stdout, tracker, l, setup)
 	if telemetryErr != nil {
 		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
-	reportTelemetryPruned(stdout, telemetryPrunedCount, telemetryPrunedDryRun, telemetryRetentionConfig.EnabledEffective())
 
 	// Prune crash-abandoned orphan runs and run-creation staging directories
 	// before anything else touches the runs tree (#2035): a mid-Create crash's
@@ -1275,6 +1265,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	openPRs := newOpenPRLoop(ctx, setup.OpenPRRefresher)
 	defer openPRs.Stop()
+	cleanupRetries := newTerminalCleanupRetryRegistry(setup)
 	setup.MergedPRCostReconciler = newDaemonMergedPRCostReconciler(
 		setup.Root,
 		setup.Config,
@@ -1296,6 +1287,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		scheduler:      sched,
 		openPRs:        openPRs,
 		reads:          reads,
+		cleanupRetries: cleanupRetries,
 		readModel:      setup.ReadModel,
 		wg:             &wg,
 		appliedDigest:  setup.ConfigDigest,
@@ -1744,6 +1736,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// was actually reached, so the shutdown join below never blocks on a
 	// sweep that was never launched.
 	startupRetentionSweepDone := startDeferredRetentionSweep(ctx, l, setup, retentionGate, worktreeRetentionErrors, readyNow)
+	terminalCleanupRetryCtx, stopTerminalCleanupRetry := context.WithCancel(context.Background())
+	defer stopTerminalCleanupRetry()
+	terminalCleanupRetryDone := startTerminalCleanupRetry(terminalCleanupRetryCtx, cleanupRetries, terminalCleanupRetryErrors, readyNow)
 	startupMergedPRCostSweepDone := mergedPRCostSweeps.startDeferred(ctx, readyNow)
 	pf(stdout, "daemon started at %s (%d workflow(s)); API listening at %s://%s%s\n", root, len(setup.Entries), apiServer.Scheme(), apiServer.Address(), httpapi.Prefix)
 	if webhookServer != nil {
@@ -1905,6 +1900,9 @@ daemonLoop:
 
 	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
 		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
+	stopTerminalCleanupRetry()
+	<-terminalCleanupRetryDone
+	runTerminalCleanupRetryFinal(cleanupRetries, terminalCleanupRetryErrors, readyNow)
 	if !drainResult.forced {
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {
