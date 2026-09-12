@@ -116,6 +116,28 @@ func TestCopilotAdapterUsesConfiguredCommandForDirectLauncher(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterKeepsQualifiedCopilotPathForModelDiscovery(t *testing.T) {
+	// An operator who pins the real CLI by path — not a wrapper — still trips
+	// the launcher-contract gate, because that gate fires for anything that is
+	// not the literal default `copilot`. Discovery must keep the configured
+	// binary instead of falling back to a bare `copilot` the machine may not
+	// have on PATH.
+	modelLister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	pinned := filepath.Join(t.TempDir(), "copilot")
+	adapter := &CopilotAdapter{
+		Command:                 []string{pinned},
+		RequireLauncherContract: true,
+		ModelLister:             modelLister,
+	}
+
+	if _, err := adapter.discoverModels(context.Background()); err != nil {
+		t.Fatalf("discoverModels: %v", err)
+	}
+	if !slices.Equal(modelLister.lastCommand, []string{pinned}) {
+		t.Fatalf("model discovery command = %q, want the pinned Copilot path %q", modelLister.lastCommand, pinned)
+	}
+}
+
 func testCopilotModelList() []CopilotModelInfo {
 	maxEffort := []string{"none", "low", "medium", "high", "xhigh", "max"}
 	return []CopilotModelInfo{
