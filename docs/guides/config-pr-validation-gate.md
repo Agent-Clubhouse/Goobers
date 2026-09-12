@@ -44,6 +44,13 @@ The action downloads and checksum-verifies the pinned Goobers release, runs
 fails the step on any validation error — findings that touch a file also
 annotate that file's lines directly on the PR diff.
 
+That source-only command solves placement and runner capabilities against the
+checked-in `instance.yaml.example`, so it prints that those findings are
+advisory. If CI has read-only access to the deployed instance document, invoke
+the CLI directly with `--source-tree --instance /path/to/instance.yaml` to make
+that solve authoritative; an unsatisfied declared runner inventory then fails
+the check instead of warning.
+
 ## Allow expected warnings without hiding drift
 
 Instead of `strict: "true"`, set `allowed-warnings-file` to a checked-in file

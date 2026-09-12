@@ -272,12 +272,10 @@ func TestStartupPreflightKeepsPlacementFindingsAdvisory(t *testing.T) {
 	}
 }
 
-// TestValidateSourceTreePlacementAdvisory: `goobers validate --source-tree`
-// has no real instance.yaml — it solves against instance.yaml.example — so
-// its placement findings are advisory-only warnings even when the example
-// declares an inventory that cannot satisfy a stage (RNR001's and RNR003's
-// warning branches).
-func TestValidateSourceTreePlacementAdvisory(t *testing.T) {
+// TestValidateSourceTreePlacementAdvisoryAndRealInstance proves the source-tree
+// gate names its example-based blind spot, while --instance turns the same
+// unsatisfied placement into an authoritative failure.
+func TestValidateSourceTreePlacementAdvisoryAndRealInstance(t *testing.T) {
 	root := initDeterministicDemo(t)
 	declareInventory(t, root)
 	writeSecondWorkflow(t, root, unsatisfiableV30WorkflowYAML)
@@ -299,6 +297,45 @@ func TestValidateSourceTreePlacementAdvisory(t *testing.T) {
 	}
 	if strings.Contains(stdout, "ERROR RNR001") {
 		t.Errorf("source-tree placement findings must never be errors:\n%s", stdout)
+	}
+	for _, want := range []string{"--instance was not supplied", "instance.yaml.example", "advisory-only"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("source-tree output must name its advisory solve limitation %q:\n%s", want, stdout)
+		}
+	}
+	jsonCode, jsonOut, jsonErr := runArgs(t, "validate", "--json", "--source-tree", tree)
+	if jsonCode != 0 || jsonErr != "" {
+		t.Fatalf("JSON source-tree validate code=%d stdout=%q stderr=%q", jsonCode, jsonOut, jsonErr)
+	}
+	envelope := decodeDiagnosticsEnvelope(t, jsonOut)
+	var advisory *diagnosticFinding
+	for i := range envelope.Findings {
+		if envelope.Findings[i].Code == sourceTreeAdvisoryCode {
+			advisory = &envelope.Findings[i]
+			break
+		}
+	}
+	if advisory == nil || advisory.Severity != diagnosticSeverityInfo || advisory.Message != sourceTreeAdvisoryMessage {
+		t.Fatalf("JSON source-tree advisory = %+v, findings=%+v", advisory, envelope.Findings)
+	}
+
+	realInstance := filepath.Join(root, "instance.yaml")
+	code, stdout, stderr = runArgs(t, "validate", "--source-tree", "--instance", realInstance, tree)
+	if code != 1 {
+		t.Fatalf("source-tree validate with real instance code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "ERROR RNR001 Workflow/win-build") {
+		t.Errorf("real-instance source-tree validate must enforce RNR001:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "--instance was not supplied") || strings.Contains(stdout, "advisory-only") {
+		t.Errorf("real-instance source-tree validate must not claim an advisory solve:\n%s", stdout)
+	}
+}
+
+func TestValidateInstanceFlagRequiresSourceTree(t *testing.T) {
+	code, _, stderr := runArgs(t, "validate", "--instance", "instance.yaml")
+	if code != 2 || !strings.Contains(stderr, "--instance requires --source-tree") {
+		t.Fatalf("validate --instance without --source-tree: code=%d stderr=%q", code, stderr)
 	}
 }
 
