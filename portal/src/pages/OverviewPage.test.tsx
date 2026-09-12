@@ -269,6 +269,7 @@ describe("overview page", () => {
     expect(screen.getByText(/30d window, maximum 900 runs/)).toBeInTheDocument();
     expect(screen.getByText(/last pass dry-run/)).toHaveTextContent("17 candidates");
     expect(screen.getByText(/enforcement begins/)).toBeInTheDocument();
+    expect(screen.getByText(/instance.yaml retention changes require a daemon restart/)).toHaveTextContent(/materialized config directory/);
   });
 
   it("does not present a stale enforcement date for a disabled retention policy", async () => {

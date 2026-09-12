@@ -310,7 +310,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"webhook.secret is configured. Invalid revisions are rejected with the\n" +
 	"last-known-good definitions left running. Direct edits to the materialized\n" +
 	"config directory are watched by default; --watch-config=false explicitly\n" +
-	"disables that watcher. Existing runs retain their pinned definitions.\n\n" +
+	"disables that watcher. instance.yaml is loaded only at daemon startup and\n" +
+	"is never hot-reloaded; changes to it, including retention: and\n" +
+	"telemetry.retention:, require a daemon restart. Existing runs retain their\n" +
+	"pinned definitions.\n\n" +
 	"--diagnostics turns on deep, opt-in capture for hard hangs: any\n" +
 	"deterministic stage still running past a couple of minutes gets a\n" +
 	"periodic native process sample + process tree + open-fd (lsof)\n" +
@@ -387,7 +390,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
 	diagnostics := fs.Bool("diagnostics", false, "capture deep per-stage diagnostics (process samples, lsof, un-truncated output) for hang debugging")
-	watchConfig := fs.Bool("watch-config", true, "hot-reload edits to the materialized config directory (default true; Git workflow sources reconcile automatically)")
+	watchConfig := fs.Bool("watch-config", true, "hot-reload materialized config-directory edits (default true; instance.yaml changes require restart)")
 	drainTimeout := fs.Duration("drain-timeout", 0, "force shutdown if graceful drain exceeds this duration (default: wait indefinitely)")
 	var notifications notifyFlag
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")

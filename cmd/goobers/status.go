@@ -89,14 +89,14 @@ func telemetryRetentionStatusLine(status readservice.SchedulerStatus) string {
 	line := fmt.Sprintf("Telemetry retention: enabled=%t, window=%s, max-runs=%d, first-enable=%s",
 		retention.Enabled, retention.Window, retention.MaxRuns, retention.FirstEnable)
 	if retention.LastPassAt == nil {
-		return line + ", last-pass=none\n"
+		return line + ", last-pass=none; instance.yaml changes require daemon restart\n"
 	}
 	line += fmt.Sprintf(", last-pass=%s at %s, candidates=%d",
 		retention.LastPassMode, retention.LastPassAt.UTC().Format(time.RFC3339), retention.CandidateCount)
 	if retention.EnforceAt != nil {
 		line += ", enforcement=" + retention.EnforceAt.UTC().Format(time.RFC3339)
 	}
-	return line + "\n"
+	return line + "; instance.yaml changes require daemon restart\n"
 }
 
 func renderSchedulerStatus(
@@ -1584,6 +1584,7 @@ func reportTelemetryRetentionPolicy(l instance.Layout, now time.Time, stdout io.
 	default:
 		pf(stdout, "telemetry retention: policy in force, last pass %s ago pruned %d run(s)%s\n", lastPassAgo, state.PrunedCount, cutoff)
 	}
+	pln(stdout, "  instance.yaml retention changes require a daemon restart; --watch-config watches only the materialized config directory")
 }
 
 // reportWorktreeRetentionPolicy is the operator-facing half of #4253's flip.
@@ -1612,6 +1613,7 @@ func reportWorktreeRetentionPolicy(l instance.Layout, now time.Time, stdout io.W
 	default:
 		pf(stdout, "worktree retention: policy in force, last pass %s ago pruned %d item(s)\n", lastPassAgo, state.PrunedCount)
 	}
+	pln(stdout, "  instance.yaml retention changes require a daemon restart; --watch-config watches only the materialized config directory")
 }
 
 func reportDaemonBehavior(stdout io.Writer, behavior *daemonBehavior) {

@@ -1049,6 +1049,9 @@ func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
 		strings.Contains(duringGrace.String(), "pruned") {
 		t.Fatalf("grace-period status = %q", duringGrace.String())
 	}
+	if !strings.Contains(duringGrace.String(), "instance.yaml retention changes require a daemon restart") {
+		t.Fatalf("grace-period status omits restart boundary: %q", duringGrace.String())
+	}
 
 	// #4824: enforcement held pending explicit operator acknowledgement.
 	blockedState := telemetryRetentionState{

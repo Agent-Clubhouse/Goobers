@@ -124,7 +124,7 @@ func TestTelemetryRetentionStatusLine(t *testing.T) {
 		Enabled: true, Window: "30d", MaxRuns: 900, FirstEnable: "gracePeriod",
 		LastPassAt: &passAt, LastPassMode: "dry-run", CandidateCount: 17, EnforceAt: &enforceAt,
 	}})
-	for _, want := range []string{"enabled=true", "window=30d", "max-runs=900", "last-pass=dry-run", "candidates=17", "enforcement=2026-09-19T08:00:00Z"} {
+	for _, want := range []string{"enabled=true", "window=30d", "max-runs=900", "last-pass=dry-run", "candidates=17", "enforcement=2026-09-19T08:00:00Z", "instance.yaml changes require daemon restart"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("status line %q does not contain %q", got, want)
 		}
