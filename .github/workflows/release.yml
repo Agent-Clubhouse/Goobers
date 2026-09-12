@@ -908,12 +908,49 @@ jobs:
           # The shipped, credential-free mock demo is trusted test content.
           # Exercise the documented opt-in on CI hosts without user namespaces.
           goobers init --allow-ephemeral --demo --insecure smoke/demo-instance
+          # First WITHOUT the opt-out (#4888). A GitHub-hosted runner has no
+          # user namespaces, so the product's DEFAULT isolated-network path
+          # must refuse here - and that refusal is the only way CI ever reaches
+          # the runtime isolation error #4267 added. Running only the degraded
+          # path left that diagnostic shipped but never executed, so a
+          # regression turning it into a silent success, a crash, or an
+          # unrecognisable message would have reached users unchallenged.
+          if goobers run demo smoke/demo-instance > smoke/demo-isolated.txt 2>&1; then
+            echo "demo unexpectedly succeeded without GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE" >&2
+            cat smoke/demo-isolated.txt >&2
+            exit 1
+          fi
+          grep --fixed-strings "GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE" smoke/demo-isolated.txt
+          # Then the documented opt-out, which is what this runner can complete.
           GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo smoke/demo-instance | tee smoke/demo-result.txt
           grep --fixed-strings "phase=completed" smoke/demo-result.txt
           grep --fixed-strings "  goobers_portal_${TAG}.tar.gz" dist/SHA256SUMS
           mkdir smoke/portal
           tar -xzf "dist/goobers_portal_${TAG}.tar.gz" -C smoke/portal
+          # `test -s index.html` was the ONLY assertion this artifact ever got
+          # (#4888): a non-empty check on one file, while the onboarding zip
+          # above gets a real recursive diff. The packer now verifies the
+          # archive against the assets it collected; this checks the published
+          # artifact is internally coherent, which is what only a consumer can
+          # see - every local asset index.html references must be present, so a
+          # truncated archive or a dropped hashed-asset directory fails here.
           test -s smoke/portal/index.html
+          portal_refs="$(grep -o -E '(src|href)="[^"]+\.(js|css)"' smoke/portal/index.html \
+            | sed -E 's/^(src|href)="//; s/"$//' | sort -u)"
+          if [[ -z "$portal_refs" ]]; then
+            echo "portal index.html references no local script or stylesheet" >&2
+            exit 1
+          fi
+          while IFS= read -r ref; do
+            case "$ref" in
+              *://*) continue ;;
+            esac
+            if [[ ! -f "smoke/portal/${ref#/}" ]]; then
+              echo "portal archive is missing an asset index.html references: $ref" >&2
+              exit 1
+            fi
+          done <<< "$portal_refs"
+          echo "portal archive: every local asset index.html references is present"
           test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
           mkdir generated-docs
           goobers __generate-docs generated-docs
