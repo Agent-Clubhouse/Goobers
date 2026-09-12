@@ -889,9 +889,28 @@ jobs:
             exit 1
           fi
           grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
-          grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
+          # The packaged quickstart is rewritten differently for a pre-release
+          # (#4978): install.sh refuses pre-release tags, so the guide points at
+          # the extracted archive's ./goobers rather than a PATH-installed
+          # goobers-<tag>. These assertions were written for the stable wording
+          # only, which made them unsatisfiable for exactly the tags an RC uses
+          # and blocked the release rather than catching anything.
+          #
+          # Both branches assert the NEGATIVE as well: the wording that belongs
+          # to the other shape must be absent, so a generator that stops
+          # distinguishing them fails here instead of silently telling
+          # pre-release users to run a binary install.sh never installed.
+          if [[ "$TAG" == *-* ]]; then
+            grep --fixed-strings "This pre-release \`${TAG}\`" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "./goobers --version" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "./goobers init --demo ./demo-instance" smoke/docs/guides/quickstart.md
+            ! grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
+          else
+            grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
+            ! grep --fixed-strings "This pre-release \`${TAG}\`" smoke/docs/guides/quickstart.md
+          fi
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
           test -f smoke/onboarding/manifest.json
