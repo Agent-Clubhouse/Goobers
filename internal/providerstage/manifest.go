@@ -1,5 +1,7 @@
-// Package providerstage describes the capabilities used by built-in
-// provider-chain commands.
+// Package providerstage describes the capabilities and workflow-input
+// contracts of built-in provider-chain commands. Input lifecycle metadata is
+// additive and retains retired names so validation can reject obsolete config
+// before a stage runs; see inputs.go.
 //
 // # DSL-version linkage
 //
