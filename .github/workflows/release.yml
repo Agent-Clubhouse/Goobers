@@ -889,9 +889,28 @@ jobs:
             exit 1
           fi
           grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
-          grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
+          # The packaged quickstart is rewritten differently for a pre-release
+          # (#4978): install.sh refuses pre-release tags, so the guide points at
+          # the extracted archive's ./goobers rather than a PATH-installed
+          # goobers-<tag>. These assertions were written for the stable wording
+          # only, which made them unsatisfiable for exactly the tags an RC uses
+          # and blocked the release rather than catching anything.
+          #
+          # Both branches assert the NEGATIVE as well: the wording that belongs
+          # to the other shape must be absent, so a generator that stops
+          # distinguishing them fails here instead of silently telling
+          # pre-release users to run a binary install.sh never installed.
+          if [[ "$TAG" == *-* ]]; then
+            grep --fixed-strings "This pre-release \`${TAG}\`" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "./goobers --version" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "./goobers init --demo ./demo-instance" smoke/docs/guides/quickstart.md
+            ! grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
+          else
+            grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
+            grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
+            ! grep --fixed-strings "This pre-release \`${TAG}\`" smoke/docs/guides/quickstart.md
+          fi
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
           test -f smoke/onboarding/manifest.json
@@ -906,14 +925,54 @@ jobs:
           goobers init --allow-ephemeral --template=quickstart smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
           # The shipped, credential-free mock demo is trusted test content.
-          # Exercise the documented opt-in on CI hosts without user namespaces.
+          # --insecure governs init's own host check only; it does not relax the
+          # runtime network isolation asserted below.
           goobers init --allow-ephemeral --demo --insecure smoke/demo-instance
-          GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo smoke/demo-instance | tee smoke/demo-result.txt
+          # Run the DEFAULT isolated-network path, with no opt-out (#4888).
+          # Release smoke previously passed GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1
+          # unconditionally, so the path that actually ships as the default was
+          # never exercised here and a regression in it could not fail this job.
+          #
+          # On Linux that variable is only consulted when the host RESTRICTS
+          # unprivileged user namespaces (internal/executor/network_linux.go):
+          # a hosted runner that permits them runs genuinely isolated without
+          # it. Measured on this runner, it does — so requiring success here
+          # asserts real isolation rather than the degraded fallback.
+          #
+          # If a future runner image restricts user namespaces this fails
+          # loudly, which is the correct direction for a release gate: the
+          # documented escape (GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1) is then
+          # an explicit edit someone makes knowingly, not a silent degradation
+          # that quietly stops testing the shipped default.
+          goobers run demo smoke/demo-instance | tee smoke/demo-result.txt
           grep --fixed-strings "phase=completed" smoke/demo-result.txt
           grep --fixed-strings "  goobers_portal_${TAG}.tar.gz" dist/SHA256SUMS
           mkdir smoke/portal
           tar -xzf "dist/goobers_portal_${TAG}.tar.gz" -C smoke/portal
+          # `test -s index.html` was the ONLY assertion this artifact ever got
+          # (#4888): a non-empty check on one file, while the onboarding zip
+          # above gets a real recursive diff. The packer now verifies the
+          # archive against the assets it collected; this checks the published
+          # artifact is internally coherent, which is what only a consumer can
+          # see - every local asset index.html references must be present, so a
+          # truncated archive or a dropped hashed-asset directory fails here.
           test -s smoke/portal/index.html
+          portal_refs="$(grep -o -E '(src|href)="[^"]+\.(js|css)"' smoke/portal/index.html \
+            | sed -E 's/^(src|href)="//; s/"$//' | sort -u)"
+          if [[ -z "$portal_refs" ]]; then
+            echo "portal index.html references no local script or stylesheet" >&2
+            exit 1
+          fi
+          while IFS= read -r ref; do
+            case "$ref" in
+              *://*) continue ;;
+            esac
+            if [[ ! -f "smoke/portal/${ref#/}" ]]; then
+              echo "portal archive is missing an asset index.html references: $ref" >&2
+              exit 1
+            fi
+          done <<< "$portal_refs"
+          echo "portal archive: every local asset index.html references is present"
           test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
           mkdir generated-docs
           goobers __generate-docs generated-docs
@@ -1135,7 +1194,20 @@ jobs:
           # Original notes are part of the signer artifact but aren't checksummed or
           # published. Only the separate validation job's generated notes are attached.
           bounded_read(directory / "RELEASE_NOTES.md", 1 << 20).decode("utf-8")
-          bounded_read(notes / "RELEASE_NOTES.md", 1 << 20).decode("utf-8")
+          published_notes = bounded_read(notes / "RELEASE_NOTES.md", 1 << 20).decode("utf-8")
+          # Cover the PUBLISHED notes in the manifest (#4886). This has to
+          # happen here, after validation, and against notes/ rather than
+          # dist/: the two files differ. The signer artifact's copy is an
+          # earlier draft that is never attached, while the one consumers
+          # download is regenerated by the validation job. Checksumming the
+          # dist/ copy would publish a digest for a file nobody receives.
+          #
+          # Appending after the exact-set check above is deliberate too: that
+          # check proves the manifest covers precisely the signed asset set,
+          # and adding the notes entry beforehand would make it refuse.
+          notes_digest = hashlib.sha256((notes / "RELEASE_NOTES.md").read_bytes()).hexdigest()
+          with (directory / "SHA256SUMS").open("a", encoding="ascii") as manifest_file:
+              manifest_file.write(f"{notes_digest}  RELEASE_NOTES.md\n")
           assets = [str(directory / name) for name in sorted(expected)]
           assets.extend((str(directory / "SHA256SUMS"), str(notes / "RELEASE_NOTES.md")))
           Path("publish-assets.txt").write_text("\n".join(assets) + "\n", encoding="utf-8")

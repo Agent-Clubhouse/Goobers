@@ -199,6 +199,7 @@ func TestAbandonReservationClosesTheRunItReserved(t *testing.T) {
 
 	var started, finished, cause int
 	var finishedStatus string
+	var finishedDisposition string
 	var causeText string
 	for _, op := range abandoned.Ops {
 		if op.Event == nil {
@@ -210,6 +211,7 @@ func TestAbandonReservationClosesTheRunItReserved(t *testing.T) {
 		case journal.EventRunFinished:
 			finished++
 			finishedStatus = op.Event.Status
+			finishedDisposition = op.Event.Disposition
 		case journal.EventError:
 			if op.Event.Error != nil && op.Event.Error.Code == "run_failed" {
 				cause++
@@ -225,6 +227,9 @@ func TestAbandonReservationClosesTheRunItReserved(t *testing.T) {
 	}
 	if finishedStatus != string(journal.PhaseFailed) {
 		t.Errorf("terminal status = %q, want %q — the workflow never started, so the run failed", finishedStatus, journal.PhaseFailed)
+	}
+	if finishedDisposition != journal.RunDispositionProduced {
+		t.Errorf("terminal disposition = %q, want %q", finishedDisposition, journal.RunDispositionProduced)
 	}
 	if cause != 1 || causeText != "temporal frontend unavailable" {
 		t.Errorf("run_failed cause = %d/%q, want the start failure text", cause, causeText)

@@ -259,11 +259,11 @@ func init() {
 		coreCommand("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
-			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos"),
+			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("lint", apicontract.ActionConfigTime, runLint).
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
-			withExamples("goobers lint", "goobers lint --json", "goobers lint --check-harness --check-repos"),
+			withExamples("goobers lint", "goobers lint --json", "goobers lint --check-harness --check-repos", "goobers lint --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("fix", apicontract.ActionConfigTime, runFix).
 			withSynopsis(synopsisByID["fix"]).
 			withHelp("mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)", fixHelp).
@@ -340,7 +340,11 @@ func init() {
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.1.0"),
+			// The manual example must name a target the ordering guard can
+			// actually accept (#4887). It previously pinned v0.1.0, which
+			// every build since has been newer than, so the shipped example
+			// failed verbatim for every reader who ran it.
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.0"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",

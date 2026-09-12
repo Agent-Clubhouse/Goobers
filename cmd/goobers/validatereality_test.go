@@ -206,7 +206,8 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 				}},
 			}
 			report := &validate.Report{}
-			warnings := appendStaticRealityWarnings("", "config", &instance.Config{Repos: tc.repos}, set, nil, report, false)
+			warnings := appendStaticRealityWarnings("", "config", instance.ConfigFileName,
+				&instance.Config{Repos: tc.repos}, set, nil, report, false, false)
 			if got := len(warnings); (got == 1) != tc.wantWarning {
 				t.Fatalf("warning count = %d, want warning %t: %#v", got, tc.wantWarning, warnings)
 			}
@@ -896,7 +897,8 @@ func TestAppendWindowsAVExclusionWarnings(t *testing.T) {
 			report := &validate.Report{}
 			cfg := &instance.Config{Runners: tc.runners}
 			var got []realityWarning
-			for _, w := range appendStaticRealityWarnings("", "config", cfg, set, nil, report, false) {
+			for _, w := range appendStaticRealityWarnings("", "config", instance.ConfigFileName,
+				cfg, set, nil, report, false, false) {
 				if w.warning.Code == validate.RunnerAVExclusionsUnverified {
 					got = append(got, w)
 				}
@@ -1032,7 +1034,8 @@ func TestAppendDaemonIdentitySlugWarning(t *testing.T) {
 			report := &validate.Report{}
 			cfg := &instance.Config{DaemonIdentity: tc.identity}
 			var got []realityWarning
-			for _, w := range appendStaticRealityWarnings("", "config", cfg, set, nil, report, false) {
+			for _, w := range appendStaticRealityWarnings("", "config", instance.ConfigFileName,
+				cfg, set, nil, report, false, false) {
 				if w.warning.Code == validate.WarningDaemonIdentityMissingSlug {
 					got = append(got, w)
 				}
@@ -1042,6 +1045,9 @@ func TestAppendDaemonIdentitySlugWarning(t *testing.T) {
 			}
 			if !tc.wantWarning {
 				return
+			}
+			if got[0].path != "/daemonIdentity/slug" {
+				t.Errorf("IDENT001 diagnostic path = %q, want /daemonIdentity/slug", got[0].path)
 			}
 			for _, want := range tc.wantText {
 				if !strings.Contains(got[0].warning.Explanation, want) {
@@ -1111,7 +1117,8 @@ func TestAppendCobrandAssetWarnings(t *testing.T) {
 			report := &validate.Report{}
 			cfg := &instance.Config{Portal: tc.portal}
 			var got []realityWarning
-			for _, w := range appendStaticRealityWarnings(root, "config", cfg, set, nil, report, false) {
+			for _, w := range appendStaticRealityWarnings(root, "config", filepath.Join(root, instance.ConfigFileName),
+				cfg, set, nil, report, false, false) {
 				if w.warning.Code == validate.WarningCobrandMissingLogoAsset ||
 					w.warning.Code == validate.WarningCobrandMissingFaviconAsset {
 					got = append(got, w)
@@ -1123,6 +1130,9 @@ func TestAppendCobrandAssetWarnings(t *testing.T) {
 			for i, want := range tc.wantCodes {
 				if got[i].warning.Code != want {
 					t.Errorf("warning %d code = %q, want %q", i, got[i].warning.Code, want)
+				}
+				if !strings.HasPrefix(got[i].path, "/portal/brand/") {
+					t.Errorf("warning %d diagnostic path = %q, want portal brand JSON pointer", i, got[i].path)
 				}
 			}
 			for _, want := range tc.wantText {

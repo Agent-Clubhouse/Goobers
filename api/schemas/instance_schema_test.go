@@ -622,6 +622,22 @@ func TestInstanceSchemaDescriptionsCarryTheColdStartTraps(t *testing.T) {
 	}
 }
 
+// Retention's local-branch rule is ancestry-only today (#4861). Keep that
+// limitation in the operator-facing schema until a separate policy decision
+// chooses authoritative squash/queue/legacy landing evidence.
+func TestInstanceSchemaDescribesLocalBranchRetentionLimit(t *testing.T) {
+	raw, err := FS.ReadFile("instance.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := string(raw)
+	for _, want := range []string{"requires Git ancestry", "squash", "merge-queue", "legacy", "may leave local branches behind"} {
+		if !strings.Contains(document, want) {
+			t.Errorf("instance schema no longer documents local branch retention limit %q", want)
+		}
+	}
+}
+
 // TestSchemaPatternsAreECMA262Portable guards against a Go-only regex
 // construct silently breaking every non-Go consumer of these schemas. JSON
 // Schema 2020-12 §6.4 mandates the ECMA-262 regex dialect for "pattern",

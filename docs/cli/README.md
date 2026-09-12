@@ -1805,7 +1805,7 @@ Exactly one mode is required per invocation.
 instance.yaml's schema revision. They are separate remedies over separate
 files, so they are never combined in one run.
 
-Mechanically migrate every workflow in a config directory (default path
+Mechanically migrate every workflow under an instance root (default path
 ".") from its current dslVersion to <version>, one registered version
 step at a time (DVL-6). Prints a reviewable unified diff per changed
 workflow file by default; --write applies the diff to each file in
@@ -2117,7 +2117,7 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--provider=github|ado] --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--repo <repository>] [--branch <name>] [--issue-scope=all|assigned] [--assigned-to <identity>] [--pr-ci | --ci-command <JSON-argv> --required-capabilities <list>] [--workflows <list>] [--provider=github|ado] [--repo-auth-kind <kind>] [--repo-token-env <name>] [--work-tracking-token-env <name>] [--pr-token-env <name>] [--push-token-env <name>] [--github-cli-user <name>] [--model-token-env <name>] [--harness <name>]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
@@ -2134,8 +2134,12 @@ For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new
 select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=standard non-interactively seeds backlog-curation and implementation
-with their three canonical personas. It requires an explicit --ci-command
-JSON argv array and comma-separated --required-capabilities (e.g. node@24).
+with their three canonical personas by default. Use --workflows to select
+implementation, backlog-curation, and/or work-nomination. --repo accepts a
+GitHub owner/name or Azure DevOps identity; --branch defaults to main.
+Implementation requires either --pr-ci or an explicit --ci-command JSON argv
+array plus comma-separated --required-capabilities (e.g. node@24).
+Use --issue-scope=assigned with --assigned-to to limit implementation work.
 Use --provider=ado for Azure DevOps placeholders and GOOBERS_ADO_TOKEN;
 the default provider is github. See docs/guides/ado-authentication.md.
 It creates placeholders: configure repository identity and credential refs
@@ -2268,15 +2272,17 @@ $ printf %s "$LEAKED" | goobers journal redact --run <id> --path inputs/creds.en
 lint config via the single authoritative validation engine (alias for validate)
 
 ~~~text
-Usage: goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
+Usage: goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]
 
 Lint an instance's instance.yaml and config/ directory (default path
 ".") against the single authoritative validation engine. This is an
 alias for `goobers validate`: identical flags, identical checks, and
 identical exit codes, so CI and local development share one validation
 path instead of drifting between ad-hoc checks. --source-tree lints a
-checked-in config source tree using instance.yaml.example and the path
-itself as config/. --json emits the same versioned findings envelope as
+checked-in config source tree, optionally solving against a real instance
+document supplied with --instance. Without it, placement and capability
+solving uses instance.yaml.example and is explicitly advisory. --json
+emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
 config-repo PR check. --strict treats warnings as validation errors. --check-harness additionally preflights every agent
@@ -2291,6 +2297,7 @@ codes: 0 = clean, 1 = findings, 2 = usage/IO error.
 $ goobers lint
 $ goobers lint --json
 $ goobers lint --check-harness --check-repos
+$ goobers lint --source-tree --instance /etc/goobers/instance.yaml ./config-repo
 ~~~
 
 ## `goobers mcp-io`
@@ -3696,7 +3703,13 @@ Stage and smoke-check a binary, then request supervised activation. Policies
 are manual, on-release (default), and on-main. Manual requires a release tag;
 on-main builds the configured branch. on-release resolves the newest stable
 release unless --include-prerelease is set, which considers all GitHub
-releases and only stages a target strictly newer than the running build.
+releases.
+
+EVERY policy refuses a target that is not strictly newer than the running
+build -- manual included. There is no downgrade flag and no rollback path
+here: self-update only moves forward, and a supervised update that turns
+out unhealthy is reverted by the supervisor's own rollback, not by staging
+an older tag. To move to an older build deliberately, install it directly.
 
 Releases are resolved from the canonical Goobers product repository
 (Agent-Clubhouse/Goobers) by default, independent of any workload
@@ -3709,7 +3722,7 @@ a private release mirror).
 
 ~~~console
 $ goobers self-update --policy on-release
-$ goobers self-update --policy manual --target v0.1.0
+$ goobers self-update --policy manual --target v0.5.0
 ~~~
 
 ## `goobers service`
@@ -4070,7 +4083,7 @@ $ goobers stats --since 24h --json
 validate config, show warnings, list runs, report daemon health, or list live agentic stages
 
 ~~~text
-Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
@@ -4080,6 +4093,8 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
+Manual-only workflows are summarized by default; use --all or --workflow to show
+their individual warnings, queue evidence, and workflow-summary rows. JSON stays exhaustive.
 At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle
 and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.
 It lists parked backlog items too — open issues carrying a park disposition without
@@ -4395,7 +4410,10 @@ is always active, and authenticated GitHub push deliveries wake it when
 webhook.secret is configured. Invalid revisions are rejected with the
 last-known-good definitions left running. Direct edits to the materialized
 config directory are watched by default; --watch-config=false explicitly
-disables that watcher. Existing runs retain their pinned definitions.
+disables that watcher. instance.yaml is loaded only at daemon startup and
+is never hot-reloaded; changes to it, including retention: and
+telemetry.retention:, require a daemon restart. Existing runs retain their
+pinned definitions.
 
 --diagnostics turns on deep, opt-in capture for hard hangs: any
 deterministic stage still running past a couple of minutes gets a
@@ -4454,16 +4472,16 @@ $ goobers update-behind-pr
 validate an instance or checked-in config source tree
 
 ~~~text
-Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
+Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). Placement findings (RNR001/RNR003) are errors when
 instance.yaml declares a runners: inventory that cannot satisfy some
 stage, and warnings otherwise. --source-tree validates a checked-in
-config source tree using instance.yaml.example and the path itself as
-config/; because the tree carries no real instance.yaml, its placement
-solve runs against the example inventory and is advisory-only
-(warnings, never errors). --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+config source tree and the path itself as config/. With --instance, its
+placement and capability solve uses that real instance document. Without
+--instance, the solve uses instance.yaml.example, is advisory-only
+(warnings, never errors), and the output states that limitation. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
@@ -4479,6 +4497,7 @@ a repository is larger than the checkout-size threshold. Exit codes:
 $ goobers validate
 $ goobers validate --json
 $ goobers validate --check-harness --check-repos
+$ goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo
 ~~~
 
 ## `goobers validate-plan`

@@ -75,7 +75,8 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		journal.EventClaimReleased,
 		journal.EventClaimForceReleased,
 		journal.EventClaimLockSlow,
-		journal.EventConfigReloaded:
+		journal.EventConfigReloaded,
+		journal.EventWorkerConfigDivergence:
 		return RunEventBookkeeping, false
 
 	case journal.EventRefTouched:

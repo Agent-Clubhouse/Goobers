@@ -12,7 +12,7 @@
     "deadcode": "node scripts/check-dead-code.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "tsc --noEmit -p tsconfig.e2e.json && playwright test",
+    "test:e2e": "npm run build && tsc --noEmit -p tsconfig.e2e.json && playwright test",
     "test:contract": "vitest run src/api/wireContract.test.ts src/api/authoringContract.test.ts",
     "preview": "vite preview"
   },

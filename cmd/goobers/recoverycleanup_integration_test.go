@@ -25,14 +25,17 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 		if terminal {
 			name = "standalone-terminal"
 		}
-		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false) })
+		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false, false, "main") })
 	}
-	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false) })
-	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true) })
-	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true) })
+	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false, false, "main") })
+	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, false, "main") })
+	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true, false, "main") })
+	t.Run("abandoned-preparation-missing-record", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, true, "main") })
+	t.Run("master-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, "master") })
+	t.Run("slash-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, false, "release/2026.09") })
 }
 
-func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned bool) {
+func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned, interruptRecord bool, baseBranch string) {
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -42,7 +45,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	previousCloneURL := repoCloneURL
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
 	t.Cleanup(func() { repoCloneURL = previousCloneURL })
-	recoveryCLIGit(t, source, "init", "--initial-branch=main")
+	recoveryCLIGit(t, source, "init", "--initial-branch="+baseBranch)
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	const runID = "cleanup-recovery"
 	startedAt := time.Now().UTC()
@@ -68,7 +71,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	option(manager) // A configuration reload must replace, not duplicate.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: "main", Branch: "goobers/implementation/" + runID})
+	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: baseBranch, Branch: "goobers/implementation/" + runID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +87,38 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		recoveryCLIGit(t, workspace.Path, "add", "implementation.txt")
 		recoveryCLIGit(t, workspace.Path, "commit", "-m", "Restore retained implementation for prior-run")
 		recoveryCLIGit(t, workspace.Path, "checkout", "goobers/implementation/"+runID)
+	}
+	if interruptRecord {
+		root, err := prepareRecoveryInventory(layout.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identities, err := recoveryRepositoryIdentities(cfg, func(apiv1.RepoRef) (string, error) { return source, nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		recoveryCfg := cfg.Retention.RecoveryEffective()
+		retainWindow, err := recoveryCfg.RetainWindowEffective()
+		if err != nil {
+			t.Fatal(err)
+		}
+		interrupted := errors.New("interrupt after retained publication")
+		request := recovery.RetentionRequest{
+			Repository: workspace.Path, RepositoryKey: identities[worktree.RepositoryDigest(source)], RunID: runID,
+			BaseRef: baseBranch, IdentityTime: startedAt, RetainUntil: startedAt.Add(retainWindow),
+			InventoryRoot: root, CleanupRoots: []string{workcopies},
+			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(),
+		}
+		if err := recovery.RetainAbandonedPreparation(ctx, request, recoveryCleanupTestJournal{err: interrupted}); !errors.Is(err, interrupted) {
+			t.Fatalf("seed interrupted recovery publication: %v", err)
+		}
+		entries, err := recovery.ReadInventory(ctx, root, recoveryCfg.MaxSnapshotsEffective())
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("inspect interrupted recovery publication: %+v %v", entries, err)
+		}
+		if err := os.Remove(entries[0].RecordPath); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if terminal {
 		if removeBeforeTerminal {
@@ -115,6 +150,15 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	}
 	if _, err := os.Stat(workspace.Path); !os.IsNotExist(err) {
 		t.Fatalf("acknowledged cleanup did not remove worktree: %v", err)
+	}
+	if interruptRecord {
+		retry, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: baseBranch, Branch: "goobers/implementation/" + runID})
+		if err != nil {
+			t.Fatalf("repaired cleanup left a self-colliding worktree branch: %v", err)
+		}
+		if err := retry.Remove(ctx, worktree.RemoveOptions{}); err != nil {
+			t.Fatalf("remove replacement worktree: %v", err)
+		}
 	}
 	entries, err := os.ReadDir(filepath.Join(layout.Root, "recovery"))
 	if err != nil {
@@ -171,6 +215,10 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 		}
 	}
 }
+
+type recoveryCleanupTestJournal struct{ err error }
+
+func (l recoveryCleanupTestJournal) Append(journal.Event) error { return l.err }
 
 func assertTerminalRecoveryConfigFailurePreservesWorktree(t *testing.T, layout instance.Layout, manager *worktree.Manager, runID, path string) {
 	t.Helper()

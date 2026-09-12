@@ -1023,6 +1023,103 @@ func TestManager_Create_AdoptsAndResetsExistingKey(t *testing.T) {
 	}
 }
 
+func TestManager_CreateFailedBeforeWorktreeExistsSkipsCleanupGuards(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	var guardCalls int
+	m, err := NewManager(t.TempDir(), WithMutationReceiptCleanup(func(context.Context, CleanupTarget) error {
+		guardCalls++
+		return errors.New("mutation cleanup must not inspect an absent failed-create path")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		guardCalls++
+		return errors.New("recovery cleanup must not inspect an absent failed-create path")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "failed-before-add"
+	_, err = m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, OwnerRunID: "owner", BaseRef: "refs/heads/does-not-exist",
+	})
+	if err == nil || !strings.Contains(err.Error(), "create for run "+runID) {
+		t.Fatalf("Create error = %v, want the original git worktree add failure", err)
+	}
+	if strings.Contains(err.Error(), "clean up failed create") {
+		t.Fatalf("Create manufactured a cleanup failure for an absent worktree: %v", err)
+	}
+	if guardCalls != 0 {
+		t.Fatalf("cleanup guard calls = %d, want 0 for an absent, unregistered target", guardCalls)
+	}
+
+	key := repoKey(repo)
+	directory := worktreeDirectoryName(runID)
+	path := filepath.Join(m.runsDirForKey(key), directory)
+	for _, metadata := range []string{m.markerPath(key, runID), m.ownershipPath(key, directory)} {
+		if _, statErr := os.Lstat(metadata); !os.IsNotExist(statErr) {
+			t.Fatalf("failed-create metadata survived at %s: %v", metadata, statErr)
+		}
+	}
+	if registered, inspectErr := worktreeRegistered(ctx, m.repoDirForKey(key), path); inspectErr != nil || registered {
+		t.Fatalf("failed target registration = %v, %v; want absent", registered, inspectErr)
+	}
+}
+
+func TestCleanupFailedCreateKeepsGuardForPossibleSourceState(t *testing.T) {
+	for _, removeDirectory := range []bool{false, true} {
+		name := "path-on-disk"
+		if removeDirectory {
+			name = "registered-without-directory"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			repo := newSourceRepo(t)
+			m := newTestManager(t)
+			wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "partial-create", OwnerRunID: "owner", BaseRef: "main"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if removeDirectory {
+				if err := os.RemoveAll(wt.Path); err != nil {
+					t.Fatal(err)
+				}
+				registered, inspectErr := worktreeRegistered(ctx, m.repoDirForKey(wt.key), wt.Path)
+				if inspectErr != nil || !registered {
+					list, _ := runCleanupGitOutput(ctx, m.repoDirForKey(wt.key), "worktree list", "worktree", "list", "--porcelain")
+					t.Fatalf("fixture registration = %v, %v; path=%q list=%q", registered, inspectErr, wt.Path, list)
+				}
+			}
+
+			blocked := errors.New("durable handoff unavailable")
+			var targets []CleanupTarget
+			if err := m.SetCleanupGuard("recovery", func(_ context.Context, target CleanupTarget) error {
+				targets = append(targets, target)
+				return blocked
+			}); err != nil {
+				t.Fatal(err)
+			}
+			err = m.cleanupFailedCreate(ctx, wt.key, wt.Path, wt.RunID)
+			if !errors.Is(err, blocked) || !errors.Is(err, ErrCleanupDeferred) {
+				t.Fatalf("cleanupFailedCreate error = %v, want fail-closed guard error", err)
+			}
+			if len(targets) != 1 || targets[0].Path != wt.Path || targets[0].WorktreeID != wt.RunID || targets[0].OwnerRunID != "owner" {
+				t.Fatalf("cleanup guard targets = %+v, want exact failed-create ownership", targets)
+			}
+			if _, err := readMarker(m.markerPath(wt.key, wt.RunID)); err != nil {
+				t.Fatalf("fail-closed cleanup removed marker: %v", err)
+			}
+			registered, err := worktreeRegistered(ctx, m.repoDirForKey(wt.key), wt.Path)
+			if err != nil || !registered {
+				list, _ := runCleanupGitOutput(ctx, m.repoDirForKey(wt.key), "worktree list", "worktree", "list", "--porcelain")
+				t.Fatalf("fail-closed cleanup registration = %v, %v; want preserved; path=%q list=%q", registered, err, wt.Path, list)
+			}
+		})
+	}
+}
+
 func TestManager_CreateUsesFixedLengthDirectoryAndPreservesFullIDs(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)
@@ -1054,7 +1151,7 @@ func TestManager_CreateUsesFixedLengthDirectoryAndPreservesFullIDs(t *testing.T)
 		if err != nil {
 			t.Fatalf("read marker for %q: %v", runID, err)
 		}
-		if mk.RunID != runID || mk.OwnerRunID != "full-owner-run-id" || mk.Directory != directory || mk.Writer != "worker-pod-a" {
+		if mk.RunID != runID || mk.OwnerRunID != "full-owner-run-id" || mk.Directory != directory || mk.BaseRef != "refs/heads/main" || mk.Writer != "worker-pod-a" {
 			t.Fatalf("marker lost ownership identity: %+v", mk)
 		}
 		directories = append(directories, directory)

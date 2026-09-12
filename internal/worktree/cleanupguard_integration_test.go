@@ -83,7 +83,7 @@ func TestIntegrationCleanupHandoffPrecedesRollbackAndDeletion(t *testing.T) {
 			if data, err := os.ReadFile(acquisition); err != nil || string(data) != "branch acquisition evidence" {
 				t.Fatalf("branch acquisition evidence lost: %q %v", data, err)
 			}
-			if len(targets) != 1 || targets[0] != (CleanupTarget{Path: wt.Path, WorktreeID: wt.RunID, OwnerRunID: "owner", Gaggle: "issue:42", RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt}) || mk.RepositoryDigest == "" || mk.CreatedAt.IsZero() {
+			if len(targets) != 1 || targets[0] != (CleanupTarget{Path: wt.Path, WorktreeID: wt.RunID, OwnerRunID: "owner", Gaggle: "issue:42", BaseRef: "refs/heads/main", RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt}) || mk.RepositoryDigest == "" || mk.CreatedAt.IsZero() {
 				t.Fatalf("incorrect handoff identity: %+v", targets)
 			}
 			deny = false

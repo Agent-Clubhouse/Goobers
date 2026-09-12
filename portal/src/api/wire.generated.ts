@@ -191,6 +191,16 @@ export const goWireFixtures = {
         "explanation": "fixture warning"
       }
     ],
+    "telemetryRetention": {
+      "enabled": true,
+      "window": "90d",
+      "maxRuns": 500,
+      "firstEnable": "gracePeriod",
+      "enforceAt": "2026-07-18T12:36:56Z",
+      "lastPassAt": "2026-07-18T12:32:56Z",
+      "lastPassMode": "dry-run",
+      "candidateCount": 7
+    },
     "memoryGateEnabled": false,
     "fsyncDisabled": false,
     "fleetEnrolled": false
@@ -598,7 +608,7 @@ export const goWireFixtures = {
           },
           "currentStage": "review",
           "liveness": "terminal",
-          "trajectory": "parked",
+          "trajectory": "terminal",
           "claim": {
             "leaseStatus": "released",
             "providerMarker": "recorded"
@@ -673,7 +683,7 @@ export const goWireFixtures = {
       },
       "currentStage": "review",
       "liveness": "terminal",
-      "trajectory": "parked",
+      "trajectory": "terminal",
       "claim": {
         "leaseStatus": "released",
         "providerMarker": "recorded"

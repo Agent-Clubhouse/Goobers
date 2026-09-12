@@ -111,7 +111,7 @@ func TestIntegrationPinnedCustodyTransfersOnlyAfterAcknowledgement(t *testing.T)
 		t.Fatal("replacement skipped handoff")
 	}
 	owner, err := readMarker(filepath.Join(manager.pinnedRoot, repoKey(repo), pinnedCustodyFile))
-	if err != nil || owner.OwnerRunID != "next-run" || owner.RepositoryDigest != RepositoryDigest(repo) {
+	if err != nil || owner.OwnerRunID != "next-run" || owner.BaseRef != "refs/remotes/mirror/main" || owner.RepositoryDigest != RepositoryDigest(repo) {
 		t.Fatalf("new custody not published: %+v %v", owner, err)
 	}
 }

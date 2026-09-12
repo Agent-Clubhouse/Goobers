@@ -386,10 +386,22 @@ export interface Instance extends ContractVersion {
   counts: InventoryCounts;
   warnings: ValidationWarning[];
   maintenance?: MaintenanceStatus;
+  telemetryRetention?: TelemetryRetentionStatus;
   memoryHighWater?: number;
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
   fleetEnrolled: boolean;
+}
+
+export interface TelemetryRetentionStatus {
+  enabled: boolean;
+  window: string;
+  maxRuns: number;
+  firstEnable: string;
+  enforceAt?: string;
+  lastPassAt?: string;
+  lastPassMode?: string;
+  candidateCount: number;
 }
 
 export type MaintenanceState = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";

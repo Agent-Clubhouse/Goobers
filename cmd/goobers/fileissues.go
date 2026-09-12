@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/nomination"
 	"github.com/goobers/goobers/providers"
@@ -476,7 +475,7 @@ func fileIssuesPolicy() (nomination.Policy, error) {
 // shape, the only one a stage pod can use); the checkFile result on disk;
 // the checkStage's result recorded in the run journal (a self runner).
 func bindFileIssuesCheck(root, digest string) error {
-	if bound, present := os.LookupEnv(executor.InputEnvVar("checkDigest")); present {
+	if bound, present := providerInputLookup("checkDigest"); present {
 		switch strings.TrimSpace(bound) {
 		case "":
 			return errors.New("refusing to file nominations that file-issues --check did not mark valid (checkDigest input is empty)")

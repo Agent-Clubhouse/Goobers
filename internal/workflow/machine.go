@@ -91,5 +91,5 @@ func SupportsStageQualifiedInputs(m *Machine) bool {
 	if m == nil {
 		return false
 	}
-	return m.Def.DSLVersion != supportmatrix.CurrentDSLVersion
+	return m.Def.DSLVersion != supportmatrix.V1DSLVersion
 }

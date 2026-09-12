@@ -26,7 +26,7 @@ package engine
 // Both fixtures are DSL 2.0 (backlog-curation's own version), which
 // SupportsStageQualifiedInputs admits — the feature is live for every remaining
 // DSL version, so this is not a preview-only shape. The DSL GATE itself (a
-// CurrentDSLVersion lane must keep reading a dotted value as a bare key) is
+// V1DSLVersion lane must keep reading a dotted value as a bare key) is
 // pinned by TestStageQualifiedInputsAreDSLGated in inputsfrom_test.go, because
 // it needs a definition the parity fixtures deliberately cannot express.
 

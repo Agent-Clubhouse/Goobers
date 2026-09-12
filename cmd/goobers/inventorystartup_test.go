@@ -38,7 +38,7 @@ func (r *heldInitialCountReader) ActiveRunCounts(ctx context.Context) ([]readmod
 }
 
 func TestDaemonReadinessWaitsForInitialActiveCounts(t *testing.T) {
-	for _, mode := range []string{"success", "sample-error", "canceled"} {
+	for _, mode := range []string{"success", "sample-error", "shutdown-before-readiness"} {
 		t.Run(mode, func(t *testing.T) { testDaemonInitialCounts(t, mode) })
 	}
 }
@@ -119,7 +119,7 @@ func testDaemonInitialCounts(t *testing.T, mode string) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	getStartupJSON(t, client, address, httpapi.ReadinessPath, http.StatusServiceUnavailable, &readiness)
-	if mode == "canceled" {
+	if mode == "shutdown-before-readiness" {
 		cancel()
 	} else {
 		close(held.release)
@@ -151,7 +151,14 @@ func testDaemonInitialCounts(t *testing.T, mode string) {
 			}
 			return
 		}
-		if code == 0 || !strings.Contains(stderr.String(), "error: initialize active-run counts:") {
+		if mode == "shutdown-before-readiness" {
+			if code != 0 {
+				t.Fatalf("pre-readiness shutdown code=%d, want documented clean-shutdown code 0; stderr=%s", code, stderr.String())
+			}
+			if strings.Contains(stderr.String(), "error: initialize active-run counts:") {
+				t.Fatalf("clean pre-readiness shutdown reported a startup failure: %s", stderr.String())
+			}
+		} else if code == 0 || !strings.Contains(stderr.String(), "error: initialize active-run counts:") {
 			t.Fatalf("startup failure code=%d stderr=%s", code, stderr.String())
 		}
 		select {

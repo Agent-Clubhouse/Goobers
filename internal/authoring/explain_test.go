@@ -87,7 +87,7 @@ func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 
 // TestExplainResolvesNewerVersionSelectors pins #3291's fix: selectors backed
 // by features that exist only in a NEWER loadable DSL version than the
-// transitional CurrentDSLVersion must explain, with a concrete lifecycle —
+// transitional V1DSLVersion must explain, with a concrete lifecycle —
 // before the fix every one of these returned ErrUnavailableSelector, and the
 // coverage test skipped exactly that error, so the whole 2.0-only authoring
 // surface was dark with green CI.

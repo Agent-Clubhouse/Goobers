@@ -11,7 +11,7 @@ const (
 	ciPollTaskKind = "ci-poll"
 )
 
-// applyCurrentToNext implements the DVL-5 (#865, PR #1353) v_current→v_2_0
+// applyV14ToV20 implements the DVL-5 (#865, PR #1353) v_current→v_2_0
 // edge's one concrete semantic delta: internal/workflow/v_2_0's ci-poll
 // input builder injects a "10s" pollIntervalSeconds default onto a ci-poll
 // task's invocation whenever its downstream automated gate leaves
@@ -23,7 +23,7 @@ const (
 // — pinning `automated.pollIntervalSeconds: 10` on every such gate — so the
 // compiled behavior is identical immediately before and after the version
 // bump, and the change is visible in the migration diff for review.
-func applyCurrentToNext(_ []byte, root *yaml.Node) (bool, []string, error) {
+func applyV14ToV20(_ []byte, root *yaml.Node) (bool, []string, error) {
 	var notes []string
 	changed := false
 	spec, _ := mapValue(root, "spec")

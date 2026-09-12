@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -374,17 +375,17 @@ func stageReleaseDocs(version, commit, ldflags string) (string, func(), error) {
 	}
 	// Runs last: it decides by what the payload actually contains, so every
 	// other staging step must already have put its files there.
-	if err := pinUnresolvableReadmeLinks(payloadDir, version); err != nil {
+	if err := pinUnresolvablePayloadLinks(payloadDir, version); err != nil {
 		cleanup()
 		return "", nil, err
 	}
-	if broken, err := unresolvableReadmeLinks(payloadDir); err != nil {
+	if broken, err := unresolvablePayloadLinks(payloadDir); err != nil {
 		cleanup()
 		return "", nil, err
 	} else if len(broken) > 0 {
 		cleanup()
 		return "", nil, fmt.Errorf(
-			"packaged README still links to %d path(s) the archive does not contain: %s",
+			"packaged documentation still links to %d path(s) the archive does not contain: %s",
 			len(broken), strings.Join(broken, ", "))
 	}
 	return payloadDir, cleanup, nil
@@ -421,7 +422,7 @@ var markdownRelativeLinkPattern = regexp.MustCompile(`\]\(([^)\s#][^)\s]*)\)`)
 // release fails and names it instead of shipping it.
 var markdownReferenceLinkPattern = regexp.MustCompile(`(?m)^\[[^\]]+\]:[ \t]+(\S+)`)
 
-// pinUnresolvableReadmeLinks rewrites the packaged README's repository-relative
+// pinUnresolvablePayloadLinks rewrites the packaged documentation's repository-relative
 // links that do not resolve inside the archive into blob URLs pinned at this
 // release's tag (#4268).
 //
@@ -437,59 +438,185 @@ var markdownReferenceLinkPattern = regexp.MustCompile(`(?m)^\[[^\]]+\]:[ \t]+(\S
 // for a document a user reads months later beside a binary of this vintage —
 // main will have moved, and the file the link describes may not be there at
 // all.
-func pinUnresolvableReadmeLinks(payloadDir, version string) error {
-	readme := filepath.Join(payloadDir, "README.md")
-	data, err := os.ReadFile(readme)
+func pinUnresolvablePayloadLinks(payloadDir, version string) error {
+	files, err := payloadMarkdownFiles(payloadDir)
 	if err != nil {
-		return fmt.Errorf("read packaged README for link pinning: %w", err)
+		return err
 	}
-	rewritten := markdownRelativeLinkPattern.ReplaceAllStringFunc(string(data), func(match string) string {
-		target := markdownRelativeLinkPattern.FindStringSubmatch(match)[1]
-		if readmeLinkResolves(payloadDir, target) {
-			return match
+	for _, rel := range files {
+		path := filepath.Join(payloadDir, filepath.FromSlash(rel))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read packaged %s for link pinning: %w", rel, err)
 		}
-		return fmt.Sprintf("](%s)", releaseBlobURL(version, target))
-	})
-	if err := os.WriteFile(readme, []byte(rewritten), 0o644); err != nil {
-		return fmt.Errorf("write packaged README after link pinning: %w", err)
+		rewritten := rewritePayloadLinks(string(data), payloadDir, rel, version)
+		if rewritten == string(data) {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(rewritten), 0o644); err != nil {
+			return fmt.Errorf("write packaged %s after link pinning: %w", rel, err)
+		}
 	}
 	return nil
 }
 
-// unresolvableReadmeLinks lists the packaged README's repository-relative link
-// targets that do not exist in payloadDir. It is the assertion behind the
+// rewritePayloadLinks pins every unresolvable relative link in one payload
+// document, leaving fenced code blocks alone.
+//
+// The fence skip is load-bearing now that this walks the whole payload rather
+// than one README: the documentation tree is full of fenced markdown samples,
+// and rewriting a link inside one would corrupt the example it exists to show
+// rather than fix anything. Inline code spans are not skipped — a bracketed
+// link inside backticks is rare enough not to justify a second parser, and
+// pinning one would still produce a working URL.
+func rewritePayloadLinks(content, payloadDir, rel, version string) string {
+	lines := strings.Split(content, "\n")
+	fenced := false
+	for i, line := range lines {
+		if isMarkdownFence(line) {
+			fenced = !fenced
+			continue
+		}
+		if fenced {
+			continue
+		}
+		lines[i] = markdownRelativeLinkPattern.ReplaceAllStringFunc(line, func(match string) string {
+			target := markdownRelativeLinkPattern.FindStringSubmatch(match)[1]
+			resolved, ok := resolvePayloadLink(payloadDir, rel, target)
+			if ok {
+				return match
+			}
+			return fmt.Sprintf("](%s)", releaseBlobURL(version, resolved))
+		})
+	}
+	return strings.Join(lines, "\n")
+}
+
+// isMarkdownFence reports whether a line opens or closes a fenced code block.
+func isMarkdownFence(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+}
+
+// payloadMarkdownFiles lists every markdown document in the payload, as
+// slash-separated paths relative to its root.
+func payloadMarkdownFiles(payloadDir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(payloadDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
+			return nil
+		}
+		rel, err := filepath.Rel(payloadDir, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk payload documentation: %w", err)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// unresolvablePayloadLinks lists every relative link target in the payload's
+// markdown that the archive does not contain. It is the assertion behind the
 // staging failure: the pin above is the fix, and this is the proof that it
 // covered every case, evaluated against the payload actually produced rather
-// than against the repository tree.
-func unresolvableReadmeLinks(payloadDir string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(payloadDir, "README.md"))
+// than against the repository tree — where these targets do resolve, which is
+// precisely why the repository's own link checker never sees this class of
+// defect.
+func unresolvablePayloadLinks(payloadDir string) ([]string, error) {
+	files, err := payloadMarkdownFiles(payloadDir)
 	if err != nil {
-		return nil, fmt.Errorf("read packaged README for link check: %w", err)
+		return nil, err
 	}
 	var broken []string
-	for _, pattern := range []*regexp.Regexp{markdownRelativeLinkPattern, markdownReferenceLinkPattern} {
-		for _, match := range pattern.FindAllStringSubmatch(string(data), -1) {
-			if target := match[1]; !readmeLinkResolves(payloadDir, target) {
-				broken = append(broken, target)
+	for _, rel := range files {
+		data, err := os.ReadFile(filepath.Join(payloadDir, filepath.FromSlash(rel)))
+		if err != nil {
+			return nil, fmt.Errorf("read packaged %s for link check: %w", rel, err)
+		}
+		fenced := false
+		for _, line := range strings.Split(string(data), "\n") {
+			if isMarkdownFence(line) {
+				fenced = !fenced
+				continue
+			}
+			if fenced {
+				continue
+			}
+			for _, pattern := range []*regexp.Regexp{markdownRelativeLinkPattern, markdownReferenceLinkPattern} {
+				for _, match := range pattern.FindAllStringSubmatch(line, -1) {
+					if _, ok := resolvePayloadLink(payloadDir, rel, match[1]); !ok {
+						broken = append(broken, rel+" -> "+match[1])
+					}
+				}
 			}
 		}
 	}
 	return broken, nil
 }
 
-// readmeLinkResolves reports whether a markdown link target names something the
-// payload contains. A target carrying a scheme is somebody else's problem; one
-// carrying a fragment is checked by its path alone.
-func readmeLinkResolves(payloadDir, target string) bool {
+// resolvePayloadLink resolves target as written inside the document at rel,
+// returning the payload-relative path it names and whether the payload
+// contains it.
+//
+// Resolution is relative to the LINKING DOCUMENT's directory, not the payload
+// root. That distinction did not exist while only the root README was pinned,
+// and it is the whole difficulty of covering the tree: "../reference/x.md" in
+// docs/guides/ names docs/reference/x.md, and checking it against the root
+// would both miss real breakage and rewrite links that work.
+//
+// The payload mirrors the repository layout for everything it carries (docs/,
+// the onboarding tree, and the root files), so the payload-relative path it
+// returns is also the repository-relative path a blob URL needs.
+func resolvePayloadLink(payloadDir, rel, target string) (string, bool) {
 	if strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
-		return true
+		return target, true
 	}
-	path, _, _ := strings.Cut(target, "#")
-	if path == "" {
-		return true
+	linkPath, fragment, hasFragment := strings.Cut(target, "#")
+	if linkPath == "" {
+		// A same-document fragment names no file.
+		return target, true
 	}
-	_, err := os.Stat(filepath.Join(payloadDir, filepath.FromSlash(path)))
-	return err == nil
+	var resolved string
+	if strings.HasPrefix(linkPath, "/") {
+		resolved = strings.TrimPrefix(linkPath, "/")
+	} else {
+		resolved = path.Join(path.Dir(rel), linkPath)
+	}
+	resolved = path.Clean(resolved)
+	// A link escaping the payload root cannot be satisfied by the archive; it
+	// names something only the repository has. Clamp the leading hops rather
+	// than carrying them into the URL: a link that climbs past the root is
+	// malformed in the repository too, and "blob/<tag>/../../internal/x" is a
+	// broken URL, whereas the clamped path is the one the author meant.
+	for resolved == ".." || strings.HasPrefix(resolved, "../") {
+		if resolved == ".." {
+			resolved = ""
+			break
+		}
+		resolved = strings.TrimPrefix(resolved, "../")
+	}
+	if resolved == "" {
+		return withFragment(strings.TrimPrefix(linkPath, "./"), fragment, hasFragment), false
+	}
+	if _, err := os.Stat(filepath.Join(payloadDir, filepath.FromSlash(resolved))); err != nil {
+		return withFragment(resolved, fragment, hasFragment), false
+	}
+	return withFragment(resolved, fragment, hasFragment), true
+}
+
+func withFragment(path, fragment string, hasFragment bool) string {
+	if hasFragment {
+		return path + "#" + fragment
+	}
+	return path
 }
 
 // releaseBlobURL renders the canonical GitHub blob URL for a repository path at
@@ -506,6 +633,49 @@ func releaseBlobURL(version, target string) string {
 
 func adaptInstalledOnboarding(payloadDir, version string) error {
 	releaseCommand := "goobers-" + version
+	prerelease := strings.Contains(version, "-")
+	if prerelease {
+		releaseCommand = "./goobers"
+	}
+	readmeOnboarding := fmt.Sprintf(
+		"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
+			"a newer release cannot change this walkthrough:\n\n"+
+			"```sh\n%s --version\n```\n\n",
+		version,
+		releaseCommand,
+	)
+	readmeSetup := fmt.Sprintf(
+		"The release installer installs the binary and documentation only. Start setup with\n"+
+			"`goobers init --guided` after installation.\n\n"+
+			"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
+			"below with `./goobers`:\n\n",
+		releaseCommand,
+	)
+	quickstartConfirmation := fmt.Sprintf(
+		"## Confirm the installed binary\n\n"+
+			"This copy is bundled with release `%s` and uses its versioned executable from `PATH`.\n\n"+
+			"```sh\n%s --version\n```\n\n",
+		version,
+		releaseCommand,
+	)
+	if prerelease {
+		readmeOnboarding = fmt.Sprintf(
+			"This copy is bundled with pre-release `%s`. The stable installer does not install\n"+
+				"pre-releases, so run the binary from the extracted archive directory:\n\n"+
+				"```sh\n%s --version\n```\n\n",
+			version,
+			releaseCommand,
+		)
+		readmeSetup = "This pre-release is distributed for manual archive extraction. From the directory\n" +
+			"containing the extracted binary, start setup directly:\n\n"
+		quickstartConfirmation = fmt.Sprintf(
+			"## Confirm the extracted binary\n\n"+
+				"This pre-release `%s` uses the binary in the manually extracted archive directory.\n\n"+
+				"```sh\n%s --version\n```\n\n",
+			version,
+			releaseCommand,
+		)
+	}
 	rewrites := []struct {
 		path                 string
 		sections             []onboardingSectionRewrite
@@ -521,11 +691,8 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 				},
 				{
 					source: readmeSourceInstall,
-					installed: fmt.Sprintf(
-						"This copy is bundled with release `%s`. Use its versioned command so installing\n"+
-							"a newer release cannot change this walkthrough:\n\n"+
-							"```sh\n%s --version\n```\n\n"+
-							"The fastest first run is the hermetic demo:\n\n"+
+					installed: readmeOnboarding + fmt.Sprintf(
+						"The fastest first run is the hermetic demo:\n\n"+
 							"```sh\n"+
 							"%s init --demo ./demo-instance\n"+
 							"%s run demo ./demo-instance\n"+
@@ -540,17 +707,11 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"production-oriented definitions under\n"+
 							"[`config-examples/`](onboarding/templates/canonical/README.md).\n\n"+
 							"The [full quickstart](docs/guides/quickstart.md) walks through that progression.\n\n"+
-							"The release installer installs the binary and documentation only. Start setup with\n"+
-							"`goobers init --guided` after installation.\n\n"+
-							"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
-							"below with `./goobers`:\n\n"+
+							readmeSetup+
 							"```sh\n"+
 							"%s init --guided\n"+
 							"%s run %s ./my-instance\n"+
 							"```\n",
-						version,
-						releaseCommand,
-						releaseCommand,
 						releaseCommand,
 						releaseCommand,
 						releaseCommand,
@@ -577,14 +738,8 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 					),
 				},
 				{
-					source: quickstartSourceBuild,
-					installed: fmt.Sprintf(
-						"## Confirm the installed binary\n\n"+
-							"This copy is bundled with release `%s` and uses its versioned executable from `PATH`.\n\n"+
-							"```sh\n%s --version\n```\n\n",
-						version,
-						releaseCommand,
-					),
+					source:    quickstartSourceBuild,
+					installed: quickstartConfirmation,
 				},
 				{
 					source:    "../../config-examples/README.md",

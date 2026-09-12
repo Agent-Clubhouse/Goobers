@@ -67,9 +67,13 @@ func (w *workerSeams) publishWorkerRecovery(ctx context.Context, manager *worktr
 	if err != nil {
 		return err
 	}
+	baseRef, err := recoveryCleanupBaseRef(target)
+	if err != nil {
+		return err
+	}
 	publisher := recovery.HTTPArchivePublisher{BaseURL: emitter.BaseURL, Token: token, RunID: target.OwnerRunID, Client: emitter.Client}
 	request := recovery.RetentionRequest{
-		Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID, BaseRef: recoveryCleanupBaseRef(target),
+		Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID, BaseRef: baseRef,
 		IdentityTime: target.CreatedAt, RetainUntil: target.CreatedAt.Add(retainWindow),
 		InventoryRoot: root, CleanupRoots: []string{cleanupRoot},
 		MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(), SkipEmpty: true,

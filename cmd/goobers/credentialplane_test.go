@@ -318,6 +318,29 @@ func TestCredentialPlaneRefusesUnknownStageAndRun(t *testing.T) {
 	}
 }
 
+// TestCredentialPlaneResolvesEngineRunWithScopedAndLegacyProjections is the
+// credential-path regression for #4858. Engine runs temporarily appear twice:
+// the live gaggle-scoped journal is authoritative, while the flat journal is
+// a compatibility projection. Both are real directories, so SameFile cannot
+// deduplicate them.
+func TestCredentialPlaneResolvesEngineRunWithScopedAndLegacyProjections(t *testing.T) {
+	machine := compileCredentialPlaneMachine(t, credentialPlaneSpec())
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+	scoped := filepath.Join(service.layout.ForGaggle("web").RunsDir(), runID)
+	markRunYAMLEngineDriven(t, scoped)
+	createDriverRun(t, service.layout.RunsDir(), runID, machine.Def.Name, "web", journal.DriverEngine, time.Now(), nil)
+
+	resolved, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "implement", Capabilities: []string{"repo:push"},
+	})
+	if err != nil {
+		t.Fatalf("resolve credential for dual-projected engine run: %v", err)
+	}
+	if len(resolved.Credentials) != 1 || resolved.Credentials[0].Capability != "repo:push" {
+		t.Fatalf("resolved credentials = %+v, want the scoped run's repo:push grant", resolved.Credentials)
+	}
+}
+
 // TestCredentialPlaneVerifiesAgainstThePinnedDefinition proves the stage
 // identity is checked against the run's PINNED definition, not the currently
 // served one: a run pinned to a definition where implement declares only

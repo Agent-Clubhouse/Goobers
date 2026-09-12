@@ -62,5 +62,9 @@ without these adopter settings fails closed; it is not a ready-to-apply cluster.
 
 This floor fixes the namespace-policy mismatch, not multi-tenant isolation.
 Shared workers still share filesystem, service identity and other process
-resources across same-operator gaggles. Stage pods retain their separate
-per-runner-class policies in gaggle namespaces.
+resources across same-operator gaggles. The templates can give stage pods
+separate per-runner-class policies in gaggle namespaces, but the current
+worker does not route by `spec.isolation.namespace`: one worker-wide flag
+controls every loaded gaggle queue. Copied workers with different flag values
+race nondeterministically for those same queues; this does not enforce
+per-gaggle namespace isolation (#4897).

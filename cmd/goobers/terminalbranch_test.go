@@ -396,6 +396,9 @@ func TestRunAbortPreparesTerminalBranchCleanup(t *testing.T) {
 			if finished.Type != journal.EventRunFinished || finished.Status != string(journal.PhaseAborted) {
 				t.Fatalf("last event = %+v, want aborted run.finished", finished)
 			}
+			if finished.Disposition != journal.RunDispositionProduced {
+				t.Fatalf("last event disposition = %q, want %q", finished.Disposition, journal.RunDispositionProduced)
+			}
 			if events[0].Seq >= finished.Seq {
 				t.Fatalf("cleanup seq = %d, run.finished seq = %d", events[0].Seq, finished.Seq)
 			}

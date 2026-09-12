@@ -154,7 +154,7 @@ func runExplain(args []string, stdout, stderr io.Writer) int {
 func newAuthoringStamp(schemaVersion string) authoringStamp {
 	info := buildversion.Get()
 	// The stamp tells an author which language version this output describes,
-	// so it must name the newest SUPPORTED version: CurrentDSLVersion is
+	// so it must name the newest SUPPORTED version: V1DSLVersion is
 	// dropped (#3507), and stamping it would point authors at a version that
 	// no longer loads (#3565).
 	dslVersion, ok := supportmatrix.GetDSL().NewestSupported()
@@ -162,7 +162,7 @@ func newAuthoringStamp(schemaVersion string) authoringStamp {
 		// No supported version declared at all — a matrix state the support
 		// policy rejects. Fall back to the copy-forward version rather than
 		// stamp an empty one.
-		dslVersion = supportmatrix.NextDSLVersion
+		dslVersion = supportmatrix.V2DSLVersion
 	}
 	return authoringStamp{
 		SchemaVersion: schemaVersion,
