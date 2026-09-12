@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workerhost"
 )
@@ -72,6 +73,18 @@ func TestWorkerEngineDepsWiresWorkspacesAndAutomated(t *testing.T) {
 	// Agentic/deterministic seams deliberately await the runtime wiring slice.
 	if deps.Goober != nil || deps.Det != nil {
 		t.Error("executor seams unexpectedly wired; update the worker help text and this test together")
+	}
+}
+
+func TestWorkerSeamScrubberUsesItsLiveRegistry(t *testing.T) {
+	const secret = "SUPER-SECRET-CANARY-9f8e7d6c5b4a3210"
+	registry, scrubber := journal.DefaultScrubber()
+	seams := &workerSeams{shared: registry, scrubber: scrubber}
+	seams.SharedRegistry().Register([]byte(secret))
+
+	got := seams.Scrubber().Scrub([]byte("worker result: " + secret))
+	if bytes.Contains(got, []byte(secret)) || !bytes.Contains(got, []byte(journal.Redacted)) {
+		t.Fatalf("live worker seam scrubber did not use its registry: %q", got)
 	}
 }
 

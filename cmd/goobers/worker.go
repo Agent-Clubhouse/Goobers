@@ -265,6 +265,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// resolved anywhere in this process refuses the stage instead of
 		// executing with it.
 		engineRuntime.deps.Canary = seams.SharedRegistry()
+		engineRuntime.deps.Scrubber = seams.Scrubber()
 		// Replace the uncredentialed provisioner too: workerEngineDeps builds
 		// its worktree manager before any instance is known, so it has no git
 		// auth and cannot clone a private repo.

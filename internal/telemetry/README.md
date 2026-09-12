@@ -64,6 +64,7 @@ contract the Goobernetes-Infra collector pipeline is configured against:
 | `goobers.stage.retries` | counter (int64) | `{attempt}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.attempt.kind` |
 | `goobers.gate.decisions` | counter (int64) | `{decision}` | `goobers.workflow`, `goobers.stage`, `goobers.gate.decision` |
 | `goobers.escalations` | counter (int64) | `{escalation}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type` |
+| `journal.redactions_total` | counter (int64) | `{redaction}` | `layer` (`registry`/`pattern`) |
 | `goobers.work.active` | up-down counter (int64) | `{span}` | `goobers.workflow`, `goobers.span.kind` (`run`/`task`/`gate`/`scheduler`) |
 | `goobers.stage.metric.value` | histogram (float64) | `1` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.metric.name`, `goobers.metric.unit` |
 | `goobers.worktree.disk.usage` | gauge (int64) | `By` | `goobers.storage.operation` |

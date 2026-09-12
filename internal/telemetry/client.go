@@ -203,6 +203,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		// export is optional and must never become a new boot-fatal class.
 		if inst, instErr := newInstruments(meterProvider.Meter(ScopeName)); instErr == nil {
 			client.instruments = inst
+			journal.ObserveRedactions(scrubber, redactionMetricObserver{counter: inst.redactions})
 		}
 	}
 	if cfg.SpanExporter != nil {

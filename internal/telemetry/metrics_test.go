@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
 	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
@@ -203,6 +205,40 @@ func TestRunStageGateAndRetryMetricsAreRecorded(t *testing.T) {
 	for _, point := range metricPoints(t, collected, MetricWorkActive) {
 		if point.value != 0 {
 			t.Fatalf("%s = %v for %v, want every finished span decremented", MetricWorkActive, point.value, point.attrs)
+		}
+	}
+}
+
+func TestRedactionsTotalRecordsRegistryAndPatternLayersWithoutChangingBytes(t *testing.T) {
+	const registered = "SUPER-SECRET-CANARY-9f8e7d6c5b4a3210"
+	const patterned = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"
+
+	baselineRegistry, baseline := journal.DefaultScrubber()
+	baselineRegistry.Register([]byte(registered))
+	registry, observed := journal.DefaultScrubber()
+	registry.Register([]byte(registered))
+
+	reader := metric.NewManualReader()
+	newMetricsClient(t, Config{MetricReader: reader, Scrubber: observed})
+	for _, input := range [][]byte{
+		[]byte("known value: " + registered),
+		[]byte("shaped value: " + patterned),
+	} {
+		want := baseline.Scrub(input)
+		got := observed.Scrub(input)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("instrumentation changed Scrub output:\n got %q\nwant %q", got, want)
+		}
+	}
+
+	points := metricPoints(t, collectMetrics(t, reader), MetricRedactionsTotal)
+	if len(points) != 2 {
+		t.Fatalf("%s points = %+v, want registry and pattern", MetricRedactionsTotal, points)
+	}
+	for _, layer := range []journal.RedactionLayer{journal.RedactionLayerRegistry, journal.RedactionLayerPattern} {
+		point := pointWith(t, points, MetricAttrRedactionLayer, string(layer))
+		if point.value != 1 {
+			t.Errorf("%s{%s=%s} = %v, want 1", MetricRedactionsTotal, MetricAttrRedactionLayer, layer, point.value)
 		}
 	}
 }
