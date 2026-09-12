@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
 )
 
@@ -71,6 +72,11 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	set, report, err := LoadConfigDir(layout.ConfigDir())
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("guided scaffold emitted a missing-skill-package warning: %+v", warning)
+		}
 	}
 	if len(set.Gaggles) != 1 || len(set.Workflows) != 2 || len(set.Goobers) != 3 {
 		t.Fatalf("unexpected guided config shape: gaggles=%d workflows=%d goobers=%d",

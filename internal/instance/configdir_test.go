@@ -27,6 +27,11 @@ func TestLoadConfigDirValid(t *testing.T) {
 	if set.Manifest == nil {
 		t.Fatal("expected a Manifest")
 	}
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("config-examples declares an unshipped skill package: %+v", warning)
+		}
+	}
 	gotGaggles := map[string]bool{}
 	for _, g := range set.Gaggles {
 		gotGaggles[g.Name] = true
