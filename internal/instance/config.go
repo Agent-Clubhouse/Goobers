@@ -361,14 +361,14 @@ type RunnerConfig struct {
 	// START new runs while the cgroup is hot, and in every one of those
 	// incidents the killing allocation was a stage ALREADY RUNNING.
 	//
-	// EMPTY IS NOT UNBOUNDED. Left empty, the bound is DERIVED from the pod's
-	// own cgroup memory limit less a reserve for the daemon, and applied only
-	// through a child cgroup — an RSS bound the kernel enforces in the same
-	// unit it OOM-kills on. Set explicitly, the number is also allowed to be
-	// applied through RLIMIT_AS where no cgroup can be delegated. That
-	// asymmetry is deliberate: RLIMIT_AS bounds ADDRESS SPACE, which runtimes
-	// reserve far more of than they touch, so it is safe to apply to a number
-	// an operator chose and unsafe to apply to one derived on their behalf.
+	// Empty means UNBOUNDED: no defensible bound can be derived from the pod's
+	// cgroup limit because stages run concurrently with the daemon, page cache,
+	// and sibling stages. TestPodLimitLessReserveWouldNotHaveStoppedTheIncident
+	// pins the incident arithmetic that rejected such a derived default. Set
+	// this explicitly to apply the chosen number through a child cgroup, or
+	// through RLIMIT_AS where no cgroup can be delegated. RLIMIT_AS bounds
+	// ADDRESS SPACE, which runtimes reserve far more of than they touch, so it
+	// is safe only for a number an operator chose.
 	//
 	// Outside a container, or where the memory controller is not delegated to
 	// child cgroups, there may be no mechanism at all; the daemon reports
