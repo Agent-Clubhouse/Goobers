@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { actionRunSummary, parseHostedProgress } from "./actions-source.mjs";
+import { actionRunSummary, parseHostedProgress, projectOperator } from "./actions-source.mjs";
 
 test("actionRunSummary includes an associated PR link and title", () => {
     const summary = actionRunSummary(
@@ -60,4 +60,14 @@ test("parseHostedProgress rejects another Actions run", () => {
         },
     };
     assert.equal(parseHostedProgress(check, "123"), null);
+});
+
+test("Actions-backed terminal runs project a terminal trajectory", async () => {
+    const resolved = { owner: "octo", repo: "app" };
+    for (const phase of ["completed", "failed", "aborted", "escalated"]) {
+        const operator = await projectOperator(resolved, "", [], phase);
+        assert.equal(operator.liveness, "terminal", phase);
+        assert.equal(operator.trajectory, "terminal", phase);
+        assert.notEqual(operator.trajectory, "parked", phase);
+    }
 });
