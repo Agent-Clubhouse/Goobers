@@ -50,6 +50,16 @@ func TestBuiltInCommandsHaveInputSchemas(t *testing.T) {
 	}
 }
 
+func TestEveryBuiltInSchemaIncludesExecutorInputs(t *testing.T) {
+	for _, command := range builtincmd.Names() {
+		for _, name := range []string{"maxOutputBytes", "timeout"} {
+			if !slices.ContainsFunc(Inputs(command), func(input Input) bool { return input.Name == name }) {
+				t.Errorf("effective schema for %q lacks executor-wide input %q", command, name)
+			}
+		}
+	}
+}
+
 func TestProviderInputSchemasAreWellFormed(t *testing.T) {
 	for command := range inputSchemas {
 		for _, version := range []string{"2.0", "3.0"} {
@@ -101,11 +111,11 @@ func TestInputsForVersionHonorsDSLWindow(t *testing.T) {
 	t.Cleanup(func() { delete(inputSchemas, command) })
 
 	v2 := InputsForVersion(command, "2.0")
-	if got := inputNames(v2); !slices.Equal(got, []string{"baseline", "transitioned"}) || v2[1].State != InputCurrent {
+	if got := inputNames(v2); !slices.Equal(got, []string{"baseline", "maxOutputBytes", "timeout", "transitioned"}) || v2[3].State != InputCurrent {
 		t.Fatalf("2.0 inputs = %q", got)
 	}
 	v3 := InputsForVersion(command, "3.0")
-	if got := inputNames(v3); !slices.Equal(got, []string{"baseline", "transitioned", "v3-only"}) || v3[1].State != InputRetired {
+	if got := inputNames(v3); !slices.Equal(got, []string{"baseline", "maxOutputBytes", "timeout", "transitioned", "v3-only"}) || v3[3].State != InputRetired {
 		t.Fatalf("3.0 inputs = %q", got)
 	}
 }

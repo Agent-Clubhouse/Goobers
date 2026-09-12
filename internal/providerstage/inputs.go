@@ -119,7 +119,7 @@ var inputSchemas = map[string][]Input{
 		stringListsIn("overlappingSiblings"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"file-issues": schema(
-		stringsIn("autoApprove", "backlogLabel", "checkFile", "checkStage", "nominatedLabel", "nominationsFile", "partitionLabel", "producerStage", "signalsStage"),
+		stringsIn("autoApprove", "backlogLabel", "checkDigest", "checkFile", "checkStage", "nominatedLabel", "nominationsFile", "partitionLabel", "producerStage", "signalsStage"),
 		integersIn("dedupeWindowDays", "maxPerRun"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"gather-ci-failures":       schema(pathsIn("resultFile"), durationsIn("timeout")),
@@ -220,6 +220,15 @@ var inputSchemas = map[string][]Input{
 	"validate":           {},
 }
 
+// executorInputs are valid for every deterministic shell stage. They are
+// consumed by the shell executor before the built-in command starts, so they
+// belong to the effective contract of every built-in rather than to any one
+// command implementation.
+var executorInputs = []Input{
+	{Name: "maxOutputBytes", Type: InputInteger, State: InputCurrent},
+	{Name: "timeout", Type: InputDuration, State: InputCurrent},
+}
+
 func schema(groups ...[]Input) []Input {
 	var inputs []Input
 	for _, group := range groups {
@@ -246,7 +255,16 @@ func pathsIn(names ...string) []Input       { return currentInputs(InputPath, na
 // Inputs returns the declared workflow-input schema for command. The result is
 // a copy and is sorted by name so validation and authoring output stay stable.
 func Inputs(command string) []Input {
-	inputs := append([]Input(nil), inputSchemas[command]...)
+	declared, ok := inputSchemas[command]
+	if !ok {
+		return nil
+	}
+	inputs := append([]Input(nil), declared...)
+	for _, common := range executorInputs {
+		if !slices.ContainsFunc(declared, func(input Input) bool { return input.Name == common.Name }) {
+			inputs = append(inputs, common)
+		}
+	}
 	slices.SortFunc(inputs, func(a, b Input) int { return cmp.Compare(a.Name, b.Name) })
 	return inputs
 }
@@ -267,11 +285,17 @@ func InputSchemaForVersion(command, dslVersion string) ([]Input, bool) {
 	if !ok {
 		return nil, false
 	}
-	var inputs []Input
-	for _, input := range declared {
+	byName := make(map[string]Input, len(executorInputs)+len(declared))
+	for _, input := range append(append([]Input(nil), executorInputs...), declared...) {
 		if activeAt(dslVersion, input.SinceDSL, input.UntilDSL) {
-			inputs = append(inputs, input)
+			// A command-specific declaration intentionally overrides common
+			// metadata for the same input name.
+			byName[input.Name] = input
 		}
+	}
+	inputs := make([]Input, 0, len(byName))
+	for _, input := range byName {
+		inputs = append(inputs, input)
 	}
 	slices.SortFunc(inputs, func(a, b Input) int { return cmp.Compare(a.Name, b.Name) })
 	return inputs, true

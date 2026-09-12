@@ -62,6 +62,23 @@ func TestCheckProviderStageInputsAllowsCurrentAndExternalInputs(t *testing.T) {
 	}
 }
 
+func TestCheckProviderStageInputsAllowsExecutorWideInputsForEveryBuiltIn(t *testing.T) {
+	def := Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{
+		{
+			Name: "update",
+			Type: apiv1.TaskDeterministic,
+			Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "self-update"}},
+			Inputs: map[string]string{
+				"timeout":        "5m",
+				"maxOutputBytes": "1048576",
+			},
+		},
+	}}}
+	if problems := CheckProviderStageInputs(def); len(problems) != 0 {
+		t.Fatalf("problems = %q, want executor-wide shell inputs accepted for self-update", problems)
+	}
+}
+
 func TestCheckProviderStageInputsRejectsUndeclaredBuiltInInput(t *testing.T) {
 	def := Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
 		Name:   "query",
