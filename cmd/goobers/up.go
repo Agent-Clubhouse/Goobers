@@ -1090,18 +1090,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if setup.Config.Telemetry.Retention != nil {
 		telemetryRetentionConfig = *setup.Config.Telemetry.Retention
 	}
-	var telemetryPruned []retention.Result
+	var telemetryPrunedCount int
 	var telemetryPrunedDryRun bool
 	telemetryErr := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
 		var err error
-		telemetryPruned, telemetryPrunedDryRun, err = pruneAndRecordTelemetryRetention(setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, time.Now())
+		telemetryPrunedCount, telemetryPrunedDryRun, err = pruneAndRecordTelemetryRetention(setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, time.Now())
 		return err
 	})
 	if telemetryErr != nil {
 		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
-	reportTelemetryPruned(stdout, telemetryPruned, telemetryPrunedDryRun, telemetryRetentionConfig.EnabledEffective())
+	reportTelemetryPruned(stdout, telemetryPrunedCount, telemetryPrunedDryRun, telemetryRetentionConfig.EnabledEffective())
 
 	// Prune crash-abandoned orphan runs and run-creation staging directories
 	// before anything else touches the runs tree (#2035): a mid-Create crash's

@@ -181,13 +181,15 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 func TestTelemetryRetentionStatusReplaysAcrossReadersAndInstanceAPI(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	journaledAt := passAt.Add(10 * time.Minute)
 	enforceAt := passAt.Add(7 * 24 * time.Hour)
-	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return passAt }))
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return journaledAt }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: map[string]any{
-		"mode": "dry-run", "candidateCount": 17, "enforceAt": enforceAt.Format(time.RFC3339Nano),
+		"mode": "dry-run", "candidateCount": 17, "passAt": passAt.Format(time.RFC3339Nano),
+		"enforceAt": enforceAt.Format(time.RFC3339Nano),
 	}}); err != nil {
 		t.Fatal(err)
 	}

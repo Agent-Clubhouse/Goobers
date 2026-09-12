@@ -45,6 +45,17 @@ type retentionGraceState struct {
 	// additional large-first-enforcement safety gate.
 	EnforceAcknowledged      bool `json:"enforceAcknowledged,omitempty"`
 	LargeFirstEnforceBlocked bool `json:"largeFirstEnforceBlocked,omitempty"`
+	// PendingTelemetryPass is the durable outbox for an automatic telemetry
+	// prune whose bounded instance-journal summary has not been acknowledged.
+	// Worktree retention never sets it.
+	PendingTelemetryPass *telemetryRetentionPass `json:"pendingTelemetryPass,omitempty"`
+}
+
+type telemetryRetentionPass struct {
+	At             time.Time `json:"at"`
+	DryRun         bool      `json:"dryRun"`
+	CandidateCount int       `json:"candidateCount"`
+	EnforceAt      time.Time `json:"enforceAt,omitempty"`
 }
 
 // normalizeRetentionGraceState rejects clocks that cannot have been produced

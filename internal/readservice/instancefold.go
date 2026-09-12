@@ -147,8 +147,11 @@ func (s *instanceState) apply(event journal.Event) {
 			LastPassMode:   runnerString(event.Runner, "mode"),
 			CandidateCount: runnerInt(event.Runner, "candidateCount"),
 		}
-		if !event.Time.IsZero() {
-			at := event.Time
+		at := event.Time
+		if passAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "passAt")); err == nil {
+			at = passAt
+		}
+		if !at.IsZero() {
 			status.LastPassAt = &at
 		}
 		if enforceAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "enforceAt")); err == nil {
