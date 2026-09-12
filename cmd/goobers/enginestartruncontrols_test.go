@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"sync"
 	"testing"
 
@@ -206,6 +207,9 @@ func TestSchedulerDefinitionsPinResolvedRunControls(t *testing.T) {
 	cfg, set, _ := runControlsFixture()
 
 	layout := instance.NewLayout(t.TempDir())
+	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := layout.EnsureGaggleRuntime("web"); err != nil {
 		t.Fatal(err)
 	}

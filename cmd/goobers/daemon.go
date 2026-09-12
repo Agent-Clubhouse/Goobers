@@ -1278,6 +1278,10 @@ func buildRuntimeRunner(
 	selfIdentity string,
 	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
+	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir())
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	runnerCfg, manager, err := buildRunnerConfig(runnerCompositionInput{
 		Layout:               l,
 		Config:               cfg,
@@ -1293,6 +1297,7 @@ func buildRuntimeRunner(
 		CredentialStores:     stores,
 		SandboxPosture:       sandboxPosture,
 		ProviderQuota:        providerQuota,
+		AppliedConfigDigest:  appliedConfigDigest,
 	})
 	if err != nil {
 		return nil, nil, nil, err
