@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,12 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
-func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt time.Time, phase journal.RunPhase) {
+type statsCommandMutation struct {
+	kind      string
+	operation string
+}
+
+func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt time.Time, phase journal.RunPhase, extraMutations ...statsCommandMutation) {
 	t.Helper()
 	now := startedAt
 	clock := func() time.Time {
@@ -42,13 +49,12 @@ func writeStatsCommandRun(t *testing.T, root, runID, workflow string, startedAt 
 	if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)}); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutation := range []struct {
-		kind      string
-		operation string
-	}{
+	mutations := []statsCommandMutation{
 		{kind: "pr", operation: "open"},
 		{kind: "issue", operation: "claim"},
-	} {
+	}
+	mutations = append(mutations, extraMutations...)
+	for _, mutation := range mutations {
 		if err := run.Append(journal.Event{
 			Type:        journal.EventRefTouched,
 			ExternalRef: &journal.ExternalRef{Provider: "github", Kind: mutation.kind, ID: runID},
@@ -157,6 +163,64 @@ func TestStatsMergedCountUsesReadyReadModelOutcome(t *testing.T) {
 	}
 	if windowed.PullRequests.Merged != 1 {
 		t.Fatalf("windowed merged = %d, want read-model outcomes 1", windowed.PullRequests.Merged)
+	}
+}
+
+func TestStatsMergedCountFallsBackForUnavailableReadModel(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T, instance.Layout)
+	}{
+		{
+			name: "schema from prior binary",
+			setup: func(t *testing.T, layout instance.Layout) {
+				store, err := readmodel.Open(layout.ReadDB())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				db, err := sql.Open("sqlite", layout.ReadDB())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = db.Close() }()
+				if _, err := db.Exec("UPDATE projection_state SET schema_version = schema_version - 1 WHERE id = 1"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "uninitialized database",
+			setup: func(t *testing.T, layout instance.Layout) {
+				if err := os.WriteFile(layout.ReadDB(), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := initDemo(t)
+			writeStatsCommandRun(t, root, "mutation-only", "merge-review", time.Now().Add(-time.Hour), journal.PhaseCompleted,
+				statsCommandMutation{kind: "pr", operation: "merge"})
+			layout := instance.NewLayout(root)
+			if err := rollup.Rebuild(context.Background(), layout.TelemetryDB(), layout.RunsDir(), layout.SchedulerDir()); err != nil {
+				t.Fatal(err)
+			}
+			test.setup(t, layout)
+			code, stdout, stderr := runArgs(t, "stats", "--json", root)
+			if code != 0 {
+				t.Fatalf("stats did not fall back: code=%d stderr=%q", code, stderr)
+			}
+			var got statsJSONSummary
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.PullRequests.Merged != 1 {
+				t.Fatalf("fallback merged = %d, want mutation count 1", got.PullRequests.Merged)
+			}
+		})
 	}
 }
 

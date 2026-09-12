@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -217,6 +218,9 @@ func statsMergedOutcomeCount(ctx context.Context, layout instance.Layout, since 
 	}
 	reader, err := readmodel.OpenExistingReader(ctx, layout.ReadDB())
 	if err != nil {
+		if errors.Is(err, readmodel.ErrExistingProjectionUnavailable) {
+			return 0, false, nil
+		}
 		return 0, false, fmt.Errorf("open run read model %s: %w", layout.ReadDB(), err)
 	}
 	defer func() { _ = reader.Close() }()

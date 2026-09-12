@@ -3,10 +3,17 @@ package readmodel
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"time"
 )
+
+// ErrExistingProjectionUnavailable means read.db exists but cannot serve this
+// build yet (for example, a daemon from the prior version has not rebuilt it).
+// One-shot readers may fall back to another derived source for this condition;
+// corrupt or unreadable databases remain ordinary errors.
+var ErrExistingProjectionUnavailable = errors.New("readmodel: existing projection unavailable")
 
 // ExistingReader exposes only reads and lifecycle management. It cannot build,
 // migrate, or write a projection; an absent/incompatible database is an error.
@@ -45,14 +52,21 @@ func OpenExistingReader(ctx context.Context, path string) (*ExistingReader, erro
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(2)
 	store := &Store{reader: db, path: path}
-	state, err := store.State(ctx)
-	if err != nil {
+	var schemaVersion int
+	if err := db.QueryRowContext(ctx, `SELECT schema_version FROM projection_state WHERE id = 1`).Scan(&schemaVersion); err != nil {
+		_ = store.Close()
+		if errors.Is(err, sql.ErrNoRows) || isMissingTable(err) {
+			return nil, fmt.Errorf("%w: projection state is not initialized", ErrExistingProjectionUnavailable)
+		}
+		return nil, fmt.Errorf("readmodel: inspect existing schema: %w", err)
+	}
+	if schemaVersion != len(migrations) {
+		_ = store.Close()
+		return nil, fmt.Errorf("%w: existing schema %d does not match this build (%d); let the matching daemon rebuild its projection", ErrExistingProjectionUnavailable, schemaVersion, len(migrations))
+	}
+	if _, err := store.State(ctx); err != nil {
 		_ = store.Close()
 		return nil, err
-	}
-	if state.SchemaVersion != len(migrations) {
-		_ = store.Close()
-		return nil, fmt.Errorf("readmodel: existing schema %d does not match this build (%d); let the matching daemon rebuild its projection", state.SchemaVersion, len(migrations))
 	}
 	return &ExistingReader{Reader: store, QueueEligibilityReader: store, FreshnessReporter: store, Closer: store, store: store}, nil
 }
