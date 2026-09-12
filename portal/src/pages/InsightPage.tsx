@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
@@ -9,26 +9,28 @@ import type {
   TelemetryStatsOptions,
   TelemetryUsageStats,
 } from "../api/types";
+import { isMissingCostCapability } from "../api/errors";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
-import { ScopeStrip } from "../components/ScopeStrip";
+import { SectionQueryStatus } from "../components/SectionQueryStatus";
 import {
   type InsightCostRollupSnapshot,
   type InsightErrorSignaturesSnapshot,
   type InsightExternalCostSnapshot,
   type InsightGaggleSpend,
   type InsightWindow,
-  useInsightCostRollup,
-  useInsightCostTrend,
   useInsightErrorSignatures,
-  useInsightExternalCosts,
   useInsightStats,
 } from "../insightData";
-import { deriveExternalCostRows } from "../costView";
 import {
-  deriveInsightCostTrendState,
+  deriveExternalCostRows,
+  filterExternalCostRows,
+  sortExternalCostRows,
+  type ExternalCostSortDirection,
+  type ExternalCostSortKey,
+} from "../costView";
+import {
   deriveInsightViewModel,
-  hasInsightScopeIdentity,
   type InsightCostTrendViewModel,
   type InsightScope,
   type InsightViewModel,
@@ -42,17 +44,24 @@ import {
   insightScopeRouteFilters,
   type OutcomeMetric,
 } from "../insightScope";
-import { routeHash, type ErrorRouteFilters, type Navigate, type RunRouteFilters } from "../routing";
-import type { ScopeFilters } from "../scope";
+import {
+  routeHash,
+  type ErrorRouteFilters,
+  type InsightRouteFilters,
+  type Navigate,
+  type RunRouteFilters,
+} from "../routing";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
 
-const WINDOWS: readonly { label: string; value: InsightWindow }[] = [
+export const INSIGHT_WINDOWS: readonly { label: string; value: InsightWindow }[] = [
   { label: "Last 24 hours", value: "24h" },
   { label: "Last 7 days", value: "7d" },
   { label: "Last 30 days", value: "30d" },
   { label: "All time", value: "all" },
 ];
+
+const INITIAL_DETAIL_ROWS = 5;
 
 export function InsightPage({
   client,
@@ -61,41 +70,28 @@ export function InsightPage({
   standalone,
 }: {
   client: DaemonClient;
-  filters?: ScopeFilters;
+  filters?: InsightRouteFilters;
   navigate: Navigate;
   standalone: boolean;
 }) {
   const window = filters?.window ?? "7d";
   const requestedScope = insightScopeFromRoute(filters);
+  const routeFilters = (scope: InsightScope, nextWindow: InsightWindow) =>
+    insightScopeRouteFilters(scope, nextWindow);
   const setScope = (nextScope: InsightScope) =>
-    navigate({ page: "insight", filters: insightScopeRouteFilters(nextScope, window) });
+    navigate({ page: "insight", filters: routeFilters(nextScope, window) });
   const setWindow = (nextWindow: InsightWindow) =>
-    navigate({ page: "insight", filters: insightScopeRouteFilters(requestedScope, nextWindow) });
+    navigate({ page: "insight", filters: routeFilters(requestedScope, nextWindow) });
   const errorScope = insightScopeApiParameters(requestedScope);
-  // Keep the daemon's CostAggregate ceiling unchanged; these five page loads
-  // take turns instead of competing with one another.
   const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
-  const statsSettled = query.state.status !== "loading";
   const errorSignatures = useInsightErrorSignatures(
     client,
     window,
     errorScope.gaggle,
     errorScope.workflow,
     errorScope.stage,
-    statsSettled,
+    query.state.status !== "loading",
   );
-  const errorsSettled = errorSignatures.state.status !== "loading";
-  const costTrend = useInsightCostTrend(
-    client,
-    window,
-    errorScope.gaggle,
-    errorScope.workflow,
-    errorsSettled,
-  );
-  const trendSettled = costTrend.state.status !== "loading";
-  const costRollup = useInsightCostRollup(client, window, trendSettled);
-  const costRollupSettled = costRollup.state.status !== "loading";
-  const externalCosts = useInsightExternalCosts(client, window, costRollupSettled);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -106,22 +102,12 @@ export function InsightPage({
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
   }
-  if (
-    errorSignatures.state.status === "loading" ||
-    costTrend.state.status === "loading" ||
-    costRollup.state.status === "loading" ||
-    externalCosts.state.status === "loading"
-  ) {
-    return <DaemonLoadingState standalone={standalone} />;
-  }
   const snapshot = query.state.data;
   const availableScopes = insightScopeOptions(snapshot.stats);
   const scopes = availableScopes.some((option) => option.key === insightScopeKey(requestedScope))
     ? availableScopes
     : [...availableScopes, insightScopeOption(requestedScope)];
   const view = deriveInsightViewModel(requestedScope, snapshot);
-  const costTrendView = deriveInsightCostTrendState(requestedScope, costTrend.state);
-
   return (
     <>
       <header className="page-heading">
@@ -155,7 +141,7 @@ export function InsightPage({
             onChange={(event) => setWindow(event.target.value as InsightWindow)}
             value={window}
           >
-            {WINDOWS.map((option) => (
+            {INSIGHT_WINDOWS.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -164,32 +150,17 @@ export function InsightPage({
         </label>
       </div>
 
-      {hasInsightScopeIdentity(requestedScope) && (
-        <ScopeStrip
-          ariaLabel="Insight scope"
-          clearHref={routeHash({
-            page: "insight",
-            filters: insightScopeRouteFilters({ kind: "instance" }, window),
-          })}
-          filters={errorScope}
+      {query.state.status === "stale" && query.state.error && (
+        <SectionQueryStatus
+          error
+          message="Telemetry refresh failed. Showing the last successful snapshot for this window."
+          retry={query.retry}
         />
       )}
 
-      {query.state.status === "stale" && query.state.error && (
-        <div className="insight-stale-error" role="alert">
-          Telemetry refresh failed. Showing the last successful snapshot for this window.
-        </div>
-      )}
-
       <InsightContent
-        costRollup={costRollup.state}
-        costRollupRetry={costRollup.retry}
-        costTrend={costTrendView}
-        costTrendRetry={costTrend.retry}
         errorSignatures={errorSignatures.state}
         errorSignaturesRetry={errorSignatures.retry}
-        externalCosts={externalCosts.state}
-        externalCostsRetry={externalCosts.retry}
         view={view}
       />
     </>
@@ -197,28 +168,15 @@ export function InsightPage({
 }
 
 function InsightContent({
-  costRollup,
-  costRollupRetry,
-  costTrend,
-  costTrendRetry,
   errorSignatures,
   errorSignaturesRetry,
-  externalCosts,
-  externalCostsRetry,
   view,
 }: {
-  costRollup: QueryState<InsightCostRollupSnapshot>;
-  costRollupRetry: () => void;
-  costTrend: QueryState<InsightCostTrendViewModel>;
-  costTrendRetry: () => void;
   errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
   errorSignaturesRetry: () => void;
-  externalCosts: QueryState<InsightExternalCostSnapshot>;
-  externalCostsRetry: () => void;
   view: InsightViewModel;
 }) {
-  const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage, window } =
-    view;
+  const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage } = view;
   const hasOutcomes = Boolean(summary) || breakdown.length > 0;
   const hasFailureReasons =
     (errorSignatures.status === "ready" || errorSignatures.status === "stale") &&
@@ -239,9 +197,6 @@ function InsightContent({
 
   return (
     <>
-      <InstanceCostRollup costRollup={costRollup} retry={costRollupRetry} window={window} />
-      <ExternalCostBreakdown costs={externalCosts} retry={externalCostsRetry} />
-
       {isEmpty ? (
         <section className="empty-state insight-empty">
           <span className="insight-empty-icon">
@@ -258,13 +213,12 @@ function InsightContent({
         <section className="content-section">
           <div className="section-heading">
             <div>
-              <p className="section-kicker">Outcomes</p>
               <h2>Success and failure</h2>
             </div>
             <span className="section-count">Terminal outcomes exclude other states</span>
           </div>
-          <div className="insight-outcomes">
-            <div aria-hidden="true" className="insight-outcome-header">
+          <div className="data-table-shell insight-outcomes">
+            <div aria-hidden="true" className="data-table-header insight-outcome-header">
               <span>Scope</span>
               <span>Success rate</span>
               <span>Succeeded</span>
@@ -288,53 +242,54 @@ function InsightContent({
       )}
 
       {creditAssignment.length > 0 && (
-        <CreditAssignment credits={creditAssignment} filters={filters} />
+        <InsightReportSection title="Highest-contributing nodes">
+          <CreditAssignment credits={creditAssignment} filters={filters} />
+        </InsightReportSection>
       )}
 
       {usage && (
-        <section className="content-section">
-          <div className="section-heading">
-            <div>
-              <p className="section-kicker">AI usage</p>
-              <h2>Cost and tokens</h2>
-            </div>
-            <span className="section-count">Selected scope rollup</span>
-          </div>
+        <InsightReportSection title="Tokens and retry waste">
           <p className="usage-description">
             Attempt measurements are aggregated for the selected scope. Runners that do not
             report usage remain unmeasured.
           </p>
-          <UsageAnalytics filters={filters} usage={usage} />
-          <CostTrend
-            costTrend={costTrend}
-            currentUsage={usage}
-            retry={costTrendRetry}
-            window={window}
-          />
-        </section>
+          <UsageAnalytics filters={filters} mode="insight" usage={usage} />
+        </InsightReportSection>
       )}
 
-      <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
+      <InsightReportSection title="Failure reasons">
+        <FailureReasonBreakdown retry={errorSignaturesRetry} state={errorSignatures} />
+      </InsightReportSection>
 
       {(hasOutcomes || stages.length > 0) && (
-        <section className="content-section">
-          <div className="section-heading">
-            <div>
-              <p className="section-kicker">Latency</p>
-              <h2>Slowest stages</h2>
-            </div>
-            <span className="section-count">Ordered by P95 duration</span>
-          </div>
+        <InsightReportSection title="Slowest stages">
           {stages.length === 0 ? (
             <p className="inline-empty">No stage duration samples in this scope.</p>
           ) : (
             <StageDistributions filters={filters} stages={stages} />
           )}
-        </section>
+        </InsightReportSection>
       )}
         </>
       )}
     </>
+  );
+}
+
+function InsightReportSection({
+  children,
+  title,
+}: {
+  children: React.ReactNode;
+  title: string;
+}) {
+  return (
+    <section className="content-section insight-report-section">
+      <div className="section-heading">
+        <h2>{title}</h2>
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -345,24 +300,20 @@ function CreditAssignment({
   credits: NodeCredit[];
   filters: TelemetryStatsOptions;
 }) {
+  const [showAll, setShowAll] = useState(false);
+  const visibleCredits = showAll ? credits : credits.slice(0, INITIAL_DETAIL_ROWS);
   return (
-    <section className="content-section">
-      <div className="section-heading">
-        <div>
-          <p className="section-kicker">Credit assignment</p>
-          <h2>Highest-contributing nodes</h2>
-        </div>
-        <span className="section-count">Failure, escalation, and retry waste</span>
-      </div>
-      <div className="insight-outcomes">
-        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header">
+    <>
+      <p className="usage-description">Failure, escalation, and retry-waste contributors.</p>
+      <div className="data-table-shell insight-outcomes">
+        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header data-table-header">
           <span>Node</span>
           <span>Failure share</span>
           <span>Failures</span>
           <span>Escalations</span>
           <span>Retry waste</span>
         </div>
-        {credits.map((credit) => (
+        {visibleCredits.map((credit) => (
           <a
             aria-label={`View runs behind ${credit.gaggle} ${credit.workflow} ${credit.stage}: ${credit.failureRuns} failures, ${credit.escalationRuns} escalations, ${credit.retryWasteAttempts} wasted attempts`}
             className="credit-assignment-row credit-assignment-link"
@@ -389,8 +340,13 @@ function CreditAssignment({
             <strong>{credit.retryWasteAttempts}</strong>
           </a>
         ))}
+        {credits.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer contributors" : `View all ${credits.length} contributors`}
+          </button>
+        )}
       </div>
-    </section>
+    </>
   );
 }
 
@@ -406,10 +362,8 @@ function CurationHealth({
     <section className="content-section">
       <div className="section-heading">
         <div>
-          <p className="section-kicker">Backlog</p>
           <h2>Ready-pool health</h2>
         </div>
-        <span className="section-count">{curation.runs} curation runs</span>
       </div>
       <dl className="curation-health">
         <div>
@@ -489,62 +443,60 @@ function FailureReasonBreakdown({
 }) {
   const snapshot = state.status === "ready" || state.status === "stale" ? state.data : undefined;
   return (
-    <section className="content-section">
-      <div className="section-heading">
-        <div>
-          <p className="section-kicker">Failures</p>
-          <h2>Failure reasons</h2>
-        </div>
-        <span className="section-count">Grouped by code + coarse class</span>
-      </div>
-      <p className="error-signature-description">
-        Error class is a coarse telemetry label and may be unknown.
-      </p>
+    <>
       {state.status === "loading" ? (
-        <p className="inline-empty">Loading failure reasons…</p>
+        <SectionQueryStatus loading message="Loading failure reasons…" />
       ) : state.status === "error" ? (
-        <div className="inline-empty insight-inline-error" role="alert">
-          <span>Failure reasons could not be loaded.</span>
-          <button className="text-button" onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
+        <SectionQueryStatus error message="Failure reasons could not be loaded." retry={retry} />
       ) : (
         <>
           {state.status === "stale" && state.error && (
-            <div className="insight-inline-error" role="alert">
-              <span>
-                Failure reasons could not be refreshed. Showing the last successful breakdown.
-              </span>
-              <button className="text-button" onClick={retry} type="button">
-                Retry
-              </button>
-            </div>
+            <SectionQueryStatus
+              error
+              message="Failure reasons could not be refreshed. Showing the last successful breakdown."
+              retry={retry}
+            />
           )}
           {snapshot && snapshot.result.items.length > 0 ? (
-            <div className="error-signatures">
-              <div aria-hidden="true" className="error-signature-header">
-                <span>Code</span>
-                <span>Coarse class</span>
-                <span>Count</span>
-                <span>Last seen</span>
-                <span>Matching example</span>
-                <span />
-              </div>
-              {snapshot.result.items.map((signature) => (
-                <FailureReasonRow
-                  filters={snapshot.filters}
-                  key={`${signature.code}:${signature.errorClass}`}
-                  signature={signature}
-                />
-              ))}
-            </div>
+            <FailureReasonRows snapshot={snapshot} />
           ) : (
             <p className="inline-empty">No coded failures in this scope and time window.</p>
           )}
         </>
       )}
-    </section>
+    </>
+  );
+}
+
+function FailureReasonRows({ snapshot }: { snapshot: InsightErrorSignaturesSnapshot }) {
+  const [showAll, setShowAll] = useState(false);
+  const items = snapshot.result.items;
+  const visibleItems = showAll ? items : items.slice(0, INITIAL_DETAIL_ROWS);
+  return (
+    <>
+      <div className="data-table-shell error-signatures">
+        <div aria-hidden="true" className="data-table-header error-signature-header">
+          <span>Code</span>
+          <span>Coarse class</span>
+          <span>Count</span>
+          <span>Last seen</span>
+          <span>Matching example</span>
+          <span />
+        </div>
+        {visibleItems.map((signature) => (
+          <FailureReasonRow
+            filters={snapshot.filters}
+            key={`${signature.code}:${signature.errorClass}`}
+            signature={signature}
+          />
+        ))}
+        {items.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer failure reasons" : `View all ${items.length} failure reasons`}
+          </button>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -611,7 +563,6 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
     >
       <span className="insight-scope-label">
         <strong>{metric.label}</strong>
-        <small>{metric.unit}</small>
       </span>
       <a
         aria-label={`View terminal ${metric.unit} behind ${metric.label} for success rate ${formatRate(metric.successRate)}`}
@@ -656,11 +607,13 @@ function OutcomeRow({ emphasis = false, metric }: { emphasis?: boolean; metric: 
   );
 }
 
-function UsageAnalytics({
+export function UsageAnalytics({
   filters,
+  mode,
   usage,
 }: {
   filters: TelemetryStatsOptions;
+  mode: "cost" | "insight";
   usage: TelemetryUsageStats;
 }) {
   const label = usageMetricLabel(usage);
@@ -698,11 +651,10 @@ function UsageAnalytics({
     ),
   });
   return (
-    <div className="usage-analytics">
-      <div aria-hidden="true" className="usage-header">
+    <div className="data-table-shell usage-analytics usage-analytics-split">
+      <div aria-hidden="true" className="data-table-header usage-header">
         <span>Scope</span>
-        <span>Tokens</span>
-        <span>AI cost</span>
+        <span>{mode === "insight" ? "Tokens" : "AI cost"}</span>
         <span>Retry waste</span>
       </div>
       <div className="usage-row">
@@ -713,25 +665,33 @@ function UsageAnalytics({
             {usage.totalAttempts === 1 ? "attempt" : "attempts"}
           </small>
         </span>
-        <UsagePercentiles
-          ariaLabel={`View token usage runs behind ${label}: ${formatSamples(usage.tokenSamples)}, P50 ${formatMeasuredTokens(usage.p50Tokens)}, P95 ${formatMeasuredTokens(usage.p95Tokens)}`}
-          formatter={formatMeasuredTokens}
-          href={tokenHref}
-          label="Tokens"
-          p50={usage.p50Tokens}
-          p95={usage.p95Tokens}
-          samples={usage.tokenSamples}
+        {mode === "insight" ? (
+          <UsagePercentiles
+            ariaLabel={`View token usage runs behind ${label}: ${formatSamples(usage.tokenSamples)}, P50 ${formatMeasuredTokens(usage.p50Tokens)}, P95 ${formatMeasuredTokens(usage.p95Tokens)}`}
+            formatter={formatMeasuredTokens}
+            href={tokenHref}
+            label="Tokens"
+            p50={usage.p50Tokens}
+            p95={usage.p95Tokens}
+            samples={usage.tokenSamples}
+          />
+        ) : (
+          <UsagePercentiles
+            ariaLabel={`View AI cost runs behind ${label}: total ${formatMeasuredCost(usage.costUSD)}, ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+            formatter={formatMeasuredCost}
+            label="AI cost"
+            p50={usage.p50CostUSD}
+            p95={usage.p95CostUSD}
+            samples={usage.costSamples}
+            total={usage.costUSD}
+          />
+        )}
+        <RetryWasteMetric
+          href={mode === "insight" ? wasteHref : undefined}
+          includeCost={mode === "cost"}
+          label={label}
+          usage={usage}
         />
-        <UsagePercentiles
-          ariaLabel={`View AI cost runs behind ${label}: ${formatSamples(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
-          formatter={formatMeasuredCost}
-          href={costHref}
-          label="AI cost"
-          p50={usage.p50CostUSD}
-          p95={usage.p95CostUSD}
-          samples={usage.costSamples}
-        />
-        <RetryWasteMetric href={wasteHref} label={label} usage={usage} />
       </div>
     </div>
   );
@@ -745,22 +705,30 @@ function UsagePercentiles({
   p50,
   p95,
   samples,
+  total,
 }: {
   ariaLabel: string;
   formatter: (value: number | undefined) => string;
-  href: string;
+  href?: string;
   label: string;
   p50?: number;
   p95?: number;
   samples: number;
+  total?: number;
 }) {
-  return (
-    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>
+  const content = (
+    <>
       <span className="usage-metric-heading">
         <strong>{label}</strong>
         <small>{formatSamples(samples)}</small>
       </span>
-      <span className="usage-percentiles">
+      <span className={`usage-percentiles${total !== undefined ? " usage-percentiles-with-total" : ""}`}>
+        {total !== undefined && (
+          <span>
+            <small>Total</small>
+            <strong>{formatter(total)}</strong>
+          </span>
+        )}
         <span>
           <small>P50</small>
           <strong>{formatter(p50)}</strong>
@@ -770,29 +738,36 @@ function UsagePercentiles({
           <strong>{formatter(p95)}</strong>
         </span>
       </span>
-    </a>
+    </>
+  );
+  return href ? (
+    <a aria-label={ariaLabel} className="usage-metric-link" href={href}>{content}</a>
+  ) : (
+    <div className="usage-metric-link usage-metric-static">{content}</div>
   );
 }
 
 function RetryWasteMetric({
   href,
+  includeCost,
   label,
   usage,
 }: {
-  href: string;
+  href?: string;
+  includeCost: boolean;
   label: string;
   usage: TelemetryUsageStats;
 }) {
   const description =
     usage.retryWasteAttempts === 0
       ? "no superseded attempts"
-      : `${usage.retryWasteAttempts} superseded ${usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}, ${formatMeasuredTokens(usage.retryWasteTokens)}, ${formatMeasuredCost(usage.retryWasteCostUSD)}`;
-  return (
-    <a
-      aria-label={`View retry-waste runs behind ${label}: ${description}`}
-      className="usage-metric-link usage-waste-link"
-      href={href}
-    >
+      : [
+          `${usage.retryWasteAttempts} superseded ${usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}`,
+          formatMeasuredTokens(usage.retryWasteTokens),
+          ...(includeCost ? [formatMeasuredCost(usage.retryWasteCostUSD)] : []),
+        ].join(", ");
+  const content = (
+    <>
       <span className="usage-metric-heading">
         <strong>Retry waste</strong>
         <small>
@@ -814,24 +789,39 @@ function RetryWasteMetric({
             <small>Tokens</small>
             <strong>{formatMeasuredTokens(usage.retryWasteTokens)}</strong>
           </span>
-          <span>
-            <small>Cost</small>
-            <strong>{formatMeasuredCost(usage.retryWasteCostUSD)}</strong>
-          </span>
+          {includeCost && (
+            <span>
+              <small>Cost</small>
+              <strong>{formatMeasuredCost(usage.retryWasteCostUSD)}</strong>
+            </span>
+          )}
         </span>
       )}
+    </>
+  );
+  return href ? (
+    <a
+      aria-label={`View retry-waste runs behind ${label}: ${description}`}
+      className="usage-metric-link usage-waste-link"
+      href={href}
+    >
+      {content}
     </a>
+  ) : (
+    <div className="usage-metric-link usage-metric-static usage-waste-link">{content}</div>
   );
 }
 
-function CostTrend({
+export function CostTrend({
   costTrend,
   currentUsage,
+  refreshing,
   retry,
   window,
 }: {
   costTrend: QueryState<InsightCostTrendViewModel>;
   currentUsage: TelemetryUsageStats;
+  refreshing: boolean;
   retry: () => void;
   window: InsightWindow;
 }) {
@@ -843,16 +833,24 @@ function CostTrend({
     );
   }
   if (costTrend.status === "loading") {
-    return <p className="usage-trend-note">Loading cost trend…</p>;
+    return (
+      <div className="usage-trend">
+        <SectionQueryStatus loading message="Loading cost trend…" />
+      </div>
+    );
   }
   if (costTrend.status === "error") {
+    const unavailable = isMissingCostCapability(costTrend.error);
     return (
-      <div className="insight-inline-error">
-        <span>Unable to load the cost trend.</span>
-        <button onClick={retry} type="button">
-          Retry
-        </button>
-      </div>
+      <SectionQueryStatus
+        error
+        message={
+          unavailable
+            ? "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section."
+            : "Unable to load the cost trend."
+        }
+        retry={unavailable ? undefined : retry}
+      />
     );
   }
   if (costTrend.status !== "ready" && costTrend.status !== "stale") {
@@ -864,16 +862,19 @@ function CostTrend({
 
   return (
     <div className="usage-trend">
-      {costTrend.status === "stale" && costTrend.error && (
-        <div className="insight-inline-error">
-          <span>Cost trend refresh failed. Showing the last successful read.</span>
-          <button onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
+      {(refreshing || (costTrend.status === "stale" && Boolean(costTrend.error))) && (
+        <SectionQueryStatus
+          error={costTrend.status === "stale" && Boolean(costTrend.error)}
+          loading={refreshing}
+          message={
+            costTrend.status === "stale" && costTrend.error
+              ? "Cost trend refresh failed. Showing the last successful read."
+              : "Refreshing cost trend…"
+          }
+          retry={retry}
+        />
       )}
       <div className="usage-trend-heading">
-        <p className="section-kicker">Trend</p>
         <h3>Cost over time</h3>
       </div>
       {hasSamples ? (
@@ -893,30 +894,123 @@ function CostTrendSparkline({
   points: { since: string; until: string; usage: TelemetryUsageStats | undefined }[];
   window: InsightWindow;
 }) {
+  const width = 720;
+  const height = 220;
+  const margin = { top: 14, right: 18, bottom: 42, left: 64 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
   const scaleMax = Math.max(...points.map((point) => point.usage?.p95CostUSD ?? 0), 0.0001);
+  const chartPoints = points.map((point, index) => {
+    const x =
+      margin.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
+    const p50 = point.usage?.p50CostUSD ?? 0;
+    const p95 = Math.max(p50, point.usage?.p95CostUSD ?? 0);
+    return {
+      ...point,
+      p50,
+      p95,
+      x,
+      p50Y: margin.top + plotHeight - (p50 / scaleMax) * plotHeight,
+      p95Y: margin.top + plotHeight - (p95 / scaleMax) * plotHeight,
+    };
+  });
+  const baseline = margin.top + plotHeight;
+  const p50Area = areaPath(
+    chartPoints.map((point) => [point.x, point.p50Y]),
+    baseline,
+  );
+  const spreadArea = bandPath(
+    chartPoints.map((point) => [point.x, point.p95Y]),
+    chartPoints.map((point) => [point.x, point.p50Y]),
+  );
+  const p50Line = linePath(chartPoints.map((point) => [point.x, point.p50Y]));
+  const p95Line = linePath(chartPoints.map((point) => [point.x, point.p95Y]));
+  const xTickIndexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])];
+  const yTicks = [scaleMax, scaleMax / 2, 0];
+
   return (
-    <div className="usage-trend-sparkline" role="img" aria-label={sparklineAriaLabel(points)}>
-      {points.map((point) => {
-        const p50 = point.usage?.p50CostUSD;
-        const p95 = point.usage?.p95CostUSD;
-        const p50Height = `${Math.min(100, ((p50 ?? 0) / scaleMax) * 100)}%`;
-        const p95Height = `${Math.min(100, ((p95 ?? 0) / scaleMax) * 100)}%`;
-        return (
-          <span
-            className="usage-trend-bar"
-            key={point.since}
-            title={`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(p50)}, P95 ${formatMeasuredCost(p95)}`}
-          >
-            <span className="usage-trend-bar-track">
-              <span className="usage-trend-bar-p95" style={{ height: p95Height }} />
-              <span className="usage-trend-bar-p50" style={{ height: p50Height }} />
-            </span>
-            <small>{formatBucketTick(point.since, window)}</small>
-          </span>
-        );
-      })}
+    <div className="usage-trend-chart">
+      <svg
+        aria-label={sparklineAriaLabel(points)}
+        className="usage-trend-chart-plot"
+        role="img"
+        viewBox={`0 0 ${width} ${height}`}
+      >
+        <title>{sparklineAriaLabel(points)}</title>
+        {yTicks.map((tick) => {
+          const y = margin.top + plotHeight - (tick / scaleMax) * plotHeight;
+          return (
+            <g className="usage-trend-gridline" key={tick}>
+              <line x1={margin.left} x2={width - margin.right} y1={y} y2={y} />
+              <text x={margin.left - 10} y={y + 4}>
+                {formatMeasuredCost(tick)}
+              </text>
+            </g>
+          );
+        })}
+        <path className="usage-trend-area usage-trend-area-p50" d={p50Area} />
+        <path className="usage-trend-area usage-trend-area-spread" d={spreadArea} />
+        <path className="usage-trend-line usage-trend-line-p50" d={p50Line} />
+        <path className="usage-trend-line usage-trend-line-p95" d={p95Line} />
+        {chartPoints.map((point) => (
+          <g key={point.since}>
+            <circle className="usage-trend-point usage-trend-point-p50" cx={point.x} cy={point.p50Y} r="3">
+              <title>{`${formatBucketLabel(point.since, point.until)}: P50 ${formatMeasuredCost(point.p50)}`}</title>
+            </circle>
+            <circle className="usage-trend-point usage-trend-point-p95" cx={point.x} cy={point.p95Y} r="3">
+              <title>{`${formatBucketLabel(point.since, point.until)}: P95 ${formatMeasuredCost(point.p95)}`}</title>
+            </circle>
+          </g>
+        ))}
+        <line
+          className="usage-trend-axis"
+          x1={margin.left}
+          x2={width - margin.right}
+          y1={baseline}
+          y2={baseline}
+        />
+        {xTickIndexes.map((index) => {
+          const point = chartPoints[index];
+          return point ? (
+            <text
+              className="usage-trend-x-label"
+              key={point.since}
+              textAnchor={index === 0 ? "start" : index === points.length - 1 ? "end" : "middle"}
+              x={point.x}
+              y={height - 15}
+            >
+              {formatBucketTick(point.since, window)}
+            </text>
+          ) : null;
+        })}
+      </svg>
+      <div className="usage-trend-legend" aria-hidden="true">
+        <span><i className="usage-trend-key usage-trend-key-p50" />P50 cost</span>
+        <span><i className="usage-trend-key usage-trend-key-spread" />P50–P95 spread</span>
+      </div>
     </div>
   );
+}
+
+function linePath(points: [number, number][]): string {
+  return points.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x} ${y}`).join(" ");
+}
+
+function areaPath(points: [number, number][], baseline: number): string {
+  if (points.length === 0) {
+    return "";
+  }
+  return `${linePath(points)} L ${points.at(-1)![0]} ${baseline} L ${points[0][0]} ${baseline} Z`;
+}
+
+function bandPath(upper: [number, number][], lower: [number, number][]): string {
+  if (upper.length === 0) {
+    return "";
+  }
+  return `${linePath(upper)} ${[...lower]
+    .reverse()
+    .map(([x, y]) => `L ${x} ${y}`)
+    .join(" ")} Z`;
 }
 
 function sparklineAriaLabel(
@@ -1007,70 +1101,91 @@ function DeltaBadge({
   return <span className={`usage-trend-delta usage-trend-delta-${direction}`}>{label}</span>;
 }
 
-const BUDGET_THRESHOLD_STORAGE_KEY = "goobers-insight-budget-threshold-usd";
-
-/**
- * The daemon has no budget-config endpoint (#2533 is portal-only), so the
- * soft threshold an operator sets is a local browser preference, not shared
- * instance state. Reads/writes are wrapped in try/catch (matching how
- * unavailable storage is handled elsewhere, e.g. private-browsing quota
- * errors) so a storage failure degrades to "no threshold set" instead of
- * crashing the page.
- */
-function readStoredThreshold(): number | undefined {
-  try {
-    const stored = window.localStorage.getItem(BUDGET_THRESHOLD_STORAGE_KEY);
-    const parsed = stored ? Number(stored) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeStoredThreshold(value: number | undefined): void {
-  try {
-    if (value === undefined) {
-      window.localStorage.removeItem(BUDGET_THRESHOLD_STORAGE_KEY);
-    } else {
-      window.localStorage.setItem(BUDGET_THRESHOLD_STORAGE_KEY, String(value));
-    }
-  } catch {
-    // Storage unavailable (private browsing, quota) — the in-memory state
-    // set alongside this call still drives the UI for the rest of the
-    // session; it just won't survive a reload.
-  }
-}
-
-function ExternalCostBreakdown({
+export function ExternalCostBreakdown({
   costs,
+  refreshing,
   retry,
 }: {
   costs: QueryState<InsightExternalCostSnapshot>;
+  refreshing: boolean;
   retry: () => void;
 }) {
+  const [filter, setFilter] = useState("");
+  const [kind, setKind] = useState<"all" | "pr" | "issue">("all");
+  const [sortKey, setSortKey] = useState<ExternalCostSortKey>("native");
+  const [sortDirection, setSortDirection] = useState<ExternalCostSortDirection>("desc");
+  const [openRuns, setOpenRuns] = useState<{ label: string; runs: string[] }>();
+  const rows = useMemo(
+    () =>
+      costs.status === "ready" || costs.status === "stale"
+        ? deriveExternalCostRows(costs.data.result)
+        : [],
+    [costs],
+  );
+  const visibleRows = useMemo(
+    () => sortExternalCostRows(filterExternalCostRows(rows, filter, kind), sortKey, sortDirection),
+    [filter, kind, rows, sortDirection, sortKey],
+  );
+  const selectSort = (nextSortKey: ExternalCostSortKey) => {
+    if (nextSortKey === sortKey) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setSortKey(nextSortKey);
+    setSortDirection(
+      nextSortKey === "work-item" || nextSortKey === "provider" ? "asc" : "desc",
+    );
+  };
+  const sortHeading = (label: string, key: ExternalCostSortKey) => (
+    <button
+      className="external-cost-sort-heading"
+      onClick={() => selectSort(key)}
+      type="button"
+    >
+      {label}
+      {sortKey === key && <span aria-hidden="true">{sortDirection === "asc" ? "↑" : "↓"}</span>}
+    </button>
+  );
+
   if (costs.status === "error") {
+    const unavailable = isMissingCostCapability(costs.error);
     return (
-      <section className="content-section">
+      <section className="content-section cost-section-stable cost-section-attribution">
         <ExternalCostHeading />
-        <div className="insight-inline-error">
-          <span>Unable to load pull request and issue costs.</span>
-          <button onClick={retry} type="button">Retry</button>
-        </div>
+        <SectionQueryStatus
+          error
+          message={
+            unavailable
+              ? "Attributed costs are not supported by this daemon. Upgrade Goobers to enable pull request and issue cost reporting."
+              : "Unable to load pull request and issue costs."
+          }
+          retry={unavailable ? undefined : retry}
+        />
+      </section>
+    );
+  }
+  if (costs.status === "loading") {
+    return (
+      <section className="content-section cost-section-stable cost-section-attribution">
+        <ExternalCostHeading statusMessage="Loading attributed costs…" />
       </section>
     );
   }
   if (costs.status !== "ready" && costs.status !== "stale") {
     return null;
   }
-  const rows = deriveExternalCostRows(costs.data.result);
   return (
-    <section className="content-section">
-      <ExternalCostHeading />
+    <section className="content-section cost-section-stable cost-section-attribution">
+      <ExternalCostHeading
+        loadedAt={costs.data.loadedAt}
+        statusMessage={refreshing ? "Refreshing attributed costs…" : undefined}
+      />
       {costs.status === "stale" && costs.error && (
-        <div className="insight-inline-error">
-          <span>Attributed cost refresh failed. Showing the last successful read.</span>
-          <button onClick={retry} type="button">Retry</button>
-        </div>
+        <SectionQueryStatus
+          error
+          message={`Attributed cost refresh failed. Showing data loaded ${formatTimestamp(costs.data.loadedAt)}.`}
+          retry={retry}
+        />
       )}
       {costs.data.boundedAllTime && (
         <p className="usage-description">
@@ -1080,97 +1195,187 @@ function ExternalCostBreakdown({
       {rows.length === 0 ? (
         <p className="inline-empty">No pull request or issue cost was attributed in this window.</p>
       ) : (
-        <div className="external-cost-list">
-          {rows.map((row) => (
-            <article className="external-cost-card" key={row.key}>
-              <div className="external-cost-title">
-                <strong>{row.label}</strong>
-                <span>{row.provider}</span>
+        <>
+          <div aria-label="Cost work item filters" className="filter-bar external-cost-controls" role="group">
+            <label className="filter-search external-cost-filter-field">
+              <span>Filter</span>
+              <input
+                onChange={(event) => setFilter(event.target.value)}
+                placeholder="PR, issue, provider, model, or run"
+                type="search"
+                value={filter}
+              />
+            </label>
+            <label className="filter-select external-cost-filter-field">
+              <span>Type</span>
+              <select
+                onChange={(event) => setKind(event.target.value as "all" | "pr" | "issue")}
+                value={kind}
+              >
+                <option value="all">All work items</option>
+                <option value="pr">Pull requests</option>
+                <option value="issue">Issues</option>
+              </select>
+            </label>
+          </div>
+          {visibleRows.length === 0 ? (
+            <p className="inline-empty">No attributed costs match the current filters.</p>
+          ) : (
+            <div className="data-table-shell external-cost-table-wrap">
+              <div className="external-cost-table" role="table">
+                <div className="data-table-header external-cost-grid external-cost-header" role="row">
+                    <span aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Work item", "work-item")}
+                    </span>
+                    <span aria-sort={sortKey === "provider" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Provider", "provider")}
+                    </span>
+                    <span aria-sort={sortKey === "native" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Provider-native", "native")}
+                    </span>
+                    <span aria-sort={sortKey === "normalized" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Normalized estimate", "normalized")}
+                    </span>
+                    <span aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Runs / models", "runs")}
+                    </span>
+                </div>
+                {visibleRows.map((row) => (
+                    <div className="external-cost-grid external-cost-row" key={row.key} role="row">
+                      <span className="work-item-identity external-cost-item" role="cell">
+                          {row.repository ? (
+                            <a
+                              className="data-table-link data-table-primary"
+                              href={routeHash({
+                                page: "work-items",
+                                provider: row.provider,
+                                repository: row.repository,
+                                kind: row.externalKind,
+                                id: row.externalId,
+                              })}
+                            >
+                              {row.label}
+                            </a>
+                          ) : (
+                            <strong className="data-table-primary">{row.label}</strong>
+                          )}
+                          <small className="data-table-meta">
+                            {row.provider} · {row.externalKind === "pr" ? "pull request" : "issue"}
+                          </small>
+                      </span>
+                      <span className="external-cost-provider" role="cell">{row.provider}</span>
+                      <span className="external-cost-values" role="cell">
+                        <strong className="data-table-number">{row.native}</strong>
+                        <strong className="data-table-number">{row.normalized}</strong>
+                        <small className={row.lowerBound ? "cost-coverage-warning" : "data-table-meta"}>
+                          {row.coverage}
+                        </small>
+                      </span>
+                      <span className="external-cost-runs" role="cell">
+                          {row.models.length > 0 && (
+                            <ul
+                              className="external-cost-models"
+                              aria-label={`${row.label} model breakdown`}
+                            >
+                              {row.models.map((model) => <li key={model}>{model}</li>)}
+                            </ul>
+                          )}
+                          {row.runs.length > 0 && (
+                            <button
+                              aria-label={`View ${row.runs.length} run${row.runs.length === 1 ? "" : "s"} for ${row.label}`}
+                              className="text-button external-cost-runs-button"
+                              onClick={() => setOpenRuns({ label: row.label, runs: row.runs })}
+                              type="button"
+                            >
+                              {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
+                            </button>
+                          )}
+                      </span>
+                    </div>
+                ))}
               </div>
-              <dl className="external-cost-totals">
-                <div>
-                  <dt>Provider-native</dt>
-                  <dd>{row.native}</dd>
-                </div>
-                <div>
-                  <dt>Normalized estimate</dt>
-                  <dd>{row.normalized}</dd>
-                </div>
-              </dl>
-              <p className={row.lowerBound ? "cost-coverage-warning" : "usage-description"}>
-                {row.coverage}
-              </p>
-              {row.models.length > 0 && (
-                <ul className="external-cost-models" aria-label={`${row.label} model breakdown`}>
-                  {row.models.map((model) => <li key={model}>{model}</li>)}
+            </div>
+          )}
+          {openRuns && (
+            <div className="artifact-dialog-backdrop">
+              <section
+                aria-labelledby="external-cost-runs-title"
+                aria-modal="true"
+                className="artifact-dialog external-cost-runs-dialog"
+                role="dialog"
+              >
+                <header>
+                  <h2 id="external-cost-runs-title">{openRuns.label} runs</h2>
+                  <button
+                    aria-label="Close run list"
+                    className="dialog-close"
+                    onClick={() => setOpenRuns(undefined)}
+                    type="button"
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                </header>
+                <ul aria-label={`${openRuns.label} run breakdown`}>
+                  {openRuns.runs.map((run) => (
+                    <li key={run}>
+                      <a href={routeHash({ page: "run", id: run })}>{run}</a>
+                    </li>
+                  ))}
                 </ul>
-              )}
-              {row.runs.length > 0 && (
-                <details className="external-cost-runs">
-                  <summary>{row.runs.length} run{row.runs.length === 1 ? "" : "s"}</summary>
-                  <ul aria-label={`${row.label} run breakdown`}>
-                    {row.runs.map((run) => <li key={run}>{run}</li>)}
-                  </ul>
-                </details>
-              )}
-            </article>
-          ))}
-        </div>
+              </section>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
 }
 
-function ExternalCostHeading() {
+function ExternalCostHeading({
+  loadedAt,
+  statusMessage,
+}: {
+  loadedAt?: string;
+  statusMessage?: string;
+}) {
   return (
     <div className="section-heading">
       <div>
-        <p className="section-kicker">Attribution</p>
         <h2>Cost by pull request and issue</h2>
       </div>
-      <span className="section-count">Exact recorded usage</span>
+      <div className="section-heading-meta">
+        <span className="section-count">
+          Exact recorded usage{loadedAt ? ` · Loaded ${formatTimestamp(loadedAt)}` : ""}
+        </span>
+        {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
+      </div>
     </div>
   );
 }
 
-function useBudgetThreshold(): [number | undefined, (value: number | undefined) => void] {
-  const [threshold, setThresholdState] = useState<number | undefined>(readStoredThreshold);
-  const setThreshold = useCallback((value: number | undefined) => {
-    setThresholdState(value);
-    writeStoredThreshold(value);
-  }, []);
-  return [threshold, setThreshold];
-}
-
-function InstanceCostRollup({
+export function InstanceCostRollup({
   costRollup,
+  refreshing,
   retry,
   window,
 }: {
   costRollup: QueryState<InsightCostRollupSnapshot>;
+  refreshing: boolean;
   retry: () => void;
   window: InsightWindow;
 }) {
-  const [threshold, setThreshold] = useBudgetThreshold();
-
   if (costRollup.status === "loading") {
     return (
-      <section className="content-section">
-        <RollupHeading window={window} />
-        <p className="inline-empty">Loading instance spend…</p>
+      <section className="content-section cost-section-stable">
+        <RollupHeading statusMessage="Loading instance spend…" window={window} />
       </section>
     );
   }
   if (costRollup.status === "error") {
     return (
-      <section className="content-section">
+      <section className="content-section cost-section-stable">
         <RollupHeading window={window} />
-        <div className="insight-inline-error">
-          <span>Unable to load instance spend.</span>
-          <button onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
+        <SectionQueryStatus error message="Unable to load instance spend." retry={retry} />
       </section>
     );
   }
@@ -1179,31 +1384,25 @@ function InstanceCostRollup({
   }
   const data = costRollup.data;
   const rankedGaggles = data.byGaggle.filter((entry) => (entry.usage?.costSamples ?? 0) > 0);
-  const total = data.totalCostSamples === 0 ? undefined : data.totalCostUSD;
 
   return (
-    <section className="content-section">
-      <RollupHeading window={window} />
+    <section className="content-section cost-section-stable">
+      <RollupHeading
+        statusMessage={refreshing ? "Refreshing instance spend…" : undefined}
+        window={window}
+      />
       {costRollup.status === "stale" && costRollup.error && (
-        <div className="insight-inline-error">
-          <span>Instance spend refresh failed. Showing the last successful read.</span>
-          <button onClick={retry} type="button">
-            Retry
-          </button>
-        </div>
+        <SectionQueryStatus
+          error
+          message="Instance spend refresh failed. Showing the last successful read."
+          retry={retry}
+        />
       )}
-      <div className="instance-spend-summary">
-        <div className="instance-spend-total">
-          <small>Total AI cost · all gaggles</small>
-          <strong>{data.totalCostSamples === 0 ? "Unmeasured" : formatMeasuredCost(total)}</strong>
-        </div>
-        <BudgetThreshold onChange={setThreshold} threshold={threshold} total={total} />
-      </div>
       {rankedGaggles.length === 0 ? (
         <p className="inline-empty">No gaggle has a measured AI cost in this window.</p>
       ) : (
-        <div className="gaggle-spend-table">
-          <div aria-hidden="true" className="gaggle-spend-header">
+        <div className="data-table-shell gaggle-spend-table">
+          <div aria-hidden="true" className="data-table-header gaggle-spend-header">
             <span>Gaggle</span>
             <span>P50 cost</span>
             <span>P95 cost</span>
@@ -1218,14 +1417,20 @@ function InstanceCostRollup({
   );
 }
 
-function RollupHeading({ window }: { window: InsightWindow }) {
+function RollupHeading({
+  statusMessage,
+  window,
+}: {
+  statusMessage?: string;
+  window: InsightWindow;
+}) {
   return (
     <div className="section-heading">
-      <div>
-        <p className="section-kicker">AI usage</p>
-        <h2>Instance spend</h2>
+      <h2>Cost by gaggle</h2>
+      <div className="section-heading-meta">
+        <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
+        {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
       </div>
-      <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
     </div>
   );
 }
@@ -1265,68 +1470,6 @@ function GaggleSpendRow({
   );
 }
 
-function BudgetThreshold({
-  onChange,
-  threshold,
-  total,
-}: {
-  onChange: (value: number | undefined) => void;
-  threshold: number | undefined;
-  total: number | undefined;
-}) {
-  const [draft, setDraft] = useState(() => (threshold === undefined ? "" : String(threshold)));
-
-  const commit = () => {
-    const parsed = Number(draft);
-    onChange(draft.trim() !== "" && Number.isFinite(parsed) && parsed > 0 ? parsed : undefined);
-  };
-
-  const status = budgetStatus(total, threshold);
-
-  return (
-    <div className="budget-threshold">
-      <label>
-        <small>Soft budget (USD)</small>
-        <input
-          inputMode="decimal"
-          onBlur={commit}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              commit();
-              event.currentTarget.blur();
-            }
-          }}
-          placeholder="Not set"
-          type="number"
-          value={draft}
-        />
-      </label>
-      {status && (
-        <span className={`budget-status budget-status-${status.kind}`} role="status">
-          {status.label}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function budgetStatus(
-  total: number | undefined,
-  threshold: number | undefined,
-): { kind: "under" | "over"; label: string } | undefined {
-  if (threshold === undefined || total === undefined) {
-    return undefined;
-  }
-  const ratio = total / threshold;
-  return ratio >= 1
-    ? {
-        kind: "over",
-        label: `${(ratio * 100).toFixed(0)}% of budget — over by ${formatMeasuredCost(total - threshold)}`,
-      }
-    : { kind: "under", label: `${(ratio * 100).toFixed(0)}% of budget` };
-}
-
 function StageDistributions({
   filters,
   stages,
@@ -1334,22 +1477,47 @@ function StageDistributions({
   filters: TelemetryStatsOptions;
   stages: TelemetryStageStats[];
 }) {
+  const [showAll, setShowAll] = useState(false);
   const scaleMax = Math.max(...stages.map((stage) => stage.maxDurationMs ?? 0), 1);
+  const visibleStages = showAll ? stages : stages.slice(0, INITIAL_DETAIL_ROWS);
   return (
-    <div className="stage-distributions">
-      <div className="distribution-legend">
-        <span>
-          <i className="distribution-mark distribution-mark-p50" /> P50
-        </span>
-        <span>
-          <i className="distribution-mark distribution-mark-p95" /> P95
-        </span>
-        <span className="distribution-scale">
-          Scale 0 to {formatDuration(scaleMax)}
-        </span>
+    <>
+      <div className="data-table-shell stage-distributions">
+        <div className="data-table-header distribution-legend">
+          <span>
+            <i className="distribution-mark distribution-mark-p50" /> P50
+          </span>
+          <span>
+            <i className="distribution-mark distribution-mark-p95" /> P95
+          </span>
+          <span className="distribution-scale">
+            Scale 0 to {formatDuration(scaleMax)}
+          </span>
+        </div>
+        {visibleStages.map((stage) => (
+          <StageDistributionRow filters={filters} key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`} scaleMax={scaleMax} stage={stage} />
+        ))}
+        {stages.length > INITIAL_DETAIL_ROWS && (
+          <button className="data-table-disclosure" onClick={() => setShowAll((value) => !value)} type="button">
+            {showAll ? "Show fewer stages" : `View all ${stages.length} stages`}
+          </button>
+        )}
       </div>
-      {stages.map((stage) => (
-        <a
+    </>
+  );
+}
+
+function StageDistributionRow({
+  filters,
+  scaleMax,
+  stage,
+}: {
+  filters: TelemetryStatsOptions;
+  scaleMax: number;
+  stage: TelemetryStageStats;
+}) {
+  return (
+    <a
           aria-label={`View runs behind ${stage.gaggle} ${stage.workflow} ${stage.stage}: ${stage.durationSamples} samples, P50 ${formatMeasuredDuration(stage.p50DurationMs)}, P95 ${formatMeasuredDuration(stage.p95DurationMs)}, minimum ${formatMeasuredDuration(stage.minDurationMs)}, average ${formatMeasuredDuration(stage.avgDurationMs)}, maximum ${formatMeasuredDuration(stage.maxDurationMs)}${stage.stuckAbortedAttempts > 0 ? `, ${stage.stuckAbortedAttempts} stuck-aborted attempts excluded` : ""}`}
           className="stage-distribution-row"
           href={routeHash({
@@ -1363,7 +1531,6 @@ function StageDistributions({
               "measured",
             ),
           })}
-          key={`${stage.gaggle}:${stage.workflow}:${stage.stage}`}
         >
           <span className="distribution-name">
             <strong>{stage.stage}</strong>
@@ -1404,9 +1571,7 @@ function StageDistributions({
             </span>
           </span>
           <Icon name="chevron" size={15} />
-        </a>
-      ))}
-    </div>
+    </a>
   );
 }
 
@@ -1511,7 +1676,7 @@ function formatMeasuredCost(value: number | undefined): string {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
+    maximumFractionDigits: 2,
   }).format(value);
 }
 

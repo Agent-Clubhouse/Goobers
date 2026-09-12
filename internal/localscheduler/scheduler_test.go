@@ -1028,7 +1028,9 @@ func TestCronRunHoldsSlotThenManualTriggerRejected(t *testing.T) {
 	sched.Tick(context.Background(), base.Add(time.Hour)) // cron fire holds the slot
 	waitForCount(t, func() int { return starter.count() }, 1)
 
-	_, err := sched.Trigger(context.Background(), "implement", base.Add(time.Minute))
+	_, err := sched.TriggerWithOptions(context.Background(), "implement", base.Add(time.Minute), ManualTriggerOptions{
+		BypassCadenceBudgets: true,
+	})
 	if err == nil {
 		t.Fatal("expected the manual trigger to be rejected while the cron run holds the max-parallel slot")
 	}
@@ -1065,6 +1067,78 @@ func TestManualTriggerBypassesCronButHonorsConditions(t *testing.T) {
 	waitForCount(t, func() int { return starter.count() }, 1)
 	if got := starter.starts[0].Trigger.Kind; got != journal.TriggerManual {
 		t.Fatalf("dispatched run's Trigger.Kind = %q, want %q (issue #134)", got, journal.TriggerManual)
+	}
+}
+
+func TestForcedManualTriggerBypassesCadenceBudgetsButDefaultAndScheduleDoNot(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		readiness  apiv1.ReadinessConditions
+		skipReason string
+	}{
+		{
+			name: "hourly",
+			readiness: apiv1.ReadinessConditions{
+				MaxConcurrentRuns: 100,
+				MaxRunsPerHour:    1,
+			},
+			skipReason: ReasonBudget,
+		},
+		{
+			name: "daily",
+			readiness: apiv1.ReadinessConditions{
+				MaxConcurrentRuns: 100,
+				MaxRunsPerHour:    100,
+				MaxRunsPerDay:     1,
+			},
+			skipReason: ReasonDailyBudget,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+			sched, dir := newTestScheduler(t, []WorkflowEntry{{
+				Workflow:  "curate",
+				Readiness: tc.readiness,
+				Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+				Starter:   starter,
+			}})
+			base := time.Now()
+
+			if _, err := sched.Trigger(context.Background(), "curate", base); err != nil {
+				t.Fatalf("first manual trigger: %v", err)
+			}
+			sched.Wait()
+
+			if _, err := sched.Trigger(context.Background(), "curate", base.Add(time.Minute)); err == nil {
+				t.Fatal("default manual trigger bypassed the spent cadence budget")
+			} else if !strings.Contains(err.Error(), tc.skipReason) {
+				t.Fatalf("default manual trigger error = %v, want %q", err, tc.skipReason)
+			}
+
+			if _, err := sched.TriggerWithOptions(context.Background(), "curate", base.Add(2*time.Minute), ManualTriggerOptions{
+				BypassCadenceBudgets: true,
+			}); err != nil {
+				t.Fatalf("forced manual trigger: %v", err)
+			}
+			sched.Wait()
+
+			sched.Tick(context.Background(), base.Add(time.Hour))
+			sched.Wait()
+			if got := starter.count(); got != 2 {
+				t.Fatalf("starts after scheduled trigger = %d, want 2; scheduled trigger bypassed cadence budget", got)
+			}
+
+			events, err := journal.ReadInstanceLog(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if event.Type == journal.EventTickSkipped && event.Reason == tc.skipReason {
+					return
+				}
+			}
+			t.Fatalf("scheduled trigger did not journal %q: %+v", tc.skipReason, events)
+		})
 	}
 }
 

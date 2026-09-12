@@ -24,6 +24,8 @@ var (
 	ErrTelemetryUnavailable = errors.New("telemetry is unavailable")
 	// ErrInvalidTelemetryRequest identifies invalid filters or cursors.
 	ErrInvalidTelemetryRequest = errors.New("invalid telemetry request")
+	// ErrWorkItemNotFound means no confirmed provider mutation exists for an item.
+	ErrWorkItemNotFound = errors.New("work item not found")
 )
 
 // TelemetryReader is the shared telemetry read boundary used by HTTP and CLI.
@@ -33,6 +35,12 @@ type TelemetryReader interface {
 	TelemetryErrorSignatures(context.Context, TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error)
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
 	TelemetryImplementationOutcomes(context.Context, TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error)
+}
+
+// WorkItemReader exposes work-item summaries and action history.
+type WorkItemReader interface {
+	WorkItems(context.Context, WorkItemListOptions) (WorkItemPage, error)
+	WorkItem(context.Context, string, string, string, string) (WorkItemDetail, error)
 }
 
 // TelemetryImplementationOutcomesRequest selects the terminal implementation
@@ -667,6 +675,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			result.Trend = append(result.Trend, TelemetryTrendBucket{
 				Since: since.UTC().Format(time.RFC3339Nano),
 				Until: until.UTC().Format(time.RFC3339Nano),
+				Usage: []TelemetryUsageStats{},
 			})
 		}
 		if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
@@ -720,6 +729,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		result.TrendPrevious = &TelemetryTrendBucket{
 			Since: req.TrendPreviousSince.UTC().Format(time.RFC3339Nano),
 			Until: req.TrendPreviousUntil.UTC().Format(time.RFC3339Nano),
+			Usage: []TelemetryUsageStats{},
 		}
 		for _, stat := range trends[len(trends)-1].Usage {
 			result.TrendPrevious.Usage = append(result.TrendPrevious.Usage, projectTelemetryUsage(stat))
@@ -991,8 +1001,11 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 			return TelemetryStatsResult{}, err
 		}
 		if len(trustedFailure) == 0 {
-			analytics.Centrality = nil
-			analytics.CriticalPath = readmodel.CriticalPath{}
+			// Withheld, not absent (#4825): keep Centrality/CriticalPath.Nodes
+			// as empty slices, not nil, so they marshal as JSON [] rather than
+			// null against the client contract's non-nullable fields.
+			analytics.Centrality = []readmodel.CentralityScore{}
+			analytics.CriticalPath = readmodel.CriticalPath{Nodes: []string{}}
 			analytics.Confidence = "untrusted"
 			analytics.Caveat = "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available"
 		} else if !sameAnalyticsNodes(trustedFailure, creditNodes) {

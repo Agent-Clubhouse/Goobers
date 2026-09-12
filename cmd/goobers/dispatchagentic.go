@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // dispatchagentic.go is the pod half of the agentic claim check.
@@ -354,17 +355,21 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// stampVolumes). The daemon-side binding exists precisely because runner
 	// `self` has no such pod; layering it here would carve an ephemeral
 	// directory inside an already-ephemeral one.
-	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil, false)
+	spec, ok := kit.Goobers[gooberName]
+	if !ok {
+		return nil, fmt.Errorf("kit carries no spec for goober %q", gooberName)
+	}
+	var commands map[string][]string
+	if len(kit.HarnessCommand) > 0 {
+		commands = map[string][]string{string(spec.Harness): kit.HarnessCommand}
+	}
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, commands, "", "", false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
 	// Preflight THIS goober's harness specifically, rather than walking
 	// workflows as the daemon does — a pod has no workflow set, and the only
 	// harness that matters here is the one this stage is about to use.
-	spec, ok := kit.Goobers[gooberName]
-	if !ok {
-		return nil, fmt.Errorf("kit carries no spec for goober %q", gooberName)
-	}
 	adapter, err := adapterRegistry.Get(string(spec.Harness))
 	if err != nil {
 		return nil, fmt.Errorf("harness %q is not available in this pod: %w", spec.Harness, err)
@@ -443,10 +448,35 @@ func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
 		SharedRegistry:   w.Registry,
 		RunsDir:          w.RunsDir,
 		SandboxPosture:   instance.SandboxPosture(w.Kit.SandboxPosture),
-		ArtifactRecorder: podArtifactRecorder{stderr: w.Stderr, scrubber: w.Scrubber, dir: w.RunsDir},
+		ArtifactRecorder: podCheckpointRecorder(w),
 		SecretRegistrar:  w.Registry,
 		AgenticAdapter:   newAgenticAdapter,
 	}
+}
+
+type checkpointPodArtifacts struct {
+	podArtifactRecorder
+	livejournal.TranscriptTransport
+}
+
+func podCheckpointRecorder(w podExecutorWiring) runner.ArtifactRecorder {
+	recorder := podArtifactRecorder{stderr: w.Stderr, scrubber: w.Scrubber, dir: w.RunsDir}
+	endpoint := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
+	blobs := podBlobClient()
+	if endpoint == "" {
+		return recorder
+	}
+	transport := livejournal.TranscriptTransport{
+		// Placement supplies the journal scope in the pod environment, just
+		// as it does for artifact emission. Review kits may omit gaggle.
+		RunID: os.Getenv(dispatcher.EnvRunID), Gaggle: os.Getenv(dispatcher.EnvGaggle),
+		// TranscriptTransport supplies separate checkpoint/final deadlines.
+		Emitter: &livejournal.HTTPEmitter{BaseURL: endpoint, Token: os.Getenv(dispatcher.EnvPodToken)},
+	}
+	if blobs != nil {
+		transport.Blobs = blobs
+	}
+	return checkpointPodArtifacts{podArtifactRecorder: recorder, TranscriptTransport: transport}
 }
 
 // podArtifactRecorder satisfies runner.ArtifactRecorder inside a stage pod.
@@ -598,7 +628,7 @@ func (r podArtifactRecorder) Append(ev journal.Event) error {
 		Gaggle: os.Getenv(dispatcher.EnvGaggle),
 		Ops: []livejournal.Op{{
 			Kind: livejournal.OpAppend,
-			Key:  fmt.Sprintf("%s/%s/%d", os.Getenv(dispatcher.EnvStage), ev.Type, ev.Seq),
+			Key:  podAgentEventOpKey(ev),
 			// The daemon's replayClock adopts THIS field as the event's own
 			// Time (livejournal.applyOp: run.clock.set(op.Time)) — a pod has
 			// no journal-plane clock of its own to inherit one from, so an

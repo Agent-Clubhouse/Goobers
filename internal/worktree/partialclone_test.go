@@ -516,7 +516,7 @@ func TestManager_WorkingCopy_PartialCloneOffIsByteIdentical(t *testing.T) {
 
 	recorded := recordedGitLines(t, log)
 	wantClone := hardenedGitPrefix + " clone --mirror " + repo + " " + mirror
-	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/*:refs/* ^refs/heads/goobers/*"
+	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/*:refs/* ^refs/heads/goobers/* ^refs/goobers/recovery/* ^refs/goobers/recovery-snapshots/*"
 	if got := findRecordedLine(recorded, " clone "); got != wantClone {
 		t.Errorf("flag-off clone invocation:\n got %q\nwant %q", got, wantClone)
 	}
@@ -555,7 +555,7 @@ func TestManager_WorkingCopy_PartialCloneOnInvocations(t *testing.T) {
 
 	recorded := recordedGitLines(t, log)
 	wantClone := hardenedGitPrefix + " clone --mirror --filter=blob:none " + url + " " + mirror
-	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* ^refs/heads/goobers/*"
+	wantFetch := hardenedGitPrefix + " fetch --prune origin +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* ^refs/heads/goobers/* ^refs/goobers/recovery/* ^refs/goobers/recovery-snapshots/*"
 	if got := findRecordedLine(recorded, " clone "); got != wantClone {
 		t.Errorf("flag-on clone invocation:\n got %q\nwant %q", got, wantClone)
 	}

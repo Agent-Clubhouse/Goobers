@@ -192,7 +192,7 @@ spec:
 	// `localscheduler: unknown workflow "reloaded-implement"`.
 	waitForDefinitionsReload(t, address, reloadedHealth.Freshness.DefinitionsLoadedAt)
 	stdout := waitForRunnableWorkflow(t, root, "reloaded-implement")
-	runID := runIDFromRunStdout(t, stdout)
+	runID := runIDFromAcceptedTriggerStdout(t, layout, stdout)
 	mirrored := waitForConfigValue(t, "gaggle outbox mirror after reload", func() ([]byte, bool) {
 		data, err := os.ReadFile(filepath.Join(mirrorPath, runID, "local-ci", "attempt-1", "reports", "report.txt"))
 		if errors.Is(err, os.ErrNotExist) {

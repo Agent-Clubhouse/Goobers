@@ -3,6 +3,7 @@
 package proc
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,18 @@ import (
 
 	"golang.org/x/sys/windows"
 )
+
+func TestVanishedThreadOnlyAcceptsInvalidParameter(t *testing.T) {
+	if !vanishedThread(windows.ERROR_INVALID_PARAMETER) {
+		t.Fatal("vanished thread error was not recognized")
+	}
+	if vanishedThread(windows.ERROR_ACCESS_DENIED) {
+		t.Fatal("access denied was treated as a vanished thread")
+	}
+	if vanishedThread(errors.New("invalid parameter")) {
+		t.Fatal("untyped error was treated as a vanished thread")
+	}
+}
 
 func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
@@ -229,6 +242,9 @@ func TestKillTerminatesEscapedDescendants(t *testing.T) {
 }
 
 func TestKillTerminatesWSLDescendants(t *testing.T) {
+	if os.Getenv("GOOBERS_RUN_WSL_INTEGRATION_TEST") != "1" {
+		t.Skip("set GOOBERS_RUN_WSL_INTEGRATION_TEST=1 to run the disruptive WSL integration test")
+	}
 	if _, err := exec.LookPath("wsl.exe"); err != nil {
 		t.Skip("wsl.exe is not installed")
 	}
@@ -240,7 +256,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",
-		"$child = Start-Process wsl.exe -ArgumentList '-e','sh','-c','sleep 30' -PassThru; Set-Content -LiteralPath $env:GOOBERS_WSL_PID -Value $child.Id; Start-Sleep -Seconds 30",
+		"$child = Start-Process wsl.exe -ArgumentList '-e','sh','-c','sleep 30' -WindowStyle Hidden -PassThru; Set-Content -LiteralPath $env:GOOBERS_WSL_PID -Value $child.Id; Start-Sleep -Seconds 30",
 	)
 	cmd.Env = append(os.Environ(), "GOOBERS_WSL_PID="+marker)
 	tree, err := Start(cmd)

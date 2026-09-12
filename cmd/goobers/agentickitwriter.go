@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -173,5 +174,6 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 		EnvCapabilities: buildEnvCapabilities(),
 		Grants:          wireGrants,
 		SandboxPosture:  string(instance.EffectiveAgenticSandbox(cfg, nil)),
+		HarnessCommand:  slices.Clone(cfg.Runner.HarnessCommand[string(spec.Harness)]),
 	}, nil
 }

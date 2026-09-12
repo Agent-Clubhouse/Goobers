@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { DaemonApiError, DaemonUnavailableError } from "./api/errors";
@@ -39,6 +39,7 @@ const testConfig: LiveDataConfig = {
 beforeEach(() => {
   vi.useFakeTimers();
   window.sessionStorage.clear();
+  window.localStorage.clear();
   Object.defineProperty(window.navigator, "onLine", { configurable: true, value: true });
   Object.defineProperty(document, "visibilityState", {
     configurable: true,
@@ -49,10 +50,90 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
 describe("LiveDataController", () => {
+  it("shares one SSE transport across tabs and broadcasts invalidations", async () => {
+    vi.stubGlobal("BroadcastChannel", TestBroadcastChannel);
+    const stream = new ControlledEventStream();
+    const leaderClient = new ScriptedClient([() => Promise.resolve(stream)]);
+    const followerClient = new ScriptedClient([]);
+    const leader = new LiveDataController(
+      leaderClient,
+      { ...testConfig, crossTabEnabled: true },
+      { cursorScope: "same-instance" },
+    );
+    const follower = new LiveDataController(
+      followerClient,
+      { ...testConfig, crossTabEnabled: true },
+      { cursorScope: "same-instance" },
+    );
+    const leaderRefresh = vi.fn().mockResolvedValue(true);
+    const followerRefresh = vi.fn().mockResolvedValue(true);
+    leader.subscribe(["run"], leaderRefresh);
+    follower.subscribe(["run"], followerRefresh);
+
+    leader.start();
+    await settle();
+    follower.start();
+    await settle();
+    expect(leaderClient.requests).toHaveLength(1);
+    expect(followerClient.requests).toHaveLength(0);
+    leaderRefresh.mockClear();
+    followerRefresh.mockClear();
+
+    stream.push(update("fixture:1", ["run"]));
+    await vi.advanceTimersByTimeAsync(testConfig.invalidationWindowMs);
+    await settle();
+
+    expect(leaderRefresh).toHaveBeenCalledOnce();
+    expect(followerRefresh).toHaveBeenCalledOnce();
+
+    follower.stop();
+    leader.stop();
+  });
+
+  it("keeps reconnecting without polling when the host disables polling", async () => {
+    const client = new ScriptedClient([
+      () => Promise.reject(new Error("stream offline")),
+      () => Promise.reject(new Error("stream offline")),
+      () => Promise.reject(new Error("stream offline")),
+    ]);
+    const controller = new LiveDataController(client, {
+      ...testConfig, pollingEnabled: false, failuresBeforePolling: 1,
+    });
+    const refresh = vi.fn();
+    controller.subscribe(["instance"], refresh);
+    refresh.mockClear();
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(350);
+    expect(controller.freshness).toBe("reconnecting");
+    expect(refresh).not.toHaveBeenCalled();
+    controller.stop();
+  });
+
+  it("uses only the host's scoped cursor rather than another instance's cursor", async () => {
+    window.sessionStorage.setItem("goobers-live-event-cursor", "legacy:10");
+    window.sessionStorage.setItem("goobers-live-event-cursor:other", "other:20");
+    window.sessionStorage.setItem("goobers-live-event-cursor:mine", "mine:30");
+    const seen: Array<string | undefined> = [];
+    const client = new ScriptedClient([
+      (request) => {
+        seen.push(request?.cursor);
+        return Promise.resolve(new ControlledEventStream());
+      },
+    ]);
+    const controller = new LiveDataController(client, testConfig, { cursorScope: "mine" });
+    controller.start();
+    await settle();
+    expect(seen).toEqual(["mine:30"]);
+    controller.stop();
+    expect(window.sessionStorage.getItem("goobers-live-event-cursor:other")).toBe("other:20");
+  });
+
   it("invalidates the exact cached resources named by an SSE event", async () => {
     const stream = new ControlledEventStream();
     const client = new ScriptedClient([() => Promise.resolve(stream)]);
@@ -1054,6 +1135,86 @@ describe("LiveDataController", () => {
     controller.stop();
   });
 
+  it("uses health revision checks to skip unchanged fallback snapshots", async () => {
+    const unavailable = () => Promise.reject(new DaemonUnavailableError());
+    const client = new ScriptedClient([unavailable, unavailable, unavailable, unavailable]);
+    const health = {
+      ...populatedDaemonFixtures().health,
+      readState: {
+        epoch: "projection-a",
+        appliedSeq: 1,
+        observedAt: "2026-09-10T00:00:00Z",
+        lagSeconds: 0,
+        pendingIntake: 0,
+        oldestPendingSourceAge: 0,
+        intakeWriteFailures: 0,
+        minChangeSeq: 1,
+        completeness: "complete" as const,
+        degraded: [],
+      },
+    };
+    vi.spyOn(client, "getHealth").mockImplementation(async () => health);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn().mockResolvedValue(true);
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockClear();
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(110);
+    await settle();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    health.readState.appliedSeq = 2;
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    controller.stop();
+  });
+
+  it("retries a fallback snapshot when refreshing a new revision fails", async () => {
+    const unavailable = () => Promise.reject(new DaemonUnavailableError());
+    const client = new ScriptedClient([unavailable, unavailable, unavailable, unavailable]);
+    const health = {
+      ...populatedDaemonFixtures().health,
+      readState: {
+        epoch: "projection-a",
+        appliedSeq: 1,
+        observedAt: "2026-09-10T00:00:00Z",
+        lagSeconds: 0,
+        pendingIntake: 0,
+        oldestPendingSourceAge: 0,
+        intakeWriteFailures: 0,
+        minChangeSeq: 1,
+        completeness: "complete" as const,
+        degraded: [],
+      },
+    };
+    vi.spyOn(client, "getHealth").mockImplementation(async () => health);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn();
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockReset();
+    refresh.mockResolvedValueOnce(false).mockResolvedValue(true);
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(110);
+    await settle();
+    expect(refresh).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    controller.stop();
+  });
+
   it("waits for each polling refresh before scheduling the next", async () => {
     const unavailable = () => Promise.reject(new DaemonUnavailableError());
     const client = new ScriptedClient([unavailable, unavailable, unavailable]);
@@ -1242,14 +1403,8 @@ describe("live page integration", () => {
     render(<App client={client} />);
 
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Core product/ }));
     expect(screen.getByText("1 active / 2 max")).toBeInTheDocument();
-    const coreSection = screen
-      .getByRole("heading", { name: "Core product" })
-      .closest<HTMLElement>(".gaggle-section");
-    if (!coreSection) {
-      throw new Error("Core product inventory section was not rendered.");
-    }
-    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("1");
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
     );
@@ -1270,9 +1425,7 @@ describe("live page integration", () => {
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
-
     expect(screen.getByText("2 active / 2 max")).toBeInTheDocument();
-    expect(within(coreSection).getByText("Active runs").nextElementSibling).toHaveTextContent("2");
     expect(listGaggles).toHaveBeenCalledTimes(inventoryGaggleReads);
     expect(listGoobers).toHaveBeenCalledTimes(inventoryGooberReads);
     expect(listWorkflows).toHaveBeenCalledTimes(inventoryWorkflowReads);
@@ -1325,6 +1478,7 @@ describe("live page integration", () => {
       window.dispatchEvent(new HashChangeEvent("hashchange"));
     });
     expect(await screen.findByRole("heading", { name: "Workflows" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Core product/ }));
     expect(listGaggles).toHaveBeenCalledTimes(populatedInventoryReads.gaggles);
     expect(listGoobers).toHaveBeenCalledTimes(populatedInventoryReads.goobers);
     expect(listWorkflows).toHaveBeenCalledTimes(populatedInventoryReads.workflows);
@@ -1449,6 +1603,36 @@ class MutableFixtureClient extends FixtureDaemonClient {
     }
     gaggle.activeRunCount = activeRuns;
     workflow.concurrency.activeRuns = activeRuns;
+  }
+}
+
+class TestBroadcastChannel extends EventTarget {
+  private static readonly channels = new Map<string, Set<TestBroadcastChannel>>();
+
+  constructor(readonly name: string) {
+    super();
+    const peers = TestBroadcastChannel.channels.get(name) ?? new Set();
+    peers.add(this);
+    TestBroadcastChannel.channels.set(name, peers);
+  }
+
+  postMessage(message: unknown): void {
+    for (const peer of TestBroadcastChannel.channels.get(this.name) ?? []) {
+      if (peer === this) {
+        continue;
+      }
+      queueMicrotask(() => {
+        peer.dispatchEvent(new MessageEvent("message", { data: message }));
+      });
+    }
+  }
+
+  close(): void {
+    const peers = TestBroadcastChannel.channels.get(this.name);
+    peers?.delete(this);
+    if (peers?.size === 0) {
+      TestBroadcastChannel.channels.delete(this.name);
+    }
   }
 }
 

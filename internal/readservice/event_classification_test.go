@@ -51,6 +51,7 @@ func TestProjectEventClassifiesEveryKnownEventType(t *testing.T) {
 		{event: journal.Event{Type: journal.EventClaimLockSlow}, category: RunEventBookkeeping},
 		{event: journal.Event{Type: journal.EventClaimLockTimeout}, category: RunEventResult, chapter: true},
 		{event: journal.Event{Type: journal.EventConfigReloaded}, category: RunEventBookkeeping},
+		{event: journal.Event{Type: journal.EventWorkerConfigDivergence}, category: RunEventBookkeeping},
 		{event: journal.Event{Type: journal.EventConfigReloadRejected}, category: RunEventResult, chapter: true},
 		{event: journal.Event{Type: journal.EventDaemonStarted}, category: RunEventLiveness},
 		{event: journal.Event{Type: journal.EventDaemonCleanShutdown}, category: RunEventLiveness},

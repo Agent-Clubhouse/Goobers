@@ -19,9 +19,27 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestTerminalSharedClaimsNeverUseLegacyMarkerRelease(t *testing.T) {
+	l := instance.NewLayout(initDeterministicDemo(t))
+	ledger := openTestClaimLedger(t, filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "42"}
+	owner := sharedclaim.Owner{Instance: "instance", Run: "shared-run", Token: "owner"}
+	if ok, _, err := ledger.ClaimScopedUntil(key, owner.Run, "claim", time.Now().Add(time.Minute), owner); err != nil || !ok {
+		t.Fatalf("seed shared claim: %v %v", ok, err)
+	}
+	entries, err := terminalClaimMarkerEntries(l, owner.Run)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("shared claim reached legacy marker cleanup: %+v %v", entries, err)
+	}
+	if current, held := ledger.LookupScoped(key); !held || current.SharedOwner != owner {
+		t.Fatal("marker filtering changed ownership")
+	}
+}
 
 // fakeClaimMarkerRelease records every provider claim-epoch release a terminal
 // run issues, plus whether the ledger still held that run's claims at the

@@ -436,7 +436,9 @@ func TestRenderPodActiveDeadlineAlwaysOn(t *testing.T) {
 // The pod-plane env contract: identity, blob endpoint (decision 010 — every
 // class carries the blob data path), write API, and the per-run bearer.
 func TestRenderPodEnvContract(t *testing.T) {
-	pod, err := RenderPod(testConfig(), testAttempt(), linuxRunner())
+	attempt := testAttempt()
+	attempt.InstanceID = "0123456789abcdef0123456789abcdef"
+	pod, err := RenderPod(testConfig(), attempt, linuxRunner())
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}
@@ -446,6 +448,7 @@ func TestRenderPodEnvContract(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		EnvRunID:        "run-2026-08-22-0001",
+		EnvInstanceID:   attempt.InstanceID,
 		EnvStage:        "build",
 		EnvAttempt:      "1",
 		EnvBlobEndpoint: "http://goobers-api.goobers-system:7777",

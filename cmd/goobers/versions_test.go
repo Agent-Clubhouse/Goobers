@@ -20,8 +20,8 @@ func TestRunVersionsHuman(t *testing.T) {
 	for _, want := range []string{
 		"goobers support matrix",
 		"DSL versions:",
-		supportmatrix.CurrentDSLVersion,
-		supportmatrix.NextDSLVersion,
+		supportmatrix.V1DSLVersion,
+		supportmatrix.V2DSLVersion,
 		string(supportmatrix.LevelSupported),
 		"minimum Go toolchain:",
 		supportmatrix.Get().MinGoVersion,

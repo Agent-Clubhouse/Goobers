@@ -12,6 +12,10 @@ metadata:
     goobers.dev/role: worker
 spec:
   replicas: 1
+  # The lock-bearing RWO instance must be released before its replacement
+  # starts; a surge replica can block disk attachment or share live locks.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: goobers-worker
@@ -23,6 +27,9 @@ spec:
         goobers.dev/role: worker
     spec:
       serviceAccountName: goobers-worker
+      # Allow the default 30s Temporal drain, bounded pod disposal, and exit.
+      # Increase this when overriding --drain-timeout.
+      terminationGracePeriodSeconds: 90
       nodeSelector:
         kubernetes.io/os: linux
       securityContext:
@@ -109,15 +116,20 @@ spec:
             # #4286: enables the dispatcher-backed pod-per-stage seam (mode
             # 3) — without it, the worker serves workspaces/gates but every
             # real stage fails closed with "not configured". Takes a SINGLE
-            # namespace: one worker dispatches into one gaggle namespace, not
-            # one per gaggle (../gaggle-namespace/examples/ ships more than
-            # one — pick the one this Deployment serves, or copy this
-            # Deployment per gaggle for G2 dedicated mode, #656). The
+            # namespace, independent of each gaggle's
+            # spec.isolation.namespace. This worker polls EVERY gaggle queue
+            # loaded from its config, so all loaded gaggles share this
+            # worker-wide namespace. Copies with different namespace values
+            # race nondeterministically for the same queues and the winner
+            # decides the pod namespace; this does not enforce per-gaggle
+            # isolation (#4897). Possible resolutions include dedicated queue
+            # scoping, dynamic gaggle-to-namespace mapping, or demoting the
+            # isolation field. The
             # matching RBAC grant lives in
             # ../gaggle-namespace/base/dispatcher-rbac.yaml, bound to this
             # same goobers-worker ServiceAccount.
             - "--dispatch-namespace"
-            - "gaggle-a" # CHANGE-ME: the gaggle namespace this worker dispatches into
+            - "gaggle-a" # CHANGE-ME: worker-wide namespace shared by every loaded gaggle
           env:
             # Temporal frontend (§2); reachable from workers and operator only
             # (§5 — see ../temporal/networkpolicy-temporal.yaml). The worker
@@ -145,6 +157,10 @@ spec:
             # root stays read-only; this state lasts for the life of the pod.
             - name: harness-home
               mountPath: /home/nonroot
+            # Config snapshots, git helpers, and executor staging need temp
+            # files even though the container root filesystem is read-only.
+            - name: tmp
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -167,6 +183,9 @@ spec:
           emptyDir: {}
         - name: harness-home
           emptyDir: {}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
         # ReadWriteMany, because more than one worker mounts it. Provision it
         # with a filesystem your platform can serve RWX (Azure Files, EFS,
         # Filestore, CephFS, NFS). If you only ever run ONE worker, drop this

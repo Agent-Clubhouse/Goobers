@@ -3,7 +3,11 @@ package rollup
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -163,6 +167,94 @@ func TestIngestSchedulerLogResumesAfterJournalShrinks(t *testing.T) {
 	_, lastSeq, _ := schedulerCursorRow(t, db)
 	if lastSeq != 7 {
 		t.Fatalf("lastSeq after shrink = %d, want 7", lastSeq)
+	}
+}
+
+// writeInstanceEventsGeneration writes lines to instance-journal generation
+// gen and advances schedulerDir's generation pointer to it — mirroring what
+// internal/journal.CompactInstanceEvents actually does on disk (a new
+// "events.jsonl.gen-NNNNNN" file plus an atomically-advanced
+// "events.jsonl.current" pointer), NOT what writeInstanceEvents does
+// (rewriting the bare "events.jsonl" path in place, which is a fine stand-in
+// for "the file shrank" but does not exercise generation resolution at all).
+func writeInstanceEventsGeneration(t *testing.T, schedulerDir string, gen int, lines []string) error {
+	t.Helper()
+	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
+		return err
+	}
+	body := strings.Join(lines, "\n") + "\n"
+	name := fileEvents
+	if gen > 0 {
+		name = fmt.Sprintf("%s.gen-%06d", fileEvents, gen)
+	}
+	if err := os.WriteFile(filepath.Join(schedulerDir, name), []byte(body), 0o644); err != nil {
+		return err
+	}
+	if gen == 0 {
+		return nil
+	}
+	return os.WriteFile(filepath.Join(schedulerDir, fileEventsPointer), []byte(strconv.Itoa(gen)), 0o644)
+}
+
+// TestIngestSchedulerLogFollowsGenerationRotation is #3639's regression
+// guard. Compaction never appends to or shrinks the file a prior ingest
+// resolved — it writes kept records to a NEW generation file and advances a
+// separate pointer, leaving the old generation's file frozen at whatever
+// size it already was. Before this fix, ingestion kept re-resolving the
+// legacy hardcoded "events.jsonl" path forever: once a generation rotation
+// happened, that frozen file's size never again exceeded the stored byte
+// offset, so every ingest read zero new bytes — successfully, with no
+// error — and rollup scheduler telemetry silently stopped advancing for
+// good. This drives an actual rotation (a new generation file + pointer,
+// with the old generation left on disk exactly as real compaction leaves it)
+// and requires the events appended AFTER rotation to still show up.
+func TestIngestSchedulerLogFollowsGenerationRotation(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEventsGeneration(t, schedulerDir, 0, firstFive()); err != nil {
+		t.Fatal(err)
+	}
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatalf("pre-rotation ingest: %v", err)
+	}
+	if got := schedulerEventTypes(t, db); len(got) != 5 {
+		t.Fatalf("events before rotation = %d, want 5: %v", len(got), got)
+	}
+
+	// Compaction: generation 1 keeps the run-started/run-finished/error trio
+	// (3,4,5) and drops the older trigger.fired/tick.skipped pair (1,2) — then
+	// the daemon appends three genuinely new events (6,7,8) after rotation,
+	// exactly as it would in the window between a compaction pass and the
+	// next scheduler tick. The legacy "events.jsonl" from gen 0 is left on
+	// disk untouched, as cleanupStaleInstanceEventsGenerations does until a
+	// generation actually falls out of the keep window.
+	rotated := append(append([]string{}, firstFive()[2:]...), nextThree()...)
+	if err := writeInstanceEventsGeneration(t, schedulerDir, 1, rotated); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatalf("post-rotation ingest: %v", err)
+	}
+	got := schedulerEventTypes(t, db)
+	if len(got) != 8 {
+		t.Fatalf("events after rotation = %d, want 8 (5 original + 3 post-rotation, no dupes): %v", len(got), got)
+	}
+	_, lastSeq, present := schedulerCursorRow(t, db)
+	if !present || lastSeq != 8 {
+		t.Fatalf("cursor after rotation = (lastSeq %d, present %v), want lastSeq 8", lastSeq, present)
+	}
+
+	// A steady-state re-ingest with nothing new must not re-detect the same
+	// rotation as a fresh one (the generation column itself must now read 1,
+	// matching the live pointer) and must add nothing.
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatalf("steady-state re-ingest after rotation: %v", err)
+	}
+	if got := schedulerEventTypes(t, db); len(got) != 8 {
+		t.Fatalf("events after steady-state re-ingest = %d, want still 8: %v", len(got), got)
 	}
 }
 

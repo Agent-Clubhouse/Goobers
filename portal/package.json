@@ -7,10 +7,12 @@
     "dev": "vite",
     "dev:getting-started": "vite --mode getting-started",
     "build": "npm run typecheck && vite build",
+    "package:portal": "node scripts/package-portal.mjs",
+    "test:package": "node scripts/test-portal-package.mjs",
     "deadcode": "node scripts/check-dead-code.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "tsc --noEmit -p tsconfig.e2e.json && playwright test",
+    "test:e2e": "npm run build && tsc --noEmit -p tsconfig.e2e.json && playwright test",
     "test:contract": "vitest run src/api/wireContract.test.ts src/api/authoringContract.test.ts",
     "preview": "vite preview"
   },

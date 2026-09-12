@@ -37,6 +37,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintf(os.Stderr, "milestone helper args = %q, want %q\n", os.Args[1:], want)
 			os.Exit(2)
 		}
+
 		marker := os.Getenv(milestoneHelperMarker)
 		if marker == "" {
 			fmt.Fprintln(os.Stderr, "milestone helper marker is empty")
@@ -1012,6 +1013,65 @@ func TestCopilotAdapterToolAllowlist(t *testing.T) {
 				t.Fatalf("tool-constrained run wrote a completion file: %v", err)
 			}
 		})
+	}
+}
+
+func TestCopilotAdapterRequiredToolsRemainVisible(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			if req.StdoutCapture == nil {
+				return errors.New("required tool did not enable response completion")
+			}
+			_, err := req.StdoutCapture.Write([]byte(`{"status":"success","summary":"done"}`))
+			return err
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:       []string{"forwarding-launcher", "copilot"},
+		RequiredTools: []string{"task_complete"},
+		Runner:        runner,
+	}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(workspace),
+		HarnessConfigResolved: true,
+		Workspace:             workspace,
+		CompletionPath:        DefaultResultPath,
+		Tools:                 []string{"view"},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !slices.Contains(runner.lastReq.Command, "--available-tools=view,task_complete") {
+		t.Fatalf("required launcher completion tool missing from command: %v", runner.lastReq.Command)
+	}
+}
+
+func TestCopilotAdapterRequiredToolsPreserveUnconstrainedRun(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:       []string{"forwarding-launcher", "copilot"},
+		RequiredTools: []string{"task_complete"},
+		Runner:        runner,
+	}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:              testEnvelope(workspace),
+		HarnessConfigResolved: true,
+		Workspace:             workspace,
+		CompletionPath:        DefaultResultPath,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, arg := range runner.lastReq.Command {
+		if strings.HasPrefix(arg, "--available-tools=") {
+			t.Fatalf("unconstrained run was narrowed by a required tool: %v", runner.lastReq.Command)
+		}
 	}
 }
 
@@ -2235,6 +2295,69 @@ func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
 	}
 	if _, err := adapter.Preflight(context.Background()); err != nil {
 		t.Fatalf("preflight should pass when signed in: %v", err)
+	}
+}
+
+func TestCopilotAdapterPreflightVerifiesAdapterManagedSession(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	copilotHome := t.TempDir()
+	t.Setenv("COPILOT_HOME", copilotHome)
+	var probedSessionID string
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+		act: func(req ProcessRequest) error {
+			sessionIndex := slices.Index(req.Command, "--session-id")
+			if sessionIndex < 0 {
+				return nil
+			}
+			if sessionIndex+1 >= len(req.Command) {
+				return errors.New("session id value missing")
+			}
+			probedSessionID = req.Command[sessionIndex+1]
+			path := copilotSessionLogPath(copilotHome, probedSessionID)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(path, []byte(`{"type":"session.start"}`+"\n"), 0o600)
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:                     []string{program, "forwarding-launcher"},
+		AuthCheckArgs:               []string{"auth", "status"},
+		ExtraEnvAllowlist:           []string{"COPILOT_HOME"},
+		VerifyAdapterManagedSession: true,
+		Runner:                      runner,
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("preflight should accept a launcher that writes the requested native session: %v", err)
+	}
+	if probedSessionID == "" {
+		t.Fatal("preflight did not probe a generated session id")
+	}
+	if _, err := os.Stat(filepath.Dir(copilotSessionLogPath(copilotHome, probedSessionID))); !os.IsNotExist(err) {
+		t.Fatalf("preflight session was not cleaned up: %v", err)
+	}
+}
+
+func TestCopilotAdapterPreflightRejectsMissingAdapterManagedSession(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COPILOT_HOME", t.TempDir())
+	adapter := &CopilotAdapter{
+		Command:                     []string{program, "forwarding-launcher"},
+		AuthCheckArgs:               []string{"auth", "status"},
+		ExtraEnvAllowlist:           []string{"COPILOT_HOME"},
+		VerifyAdapterManagedSession: true,
+		Runner:                      &fakeProcessRunner{result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")}},
+	}
+	if _, err := adapter.Preflight(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "did not honor the local --session-id contract") {
+		t.Fatalf("preflight accepted a launcher without a native session transcript: %v", err)
 	}
 }
 

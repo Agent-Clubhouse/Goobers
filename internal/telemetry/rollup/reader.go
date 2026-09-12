@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 
@@ -18,11 +20,40 @@ import (
 // span exporter — see mirror.go's package comment for why these are literal
 // constants here rather than an import.
 const (
-	fileRunYAML = "run.yaml"
-	fileEvents  = "events.jsonl"
-	dirSpans    = "spans"
-	fileSpans   = "spans.jsonl"
+	fileRunYAML       = "run.yaml"
+	fileEvents        = "events.jsonl"
+	fileEventsPointer = fileEvents + ".current"
+	dirSpans          = "spans"
+	fileSpans         = "spans.jsonl"
 )
+
+// resolveSchedulerEventsGeneration mirrors internal/journal/instancegen.go's
+// generation-pointer scheme (again without importing internal/journal, same
+// decoupling rationale as journalEvent above — see the package comment):
+// compaction never rewrites the instance journal in place, it writes kept
+// records to a new "events.jsonl.gen-NNNNNN" file and atomically advances the
+// fileEventsPointer file to name the new generation, so a reader that already
+// resolved a prior generation is never disturbed. Generation 0 keeps the
+// legacy bare "events.jsonl" name and has no pointer file, so an instance
+// directory that predates this scheme (or has never compacted) resolves
+// correctly with no migration.
+func resolveSchedulerEventsGeneration(schedulerDir string) (path string, generation int, err error) {
+	data, err := os.ReadFile(filepath.Join(schedulerDir, fileEventsPointer))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return filepath.Join(schedulerDir, fileEvents), 0, nil
+		}
+		return "", 0, fmt.Errorf("rollup: read instance log pointer: %w", err)
+	}
+	gen, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if convErr != nil || gen < 0 {
+		return "", 0, fmt.Errorf("rollup: instance log pointer %q is not a valid generation", strings.TrimSpace(string(data)))
+	}
+	if gen == 0 {
+		return filepath.Join(schedulerDir, fileEvents), 0, nil
+	}
+	return filepath.Join(schedulerDir, fmt.Sprintf("%s.gen-%06d", fileEvents, gen)), gen, nil
+}
 
 func readRunIdentity(runDir string) (runIdentity, error) {
 	data, err := os.ReadFile(filepath.Join(runDir, fileRunYAML))
@@ -72,25 +103,53 @@ func readEvents(runDir string) ([]journalEvent, error) {
 }
 
 // readInstanceEventsFrom decodes the instance journal at
-// <instance-root>/scheduler/events.jsonl — the same envelope and file name
-// (fileEvents) as a run's own events.jsonl, just under the scheduler directory
-// instead of a run directory, and thus tolerant of a torn tail the same way
-// (issue #128 first made the rollup read this file so scheduler decisions —
-// trigger.fired/tick.skipped/claim.* — became queryable).
+// <instance-root>/scheduler/events.jsonl (or, past the first compaction, its
+// current generation file — see internal/journal's instancegen.go) — the
+// same envelope and file name (fileEvents) as a run's own events.jsonl, just
+// under the scheduler directory instead of a run directory, and thus
+// tolerant of a torn tail the same way (issue #128 first made the rollup
+// read this file so scheduler decisions — trigger.fired/tick.skipped/
+// claim.* — became queryable).
 //
 // It decodes only the records at or after byteOffset so a steady-state
 // IngestSchedulerLog reads just the newly appended tail instead of the whole
 // (potentially multi-GB) journal every tick (#1411). See readJSONLTail for the
 // offset/reset contract.
-func readInstanceEventsFrom(schedulerDir string, byteOffset int64) (events []journalEvent, newOffset int64, reset bool, err error) {
-	events, newOffset, reset, err = readJSONLTail[journalEvent](filepath.Join(schedulerDir, fileEvents), byteOffset)
+//
+// cursorGen is the generation the caller's byteOffset was recorded against.
+// Compaction (internal/journal.CompactInstanceEvents /
+// (*InstanceLog).Compact) never appends to or truncates the file a reader has
+// open — it writes kept records to a NEW generation file and atomically
+// advances a pointer, so a byte offset from one generation carries no
+// meaning against another's content. Before this, ingestion resolved a
+// hardcoded "events.jsonl" path once and kept reading it forever: after the
+// first compaction that path stops growing (frozen at whatever size it was),
+// so ingestion silently stopped advancing, and once cleanup eventually
+// reclaimed that generation entirely it read as an ordinary missing file —
+// zero records, no error, forever (#3639). Detecting a generation change
+// here and forcing a re-read of the new file from its head fixes both: the
+// reset is safe because IngestSchedulerLog's downstream writes are
+// idempotent (events: INSERT ... ON CONFLICT DO NOTHING keyed by seq), so
+// replaying already-ingested events costs one extra full read, not a
+// duplicate row.
+func readInstanceEventsFrom(schedulerDir string, cursorGen int, byteOffset int64) (events []journalEvent, newGen int, newOffset int64, reset bool, err error) {
+	path, gen, err := resolveSchedulerEventsGeneration(schedulerDir)
 	if err != nil {
-		return nil, 0, false, err
+		return nil, cursorGen, 0, false, err
+	}
+	start := byteOffset
+	if gen != cursorGen {
+		start = 0
+		reset = true
+	}
+	events, newOffset, sizeReset, err := readJSONLTail[journalEvent](path, start)
+	if err != nil {
+		return nil, cursorGen, 0, false, err
 	}
 	if err := validateJournalEventSchemas(events); err != nil {
-		return nil, 0, false, fmt.Errorf("rollup: decode %s: %w", fileEvents, err)
+		return nil, cursorGen, 0, false, fmt.Errorf("rollup: decode %s: %w", filepath.Base(path), err)
 	}
-	return events, newOffset, reset, nil
+	return events, gen, newOffset, reset || sizeReset, nil
 }
 
 // readSpans decodes spans/spans.jsonl, tolerating a missing file (a run may

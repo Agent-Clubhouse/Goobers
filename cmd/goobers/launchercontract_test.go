@@ -1,31 +1,23 @@
 package main
 
 import (
-	"context"
-	"strings"
+	"slices"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 )
 
-type incompatibleLauncherRunner struct{ calls int }
-
-func (r *incompatibleLauncherRunner) Run(_ context.Context, req harness.ProcessRequest) (harness.ProcessResult, error) {
-	r.calls++
-	return harness.ProcessResult{ExitCode: 2}, nil
-}
-
 func TestLauncherContractRequiredThroughProductionAdapterLookup(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		commands map[string][]string
-		required bool
+		custom   bool
 	}{
 		{name: "default"},
 		{name: "explicit direct", commands: map[string][]string{"copilot": {"copilot"}}},
-		{name: "wrapper", commands: map[string][]string{"copilot": {"agency", "copilot"}}, required: true},
-		{name: "renamed executable", commands: map[string][]string{"copilot": {"my-copilot"}}, required: true},
+		{name: "forwarding launcher", commands: map[string][]string{"copilot": {"launcher", "copilot"}}, custom: true},
+		{name: "renamed executable", commands: map[string][]string{"copilot": {"my-copilot"}}, custom: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter, err := adapterFor(apiv1.HarnessCopilot, nil, tc.commands, nil)
@@ -33,17 +25,29 @@ func TestLauncherContractRequiredThroughProductionAdapterLookup(t *testing.T) {
 				t.Fatal(err)
 			}
 			copilot := adapter.(*harness.CopilotAdapter)
-			if copilot.RequireLauncherContract != tc.required {
-				t.Fatalf("contract required=%v, want %v", copilot.RequireLauncherContract, tc.required)
+			if copilot.RequireLauncherContract != tc.custom {
+				t.Fatalf("contract required=%v, want %v", copilot.RequireLauncherContract, tc.custom)
 			}
-			if tc.required {
-				process := &incompatibleLauncherRunner{}
-				copilot.Runner = process
-				if _, err := copilot.Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "incompatible") {
-					t.Fatalf("preflight accepted incompatible wrapper: %v", err)
-				}
-				if process.calls != 1 {
-					t.Fatalf("incompatible wrapper reached subsequent probes: %d", process.calls)
+			if copilot.AllowAdapterManagedFallback != tc.custom {
+				t.Fatalf("adapter-managed fallback=%v, want %v", copilot.AllowAdapterManagedFallback, tc.custom)
+			}
+			if copilot.VerifyAdapterManagedSession != tc.custom {
+				t.Fatalf("adapter-managed session verification=%v, want %v", copilot.VerifyAdapterManagedSession, tc.custom)
+			}
+			if copilot.DisableUsageOutput != tc.custom {
+				t.Fatalf("conservative usage capture=%v, want %v", copilot.DisableUsageOutput, tc.custom)
+			}
+			if got := len(copilot.RequiredTools) == 1 && copilot.RequiredTools[0] == "task_complete"; got != tc.custom {
+				t.Fatalf("launcher required tool configured=%v, want %v: %v", got, tc.custom, copilot.RequiredTools)
+			}
+			if got := slices.Contains(copilot.AuthCheckArgs, "--available-tools=view,task_complete"); got != tc.custom {
+				t.Fatalf("launcher auth completion tool configured=%v, want %v: %v", got, tc.custom, copilot.AuthCheckArgs)
+			}
+			if tc.custom {
+				for _, arg := range []string{"--silent", "--no-ask-user", "--autopilot"} {
+					if !slices.Contains(copilot.AuthCheckArgs, arg) {
+						t.Fatalf("launcher auth probe missing %q: %v", arg, copilot.AuthCheckArgs)
+					}
 				}
 			}
 		})

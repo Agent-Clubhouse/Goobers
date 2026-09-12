@@ -83,6 +83,10 @@ func checkOverlayImageContract(ctx context.Context, _ kubernetes.Interface, opts
 	return result
 }
 
+// APIServerEgressLabel marks a dedicated API-server egress policy. Other
+// policies may legitimately allow provider CIDRs or ingress client networks.
+const APIServerEgressLabel = "goobers.dev/apiserver-egress"
+
 func checkAPIServerIPBlockDrift(ctx context.Context, client kubernetes.Interface, opts Options) Result {
 	result := Result{
 		ID:       "apiserver-ipblock-drift",
@@ -104,14 +108,22 @@ func checkAPIServerIPBlockDrift(ctx context.Context, client kubernetes.Interface
 		result.Hint = "verify the kubeconfig cluster server URL"
 		return result
 	}
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", endpoint.Hostname())
+	probeCtx, cancel := context.WithTimeout(ctx, opts.timeout())
+	defer cancel()
+	lookup := opts.LookupAPIServerIPs
+	if lookup == nil {
+		lookup = func(ctx context.Context, host string) ([]net.IP, error) {
+			return net.DefaultResolver.LookupIP(ctx, "ip", host)
+		}
+	}
+	ips, err := lookup(probeCtx, endpoint.Hostname())
 	if err != nil {
 		result.Status = StatusFail
 		result.Detail = fmt.Sprintf("cannot resolve API-server endpoint %q: %v", endpoint.Hostname(), err)
 		result.Hint = "verify the kubeconfig cluster server URL and DNS reachability"
 		return result
 	}
-	policies, err := client.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{})
+	policies, err := client.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{LabelSelector: APIServerEgressLabel + "=true"})
 	if err != nil {
 		result.Status = StatusFail
 		result.Detail = fmt.Sprintf("unable to list NetworkPolicies: %v", err)
@@ -145,13 +157,17 @@ func checkAPIServerIPBlockDrift(ctx context.Context, client kubernetes.Interface
 						break
 					}
 				}
+				for _, excluded := range peer.IPBlock.Except {
+					_, exception, err := net.ParseCIDR(excluded)
+					if err != nil || exception.Contains(ip) {
+						matches = false
+						break
+					}
+				}
 				if !matches {
 					mismatches = append(mismatches, policy.Namespace+"/"+policy.Name+"="+network)
 				}
 			}
-		}
-		for _, ingress := range policy.Spec.Ingress {
-			checkPeers(ingress.From)
 		}
 		for _, egress := range policy.Spec.Egress {
 			checkPeers(egress.To)
@@ -160,7 +176,7 @@ func checkAPIServerIPBlockDrift(ctx context.Context, client kubernetes.Interface
 	if checked == 0 {
 		result.Status = StatusFail
 		result.Detail = "incident: API calls can time out as RBAC or auth symptoms when no API-server ipBlock entries are inspected (checked 0)"
-		result.Hint = "render a NetworkPolicy egress ipBlock for the live API-server endpoint"
+		result.Hint = "label dedicated API-server egress policies goobers.dev/apiserver-egress=true and render their live endpoint ipBlocks"
 		return result
 	}
 	if len(mismatches) > 0 {
@@ -467,88 +483,6 @@ func checkMixedOSPlacement(ctx context.Context, client kubernetes.Interface, _ O
 
 	result.Status = StatusPass
 	result.Detail = fmt.Sprintf("%d Windows node(s) tainted NoSchedule; all shipped workloads pinned to Linux", len(windowsNodes))
-	return result
-}
-
-func checkRunnerClassCapacity(ctx context.Context, client kubernetes.Interface, _ Options) Result {
-	result := Result{
-		ID:       "runner-class-capacity",
-		Title:    "runner-class requests fit the node pool (incident I-55 / O-11)",
-		Citation: "§7",
-		Severity: SeverityRequired,
-	}
-	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		result.Status = StatusFail
-		result.Detail = fmt.Sprintf("unable to list nodes: %v", err)
-		result.Hint = "grant list on nodes to the preflighting identity so runner-class capacity is verified against the pool"
-		return result
-	}
-	if len(nodes.Items) == 0 {
-		result.Status = StatusWarn
-		result.Detail = "checked 0 node(s); no pool capacity was available to verify"
-		result.Hint = "a non-empty cluster is required before runner-class capacity can be checked"
-		return result
-	}
-
-	maxCPU := int64(0)
-	maxMemory := int64(0)
-	for _, node := range nodes.Items {
-		if cpu := node.Status.Allocatable.Cpu().MilliValue(); cpu > maxCPU {
-			maxCPU = cpu
-		}
-		if mem := node.Status.Allocatable.Memory().Value(); mem > maxMemory {
-			maxMemory = mem
-		}
-	}
-
-	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		result.Status = StatusFail
-		result.Detail = fmt.Sprintf("unable to list pods: %v", err)
-		result.Hint = "grant list on pods across namespaces so runner-class requests can be checked against node allocatable capacity"
-		return result
-	}
-
-	classRequests := map[string]struct{ cpu, memory int64 }{}
-	for _, pod := range pods.Items {
-		class, ok := pod.Labels["goobers.dev/runner-class"]
-		if !ok || class == "" {
-			continue
-		}
-		entry := classRequests[class]
-		for _, c := range pod.Spec.InitContainers {
-			entry.cpu += c.Resources.Requests.Cpu().MilliValue()
-			entry.memory += c.Resources.Requests.Memory().Value()
-		}
-		for _, c := range pod.Spec.Containers {
-			entry.cpu += c.Resources.Requests.Cpu().MilliValue()
-			entry.memory += c.Resources.Requests.Memory().Value()
-		}
-		classRequests[class] = entry
-	}
-	if len(classRequests) == 0 {
-		result.Status = StatusWarn
-		result.Detail = "checked 0 runner class(es); no pods carry a goobers.dev/runner-class label"
-		result.Hint = "a runner class must be declared and populated before its request ceiling can be evaluated against node allocatable capacity"
-		return result
-	}
-
-	var offenders []string
-	for class, req := range classRequests {
-		if req.cpu > maxCPU || req.memory > maxMemory {
-			offenders = append(offenders, fmt.Sprintf("%s requests %dm CPU / %d bytes vs node-pool ceiling %dm CPU / %d bytes", class, req.cpu, req.memory, maxCPU, maxMemory))
-		}
-	}
-	if len(offenders) > 0 {
-		result.Status = StatusFail
-		result.Detail = fmt.Sprintf("checked %d runner class(es) across %d node(s); %s", len(classRequests), len(nodes.Items), strings.Join(offenders, "; "))
-		result.Hint = "lower the runner-class request ceiling or expand the node pool so every declared class fits within the allocatable capacity a node can actually provide"
-		return result
-	}
-
-	result.Status = StatusPass
-	result.Detail = fmt.Sprintf("checked %d runner class(es) across %d node(s); every class fits within the largest allocatable node (%dm CPU / %d bytes)", len(classRequests), len(nodes.Items), maxCPU, maxMemory)
 	return result
 }
 

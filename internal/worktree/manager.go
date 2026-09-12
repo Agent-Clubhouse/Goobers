@@ -23,6 +23,9 @@ import (
 // distinct repo URL — and hands out per-run worktrees branched off them. The
 // zero value is not usable; construct with NewManager.
 type Manager struct {
+	cleanupGuardsMu sync.RWMutex
+	cleanupGuards   map[string]func(context.Context, CleanupTarget) error
+
 	// Root is the workcopies directory (ARCHITECTURE.md §6:
 	// <instance-root>/workcopies), always absolute (NewManager resolves it) —
 	// see NewManager's doc comment for why.
@@ -409,8 +412,15 @@ func (m *Manager) PinnedRoot() string {
 // two managers (or two runs) referring to the same repo always land on the
 // same managed working copy.
 func repoKey(repoURL string) string {
+	return RepositoryDigest(repoURL)[:16]
+}
+
+// RepositoryDigest binds cleanup metadata to the exact configured clone URL
+// without persisting a URL that could contain credentials. It is not a provider
+// identity: callers must match it against their configured repository URLs.
+func RepositoryDigest(repoURL string) string {
 	sum := sha256.Sum256([]byte(repoURL))
-	return hex.EncodeToString(sum[:])[:16]
+	return hex.EncodeToString(sum[:])
 }
 
 const worktreeDirectoryHashBytes = 12
@@ -603,6 +613,9 @@ func (m *Manager) fetchMirror(ctx context.Context, repoURL, dir string, narrow b
 	for _, ns := range m.runBranchNamespacesSnapshot() {
 		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
 	}
+	// Recovery pins are local lifecycle state, not replicas of origin.
+	// Neither prune nor a remote ref with the same name may change them.
+	fetchArgs = append(fetchArgs, "^refs/goobers/recovery/*", "^refs/goobers/recovery-snapshots/*")
 	return m.runRemoteGit(ctx, repoURL, dir, fetchArgs...)
 }
 

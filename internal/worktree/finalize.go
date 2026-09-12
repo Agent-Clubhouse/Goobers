@@ -100,7 +100,7 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 				})
 				continue
 			}
-			if mk.Status != statusActive {
+			if mk.Status != statusActive && mk.Status != statusCleanupPending {
 				finalizeErr = errors.Join(finalizeErr,
 					fmt.Errorf("worktree: finalize run %s: marker %s has unknown status %q", runID, markerPath, mk.Status))
 				continue
@@ -131,6 +131,11 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 		}
 		m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
 		results = append(results, FinalizeResult{WorktreeID: worktreeID, Path: path})
+	}
+	// Failed handoffs leave worktrees alive. Keep their branch-acquisition
+	// evidence too, so retries cannot treat retained work as a fresh branch.
+	if finalizeErr != nil {
+		return results, finalizeErr
 	}
 	acquisitionDir := m.branchAcquisitionRunDir(key, runID)
 	if err := os.RemoveAll(acquisitionDir); err != nil {

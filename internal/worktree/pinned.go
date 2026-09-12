@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/lock"
@@ -89,11 +90,13 @@ func (e *StalePinnedLeaseError) Error() string {
 
 // PinnedLease owns a pinned workspace for an entire run.
 type PinnedLease struct {
-	Worktree *Worktree
-	handle   *lock.Handle
-	queue    string
-	record   string
-	root     string
+	Worktree    *Worktree
+	handle      *lock.Handle
+	queue       string
+	record      string
+	root        string
+	releaseOnce sync.Once
+	releaseErr  error
 }
 
 // Release relinquishes the whole-run lease without removing the workspace.
@@ -101,8 +104,20 @@ func (l *PinnedLease) Release() error {
 	if l == nil {
 		return nil
 	}
+	l.releaseOnce.Do(func() { l.releaseErr = l.release() })
+	return l.releaseErr
+}
+
+func (l *PinnedLease) release() error {
 	var err error
-	if l.record != "" {
+	if l.Worktree != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		err = l.Worktree.manager.handoffPinnedState(ctx, l.Worktree.key, l.Worktree.RunID)
+		cancel()
+	}
+	// A failed final handoff leaves the lease record in place. Another run
+	// cannot acquire and reset this state until explicit recovery succeeds.
+	if l.record != "" && err == nil {
 		err = os.WriteFile(l.record, nil, 0o644)
 	}
 	err = errors.Join(err, l.handle.Release())
@@ -252,7 +267,7 @@ func (m *Manager) AcquirePinned(ctx context.Context, opts PinnedOptions) (_ *Pin
 		return nil, fmt.Errorf("worktree: persist pinned lease: %w", err)
 	}
 
-	wt, err := m.preparePinned(ctx, key, opts)
+	wt, err := m.preparePinnedWithCustody(ctx, key, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -314,6 +329,12 @@ func (m *Manager) ResetPinned(ctx context.Context, opts PinnedResetOptions) (str
 	if err := m.pinnedProcessKiller(pinDir); err != nil {
 		return "", fmt.Errorf("worktree: terminate pinned workspace processes: %w", err)
 	}
+	if err := m.handoffPinnedState(ctx, key, ""); err != nil {
+		return "", err
+	}
+	if err := m.handoffPinnedReceipts(ctx, key); err != nil {
+		return "", err
+	}
 	if err := os.RemoveAll(pinDir); err != nil {
 		return "", fmt.Errorf("worktree: remove pinned workspace: %w", err)
 	}
@@ -325,7 +346,7 @@ func (m *Manager) ResetPinned(ctx context.Context, opts PinnedResetOptions) (str
 			return "", fmt.Errorf("worktree: clear pinned reset state: %w", err)
 		}
 	}
-	workspace, err := m.preparePinned(ctx, key, PinnedOptions{
+	workspace, err := m.preparePinnedWithCustody(ctx, key, PinnedOptions{
 		RepoURL: opts.RepoURL,
 		RunID:   "workspace-reset",
 		BaseRef: opts.BaseRef,
@@ -374,6 +395,9 @@ func pinnedQueueEntryOrphaned(path, name string) (bool, error) {
 }
 
 func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOptions) (*Worktree, error) {
+	if err := m.handoffPinnedReceipts(ctx, key); err != nil {
+		return nil, err
+	}
 	root := filepath.Join(m.pinnedRoot, key)
 	repoDir := filepath.Join(root, "repo.git")
 	pinDir := filepath.Join(root, "pin")
@@ -497,13 +521,13 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 	if err := ensureScratchExcluded(ctx, pinDir); err != nil {
 		return nil, err
 	}
-	startRef, err := gitOutput(ctx, pinDir, "rev-parse", "HEAD")
+	startRef, err := finishPinnedPreparation(ctx, pinDir, opts, existing)
 	if err != nil {
 		return nil, err
 	}
-	if opts.SyncBase && existing {
-		if err := runGit(ctx, pinDir, "merge", "--ff", "--no-edit", baseRef); err != nil {
-			return nil, fmt.Errorf("worktree: sync pinned branch %q with base %q: %w", opts.Branch, opts.BaseRef, err)
+	if opts.RunID != "workspace-reset" {
+		if err := writeMarkerData(filepath.Join(root, pinnedReceiptOwnerFile), []byte(opts.RunID)); err != nil {
+			return nil, err
 		}
 	}
 	return &Worktree{
@@ -511,6 +535,20 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 		manager: m, key: key, startRef: startRef, repoURL: opts.RepoURL,
 		pinned: true, repoDir: pinDir,
 	}, nil
+}
+
+func finishPinnedPreparation(ctx context.Context, pinDir string, opts PinnedOptions, existing bool) (string, error) {
+	startRef, err := gitOutput(ctx, pinDir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if opts.SyncBase && existing {
+		baseRef := pinnedBaseRef(ctx, pinDir, opts.BaseRef)
+		if err := runGit(ctx, pinDir, "merge", "--ff", "--no-edit", baseRef); err != nil {
+			return "", fmt.Errorf("worktree: sync pinned branch %q with base %q: %w", opts.Branch, opts.BaseRef, err)
+		}
+	}
+	return startRef, nil
 }
 
 // PreparePinned selects the branch and optional base synchronization requested
@@ -521,6 +559,9 @@ func (wt *Worktree) PreparePinned(ctx context.Context, opts PinnedPrepareOptions
 	}
 	if opts.BaseRef == "" || opts.Branch == "" {
 		return fmt.Errorf("worktree: pinned stage BaseRef and Branch are required")
+	}
+	if err := wt.manager.handoffPinnedState(ctx, wt.key, wt.RunID); err != nil {
+		return err
 	}
 	repoDir := filepath.Join(wt.manager.pinnedRoot, wt.key, "repo.git")
 	refspecs := []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}

@@ -123,6 +123,10 @@ type schedulerSetup struct {
 	// never nil — an instance with no declared stores gets a registry that
 	// fails every store ref closed.
 	SecretStores *secretstore.Registry
+	// MergedPRCostReconciler is the daemon-owned, workflow-independent
+	// backstop that publishes cost summaries for recently merged Goobers PRs.
+	// Config reload replaces its definition snapshot in place.
+	MergedPRCostReconciler *daemonMergedPRCostReconciler
 
 	// shutdownOnce/shutdownErr make Shutdown idempotent: `up` closes the setup
 	// explicitly so a flush or close failure can fail the command, while the
@@ -1017,8 +1021,9 @@ func buildSchedulerDefinitions(
 				wg:                   wg,
 			}),
 			RepoRef: repoRefs[identity],
-			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
-			RequiredCapabilities: requiredCaps,
+			// Only runner-driven entries execute on the scheduler's self host.
+			// Engine-selected entries enforce capabilities per pinned stage.
+			RequiredCapabilities: selections[identity].schedulerSelfCapabilities(requiredCaps),
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
 			// above found this workflow unplaceable on the declared inventory
 			// AND the entry is runner-driven — an engine-selected entry's
@@ -1273,6 +1278,10 @@ func buildRuntimeRunner(
 	selfIdentity string,
 	requireLabelsDefault string,
 ) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
+	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir())
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	runnerCfg, manager, err := buildRunnerConfig(runnerCompositionInput{
 		Layout:               l,
 		Config:               cfg,
@@ -1288,11 +1297,18 @@ func buildRuntimeRunner(
 		CredentialStores:     stores,
 		SandboxPosture:       sandboxPosture,
 		ProviderQuota:        providerQuota,
+		AppliedConfigDigest:  appliedConfigDigest,
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
+	// The daemon owns root identity creation; tier-3 workers must not create
+	// independent identities while loading a copied configuration tree.
+	runnerCfg.InstanceID, err = l.EnsureIdentity(context.Background())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("initialize daemon instance identity: %w", err)
+	}
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.JournalAdvanced = telemetryingest.RunIntakeObserver(watermarks, instanceLog)
 	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
@@ -1629,8 +1645,9 @@ func (s *trackedStarter) RegisterDispatch() func() {
 // duplicate-driver bug rather than a redundant safety net.
 //
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
-// terminal-run cleanup fails; claim cleanup fails closed rather than silently
-// leaving a known terminal owner in the ledger.
+// terminal-run cleanup fails. A deferred durable handoff is journaled and
+// retried later without blocking daemon readiness; all other cleanup failures
+// remain fatal.
 func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
 	resumed, warned, _, err = resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
 	return resumed, warned, err
@@ -1692,7 +1709,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					if rn != nil {
 						finalizeErr = rn.FinalizeTerminal(id.RunID, phase)
 					} else {
-						manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir())
+						manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
 						if managerErr != nil {
 							finalizeErr = managerErr
 						} else {
@@ -1700,7 +1717,20 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 						}
 					}
 					if finalizeErr != nil {
-						return resumed, warned, reattached, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
+						if !errors.Is(finalizeErr, worktree.ErrCleanupDeferred) {
+							return resumed, warned, reattached, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
+						}
+						if log != nil {
+							if err := log.Append(journal.Event{
+								Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+								Error: &journal.ErrorDetail{
+									Code:    "terminal_cleanup_deferred",
+									Message: fmt.Sprintf("terminal cleanup deferred for retry: %v", finalizeErr),
+								},
+							}); err != nil {
+								return resumed, warned, reattached, fmt.Errorf("journal deferred terminal cleanup for run %q: %w", id.RunID, err)
+							}
+						}
 					}
 					// #2190: a run that resumed here and was already terminal
 					// took a different path than a normal terminal run's

@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!package/**
+!bin/**
+!version
+!source

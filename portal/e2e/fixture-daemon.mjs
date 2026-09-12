@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const port = 4173;
+const port = Number(process.env.PORTAL_E2E_PORT ?? 4173);
 const distRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../internal/portalassets/dist");
 const page = { limit: 100, total: 1, hasMore: false, nextCursor: "" };
 const identity = { gaggle: "core", name: "implementation" };
@@ -100,6 +100,23 @@ const run = {
   noWork: false,
 };
 
+const completedRun = {
+  ...run,
+  id: "01JZE2ECOMPLETEDRUNWITHALONGIDENTIFIER",
+  trigger: {
+    kind: "item",
+    ref: "refs/heads/users/jeffstei/a-very-long-portal-layout-verification-branch",
+  },
+  phase: "completed",
+  terminal: true,
+  currentStage: undefined,
+  startedAt: "2026-08-17T06:00:00Z",
+  finishedAt: "2026-08-17T06:03:00Z",
+  durationMillis: 180_000,
+  lastActivityAt: "2026-08-17T06:03:00Z",
+  lastSeq: 9,
+};
+
 const runDetail = {
   ...run,
   graph: workflowGraph,
@@ -160,6 +177,18 @@ const telemetryStats = {
   models: [],
   creditAssignment: [],
   causalCredit: null,
+  // #4825: a fresh instance has no promotion-eligible causal confidence
+  // interval, so graphAnalytics is withheld — empty arrays, not null, per
+  // the (non-nullable) client contract. Previously omitted from this
+  // fixture entirely, which meant the portal's own e2e suite never
+  // exercised the withheld-analytics branch of WorkflowTopologyGraph.
+  graphAnalytics: {
+    centrality: [],
+    criticalPath: { nodes: [], weight: 0 },
+    cycles: [],
+    confidence: "untrusted",
+    caveat: "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available",
+  },
   curation: {
     everRecorded: false,
     runs: 0,
@@ -215,6 +244,18 @@ const responses = new Map([
       status: "ready",
       concurrency: { activeRuns: 1, maxConcurrentRuns: 2 },
       counts: { gaggles: 1, goobers: 1, workflows: 1, activeRuns: 1 },
+      maintenance: {
+        kind: "retention-sweep",
+        state: "running",
+        trigger: "periodic",
+        startedAt: "2026-09-09T18:10:00Z",
+        lastProgressAt: "2026-09-09T19:15:00Z",
+        currentPhase: "projection-retention-with-a-long-but-coherent-phase-name",
+        candidates: 23,
+        removed: 12,
+        failures: 0,
+        lastResult: "running",
+      },
       warnings: [],
     },
   ],
@@ -236,7 +277,12 @@ const responses = new Map([
         accentInkLight: null,
         accentInkDark: null,
       },
-      support: { docsUrl: null, issuesUrl: null, chatUrl: null, links: [] },
+      support: {
+        docsUrl: "https://example.test/docs",
+        issuesUrl: "https://example.test/support",
+        chatUrl: null,
+        links: [],
+      },
       capabilities: { revealRun: true },
     },
   ],
@@ -337,6 +383,28 @@ const responses = new Map([
       issues: [],
     },
   ],
+  [
+    "/api/v1/work-items",
+    {
+      items: [
+        {
+          provider: "github",
+          repository: "Agent-Clubhouse/Goobers",
+          kind: "pr",
+          externalId: "4800",
+          url: "https://github.com/Agent-Clubhouse/Goobers/pull/4800",
+          actionCount: 2,
+          lastOperation: "comment",
+          lastActionAt: "2026-09-10T08:02:00Z",
+          lastRunId: run.id,
+          gaggle: "core",
+          workflow: "implementation",
+          runStatus: "running",
+        },
+      ],
+      hasMore: false,
+    },
+  ],
   ["/api/v1/telemetry/stats", telemetryStats],
   ["/api/v1/telemetry/error-signatures", { items: [] }],
   [`/api/v1/runs/${run.id}`, runDetail],
@@ -353,15 +421,28 @@ const contentTypes = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
 };
-const eventStreams = new Set();
+const eventStreams = new Map();
 let eventSequence = 0;
+const constrainedAdmissions = new Map();
+
+function admissionState(key) {
+  if (!constrainedAdmissions.has(key)) {
+    constrainedAdmissions.set(key, { active: 0, peak: 0, requests: 0 });
+  }
+  return constrainedAdmissions.get(key);
+}
 
 function sendJSON(response, value) {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify(value));
 }
 
-function emitInvalidation() {
+function sendError(response, status, code, message, headers = {}) {
+  response.writeHead(status, { "Content-Type": "application/json", ...headers });
+  response.end(JSON.stringify({ error: { code, message } }));
+}
+
+function emitInvalidation(key) {
   eventSequence += 1;
   const cursor = `fixture:${eventSequence}`;
   const event = {
@@ -370,19 +451,20 @@ function emitInvalidation() {
     runIds: [run.id],
     workflows: [identity],
   };
-  for (const stream of eventStreams) {
+  for (const [stream, streamKey] of eventStreams) {
+    if (streamKey !== key) continue;
     stream.write(`id: ${cursor}\nevent: invalidate\ndata: ${JSON.stringify(event)}\n\n`);
   }
 }
 
-function serveEvents(response) {
+function serveEvents(response, key) {
   response.writeHead(200, {
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "Content-Type": "text/event-stream",
   });
   response.flushHeaders();
-  eventStreams.add(response);
+  eventStreams.set(response, key);
   response.on("close", () => eventStreams.delete(response));
 }
 
@@ -413,8 +495,23 @@ function serveStatic(pathname, mode, response) {
 
 createServer((request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+  // Keep constrained browser sessions independent of sibling tests' counters
+  // and SSE invalidations, including concurrent repeat-each invocations.
+  const admissionKey = request.headers["x-test-constrained-admission"] ?? "";
+  if (url.pathname === "/api/v1/test/admission") {
+    const constrainedAdmission = admissionState(admissionKey);
+    if (request.method === "POST") {
+      constrainedAdmission.active = 0;
+      constrainedAdmission.peak = 0;
+      constrainedAdmission.requests = 0;
+      sendJSON(response, { reset: true });
+      return;
+    }
+    sendJSON(response, constrainedAdmission);
+    return;
+  }
   if (url.pathname === "/api/v1/events") {
-    serveEvents(response);
+    serveEvents(response, admissionKey);
     return;
   }
   if (url.pathname === "/api/v1/test/invalidate") {
@@ -423,19 +520,20 @@ createServer((request, response) => {
       response.end("method not allowed");
       return;
     }
-    if (eventStreams.size === 0) {
+    const connected = [...eventStreams.values()].filter((key) => key === admissionKey).length;
+    if (connected === 0) {
       response.writeHead(409);
       response.end("no event stream connected");
       return;
     }
-    emitInvalidation();
-    sendJSON(response, { delivered: eventStreams.size });
+    emitInvalidation(admissionKey);
+    sendJSON(response, { delivered: connected });
     return;
   }
   if (url.pathname === "/api/v1/runs") {
     const phase = url.searchParams.get("phase");
     sendJSON(response, {
-      runs: phase && phase !== "running" ? [] : [run],
+      runs: phase === "completed" ? [completedRun] : phase && phase !== "running" ? [] : [run],
       ...(url.searchParams.get("latestPerWorkflow") === "true"
         ? { workflowActivity: [{ ...identity, activeRuns: 1 }] }
         : {}),
@@ -444,7 +542,31 @@ createServer((request, response) => {
   }
   const fixture = responses.get(url.pathname);
   if (fixture) {
-    sendJSON(response, fixture);
+    if (!admissionKey) {
+      sendJSON(response, fixture);
+      return;
+    }
+    const constrainedAdmission = admissionState(admissionKey);
+    constrainedAdmission.requests += 1;
+    if (constrainedAdmission.active >= 1) {
+      sendError(
+        response,
+        503,
+        "class_saturated",
+        "too many concurrent bounded requests; retry shortly",
+        { "Retry-After": "0" },
+      );
+      return;
+    }
+    constrainedAdmission.active += 1;
+    constrainedAdmission.peak = Math.max(
+      constrainedAdmission.peak,
+      constrainedAdmission.active,
+    );
+    setTimeout(() => {
+      constrainedAdmission.active -= 1;
+      sendJSON(response, fixture);
+    }, 40);
     return;
   }
   serveStatic(url.pathname, url.searchParams.get("mode"), response);

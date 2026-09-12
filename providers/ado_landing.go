@@ -158,9 +158,29 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 			MergeStrategy: adoMergeStrategy(req.MergeMethod),
 		},
 	}
+	repositoryAPIURL, err := p.repoURL(req.Repository)
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
+	intent, err := prepareLandingIntent(ctx, p.mutationRecorder, ProviderADO, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "enqueue")
+	if err != nil {
+		return EnqueuePullRequestResult{}, err
+	}
 	var out adoPullRequestDetail
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
 		return EnqueuePullRequestResult{}, err
+	}
+	if strconv.Itoa(out.PullRequestID) != req.PullID {
+		return EnqueuePullRequestResult{}, fmt.Errorf("auto-complete response identifies a different pull request; acceptance is unconfirmed")
+	}
+	// ADO has no queue-entry ID. Record the acknowledged auto-complete
+	// mutation, but do not invent a GitHub-style admission or merge receipt.
+	if p.mutationRecorder != nil && out.AutoCompleteSetBy != nil && out.AutoCompleteSetBy.ID != "" && out.AutoCompleteSetBy.ID == detail.CreatedBy.ID {
+		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
+			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "enqueue", LandingIntent: intent,
+		}); err != nil {
+			return EnqueuePullRequestResult{Number: out.PullRequestID, Merged: strings.EqualFold(out.Status, "completed"), MergeSHA: out.LastMergeCommit.CommitID}, err
+		}
 	}
 	if strings.EqualFold(out.Status, "completed") {
 		return EnqueuePullRequestResult{Number: out.PullRequestID, Merged: true, MergeSHA: out.LastMergeCommit.CommitID}, nil
@@ -285,6 +305,14 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 			MergeCommitMessage: req.CommitMessage,
 		},
 	}
+	repositoryAPIURL, err := p.repoURL(req.Repository)
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
+	intent, err := prepareLandingIntent(ctx, p.mutationRecorder, ProviderADO, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "merge")
+	if err != nil {
+		return MergePullRequestResult{}, err
+	}
 	var out adoPullRequestDetail
 	if err := p.do(ctx, http.MethodPatch, endpoint, body, &out); err != nil {
 		return MergePullRequestResult{}, err
@@ -293,7 +321,21 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
-	p.recordMutation(ctx, "pr", req.PullID, "merge")
+	if strconv.Itoa(final.PullRequestID) != req.PullID {
+		return MergePullRequestResult{}, fmt.Errorf("merge response identifies a different pull request; completion is unconfirmed")
+	}
+	if p.mutationRecorder != nil {
+		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, final.LastMergeCommit.CommitID)
+		if intent != nil {
+			confirmation.IntentID = intent.ID
+		}
+		if err := recordLandingReceipt(ctx, p.mutationRecorder, ExternalRef{
+			Provider: ProviderADO, Ref: "ado#" + req.PullID, Operation: "merge",
+			MergeConfirmation: confirmation,
+		}); err != nil {
+			return MergePullRequestResult{Number: final.PullRequestID, Merged: true, MergeSHA: final.LastMergeCommit.CommitID}, err
+		}
+	}
 	return MergePullRequestResult{Number: final.PullRequestID, Merged: true, MergeSHA: final.LastMergeCommit.CommitID}, nil
 }
 

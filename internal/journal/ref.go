@@ -66,6 +66,17 @@ func ArtifactRef(data []byte) (Ref, error) {
 	return Ref{Path: path, Digest: digest, Size: int64(len(data)), Integrity: apiv1.IntegrityDerived}, nil
 }
 
+// SpanRef derives the canonical journal address of already-scrubbed span bytes
+// without writing them, for remote recorders awaiting daemon acknowledgment.
+func SpanRef(data []byte) (Ref, error) {
+	digest := Digest(data)
+	relative, err := spanPath(digest)
+	if err != nil {
+		return Ref{}, err
+	}
+	return Ref{Path: relative, Digest: digest, Size: int64(len(data))}, nil
+}
+
 // digestHex returns the hex portion of a "sha256:<hex>" digest.
 func digestHex(digest string) (string, error) {
 	algo, hexPart, ok := strings.Cut(digest, ":")

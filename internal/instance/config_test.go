@@ -54,6 +54,7 @@ retention:
   dryRun: true
   maxRetainedWorktreeBytes: 1048576
   retainedWorktreeMaxAge: 72h
+  journalGraceAge: 48h
 notifications: true
 speech:
   enabled: true
@@ -77,7 +78,7 @@ speech:
 	if !cfg.TelemetryEnabled() {
 		t.Fatalf("expected telemetry enabled by default")
 	}
-	if cfg.Telemetry.Retention == nil || !cfg.Telemetry.Retention.Enabled ||
+	if cfg.Telemetry.Retention == nil || !cfg.Telemetry.Retention.EnabledEffective() ||
 		cfg.Telemetry.Retention.Window != "30d" || cfg.Telemetry.Retention.MaxRuns != 25 {
 		t.Fatalf("unexpected telemetry retention config: %+v", cfg.Telemetry.Retention)
 	}
@@ -103,12 +104,15 @@ speech:
 		cfg.Speech.Language != "en-US" || cfg.Speech.Rate != 210 || cfg.Speech.Timeout != "8s" {
 		t.Fatalf("unexpected speech config: %+v", cfg.Speech)
 	}
-	if !cfg.Retention.Enabled || !cfg.Retention.DryRun || cfg.Retention.MaxRetainedWorktreeBytes != 1048576 {
+	if !cfg.Retention.EnabledEffective() || !cfg.Retention.DryRun || cfg.Retention.MaxRetainedWorktreeBytes != 1048576 {
 		t.Fatalf("unexpected retention config: %+v", cfg.Retention)
 	}
 
 	if got, err := cfg.Retention.RetainedWorktreeMaxAgeDuration(); err != nil || got != 72*time.Hour {
 		t.Fatalf("RetainedWorktreeMaxAgeDuration = %s, %v; want 72h", got, err)
+	}
+	if got, err := cfg.Retention.JournalGraceAgeDuration(); err != nil || got != 48*time.Hour {
+		t.Fatalf("JournalGraceAgeDuration = %s, %v; want 48h", got, err)
 	}
 	if cfg.APIListenAddress() != DefaultAPIListenAddress {
 		t.Fatalf("APIListenAddress = %q, want %q", cfg.APIListenAddress(), DefaultAPIListenAddress)
@@ -1210,21 +1214,59 @@ workflowSource:
 	}
 }
 
-func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
+// TestRetentionConfigDefaultsToOptOutPruning pins #4253's flip: a config that
+// says nothing about retention prunes on the default age bound, rather than
+// prunes nothing. This test previously asserted the opposite
+// (TestRetentionConfigDefaultsDisabledAndValidatesLimits) and was rewritten
+// with the policy, not adjusted until it passed.
+func TestRetentionConfigDefaultsToOptOutPruning(t *testing.T) {
 	var zero RetentionConfig
-	if zero.Enabled || zero.DryRun || zero.MaxRetainedWorktreeBytes != 0 {
-		t.Fatalf("zero retention config is not disabled: %+v", zero)
+	if !zero.EnabledEffective() {
+		t.Fatalf("zero retention config is not enabled by default: %+v", zero)
+	}
+	if zero.DryRun || zero.MaxRetainedWorktreeBytes != 0 {
+		t.Fatalf("zero retention config changed beyond Enabled: %+v", zero)
+	}
+	if zero.ImmediateFirstEnable() {
+		t.Fatal("zero retention config must take the safe first-enable grace window")
 	}
 
-	if got, err := zero.RetainedWorktreeMaxAgeDuration(); err != nil || got != 0 {
-		t.Fatalf("default RetainedWorktreeMaxAgeDuration = %s, %v; want 0, nil", got, err)
+	// The whole point of the flip: an omitted age is the default bound, not
+	// "no bound".
+	if got, err := zero.RetainedWorktreeMaxAgeDuration(); err != nil || got != DefaultRetainedWorktreeMaxAge {
+		t.Fatalf("default RetainedWorktreeMaxAgeDuration = %s, %v; want %s, nil", got, err, DefaultRetainedWorktreeMaxAge)
+	}
+	if got, err := zero.JournalGraceAgeDuration(); err != nil || got != DefaultJournalGraceAge {
+		t.Fatalf("default JournalGraceAgeDuration = %s, %v; want %s, nil", got, err, DefaultJournalGraceAge)
+	}
+	journalGraceOff := RetentionConfig{JournalGraceAge: "0s"}
+	if got, err := journalGraceOff.JournalGraceAgeDuration(); err != nil || got != 0 {
+		t.Fatalf(`JournalGraceAgeDuration("0s") = %s, %v; want 0, nil`, got, err)
+	}
+	if err := (&Config{Retention: zero}).Validate(); err != nil {
+		t.Fatalf("Validate(zero retention) error = %v, want nil", err)
+	}
+
+	// An explicit "0s" is now the escape hatch that turns the age rule off,
+	// so it parses rather than erroring...
+	off := RetentionConfig{RetainedWorktreeMaxAge: "0s", MaxRetainedWorktreeBytes: 1}
+	if got, err := off.RetainedWorktreeMaxAgeDuration(); err != nil || got != 0 {
+		t.Fatalf(`RetainedWorktreeMaxAgeDuration("0s") = %s, %v; want 0, nil`, got, err)
+	}
+	if err := (&Config{Retention: off}).Validate(); err != nil {
+		t.Fatalf("Validate(age off, byte cap set) error = %v, want nil", err)
 	}
 
 	for _, cfg := range []RetentionConfig{
 		{MaxRetainedWorktreeBytes: -1},
 		{RetainedWorktreeMaxAge: "not-a-duration"},
-		{RetainedWorktreeMaxAge: "0s"},
 		{RetainedWorktreeMaxAge: "-1h"},
+		{JournalGraceAge: "not-a-duration"},
+		{JournalGraceAge: "-1h"},
+		// ...but turning the age rule off with no byte ceiling leaves
+		// retention enabled without a general retained-worktree bound.
+		{RetainedWorktreeMaxAge: "0s"},
+		{FirstEnable: "someday"},
 	} {
 		if err := (&Config{Retention: cfg}).Validate(); err == nil || !strings.Contains(err.Error(), "retention.") {
 			t.Fatalf("Validate(%+v) error = %v, want retention error", cfg, err)
@@ -1237,16 +1279,26 @@ func TestRetentionConfigDefaultsDisabledAndValidatesLimits(t *testing.T) {
 // limit previously pruned nothing, giving an operator false confidence that
 // disk usage was bounded.
 func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
-	if err := (&Config{Retention: RetentionConfig{Enabled: true}}).Validate(); err == nil || !strings.Contains(err.Error(), "retention.enabled requires at least one") {
-		t.Fatalf("Validate(enabled, no limits) error = %v, want a retention.enabled-requires-a-limit error", err)
+	// #2052's trap — enabled with no limits, pruning nothing, while the
+	// operator believes disk is bounded — is now structurally impossible:
+	// an omitted age resolves to DefaultRetainedWorktreeMaxAge, so "enabled
+	// with no limits" is a bounded configuration rather than a silent no-op.
+	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true)}}).Validate(); err != nil {
+		t.Fatalf("Validate(enabled, no explicit limits) error = %v, want nil now that the age default applies", err)
+	}
+	// The trap only survives if the operator explicitly turns the general age
+	// rule off and sets no ceiling, which is still refused; journal-grace only
+	// covers worktrees whose journals have disappeared.
+	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true), RetainedWorktreeMaxAge: "0s"}}).Validate(); err == nil || !strings.Contains(err.Error(), "prune nothing") {
+		t.Fatalf("Validate(enabled, age rule off, no ceiling) error = %v, want a prunes-nothing error", err)
 	}
 
 	// A single configured axis remains a valid, intentional configuration —
 	// this must NOT be rejected by the new check.
-	if err := (&Config{Retention: RetentionConfig{Enabled: true, MaxRetainedWorktreeBytes: 1}}).Validate(); err != nil {
+	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true), MaxRetainedWorktreeBytes: 1}}).Validate(); err != nil {
 		t.Fatalf("Validate(enabled, byte cap only) error = %v, want nil", err)
 	}
-	if err := (&Config{Retention: RetentionConfig{Enabled: true, RetainedWorktreeMaxAge: "1h"}}).Validate(); err != nil {
+	if err := (&Config{Retention: RetentionConfig{Enabled: boolConfig(true), RetainedWorktreeMaxAge: "1h"}}).Validate(); err != nil {
 		t.Fatalf("Validate(enabled, age limit only) error = %v, want nil", err)
 	}
 
@@ -1327,8 +1379,19 @@ retention:
 
 func TestTelemetryRetentionConfigDefaultsAndValidatesLimits(t *testing.T) {
 	var zero TelemetryRetentionConfig
-	if zero.Enabled {
-		t.Fatal("zero telemetry retention config must disable automatic pruning")
+	// #4253 (ruling on #3056): automatic pruning is opt-OUT — a zero-value
+	// config (no telemetry.retention block, or one that omits enabled)
+	// leaves automatic pruning ON at the default window/maxRuns.
+	if !zero.EnabledEffective() {
+		t.Fatal("zero telemetry retention config must default to enabled (opt-out, #4253)")
+	}
+	explicitlyDisabled := false
+	disabled := TelemetryRetentionConfig{Enabled: &explicitlyDisabled}
+	if disabled.EnabledEffective() {
+		t.Fatal("explicit enabled: false must still disable automatic pruning")
+	}
+	if zero.ImmediateFirstEnable() {
+		t.Fatal("zero telemetry retention config must default to the safe first-enable grace period, not immediate")
 	}
 	if got, err := zero.WindowDuration(); err != nil || got != DefaultTelemetryRetentionWindow {
 		t.Fatalf("default WindowDuration = %s, %v; want %s", got, err, DefaultTelemetryRetentionWindow)

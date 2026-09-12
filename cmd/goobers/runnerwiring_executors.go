@@ -248,12 +248,21 @@ var copilotModelLister harness.CopilotModelLister
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
 func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), ephemeralTmp bool) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
+	copilotCommand := harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"})
+	customLauncher := requiresCopilotLauncherContract(harnessCommand)
+	authCheckArgs := copilotAuthCheckArgs
+	if customLauncher {
+		authCheckArgs = forwardingLauncherAuthCheckArgs()
+	}
 	copilotAdapter := &harness.CopilotAdapter{
-		Command:                 harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"}),
-		RequireLauncherContract: requiresCopilotLauncherContract(harnessCommand),
-		AuthCheckArgs:           copilotAuthCheckArgs,
-		ModelLister:             copilotModelLister,
-		EnvCapabilities:         envCaps,
+		Command:                     copilotCommand,
+		RequireLauncherContract:     customLauncher,
+		AllowAdapterManagedFallback: customLauncher,
+		VerifyAdapterManagedSession: customLauncher,
+		DisableUsageOutput:          customLauncher,
+		AuthCheckArgs:               authCheckArgs,
+		ModelLister:                 copilotModelLister,
+		EnvCapabilities:             envCaps,
 		OptionalCredentialCapabilities: map[string]bool{
 			string(capability.AgentModel): true,
 		},
@@ -263,6 +272,9 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		DeferDiscovery:    deferModelDiscovery,
 		ModelCredential:   modelCredential,
 		EphemeralTmp:      ephemeralTmp,
+	}
+	if customLauncher {
+		copilotAdapter.RequiredTools = []string{"task_complete"}
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), copilotAdapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)
@@ -292,7 +304,23 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 
 func requiresCopilotLauncherContract(commands map[string][]string) bool {
 	command, configured := commands[string(apiv1.HarnessCopilot)]
-	return configured && (len(command) != 1 || command[0] != "copilot")
+	return configured && !isDirectCopilotLauncher(command)
+}
+
+func isDirectCopilotLauncher(command []string) bool {
+	return len(command) == 1 && command[0] == "copilot"
+}
+
+func forwardingLauncherAuthCheckArgs() []string {
+	return []string{
+		"-p",
+		"Call task_complete with the summary exactly: ok",
+		"--allow-all-tools",
+		"--available-tools=view,task_complete",
+		"--silent",
+		"--no-ask-user",
+		"--autopilot",
+	}
 }
 
 // harnessCommandOrDefault returns the adopter's launcher override for the named
@@ -314,6 +342,7 @@ type deterministicExecutorInput struct {
 	Grants              []credentials.Grant
 	SharedRegistry      *journal.RegistryScrubber
 	InstanceRoot        string
+	AppliedConfigDigest string
 	SelfBin             string
 	ProjectConfigured   bool
 	ConfiguredProject   instance.RepoRef
@@ -343,6 +372,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 		return nil, err
 	}
 	shell.InstanceRoot = input.InstanceRoot
+	shell.AppliedConfigDigest = input.AppliedConfigDigest
 	shell.ScratchDir = input.ScratchDir
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
 	// #4070: bound what one stage subprocess may take, so a heavy stage

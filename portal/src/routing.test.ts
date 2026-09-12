@@ -15,6 +15,37 @@ describe("definition routing", () => {
     expect(parseRoute(routeHash(workflow))).toEqual(workflow);
     expect(activeArea(gaggle)).toBe("workflows");
   });
+
+  describe("Work Items routing", () => {
+    it("round-trips list filters and item detail identities", () => {
+      const list = {
+        page: "work-items" as const,
+        kind: "pr" as const,
+        gaggle: "core tools",
+        query: "acme/app#42",
+      };
+      const detail = {
+        page: "work-items" as const,
+        provider: "github",
+        repository: "acme/app",
+        kind: "issue" as const,
+        id: "42",
+      };
+
+      expect(parseRoute(routeHash(list))).toEqual(list);
+      expect(routeHash(list)).toBe("#/work-items?kind=pr&gaggle=core+tools&q=acme%2Fapp%2342");
+      expect(routeHash(detail)).toBe("#/work-items/github/acme/app/issue/42");
+      expect(parseRoute(routeHash(detail))).toEqual(detail);
+      expect(activeArea(detail)).toBe("work-items");
+    });
+  });
+
+  it("round-trips a gaggle-filtered Goobers inventory", () => {
+    const route = { page: "goobers" as const, gaggle: "core tools" };
+
+    expect(routeHash(route)).toBe("#/goobers?gaggle=core+tools");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+  });
 });
 
 describe("Insight routing", () => {
@@ -95,6 +126,36 @@ describe("Insight routing", () => {
     expect(hash).toMatch(/^#\/insight\?/);
     expect(parseRoute(hash)).toEqual(route);
     expect(parseRoute("#/insight")).toEqual({ page: "insight" });
+  });
+
+  it("round-trips a shareable focused Insight section", () => {
+    const route = {
+      page: "insight" as const,
+      filters: {
+        gaggle: "core",
+        window: "7d" as const,
+        section: "failures" as const,
+      },
+    };
+
+    expect(routeHash(route)).toBe("#/insight?gaggle=core&window=7d&section=failures");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+  });
+
+  it("round-trips a scoped Cost route with a time window preset", () => {
+    const route = {
+      page: "cost" as const,
+      filters: {
+        gaggle: "core tools",
+        workflow: "implementation/v2",
+        stage: "review gate",
+        window: "30d" as const,
+      },
+    };
+
+    expect(parseRoute(routeHash(route))).toEqual(route);
+    expect(parseRoute("#/cost")).toEqual({ page: "cost" });
+    expect(activeArea(route)).toBe("cost");
   });
 
   it("round-trips an exact error signature including empty values", () => {

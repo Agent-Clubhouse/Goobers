@@ -32,6 +32,7 @@ type issueCloseOutProvider interface {
 	FindPullRequestByBranch(context.Context, providers.RepositoryRef, string, string) (providers.PullRequestResult, bool, error)
 	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
 	UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
+	ReleaseWorkItemClaim(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error)
 }
 
 type pullRequestReader interface {
@@ -123,16 +124,7 @@ func issueCloseOutReason(root, runID, gateName string) (string, error) {
 				if err := json.Unmarshal(data, &verdict); err != nil {
 					return "", fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
 				}
-				reason := strings.TrimSpace(verdict.Summary)
-				if verdict.Decision == apiv1.VerdictFail {
-					reason = strings.TrimSpace(verdict.Rationale)
-				}
-				if reason == "" {
-					reason = strings.TrimSpace(verdict.Rationale)
-				}
-				if reason == "" {
-					reason = strings.TrimSpace(verdict.Summary)
-				}
+				reason := issueCloseOutVerdictReason(verdict)
 				if reason != "" {
 					return reason, nil
 				}
@@ -163,6 +155,17 @@ func issueCloseOutReason(root, runID, gateName string) (string, error) {
 		return "", fmt.Errorf("no terminal gate or failed task reason found")
 	}
 	return "", fmt.Errorf("no verdict found for gate %q", gateName)
+}
+
+func issueCloseOutVerdictReason(verdict apiv1.Verdict) string {
+	primary, fallback := verdict.Summary, verdict.Rationale
+	if verdict.Decision == apiv1.VerdictFail {
+		primary, fallback = fallback, primary
+	}
+	if reason := strings.TrimSpace(primary); reason != "" {
+		return reason
+	}
+	return strings.TrimSpace(fallback)
 }
 
 // issueCloseOutReviewVerdict returns the last reviewer verdict journaled for
@@ -463,14 +466,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		// run artifacts they'd have to parse by hand. Appended after the
 		// question validation above so a needs-human park still states its
 		// question, and the evidence follows it.
-		verdict, gateName, found, err := issueCloseOutReviewVerdict(root, runID)
+		evidenceDetail, err := issueCloseOutEvidenceDetail(root, runID)
 		if err != nil {
-			pf(stderr, "error: resolve review verdict for escalation comment: %v\n", err)
+			pf(stderr, "error: resolve evidence for escalation comment: %v\n", err)
 			return 1
 		}
-		if found {
-			comment += issueCloseOutVerdictDetail(verdict, gateName, runID)
-		}
+		comment += evidenceDetail
 		// #2028: needs-remediation never gets the configured human assignee —
 		// withNeedsHumanAssignee only fires for LabelNeedsHuman — so config
 		// load is scoped to the status that actually needs it.
@@ -534,29 +535,38 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Release the goobers:claimed label on the same event that releases the
-	// ledger claim below (#414 design point 1), regardless of status — even
-	// the in-review branch above releases the ledger claim unconditionally,
-	// and UpdateWorkItemStatus only ever swaps goobers/status:-prefixed
-	// labels, so without this the claim marker survived indefinitely and a
-	// fresh eligibility query could see a completed (or in-review) item as
-	// still "claimed" forever. Best-effort like the ClaimWorkItem marker on
-	// the claim side (backlogquery.go): the durable ledger release below,
-	// not this label, is what's actually authoritative for eligibility, so a
-	// failed removal here leaves only a stale human-visible marker, not a
-	// stuck item.
-	// The claim marker is the plain LabelClaimed on every provider —
-	// ClaimWorkItem defaults req.ClaimLabel to it on ADO too, so removal
-	// uses the same constant everywhere. (A prior status-form translation
-	// here targeted a tag the claim path never writes, wire-confirmed as
-	// the stale-marker leak on ADO work items.)
-	claimMarker := providers.LabelClaimed
-	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository:   backlogRepo,
-		ID:           claim.ItemID,
-		RemoveLabels: []string{claimMarker},
-	}); err != nil {
-		pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
+	// Release the provider claim epoch — the goobers-claim-release breadcrumb
+	// plus the goobers:claimed label mirror — on the same event that releases
+	// the ledger claim below (#414 design point 1, #4639), regardless of
+	// status — even the in-review branch above releases the ledger claim
+	// unconditionally, and UpdateWorkItemStatus only ever swaps
+	// goobers/status:-prefixed labels, so without this the claim marker
+	// survived indefinitely and a fresh eligibility query could see a
+	// completed (or in-review) item as still "claimed" forever. Best-effort
+	// like the ClaimWorkItem marker on the claim side (backlogquery.go): the
+	// durable ledger release below, not this marker, is what's actually
+	// authoritative for eligibility, so a failed release here leaves only a
+	// stale human-visible marker, not a stuck item.
+	//
+	// #4639: this must go through ReleaseWorkItemClaim rather than a raw
+	// UpdateWorkItem(RemoveLabels:...) — claimWinner (the sole source of
+	// truth for who holds a claim) resolves purely from the claim/release
+	// breadcrumb comments, never labels, so stripping only the label left a
+	// stale breadcrumb that permanently blocked reclaim once the item cycled
+	// back to goobers:ready (most visibly on a needs-remediation park). This
+	// run holds the authoritative ledger lease being released below, which is
+	// exactly LedgerAuthorized's precondition.
+	// The comment-epoch rule above is local-only. Shared release below
+	// reconciles the label from remote ownership after its CAS transition.
+	if claim.SharedDeadline.IsZero() {
+		if _, err := provider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+			Repository:       backlogRepo,
+			ID:               claim.ItemID,
+			RunID:            runID,
+			LedgerAuthorized: true,
+		}); err != nil {
+			pf(stderr, "warning: release %s claim label: %v\n", claim.ItemID, err)
+		}
 	}
 
 	// Release the lease now rather than waiting for it to expire — the run

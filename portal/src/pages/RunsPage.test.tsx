@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
@@ -11,12 +12,16 @@ import {
   populatedDaemonFixtures,
 } from "../test/daemonFixtures";
 
+const portalStyles = readFileSync("src/styles.css", "utf8");
+
 beforeEach(() => {
   window.location.hash = "#/runs";
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
 });
 
 describe("runs history page", () => {
   it("reads live daemon runs and paginates with server-side cursors", async () => {
+    window.location.hash = "#/runs?status=all";
     const client = new FixtureDaemonClient(
       largeJournalFixtures({ completed: 68, running: 0, failed: 0, escalated: 0, aborted: 0 }),
     );
@@ -38,15 +43,11 @@ describe("runs history page", () => {
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    listRuns.mockClear();
-    listRuns.mockImplementation(() => new Promise(() => {}));
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    const revisitedHistory = screen.getByRole("region", { name: "Run history" });
-    expect(revisitedHistory.querySelectorAll("a")).toHaveLength(68);
-    expect(listRuns).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "active" })).toHaveAttribute("aria-pressed", "true");
   }, 10_000);
 
   it("maps filter chips onto server-side phase requests", async () => {
@@ -70,7 +71,56 @@ describe("runs history page", () => {
     );
   });
 
+  it("treats analytical drill-through URLs as all runs when status is omitted", async () => {
+    window.location.hash =
+      "#/runs?gaggle=core&population=cost-measured&since=2026-09-03T07%3A06%3A25.802Z&until=2026-09-10T07%3A06%3A25.802Z";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const listRuns = vi.spyOn(client, "listRuns");
+    render(<App client={client} />);
+
+    await screen.findByRole("heading", { name: "Runs" });
+    expect(screen.getByRole("button", { name: "All runs" })).toHaveAttribute("aria-pressed", "true");
+    expect(listRuns).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gaggle: "core",
+        population: "cost-measured",
+        phase: undefined,
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("persists status, gaggle, and workflow filters in the route", async () => {
+    window.location.hash = "#/runs?status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByRole("heading", { name: "Runs" });
+    await user.selectOptions(screen.getByLabelText("Filter by gaggle"), "core");
+    expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
+
+    await user.selectOptions(
+      screen.getByLabelText("Filter by workflow"),
+      JSON.stringify(["core", "implementation"]),
+    );
+    expect(window.location.hash).toBe(
+      "#/runs?gaggle=core&workflow=implementation&status=all",
+    );
+
+    await user.click(screen.getByRole("button", { name: "active" }));
+    expect(window.location.hash).toBe("#/runs?gaggle=core&workflow=implementation");
+  });
+
+  it("identifies runs by their work item while retaining the run ID", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const row = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
+    expect(row).toHaveTextContent("#3088 · Operator status progress");
+    expect(within(row).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();
+  });
+
   it("hides no-work runs by default and reveals them via the toggle (#2188)", async () => {
+    window.location.hash = "#/runs?status=all";
     const noWorkRun: RunSummary = {
       id: "01JZ000NOWORK",
       workflow: "backlog-curation",
@@ -114,6 +164,33 @@ describe("runs history page", () => {
     expect(screen.getByRole("link", { name: /Open run 01JZ000PRODUCED/ })).toBeInTheDocument();
   });
 
+  it("uses a bounded narrow-screen page while retaining pagination", async () => {
+    window.location.hash = "#/runs?status=all";
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+    const client = new FixtureDaemonClient(
+      largeJournalFixtures({ completed: 28, running: 0, failed: 0, escalated: 0, aborted: 0 }),
+    );
+    const listRuns = vi.spyOn(client, "listRuns");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    const history = await screen.findByRole("region", { name: "Run history" });
+    expect(history.querySelectorAll("a")).toHaveLength(20);
+    expect(listRuns).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 20 }),
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(28));
+    expect(portalStyles).toMatch(
+      /\.run-current-stage\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    );
+    expect(portalStyles).toMatch(
+      /\.all-runs-grid ~ \.data-row\s*\{[^}]*min-width:\s*0/s,
+    );
+  });
+
   it("shows how to start the first run when no runs exist", async () => {
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
@@ -137,6 +214,7 @@ describe("runs history page", () => {
   });
 
   it("distinguishes filters that exclude existing runs and offers recovery", async () => {
+    window.location.hash = "#/runs?status=all";
     const fixtures = populatedDaemonFixtures();
     fixtures.runs.runs = fixtures.runs.runs.filter((run) => run.phase === "completed");
     const user = userEvent.setup();
@@ -148,7 +226,7 @@ describe("runs history page", () => {
     expect(await screen.findByText("Filters exclude existing runs")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Clear all filters" })).toHaveAttribute(
       "href",
-      "#/runs",
+      "#/runs?status=all",
     );
     expect(screen.getByText("goobers status <instance>")).toBeInTheDocument();
 
@@ -163,7 +241,8 @@ describe("runs history page", () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByText("core / implementation")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
+    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
 
@@ -173,7 +252,8 @@ describe("runs history page", () => {
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
-    expect(await screen.findByText("core / implementation")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Filter by gaggle")).toHaveDisplayValue("Core product");
+    expect(screen.getByLabelText("Filter by workflow")).toHaveDisplayValue("Implementation");
   });
 
   it("surfaces a daemon error with an explicit reconnect affordance", async () => {

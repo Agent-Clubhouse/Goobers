@@ -17,6 +17,10 @@ import (
 // Older daemons without durable identity must be upgraded before manual writes.
 // Redirects are refused: a different server cannot vouch for this target.
 func prepareRemoteRoot(ctx context.Context, endpoint string, diagnostic io.Writer) error {
+	return prepareRemoteRootForInstance(ctx, endpoint, "", diagnostic)
+}
+
+func prepareRemoteRootForInstance(ctx context.Context, endpoint, expectedID string, diagnostic io.Writer) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+apicontract.InstancePath, nil)
 	if err != nil {
 		return fmt.Errorf("build daemon identity request")
@@ -47,6 +51,9 @@ func prepareRemoteRoot(ctx context.Context, endpoint string, diagnostic io.Write
 	}
 	if err := validateRemoteRoot(root, identity); err != nil {
 		return err
+	}
+	if expectedID != "" && identity.ID != expectedID {
+		return fmt.Errorf("discovered daemon belongs to another instance; no mutation sent")
 	}
 	if _, err := fmt.Fprintf(diagnostic, "Remote instance root: %q; instance ID: %q\n", root, identity.ID); err != nil {
 		return fmt.Errorf("display remote mutation target: %w", err)

@@ -34,20 +34,21 @@ type mergePRServerState struct {
 	// mergeableState is GitHub's mergeable_state enum for the PR detail
 	// ("unstable" = mergeable, only advisory checks red; "blocked" = required
 	// checks failing/pending). Empty omits the field (the pre-#961 shape).
-	mergeableState  string
-	headSHA         string
-	headBranch      string
-	headOwner       string
-	headRepo        string
-	baseSHA         string
-	stacked         bool
-	pullListStatus  int
-	deleteStatus    int
-	mergeCalls      int
-	pullListCalls   int
-	deleteCalls     int
-	baseListCalls   int
-	baseDeleteCalls int
+	mergeableState   string
+	headSHA          string
+	headBranch       string
+	headOwner        string
+	headRepo         string
+	baseSHA          string
+	stacked          bool
+	pullListStatus   int
+	deleteStatus     int
+	mergeCalls       int
+	beforeMergeReply func() error
+	pullListCalls    int
+	deleteCalls      int
+	baseListCalls    int
+	baseDeleteCalls  int
 	// mergeRefusalStatus/mergeRefusalBody make the REST merge endpoint answer
 	// with a refusal instead of merging — #1751's conflict case and its
 	// false-positive guard both drive the same handler with different bodies.
@@ -169,9 +170,16 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 		if strings.Contains(body.Query, "enqueuePullRequest(input:") {
 			st.enqueueCalls++
 			st.enqueueVars = body.Variables
+			if st.beforeMergeReply != nil {
+				if err := st.beforeMergeReply(); err != nil {
+					t.Errorf("prepare enqueue reply: %v", err)
+					http.Error(w, "fixture failed", http.StatusInternalServerError)
+					return
+				}
+			}
 			writeFakeJSON(w, map[string]interface{}{"data": map[string]interface{}{
 				"enqueuePullRequest": map[string]interface{}{
-					"mergeQueueEntry": map[string]interface{}{"state": "QUEUED", "position": 1},
+					"mergeQueueEntry": map[string]interface{}{"id": "MQE_accepted", "enqueuedAt": "2026-09-01T12:00:00Z", "state": "QUEUED", "position": 1},
 				},
 			}})
 			return
@@ -301,6 +309,13 @@ func newMergePRServer(t *testing.T, owner, repo string, st *mergePRServerState) 
 	})
 	mux.HandleFunc(prefix+"/pulls/9/merge", func(w http.ResponseWriter, r *http.Request) {
 		st.mergeCalls++
+		if st.beforeMergeReply != nil {
+			if err := st.beforeMergeReply(); err != nil {
+				t.Errorf("prepare merge reply: %v", err)
+				http.Error(w, "fixture failed", http.StatusInternalServerError)
+				return
+			}
+		}
 		if err := json.NewDecoder(r.Body).Decode(&st.mergeBody); err != nil {
 			t.Errorf("decode merge request body: %v", err)
 		}
@@ -440,8 +455,15 @@ func TestMergePRAllConjunctsMetMerges(t *testing.T) {
 		t.Fatalf("result = %+v, want deleted branch cleanup for %q", result, st.headBranch)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 2 || facts[0].Operation != "merge" || facts[1].Kind != "branch" || facts[1].Operation != "delete" {
-		t.Fatalf("mutation facts = %+v, want merge followed by branch delete", facts)
+	if len(facts) != 3 || facts[0].Operation != "merge-intent" || facts[0].LandingIntent == nil || facts[1].Operation != "merge" || facts[2].Kind != "branch" || facts[2].Operation != "delete" {
+		t.Fatalf("mutation facts = %+v, want intent, merge, then branch delete", facts)
+	}
+	confirmation := facts[1].MergeConfirmation
+	if confirmation == nil || confirmation.IntentID != facts[0].LandingIntent.ID {
+		t.Fatalf("confirmation does not identify the persisted intent: %+v", confirmation)
+	}
+	if confirmation == nil || confirmation.RepositoryAPIURL != server.URL+"/repos/your-org/your-repo" || confirmation.PullID != "9" || confirmation.MergeSHA != "merge-commit-sha" {
+		t.Fatalf("CLI lost merge confirmation: %+v", confirmation)
 	}
 }
 
@@ -646,6 +668,17 @@ func TestMergePRMergeQueuePolicyEnqueuesInsteadOfMerging(t *testing.T) {
 	if _, ok := result["branchCleanup"]; ok {
 		t.Fatalf("result = %+v, want no branchCleanup key for an enqueued pull request", result)
 	}
+	facts := readMutationFacts(t, dir)
+	if len(facts) != 2 || facts[0].Operation != "merge-intent" || facts[0].LandingIntent == nil || facts[1].Operation != "enqueue" || facts[1].QueueAdmission == nil || facts[1].MergeConfirmation != nil {
+		t.Fatalf("accepted queue receipt missing/promoted: %+v", facts)
+	}
+	admission := facts[1].QueueAdmission
+	if facts[0].LandingIntent.Operation != "enqueue" || admission.IntentID != facts[0].LandingIntent.ID {
+		t.Fatalf("queue intent/receipt disconnected: %+v", facts)
+	}
+	if admission.EntryID != "MQE_accepted" || admission.ExpectedHeadSHA != "head123" || admission.PullID != "9" || admission.RepositoryAPIURL != server.URL+"/repos/your-org/your-repo" {
+		t.Fatalf("CLI queue receipt crossed repository or head: %+v", admission)
+	}
 }
 
 // TestMergePRMergeQueuePolicyNeverUsesRESTMergeEndpoint is issue #882's
@@ -708,6 +741,11 @@ func TestMergePRMergeQueuePolicyReportsMergedWhenAlreadyMerged(t *testing.T) {
 	if st.deleteCalls != 1 {
 		t.Fatalf("branch delete called %d times, want 1 (a real merge happened, cleanup should run)", st.deleteCalls)
 	}
+	for _, fact := range readMutationFacts(t, dir) {
+		if fact.MergeConfirmation != nil {
+			t.Fatalf("observed merge was attributed to this CLI invocation: %+v", fact)
+		}
+	}
 }
 
 // TestMergePRDirectPolicyUnchangedWhenNoRulesApply is the "second repo still
@@ -765,7 +803,7 @@ func TestMergePRDeletesForkHeadBranchInForkRepository(t *testing.T) {
 		t.Fatalf("result = %+v, want merged with deleted fork branch", result)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 2 || facts[1].Kind != "branch" || facts[1].ID != st.headBranch || facts[1].Operation != "delete" {
+	if len(facts) != 3 || facts[0].Operation != "merge-intent" || facts[1].Operation != "merge" || facts[2].Kind != "branch" || facts[2].ID != st.headBranch || facts[2].Operation != "delete" {
 		t.Fatalf("mutation facts = %+v, want fork branch deletion", facts)
 	}
 }
@@ -791,7 +829,7 @@ func TestMergePRKeepsStackedHeadBranch(t *testing.T) {
 		t.Fatalf("result = %+v, want merged with stacked cleanup skip", result)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 1 || facts[0].Operation != "merge" {
+	if len(facts) != 2 || facts[0].Operation != "merge-intent" || facts[1].Operation != "merge" {
 		t.Fatalf("mutation facts = %+v, want no branch mutation for guarded skip", facts)
 	}
 }
@@ -817,7 +855,7 @@ func TestMergePRDeleteFailurePreservesMergeResult(t *testing.T) {
 		t.Fatalf("cleanup failure not visible: result=%+v stderr=%q", result, stderr)
 	}
 	facts := readMutationFacts(t, dir)
-	if len(facts) != 1 || facts[0].Operation != "merge" {
+	if len(facts) != 2 || facts[0].Operation != "merge-intent" || facts[1].Operation != "merge" {
 		t.Fatalf("mutation facts = %+v, want no branch mutation for failed delete", facts)
 	}
 }

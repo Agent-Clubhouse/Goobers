@@ -24,8 +24,8 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **11 goobers and 13 workflows**.
-<!-- reference-inventory: goobers=11 workflows=13 -->
+The shipped tree loads **11 goobers and 14 workflows**.
+<!-- reference-inventory: goobers=11 workflows=14 -->
 
 | Goober role | Purpose |
 |---|---|
@@ -48,6 +48,7 @@ The shipped tree loads **11 goobers and 13 workflows**.
 | `decomposition` | Converts oversized approved work into validated child batches. |
 | `docs-updater` | Turns a documentation signal into a reviewed PR. |
 | `implementation` | Implements a ready issue and opens a PR. |
+| `implementation-recovery` | Restores retained state for an approved needs-remediation issue, then runs the implementation review and CI gates before opening a PR. |
 | `merge-review` | Reviews eligible PRs and, when explicitly enabled, lands them. |
 | `parked-item-report` | Reports parked remediation candidates for human review; schedule disabled by default. |
 | `pr-remediation` | Rebases or fixes managed PRs from CI and review evidence. |
@@ -221,7 +222,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 13 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 14 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to

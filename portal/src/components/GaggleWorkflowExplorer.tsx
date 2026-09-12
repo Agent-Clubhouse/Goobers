@@ -10,6 +10,7 @@ import { latestWorkflowOutcome } from "../operationalData";
 import { routeHash } from "../routing";
 import { validateWorkflowDetail } from "../workflowDetailData";
 import { ScopePivot } from "./ScopePivot";
+import { SectionQueryStatus } from "./SectionQueryStatus";
 import { GraphFrame } from "../ui/GraphFrame";
 import { StatusBadge } from "../ui/StatusBadge";
 import { formatTriggers } from "../pages/WorkflowsPage";
@@ -230,20 +231,14 @@ function SelectedWorkflow({
       </header>
 
       {state.status === "loading" && (
-        <p className="inline-empty" role="status">
-          Loading workflow graph…
-        </p>
+        <SectionQueryStatus loading message="Loading workflow graph…" />
       )}
       {state.status === "error" && (
-        <div className="gaggle-workflow-error" role="alert">
-          <div>
-            <strong>Workflow graph unavailable</strong>
-            <p>{state.error.message}</p>
-          </div>
-          <button onClick={() => setRetryKey((current) => current + 1)} type="button">
-            Retry
-          </button>
-        </div>
+        <SectionQueryStatus
+          error
+          message={`Workflow graph unavailable: ${state.error.message}`}
+          retry={() => setRetryKey((current) => current + 1)}
+        />
       )}
       {state.status === "ready" && (
         <div className="gaggle-workflow-preview">

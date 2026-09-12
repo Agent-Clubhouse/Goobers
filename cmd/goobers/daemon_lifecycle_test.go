@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,7 @@ func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
 	}
 	var gaggle, digest string
+	var pinnedDefinition []byte
 	found := false
 	for i := range set.Workflows {
 		if set.Workflows[i].Name == workflowName {
@@ -37,6 +39,10 @@ func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 			}
 			gaggle = set.Workflows[i].Spec.Gaggle
 			digest = m.Digest()
+			pinnedDefinition, err = json.Marshal(m.Def)
+			if err != nil {
+				t.Fatal(err)
+			}
 			found = true
 			break
 		}
@@ -49,7 +55,7 @@ func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 		RunID: runID, Workflow: workflowName, WorkflowVersion: 1,
 		WorkflowDigest: digest, Gaggle: gaggle,
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-	}, nil)
+	}, map[string][]byte{journal.PinnedWorkflowDefinitionInputName: pinnedDefinition}, journal.WithInputIntegrity(map[string]apiv1.Integrity{journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted}))
 	if err != nil {
 		t.Fatalf("hand-construct stuck run journal: %v", err)
 	}
@@ -248,7 +254,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 	}
 	orphanKey := runID + "-local-ci" // buildEnvelope's RunID+"-"+stageName convention
 	if _, err := wtMgr.Create(context.Background(), worktree.CreateOptions{
-		RepoURL: fixtureRepo, RunID: orphanKey, BaseRef: "main",
+		RepoURL: fixtureRepo, RunID: orphanKey, OwnerRunID: runID, BaseRef: "main",
 	}); err != nil {
 		t.Fatalf("plant orphaned worktree: %v", err)
 	}
@@ -311,20 +317,9 @@ func TestUpSkipsUnresolvableWorkflowWithWarningNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Fatalf("code = %d (the daemon must still start despite the stale run), stderr = %q", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runUpContext did not return after ctx cancellation")
+	if code := runUpThroughStartup(t, []string{root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("daemon startup/shutdown code=%d stderr=%q", code, stderr.String())
 	}
 
 	if !strings.Contains(stdout.String(), "warning: run stale-1") {
@@ -368,20 +363,9 @@ func TestUpSkipsRunFromRemovedGaggleWithWarningNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
-
 	var stdout, stderr bytes.Buffer
-	done := make(chan int, 1)
-	go func() { done <- runUpContext(ctx, []string{root}, &stdout, &stderr) }()
-
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Fatalf("code = %d (the daemon must still start after gaggle removal), stderr = %q", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runUpContext did not return after ctx cancellation")
+	if code := runUpThroughStartup(t, []string{root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("daemon startup/shutdown code=%d stderr=%q", code, stderr.String())
 	}
 
 	if !strings.Contains(stdout.String(), "warning: run removed-gaggle-run") {

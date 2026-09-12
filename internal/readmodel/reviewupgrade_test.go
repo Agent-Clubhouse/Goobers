@@ -92,6 +92,9 @@ func TestReviewEvidenceUpgradeRefreshesSamePositionOnce(t *testing.T) {
 	if !reflect.DeepEqual(got.Operator, p.Run.Operator) {
 		t.Fatalf("same-position upgrade lost evidence: got=%+v want=%+v", got.Operator, p.Run.Operator)
 	}
+	if got.Disposition != DispositionProduced {
+		t.Fatalf("same-position upgrade disposition = %q, want %q; historical terminal unknown row was not repaired", got.Disposition, DispositionProduced)
+	}
 	before, err := store.LatestChangeSeq(ctx)
 	if err != nil {
 		t.Fatal(err)

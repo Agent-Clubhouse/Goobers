@@ -247,6 +247,14 @@ func (c *Conditions) AdmitWorkflow(identity WorkflowIdentity, r apiv1.ReadinessC
 // AdmitProviderWorkflow applies run conditions using the provider the run
 // targets.
 func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider apiv1.Provider, r apiv1.ReadinessConditions, now time.Time) (ok bool, reason string) {
+	return c.admitProviderWorkflow(identity, provider, r, now, false)
+}
+
+// admitProviderWorkflow applies every run condition, optionally allowing an
+// explicit manual invocation to pass an already-spent cadence budget. Manual
+// starts are still recorded, so automatic triggers continue to account for
+// them when enforcing their hourly and daily ceilings.
+func (c *Conditions) admitProviderWorkflow(identity WorkflowIdentity, provider apiv1.Provider, r apiv1.ReadinessConditions, now time.Time, bypassCadenceBudgets bool) (ok bool, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -335,11 +343,11 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 	// of the same slice, not a second tracked list.
 	starts := pruneStarts(c.starts[identity], now, dayWindow)
 	hourlyCount := countSince(starts, now.Add(-budgetWindow))
-	if hourlyCount >= int(maxRunsPerHour) {
+	if !bypassCadenceBudgets && hourlyCount >= int(maxRunsPerHour) {
 		c.starts[identity] = starts
 		return false, ReasonBudget
 	}
-	if maxRunsPerDay > 0 && len(starts) >= int(maxRunsPerDay) {
+	if !bypassCadenceBudgets && maxRunsPerDay > 0 && len(starts) >= int(maxRunsPerDay) {
 		c.starts[identity] = starts
 		return false, ReasonDailyBudget
 	}

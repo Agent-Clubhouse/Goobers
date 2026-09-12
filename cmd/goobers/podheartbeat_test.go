@@ -411,6 +411,9 @@ func (b *syncBuffer) String() string {
 func newJournalAndSurrenderServer(t *testing.T, emitted chan<- livejournal.EmitRequest) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveLocalExecutionPolicy(w, r) {
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/journal/emit") {
 			var req livejournal.EmitRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {

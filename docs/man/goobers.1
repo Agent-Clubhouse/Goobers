@@ -43,7 +43,7 @@ show command or concept help
 scaffold an instance root
 .TP
 \fBgoobers run\fR
-trigger a run manually (still honors run conditions)
+trigger a run manually; --force bypasses cadence budgets
 .TP
 \fBgoobers scaffold\fR
 scaffold a goober, workflow, or gaggle
@@ -138,6 +138,9 @@ apply the recorded checked-in source to the runtime instance
 .TP
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
+.TP
+\fBgoobers config-seed\fR
+seed a private worker instance from a rendered configuration mirror
 .TP
 \fBgoobers diagnostics\fR
 collect a portable, redacted support bundle
@@ -241,6 +244,12 @@ check WSL full-isolation readiness and optionally hand off a command
 \fBgoobers queue-explain\fR
 explain historical PR queue eligibility and claim observations
 .TP
+\fBgoobers recovery-abandon\fR
+explicitly abandon one retained recovery snapshot
+.TP
+\fBgoobers recovery-restore\fR
+restore retained implementation onto current main
+.TP
 \fBgoobers rerun-stage\fR
 rerun a stage with a recorded instruction addendum
 .TP
@@ -337,6 +346,9 @@ recent errors across runs, by class, with run/stage refs
 \fBgoobers telemetry export\fR
 re-emit a span-start-time window from journaled OTLP/JSON
 .TP
+\fBgoobers telemetry merges\fR
+confirmed PR landings and daily counts by originating instance
+.TP
 \fBgoobers telemetry prune\fR
 remove terminal runs outside configured retention bounds
 .TP
@@ -348,6 +360,9 @@ success rate and duration aggregates per workflow and stage
 .TP
 \fBgoobers versions\fR
 print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
+.TP
+\fBgoobers work-items\fR
+list pull requests and issues changed by Goobers
 .TP
 \fBgoobers worker\fR
 host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
@@ -467,6 +482,9 @@ reconcile late merge-queue merges (a workflow stage)
 \fBgoobers record-merge-refusal\fR
 record a merge refusal and demote a persistently-stuck lander (a workflow stage)
 .TP
+\fBgoobers recovery-resume\fR
+restore retained implementation into the receiving run (a workflow stage)
+.TP
 \fBgoobers remediation-checkpoint\fR
 durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 .TP
@@ -526,6 +544,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-config-diff\fR(1),
 \fBgoobers-config-materialize\fR(1),
 \fBgoobers-config-show\fR(1),
+\fBgoobers-config-seed\fR(1),
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),
 \fBgoobers-dashboard\fR(1),
@@ -596,6 +615,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-reconcile-branches\fR(1),
 \fBgoobers-reconcile-post-merge\fR(1),
 \fBgoobers-record-merge-refusal\fR(1),
+\fBgoobers-recovery-abandon\fR(1),
+\fBgoobers-recovery-restore\fR(1),
+\fBgoobers-recovery-resume\fR(1),
 \fBgoobers-remediation-checkpoint\fR(1),
 \fBgoobers-report-pr-status\fR(1),
 \fBgoobers-rerun-stage\fR(1),
@@ -641,6 +663,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-telemetry-compact\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
+\fBgoobers-telemetry-merges\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
 \fBgoobers-telemetry-prune-orphans\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
@@ -652,6 +675,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-validate-plan\fR(1),
 \fBgoobers-version\fR(1),
 \fBgoobers-versions\fR(1),
+\fBgoobers-work-items\fR(1),
 \fBgoobers-worker\fR(1),
 \fBgoobers-workflow\fR(1),
 \fBgoobers-workflow-show\fR(1),

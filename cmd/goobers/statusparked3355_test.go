@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -78,6 +80,52 @@ func TestStatusListsBacklogItemsParkedOutOfTheReadyPool(t *testing.T) {
 	for _, unwanted := range []string{"#266", "#300"} {
 		if strings.Contains(stdout, unwanted) {
 			t.Fatalf("stdout = %q, want no ready-pool item %s in the parked section", stdout, unwanted)
+		}
+	}
+}
+
+func TestStatusKeepsTerminalRunsDistinctFromParkedBacklog(t *testing.T) {
+	now := time.Date(2026, time.September, 11, 12, 0, 0, 0, time.UTC)
+	runs := []runSummary{
+		{
+			RunID: "run-completed", Workflow: "implementation", Gaggle: "goobers",
+			Phase: journal.PhaseCompleted, StartedAt: now.Add(-2 * time.Hour), LastActivityAt: now.Add(-time.Hour),
+			Operator: readservice.OperatorRunSummary{Trajectory: "terminal", Liveness: "terminal"},
+		},
+		{
+			RunID: "run-failed", Workflow: "implementation", Gaggle: "goobers",
+			Phase: journal.PhaseFailed, StartedAt: now.Add(-time.Hour), LastActivityAt: now.Add(-time.Minute),
+			Operator: readservice.OperatorRunSummary{Trajectory: "terminal", Liveness: "terminal"},
+		},
+	}
+	var output strings.Builder
+	renderStatus(&output, runs, now)
+	output.WriteString(parkedBacklogStatusText(statusParkedBacklog{
+		Total: 1,
+		Items: []statusParkedItem{{
+			Ref: "#42", Title: "genuinely parked decision", Dispositions: []string{providers.LabelNeedsHuman},
+		}},
+	}))
+
+	lines := strings.Split(output.String(), "\n")
+	for _, runID := range []string{"run-completed", "run-failed"} {
+		var row string
+		for _, line := range lines {
+			if strings.Contains(line, runID) {
+				row = line
+				break
+			}
+		}
+		if row == "" || !strings.Contains(row, "terminal") || strings.Contains(strings.ToLower(row), "parked") {
+			t.Fatalf("status row for %s = %q, want terminal and never parked; full output: %q", runID, row, output.String())
+		}
+	}
+	for _, want := range []string{
+		"Parked backlog items (park label, no goobers:ready — not selectable): 1",
+		"#42 goobers:needs-human — genuinely parked decision",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("status = %q, want %q", output.String(), want)
 		}
 	}
 }

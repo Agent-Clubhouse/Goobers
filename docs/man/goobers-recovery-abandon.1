@@ -1,0 +1,22 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RECOVERY ABANDON" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers recovery-abandon \- explicitly abandon one retained recovery snapshot
+.SH SYNOPSIS
+\fBgoobers recovery-abandon\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers recovery-abandon --run <run-id> --ref <recovery-ref> --confirm-digest <patch-digest> [instance]
+
+Abandon one exact retained snapshot from a terminal run. The digest must
+match its published patch digest. Records an operator decision and prevents
+automatic recovery selection. Configured retention subsequently removes
+the owned recovery ref and archive, not user branches. Active runs, stage
+execution, and ambiguous matches are refused.
+.fi
+.SH EXAMPLES
+.nf
+goobers recovery-abandon --run source-run --ref refs/goobers/recovery/source-run --confirm-digest sha256:<digest> ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

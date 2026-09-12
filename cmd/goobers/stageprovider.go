@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -33,6 +34,7 @@ type stageProviderConfig struct {
 	openPR           bool
 	noRetries        bool
 	observeToken     func(string)
+	quota            *localscheduler.ProviderQuotaState
 }
 
 type stageProviderOption func(*stageProviderConfig)
@@ -85,6 +87,12 @@ func withStageProviderRetriesDisabled() stageProviderOption {
 func withStageProviderTokenObserver(observer func(string)) stageProviderOption {
 	return func(cfg *stageProviderConfig) {
 		cfg.observeToken = observer
+	}
+}
+
+func withStageProviderQuota(quota *localscheduler.ProviderQuotaState) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.quota = quota
 	}
 }
 
@@ -171,7 +179,19 @@ func stageAttribution(root string) (providers.Attribution, bool) {
 	if costPublicationAllowed(root, gaggle, providers.RepositoryRef{}, os.Stderr) {
 		attribution.Cost = stageCostReceipt(root, runID)
 	}
+	attribution.InstanceID = stageInstanceIdentity()
 	return attribution, true
+}
+
+func stageInstanceIdentity() string {
+	// Missing, empty and malformed pins all mean unknown. Reading a root
+	// here would attribute historical/remote work to whichever worker happens
+	// to execute this stage, rather than the instance that admitted the run.
+	value := os.Getenv(executor.InstanceIDEnvVar)
+	if instance.ValidIdentity(value) {
+		return value
+	}
+	return ""
 }
 
 func stageCostReceipt(root, runID string) *providers.CostReceipt {
@@ -291,6 +311,13 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	}
 	if cfg.noRetries {
 		opts = append(opts, providers.WithMaxRateLimitRetries(0), providers.WithMaxTransientRetries(0))
+	}
+	if cfg.quota != nil {
+		accounting := &providerQuotaAccounting{state: cfg.quota}
+		opts = append(opts,
+			providers.WithQuotaRequestGate(accounting),
+			providers.WithQuotaObserver(accounting),
+		)
 	}
 	if cfg.cached {
 		return newCachedGitHubProvider(cfg.root, token, opts...), nil

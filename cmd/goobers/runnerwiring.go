@@ -89,6 +89,7 @@ func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(contex
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
 type runnerCompositionInput struct {
+	ExecutionFence       executionFenceStart
 	Layout               instance.Layout
 	Config               *instance.Config
 	Goobers              map[string]apiv1.GooberSpec
@@ -103,12 +104,17 @@ type runnerCompositionInput struct {
 	CredentialStores     credentials.StoreResolver
 	SandboxPosture       instance.SandboxPosture
 	ProviderQuota        *localscheduler.ProviderQuotaState
+	AppliedConfigDigest  string
 }
 
 var runnerLookPath = exec.LookPath
 
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
+	executionFence := input.ExecutionFence
+	if executionFence == nil {
+		executionFence = localSharedExecutionFence(l)
+	}
 	cfg := input.Config
 	goobers := input.Goobers
 	instructionsByGoober := input.InstructionsByGoober
@@ -122,6 +128,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	stores := input.CredentialStores
 	sandboxPosture := input.SandboxPosture
 	providerQuota := input.ProviderQuota
+	appliedConfigDigest := input.AppliedConfigDigest
 	// Per-gaggle credential scoping (MGV-5, #1012): this runner serves one
 	// gaggle, so its stages are granted that gaggle's own project-repo token —
 	// not an instance-wide default. gaggleProject is zero for a single-gaggle /
@@ -167,6 +174,10 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// not retain a manager rooted in the opposite lifecycle namespace.
 		wtMgr = nil
 	}
+	recoveryOption, recoveryErr := recoveryCleanupOption(l, cfg, absoluteWorkcopiesRoot, cloneURLFn, sharedReg)
+	if recoveryErr != nil {
+		return runner.Config{}, nil, recoveryErr
+	}
 	if wtMgr == nil {
 		var err error
 		// This layout is gaggle-scoped (l.ForGaggle) in the daemon; its Manager
@@ -175,6 +186,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// entry leaves the default "goobers/" in place (WithRunBranchNamespaces
 		// drops empties), so a single-gaggle default instance is unchanged.
 		managerOptions := []worktree.ManagerOption{
+			mutationCleanupGuard(l.RunsDir()),
 			worktree.WithRunBranchNamespaces(branchNamespaces[l.Gaggle()]),
 			worktree.WithPinnedRoot(l.WorkcopiesBaseDir()),
 		}
@@ -205,6 +217,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			return runner.Config{}, nil, fmt.Errorf("new worktree manager: %w", err)
 		}
 	}
+	recoveryOption(wtMgr)
 	if _, err := buildExternalTelemetryRegistry(cfg.ExternalTelemetry, sharedReg); err != nil {
 		return runner.Config{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
 	}
@@ -277,23 +290,32 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 
 	rc := runner.Config{
-		RunControls: cfg.RunConditions.RunControls(),
+		RecoveryEvents: recoveryRunEvents(l),
+		RunControls:    cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
-			return buildDeterministicExecutor(deterministicExecutorInput{
+			exec, err := buildDeterministicExecutor(deterministicExecutorInput{
 				Config: cfg, Resolver: resolver, Grants: deterministicGrants, SharedRegistry: sharedReg,
-				InstanceRoot: instanceRoot, SelfBin: selfBin, ProjectConfigured: projectConfigured,
+				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
 				ScratchDir: deterministicScratchDir,
 			})
+			if err != nil {
+				return nil, err
+			}
+			return claimFencedDeterministic{Deterministic: exec, start: executionFence}, nil
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
-			return buildAgenticExecutor(agenticExecutorInput{
+			exec, err := buildAgenticExecutor(agenticExecutorInput{
 				GooberName: gooberName, Goobers: goobers, Instructions: instructionsByGoober, Assets: assetsByGoober,
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 			})
+			if err != nil {
+				return nil, err
+			}
+			return claimFencedGoober{Goober: exec, start: executionFence}, nil
 		},
 		Automated: gate.NewAutomatedEvaluator(),
 		// Placement provenance is recorded only once this instance declares a
@@ -364,6 +386,14 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// (SetPathLengthLimits's own shape) is the wrong model here.
 	wtMgr.SetRunBranchNamespaces(branchNamespaces[l.Gaggle()])
 	return rc, wtMgr, nil
+}
+
+func deterministicStageConfigDigest(configDir string) (string, error) {
+	digest, err := configDirectoryDigest(configDir)
+	if err != nil {
+		return "", fmt.Errorf("digest deterministic-stage config: %w", err)
+	}
+	return digest, nil
 }
 
 func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) (string, error), goos string) (map[string]worktree.PathLengthLimit, error) {

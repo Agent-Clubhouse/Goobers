@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 const launcherContractFlag = "--goobers-launcher-contract"
+
+var verifiedAdapterManagedLaunchers sync.Map
 
 // launcherContract is the versioned, credential-free wrapper handshake. It is
 // deliberately not a new harness: prompts, results, tools and native transcript
@@ -28,6 +32,9 @@ func (c *CopilotAdapter) prepareLauncherSession(ctx context.Context, workspace s
 	contract, err := c.launcherSessionContract(ctx)
 	if err != nil {
 		return nil, nil, "", cleanup, err
+	}
+	if c.RequireLauncherContract && !c.isLauncherContractVerified() {
+		return nil, nil, "", cleanup, fmt.Errorf("harness: copilot launcher adapter-managed fallback was not verified by preflight")
 	}
 	if copilotCommandSelectsSession(argv) {
 		if contract.SessionMode != "adapter-managed" {
@@ -123,10 +130,21 @@ func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherC
 		MaxTranscriptBytes: 16 * 1024,
 		StdoutCapture:      stdout,
 	})
-	if err != nil || result.ExitCode != 0 || stdout.Truncated() {
+	contractOutput := bytes.TrimSpace(stdout.Bytes())
+	nonJSONOutput := len(contractOutput) > 0 && contractOutput[0] != '{'
+	if err != nil || result.ExitCode != 0 || stdout.Truncated() || len(contractOutput) == 0 || nonJSONOutput {
+		handshakeAbsent := result.ExitCode > 0 || len(contractOutput) == 0 || nonJSONOutput
+		if handshakeAbsent && !stdout.Truncated() &&
+			!errors.Is(err, ErrTimeout) && !errors.Is(err, ErrCanceled) &&
+			c.AllowAdapterManagedFallback {
+			contract := launcherContract{Version: 1, SessionMode: "adapter-managed"}
+			c.launcherContract = &contract
+			c.launcherContractVerified = adapterManagedLauncherVerified(c.Command)
+			return contract, nil
+		}
 		return launcherContract{}, fmt.Errorf("harness: copilot launcher is incompatible: %s must return a bounded version-1 session contract without starting an agent; use direct copilot or a contract-aware wrapper", launcherContractFlag)
 	}
-	contract, err := parseLauncherContract(stdout.Bytes())
+	contract, err := parseLauncherContract(contractOutput)
 	if err != nil {
 		return launcherContract{}, fmt.Errorf("harness: copilot launcher is incompatible: %w; use direct copilot or a contract-aware wrapper", err)
 	}
@@ -134,5 +152,31 @@ func (c *CopilotAdapter) launcherSessionContract(ctx context.Context) (launcherC
 		return launcherContract{}, fmt.Errorf("harness: copilot launcher is incompatible: configured session selectors conflict with %s ownership", contract.SessionMode)
 	}
 	c.launcherContract = &contract
+	c.launcherContractVerified = true
 	return contract, nil
+}
+
+func (c *CopilotAdapter) cacheLauncherContract(contract launcherContract) {
+	c.launcherMu.Lock()
+	defer c.launcherMu.Unlock()
+	c.launcherContract = &contract
+	c.launcherContractVerified = true
+	if contract.SessionMode == "adapter-managed" {
+		markAdapterManagedLauncherVerified(c.Command)
+	}
+}
+
+func (c *CopilotAdapter) isLauncherContractVerified() bool {
+	c.launcherMu.Lock()
+	defer c.launcherMu.Unlock()
+	return c.launcherContractVerified
+}
+
+func markAdapterManagedLauncherVerified(command []string) {
+	verifiedAdapterManagedLaunchers.Store(strings.Join(command, "\x00"), struct{}{})
+}
+
+func adapterManagedLauncherVerified(command []string) bool {
+	_, ok := verifiedAdapterManagedLaunchers.Load(strings.Join(command, "\x00"))
+	return ok
 }

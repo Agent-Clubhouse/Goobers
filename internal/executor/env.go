@@ -39,6 +39,8 @@ func InputEnvVar(key string) string {
 const (
 	// RunIDEnvVar identifies the run executing a goobers CLI stage.
 	RunIDEnvVar = "GOOBERS_RUN_ID"
+	// InstanceIDEnvVar carries the run-pinned originating instance identity.
+	InstanceIDEnvVar = "GOOBERS_INSTANCE_ID"
 	// GaggleEnvVar identifies the gaggle executing a goobers CLI stage.
 	GaggleEnvVar = "GOOBERS_GAGGLE"
 	// WorkflowEnvVar identifies the workflow executing a goobers CLI stage.
@@ -46,6 +48,9 @@ const (
 
 	// InstanceRootEnvVar carries the instance root to goobers CLI stages.
 	InstanceRootEnvVar = "GOOBERS_INSTANCE_ROOT"
+	// AppliedConfigDigestEnvVar pins a daemon-launched CLI stage to the config
+	// generation its runner was built from. The CLI refuses a different tree.
+	AppliedConfigDigestEnvVar = "GOOBERS_APPLIED_CONFIG_DIGEST"
 	// TaskEnvVar identifies the workflow task executing a goobers CLI stage.
 	TaskEnvVar = "GOOBERS_TASK"
 	// GooberEnvVar identifies the persona responsible for the task.
@@ -85,6 +90,9 @@ const (
 	// RepoProviderEnvVar carries the scheduler-routed repository provider to
 	// goobers CLI stages.
 	RepoProviderEnvVar = "GOOBERS_REPO_PROVIDER"
+	// RepoBaseURLEnvVar carries the declared forge root to stage-pod checkout.
+	// Gitea has no fixed host; this is repository identity, not a credential.
+	RepoBaseURLEnvVar = "GOOBERS_REPO_BASE_URL"
 	// RepoOwnerEnvVar carries the scheduler-routed repository owner to goobers
 	// CLI stages.
 	RepoOwnerEnvVar = "GOOBERS_REPO_OWNER"

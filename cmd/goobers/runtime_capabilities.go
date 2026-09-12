@@ -259,11 +259,11 @@ func init() {
 		coreCommand("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
-			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos"),
+			withExamples("goobers validate", "goobers validate --json", "goobers validate --check-harness --check-repos", "goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("lint", apicontract.ActionConfigTime, runLint).
 			withSynopsis(synopsisByID["lint"]).
 			withHelp("lint config via the single authoritative validation engine (alias for validate)", lintHelp).
-			withExamples("goobers lint", "goobers lint --json", "goobers lint --check-harness --check-repos"),
+			withExamples("goobers lint", "goobers lint --json", "goobers lint --check-harness --check-repos", "goobers lint --source-tree --instance /etc/goobers/instance.yaml ./config-repo"),
 		command("fix", apicontract.ActionConfigTime, runFix).
 			withSynopsis(synopsisByID["fix"]).
 			withHelp("mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)", fixHelp).
@@ -340,7 +340,11 @@ func init() {
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.1.0"),
+			// The manual example must name a target the ordering guard can
+			// actually accept (#4887). It previously pinned v0.1.0, which
+			// every build since has been newer than, so the shipped example
+			// failed verbatim for every reader who ran it.
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.0"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",
@@ -400,6 +404,10 @@ func init() {
 			withSynopsis(synopsisByID["worker"]).
 			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
 			withExamples("goobers worker", "goobers worker --task-queue goobers-engine --drain-timeout 60s"),
+		command("config-seed", apicontract.ActionMaintenance, runConfigSeed).
+			withSynopsis(synopsisByID["config-seed"]).
+			withHelp("seed a private worker instance from a rendered configuration mirror", configSeedHelp).
+			withExamples("goobers config-seed --mirror /mnt/config-mirror --instance /var/lib/worker/instance"),
 		coreCommand("dashboard", apicontract.ActionReadOnlyNavigation, runDashboard).
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).
@@ -418,7 +426,7 @@ func init() {
 				withExamples("goobers run cancel <run-id>"),
 		).
 			withSynopsis(synopsisByID["run"]).
-			withHelp("trigger a run manually (still honors run conditions)", runHelp).
+			withHelp("trigger a run manually; --force bypasses cadence budgets", runHelp).
 			withExamples("goobers run default-implement", "goobers run --gaggle example default-implement", "goobers run example/default-implement --no-wait"),
 		runtimeCommand("approve", "approve", runApprove).
 			withSynopsis(synopsisByID["approve"]).
@@ -472,6 +480,10 @@ func init() {
 			withSynopsis(synopsisByID["cost"]).
 			withHelp("show bounded cost attribution by pull request or issue", costHelp).
 			withExamples("goobers cost", "goobers cost --pr 4398 --json", "goobers cost --issue 4398 --window 30d"),
+		command("work-items", apicontract.ActionReadOnlyNavigation, runWorkItems).
+			withSynopsis(synopsisByID["work-items"]).
+			withHelp("list pull requests and issues changed by Goobers", workItemsHelp).
+			withExamples("goobers work-items", "goobers work-items --kind=pr --json", "goobers work-items --provider=github --kind=pr --id=4398"),
 		command("features", apicontract.ActionReadOnlyNavigation, runFeatures).
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
@@ -492,6 +504,18 @@ func init() {
 			withSynopsis(synopsisByID["reset-rate-limit"]).
 			withHelp("clear the hourly run-rate budget without deleting runs/", resetRateLimitHelp).
 			withExamples("goobers reset-rate-limit"),
+		command("recovery-abandon", apicontract.ActionMaintenance, runRecoveryAbandon).
+			withSynopsis(synopsisByID["recovery-abandon"]).
+			withHelp("explicitly abandon one retained recovery snapshot", recoveryAbandonHelp).
+			withExamples("goobers recovery-abandon --run source-run --ref refs/goobers/recovery/source-run --confirm-digest sha256:<digest> ./instance"),
+		command("recovery-restore", apicontract.ActionMaintenance, runRecoveryRestore).
+			withSynopsis(synopsisByID["recovery-restore"]).
+			withHelp("restore retained implementation onto current main", recoveryRestoreHelp).
+			withExamples("goobers recovery-restore --record ./retained/record.json --repository ./checkout --branch recovered-work ./instance"),
+		stageCommand("recovery-resume", apicontract.ActionWorkflowExecution, runRecoveryResume).
+			withSynopsis(synopsisByID["recovery-resume"]).
+			withHelp("restore retained implementation into the receiving run (a workflow stage)", recoveryResumeHelp).
+			withExamples("goobers recovery-resume"),
 		groupCommand(
 			"workspace",
 			runWorkspace,
@@ -607,6 +631,9 @@ func init() {
 		groupCommand(
 			"telemetry",
 			runTelemetry,
+			subcommand("telemetry merges", "merges", apicontract.ActionReadOnlyNavigation, runTelemetryMerges).
+				withHelp("confirmed PR landings and daily counts by originating instance", telemetryMergesHelp).
+				withExamples("goobers telemetry merges", "goobers telemetry merges --json"),
 			subcommand("telemetry stats", "stats", apicontract.ActionReadOnlyNavigation, runTelemetryStats).
 				withHelp("success rate and duration aggregates per workflow and stage", telemetryStatsHelp).
 				withExamples("goobers telemetry stats", "goobers telemetry stats --json"),
@@ -1033,6 +1060,21 @@ func (c cliCommand) dispatch(args []string, stdout, stderr io.Writer) int {
 		if subcommand, ok := findCLICommandIn(c.subcommands, args[0]); ok {
 			return subcommand.dispatch(args[1:], stdout, stderr)
 		}
+	}
+	// #4832: every command's `-h`/`--help` renders THIS node's own registered
+	// help text to stdout and exits 0 here, before any handler-specific flag
+	// parsing runs. Handlers built on flag.FlagSet never see -h/--help as an
+	// argument to parse: Go's flag package treats an undeclared -h/--help as
+	// a parse error (flag.ErrHelp) and every handler's uniform
+	// `if err := fs.Parse(args); err != nil { return 2 }` could not tell that
+	// case apart from a real usage error, so it wrote the (correct) help text
+	// to stderr and exited 2 — the exact bug this issue reports. Intercepting
+	// once here, at the single path every command's invocation already
+	// passes through, fixes every command without touching each handler's
+	// own flag parsing.
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		pf(stdout, "%s", c.long)
+		return 0
 	}
 	if c.providerStage {
 		return runProviderStageCommand(c.names[0], c.resultFile, c.run, args, stdout, stderr)

@@ -81,6 +81,8 @@ export class QueryFamily {
 
   private inFlight: AbortController | undefined;
   private queued: RefreshReason | undefined;
+  private currentWaiters: Array<() => void> = [];
+  private queuedWaiters: Array<() => void> = [];
   private closed = false;
 
   constructor(private readonly load: (context: LoadContext) => Promise<void>) {}
@@ -91,8 +93,15 @@ export class QueryFamily {
    * Starts immediately when idle. Otherwise records that another pass is needed
    * and returns — deliberately without touching the in-flight request.
    */
-  request(reason: RefreshReason): void {
-    if (this.closed) return;
+  request(reason: RefreshReason): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    const settled = new Promise<void>((resolve) => {
+      if (this.inFlight) {
+        this.queuedWaiters.push(resolve);
+      } else {
+        this.currentWaiters.push(resolve);
+      }
+    });
     if (this.inFlight) {
       // Coalesce. A "retry" or "scope" reason wins over "event" so the loader
       // can tell why the follow-up pass exists, but the SLOT is still one.
@@ -101,9 +110,10 @@ export class QueryFamily {
       }
       this.stats.coalesced += 1;
       this.stats.peakQueued = Math.max(this.stats.peakQueued, 1);
-      return;
+      return settled;
     }
     void this.run(reason);
+    return settled;
   }
 
   /**
@@ -121,6 +131,8 @@ export class QueryFamily {
       this.inFlight = undefined;
     }
     this.queued = undefined;
+    this.resolveWaiters(this.currentWaiters);
+    this.resolveWaiters(this.queuedWaiters);
   }
 
   /** Stop accepting work. Idempotent. */
@@ -153,11 +165,23 @@ export class QueryFamily {
       if (this.inFlight === controller) {
         this.inFlight = undefined;
       }
+      this.resolveWaiters(this.currentWaiters);
       const next = this.queued;
       this.queued = undefined;
       if (next !== undefined && !this.closed) {
+        this.currentWaiters = this.queuedWaiters;
+        this.queuedWaiters = [];
         void this.run(next);
+      } else {
+        this.resolveWaiters(this.queuedWaiters);
       }
+    }
+  }
+
+  private resolveWaiters(waiters: Array<() => void>): void {
+    const pending = waiters.splice(0);
+    for (const resolve of pending) {
+      resolve();
     }
   }
 }

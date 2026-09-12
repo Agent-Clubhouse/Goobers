@@ -91,6 +91,136 @@ func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 	}
 }
 
+// TestDSLMatrixAgainstNextPlannedRelease asserts ValidateSupportPolicyForRelease
+// and the evolution rules against the DECLARED NextPlannedRelease (#4709),
+// not a value derived from the checkout's nearest git tag. Unlike
+// TestDSLMatrixAgainstNextReleases's nextPatch/nextMinor (which recompute
+// their target every run from whichever tag git describe finds nearest —
+// exactly the topology-dependence #4663 reports, where an untagged checkout
+// hundreds of commits past a stale tag fired the release-level check against
+// that stale tag instead of any release actually being cut), this test's
+// target never changes just because the checkout moved: it changes only when
+// a reviewer bumps the constant. A PR that writes a transition unshippable in
+// the declared release fails here, on the PR, every time — not only when the
+// checkout happens to sit near the right tag.
+func TestDSLMatrixAgainstNextPlannedRelease(t *testing.T) {
+	current := GetDSL()
+	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
+	released, latestTag, _ := loadLatestReleasedSupportMatrix(t, root)
+	firstTag, _, _ := supportReleaseTagRange(t, root)
+	planned, err := validateNextPlannedRelease(current, NextPlannedRelease, latestTag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstRelease releaseVersion
+	if firstTag != "" {
+		firstRelease, err = parseSupportReleaseVersion(firstTag, false)
+		if err != nil {
+			t.Fatalf("parse first release tag %s: %v", firstTag, err)
+		}
+	}
+	releaseAnchor := firstRelease
+	if firstTag == "" {
+		releaseAnchor = planned
+	}
+	if err := validateSupportMatrixAfterTag(released, current, latestTag, planned, releaseAnchor); err != nil {
+		t.Fatalf("compiled-in DSL support matrix would fail cutting the declared NextPlannedRelease %s: %v", NextPlannedRelease, err)
+	}
+}
+
+func validateNextPlannedRelease(matrix SupportMatrix, plannedTag, latestTag string) (releaseVersion, error) {
+	planned, err := parseSupportReleaseVersion(plannedTag, false)
+	if err != nil {
+		return releaseVersion{}, fmt.Errorf("parse NextPlannedRelease %q: %w", plannedTag, err)
+	}
+	// Freshness comes first so a staged transition cannot mask the diagnostic
+	// that tells the operator which published tag requires a constant bump.
+	if err := validateNextPlannedReleaseFreshness(planned, latestTag); err != nil {
+		return releaseVersion{}, err
+	}
+	if err := ValidateSupportPolicyForRelease(matrix, plannedTag); err != nil {
+		return releaseVersion{}, fmt.Errorf(
+			"compiled-in DSL support matrix cannot ship in the declared NextPlannedRelease %s: %w",
+			plannedTag,
+			err,
+		)
+	}
+	return planned, nil
+}
+
+func TestValidateNextPlannedReleaseFreshness(t *testing.T) {
+	tests := []struct {
+		name      string
+		planned   releaseVersion
+		latestTag string
+		wantError string
+	}{
+		{name: "no published release", planned: releaseVersion{major: 1}, latestTag: ""},
+		{name: "later release", planned: releaseVersion{major: 1, minor: 1}, latestTag: "v1.0.9"},
+		{
+			name:      "same release",
+			planned:   releaseVersion{major: 1, minor: 2, patch: 3},
+			latestTag: "v1.2.3",
+			wantError: "NextPlannedRelease v1.2.3 must be later than newest published release tag v1.2.3; bump NextPlannedRelease",
+		},
+		{
+			name:      "earlier release",
+			planned:   releaseVersion{major: 1, minor: 1},
+			latestTag: "v1.2.3",
+			wantError: "NextPlannedRelease v1.1.0 must be later than newest published release tag v1.2.3; bump NextPlannedRelease",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateNextPlannedReleaseFreshness(test.planned, test.latestTag)
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != test.wantError {
+				t.Fatalf("error = %v, want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestValidateNextPlannedReleaseReportsStalenessBeforePolicyFailure(t *testing.T) {
+	matrix := SupportMatrix{
+		"1.0": {
+			Level: LevelDeprecated,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v2.0.0"},
+			},
+		},
+	}
+	_, err := validateNextPlannedRelease(matrix, "v1.0.0", "v1.0.0")
+	const want = "NextPlannedRelease v1.0.0 must be later than newest published release tag v1.0.0; bump NextPlannedRelease"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want freshness error %q before the competing support-policy failure", err, want)
+	}
+}
+
+func validateNextPlannedReleaseFreshness(planned releaseVersion, latestTag string) error {
+	if latestTag == "" {
+		return nil
+	}
+	latest, err := parseSupportReleaseVersion(latestTag, false)
+	if err != nil {
+		return fmt.Errorf("parse newest published release tag %s: %w", latestTag, err)
+	}
+	if compareReleaseVersions(planned, latest) <= 0 {
+		return fmt.Errorf(
+			"NextPlannedRelease %s must be later than newest published release tag %s; bump NextPlannedRelease",
+			planned.String(),
+			latestTag,
+		)
+	}
+	return nil
+}
+
 func TestPreTagSimulationRejectsOffByOneSupportDeadline(t *testing.T) {
 	matrix := SupportMatrix{
 		"1.0": {
@@ -444,6 +574,8 @@ func versionsToSupportMatrix(versions []Version) SupportMatrix {
 	for _, version := range versions {
 		matrix[version.Version] = VersionSupport{
 			Level:            version.Level,
+			EffectiveIn:      version.EffectiveIn,
+			Retraction:       version.Retraction,
 			UnsupportedAfter: version.UnsupportedAfter,
 			Replacement:      version.Replacement,
 			History:          version.History,

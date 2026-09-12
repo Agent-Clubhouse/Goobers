@@ -43,7 +43,7 @@ Build and run it next to the daemon. `--network host` lets it reach the daemon's
 loopback read API:
 
 ```sh
-docker build -t goobers-exporter deploy/monitoring
+docker build -t goobers-exporter deploy/monitoring  # base image + deps are pinned; see Dependency management
 docker run -d --name goobers-exporter --network host \
   -e GOOBERS_API=http://127.0.0.1:8085/api/v1 \
   goobers-exporter
@@ -96,4 +96,58 @@ variable, so nothing is hard-coded).
 |---|---|
 | `exporter.py` | the exporter (Python, `prometheus_client` + `requests`) |
 | `Dockerfile` | builds the exporter image |
+| `requirements.txt` | hash-locked dependency closure (see below) |
 | `grafana-dashboard.json` | importable Grafana dashboard |
+
+## Dependency management
+
+This image is part of a shipped deployment, so what goes into it is pinned
+twice over (#4569) — once for the base image, once for the Python packages.
+
+**Base image — pinned by digest.** The `PYTHON_IMAGE` build arg names
+`python:3.12-slim` *and* the sha256 of the multi-arch image index it resolved
+to. A bare `python:3.12-slim` tag moves with every CPython patch release and
+every Debian security rebuild, so two builds a week apart shipped different
+interpreters and different OS packages with nothing recording the change.
+
+**Python packages — pinned by version and hash.** `requirements.txt` is a
+complete transitive closure: the two direct dependencies (`prometheus_client`,
+`requests`) plus everything `requests` pulls in (`certifi`,
+`charset-normalizer`, `idna`, `urllib3`). Every artifact pip may install is
+listed by sha256, and the build runs `pip install --require-hashes --no-deps`,
+so pip refuses anything whose bytes are not the reviewed bytes. `--no-deps` is
+correct *only* because the closure is complete — if a new dependency is added
+without being locked, the build fails rather than quietly resolving it.
+
+**What this buys.** A rebuild installs exactly the reviewed versions or it
+fails loudly. It does not make the image bit-for-bit identical across builds —
+layer metadata and `.pyc` timestamps still vary — so treat the digest of a
+*published* image, not a locally rebuilt one, as the identity to promote.
+
+### Refreshing the pins
+
+Refreshing is a deliberate, reviewed act, not something a build does for you.
+
+To move the base image:
+
+```sh
+TOKEN=$(curl -s 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/python:pull' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -sI -H "Authorization: Bearer $TOKEN" \
+  -H 'Accept: application/vnd.oci.image.index.v1+json' \
+  'https://registry-1.docker.io/v2/library/python/manifests/3.12-slim' \
+  | grep -i '^docker-content-digest'
+```
+
+To move a package, bump its version and replace **every** `--hash` line for it
+with the sha256 of each artifact of the new version, from
+`https://pypi.org/pypi/<name>/<version>/json`. Leaving one stale hash in place
+does not fail the build — pip only needs the artifact it selects to match
+*some* listed hash — so replace the whole block, not one line.
+
+Verify a change with a clean build and a negative control:
+
+```sh
+docker build --no-cache -t goobers-exporter deploy/monitoring   # must pass
+# then corrupt every hash of one package in a scratch copy: the build must fail
+```

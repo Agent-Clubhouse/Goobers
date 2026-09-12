@@ -64,17 +64,17 @@ func mergeQueuePollConfiguration(stderr io.Writer) (mergeQueuePollConfig, int) {
 		return mergeQueuePollConfig{}, 1
 	}
 	resultFile := providerInput("resultFile", "queue-result.json")
-	interval, err := pollDurationInput("pollIntervalSeconds", executor.DefaultPollInterval)
+	interval, err := pollDurationInput("pollIntervalSeconds", providerInput("pollIntervalSeconds", ""), executor.DefaultPollInterval)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return mergeQueuePollConfig{}, 2
 	}
-	maxInterval, err := pollDurationInput("pollMaxIntervalSeconds", executor.DefaultMaxPollInterval)
+	maxInterval, err := pollDurationInput("pollMaxIntervalSeconds", providerInput("pollMaxIntervalSeconds", ""), executor.DefaultMaxPollInterval)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return mergeQueuePollConfig{}, 2
 	}
-	timeout, err := pollDurationInput("pollTimeoutSeconds", executor.DefaultPollTimeout)
+	timeout, err := pollDurationInput("pollTimeoutSeconds", providerInput("pollTimeoutSeconds", ""), executor.DefaultPollTimeout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return mergeQueuePollConfig{}, 2
@@ -475,8 +475,7 @@ const mergeQueueEntryGrace = 90 * time.Second
 // request that is already on main, and nothing downstream ever removes either.
 const mergeQueueAbsenceConfirmPolls = 2
 
-func pollDurationInput(key string, def time.Duration) (time.Duration, error) {
-	v := providerInput(key, "")
+func pollDurationInput(key, v string, def time.Duration) (time.Duration, error) {
 	if v == "" {
 		return def, nil
 	}

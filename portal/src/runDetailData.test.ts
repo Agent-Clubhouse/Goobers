@@ -15,8 +15,6 @@ import {
   eventSummary,
   isFailureJournalEvent,
   journalEntries,
-  keyMomentEvidence,
-  keyMomentLabel,
   keyMoments,
   orderRunEvents,
   runEventStages,
@@ -849,62 +847,6 @@ describe("isFailureJournalEvent", () => {
     expect(isFailureJournalEvent(event(2, "stage.heartbeat", { category: "liveness" }))).toBe(
       false,
     );
-  });
-});
-
-describe("keyMomentLabel", () => {
-  it("gives each kind a human label", () => {
-    expect(keyMomentLabel("escalation")).toBe("Escalation");
-    expect(keyMomentLabel("decision")).toBe("Decision");
-    expect(keyMomentLabel("handoff")).toBe("Handoff");
-  });
-});
-
-describe("keyMomentEvidence", () => {
-  it("finds the verdict artifact recorded on the same gate before the decision", () => {
-    const events: RunEvent[] = [
-      event(1, "gate.started", { category: "bookkeeping", gate: "review" }),
-      event(2, "artifact.recorded", {
-        category: "evidence",
-        artifact: {
-          name: "verdict/review-1.json",
-          digest: "sha256:verdict-1",
-          size: 40,
-          mediaType: "application/json",
-          stage: "review",
-        },
-      }),
-      event(3, "gate.evaluated", { category: "decision", gate: "review", verdict: "pass" }),
-    ];
-
-    const decision = events[2];
-    expect(keyMomentEvidence(events, decision, "run-1")).toBe(events[1]);
-  });
-
-  it("never looks past the moment's own sequence", () => {
-    const events: RunEvent[] = [
-      event(1, "gate.evaluated", { category: "decision", gate: "review", verdict: "pass" }),
-      event(2, "artifact.recorded", {
-        category: "evidence",
-        artifact: {
-          name: "verdict/review-1.json",
-          digest: "sha256:verdict-1",
-          size: 40,
-          mediaType: "application/json",
-          stage: "review",
-        },
-      }),
-    ];
-
-    expect(keyMomentEvidence(events, events[0], "run-1")).toBeUndefined();
-  });
-
-  it("is undefined when the branch never recorded inspectable evidence", () => {
-    const events: RunEvent[] = [
-      event(1, "gate.evaluated", { category: "decision", gate: "review", verdict: "pass" }),
-    ];
-
-    expect(keyMomentEvidence(events, events[0], "run-1")).toBeUndefined();
   });
 });
 

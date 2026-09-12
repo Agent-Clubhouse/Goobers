@@ -26,7 +26,7 @@ func secretInputFindings(t *testing.T, task apiv1.Task) []Issue {
 	ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{}}
 	workflow := apiv1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-workflow"},
-		DSLVersion: supportmatrix.NextDSLVersion,
+		DSLVersion: supportmatrix.V2DSLVersion,
 		Spec: apiv1.WorkflowSpec{
 			Gaggle: "example", Start: task.Name, Tasks: []apiv1.Task{task},
 		},

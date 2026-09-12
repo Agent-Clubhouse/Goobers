@@ -28,6 +28,7 @@ func TestStartInputVersionPinsEveryStartSpecField(t *testing.T) {
 	// Every field non-zero, so "the registry dropped it" is distinguishable
 	// from "the field happens to be zero on both sides".
 	spec := StartSpec{
+		InstanceID:                "0123456789abcdef0123456789abcdef",
 		RunID:                     "run-1",
 		Gaggle:                    "web",
 		RepoRef:                   apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},

@@ -1,12 +1,62 @@
 package validate
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
+
+func TestUnsupportedDSLVersionDoesNotCascadeAcrossSemanticRules(t *testing.T) {
+	for _, version := range []string{"1.4", "99.0"} {
+		t.Run(version, func(t *testing.T) {
+			dir := t.TempDir()
+			source := strings.Replace(contextFromConfig(""), `dslVersion: "2.0"`, `dslVersion: "`+version+`"`, 1)
+			// Keep an independent graph error and a separate invalid resource:
+			// neither may disappear behind the version failure.
+			source = strings.Replace(source, "next: second", "next: missing", 1)
+			source += "---\napiVersion: goobers.dev/v1alpha1\nkind: Gaggle\nmetadata:\n  name: broken\nspec: {}\n"
+			if err := os.WriteFile(filepath.Join(dir, "objects.yaml"), []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var workflowVersion, gaggleVersion, graph, schema int
+			var versionMessage string
+			for _, issue := range report.Issues {
+				if issue.Kind == "Workflow" && (strings.Contains(issue.Message, "DSL version") || strings.Contains(issue.Message, "dslVersion")) {
+					workflowVersion++
+					if issue.Code != ErrorUnsupportedDSLVersion {
+						t.Errorf("cascaded version error: %+v", issue)
+					}
+					versionMessage = issue.Message
+				}
+				if issue.Kind == "Gaggle" && issue.Name == "web" && strings.Contains(issue.Message, "DSL version") {
+					gaggleVersion++
+				}
+				if issue.Code == errorTaskNextState {
+					graph++
+				}
+				if issue.Kind == "Gaggle" && issue.Name == "broken" && issue.Severity == Error {
+					schema++
+				}
+			}
+			if workflowVersion != 1 || gaggleVersion != 0 || graph != 1 || schema == 0 {
+				t.Fatalf("findings workflow-version=%d gaggle-version=%d graph=%d schema=%d: %+v", workflowVersion, gaggleVersion, graph, schema, report.Issues)
+			}
+			for _, want := range []string{"Gaggle/web in objects.yaml", "derivative findings on those files are suppressed"} {
+				if !strings.Contains(versionMessage, want) {
+					t.Errorf("primary version message %q does not summarize %q", versionMessage, want)
+				}
+			}
+		})
+	}
+}
 
 // syntheticDSLMatrix registers every lifecycle level so checkWorkflowDSLVersion
 // can be exercised end to end regardless of what lifecycle levels the live,

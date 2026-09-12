@@ -226,10 +226,11 @@ func TestSignalExitCodesForTerminalPhases(t *testing.T) {
 func TestRunAndSignalHelpDocumentsTerminalExitCodes(t *testing.T) {
 	for _, command := range []string{"run", "signal"} {
 		t.Run(command, func(t *testing.T) {
-			_, _, stderr := runArgs(t, command, "-h")
+			// #4832: -h now renders to stdout (and exits 0), not stderr.
+			_, stdout, _ := runArgs(t, command, "-h")
 			for _, want := range []string{"0 =", "1 =", "2 =", "3 =", "submission-only"} {
-				if !strings.Contains(stderr, want) {
-					t.Errorf("%s help missing %q: %q", command, want, stderr)
+				if !strings.Contains(stdout, want) {
+					t.Errorf("%s help missing %q: %q", command, want, stdout)
 				}
 			}
 		})

@@ -196,19 +196,10 @@ func seedStageAttemptRun(t *testing.T, runsDir, runID, workflow string, startedA
 	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
 }
 
-// TestStageStatsExcludesInfraClassAttempts is #4195's regression: an
-// infra-class attempt (journal.AttemptInfra) — a crash or provider-retry
-// continuation, most commonly a rate-limited GitHub call that got correctly
-// retried — is "weather," not a verdict about the stage's own work
-// (ErrorClass.InfraFault's documented #3364 convention). Before this fix,
-// stageStats counted every stage_attempts row toward SuccessRate regardless
-// of attempt_class, so a stage under transient provider pressure reported an
-// inflated failure rate purely from attempts that were correctly retried and
-// resolved — exactly the pattern #4195 found in pr-select (65/143 "failures"
-// where 8 of 10 sampled runs also carried a github_rate_limited signature).
-// Covers three stages, not just pr-select, since the fix lives in the shared
-// aggregate every stage's failure-rate finding depends on.
-func TestStageStatsExcludesInfraClassAttempts(t *testing.T) {
+// TestStageStatsPreservesLegacyInfraFailureExclusion retains #4195's exclusion
+// for legacy infra-started failures with no outcome metadata;
+// successful recovery is counted regardless of its start class.
+func TestStageStatsPreservesLegacyInfraFailureExclusion(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
 	base := fixtureStart
@@ -229,8 +220,8 @@ func TestStageStatsExcludesInfraClassAttempts(t *testing.T) {
 	})
 	// gather-pr-context: a genuine (unclassed) failure followed by an
 	// infra-class success. The real failure must still count — this fix
-	// must not accidentally suppress actual defects — while the infra
-	// success is excluded rather than counted toward succeeded.
+	// must not accidentally suppress actual defects — and the infra
+	// success is a recovered work verdict.
 	seedStageAttemptRun(t, runsDir, "3333333333333333dddddddddddddddd", "merge-review", base.Add(2*time.Hour), []seededAttempt{
 		{stage: "gather-pr-context", attempt: 1, attemptClass: "", status: "failure"},
 		{stage: "gather-pr-context", attempt: 2, attemptClass: "infra", status: "success"},
@@ -268,11 +259,11 @@ func TestStageStatsExcludesInfraClassAttempts(t *testing.T) {
 	if !ok {
 		t.Fatal("gather-pr-context stage stats missing")
 	}
-	if gatherPRContext.TotalAttempts != 1 || gatherPRContext.FailedAttempts != 1 || gatherPRContext.SucceededAttempts != 0 {
-		t.Fatalf("gather-pr-context stats = %#v, want total=1 failed=1 succeeded=0 (the real failure still counts, the infra success is excluded)", gatherPRContext)
+	if gatherPRContext.TotalAttempts != 2 || gatherPRContext.FailedAttempts != 1 || gatherPRContext.SucceededAttempts != 1 {
+		t.Fatalf("gather-pr-context stats = %#v, want total=2 failed=1 succeeded=1 (both work outcomes count)", gatherPRContext)
 	}
-	if gatherPRContext.SuccessRate != 0 {
-		t.Fatalf("gather-pr-context SuccessRate = %v, want 0", gatherPRContext.SuccessRate)
+	if gatherPRContext.SuccessRate != 0.5 {
+		t.Fatalf("gather-pr-context SuccessRate = %v, want 0.5", gatherPRContext.SuccessRate)
 	}
 }
 

@@ -47,13 +47,16 @@ const (
 )
 
 type backlogHealthReport struct {
-	ReadyPoolDepth         int                                 `json:"readyPoolDepth"`
-	AverageReadyAgeSeconds float64                             `json:"averageReadyAgeSeconds"`
-	OldestReadyAgeSeconds  float64                             `json:"oldestReadyAgeSeconds"`
-	ReadyPoolStarved       bool                                `json:"readyPoolStarved"`
-	ReadyPoolObservedAt    string                              `json:"readyPoolObservedAt"`
-	ReadyTransitions       []providers.WorkItemLabelTransition `json:"readyTransitions,omitempty"`
-	Scan                   *backlogHealthScan                  `json:"scan,omitempty"`
+	RequireLabels              []string                            `json:"requireLabels,omitempty"`
+	PartitionLabels            []string                            `json:"partitionLabels,omitempty"`
+	UnpartitionedApprovedCount *int                                `json:"unpartitionedApprovedCount,omitempty"`
+	ReadyPoolDepth             int                                 `json:"readyPoolDepth"`
+	AverageReadyAgeSeconds     float64                             `json:"averageReadyAgeSeconds"`
+	OldestReadyAgeSeconds      float64                             `json:"oldestReadyAgeSeconds"`
+	ReadyPoolStarved           bool                                `json:"readyPoolStarved"`
+	ReadyPoolObservedAt        string                              `json:"readyPoolObservedAt"`
+	ReadyTransitions           []providers.WorkItemLabelTransition `json:"readyTransitions,omitempty"`
+	Scan                       *backlogHealthScan                  `json:"scan,omitempty"`
 }
 
 type implementationFeedbackReport struct {
@@ -163,6 +166,15 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	trustLabel := providerInput("trustLabel", "")
 	readyLabel := providerInput("readyLabel", providers.LabelReady)
 	requireLabels := splitLabelList(providerInput("requireLabels", ""))
+	// Partition membership is operator-defined. Never infer a sibling's
+	// labels from this gaggle's required labels: that would misclassify valid
+	// sibling work as unpartitioned. This optional vocabulary is diagnostic
+	// only and does not affect eligibility, claims, or feedback mutations.
+	partitionLabels := splitLabelList(providerInput("partitionLabels", ""))
+	if len(partitionLabels) > 0 && trustLabel == "" {
+		pf(stderr, "error: input partitionLabels requires trustLabel to identify approved items\n")
+		return 2
+	}
 	var labels []string
 	if trustLabel != "" {
 		labels = []string{trustLabel}
@@ -235,6 +247,20 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	}
 	items = unclaimedReadyItems(items, claims, providerGaggle(), string(backlogRepo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
+	report.RequireLabels = requireLabels
+	if len(partitionLabels) > 0 {
+		approved, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+			Repository: backlogRepo,
+			Labels:     []string{trustLabel},
+			State:      "open",
+		})
+		if err != nil {
+			return failProviderStage(stderr, "snapshot unpartitioned approved backlog", err, "backlog-health.json")
+		}
+		count := countUnpartitionedApproved(approved, trustLabel, partitionLabels)
+		report.PartitionLabels = partitionLabels
+		report.UnpartitionedApprovedCount = &count
+	}
 	report.ReadyTransitions = transitions
 	report.Scan = &scan
 	return writeBacklogHealthReport(report, stdout, stderr)
@@ -258,7 +284,33 @@ func writeBacklogHealthReport(report backlogHealthReport, stdout, stderr io.Writ
 		return 0
 	}
 	pf(stdout, "ready pool: %d items, oldest age %.0fs\n", report.ReadyPoolDepth, report.OldestReadyAgeSeconds)
+	if report.ReadyPoolStarved {
+		pf(stdout, "WARNING: ready pool starved: no unclaimed ready items match the configured scope (requireLabels=%q); review parked work and partition labels\n", strings.Join(report.RequireLabels, ","))
+	}
+	if report.UnpartitionedApprovedCount != nil && *report.UnpartitionedApprovedCount > 0 {
+		pf(stdout, "WARNING: %d open approved items have none of the declared partition labels %q; an operator must choose their partition\n", *report.UnpartitionedApprovedCount, strings.Join(report.PartitionLabels, ","))
+	}
 	return 0
+}
+
+func countUnpartitionedApproved(items []providers.WorkItem, trustLabel string, partitionLabels []string) int {
+	count := 0
+	for _, item := range items {
+		if !item.HasLabel(trustLabel) || !strings.EqualFold(item.State, "open") {
+			continue
+		}
+		partitioned := false
+		for _, label := range partitionLabels {
+			if item.HasLabel(label) {
+				partitioned = true
+				break
+			}
+		}
+		if !partitioned {
+			count++
+		}
+	}
+	return count
 }
 
 func backlogHealthScanReasonSuffix(scan backlogHealthScan) string {

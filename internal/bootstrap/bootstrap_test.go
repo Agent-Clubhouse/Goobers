@@ -13,7 +13,7 @@ const fixtureRoot = "../../test/fixtures/e2e/walking-skeleton"
 // TestRegisterGaggleWorkflowsPreservesDSLVersion is the regression test for
 // the bug found live in a deployed instance on 2026-08-24: Register (the
 // two-arg shim) drops DSLVersion, so every workflow registered through
-// RegisterGaggleWorkflows silently defaulted to supportmatrix.CurrentDSLVersion
+// RegisterGaggleWorkflows silently defaulted to supportmatrix.V1DSLVersion
 // (1.4) regardless of what it actually declared, and a 3.0 workflow's runsOn
 // then refused as if authored against 1.4. Copies the walking-skeleton
 // fixture (whose manifest already opts into preview features) and adds a

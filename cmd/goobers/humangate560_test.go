@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 const humanGateWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
@@ -58,10 +56,8 @@ func TestValidateAcceptsHumanGate(t *testing.T) {
 func TestDaemonAcceptsHumanGateAtStartup(t *testing.T) {
 	root := humanGateInstance(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
 	var stdout, stderr bytes.Buffer
-	code := runUpContext(ctx, []string{root}, &stdout, &stderr)
+	code := runUpThroughStartup(t, []string{root}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("up: code = %d, want 0; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}

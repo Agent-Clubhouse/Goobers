@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -507,44 +506,26 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 	if !apiv1.ValidRunID(runID) {
 		return resolvedInterventionRun{}, interventionBadRequest("invalid_run_id", "run ID is invalid")
 	}
-	type candidate struct {
-		gaggle string
-		dir    string
-		runner *runner.Runner
-	}
 	definitions := s.definitions.Snapshot()
 	gaggles := make([]string, 0, len(definitions.runners))
 	for gaggle := range definitions.runners {
 		gaggles = append(gaggles, gaggle)
 	}
-	sort.Strings(gaggles)
-	candidates := make([]candidate, 0, len(gaggles)+1)
-	for _, gaggle := range gaggles {
-		candidates = append(candidates, candidate{
-			gaggle: gaggle,
-			dir:    filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID),
-			runner: definitions.runners[gaggle],
-		})
+	found, err := locateOwnedRun(s.layout, gaggles, runID, definitions.legacyRunner != nil)
+	if err != nil {
+		return resolvedInterventionRun{}, err
 	}
-	if definitions.legacyRunner != nil {
-		candidates = append(candidates, candidate{dir: filepath.Join(s.layout.RunsDir(), runID), runner: definitions.legacyRunner})
-	}
-
-	var found *candidate
-	for i := range candidates {
-		if _, err := os.Stat(filepath.Join(candidates[i].dir, "run.yaml")); err == nil {
-			if found != nil {
-				return resolvedInterventionRun{}, interventionConflict("ambiguous_run_id", "run ID exists in more than one gaggle")
-			}
-			found = &candidates[i]
-		} else if !os.IsNotExist(err) {
-			return resolvedInterventionRun{}, httpapi.NewInterventionError(
-				http.StatusInternalServerError, "run_lookup_failed", "run could not be inspected", err,
-			)
+	var fallbackRunner *runner.Runner
+	if found.gaggle == "" {
+		fallbackRunner = definitions.legacyRunner
+		if fallbackRunner == nil {
+			// Preserve the intervention service's previous ownership boundary:
+			// a flat journal is not actionable when this daemon did not retain a
+			// legacy runner, even though the shared locator can see it.
+			return resolvedInterventionRun{}, httpapi.NewInterventionError(http.StatusNotFound, "run_not_found", "run was not found", nil)
 		}
-	}
-	if found == nil {
-		return resolvedInterventionRun{}, httpapi.NewInterventionError(http.StatusNotFound, "run_not_found", "run was not found", nil)
+	} else {
+		fallbackRunner = definitions.runners[found.gaggle]
 	}
 	reader, err := journal.OpenRead(found.dir)
 	if err != nil {
@@ -609,7 +590,7 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			machine = pinned
 		}
 	}
-	runRunner, _ := s.runnerRegistry.Resolve(runID, identity.Gaggle, found.runner)
+	runRunner, _ := s.runnerRegistry.Resolve(runID, identity.Gaggle, fallbackRunner)
 	if runRunner == nil {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(
 			http.StatusInternalServerError, "runner_unavailable", "run owner is unavailable", nil,

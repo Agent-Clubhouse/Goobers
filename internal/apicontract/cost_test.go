@@ -61,6 +61,14 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		if route.ID == RouteCredentialResolve {
 			continue
 		}
+		// Worker recovery uploads stream a bounded binary archive; they do
+		// not use the Portal's JSON client or its ten-second abort.
+		if route.ID == RouteRunRecoveryPublish {
+			if route.Budget != BlobBudget || route.Cost != CostMutation {
+				t.Error("recovery upload lost its transfer budget or mutation admission")
+			}
+			continue
+		}
 		if route.Budget >= clientAbort {
 			t.Errorf("route %s has a %s budget, at or above the client's %s abort; the client "+
 				"would give up first and the user would see a generic network error instead "+
@@ -135,6 +143,27 @@ func TestTelemetryCostsUsesAggregateBudget(t *testing.T) {
 	}
 	if route.Cost != CostAggregate || route.Budget != BoundedBudget {
 		t.Fatalf("telemetryCosts route = cost %q budget %s", route.Cost, route.Budget)
+	}
+}
+
+func TestNavigationReadsUseBoundedCost(t *testing.T) {
+	for _, id := range []RouteID{
+		RouteInstance,
+		RouteGaggles,
+		RouteGaggleGoobers,
+		RouteGaggleWorkflows,
+		RouteGaggleConnections,
+		RouteWorkflowDetail,
+		RouteWorkflowQueueEligibility,
+		RouteTelemetryErrors,
+	} {
+		route, ok := V1Route(id)
+		if !ok {
+			t.Fatalf("%s route is not in the V1 contract", id)
+		}
+		if route.Cost != CostBounded || route.Budget != BoundedBudget {
+			t.Errorf("%s route = cost %q budget %s", id, route.Cost, route.Budget)
+		}
 	}
 }
 

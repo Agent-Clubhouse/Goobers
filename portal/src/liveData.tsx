@@ -8,6 +8,7 @@ import {
   useCallback,
 } from "react";
 import { DaemonApiError } from "./api/errors";
+import { positionOf, type Position } from "./api/queryFamily";
 import type {
   DaemonClient,
   DaemonEventStream,
@@ -15,6 +16,7 @@ import type {
   ModelInvalidation,
   UpdateModel,
   ReadState,
+  AdmissionDegradedState,
 } from "./api/types";
 import { SessionDataCache } from "./dataCache";
 import type { PortalDiagnostics } from "./portalDiagnostics";
@@ -22,6 +24,10 @@ import type { PortalDiagnostics } from "./portalDiagnostics";
 const ALL_MODELS: UpdateModel[] = ["instance", "run", "workflow"];
 const CURSOR_STORAGE_KEY = "goobers-live-event-cursor";
 const SEEN_EVENT_LIMIT = 512;
+const LIVE_CHANNEL_NAME = "goobers-portal-live-updates";
+const LIVE_LEADER_KEY = "goobers-portal-live-leader";
+const LIVE_LEADER_LEASE_MS = 15_000;
+const LIVE_LEADER_HEARTBEAT_MS = 5_000;
 
 export type LiveFreshness =
   | "connected"
@@ -37,6 +43,9 @@ export interface LiveDataSSEFailure {
 }
 
 export interface LiveDataConfig {
+  /** Share one SSE transport across visible tabs when BroadcastChannel is available. */
+  crossTabEnabled?: boolean;
+  pollingEnabled?: boolean;
   invalidationWindowMs: number;
   reconnectBaseDelayMs: number;
   reconnectMaxDelayMs: number;
@@ -91,7 +100,7 @@ const defaultConfig: LiveDataConfig = {
   streamIdleTimeoutMs: 45_000,
   connectionSettledMs: 10_000,
   failuresBeforePolling: 3,
-  pollingIntervalMs: 5_000,
+  pollingIntervalMs: 60_000,
   refreshMaxDelayMs: 60_000,
   maxPendingInvalidations: 64,
 };
@@ -102,6 +111,22 @@ type ModelListener = (
   invalidations?: readonly ModelInvalidation[],
 ) => boolean | void | Promise<boolean | void>;
 type StateListener = (state: LiveFreshness, failure?: LiveDataSSEFailure) => void;
+type LiveChannelMessage =
+  | {
+      sender: string;
+      type: "event";
+      event: DaemonUpdateEvent;
+    }
+  | {
+      sender: string;
+      type: "freshness";
+      freshness: LiveFreshness;
+      failure?: LiveDataSSEFailure;
+    }
+  | {
+      sender: string;
+      type: "leader-released";
+    };
 
 export interface LiveDataScope {
   gaggle?: string;
@@ -110,6 +135,7 @@ export interface LiveDataScope {
 }
 
 export interface LiveDataDependencies {
+  cursorScope?: string;
   diagnostics?: PortalDiagnostics;
   // Injected so a test (or a future caller) can observe cache behaviour; the
   // controller owns a session-scoped default when none is supplied.
@@ -151,6 +177,7 @@ interface LiveDataContextValue {
   lastSSEFailure?: LiveDataSSEFailure;
   /** How current the data is. Independent of `freshness`. */
   dataFreshness: DataFreshness;
+  admissionState?: AdmissionDegradedState;
   /** Called by the HTTP client for every response carrying a readState. */
   reportReadState: (state: ReadState) => void;
   isFresh: () => boolean;
@@ -170,20 +197,26 @@ export function LiveDataProvider({
   client,
   config,
   diagnostics,
+  cursorScope,
+	standalone = false,
 }: {
   children: ReactNode;
   client: DaemonClient;
   config?: Partial<LiveDataConfig>;
   diagnostics?: PortalDiagnostics;
+  cursorScope?: string;
+	standalone?: boolean;
 }) {
   const cache = useMemo(() => new SessionDataCache(), [client]);
   const controller = useMemo(
     () =>
-      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics, cache }),
+      new LiveDataController(client, { ...defaultConfig, ...config }, { diagnostics, cache, cursorScope }),
     [
       cache,
       client,
+      config?.crossTabEnabled,
       config?.failuresBeforePolling,
+      config?.pollingEnabled,
       config?.invalidationWindowMs,
       config?.pollingIntervalMs,
       config?.reconnectBaseDelayMs,
@@ -194,6 +227,7 @@ export function LiveDataProvider({
       config?.refreshMaxDelayMs,
       config?.maxPendingInvalidations,
       diagnostics,
+      cursorScope,
     ],
   );
   const [freshness, setFreshness] = useState<LiveFreshness>(() => controller.freshness);
@@ -201,15 +235,17 @@ export function LiveDataProvider({
     () => controller.lastSSEFailure,
   );
   const [dataFreshness, setDataFreshness] = useState<DataFreshness>({ kind: "unknown" });
+  const [admissionState, setAdmissionState] = useState<AdmissionDegradedState | undefined>();
 
   const reportReadState = useCallback((state: ReadState) => {
-    setDataFreshness(deriveDataFreshness(state));
-  }, []);
+		setDataFreshness(deriveDataFreshness(state, standalone ? "standalone" : "daemon"));
+	}, [standalone]);
 
   // Registered in a layout effect so the sink is live before the first paint,
   // and torn down with the provider — a stale sink would keep a dead
   // component's setState alive across a provider swap.
   useLayoutEffect(() => setReadStateSink(reportReadState), [reportReadState]);
+  useLayoutEffect(() => setAdmissionStateSink(setAdmissionState), []);
 
   useLayoutEffect(() => {
     const unsubscribe = controller.subscribeState((nextFreshness, failure) => {
@@ -229,13 +265,14 @@ export function LiveDataProvider({
       freshness,
       lastSSEFailure,
       dataFreshness,
+      admissionState,
       reportReadState,
       isFresh: controller.isFresh,
       refresh: controller.refresh,
       retryConnection: controller.retryConnection,
       subscribe: controller.subscribe,
     }),
-    [cache, controller, dataFreshness, freshness, lastSSEFailure, reportReadState],
+    [admissionState, cache, controller, dataFreshness, freshness, lastSSEFailure, reportReadState],
   );
 
   return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
@@ -279,6 +316,8 @@ export class LiveDataController {
   private invalidationRevision = 0;
   private invalidationTimer: ReturnType<typeof setTimeout> | undefined;
   private polling = false;
+  private pollController: AbortController | undefined;
+  private pollingPosition: Position | undefined;
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private connectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -299,6 +338,15 @@ export class LiveDataController {
   private lastNotifiedSSEFailure: LiveDataSSEFailure | undefined;
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly cache: SessionDataCache;
+  private readonly cursorStorageKey: string;
+  private readonly liveChannelName: string;
+  private readonly leaderStorageKey: string;
+  private readonly tabId =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  private liveChannel: BroadcastChannel | undefined;
+  private leaderTimer: ReturnType<typeof setInterval> | undefined;
+  private isLeader = true;
   private skipNextSnapshotRefresh = false;
   private started = false;
   freshness: LiveFreshness = "reconnecting";
@@ -309,6 +357,15 @@ export class LiveDataController {
     private readonly dependencies: LiveDataDependencies = {},
   ) {
     this.cache = dependencies.cache ?? new SessionDataCache();
+    this.cursorStorageKey = dependencies.cursorScope === undefined
+      ? CURSOR_STORAGE_KEY
+      : `${CURSOR_STORAGE_KEY}:${encodeURIComponent(dependencies.cursorScope)}`;
+    this.liveChannelName = dependencies.cursorScope === undefined
+      ? LIVE_CHANNEL_NAME
+      : `${LIVE_CHANNEL_NAME}:${encodeURIComponent(dependencies.cursorScope)}`;
+    this.leaderStorageKey = dependencies.cursorScope === undefined
+      ? LIVE_LEADER_KEY
+      : `${LIVE_LEADER_KEY}:${encodeURIComponent(dependencies.cursorScope)}`;
   }
 
   readonly isFresh = (): boolean => this.freshness === "connected";
@@ -329,7 +386,7 @@ export class LiveDataController {
     this.seenEventIds.clear();
     this.seenEventOrder.length = 0;
     this.lastSSEFailure = undefined;
-    window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
+    window.sessionStorage.removeItem(this.cursorStorageKey);
     this.closeConnection("manual-retry");
     this.setFreshness("reconnecting");
     this.connect("manual-retry");
@@ -374,7 +431,7 @@ export class LiveDataController {
     this.started = true;
     this.invalidationsPaused =
       !navigator.onLine || document.visibilityState === "hidden";
-    this.cursor = window.sessionStorage.getItem(CURSOR_STORAGE_KEY) ?? undefined;
+    this.cursor = window.sessionStorage.getItem(this.cursorStorageKey) ?? undefined;
     window.addEventListener("online", this.onOnline);
     window.addEventListener("offline", this.onOffline);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -386,7 +443,11 @@ export class LiveDataController {
       this.setFreshness("stale");
       return;
     }
-    this.connect("initial");
+    if (this.startCrossTabCoordination()) {
+      this.connect("initial");
+    } else {
+      this.queueRefresh({ cursor: "", models: ALL_MODELS }, 0);
+    }
   }
 
   stop(): void {
@@ -403,6 +464,7 @@ export class LiveDataController {
     this.clearReconnectTimer();
     this.clearPollingTimer();
     this.clearInvalidationTimer();
+    this.stopCrossTabCoordination();
     this.cache.dispose();
     this.pendingInvalidations.clear();
     this.lastQueuedCursor = "";
@@ -414,7 +476,9 @@ export class LiveDataController {
     }
     this.invalidationsPaused = false;
     this.failureCount = 0;
-    this.connect("online");
+    if (this.tryBecomeLeader()) {
+      this.connect("online");
+    }
     this.resumeInvalidations();
   };
 
@@ -440,6 +504,7 @@ export class LiveDataController {
       this.clearReconnectTimer();
       this.clearPollingTimer();
       this.clearInvalidationTimer();
+      this.releaseLeadership();
       this.setFreshness("stale");
       return;
     }
@@ -449,12 +514,19 @@ export class LiveDataController {
     }
     this.invalidationsPaused = false;
     this.failureCount = 0;
-    this.connect("visibility-visible");
+    if (this.tryBecomeLeader()) {
+      this.connect("visibility-visible");
+    }
     this.resumeInvalidations();
   };
 
   private connect(cause: string, delayMs?: number): void {
-    if (!this.started || !navigator.onLine || document.visibilityState === "hidden") {
+    if (
+      !this.started ||
+      !navigator.onLine ||
+      document.visibilityState === "hidden" ||
+      (this.liveChannel !== undefined && !this.isLeader)
+    ) {
       return;
     }
     if (cause !== "initial") {
@@ -621,6 +693,9 @@ export class LiveDataController {
     if (event.type === "heartbeat" || this.hasApplied(event.id)) {
       return;
     }
+    if (this.isLeader) {
+      this.postLiveMessage({ sender: this.tabId, type: "event", event });
+    }
     // An epoch change forces a SNAPSHOT, not a quiet cursor swap (#1930, §8.2).
     //
     // The store was rebuilt, so this client's view predates a generation it can
@@ -637,7 +712,7 @@ export class LiveDataController {
       this.dependencies.diagnostics?.recordSSE({ event: "reconnect", cause: "epoch-changed" });
       this.rememberEvent(event.id);
       this.cursor = event.id;
-      window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
+      window.sessionStorage.setItem(this.cursorStorageKey, event.id);
       // Everything, not just what the event names: the rebuild may have changed
       // any of it, and the event's entity list describes one transition rather
       // than the generation gap.
@@ -651,7 +726,7 @@ export class LiveDataController {
     }
     this.rememberEvent(event.id);
     this.cursor = event.id;
-    window.sessionStorage.setItem(CURSOR_STORAGE_KEY, event.id);
+    window.sessionStorage.setItem(this.cursorStorageKey, event.id);
     if (event.type === "snapshot" && this.skipNextSnapshotRefresh) {
       this.skipNextSnapshotRefresh = false;
       return;
@@ -713,7 +788,7 @@ export class LiveDataController {
     this.cursor = undefined;
     this.seenEventIds.clear();
     this.seenEventOrder.length = 0;
-    window.sessionStorage.removeItem(CURSOR_STORAGE_KEY);
+    window.sessionStorage.removeItem(this.cursorStorageKey);
     this.failureCount = 0;
     this.setFreshness("stale");
     this.scheduleReconnect(0, "stale-cursor");
@@ -728,7 +803,7 @@ export class LiveDataController {
       return;
     }
     this.failureCount += 1;
-    if (this.failureCount >= this.config.failuresBeforePolling) {
+    if (this.config.pollingEnabled !== false && this.failureCount >= this.config.failuresBeforePolling) {
       this.startPollingFallback();
     } else {
       this.setFreshness("reconnecting");
@@ -751,7 +826,7 @@ export class LiveDataController {
   }
 
   private async runPollingCycle(): Promise<void> {
-    const refreshed = await this.runRefresh([{ cursor: "", models: ALL_MODELS }]);
+    const refreshed = await this.pollForChanges();
     if (!this.polling || !this.started) {
       return;
     }
@@ -769,7 +844,42 @@ export class LiveDataController {
     }, refreshed ? this.config.pollingIntervalMs : this.refreshRetryDelay());
   }
 
+  private async pollForChanges(): Promise<boolean> {
+    const controller = new AbortController();
+    this.pollController?.abort();
+    this.pollController = controller;
+    try {
+      const health = await this.client.getHealth({ signal: controller.signal });
+      if (controller.signal.aborted) {
+        return false;
+      }
+      const position = positionOf(health.readState);
+      if (
+        position &&
+        this.pollingPosition &&
+        position.epoch === this.pollingPosition.epoch &&
+        position.appliedSeq <= this.pollingPosition.appliedSeq
+      ) {
+        return true;
+      }
+      const refreshed = await this.runRefresh([{ cursor: "", models: ALL_MODELS }]);
+      if (refreshed) {
+        this.pollingPosition = position;
+      }
+      return refreshed;
+    } catch {
+      return false;
+    } finally {
+      if (this.pollController === controller) {
+        this.pollController = undefined;
+      }
+    }
+  }
+
   private scheduleReconnect(delay: number, cause: string): void {
+    if (this.liveChannel !== undefined && !this.isLeader) {
+      return;
+    }
     this.clearReconnectTimer();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
@@ -805,6 +915,8 @@ export class LiveDataController {
 
   private clearPollingTimer(): void {
     this.polling = false;
+    this.pollController?.abort();
+    this.pollController = undefined;
     if (this.pollingTimer !== undefined) {
       clearTimeout(this.pollingTimer);
       this.pollingTimer = undefined;
@@ -996,8 +1108,155 @@ export class LiveDataController {
     }
     this.freshness = freshness;
     this.lastNotifiedSSEFailure = this.lastSSEFailure;
+    if (this.isLeader) {
+      this.postLiveMessage({
+        sender: this.tabId,
+        type: "freshness",
+        freshness,
+        ...(this.lastSSEFailure ? { failure: this.lastSSEFailure } : {}),
+      });
+    }
     for (const listener of this.stateListeners) {
       listener(freshness, this.lastSSEFailure);
+    }
+  }
+
+  private startCrossTabCoordination(): boolean {
+    if (
+      this.config.crossTabEnabled === false ||
+      (import.meta.env.MODE === "test" && this.config.crossTabEnabled !== true) ||
+      typeof BroadcastChannel === "undefined"
+    ) {
+      this.isLeader = true;
+      return true;
+    }
+    try {
+      this.liveChannel = new BroadcastChannel(this.liveChannelName);
+      this.liveChannel.addEventListener("message", this.onLiveChannelMessage);
+      this.leaderTimer = setInterval(
+        this.maintainLeadership,
+        LIVE_LEADER_HEARTBEAT_MS,
+      );
+      return this.tryBecomeLeader();
+    } catch {
+      this.liveChannel = undefined;
+      this.isLeader = true;
+      return true;
+    }
+  }
+
+  private stopCrossTabCoordination(): void {
+    this.releaseLeadership();
+    if (this.leaderTimer !== undefined) {
+      clearInterval(this.leaderTimer);
+      this.leaderTimer = undefined;
+    }
+    this.liveChannel?.removeEventListener("message", this.onLiveChannelMessage);
+    this.liveChannel?.close();
+    this.liveChannel = undefined;
+    this.isLeader = true;
+  }
+
+  private readonly maintainLeadership = (): void => {
+    if (!this.started || document.visibilityState === "hidden" || !navigator.onLine) {
+      return;
+    }
+    if (this.isLeader) {
+      this.writeLeaderLease();
+      return;
+    }
+    if (this.tryBecomeLeader()) {
+      this.failureCount = 0;
+      this.connect("cross-tab-leader");
+    }
+  };
+
+  private tryBecomeLeader(): boolean {
+    if (!this.liveChannel) {
+      this.isLeader = true;
+      return true;
+    }
+    try {
+      const now = Date.now();
+      const lease = readLeaderLease(this.leaderStorageKey);
+      if (lease && lease.id !== this.tabId && lease.expiresAt > now) {
+        this.isLeader = false;
+        return false;
+      }
+      window.localStorage.setItem(
+        this.leaderStorageKey,
+        JSON.stringify({ id: this.tabId, expiresAt: now + LIVE_LEADER_LEASE_MS }),
+      );
+      this.isLeader = readLeaderLease(this.leaderStorageKey)?.id === this.tabId;
+      if (this.isLeader) {
+        this.writeLeaderLease();
+      }
+      return this.isLeader;
+    } catch {
+      this.isLeader = true;
+      return true;
+    }
+  }
+
+  private writeLeaderLease(): void {
+    try {
+      window.localStorage.setItem(
+        this.leaderStorageKey,
+        JSON.stringify({
+          id: this.tabId,
+          expiresAt: Date.now() + LIVE_LEADER_LEASE_MS,
+        }),
+      );
+    } catch {
+      // Storage can be unavailable in hardened browser contexts. In that case
+      // each tab keeps its own live connection rather than losing updates.
+    }
+  }
+
+  private releaseLeadership(): void {
+    if (!this.liveChannel || !this.isLeader) {
+      return;
+    }
+    try {
+      if (readLeaderLease(this.leaderStorageKey)?.id === this.tabId) {
+        window.localStorage.removeItem(this.leaderStorageKey);
+      }
+    } catch {
+      // Best-effort lease cleanup; expiration provides the recovery path.
+    }
+    this.postLiveMessage({ sender: this.tabId, type: "leader-released" });
+    this.isLeader = false;
+  }
+
+  private readonly onLiveChannelMessage = (message: MessageEvent<LiveChannelMessage>): void => {
+    const value = message.data;
+    if (!value || value.sender === this.tabId || !this.started) {
+      return;
+    }
+    if (value.type === "event") {
+      this.applyEvent(value.event);
+      return;
+    }
+    if (value.type === "freshness" && !this.isLeader) {
+      this.lastSSEFailure = value.failure;
+      this.setFreshness(value.freshness);
+      return;
+    }
+    if (
+      value.type === "leader-released" &&
+      document.visibilityState !== "hidden" &&
+      navigator.onLine &&
+      this.tryBecomeLeader()
+    ) {
+      this.connect("cross-tab-release");
+    }
+  };
+
+  private postLiveMessage(message: LiveChannelMessage): void {
+    try {
+      this.liveChannel?.postMessage(message);
+    } catch {
+      // A live channel is an optimization. The local tab remains authoritative.
     }
   }
 
@@ -1066,6 +1325,29 @@ function copyInvalidation(invalidation: ModelInvalidation): ModelInvalidation {
       ? { workflows: invalidation.workflows.map((workflow) => ({ ...workflow })) }
       : {}),
   };
+}
+
+function readLeaderLease(key: string): { id: string; expiresAt: number } | undefined {
+  const raw = window.localStorage.getItem(key);
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "id" in value &&
+      "expiresAt" in value &&
+      typeof value.id === "string" &&
+      typeof value.expiresAt === "number"
+    ) {
+      return { id: value.id, expiresAt: value.expiresAt };
+    }
+  } catch {
+    window.localStorage.removeItem(key);
+  }
+  return undefined;
 }
 
 function matchesScope(
@@ -1161,6 +1443,7 @@ function parseCursor(cursor: string | undefined):
  * standalone build, reports are simply dropped.
  */
 let readStateSink: ((state: ReadState) => void) | undefined;
+let admissionStateSink: ((state: AdmissionDegradedState | undefined) => void) | undefined;
 
 /** Registers the provider's reporter. Returns an unregister function. */
 export function setReadStateSink(sink: (state: ReadState) => void): () => void {
@@ -1177,12 +1460,33 @@ export function publishReadState(state: ReadState): void {
   readStateSink?.(state);
 }
 
-export function deriveDataFreshness(state: ReadState): DataFreshness {
+function setAdmissionStateSink(
+  sink: (state: AdmissionDegradedState | undefined) => void,
+): () => void {
+  admissionStateSink = sink;
+  return () => {
+    if (admissionStateSink === sink) {
+      admissionStateSink = undefined;
+    }
+  };
+}
+
+export function publishAdmissionState(state: AdmissionDegradedState | undefined): void {
+  admissionStateSink?.(state);
+}
+
+export function deriveDataFreshness(
+	state: ReadState,
+	mode: "daemon" | "standalone" = "daemon",
+): DataFreshness {
   if (state.completeness === "partial" && state.missing && state.missing.length > 0) {
     return { kind: "partial", lagSeconds: state.lagSeconds, missing: state.missing };
   }
-  if (state.lagSeconds > LAGGING_THRESHOLD_SECONDS || state.degraded.length > 0) {
-    return { kind: "lagging", lagSeconds: state.lagSeconds, degraded: state.degraded };
+	const degraded = mode === "standalone"
+		? state.degraded.filter((reason) => reason !== "no_sweep_completed")
+		: state.degraded;
+	if (state.lagSeconds > LAGGING_THRESHOLD_SECONDS || degraded.length > 0) {
+		return { kind: "lagging", lagSeconds: state.lagSeconds, degraded };
   }
   return { kind: "current", lagSeconds: state.lagSeconds };
 }

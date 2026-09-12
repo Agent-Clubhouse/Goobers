@@ -60,6 +60,15 @@ func WriteText(w io.Writer, r Report) {
 	if !r.Conformant {
 		verdict = "cluster does NOT conform — a required check failed"
 	}
+	if len(r.SelectedChecks) > 0 {
+		verdict = "selected checks passed; full cluster conformance was not assessed"
+		if warn > 0 {
+			verdict = "selected checks have warnings but no required failures; full cluster conformance was not assessed"
+		}
+		if !r.Conformant {
+			verdict = "selected checks failed; full cluster conformance was not assessed"
+		}
+	}
 	pf(w, "\n%d pass, %d warn, %d fail — %s\n", pass, warn, fail, verdict)
 }
 

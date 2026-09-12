@@ -1,7 +1,9 @@
 package readservice
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -110,6 +112,32 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 		issue.NormalizedTotals[0].Value != 42 ||
 		!issue.NormalizedTotals[0].Estimated {
 		t.Fatalf("Claude normalized totals = %+v", issue.NormalizedTotals)
+	}
+}
+
+func TestTelemetryCostsEmptyCollectionsSerializeAsArrays(t *testing.T) {
+	since := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	store := &fakeTelemetryStore{costs: rollup.CostResult{
+		PullRequests: []rollup.CostAggregate{{
+			Provider: "github", ExternalKind: "pr", ExternalID: "24",
+			Runs: []rollup.CostRunAggregate{{RunID: "run-unmeasured"}},
+		}},
+	}}
+
+	got, err := (&Telemetry{store: store}).TelemetryCosts(context.Background(), TelemetryCostRequest{
+		Scope: TelemetryCostScopeSummary, Since: since, Until: since.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"nativeTotals", "normalizedTotals", "billingModels", "costBases", "models"} {
+		if bytes.Contains(data, []byte(`"`+field+`":null`)) {
+			t.Fatalf("%s serialized as null: %s", field, data)
+		}
 	}
 }
 

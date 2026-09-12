@@ -69,18 +69,20 @@ const (
 // Instance is the overview inventory projection.
 type Instance struct {
 	ReadStateEnvelope
-	APIVersion    string                  `json:"apiVersion"`
-	SchemaVersion string                  `json:"schemaVersion"`
-	Name          string                  `json:"name"`
-	Environment   apiv1.Environment       `json:"environment"`
-	InstanceRoot  string                  `json:"instanceRoot"`
-	RootIdentity  *RootIdentity           `json:"rootIdentity,omitempty"`
-	Ready         bool                    `json:"ready"`
-	Status        InstanceStatus          `json:"status"`
-	Concurrency   Concurrency             `json:"concurrency"`
-	Counts        InventoryCounts         `json:"counts"`
-	Warnings      []validate.CodedWarning `json:"warnings"`
-	Maintenance   *MaintenanceStatus      `json:"maintenance,omitempty"`
+	APIVersion         string                    `json:"apiVersion"`
+	SchemaVersion      string                    `json:"schemaVersion"`
+	Name               string                    `json:"name"`
+	Environment        apiv1.Environment         `json:"environment"`
+	ComputerName       string                    `json:"computerName,omitempty"`
+	InstanceRoot       string                    `json:"instanceRoot"`
+	RootIdentity       *RootIdentity             `json:"rootIdentity,omitempty"`
+	Ready              bool                      `json:"ready"`
+	Status             InstanceStatus            `json:"status"`
+	Concurrency        Concurrency               `json:"concurrency"`
+	Counts             InventoryCounts           `json:"counts"`
+	Warnings           []validate.CodedWarning   `json:"warnings"`
+	Maintenance        *MaintenanceStatus        `json:"maintenance,omitempty"`
+	TelemetryRetention *TelemetryRetentionStatus `json:"telemetryRetention,omitempty"`
 	// MemoryHighWater, MemoryGateEnabled, and FsyncDisabled surface
 	// GOOBERS_MEMORY_HIGH_WATER and GOOBERS_DISABLE_FSYNC (#4218), settings
 	// that were previously invisible outside the daemon process's own
@@ -368,7 +370,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		return Instance{}, err
 	}
 	inventory := s.definitions.Load().inventory
-	active, err := s.activeRunCounts()
+	active, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return Instance{}, err
 	}
@@ -400,11 +402,18 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if s.sources.RetentionStats != nil {
 		maintenance = maintenanceStatus(s.sources.RetentionStats())
 	}
+	projected, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
+	if err != nil {
+		return Instance{}, err
+	}
+	telemetryRetention := telemetryRetentionStatus(s.sources.Config, projected.telemetryRetention)
+	computerName, _ := os.Hostname()
 	return Instance{
 		APIVersion:    APIVersion,
 		SchemaVersion: SchemaVersion,
 		Name:          inventory.definitions.Manifest.Spec.Instance.Name,
 		Environment:   inventory.definitions.Manifest.Spec.Instance.Environment,
+		ComputerName:  computerName,
 		InstanceRoot:  s.sources.Layout.Root,
 		RootIdentity:  inspectRootIdentity(s.sources.Layout.Root),
 		Ready:         ready,
@@ -419,12 +428,13 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 			Workflows:  len(inventory.definitions.Workflows),
 			ActiveRuns: activeTotal,
 		},
-		Warnings:          append([]validate.CodedWarning{}, inventory.warnings...),
-		Maintenance:       maintenance,
-		MemoryHighWater:   memoryHighWater,
-		MemoryGateEnabled: !memoryGateDisabled,
-		FsyncDisabled:     journal.FsyncDisabled(),
-		FleetEnrolled:     fleetEnrolled,
+		Warnings:           append([]validate.CodedWarning{}, inventory.warnings...),
+		Maintenance:        maintenance,
+		TelemetryRetention: telemetryRetention,
+		MemoryHighWater:    memoryHighWater,
+		MemoryGateEnabled:  !memoryGateDisabled,
+		FsyncDisabled:      journal.FsyncDisabled(),
+		FleetEnrolled:      fleetEnrolled,
 	}, nil
 }
 
@@ -434,7 +444,7 @@ func (s *Local) gagglesUnannotated(ctx context.Context, request PageRequest) (Ga
 		return GagglePage{}, err
 	}
 	inventory := s.definitions.Load().inventory
-	active, err := s.activeRunCounts()
+	active, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return GagglePage{}, err
 	}
@@ -566,21 +576,28 @@ func (s *Local) workflowsUnannotated(ctx context.Context, gaggle string, request
 	if !hasGaggle(inventory, gaggle) {
 		return WorkflowPage{}, fmt.Errorf("%w: gaggle %q", ErrNotFound, gaggle)
 	}
-	active, err := s.activeRunCounts()
+	active, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return WorkflowPage{}, err
 	}
-	schedulerStatus, err := s.SchedulerStatus(ctx)
+	projected, err := s.workflowSchedulerSnapshot(ctx)
 	if err != nil {
 		return WorkflowPage{}, err
 	}
-	refill := refillOccupancyByWorkflow(schedulerStatus.RefillOccupancy)
+	refill := refillOccupancyByWorkflow(
+		workflowRefillOccupancy(inventory.definitions.Workflows, active, projected.refillBlocked),
+	)
+	fallbacks := projected.engineFallbacks
 	items := make([]WorkflowSummary, 0)
 	for i := range inventory.definitions.Workflows {
 		def := &inventory.definitions.Workflows[i]
 		if def.Spec.Gaggle == gaggle {
 			item := s.workflowSummary(inventory, def, active, refill)
-			item.EngineFallback = schedulerStatus.engineFallbackFor(def.Spec.Gaggle, def.Name)
+			identity := localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}
+			if fallback, ok := fallbacks[identity]; ok {
+				value := fallback
+				item.EngineFallback = &value
+			}
 			items = append(items, item)
 		}
 	}
@@ -651,25 +668,32 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 	if def == nil {
 		return WorkflowDetail{}, fmt.Errorf("%w: workflow %q in gaggle %q", ErrNotFound, name, gaggle)
 	}
-	active, err := s.activeRunCounts()
+	active, err := s.activeRunCounts(ctx)
 	if err != nil {
 		return WorkflowDetail{}, err
 	}
-	schedulerStatus, err := s.SchedulerStatus(ctx)
+	projected, err := s.workflowSchedulerSnapshot(ctx)
 	if err != nil {
 		return WorkflowDetail{}, err
 	}
+	refill := refillOccupancyByWorkflow(
+		workflowRefillOccupancy(inventory.definitions.Workflows, active, projected.refillBlocked),
+	)
+	fallbacks := projected.engineFallbacks
 	detail := WorkflowDetail{
 		WorkflowSummary: s.workflowSummary(
 			inventory,
 			def,
 			active,
-			refillOccupancyByWorkflow(schedulerStatus.RefillOccupancy),
+			refill,
 		),
 		Graph:  inventory.graphs[workflowKey{gaggle: gaggle, name: name}],
 		Stages: workflowStages(def),
 	}
-	detail.EngineFallback = schedulerStatus.engineFallbackFor(gaggle, name)
+	if fallback, ok := fallbacks[localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: name}]; ok {
+		value := fallback
+		detail.EngineFallback = &value
+	}
 	return detail, nil
 }
 
@@ -686,18 +710,21 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 // design that kept the walk as the no-sample fallback and "so preserved the exact
 // failure on a cold daemon": a fallback taken only when the cache is cold is
 // taken exactly when the instance is busiest.
-func (s *Local) activeRunCounts() (map[localscheduler.WorkflowIdentity]int, error) {
-	counts, _, err := s.activeRunCountsWithAge()
+func (s *Local) activeRunCounts(ctx context.Context) (map[localscheduler.WorkflowIdentity]int, error) {
+	counts, _, err := s.activeRunCountsWithAge(ctx)
 	return counts, err
 }
 
 // activeRunCountsWithAge additionally reports how stale the sample is, so a
 // caller can render "as of N ago" rather than implying the number is current.
-func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
+func (s *Local) activeRunCountsWithAge(ctx context.Context) (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	sampler := s.activeSampler.Load()
 	if sampler == nil {
 		if s.readModelReads && s.sources.ReadModel != nil {
-			counts, err := s.projectedActiveRunCounts(context.Background())
+			counts, err := s.projectedActiveRunCounts(ctx)
 			return counts, 0, err
 		}
 		// A one-shot construction without a projection pays for the authoritative

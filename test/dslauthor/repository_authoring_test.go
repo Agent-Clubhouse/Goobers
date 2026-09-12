@@ -30,7 +30,7 @@ import (
 
 const (
 	secretFixtureValue          = "FIXTURE_SECRET_MUST_NOT_APPEAR"
-	recordedAuthoringPathSHA256 = "2a477f0305906de9ef971b3c04d30b835aa08247d261571883d84e9a015e6e01"
+	recordedAuthoringPathSHA256 = "0c04a9b973d06f1bbede412bcb3a2916adfb41f2f2274f35cb5dae7a89ed5a0b"
 	captureSchema               = "goobers.dev/dsl-author-captures/v1"
 )
 
@@ -477,12 +477,11 @@ func evaluateAuthoringResult(
 	if !strings.Contains(report.Proposal.StateGraph, workflow.Spec.Start) {
 		t.Fatalf("reported state graph %q omits start state %q", report.Proposal.StateGraph, workflow.Spec.Start)
 	}
-	wantCapabilities := expectedCapabilities(scenario.Name)
-	if got := configCapabilities(set, workflow); !slices.Equal(got, wantCapabilities) {
-		t.Fatalf("generated capabilities = %v, want %v", got, wantCapabilities)
+	if err := checkFixtureCapabilities(scenario, configCapabilities(set, workflow)); err != nil {
+		t.Fatalf("generated capabilities: %v", err)
 	}
-	if got := grantNames(report.Proposal.Capabilities); !slices.Equal(got, wantCapabilities) {
-		t.Fatalf("reported capabilities = %v, want %v", got, wantCapabilities)
+	if err := checkFixtureCapabilities(scenario, grantNames(report.Proposal.Capabilities)); err != nil {
+		t.Fatalf("reported capabilities: %v", err)
 	}
 	for _, grant := range report.Proposal.Capabilities {
 		if strings.TrimSpace(grant.Reason) == "" {
@@ -493,7 +492,12 @@ func evaluateAuthoringResult(
 
 func assertCaptureProvenance(t *testing.T, capture invocationCapture, skillDigest string) {
 	t.Helper()
-	if capture.CapturedWith != "GitHub Copilot CLI 1.0.75" || capture.Model != "gpt-5.6-sol" ||
+	assertCaptureProvenanceVersion(t, capture, skillDigest, "GitHub Copilot CLI 1.0.83")
+}
+
+func assertCaptureProvenanceVersion(t *testing.T, capture invocationCapture, skillDigest, version string) {
+	t.Helper()
+	if capture.CapturedWith != version || capture.Model != "gpt-5.6-sol" ||
 		!regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(capture.SkillSHA256) || len(capture.Events) == 0 {
 		t.Fatal("capture provenance is incomplete")
 	}
@@ -577,11 +581,8 @@ func assertCaptureProvenance(t *testing.T, capture invocationCapture, skillDiges
 			t.Fatalf("captured tools %v omit %q", tools, required)
 		}
 	}
-	preWriteText := strings.ToLower(preWrite.String())
-	for _, required := range []string{"evidence", "state", "capabilit"} {
-		if !strings.Contains(preWriteText, required) {
-			t.Fatalf("captured pre-write explanation omits %q", required)
-		}
+	if missing := missingPreWriteConcept(preWrite.String()); missing != "" {
+		t.Fatalf("captured pre-write explanation omits %q", missing)
 	}
 	for _, path := range []string{
 		".goobers/agent-toolkit/skills/goobers-dsl-author/SKILL.md",
@@ -604,6 +605,34 @@ func assertCaptureProvenance(t *testing.T, capture invocationCapture, skillDiges
 	}
 	if len(completed) == 0 {
 		t.Fatal("captured native event stream has no tool completions")
+	}
+}
+
+// A proposal may call its state graph a "graph". Require each concept without
+// imposing one particular wording on a genuine native authoring invocation.
+func missingPreWriteConcept(explanation string) string {
+	text := strings.ToLower(explanation)
+	for _, concept := range []string{"evidence", "state", "capabilit"} {
+		if strings.Contains(text, concept) || (concept == "state" && strings.Contains(text, "graph")) {
+			continue
+		}
+		return concept
+	}
+	return ""
+}
+
+func TestPreWriteConceptsRequireEvidenceGraphAndCapabilities(t *testing.T) {
+	for _, tc := range []struct{ explanation, missing string }{
+		{"Evidence: Makefile. State graph: manual -> test -> done. Capabilities: make.", ""},
+		{"EVIDENCE: Makefile. Graph: manual -> test -> done. Capabilities: make.", ""},
+		{"Evidence: Makefile. Capabilities: make.", "state"},
+		{"Graph: manual -> test -> done. Capabilities: make.", "evidence"},
+		{"Evidence: Makefile. Graph: manual -> test -> done.", "capabilit"},
+		{"", "evidence"},
+	} {
+		if got := missingPreWriteConcept(tc.explanation); got != tc.missing {
+			t.Errorf("missingPreWriteConcept(%q) = %q, want %q", tc.explanation, got, tc.missing)
+		}
 	}
 }
 
@@ -1274,5 +1303,13 @@ func sortedKeys[V any](values map[string]V) []string {
 }
 
 const authoringInvocationInstructions = `Exercise the installed Goobers adapter chain and goobers-dsl-author skill exactly as an adopter would. Treat the task as a plain-English authoring request. Use the supplied environment-resolver report rather than selecting another binary or contract source. A read-only-provider-response context, when present, is the captured response from existing provider access at the exact target commit.
+
+For contract.loadedPaths and contract.skillSHA256, copy the supplied environment-resolver report's contractSource.loadedPaths and contractSource.sha256 exactly. This digest identifies the complete installed authoring path, not just the SKILL.md file; do not substitute an individual file checksum.
+
+The report's diff field must be a JSON string containing the complete unified patch from git diff --no-ext-diff, not an object or a list of paths. Use git add -N only for newly authored configuration files so they appear in that diff. Leave .goobers/authoring-report.json and .goobers/result.json untracked; these reporting artifacts are not configuration changes. For an unresolved request, diff must be the empty string.
+
+Use these report field types: terms is an object mapping term names to explanation strings, never an array; command is a string or an array of command-argument strings; evidence is an array of {conclusion: string, citation: string}; proposal.stateGraph is a string, proposal.paths and proposal.omittedCapabilities are arrays of strings, proposal.presentedBeforeWrite is a boolean, and proposal.capabilities is an array of {name: string, reason: string}. All release fields are strings. validation.command and validation.status are strings, and validation.attempts is an array of {status: string, finding: string}. unresolved is always an array of diagnostic strings, including an empty array for a ready report, never an object. Check the completed report against these types before finishing.
+
+Derive toolchain requirements from repository evidence as well as the CI command. Preserve explicitly pinned toolchain versions (for example, a go.mod version) as requiredCapabilities and explain them in the capability report. Do not invent a version pin from a package-manager lockfile format or an assumed default runtime version.
 
 Before writing config, present the evidence ledger, state graph, changed paths, release and closest-example choice, and least-privilege capability rationale. After authoring, write .goobers/authoring-report.json as JSON with: status (ready or unresolved), request, contract {loadedPaths, skillSHA256}, target {identity, branch, commit, access}, terms, command, evidence [{conclusion,citation}], proposal {presentedBeforeWrite,stateGraph,paths,capabilities [{name,reason}],omittedCapabilities}, release {binaryPath,version,commit,dslVersion,canonicalExample,exampleReason}, validation {command,attempts [{status,finding}],status}, diff, and unresolved. The diff must match the final workspace diff. Set the completion result output reportPath to .goobers/authoring-report.json.`

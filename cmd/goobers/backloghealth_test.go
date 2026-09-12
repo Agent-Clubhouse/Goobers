@@ -462,3 +462,104 @@ func writeImplementationOutcomeRun(
 		t.Fatal(err)
 	}
 }
+
+func TestBacklogHealthStarvationExcludesSiblingAndUnpartitionedReadyWork(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(1, "Own parked work", "goobers:approved", "goobers:cloud", "goobers:needs-human")
+	server.addIssue(2, "Sibling ready work", "goobers:approved", "goobers:ready", "goobers:local")
+	server.addIssue(3, "Unpartitioned ready work", "goobers:approved", "goobers:ready")
+	server.addIssue(4, "Unpartitioned not ready", "goobers:approved")
+	server.addIssue(5, "Unapproved work", "goobers:ready")
+	server.addIssue(6, "Closed approved work", "goobers:approved")
+	server.setIssueState(6, "closed")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "partition-starvation-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:cloud")
+	t.Setenv("GOOBERS_INPUT_PARTITIONLABELS", "goobers:cloud,goobers:local")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-health", root)
+	if code != 0 {
+		t.Fatalf("backlog-health: code=%d stderr=%q", code, stderr)
+	}
+	data, err := os.ReadFile("backlog-health.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report backlogHealthReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.ReadyPoolDepth != 0 || !report.ReadyPoolStarved || report.ReadyPoolObservedAt == "" {
+		t.Fatalf("starved partition reported healthy or unmeasured: %+v", report)
+	}
+	if report.UnpartitionedApprovedCount == nil || *report.UnpartitionedApprovedCount != 2 {
+		t.Fatalf("unpartitioned count=%v; want exactly the two open approved items without any partition", report.UnpartitionedApprovedCount)
+	}
+	if strings.Join(report.RequireLabels, ",") != "goobers:cloud" || strings.Join(report.PartitionLabels, ",") != "goobers:cloud,goobers:local" {
+		t.Fatalf("snapshot omitted diagnostic scope: %+v", report)
+	}
+	for _, want := range []string{"WARNING: ready pool starved", "2 open approved items", "operator must choose their partition"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout did not surface %q: %s", want, stdout)
+		}
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if strings.Join(server.issues[3].labels, ",") != "goobers:approved,goobers:ready" || len(server.issues[3].comments) != 0 {
+		t.Fatal("health diagnostic changed an unpartitioned item")
+	}
+}
+
+func TestBacklogHealthDoesNotInferPartitionVocabulary(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(1, "Sibling ready", "goobers:approved", "goobers:ready", "goobers:local")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "unknown-partitions-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:cloud")
+	t.Setenv("GOOBERS_INPUT_PARTITIONLABELS", "")
+	t.Chdir(t.TempDir())
+	code, _, stderr := runArgs(t, "backlog-health", root)
+	if code != 0 {
+		t.Fatalf("backlog-health: code=%d stderr=%q", code, stderr)
+	}
+	data, err := os.ReadFile("backlog-health.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "unpartitionedApprovedCount") {
+		t.Fatalf("unknown sibling scope was reported as a measured unpartitioned count: %s", data)
+	}
+}
+
+func TestDeferredBacklogHealthDoesNotEmitStarvationWarning(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var stdout, stderr strings.Builder
+	// Even an inconsistent deferred input must not announce a measurement:
+	// absence of ObservedAt is the same guard used by the telemetry rollup.
+	report := backlogHealthReport{ReadyPoolStarved: true, Scan: &backlogHealthScan{Deferred: true}}
+	if code := writeBacklogHealthReport(report, &stdout, &stderr); code != 0 {
+		t.Fatalf("write report: %d: %s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "WARNING") {
+		t.Fatalf("deferred observation emitted an alarm: %s", stdout.String())
+	}
+}
+
+func TestBacklogHealthPartitionPopulationRequiresTrustLabel(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "partition-trust-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "")
+	t.Setenv("GOOBERS_INPUT_PARTITIONLABELS", "goobers:cloud,goobers:local")
+	t.Chdir(t.TempDir())
+	code, _, stderr := runArgs(t, "backlog-health", root)
+	if code != 2 || !strings.Contains(stderr, "partitionLabels requires trustLabel") {
+		t.Fatalf("unapproved population accepted: code=%d stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat("backlog-health.json"); !os.IsNotExist(err) {
+		t.Fatalf("invalid diagnostic published a health sample: %v", err)
+	}
+}

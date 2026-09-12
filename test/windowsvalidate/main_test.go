@@ -3,10 +3,18 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -55,6 +63,127 @@ func TestConfigureEphemeralAPI(t *testing.T) {
 	}
 	if config.API.Listen != ephemeralAPIListenAddress {
 		t.Fatalf("API listen = %q, want %q", config.API.Listen, ephemeralAPIListenAddress)
+	}
+}
+
+func TestWaitForDaemonReadinessWaitsForReadyProbe(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != httpapi.ReadinessPath {
+			t.Errorf("path = %q, want %q", request.URL.Path, httpapi.ReadinessPath)
+		}
+		ready := requests.Add(1) >= 2
+		status := http.StatusServiceUnavailable
+		if ready {
+			status = http.StatusOK
+		}
+		response.WriteHeader(status)
+		if _, err := fmt.Fprintf(response, `{"ready":%t}`, ready); err != nil {
+			t.Errorf("write readiness response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	addressPath := filepath.Join(instance.NewLayout(root).SchedulerDir(), daemonAPIAddressFileName)
+	if err := os.MkdirAll(filepath.Dir(addressPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(addressPath, []byte(strings.TrimPrefix(server.URL, "http://")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	address, exited, err := waitForDaemonReadiness(root, make(chan error), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exited {
+		t.Fatal("process reported exited")
+	}
+	if address != strings.TrimPrefix(server.URL, "http://") {
+		t.Fatalf("address = %q, want %q", address, strings.TrimPrefix(server.URL, "http://"))
+	}
+	if requests.Load() < 2 {
+		t.Fatalf("readiness requests = %d, want at least 2", requests.Load())
+	}
+}
+
+func TestWaitForDaemonReadinessReportsEarlyExit(t *testing.T) {
+	tests := []struct {
+		name    string
+		waitErr error
+		want    string
+	}{
+		{name: "failure", waitErr: errors.New("startup failed"), want: "startup failed"},
+		{name: "clean exit", want: "exited cleanly"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			waitErr := make(chan error, 1)
+			waitErr <- test.waitErr
+
+			_, exited, err := waitForDaemonReadiness(t.TempDir(), waitErr, time.Second)
+			if !exited {
+				t.Fatal("process exit was not reported")
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestWaitForDaemonReadinessPrefersExitOverElapsedTimeout(t *testing.T) {
+	waitErr := make(chan error, 1)
+	waitErr <- errors.New("startup failed")
+
+	_, exited, err := waitForDaemonReadiness(t.TempDir(), waitErr, 0)
+	if !exited {
+		t.Fatal("process exit was not reported")
+	}
+	if err == nil || !strings.Contains(err.Error(), "startup failed") {
+		t.Fatalf("error = %v, want startup failure", err)
+	}
+}
+
+func TestWaitForDaemonReadinessBoundsProbeByOverallTimeout(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		select {
+		case requestStarted <- struct{}{}:
+		default:
+		}
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	addressPath := filepath.Join(instance.NewLayout(root).SchedulerDir(), daemonAPIAddressFileName)
+	if err := os.MkdirAll(filepath.Dir(addressPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(addressPath, []byte(strings.TrimPrefix(server.URL, "http://")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const timeout = 100 * time.Millisecond
+	started := time.Now()
+	_, exited, err := waitForDaemonReadiness(root, make(chan error), timeout)
+	elapsed := time.Since(started)
+
+	if exited {
+		t.Fatal("process reported exited")
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not become ready") {
+		t.Fatalf("error = %v, want readiness timeout", err)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("readiness timeout took %s, want at most 1s", elapsed)
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("readiness request did not start")
 	}
 }
 

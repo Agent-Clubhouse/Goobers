@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+
+	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // hookRecorder captures the terminal-hook frame's calls in order, so the
@@ -387,5 +391,31 @@ func TestEngineStartResultCarriesFailureDetail(t *testing.T) {
 	got = engineStartResult(stageFailed, journal.PhaseFailed, nil)
 	if got.FailureStage != "implement" || got.FailureCode != "stage_failed" || got.FailureMessage != "exit 1" {
 		t.Errorf("engineStartResult = %+v, want the stage's own failure detail preserved", got)
+	}
+}
+
+func TestEngineInfrastructureTerminalDoesNotChargeFailureStreak(t *testing.T) {
+	const runID = "run-infra"
+	failed, fake := failedHandlerDispositionFixture(t, runID)
+	hooks := &engineTerminalHooks{failed: failed, repoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}}
+	// Run stamps the exhausted error's outer application type before returning
+	// it. Exercise the same wire representation the daemon receives.
+	wrapped := fmt.Errorf("workflow failed: %w", temporal.NewApplicationError("pod vanished", engine.FailureTypeInfrastructure))
+	converter := temporal.GetDefaultFailureConverter()
+	cause := converter.FailureToError(converter.ErrorToFailure(temporal.NewApplicationErrorWithCause(wrapped.Error(), engine.FailureTypeInfrastructure, wrapped)))
+	for i := 0; i < failureStreakThreshold; i++ {
+		hooks.fireFailed(context.Background(), engineTerminalOutcome{RunID: runID, Phase: journal.PhaseFailed, Err: cause})
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("infrastructure terminal charged failure streak: %+v", fake.calls)
+	}
+	result := engineStartResult(engine.RunResult{}, journal.PhaseFailed, cause)
+	if result.FailureCode != telemetry.ErrCodeInfraFailure {
+		t.Fatalf("scheduler code = %q", result.FailureCode)
+	}
+	for _, err := range []error{errors.New("GoobersInfrastructureFailure"), temporal.NewApplicationError("pod vanished", engine.FailureTypeStage)} {
+		if code := engineTerminalFailureCode(err); code != engineWalkFailureCode {
+			t.Fatalf("policy/unknown failure became infra: %q", code)
+		}
 	}
 }

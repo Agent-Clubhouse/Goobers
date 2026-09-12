@@ -20,8 +20,10 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // Activity names. The workflow refers to activities by these names so it is
@@ -229,32 +231,15 @@ type UnpushedDiffCapture struct {
 // second — which runner served the stage, which pod carried it, which image
 // that pod actually ran, and how long the attempt waited for capacity.
 //
-// SETTLED ATTEMPTS ONLY, and every field is then populated. This is a property
-// of the seam, not a coincidence, so read it as the contract:
-// DispatchStage builds provenance at exactly one return — the one that carries
-// a surrendered envelope — and every dispatcher error that left surrender
-// unconfirmed is returned as a classified error with the report DISCARDED
-// (dispatchstage.go, the SurrenderConfirmed guard). A settled outcome in turn
-// requires CreatePod to have already succeeded, and Dispatch stamps Runner and
-// QueuedAt before it renders, Image off the rendered spec, and Pod and
-// PodStartedAt immediately after the create. So a non-nil *StagePlacement
-// always names all five. Do NOT write a branch for a partially populated
-// block: it is unreachable, and code that handles it is untested code that
-// will rot.
-//
-// The corollary is the honest cost of this shape, and a caller journalling
-// §11 acceptance 6 has to know it: the placement failures an operator most
-// wants to see — a capacity wait that timed out, a decision-009 skew refusal,
-// an agentic kit that would not publish — deliver NO provenance block at all.
-// What crosses instead is the classified error, whose message names the runner
-// ("capacity wait for runner %q", "probe capacity for runner %q") and, for a
-// skew refusal, the exact image ("version-skew refusal for image %q"). That is
-// text, not fields, and it is deliberately all this step ships: carrying a
-// report onto the failure means putting it in the ApplicationError details,
-// where slot 0 already belongs to the infrastructure retry-at instant
-// (classifySeamError / infrastructureRetryDelay), so it is a wire-contract
-// change that belongs with the runner branch that would consume it (step 6),
-// not with the export.
+// Settled attempts carry this block in their result. They always name Runner,
+// QueuedAt, Image, Pod and PodStartedAt: creation must precede surrender.
+// A failed activity cannot transport a result, so its available observations
+// travel instead in versioned application-error details, recovered through
+// DispatchFailurePlacement. A refusal before creation may name only the runner
+// and queue time. No requested pin, daemon host, or guessed pod is substituted.
+// Node and OS remain absent unless supervision observed an assignment and a
+// recognized OS constraint. Older failures have no extension and yield nil;
+// slot zero retains the existing infrastructure retry-at wire contract.
 //
 // Every field is nevertheless omitzero, for decoding tolerance rather than to
 // describe a live state: a block recorded by some other or older producer
@@ -269,6 +254,11 @@ type StagePlacement struct {
 	// runner's declared host, so a deployment-templated runner reports the
 	// template's image and not the Deployment name.
 	Image string `json:"image,omitzero"`
+	// Node is the API-observed pod assignment. OS is the assigned pod's
+	// explicit OS or recognized OS scheduling constraint, not a separate
+	// measurement of the node kernel. Older reports leave both absent.
+	Node string `json:"node,omitzero"`
+	OS   string `json:"os,omitzero"`
 	// QueuedAt and PodStartedAt bound the attempt's wait for capacity:
 	// QueuedAt is stamped when the dispatcher accepted the attempt,
 	// PodStartedAt when the pod was created.
@@ -290,15 +280,19 @@ type stageActivityResult = DispatchStageResult
 // the one field the runner must journal. mutationFact stays as an alias, so no
 // second type exists and the recorded JSON is untouched.
 type MutationFact struct {
-	Provider      string `json:"provider"`
-	Kind          string `json:"kind"`
-	ID            string `json:"id"`
-	URL           string `json:"url,omitempty"`
-	Operation     string `json:"operation,omitempty"`
-	RunID         string `json:"runId,omitempty"`
-	Outcome       string `json:"outcome,omitempty"`
-	ErrorCode     string `json:"errorCode,omitempty"`
-	ProviderRunID string `json:"providerRunId,omitempty"`
+	ReceiptID         string                       `json:"receiptId,omitempty"`
+	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
+	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
+	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
+	Provider          string                       `json:"provider"`
+	Kind              string                       `json:"kind"`
+	ID                string                       `json:"id"`
+	URL               string                       `json:"url,omitempty"`
+	Operation         string                       `json:"operation,omitempty"`
+	RunID             string                       `json:"runId,omitempty"`
+	Outcome           string                       `json:"outcome,omitempty"`
+	ErrorCode         string                       `json:"errorCode,omitempty"`
+	ProviderRunID     string                       `json:"providerRunId,omitempty"`
 }
 
 // mutationFact is the in-package spelling of MutationFact. An ALIAS, for the
@@ -556,7 +550,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
 		// #724 salvage: an agentic session that ran out of wall clock has not
@@ -683,7 +677,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return GateReviewResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 
 	// The subject diff (#3384), read from the workspace this reviewer was
 	// already given rather than from a second one. It is both the evidence the
@@ -858,7 +852,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 		}
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, env.TaskID, ws)
+	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
 	res, err := a.Det.Run(ctx, env, run)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
@@ -963,14 +957,7 @@ func (a *Activities) scrubber() journal.Scrubber {
 }
 
 func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
-	full, err := apiv1.ResolveContainedPath(workspace, mutationsSidecarFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, []string{fmt.Sprintf("resolve sidecar path: %v", err)}
-	}
-	data, err := os.ReadFile(full)
+	data, err := mutationsidecar.Read(workspace)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

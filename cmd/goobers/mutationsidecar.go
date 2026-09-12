@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
+	"io"
 	"log"
-	"os"
 	"strings"
 
+	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/safeopen"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -27,15 +31,19 @@ const mutationsSidecarFile = "mutations.jsonl"
 // RunID identifies the claim owner, which can differ from the stage's run
 // during reconciliation. Provider Fields digests are not part of this handoff.
 type mutationFact struct {
-	Provider      string `json:"provider"`
-	Kind          string `json:"kind"`
-	ID            string `json:"id"`
-	URL           string `json:"url,omitempty"`
-	Operation     string `json:"operation,omitempty"`
-	RunID         string `json:"runId,omitempty"`
-	Outcome       string `json:"outcome,omitempty"`
-	ErrorCode     string `json:"errorCode,omitempty"`
-	ProviderRunID string `json:"providerRunId,omitempty"`
+	ReceiptID         string                       `json:"receiptId,omitempty"`
+	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
+	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
+	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
+	Provider          string                       `json:"provider"`
+	Kind              string                       `json:"kind"`
+	ID                string                       `json:"id"`
+	URL               string                       `json:"url,omitempty"`
+	Operation         string                       `json:"operation,omitempty"`
+	RunID             string                       `json:"runId,omitempty"`
+	Outcome           string                       `json:"outcome,omitempty"`
+	ErrorCode         string                       `json:"errorCode,omitempty"`
+	ProviderRunID     string                       `json:"providerRunId,omitempty"`
 }
 
 // sidecarMutationRecorder implements providers.MutationRecorder by appending
@@ -62,29 +70,92 @@ type sidecarMutationRecorder struct {
 // present-but-corrupt sidecar from the overwhelmingly common no-mutations
 // case and emits its own journal-level signal for that.
 func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref providers.ExternalRef) {
+	if err := r.RecordLandingReceipt(context.Background(), ref); err != nil {
+		log.Printf("mutation sidecar: persist %s: %v", mutationsSidecarFile, err)
+	}
+}
+
+// RecordLandingReceipt reports durability failures to landing callers. Do not
+// abandon a successful forge response merely because its request context was
+// cancelled: the local receipt must still be flushed before surrender.
+func (r sidecarMutationRecorder) RecordLandingReceipt(ctx context.Context, ref providers.ExternalRef) error {
 	fact := mutationFact{
-		Provider:  string(ref.Provider),
-		Kind:      r.kind,
-		ID:        externalRefID(ref.Ref),
-		URL:       ref.URL,
-		Operation: ref.Operation,
-		RunID:     ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
+		LandingIntent:     ref.LandingIntent,
+		QueueAdmission:    ref.QueueAdmission,
+		MergeConfirmation: ref.MergeConfirmation,
+		Provider:          string(ref.Provider),
+		Kind:              r.kind,
+		ID:                externalRefID(ref.Ref),
+		URL:               ref.URL,
+		Operation:         ref.Operation,
+		RunID:             ref.RunID, Outcome: ref.Outcome, ErrorCode: ref.ErrorCode,
 		ProviderRunID: ref.ProviderRunID,
 	}
+	if err := appendMutationFact(fact); err != nil {
+		return err
+	}
+	if ref.LandingIntent != nil || ref.QueueAdmission != nil || ref.MergeConfirmation != nil {
+		return publishStageLandingReceipts(context.WithoutCancel(ctx))
+	}
+	return nil
+}
+
+func (r sidecarMutationRecorder) RecordLandingIntent(ctx context.Context, provider providers.ProviderKind, intent providers.LandingIntent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := appendMutationFact(mutationFact{Provider: string(provider), Kind: r.kind, ID: intent.PullID, Operation: "merge-intent", LandingIntent: &intent}); err != nil {
+		return err
+	}
+	return publishStageLandingReceipts(ctx)
+}
+
+func appendMutationFact(fact mutationFact) error {
+	return appendMutationFactAt(".", fact)
+}
+
+func appendMutationFactAt(dir string, fact mutationFact) (resultErr error) {
+	// Identity belongs to this durable record, not its semantic contents:
+	// separate attempts may legitimately make identical mutations.
+	fact.ReceiptID = rand.Text()
 	data, err := json.Marshal(fact)
 	if err != nil {
-		log.Printf("mutation sidecar: marshal %s %s %s: %v", r.kind, fact.Provider, fact.ID, err)
-		return
+		return err
 	}
-	f, err := os.OpenFile(mutationsSidecarFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	parent, err := safeopen.Open(dir)
 	if err != nil {
-		log.Printf("mutation sidecar: open %s: %v", mutationsSidecarFile, err)
-		return
+		return err
 	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		log.Printf("mutation sidecar: write %s: %v", mutationsSidecarFile, err)
+	defer func() { resultErr = errors.Join(resultErr, parent.Close()) }()
+	f, err := safeopen.AppendAt(parent, mutationsSidecarFile)
+	if err != nil {
+		return err
 	}
+	return persistMutationSidecar(f, append(data, '\n'), func() error { return durability.SyncDir(dir) })
+}
+
+type mutationSidecarWriter interface {
+	io.WriteCloser
+	Sync() error
+}
+
+// persistMutationSidecar flushes the receipt before its process can surrender
+// the workspace. Syncing the parent also persists a newly created sidecar name.
+// It cannot close the earlier gap between a forge mutation and this callback;
+// that requires a separately persisted pre-mutation intent and reconciliation.
+func persistMutationSidecar(file mutationSidecarWriter, data []byte, syncParent func() error) error {
+	n, err := file.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	err = errors.Join(err, file.Close())
+	if err != nil {
+		return err
+	}
+	return syncParent()
 }
 
 // externalRefID extracts the bare identifier from a providers.ExternalRef.Ref

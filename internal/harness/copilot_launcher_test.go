@@ -116,6 +116,70 @@ func TestIncompatibleLauncherStopsBeforeAgentOrModelDiscovery(t *testing.T) {
 	}
 }
 
+func TestLauncherWithoutHandshakeUsesVerifiedAdapterManagedFallback(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	t.Setenv("COPILOT_HOME", home)
+	var contractProbes int
+	adapter := &CopilotAdapter{
+		Command:                     []string{program, "forwarding-launcher"},
+		RequireLauncherContract:     true,
+		AllowAdapterManagedFallback: true,
+		VerifyAdapterManagedSession: true,
+		VersionArgs:                 []string{"version"},
+		AuthCheckArgs:               []string{"auth"},
+		ExtraEnvAllowlist:           []string{"COPILOT_HOME"},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			switch req.Command[len(req.Command)-1] {
+			case launcherContractFlag:
+				contractProbes++
+				return ProcessResult{ExitCode: 2}, nil
+			case "version":
+				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+				return ProcessResult{}, err
+			default:
+				id := commandOptionValue(req.Command, "--session-id")
+				if id == "" {
+					t.Fatalf("behavioral fallback did not receive a generated session id: %v", req.Command)
+				}
+				path := copilotSessionLogPath(home, id)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					return ProcessResult{}, err
+				}
+				return ProcessResult{}, os.WriteFile(path, []byte(`{"type":"session.start"}`+"\n"), 0o600)
+			}
+		}),
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	contract, err := adapter.launcherSessionContract(context.Background())
+	if err != nil {
+		t.Fatalf("cached contract: %v", err)
+	}
+	if contract.SessionMode != "adapter-managed" || contractProbes != 1 {
+		t.Fatalf("contract=%+v probes=%d, want cached adapter-managed fallback", contract, contractProbes)
+	}
+	next := &CopilotAdapter{
+		Command:                     append([]string(nil), adapter.Command...),
+		RequireLauncherContract:     true,
+		AllowAdapterManagedFallback: true,
+		VerifyAdapterManagedSession: true,
+		Runner: launcherProcessRunner(func(_ context.Context, _ ProcessRequest) (ProcessResult, error) {
+			return ProcessResult{ExitCode: 2}, nil
+		}),
+	}
+	if _, err := next.launcherSessionContract(context.Background()); err != nil {
+		t.Fatalf("next adapter fallback: %v", err)
+	}
+	if !next.isLauncherContractVerified() {
+		t.Fatal("process-local behavioral proof was not reused by the next adapter")
+	}
+}
+
 func TestLauncherPreflightRejectsConflictingConfiguredSessionSelector(t *testing.T) {
 	adapter := &CopilotAdapter{
 		Command: []string{"wrapper", "copilot", "--resume", "foreign-session"}, RequireLauncherContract: true,
@@ -126,6 +190,44 @@ func TestLauncherPreflightRejectsConflictingConfiguredSessionSelector(t *testing
 	}
 	if _, err := adapter.Preflight(context.Background()); err == nil || !strings.Contains(err.Error(), "selectors conflict") {
 		t.Fatalf("conflict was not rejected before dispatch: %v", err)
+	}
+}
+
+func TestLauncherPreflightPreservesHandshakeOwnedSessionMode(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authCommand []string
+	adapter := &CopilotAdapter{
+		Command:                     []string{program, "wrapper"},
+		RequireLauncherContract:     true,
+		VerifyAdapterManagedSession: true,
+		VersionArgs:                 []string{"version"},
+		AuthCheckArgs:               []string{"auth"},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			switch req.Command[len(req.Command)-1] {
+			case launcherContractFlag:
+				_, err := io.WriteString(req.StdoutCapture, `{"version":1,"sessionMode":"wrapper-managed"}`)
+				return ProcessResult{}, err
+			case "version":
+				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+				return ProcessResult{}, err
+			default:
+				authCommand = append([]string(nil), req.Command...)
+				return ProcessResult{}, nil
+			}
+		}),
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if copilotCommandSelectsSession(authCommand) {
+		t.Fatalf("preflight overrode wrapper-managed session ownership: %v", authCommand)
+	}
+	contract, err := adapter.launcherSessionContract(context.Background())
+	if err != nil || contract.SessionMode != "wrapper-managed" {
+		t.Fatalf("contract=%+v err=%v, want wrapper-managed", contract, err)
 	}
 }
 

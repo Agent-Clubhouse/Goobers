@@ -26,6 +26,7 @@ import (
 // keeps the graph, the placements and the run controls sourced from one object
 // instead of from a name that a second lookup might resolve elsewhere.
 type engineRunRequest struct {
+	instanceID  string
 	cfg         *instance.Config
 	set         *instance.ConfigSet
 	gaggle      string
@@ -137,6 +138,7 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		// #3876: kit provenance, so an engine run's run.yaml names the same
 		// digest gooberDigestStarter stamps on a runner-driven one.
 		GooberDigest: req.gooberDigest,
+		InstanceID:   req.instanceID,
 		// #3883 (decision 005 R8): the instance's operator-hold posture,
 		// pinned at start. Nil on every instance that did not opt in, which
 		// is the rollback posture and the pre-protocol behaviour exactly.

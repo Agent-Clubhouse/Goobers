@@ -43,11 +43,14 @@ func registerDispatch(starter Starter) func() {
 // using this exact id rather than minting its own, so claim-ledger identity and
 // run identity are the same value throughout.
 type StartRequest struct {
-	RunID        string
-	GooberDigest string
-	Gaggle       string
-	Trigger      journal.Trigger
-	RepoRef      apiv1.RepoRef
+	// RequireDurableJournal forbids an accepted delivery from executing before
+	// its run journal is published. Recovery relies on this absence boundary.
+	RequireDurableJournal bool
+	RunID                 string
+	GooberDigest          string
+	Gaggle                string
+	Trigger               journal.Trigger
+	RepoRef               apiv1.RepoRef
 	// Item is the originating backlog item for a claimed unit of work. Nil for
 	// a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem

@@ -354,6 +354,61 @@ func TestDaemonBranchOwnershipConfirmsARealOwner(t *testing.T) {
 	}
 }
 
+// TestDaemonBranchOwnershipRequiresExactBranchRunIdentity is #4344's identity
+// evidence, and the arm nothing covered: FileCrossRun pins the lookup to the
+// run ID the BRANCH names and then re-checks that run's own journal identity
+// against it. Without that check, a branch could be attributed to a run that
+// merely shares its workflow — and a "confirmed owner" is what licenses
+// reconcile-branches to DELETE the branch.
+//
+// Two ways the identity can disagree, both of which must come back
+// unconfirmed rather than pointing at some other run:
+//   - the branch names a workflow the owning run's journal does not carry;
+//   - the branch names a run that exists but never journaled that branch.
+func TestDaemonBranchOwnershipRequiresExactBranchRunIdentity(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedCrossRunRun(t, layout, crossRunTestGaggle, "asking-run", journal.PhaseRunning)
+	// An implementation run that journaled a branch in the DOCS-UPDATER
+	// namespace. The ref check alone confirms this — the run really did touch
+	// that branch — so only the identity check separates it.
+	seedBranchOwningRun(t, layout, crossRunTestGaggle, "owning-run", "implementation", "goobers/docs-updater/owning-run")
+
+	service := newDaemonRunJournalService(layout, nil)
+	ctx := context.Background()
+
+	// The workflow the branch names is not the owning run's workflow.
+	response, err := service.BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: crossRunTestGaggle,
+		TargetRunID: "owning-run", Workflow: "docs-updater", Branch: "goobers/docs-updater/owning-run",
+	})
+	if err != nil {
+		t.Fatalf("branch ownership on a workflow mismatch: %v", err)
+	}
+	if response.Owner != nil {
+		t.Fatalf("owner = %+v, want none: the branch names workflow docs-updater and run owning-run journals implementation", response.Owner)
+	}
+	if response.Reason != "ambiguous-ownership" {
+		t.Fatalf("reason = %q, want %q", response.Reason, "ambiguous-ownership")
+	}
+
+	// The run the branch names never journaled that branch. The lookup is
+	// pinned to the run the BRANCH names, so no amount of other runs holding
+	// a matching reference can make this one an owner.
+	response, err = service.BranchOwnership(ctx, journalclient.BranchOwnershipRequest{
+		RunID: "asking-run", Gaggle: crossRunTestGaggle,
+		TargetRunID: "owning-run", Workflow: "implementation", Branch: "goobers/implementation/owning-run",
+	})
+	if err != nil {
+		t.Fatalf("branch ownership on an unjournaled branch: %v", err)
+	}
+	if response.Owner != nil {
+		t.Fatalf("owner = %+v, want none: run owning-run never journaled goobers/implementation/owning-run", response.Owner)
+	}
+	if response.Reason != "ambiguous-ownership" {
+		t.Fatalf("reason = %q, want %q", response.Reason, "ambiguous-ownership")
+	}
+}
+
 // TestDaemonBranchOwnershipRefusesRunsOutsideTheAskingRunsGaggle mirrors
 // TestDaemonRunPhaseRefusesRunsOutsideTheAskingRunsGaggle for the fifth
 // question: both the asking run and the target run must belong to the

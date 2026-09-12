@@ -244,6 +244,17 @@ func diagnosticsDaemonInfo(root string, now time.Time) (diagnostics.DaemonInfo, 
 	}
 	info.Running = running
 	info.Stale = running && !liveness.Healthy
+	// A present-but-unheld lock file's own holderKind (#4833) distinguishes a
+	// foreground `goobers run` (expected residue — it acquires and releases
+	// the same lock file) from an actual daemon crash. A read/decode failure
+	// here leaves LockHolderKind empty rather than failing the whole bundle
+	// collection — the summary then falls back to the conservative "possible
+	// crash" wording, same as before this field existed.
+	if info.LockPresent && !running {
+		if state, err := readInstanceLockStatePath(lockPath); err == nil && state != nil {
+			info.LockHolderKind = string(state.HolderKind)
+		}
+	}
 	if !liveness.LastTickAt.IsZero() {
 		info.LastTickAt = liveness.LastTickAt.UTC().Format(time.RFC3339)
 	}

@@ -39,21 +39,34 @@ const (
 )
 
 const (
-	// CurrentDSLVersion is the legacy 1.4 language version. It is DROPPED
+	// V1DSLVersion is the legacy 1.4 language version. It is DROPPED
 	// (unsupported; issue #3507) and is no longer a default for unpinned
-	// workflows — a missing dslVersion is now a hard error. The constant name
-	// is retained (a rename would churn ~60 files) and the string still keys
-	// the matrix's 1.4 entry and the migrator's 1.4→2.0 recovery edge.
-	CurrentDSLVersion = "1.4"
-	// NextDSLVersion is the copy-forward language version with its own
+	// workflows — a missing dslVersion is now a hard error. The string still
+	// keys the matrix's 1.4 entry and the migrator's 1.4→2.0 recovery edge.
+	V1DSLVersion = "1.4"
+	// V2DSLVersion is the copy-forward language version with its own
 	// interpreter and semantics.
-	NextDSLVersion = "2.0"
+	V2DSLVersion = "2.0"
 	// V3DSLVersion is the Goobernetes language version (dsl-3.0.md): the
 	// runsOn/runners/repoFrom surface. PREVIEW while the Goobernetes v1 waves
 	// land — DVL010/DVL011 gate it behind the instance preview opt-in; GA is a
 	// later, separate lock ceremony staged under ValidateSupportPolicy's
 	// append-only rules.
 	V3DSLVersion = "3.0"
+
+	// NextPlannedRelease is the next planned stable release line this repo
+	// intends to cut (#4709). TestDSLMatrixAgainstNextPlannedRelease asserts
+	// ValidateSupportPolicyForRelease and the evolution rules against it on
+	// every PR, in ordinary `go test` — independent of `git describe`'s
+	// output, whose value depends on how many commits a checkout sits past
+	// whichever tag happens to be nearest (#4663: an untagged checkout
+	// several hundred commits past an old stable tag spuriously fired the
+	// release-level check against that stale tag, not against any release
+	// actually being cut). A PR that writes a lifecycle transition
+	// unshippable in this declared version fails on that PR, not at tag
+	// time. Reviewed and bumped like any other change; documented in
+	// docs/guides/releases.md.
+	NextPlannedRelease = "v0.4.0"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.
@@ -62,9 +75,41 @@ type SupportTransition struct {
 	SinceVersion string `json:"sinceVersion"`
 }
 
+// Retraction records a deliberate, auditable withdrawal of a previously
+// published support-lifecycle commitment (#4708) — the declared exception
+// that lets EffectiveIn correct the level to one that took effect BEFORE its
+// published History transition, without the append-only evolution guard
+// refusing it and without silently editing the promise it withdraws. History
+// still names what was published; Retraction is the recorded reason it no
+// longer binds.
+type Retraction struct {
+	// UnsupportedAfter is the previously published unsupported-after release
+	// being withdrawn. Must equal exactly the version's own last published
+	// lifecycle transition (or UnsupportedAfter field) — a retraction naming
+	// any other value is refused, so it cannot be used to excuse an ordinary
+	// early drop that was never actually promised.
+	UnsupportedAfter string `json:"unsupportedAfter"`
+	// Release is the release that performs the retraction — the same
+	// release EffectiveIn names as when the corrected level actually took
+	// effect.
+	Release string `json:"release"`
+	// Rationale explains, for the audit trail, why the commitment is
+	// withdrawn rather than honored or the release renumbered.
+	Rationale string `json:"rationale"`
+}
+
 // VersionSupport describes the host's lifecycle contract for one DSL version.
 type VersionSupport struct {
-	Level            Level               `json:"level"`
+	Level Level `json:"level"`
+	// EffectiveIn records when the current level actually took effect when
+	// correcting an already-published mismatch with the policy history.
+	// History remains the append-only record of the published support promise.
+	EffectiveIn string `json:"effectiveIn,omitempty"`
+	// Retraction justifies an EffectiveIn correction that predates its
+	// published History transition (#4708). Required whenever EffectiveIn is
+	// earlier than the transition it corrects; validateRetraction refuses one
+	// that does not name what was actually published.
+	Retraction       *Retraction         `json:"retraction,omitempty"`
 	UnsupportedAfter string              `json:"unsupportedAfter,omitempty"`
 	Replacement      string              `json:"replacement,omitempty"`
 	History          []SupportTransition `json:"history"`
@@ -77,6 +122,8 @@ type SupportMatrix map[string]VersionSupport
 type Version struct {
 	Version          string              `json:"version"`
 	Level            Level               `json:"level"`
+	EffectiveIn      string              `json:"effectiveIn,omitempty"`
+	Retraction       *Retraction         `json:"retraction,omitempty"`
 	UnsupportedAfter string              `json:"unsupportedAfter,omitempty"`
 	Replacement      string              `json:"replacement,omitempty"`
 	History          []SupportTransition `json:"history"`
@@ -92,22 +139,34 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 	// package internal/workflow/v_current is deleted; the migrator's 1.4→2.0
 	// edge survives as the recovery path DVL030 names.
 	//
-	// The unsupported transition lands at v0.5.0, honoring the deprecation's
-	// previously-published unsupportedAfter target. The append-only lifecycle
-	// rules (supportpolicy.go) are satisfied: 1.4 was deprecated at v0.1.0 in
-	// every released matrix, the transition version v0.5.0 is later than the
-	// latest tag, and it clears the 3-minor support window measured from 2.0's
-	// first release (ValidateSupportPolicy / validateSupportMatrixEvolution).
-	CurrentDSLVersion: {
+	// The beta binaries removed 1.4 on the v0.4.0 line, EARLIER than the
+	// published v0.5.0 support promise. Preserve that promise in the
+	// append-only history and report the actual enforcement in effectiveIn.
+	// The v0.5.0 unsupported-after promise is deliberately RETRACTED rather
+	// than renumbering the release or restoring the interpreter (operator
+	// ruling on #4271, 2026-09-09). Retraction is the recorded, auditable
+	// exception validateEffectiveIn requires for an effectiveIn correction
+	// that predates its published transition — see supportpolicy.go.
+	V1DSLVersion: {
 		Level:       LevelUnsupported,
-		Replacement: NextDSLVersion,
+		EffectiveIn: "v0.4.0",
+		Retraction: &Retraction{
+			UnsupportedAfter: "v0.5.0",
+			Release:          "v0.4.0",
+			Rationale: "DSL 1.4's interpreter was removed on 2026-08-22 (#3507), before " +
+				"the published v0.5.0 unsupported-after promise; all v0.4.0-beta.* " +
+				"releases already shipped without it. Retracted rather than " +
+				"renumbering the release to v0.5.0 or restoring the removed " +
+				"interpreter (#4271, #4708).",
+		},
+		Replacement: V2DSLVersion,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
 			{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
 			{Level: LevelUnsupported, SinceVersion: "v0.5.0"},
 		},
 	},
-	NextDSLVersion: {
+	V2DSLVersion: {
 		Level: LevelSupported,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
@@ -144,6 +203,8 @@ func (m SupportMatrix) Versions() []Version {
 		versions = append(versions, Version{
 			Version:          version,
 			Level:            support.Level,
+			EffectiveIn:      support.EffectiveIn,
+			Retraction:       cloneRetraction(support.Retraction),
 			UnsupportedAfter: support.UnsupportedAfter,
 			Replacement:      support.Replacement,
 			History:          slices.Clone(support.History),
@@ -170,7 +231,7 @@ func (m SupportMatrix) Versions() []Version {
 // LevelSupported, using Versions()'s numeric major/minor order. Callers that
 // must pick a version for an object with no pin of its own (a workflow-less
 // gaggle or goober, #3297) derive it from here rather than from
-// CurrentDSLVersion: the transitional default is deprecated, and resolving an
+// V1DSLVersion: the transitional default is deprecated, and resolving an
 // unpinned object there would fail validation the moment it turns unsupported
 // — with no dslVersion field on those specs for the author to act on. ok is
 // false when no version is currently LevelSupported, a state
@@ -197,7 +258,18 @@ func GetDSL() SupportMatrix {
 
 func cloneVersionSupport(support VersionSupport) VersionSupport {
 	support.History = slices.Clone(support.History)
+	support.Retraction = cloneRetraction(support.Retraction)
 	return support
+}
+
+// cloneRetraction returns a defensive copy of retraction so a caller cannot
+// mutate the package's declaration through an aliased pointer.
+func cloneRetraction(retraction *Retraction) *Retraction {
+	if retraction == nil {
+		return nil
+	}
+	clone := *retraction
+	return &clone
 }
 
 // CompareDSLVersions orders two DSL version strings by numeric major then

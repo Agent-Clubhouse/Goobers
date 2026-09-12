@@ -32,6 +32,7 @@ func (c *Config) validateBaseConfig() error {
 		c.Workcopies.validate,
 		func() error { return c.API.validate(c.APIListenAddress()) },
 		c.validateWorkflowSource,
+		func() error { return workcopyroot.Validate("configMirrorPath", c.ConfigMirrorPath) },
 		func() error { return c.Webhook.validate(c.WebhookListenAddress()) },
 	)
 }
@@ -49,6 +50,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		c.Telemetry.Retention.validate,
 		c.RunConditions.validate,
 		c.Retention.validate,
+		func() error { return c.UpdateCheckSettings().Validate() },
 		func() error { return c.validateRepos(stores) },
 		c.validateGitHubCLIIdentityRefs,
 		func() error { return c.validateDaemonIdentity(stores) },
@@ -243,6 +245,11 @@ func (c *TelemetryRetentionConfig) validate() error {
 	if c.MaxRuns < 0 {
 		return fmt.Errorf("telemetry.retention.maxRuns must not be negative")
 	}
+	switch c.FirstEnable {
+	case "", "gracePeriod", "immediate":
+	default:
+		return fmt.Errorf("telemetry.retention.firstEnable must be %q or %q, got %q", "gracePeriod", "immediate", c.FirstEnable)
+	}
 	return nil
 }
 
@@ -278,11 +285,24 @@ func (c RetentionConfig) validate() error {
 	if c.MaxRetainedWorktreeBytes < 0 {
 		return fmt.Errorf("retention.maxRetainedWorktreeBytes must not be negative")
 	}
-	if _, err := c.RetainedWorktreeMaxAgeDuration(); err != nil {
+	// Retention is opt-out (#4253), and an omitted retainedWorktreeMaxAge now
+	// resolves to DefaultRetainedWorktreeMaxAge, so a stock instance always
+	// has a limit. The only way left to be enabled with nothing to enforce is
+	// to zero the byte ceiling and explicitly turn the age rule off, which is
+	// a configuration that silently does nothing — say so rather than
+	// pretending retention is running.
+	age, err := c.RetainedWorktreeMaxAgeDuration()
+	if err != nil {
 		return err
 	}
-	if c.Enabled && c.MaxRetainedWorktreeBytes == 0 && c.RetainedWorktreeMaxAge == "" {
-		return fmt.Errorf("retention.enabled requires at least one of retention.maxRetainedWorktreeBytes or retention.retainedWorktreeMaxAge to be set (enabling retention with no limits prunes nothing)")
+	if _, err := c.JournalGraceAgeDuration(); err != nil {
+		return err
+	}
+	if c.EnabledEffective() && c.MaxRetainedWorktreeBytes == 0 && age == 0 {
+		return fmt.Errorf("retention.retainedWorktreeMaxAge %q disables the age rule and retention.maxRetainedWorktreeBytes is unset, so retention would prune nothing: set a limit, or set retention.enabled: false", c.RetainedWorktreeMaxAge)
+	}
+	if c.FirstEnable != "" && c.FirstEnable != "gracePeriod" && c.FirstEnable != "immediate" {
+		return fmt.Errorf("retention.firstEnable must be %q or %q, got %q", "gracePeriod", "immediate", c.FirstEnable)
 	}
 	return nil
 }

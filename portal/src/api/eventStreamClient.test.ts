@@ -86,6 +86,25 @@ describe("HttpDaemonClient event stream", () => {
     );
   });
 
+  it("normalizes legacy update events as invalidations", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        'id: session:3\nevent: update\ndata: {"cursor":"session:3","models":["run"]}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+    );
+    const stream = await new HttpDaemonClient({ fetch: fetcher }).connectEvents();
+
+    await expect(stream[Symbol.asyncIterator]().next()).resolves.toEqual({
+      done: false,
+      value: {
+        id: "session:3",
+        type: "invalidate",
+        data: { cursor: "session:3", models: ["run"] },
+      },
+    });
+  });
+
   it("cancels successful response bodies that are not event streams", async () => {
     const cancel = vi.fn();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(

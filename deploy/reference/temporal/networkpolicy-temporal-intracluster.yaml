@@ -1,0 +1,59 @@
+# #4827: the OSS Temporal Helm chart's own server components (frontend,
+# history, matching, worker) must reach each other for internal RPC and
+# ringpop membership gossip — this is Temporal's OWN required traffic, not
+# an external grant, and it is separate from temporal-frontend-ingress's
+# control-plane-to-frontend grant (which admits nothing for history,
+# matching, or worker, and admits nothing for frontend's OWN membership
+# port either). Selecting the whole chart-wide app.kubernetes.io/name=
+# temporal label for BOTH podSelector and the ingress peer grants every
+# server component ingress, on every server component's listen ports, from
+# every OTHER server component in the same namespace — the mesh Temporal's
+# ringpop gossip protocol actually needs, without hand-maintaining the
+# full pairwise service graph. web/admintools pods carry the same chart-wide
+# label and so also match this policy; they do not listen on these ports,
+# so the extra ingress rule is inert for them, not a broadened exposure.
+#
+# Ports (evidence from the live chart release, #4827):
+#   frontend: 7233 (RPC, client-facing — the external grant lives in
+#     temporal-frontend-ingress), 6933 (membership), 9090 (metrics)
+#   history:  7234 (RPC), 6934 (membership), 9090 (metrics)
+#   matching: 7235 (RPC), 6935 (membership), 9090 (metrics)
+#   worker:   7239 (RPC), 6939 (membership), 9090 (metrics)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: temporal-intracluster-rpc
+  namespace: goobers-temporal
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: temporal
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # No namespaceSelector: an unqualified podSelector peer matches only
+        # pods in this policy's OWN namespace (goobers-temporal) — the same
+        # Temporal chart release, never a same-named pod elsewhere.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: temporal
+      ports:
+        - protocol: TCP
+          port: 6933
+        - protocol: TCP
+          port: 6934
+        - protocol: TCP
+          port: 6935
+        - protocol: TCP
+          port: 6939
+        - protocol: TCP
+          port: 7233
+        - protocol: TCP
+          port: 7234
+        - protocol: TCP
+          port: 7235
+        - protocol: TCP
+          port: 7239
+        - protocol: TCP
+          port: 9090

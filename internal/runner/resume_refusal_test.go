@@ -222,14 +222,19 @@ func TestRunnerResumeDigestMismatchFailsAndFinalizes(t *testing.T) {
 	}
 	var finished int
 	var runFinishedErr *journal.ErrorDetail
+	var runFinishedDisposition string
 	for _, e := range events {
 		if e.Type == journal.EventRunFinished {
 			finished++
 			runFinishedErr = e.Error
+			runFinishedDisposition = e.Disposition
 		}
 	}
 	if finished != 1 {
 		t.Fatalf("run.finished count = %d, want exactly 1", finished)
+	}
+	if runFinishedDisposition != journal.RunDispositionProduced {
+		t.Fatalf("run.finished disposition = %q, want %q", runFinishedDisposition, journal.RunDispositionProduced)
 	}
 	if runFinishedErr == nil {
 		t.Fatal("run.finished carries no Error detail — the refusal reason must be ON the terminal event itself, per the ruling")

@@ -34,11 +34,14 @@ const (
 	RunEventsPath                = V1Prefix + "/runs/{run}/events"
 	StageAttemptsPath            = V1Prefix + "/runs/{run}/stages/{stage}/attempts"
 	RunArtifactPath              = V1Prefix + "/runs/{run}/artifacts/{digest}"
+	RunRecoveryPath              = V1Prefix + "/runs/{run}/recovery"
 	RunTranscriptPath            = V1Prefix + "/runs/{run}/transcripts/{seq}"
 	TelemetryCostsPath           = V1Prefix + "/telemetry/costs"
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
+	WorkItemsPath                = V1Prefix + "/work-items"
+	WorkItemDetailPath           = WorkItemsPath + "/{provider}/{kind}/{id}"
 	// TelemetryImplementationOutcomesPath is the curation-evidence read
 	// (decision 005 R4 / finding 002 C3): the terminal implementation runs
 	// that claimed a backlog item, with the run's last error and gate verdict
@@ -118,9 +121,14 @@ const (
 	// reach the read-only navigation routes, and the bare /readyz probe is
 	// kept to booleans and timestamps so its unauthenticated fail-open
 	// exception cannot become an information-disclosure surface.
-	ConfigDigestPath         = V1Prefix + "/config/digest"
-	TriggerIngestPath        = V1Prefix + "/triggers"
-	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
+	ConfigDigestPath = V1Prefix + "/config/digest"
+	// WorkerConfigDivergencePath accepts the worker's transition reports into
+	// the daemon-owned instance journal; it is the write half of the same
+	// narrow config-observability capability.
+	WorkerConfigDivergencePath = V1Prefix + "/worker/config-divergence"
+	TriggerIngestPath          = V1Prefix + "/triggers"
+	TriggerStatusPath          = V1Prefix + "/triggers/{acceptance}"
+	RunEscalationResolvePath   = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunCancelPath is the run-control plane (#3807): ask the daemon to stop
 	// a run it is actively executing. The daemon-local seam is the
 	// <SchedulerDir>/pending-cancels/ file drop `goobers run cancel` writes,
@@ -230,6 +238,7 @@ type RouteID string
 // Stable V1 route IDs.
 const (
 	RouteConfigDigest             RouteID = "configDigest"
+	RouteWorkerConfigDivergence   RouteID = "workerConfigDivergence"
 	RouteHealth                   RouteID = "health"
 	RouteInstance                 RouteID = "instance"
 	RoutePortalConfig             RouteID = "portalConfig"
@@ -245,11 +254,15 @@ const (
 	RouteRunEvents                RouteID = "runEvents"
 	RouteStageAttempts            RouteID = "stageAttempts"
 	RouteRunArtifact              RouteID = "runArtifact"
+	RouteRunRecovery              RouteID = "runRecovery"
+	RouteRunRecoveryPublish       RouteID = "runRecoveryPublish"
 	RouteRunTranscript            RouteID = "runTranscript"
 	RouteTelemetryCosts           RouteID = "telemetryCosts"
 	RouteTelemetryStats           RouteID = "telemetryStats"
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
+	RouteWorkItems                RouteID = "workItems"
+	RouteWorkItemDetail           RouteID = "workItemDetail"
 
 	RouteTelemetryImplementationOutcomes RouteID = "telemetryImplementationOutcomes"
 
@@ -279,6 +292,7 @@ const (
 	RouteClaimVerify       RouteID = "claimVerify"
 	RouteClaimRecover      RouteID = "claimRecover"
 	RouteTriggerIngest     RouteID = "triggerIngest"
+	RouteTriggerStatus     RouteID = "triggerStatus"
 	RouteResolveEscalation RouteID = "resolveEscalation"
 	RouteCancelRun         RouteID = "cancelRun"
 	RouteJournalEmit       RouteID = "journalEmit"
@@ -386,25 +400,33 @@ const (
 var v1Routes = []Route{
 	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
-	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	// A worker's divergence report is a machine-to-daemon journal seam, not an
+	// operator mutation that every product surface must expose. Class it with
+	// the journal emit plane and pool its append with mutations.
+	{ID: RouteWorkerConfigDivergence, Method: http.MethodPost, Path: WorkerConfigDivergencePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteInstance, Method: http.MethodGet, Path: InstancePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RoutePortalConfig, Method: http.MethodGet, Path: PortalConfigPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
-	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteWorkflowQueueEligibility, Method: http.MethodGet, Path: WorkflowQueueEligibilityPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteGaggles, Method: http.MethodGet, Path: GagglesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleGoobers, Method: http.MethodGet, Path: GaggleGoobersPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleWorkflows, Method: http.MethodGet, Path: GaggleWorkflowsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleConnections, Method: http.MethodGet, Path: GaggleConnectionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkflowDetail, Method: http.MethodGet, Path: WorkflowDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkflowQueueEligibility, Method: http.MethodGet, Path: WorkflowQueueEligibilityPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRuns, Method: http.MethodGet, Path: RunsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteRunDetail, Method: http.MethodGet, Path: RunDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunReveal, Method: http.MethodPost, Path: RunRevealPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteRunEvents, Method: http.MethodGet, Path: RunEventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteStageAttempts, Method: http.MethodGet, Path: StageAttemptsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostSingleRun, Budget: BoundedBudget},
 	{ID: RouteRunArtifact, Method: http.MethodGet, Path: RunArtifactPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteRunRecovery, Method: http.MethodGet, Path: RunRecoveryPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteRunRecoveryPublish, Method: http.MethodPost, Path: RunRecoveryPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: BlobBudget},
 	{ID: RouteRunTranscript, Method: http.MethodGet, Path: RunTranscriptPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteTelemetryCosts, Method: http.MethodGet, Path: TelemetryCostsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkItems, Method: http.MethodGet, Path: WorkItemsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteWorkItemDetail, Method: http.MethodGet, Path: WorkItemDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	// The defect-aggregate route is classified with its telemetry siblings:
 	// answered from the same pre-aggregated rollup buckets, bounded by the
@@ -445,6 +467,7 @@ var v1Routes = []Route{
 	// with the mutations rather than the reads.
 	{ID: RouteClaimRecover, Method: http.MethodPost, Path: ClaimRecoverPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteTriggerStatus, Method: http.MethodGet, Path: TriggerStatusPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 	// Cancelling a live run is operator recovery, like `run abort` and the
 	// HITL resolution above — maintenance, outside the runtime parity

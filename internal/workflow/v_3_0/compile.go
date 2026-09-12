@@ -561,7 +561,7 @@ func resultFileContractProblem(t apiv1.Task, subcommand string) string {
 }
 
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, knownExternalTelemetryConnectors map[string]bool, checkAllGooberCapabilities bool) []string {
-	var problems []string
+	problems := claimVisibilityProblems(def.Spec.Readiness.ClaimVisibility)
 	maxConcurrentRuns := def.Spec.Readiness.MaxConcurrentRuns
 	if maxConcurrentRuns <= 0 {
 		maxConcurrentRuns = 1
@@ -749,7 +749,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 }
 
 func requiresModelCapability(h apiv1.Harness, knownHarnesses map[string]bool) bool {
-	return knownHarnesses != nil && (h == apiv1.HarnessCopilot || h == apiv1.HarnessClaudeCode)
+	return knownHarnesses != nil && knownHarnesses[string(h)]
 }
 
 func unknownCapability(value string) string {

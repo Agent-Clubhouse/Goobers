@@ -820,6 +820,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.readiness.claimVisibility",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.readiness.desiredConcurrentRuns",
       "stability": "ga",
       "sinceVersion": "dev"

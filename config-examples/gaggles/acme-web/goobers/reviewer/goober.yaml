@@ -14,8 +14,6 @@ spec:
   # write capability of any kind — it never mutates the repo, issue, or PR.
   capabilities:
     - agent:model
-  skills:
-    - review
   tools:
     - shell
   scaleFactor: 1

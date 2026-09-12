@@ -33,12 +33,12 @@ func (r *dispatchContextRecorder) record(ctx, dispatchCtx context.Context) {
 	r.calls++
 }
 
-func (r *dispatchContextRecorder) TriggerWithDispatchContext(ctx, dispatchCtx context.Context, _ string, _ time.Time) (string, error) {
+func (r *dispatchContextRecorder) TriggerWithDispatchContextOptions(ctx, dispatchCtx context.Context, _ string, _ time.Time, _ localscheduler.ManualTriggerOptions) (string, error) {
 	r.record(ctx, dispatchCtx)
 	return "run-1", nil
 }
 
-func (r *dispatchContextRecorder) TriggerExactWithDispatchContext(ctx, dispatchCtx context.Context, _ localscheduler.WorkflowIdentity, _ time.Time) (string, error) {
+func (r *dispatchContextRecorder) TriggerExactWithDispatchContextOptions(ctx, dispatchCtx context.Context, _ localscheduler.WorkflowIdentity, _ time.Time, _ localscheduler.ManualTriggerOptions) (string, error) {
 	r.record(ctx, dispatchCtx)
 	return "run-1", nil
 }

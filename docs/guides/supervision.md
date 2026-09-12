@@ -56,6 +56,49 @@ The hourly workflow defaults to a checksum-verified release; `manual` pins a tag
 config-diff checks. The host journals activation, retains the old binary, and rolls
 back with escalation on failed health. Config delivery remains owned by Workflow CD.
 
+### Knowing an update exists
+
+A running daemon checks the product release source at startup and every
+`updateCheck.interval` (default 24h) and prints one line when the newest
+release on its channel is ahead of the running build:
+
+```
+update available: v0.5.0 (running v0.4.0) — run `goobers self-update` to stage it
+```
+
+On an instance without `goobers service install` the notice names
+`goobers service install` instead, because `self-update` refuses without the
+supervised binary slot. `goobers status` renders the same answer from the
+daemon's cache (`<root>/updates/check.json`) and makes no request of its own.
+
+That sentence is announced once per discovered version. Because a single line
+scrolls out of `journalctl` behind the per-minute heartbeat, the heartbeat also
+carries a compact clause for as long as the build is behind (#4920):
+
+```
+[15:04:05] alive — 3 workflow(s), 0 trigger(s) fired, …; mem…; cpu…; update v0.5.0 available
+```
+
+The clause disappears once the running build is current, and `--quiet`
+suppresses it along with the rest of the heartbeat.
+
+The check is **notify-only** (INST-020): it never stages or applies anything,
+and a release source that is unreachable warns once and changes nothing about
+the daemon's health. A version is announced once, not once per tick.
+
+Configure it in `instance.yaml`:
+
+```yaml
+updateCheck:
+  enabled: true       # default; false makes this path do no network request
+  channel: stable     # stable | prerelease — the same channels self-update stages
+  interval: 24h
+```
+
+`channel: prerelease` is the persistent equivalent of `self-update`'s
+`--include-prerelease`, which is otherwise reachable only by editing a stage's
+command line.
+
 > **Credentials & PATH.** Run the daemon as the user that owns the instance's
 > provider token, so it inherits per-user credentials — this is why the Linux
 > and macOS templates default to a *user* service. Remember the daemon's
@@ -187,13 +230,12 @@ Logs go to the console the SCM captures; use the daemon's own journal
 service account (`sc.exe config goobers obj= …`) so the daemon runs as the user
 whose credentials the instance references.
 
-> **Status (#639 / #633 / #752).** The handler is build-tag-gated
-> (`//go:build windows`) and its compile is guaranteed on every PR by the
-> `linux node validation` CI job's `GOOS=windows go build ./internal/winsvc/...`
-> step. Full-binary Windows cross-compilation and live start/stop verification
-> ride the Windows POSIX-abstraction work (#620–#627), the Windows CI leg
-> (#633), and a live Windows environment (#752). Until then, treat the Windows
-> Service wiring as reviewed-and-compiling, runtime-pending.
+> **Status.** The required Windows CI gate builds and vets the full binary on a
+> native Windows runner and runs the `internal/winsvc` transition tests on
+> every pull request, merge group, and push to main. Native Service Control
+> Manager lifecycle verification — install, start, query, stop, and uninstall
+> of the packaged service — remains open in
+> [#2438](https://github.com/Agent-Clubhouse/Goobers/issues/2438).
 
 ---
 

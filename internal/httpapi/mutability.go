@@ -133,12 +133,16 @@ var ErrIdempotencyKeyMissing = errors.New("httpapi: Idempotency-Key is required 
 
 // idempotencyKey extracts and validates the key from a mutation request.
 func idempotencyKey(request *http.Request) (string, error) {
+	return idempotencyKeyWithLimit(request, idempotencyKeyMaxLen)
+}
+
+func idempotencyKeyWithLimit(request *http.Request, maxBytes int) (string, error) {
 	key := strings.TrimSpace(request.Header.Get(HeaderIdempotencyKey))
 	if key == "" {
 		return "", ErrIdempotencyKeyMissing
 	}
-	if len(key) > idempotencyKeyMaxLen {
-		return "", fmt.Errorf("httpapi: Idempotency-Key exceeds %d bytes", idempotencyKeyMaxLen)
+	if len(key) > maxBytes {
+		return "", fmt.Errorf("httpapi: Idempotency-Key exceeds %d bytes", maxBytes)
 	}
 	// Control characters would corrupt a log line and could smuggle a newline
 	// into a record. Rejected rather than sanitised: a caller sending one has a

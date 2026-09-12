@@ -49,8 +49,8 @@ against the responsible issue, per issue #30's scope.
   **use a scratch/fork repo for the first execution, not this one**, until
   the loop has been proven once.
 - The [self-hosting dogfood config](#1-setup) this repo ships —
-  `reference-workflows/` is on `main` and today loads **11 goobers and 11
-  workflows**. That inventory is CI-guarded, not restated by hand: the counts
+  `reference-workflows/` is on `main` and today loads **11 goobers and 14 workflows**.
+  That inventory is CI-guarded, not restated by hand: the counts
   below and in
   [`reference-workflows/README.md`](../reference-workflows/README.md) are
   asserted against the loaded definitions by
@@ -97,7 +97,7 @@ export GOOBERS_GITHUB_TOKEN=ghp_...
 # Validate before anything runs (fails closed on bad config/definitions).
 cd my-instance
 ../bin/goobers validate .
-# OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 13 workflow(s))
+# OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 14 workflow(s))
 ```
 
 Verified locally against a scratch instance root (no network, no live repo

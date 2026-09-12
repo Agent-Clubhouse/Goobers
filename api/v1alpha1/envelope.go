@@ -53,6 +53,10 @@ type InvocationEnvelope struct {
 	WorkflowID string `json:"workflowId"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).
 	RunID string `json:"runId"`
+	// InstanceID is the originating instance's durable identity, pinned at
+	// admission. Workers must not replace it with their own root identity.
+	// Empty denotes a legacy run with unknown instance provenance.
+	InstanceID string `json:"instanceId,omitempty"`
 	// TriggerRef identifies the event or item that caused the run. It is bounded
 	// scheduler metadata, not the provider's raw trigger payload.
 	TriggerRef string `json:"triggerRef,omitempty"`

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,6 +23,7 @@ import (
 type mutationSidecarDeterministic struct {
 	fact   string // one raw JSON line, or "" to write nothing
 	status apiv1.ResultStatus
+	err    error
 }
 
 func (d mutationSidecarDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -34,7 +36,36 @@ func (d mutationSidecarDeterministic) Run(_ context.Context, env apiv1.Invocatio
 	if status == "" {
 		status = apiv1.ResultSuccess
 	}
-	return apiv1.ResultEnvelope{Status: status, Summary: "mutated"}, nil
+	return apiv1.ResultEnvelope{Status: status, Summary: "mutated"}, d.err
+}
+
+func TestDispatchTaskPreservesMergeReceiptAfterExecutorError(t *testing.T) {
+	fact := `{"provider":"github","kind":"pr","id":"7","operation":"merge","mergeConfirmation":{"repositoryApiUrl":"https://api.github.com/repos/acme/web","pullId":"7","mergeSha":"confirmed-sha"}}`
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return mutationSidecarDeterministic{fact: fact, err: errors.New("cleanup failed after merge")}, nil
+	}, gate.NewAutomatedEvaluator())
+	res, startErr := r.Start(context.Background(), StartInput{
+		RunID: "run-merge-error", Machine: fixtureMachine(t), Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if startErr == nil && res.Phase == journal.PhaseCompleted {
+		t.Fatal("executor failure was reported as completed")
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-merge-error"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRefTouched && event.ExternalRef != nil && event.ExternalRef.ID == "7" && event.Runner["mergeConfirmation"] != nil {
+			return
+		}
+	}
+	t.Fatal("confirmed merge receipt lost when executor returned a later error")
 }
 
 // TestDispatchTaskProjectsMutationSidecarIntoRefTouched is issue #228's

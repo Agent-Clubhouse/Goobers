@@ -37,6 +37,24 @@ func openAt(dir *os.File, name string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 
+func appendAt(dir *os.File, name string) (*os.File, error) {
+	flags := unix.O_WRONLY | unix.O_APPEND | unix.O_CREAT | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK
+	fd, err := unix.Openat(int(dir.Fd()), name, flags, 0o600)
+	if err != nil {
+		return nil, noFollowError(err)
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("safeopen: append requires a regular singly-linked file")
+	}
+	return os.NewFile(uintptr(fd), name), nil
+}
+
 // noFollowError maps the kernel's O_NOFOLLOW rejection (ELOOP) onto the
 // ErrSymlink sentinel while keeping the raw errno in the chain, and passes
 // every other error (e.g. ENOENT → fs.ErrNotExist) through untouched.

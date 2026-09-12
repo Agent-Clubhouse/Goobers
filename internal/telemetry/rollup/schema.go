@@ -801,4 +801,48 @@ CREATE INDEX idx_stage_usage_run ON stage_usage(run_id);
 CREATE INDEX idx_stage_usage_branch ON stage_usage(branch, run_id);
 CREATE INDEX idx_stage_model_usage_run ON stage_model_usage(run_id);
 `,
+	// v24 (#3019): preserve the originating instance from run.yaml. NULL is
+	// deliberately unknown for existing rows; names/paths cannot backfill it.
+	`
+ALTER TABLE runs ADD COLUMN instance_id TEXT;
+`,
+	// v25 (#3019): bounded PR-keyed receipt lookup must not scan every run
+	// or repeatedly walk the complete mutation history for each forge PR.
+	`
+CREATE INDEX idx_provider_mutations_merge_identity
+ON provider_mutations(provider, external_id, occurred_at)
+WHERE kind = 'pr' AND operation = 'merge';
+`,
+	// v26 (#3019): attempts are queryable independently of external effects.
+	// Per-run deletion/rebuild and the journal retention caller own lifetime.
+	`
+CREATE TABLE landing_intents (
+ run_id TEXT NOT NULL,
+ seq INTEGER NOT NULL,
+ provider TEXT NOT NULL,
+ external_id TEXT NOT NULL,
+ occurred_at TEXT NOT NULL,
+ runner_json TEXT,
+ PRIMARY KEY (run_id, seq)
+);
+CREATE INDEX idx_landing_intents_time ON landing_intents(occurred_at, run_id, seq);
+`,
+	// v27 (#3639): scheduler_ingest_cursor's byte_offset is only meaningful
+	// against the SAME instance-journal generation it was recorded in —
+	// compaction (internal/journal.CompactInstanceEvents) writes kept records
+	// to a brand new generation file rather than rewriting the current one in
+	// place, so a byte offset carried over from before a compaction points at
+	// unrelated content in the new file. Before this column, ingestion kept
+	// resolving a hardcoded legacy path forever and silently stopped
+	// advancing (or, once that generation was eventually reclaimed, read as
+	// an ordinary empty file — zero new rows, no error). DEFAULT 0 is
+	// deliberate, not "assume generation 0 is still correct": an existing
+	// store upgrading here may already be well past generation 0, so the
+	// very next ingest sees a mismatch against the live generation and is
+	// forced to re-read that generation's current file from its head —
+	// exactly the one-time catch-up needed, safe because scheduler_events
+	// inserts are idempotent (ON CONFLICT DO NOTHING keyed by seq).
+	`
+ALTER TABLE scheduler_ingest_cursor ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
+`,
 }

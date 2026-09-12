@@ -58,6 +58,216 @@ export function renderRunAssociations(operator) {
     return links.length ? '<div class="run-associations">' + links.join("") + "</div>" : "\u2014";
 }
 
+// The snapshot cards and the run table interpolate values the portal does not
+// control — an instance name from instance.yaml, run IDs, workflow and gaggle
+// names, and phases all originate in a repository or a run's own metadata
+// (#4567). Building those rows here, rather than inline in the browser
+// script, is what makes them unit-testable against hostile input: both
+// functions are inlined into the page verbatim via .toString(), with
+// escapeAssociationHtml remapped onto the client's escapeHtml.
+
+export function renderSnapshotCard(label, value) {
+    return '<div class="label">' + escapeAssociationHtml(label) +
+        '</div><div class="value">' + escapeAssociationHtml(value) + "</div>";
+}
+
+// parts.actionsLink and parts.associations are already-built HTML from
+// safeExternalUrl and renderRunAssociations, which escape their own inputs;
+// every value read off the run itself is escaped here.
+export function renderRunRowCells(run, parts) {
+    const cell = (value) => "<td>" + escapeAssociationHtml(value) + "</td>";
+    const runId = (run && (run.runId || run.id)) || "";
+    const extra = (parts && parts.actionsLink) || "";
+    const associations = (parts && parts.associations) || "\u2014";
+    return "<td><code>" + escapeAssociationHtml(runId) + "</code>" + extra + "</td>" +
+        cell((run && run.workflow) || "") +
+        cell((run && run.gaggle) || "") +
+        cell((run && run.trigger && run.trigger.kind) || "\u2014") +
+        '<td><span class="phase">' + escapeAssociationHtml((run && run.phase) || "") + "</span></td>" +
+        "<td>" + associations + "</td>" +
+        cell((parts && parts.startedAt) || "") +
+        cell((parts && parts.lastActivityAt) || "");
+}
+
+export function formatRunDetailTime(value) {
+    if (!value) return "\u2014";
+    try {
+        return escapeAssociationHtml(new Date(value).toLocaleString());
+    } catch {
+        return escapeAssociationHtml(value);
+    }
+}
+
+// Render the complete run metadata shell at a testable escaping boundary.
+// parts.actionsLink is the only trusted markup; its call site constructs it
+// from a protocol-checked and escaped URL.
+export function renderRunDetailSummary(run = {}, parts = {}) {
+    const transitions = Array.isArray(run.transitions) ? run.transitions : [];
+    const events = Array.isArray(run.events) ? run.events : [];
+    const finalTransition = [...transitions].reverse().find((transition) => transition && transition.terminal);
+    const finishedStages = new Set(
+        events.filter((event) => event && event.type === "stage.finished" && event.stage).map((event) => event.stage),
+    );
+    const workflow = escapeAssociationHtml(run.workflow || "");
+    const workflowVersion = run.workflowVersion ? " v" + escapeAssociationHtml(run.workflowVersion) : "";
+    const duration = Number.isFinite(Number(run.durationMillis)) && Number(run.durationMillis) > 0
+        ? Math.round(Number(run.durationMillis) / 1000) + "s"
+        : "\u2014";
+    const values = [
+        ["Workflow", workflow + workflowVersion],
+        ["Gaggle", escapeAssociationHtml(run.gaggle || "")],
+        ["Phase", '<span class="phase">' + escapeAssociationHtml(run.phase || "") + "</span>"],
+        ["Final state", escapeAssociationHtml((finalTransition && (finalTransition.status || finalTransition.verdict)) || (run.terminal ? run.phase : "in progress"))],
+        ["Completed stages", escapeAssociationHtml(finishedStages.size)],
+        ["Started", formatRunDetailTime(run.startedAt)],
+        ["Finished", formatRunDetailTime(run.finishedAt)],
+        ["Duration", escapeAssociationHtml(duration)],
+        ["Repasses", escapeAssociationHtml(run.repassCount ?? 0)],
+        ["Retries", escapeAssociationHtml(run.retryCount ?? 0)],
+        ["Trigger", escapeAssociationHtml((run.trigger && run.trigger.kind) || "")],
+    ];
+    const grid = values.map(([label, value]) => '<div class="kv"><div class="label">' +
+        escapeAssociationHtml(label) + '</div><div class="value">' + value + "</div></div>").join("");
+    return '<div class="run-header"><h2>' + workflow + "</h2><code>" +
+        escapeAssociationHtml(run.id || run.runId || "") + "</code>" + (parts.actionsLink || "") + "</div>" +
+        '<div class="internal-tabs" role="tablist" aria-label="Run detail sections">' +
+        '<button id="run-tab-summary" role="tab" data-tab="summary" aria-controls="run-panel-summary">Summary</button>' +
+        '<button id="run-tab-execution" role="tab" data-tab="execution" aria-controls="run-panel-execution">Execution</button>' +
+        '<button id="run-tab-diagnostics" role="tab" data-tab="diagnostics" aria-controls="run-panel-diagnostics">Diagnostics</button>' +
+        '<button id="run-tab-actions" role="tab" data-tab="actions" aria-controls="run-panel-actions">Actions</button>' +
+        '</div><section id="run-panel-summary" role="tabpanel" aria-labelledby="run-tab-summary">' +
+        '<div class="kv-grid">' + grid + "</div>";
+}
+
+export function renderRunEventItems(displayedEvents = [], sourceId = "", runId = "", options = {}) {
+    const formatTime = options.formatTime || formatRunDetailTime;
+    const safeUrl = options.safeUrl || safeAssociationUrl;
+    return displayedEvents.map((event = {}) => {
+        const status = event.status || event.verdict || event.decision || "";
+        const stage = event.stage ? " \u00b7 " + escapeAssociationHtml(event.stage) : "";
+        const summary = '<summary><span class="event-seq">#' + escapeAssociationHtml(event.seq ?? "") +
+            "</span><code>" + escapeAssociationHtml(event.type || "") + "</code><span>" + stage +
+            (status ? " \u00b7 " + escapeAssociationHtml(status) : "") +
+            '</span><span class="event-time">' + formatTime(event.time) + "</span></summary>";
+        const artifacts = [];
+        if (event.artifact) artifacts.push(event.artifact);
+        for (const artifact of event.artifacts || []) artifacts.push(artifact);
+        const seenDigests = new Set();
+        const artifactLinks = artifacts.filter((artifact) => {
+            if (!artifact || !artifact.digest || seenDigests.has(artifact.digest)) return false;
+            seenDigests.add(artifact.digest);
+            return true;
+        }).map((artifact) => {
+            const href = "/api/run-artifact?source=" + encodeURIComponent(sourceId) +
+                "&id=" + encodeURIComponent(runId) + "&digest=" + encodeURIComponent(artifact.digest);
+            const label = artifact.name || artifact.digest;
+            return '<a href="' + href + '" target="_blank" rel="noopener">' +
+                escapeAssociationHtml(label) + " (" + escapeAssociationHtml(artifact.size ?? "") + " bytes)</a>";
+        });
+        if (event.name && String(event.name).toLowerCase().includes("transcript")) {
+            const href = "/api/run-transcript?source=" + encodeURIComponent(sourceId) +
+                "&id=" + encodeURIComponent(runId) + "&seq=" + encodeURIComponent(event.seq);
+            artifactLinks.push('<a href="' + href + '" target="_blank" rel="noopener">Agent transcript / messages</a>');
+        }
+        const externalUrl = event.externalRef && safeUrl(event.externalRef.url);
+        const refHtml = externalUrl
+            ? '<p>External: <a href="' + escapeAssociationHtml(externalUrl) +
+              '" target="_blank" rel="noopener noreferrer">' +
+              escapeAssociationHtml((event.externalRef.provider || "") + " " + (event.externalRef.kind || "") + " #" + (event.externalRef.id || "")) +
+              "</a></p>"
+            : "";
+        const details = {};
+        for (const key of ["outputs", "runner", "error", "rationale", "reason", "completeness", "raw"]) {
+            if (event[key] !== undefined && event[key] !== null && event[key] !== "") details[key] = event[key];
+        }
+        const detailsHtml = Object.keys(details).length
+            ? "<pre>" + escapeAssociationHtml(JSON.stringify(details, null, 2)) + "</pre>"
+            : "";
+        const linksHtml = artifactLinks.length
+            ? '<div class="artifact-links">' + artifactLinks.join(" \u00b7 ") + "</div>"
+            : "";
+        return "<details>" + summary + '<div class="event-body">' + refHtml + detailsHtml + linksHtml + "</div></details>";
+    }).join("");
+}
+
+export function renderTransitions(transitions = []) {
+    if (!transitions.length) return '<p class="muted">No transitions recorded.</p>';
+    const items = transitions.map((transition = {}) => {
+        const verdict = transition.verdict ? escapeAssociationHtml(transition.verdict) : "";
+        const verdictClass = verdict ? " badge-" + verdict : "";
+        const arrow = transition.terminal ? "\u25a0" : "\u2192";
+        const verdictText = verdict
+            ? ' <span class="' + verdictClass.trim() + '">[' + verdict +
+              (transition.repass ? ", repass" : "") + "]</span>"
+            : "";
+        const target = transition.target
+            ? " " + arrow + " <code>" + escapeAssociationHtml(transition.target) + "</code>"
+            : (transition.status ? " (" + escapeAssociationHtml(transition.status) + ")" : "");
+        return '<li><span class="seq">#' + escapeAssociationHtml(transition.seq ?? "") +
+            "</span><code>" + escapeAssociationHtml(transition.source || "") + "</code>" +
+            target + verdictText + "</li>";
+    });
+    return '<ul class="transitions-list">' + items.join("") + "</ul>";
+}
+
+export function renderOperatorPanel(operator, refs = [], options = {}) {
+    if (!operator) return "";
+    const safeUrl = options.safeUrl || safeAssociationUrl;
+    const parts = [];
+    if (operator.issue) {
+        const issueNumber = String(operator.issue.number ?? "");
+        const issueRef = refs.find((ref) =>
+            String(ref.id) === issueNumber &&
+            ["issue", "work-item", "workitem"].includes(String(ref.kind || "").toLowerCase()) &&
+            safeUrl(ref.url),
+        );
+        const issueLabel = escapeAssociationHtml("#" + issueNumber + " " + (operator.issue.title || ""));
+        parts.push(["Issue", issueRef
+            ? '<a href="' + escapeAssociationHtml(safeUrl(issueRef.url)) +
+              '" target="_blank" rel="noopener noreferrer">' + issueLabel + "</a>"
+            : issueLabel]);
+    }
+    if (operator.pullRequest) {
+        const pullUrl = safeUrl(operator.pullRequest.url);
+        const pullTitle = String(operator.pullRequestTitle || "").trim();
+        const pullLabel = escapeAssociationHtml(
+            (operator.pullRequest.provider || "") + " " + (operator.pullRequest.kind || "") + " #" +
+            (operator.pullRequest.id || "") + (pullTitle ? ": " + pullTitle : ""),
+        );
+        parts.push(["Pull request", pullUrl
+            ? '<a href="' + escapeAssociationHtml(pullUrl) +
+              '" target="_blank" rel="noopener noreferrer">' + pullLabel + "</a>"
+            : pullLabel]);
+    }
+    if (operator.liveness) parts.push(["Liveness", escapeAssociationHtml(operator.liveness)]);
+    if (operator.trajectory) parts.push(["Trajectory", escapeAssociationHtml(operator.trajectory)]);
+    if (operator.latestError) {
+        parts.push(["Latest error", "<code>" + escapeAssociationHtml(operator.latestError.code || "") +
+            "</code> " + escapeAssociationHtml(operator.latestError.message || "")]);
+    }
+    let markup = '<div class="kv-grid">' + parts.map(([label, value]) =>
+        '<div class="kv' + (label === "Latest error" ? " kv-wide" : "") +
+        '"><div class="label">' + escapeAssociationHtml(label) +
+        '</div><div class="value">' + value + "</div></div>").join("") + "</div>";
+    if (operator.review) {
+        const verdict = escapeAssociationHtml(operator.review.verdict || "");
+        markup += '<h3>Review</h3><p><span class="badge-' + verdict + '">' + verdict + "</span></p>";
+        if (operator.review.rationale) {
+            markup += '<p class="rationale">' + escapeAssociationHtml(operator.review.rationale) + "</p>";
+        }
+    }
+    if (operator.pullRequest && operator.pullRequestBody) {
+        markup += '<h3>Pull request description</h3><div class="pr-description">' +
+            escapeAssociationHtml(operator.pullRequestBody) + "</div>";
+    }
+    if (operator.potentialBlockers && operator.potentialBlockers.length) {
+        markup += '<h3>Potential blockers</h3><ul class="blockers-list">' +
+            operator.potentialBlockers.map((blocker) => "<li>" + escapeAssociationHtml(blocker) + "</li>").join("") +
+            "</ul>";
+    }
+    return markup;
+}
+
 export function renderGraphLegend() {
     return '<div class="graph-legend" aria-label="Workflow state legend">' +
         '<strong>State legend:</strong> ' +
@@ -992,7 +1202,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
 
   function fmtTime(v) {
     if (!v) return "\u2014";
-    try { return new Date(v).toLocaleString(); } catch { return v; }
+    try { return escapeHtml(new Date(v).toLocaleString()); } catch { return escapeHtml(v); }
   }
 
   function renderAttention(items, runs) {
@@ -1132,7 +1342,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     for (const [label, value] of cards) {
       const div = document.createElement("div");
       div.className = "card";
-      div.innerHTML = '<div class="label">' + label + '</div><div class="value">' + value + "</div>";
+      div.innerHTML = renderSnapshotCard(label, value);
       cardsEl.appendChild(div);
     }
 
@@ -1156,8 +1366,8 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         "<td" + nameTitleAttr + "><code>" + escapeHtml(name) + "</code></td>" +
         "<td>" + escapeHtml(gaggle) + "</td>" +
         "<td>" + escapeHtml(triggerLabel) + "</td>" +
-        "<td>" + (w.concurrency?.activeRuns ?? "\u2014") + "</td>" +
-        "<td>" + (w.concurrency?.maxConcurrentRuns ?? "\u2014") + "</td>" +
+        "<td>" + escapeHtml(w.concurrency?.activeRuns ?? "\u2014") + "</td>" +
+        "<td>" + escapeHtml(w.concurrency?.maxConcurrentRuns ?? "\u2014") + "</td>" +
         '<td class="enabled-cell"></td>';
       tr.classList.add("clickable-row");
       tr.title = "Filter runs to this workflow";
@@ -1428,15 +1638,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const associations = renderRunAssociations(r.operator);
       tr.className = "clickable-row";
       tr.dataset.runId = runId;
-      tr.innerHTML =
-        "<td><code>" + runId + "</code>" + actionsLink + "</td>" +
-        "<td>" + (r.workflow || "") + "</td>" +
-        "<td>" + (r.gaggle || "") + "</td>" +
-        "<td>" + escapeHtml(r.trigger?.kind || "\u2014") + "</td>" +
-        '<td><span class="phase">' + (r.phase || "") + "</span></td>" +
-        "<td>" + associations + "</td>" +
-        "<td>" + fmtTime(r.startedAt) + "</td>" +
-        "<td>" + fmtTime(r.lastActivityAt) + "</td>";
+      tr.innerHTML = renderRunRowCells(r, {
+        actionsLink,
+        associations,
+        startedAt: fmtTime(r.startedAt),
+        lastActivityAt: fmtTime(r.lastActivityAt),
+      });
       tr.querySelectorAll(".actions-run-link, .run-association-link").forEach((link) =>
         link.addEventListener("click", (event) => event.stopPropagation()));
       tr.addEventListener("click", () => openRun(runId));
@@ -1932,18 +2139,6 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
     });
   }
 
-  function renderTransitions(transitions) {
-    if (!transitions || transitions.length === 0) return '<p class="muted">No transitions recorded.</p>';
-    const items = transitions.map((t) => {
-      const verdictCls = t.verdict ? " badge-" + t.verdict : "";
-      const arrow = t.terminal ? "\\u25a0" : "\\u2192";
-      const verdictTxt = t.verdict ? ' <span class="' + verdictCls.trim() + '">[' + t.verdict + (t.repass ? ", repass" : "") + "]</span>" : "";
-      const target = t.target ? " " + arrow + " <code>" + escapeHtml(t.target) + "</code>" : (t.status ? " (" + escapeHtml(t.status) + ")" : "");
-      return '<li><span class="seq">#' + t.seq + '</span><code>' + escapeHtml(t.source) + "</code>" + target + verdictTxt + "</li>";
-    });
-    return '<ul class="transitions-list">' + items.join("") + "</ul>";
-  }
-
   function safeExternalUrl(value) {
     try {
       const url = new URL(value);
@@ -1954,6 +2149,22 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
   }
 
   const renderRunAssociations = ${renderRunAssociations.toString()
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderSnapshotCard = ${renderSnapshotCard.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderRunRowCells = ${renderRunRowCells.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderRunDetailSummary = ${renderRunDetailSummary.toString()
+        .replaceAll("formatRunDetailTime", "fmtTime")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderRunEventItems = ${renderRunEventItems.toString()
+        .replaceAll("formatRunDetailTime", "fmtTime")
+        .replaceAll("safeAssociationUrl", "safeExternalUrl")
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderTransitions = ${renderTransitions.toString()
+        .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const renderOperatorPanel = ${renderOperatorPanel.toString()
         .replaceAll("safeAssociationUrl", "safeExternalUrl")
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const BOOLEAN_FILTER_KEYS = new Set(["showNoWork"]);
@@ -2002,99 +2213,6 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const label = (ref.provider || "external") + " " + (ref.kind || "ref") + " #" + (ref.id || "");
       return '<a href="' + escapeHtml(safeExternalUrl(ref.url)) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + "</a>";
     }).join("") + "</div>";
-  }
-
-  function renderOperatorPanel(op, refs) {
-    if (!op) return "";
-    const parts = [];
-    if (op.issue) {
-      const issueRef = (refs || []).find((ref) =>
-        String(ref.id) === String(op.issue.number) &&
-        ["issue", "work-item", "workitem"].includes(String(ref.kind || "").toLowerCase()) &&
-        safeExternalUrl(ref.url),
-      );
-      const issueLabel = "#" + op.issue.number + " " + escapeHtml(op.issue.title || "");
-      parts.push(["Issue", issueRef
-        ? '<a href="' + escapeHtml(safeExternalUrl(issueRef.url)) + '" target="_blank" rel="noopener noreferrer">' + issueLabel + "</a>"
-        : issueLabel]);
-    }
-    if (op.pullRequest) {
-      const pullUrl = safeExternalUrl(op.pullRequest.url);
-      const pullTitle = String(op.pullRequestTitle || "").trim();
-      const pullLabel = escapeHtml(op.pullRequest.provider + " " + op.pullRequest.kind + " #" +
-        op.pullRequest.id + (pullTitle ? ": " + pullTitle : ""));
-      parts.push(["Pull request", pullUrl
-        ? '<a href="' + escapeHtml(pullUrl) + '" target="_blank" rel="noopener noreferrer">' + pullLabel + "</a>"
-        : pullLabel]);
-    }
-    if (op.liveness) parts.push(["Liveness", op.liveness]);
-    if (op.trajectory) parts.push(["Trajectory", op.trajectory]);
-    if (op.latestError) parts.push(["Latest error", "<code>" + escapeHtml(op.latestError.code) + "</code> " + escapeHtml(op.latestError.message || "")]);
-    let html = '<div class="kv-grid">' + parts.map(([label, value]) =>
-      '<div class="kv' + (label === "Latest error" ? " kv-wide" : "") + '"><div class="label">' +
-      label + '</div><div class="value">' + value + "</div></div>").join("") + "</div>";
-    if (op.review) {
-      html += '<h3>Review</h3><p><span class="badge-' + op.review.verdict + '">' + op.review.verdict + "</span></p>";
-      if (op.review.rationale) html += '<p class="rationale">' + escapeHtml(op.review.rationale) + "</p>";
-    }
-    if (op.pullRequest && op.pullRequestBody) {
-      html += '<h3>Pull request description</h3><div class="pr-description">' +
-        escapeHtml(op.pullRequestBody) + "</div>";
-    }
-    if (op.potentialBlockers && op.potentialBlockers.length) {
-      html += '<h3>Potential blockers</h3><ul class="blockers-list">' + op.potentialBlockers.map((b) => "<li>" + escapeHtml(b) + "</li>").join("") + "</ul>";
-    }
-    return html;
-  }
-
-  function renderRunEventItems(displayedEvents, sourceId, runId) {
-    return displayedEvents.map((event) => {
-      const status = event.status || event.verdict || event.decision || "";
-      const stage = event.stage ? " · " + escapeHtml(event.stage) : "";
-      const summary =
-        '<summary><span class="event-seq">#' + event.seq + "</span><code>" +
-        escapeHtml(event.type) + "</code><span>" + stage +
-        (status ? " · " + escapeHtml(status) : "") +
-        '</span><span class="event-time">' + fmtTime(event.time) + "</span></summary>";
-      const artifacts = [];
-      if (event.artifact) artifacts.push(event.artifact);
-      for (const artifact of event.artifacts || []) artifacts.push(artifact);
-      const seenDigests = new Set();
-      const artifactLinks = artifacts.filter((artifact) => {
-        if (!artifact.digest || seenDigests.has(artifact.digest)) return false;
-        seenDigests.add(artifact.digest);
-        return true;
-      }).map((artifact) => {
-        const href = "/api/run-artifact?source=" + encodeURIComponent(sourceId) +
-          "&id=" + encodeURIComponent(runId) + "&digest=" + encodeURIComponent(artifact.digest);
-        const label = artifact.name || artifact.digest;
-        return '<a href="' + href + '" target="_blank" rel="noopener">' +
-          escapeHtml(label) + " (" + artifact.size + " bytes)</a>";
-      });
-      const isTranscript = event.name && String(event.name).toLowerCase().includes("transcript");
-      if (isTranscript) {
-        const href = "/api/run-transcript?source=" + encodeURIComponent(sourceId) +
-          "&id=" + encodeURIComponent(runId) + "&seq=" + encodeURIComponent(event.seq);
-        artifactLinks.push('<a href="' + href + '" target="_blank" rel="noopener">Agent transcript / messages</a>');
-      }
-      const refHtml = event.externalRef && safeExternalUrl(event.externalRef.url)
-        ? '<p>External: <a href="' + escapeHtml(safeExternalUrl(event.externalRef.url)) +
-          '" target="_blank" rel="noopener noreferrer">' +
-          escapeHtml((event.externalRef.provider || "") + " " + (event.externalRef.kind || "") + " #" + (event.externalRef.id || "")) +
-          "</a></p>"
-        : "";
-      const details = {};
-      for (const key of ["outputs", "runner", "error", "rationale", "reason", "completeness", "raw"]) {
-        if (event[key] !== undefined && event[key] !== null && event[key] !== "") details[key] = event[key];
-      }
-      const detailsHtml = Object.keys(details).length
-        ? "<pre>" + escapeHtml(JSON.stringify(details, null, 2)) + "</pre>"
-        : "";
-      const linksHtml = artifactLinks.length
-        ? '<div class="artifact-links">' + artifactLinks.join(" · ") + "</div>"
-        : "";
-      return "<details>" + summary + '<div class="event-body">' + refHtml + detailsHtml + linksHtml + "</div></details>";
-    }).join("");
   }
 
   function renderRunEvents(events, sourceId, runId) {
@@ -2256,37 +2374,12 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
       const r = data.run;
       const events = r.events || [];
       const refs = externalRefsFrom(events);
-      const finalTransition = [...(r.transitions || [])].reverse().find((t) => t.terminal);
-      const finishedStages = new Set(
-        events.filter((event) => event.type === "stage.finished" && event.stage).map((event) => event.stage),
-      );
-      const kv = [
-        ["Workflow", escapeHtml(r.workflow) + (r.workflowVersion ? " v" + r.workflowVersion : "")],
-        ["Gaggle", escapeHtml(r.gaggle || "")],
-        ["Phase", '<span class="phase">' + escapeHtml(r.phase) + "</span>"],
-        ["Final state", escapeHtml((finalTransition && (finalTransition.status || finalTransition.verdict)) || (r.terminal ? r.phase : "in progress"))],
-        ["Completed stages", String(finishedStages.size)],
-        ["Started", fmtTime(r.startedAt)],
-        ["Finished", fmtTime(r.finishedAt)],
-        ["Duration", r.durationMillis ? Math.round(r.durationMillis / 1000) + "s" : "\\u2014"],
-        ["Repasses", r.repassCount ?? 0],
-        ["Retries", r.retryCount ?? 0],
-        ["Trigger", escapeHtml((r.trigger && r.trigger.kind) || "")],
-      ];
       const actionsRunUrl = safeExternalUrl(r.actionsRunUrl);
       const actionsLink = actionsRunUrl
         ? '<a class="actions-run-link" href="' + escapeHtml(actionsRunUrl) +
           '" target="_blank" rel="noopener noreferrer">View GitHub Action &#8599;</a>'
         : "";
-      let html = '<div class="run-header"><h2>' + escapeHtml(r.workflow) + "</h2><code>" +
-        escapeHtml(r.id) + "</code>" + actionsLink + "</div>" +
-        '<div class="internal-tabs" role="tablist" aria-label="Run detail sections">' +
-        '<button id="run-tab-summary" role="tab" data-tab="summary" aria-controls="run-panel-summary">Summary</button>' +
-        '<button id="run-tab-execution" role="tab" data-tab="execution" aria-controls="run-panel-execution">Execution</button>' +
-        '<button id="run-tab-diagnostics" role="tab" data-tab="diagnostics" aria-controls="run-panel-diagnostics">Diagnostics</button>' +
-        '<button id="run-tab-actions" role="tab" data-tab="actions" aria-controls="run-panel-actions">Actions</button>' +
-        '</div><section id="run-panel-summary" role="tabpanel" aria-labelledby="run-tab-summary">';
-      html += '<div class="kv-grid">' + kv.map(([label, value]) => '<div class="kv"><div class="label">' + label + '</div><div class="value">' + value + "</div></div>").join("") + "</div>";
+      let html = renderRunDetailSummary(r, { actionsLink });
       if (r.operator) {
         html += "<h2>Operator</h2>" + renderOperatorPanel(r.operator, refs);
       }

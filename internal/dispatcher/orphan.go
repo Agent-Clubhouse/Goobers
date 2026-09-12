@@ -139,7 +139,7 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 		// loop, and `deleted` reflects every pod actually removed. (The sweep
 		// also re-runs on every restart, so a pod that errors here is retried,
 		// not lost.)
-		if err := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); err != nil {
+		if err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt}); err != nil {
 			errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
 			continue
 		}

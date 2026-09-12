@@ -41,6 +41,11 @@ describe("run detail", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(status, { selector: ".status-badge" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Execution graph" })).toBeInTheDocument();
+    expect(screen.queryByText("Structure")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Execution timeline" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Selected event details" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
@@ -429,6 +434,10 @@ describe("run detail", () => {
 
     const majorEvents = await screen.findByRole("button", { name: "Major events" });
     expect(majorEvents).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Key moments" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
     expect(screen.getByText("Unsupported schema v2-preview")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Select sequence 3:/ })).not.toBeInTheDocument();
 
@@ -459,13 +468,13 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "review, gate, Running at sequence 3" }),
     ).toHaveAttribute("aria-pressed", "true");
     let inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptOne)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 4:/ }));
     inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("review evidence · Visit 1 · Sequence 4")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 1 · Sequence 4")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictOne)).toBeInTheDocument();
 
@@ -482,6 +491,10 @@ describe("run detail", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("GitHub opened pull request #1432.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open related pull request #1432" })).toHaveAttribute(
+      "href",
+      "https://github.example/pull/1432",
+    );
     expect(screen.getByRole("link", { name: "Open linked pull request" })).toHaveAttribute(
       "href",
       "https://github.example/pull/1432",
@@ -489,13 +502,13 @@ describe("run detail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 10:/ }));
     inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 10")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 2 · Sequence 10")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
     expect(await within(inspector).findByText(transcriptTwo)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 11:/ }));
     inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("review evidence · Visit 2 · Sequence 11")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 2 · Sequence 11")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View content" }));
     expect(await within(inspector).findByText(verdictTwo)).toBeInTheDocument();
 
@@ -550,7 +563,7 @@ describe("run detail", () => {
     detail.lastSeq = 3;
     renderRun(runId, new FixtureDaemonClient(fixtures));
 
-    expect(await screen.findByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    expect(await screen.findByText("Evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Select sequence 1:/ }));
     fireEvent.click(
       screen.getByRole("button", {
@@ -559,7 +572,7 @@ describe("run detail", () => {
     );
     const transcript = screen.getByRole("button", { name: /^Select sequence 3:/ });
     fireEvent.click(transcript);
-    expect(screen.getByText("review evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    expect(screen.getByText("Evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
   });
 
   it("keeps replay and stage inspection in the fallback fullscreen workspace", async () => {
@@ -580,7 +593,7 @@ describe("run detail", () => {
     expect(fullscreenRoot).toHaveAttribute("data-fullscreen", "fallback");
     expect(fullscreenRoot).toHaveAttribute("role", "dialog");
     const replayControls = within(fullscreenRoot).getByRole("region", {
-      name: "Replay controls",
+      name: "Execution timeline",
     });
     const scrubber = within(replayControls).getByRole("slider", {
       name: "Scrub replay timeline",
@@ -663,7 +676,7 @@ describe("run detail", () => {
       );
       expect(requestFullscreen).toHaveBeenCalledOnce();
       expect(
-        within(fullscreenRoot).getByRole("region", { name: "Replay controls" }),
+        within(fullscreenRoot).getByRole("region", { name: "Execution timeline" }),
       ).toBeInTheDocument();
 
       fireEvent.click(
@@ -967,7 +980,7 @@ describe("run detail", () => {
 
     client.holdRefresh();
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
       await client.waitForPendingRefresh();
     });
 
@@ -1017,7 +1030,7 @@ describe("run detail", () => {
     renderRun("01JZ455ESCALATE");
 
     expect(await screen.findByText("Unsupported schema v2-preview")).toBeInTheDocument();
-    expect(screen.getByText("Type future.recorded")).toBeInTheDocument();
+    expect(screen.getAllByText("future.recorded")).not.toHaveLength(0);
     expect(screen.queryByText(/preserved but not rendered/)).not.toBeInTheDocument();
   });
 
@@ -1044,7 +1057,7 @@ describe("run detail", () => {
   });
 
   it("renders pinned identity and narrow-layout semantics with the replay scrubber", async () => {
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 480 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
     renderRun("01JZ300ABORTED");
 
     expect(
@@ -1062,27 +1075,58 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "implement, agentic, Aborted at sequence 5" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pan graph left" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pan graph right" })).toBeInTheDocument();
     expect(portalStyles).toMatch(/\.playback-panel\s*\{[^}]*width:\s*100%/s);
     expect(screen.queryByRole("heading", { name: /attempt|escalation/i })).not.toBeInTheDocument();
   });
 
-  it("pivots the run's gaggle/workflow identity into a pre-scoped Runs and Insight view (#2529)", async () => {
+  it("shortens long run identities visually while preserving full accessible copy", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const original = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!original) {
+      throw new Error("Expected active run fixture.");
+    }
+    const longId = "01JZ441DAEMONAPI-EXTREMELY-LONG-RUN-IDENTIFIER";
+    fixtures.runDetails = { [longId]: { ...original, id: longId } };
+    fixtures.runEvents = {
+      [longId]: {
+        ...fixtures.runEvents?.["01JZ441DAEMONAPI"]!,
+        runId: longId,
+      },
+    };
     const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+
+    renderRun(longId, new FixtureDaemonClient(fixtures));
+
+    expect(await screen.findByRole("heading", { name: `Run ${longId}` })).toHaveTextContent("…");
+    await user.click(screen.getByRole("button", { name: "Copy full run ID" }));
+    expect(writeText).toHaveBeenCalledWith(longId);
+    expect(screen.getByRole("button", { name: "Run ID copied" })).toBeInTheDocument();
+  });
+
+  it("exposes mobile-first ledger fields with expandable secondary detail", async () => {
+    renderRun("01JZ441DAEMONAPI");
+    const row = await screen.findByRole("button", { name: /^Select sequence 6:/ });
+    expect(within(row).getByText("6")).toBeInTheDocument();
+    expect(within(row).getByText("review")).toBeInTheDocument();
+    expect(document.querySelector(".event-ledger-table-header")).toHaveTextContent("Elapsed");
+    expect(row.querySelector(".ledger-time")).not.toBeEmptyDOMElement();
+    expect(
+      row.parentElement?.querySelector("details.ledger-mobile-detail"),
+    ).not.toBeNull();
+  });
+
+  it("keeps workflow identity and pin metadata together without unrelated page pivots", async () => {
     renderRun("01JZ400FAILED");
 
     await screen.findByRole("heading", { name: "Run 01JZ400FAILED" });
-    expect(
-      screen.getByRole("link", { name: "View core / implementation in Insight" }),
-    ).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
-
-    await user.click(
-      screen.getByRole("link", { name: "View core / implementation in Runs" }),
+    expect(document.querySelector(".run-identity-line")).toHaveTextContent(
+      "core / implementation · Pinned v7 · sha256:core",
     );
-
-    expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Insight drill-through scope")).toHaveTextContent(
-      "core / implementation",
-    );
+    expect(screen.queryByRole("link", { name: /View core \/ implementation in/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Workflow pin")).not.toBeInTheDocument();
   });
 
   it("surfaces the coded failure reason and deep-links from a failed run", async () => {
