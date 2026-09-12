@@ -209,6 +209,21 @@ func TestRunStageGateAndRetryMetricsAreRecorded(t *testing.T) {
 	}
 }
 
+func TestJournalAppendDropMetricHasNoAttributes(t *testing.T) {
+	reader := metric.NewManualReader()
+	client := newMetricsClient(t, Config{MetricReader: reader})
+	client.InstanceJournalAppendDropped()
+	client.InstanceJournalAppendDropped()
+
+	points := metricPoints(t, collectMetrics(t, reader), MetricJournalAppendsDropped)
+	if len(points) != 1 || points[0].value != 2 {
+		t.Fatalf("%s points = %+v, want one dimensionless point with value 2", MetricJournalAppendsDropped, points)
+	}
+	if points[0].attrs.Len() != 0 {
+		t.Fatalf("%s attributes = %v, want none", MetricJournalAppendsDropped, points[0].attrs)
+	}
+}
+
 func TestRedactionsTotalRecordsRegistryAndPatternLayersWithoutChangingBytes(t *testing.T) {
 	const registered = "SUPER-SECRET-CANARY-9f8e7d6c5b4a3210"
 	const patterned = "ghp_0123456789abcdefghijklmnopqrstuvwxyzA"

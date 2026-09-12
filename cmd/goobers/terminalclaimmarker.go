@@ -229,7 +229,7 @@ func recordClaimMarkerReleaseError(log *journal.InstanceLog, entry localschedule
 	if log == nil {
 		return
 	}
-	_ = log.Append(journal.Event{
+	log.AppendBestEffort(journal.Event{
 		Type:     journal.EventError,
 		Name:     entry.ItemID,
 		Gaggle:   entry.Gaggle,

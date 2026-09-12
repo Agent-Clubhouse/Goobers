@@ -126,7 +126,7 @@ func reportOrphanedEngineRuns(l instance.Layout, log *journal.InstanceLog, open 
 		}
 		seen[run.WorkflowID] = struct{}{}
 		orphans = append(orphans, runID)
-		_ = log.Append(journal.Event{
+		log.AppendBestEffort(journal.Event{
 			Type: journal.EventError, Gaggle: run.Gaggle, Workflow: run.Workflow, RunID: runID,
 			Reason: "engine workflow open with no local run directory",
 			Runner: map[string]any{

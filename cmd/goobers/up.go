@@ -219,7 +219,7 @@ func (r *sweepErrorReporter) report(err error) {
 	if r.consecutive != 1 && (r.consecutive-1)%r.reportEvery != 0 {
 		return
 	}
-	_ = r.log.Append(journal.Event{
+	r.log.AppendBestEffort(journal.Event{
 		Type:  journal.EventError,
 		Error: &journal.ErrorDetail{Code: r.code, Message: message},
 		Runner: map[string]any{
@@ -700,9 +700,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel:      setup.ReadModel,
-		RetentionStats: setup.RetentionStats,
-		WorkItemLookup: statusWorkItemLookup(l.Root, setup.Definitions),
+		ReadModel:        setup.ReadModel,
+		RetentionStats:   setup.RetentionStats,
+		InstanceLogStats: setup.InstanceLog.Stats,
+		WorkItemLookup:   statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -1488,7 +1489,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 					claimSweepErrors.report(err)
 				}
 				if err == nil && len(released) > 0 {
-					_ = setup.InstanceLog.Append(journal.Event{
+					setup.InstanceLog.AppendBestEffort(journal.Event{
 						Type:   journal.EventClaimReleased,
 						Reason: fmt.Sprintf("periodic recovery released %d expired claim(s)", len(released)),
 						Runner: map[string]any{"releasedClaims": len(released)},

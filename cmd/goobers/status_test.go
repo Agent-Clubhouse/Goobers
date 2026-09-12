@@ -451,6 +451,23 @@ func TestTelemetryRetentionStatusLine(t *testing.T) {
 	}
 }
 
+func TestJournalHealthStatusHumanAndJSON(t *testing.T) {
+	status := readservice.SchedulerStatus{JournalHealth: &readservice.JournalHealthStatus{AppendsDropped: 4}}
+	if got := journalHealthStatusLine(status); !strings.Contains(got, "dropped 4 best-effort append(s)") {
+		t.Fatalf("journal health line = %q", got)
+	}
+	if got := journalHealthStatusLine(readservice.SchedulerStatus{JournalHealth: &readservice.JournalHealthStatus{}}); got != "" {
+		t.Fatalf("healthy journal line = %q, want silence", got)
+	}
+	blob, err := json.Marshal(statusJSONOutput{JournalHealth: status.JournalHealth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"journalHealth":{"appendsDropped":4}`) {
+		t.Fatalf("status JSON = %s", blob)
+	}
+}
+
 // TestStatusRejectsNonInstanceRoot is issue #142: a typo'd or otherwise
 // nonexistent path used to fall through to listRuns finding no runs/ dir,
 // printing the misleading "no runs found" at exit 0 — indistinguishable from

@@ -558,7 +558,7 @@ func reattachEngineRun(ctx context.Context, guards *engineRunGuards, id journal.
 		ev.Reason = engineWorkflowReason(attachment.Status)
 		ev.Status = string(engineRunTerminalPhase(deps.layout, id.RunID, journal.PhaseCompleted))
 	}
-	_ = deps.log.Append(ev)
+	deps.log.AppendBestEffort(ev)
 }
 
 // engineWorkflowReason renders Temporal's execution status for the instance

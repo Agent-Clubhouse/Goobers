@@ -4101,6 +4101,8 @@ It lists parked backlog items too — open issues carrying a park disposition wi
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
 Shared baseline failures are listed with the subjects waiting on them: runs parked
 because the target branch itself fails CI, all released by one repair to that branch.
+goobers status --daemon and the live Instance API warn when best-effort instance-journal appends were dropped;
+the process-lifetime count resets on restart because a failed journal cannot persist itself.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
 With --agents, list only the agentic stages in flight right now, by role and run id.
 The --agents answer comes from the runner's own journals, never from a process table,

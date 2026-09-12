@@ -314,7 +314,7 @@ func (s *engineStarter) echo(req localscheduler.StartRequest, ev journal.Event) 
 		ev.Runner = map[string]any{}
 	}
 	ev.Runner["driver"] = string(journal.DriverEngine)
-	_ = s.log.Append(ev)
+	s.log.AppendBestEffort(ev)
 }
 
 // runnerFallbackStarter wraps the local runner's Starter for a lane the
@@ -366,7 +366,7 @@ func (s *runnerFallbackStarter) annotate(req localscheduler.StartRequest) {
 		return
 	}
 	fields := s.selection.annotationFields()
-	_ = s.log.Append(journal.Event{
+	s.log.AppendBestEffort(journal.Event{
 		Type: journal.EventRunnerAnnotation, RunID: req.RunID,
 		Gaggle: req.Gaggle, Workflow: s.workflow,
 		Reason: "engine dispatch declined; running on the local runner", Runner: fields,

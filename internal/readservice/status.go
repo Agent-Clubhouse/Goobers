@@ -65,6 +65,14 @@ type SchedulerStatus struct {
 	Maintenance            *MaintenanceStatus
 	WorkerConfigDivergence []WorkerConfigDivergenceStatus
 	TelemetryRetention     *TelemetryRetentionStatus
+	JournalHealth          *JournalHealthStatus
+}
+
+// JournalHealthStatus exposes process-lifetime instance-journal write health.
+// It is absent from offline readers, which cannot observe another process's
+// volatile counter without pretending the failed journal persisted it.
+type JournalHealthStatus struct {
+	AppendsDropped uint64 `json:"appendsDropped"`
 }
 
 // WorkerConfigDivergenceStatus is the last config-tree comparison reported by
@@ -514,6 +522,10 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		}
 	}
 	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}
+	if s.sources.InstanceLogStats != nil {
+		stats := s.sources.InstanceLogStats()
+		status.JournalHealth = &JournalHealthStatus{AppendsDropped: stats.AppendsDropped}
+	}
 	for _, worker := range projected.workerDivergenceOrder {
 		status.WorkerConfigDivergence = append(status.WorkerConfigDivergence, projected.workerDivergence[worker])
 	}

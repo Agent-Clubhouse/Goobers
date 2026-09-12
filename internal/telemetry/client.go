@@ -107,6 +107,16 @@ type Client struct {
 	scrubber           journal.Scrubber
 }
 
+// InstanceJournalAppendDropped implements journal.InstanceAppendDropObserver.
+// The metric is deliberately dimensionless: paths, errors, run IDs, and event
+// types are either sensitive or unbounded and do not belong in metric labels.
+func (c *Client) InstanceJournalAppendDropped() {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	c.instruments.journalDrops.Add(context.Background(), 1)
+}
+
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
 func New(ctx context.Context, cfg Config) (*Client, error) {
 	// The SDK's default error handler logs every asynchronous export failure

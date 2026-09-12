@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/goobers/goobers/internal/platform/safeopen"
@@ -34,6 +35,16 @@ type InstanceLog struct {
 	file   *os.File
 	seq    uint64
 	closed bool
+
+	droppedAppends atomic.Uint64
+	dropObserver   InstanceAppendDropObserver
+}
+
+// InstanceLogStats are process-lifetime health counters for one open instance
+// journal. They deliberately are not persisted into the journal: a journal
+// that cannot accept an append cannot be its own durable failure sink.
+type InstanceLogStats struct {
+	AppendsDropped uint64 `json:"appendsDropped"`
 }
 
 // OpenInstanceLog opens the instance journal at dir, creating the directory and
@@ -78,7 +89,7 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	if err != nil {
 		return nil, RecoverReport{}, fmt.Errorf("journal: open instance log: %w", err)
 	}
-	l := &InstanceLog{dir: dir, scrubber: cfg.scrubber, now: cfg.now, file: f, seq: report.LastSeq}
+	l := &InstanceLog{dir: dir, scrubber: cfg.scrubber, now: cfg.now, file: f, seq: report.LastSeq, dropObserver: cfg.instanceDropObserver}
 
 	if tornBytes > 0 {
 		if _, err := appendEvent(l.file, &l.seq, l.scrubber, l.now, Event{
@@ -150,6 +161,31 @@ func (l *InstanceLog) Append(ev Event) error {
 	}
 	_, err = appendEvent(l.file, &l.seq, l.scrubber, l.now, ev)
 	return err
+}
+
+// AppendBestEffort is the single intentional discard path for instance-log
+// writes whose underlying decision cannot be rolled back. A failed append is
+// counted for this open process and reported to the optional external observer.
+// Callers whose operation depends on the record being durable must use Append
+// and handle its error instead.
+func (l *InstanceLog) AppendBestEffort(ev Event) {
+	if l == nil {
+		return
+	}
+	if err := l.Append(ev); err != nil {
+		l.droppedAppends.Add(1)
+		if l.dropObserver != nil {
+			l.dropObserver.InstanceJournalAppendDropped()
+		}
+	}
+}
+
+// Stats returns a race-safe snapshot of process-lifetime journal health.
+func (l *InstanceLog) Stats() InstanceLogStats {
+	if l == nil {
+		return InstanceLogStats{}
+	}
+	return InstanceLogStats{AppendsDropped: l.droppedAppends.Load()}
 }
 
 func (l *InstanceLog) ensureActiveFile(path string) error {

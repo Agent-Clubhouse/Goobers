@@ -460,7 +460,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 	}
 
-	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
+	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber), journal.WithInstanceAppendDropObserver(tel))
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
@@ -496,7 +496,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
 			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
 			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
-				_ = instanceLog.Append(journal.Event{
+				instanceLog.AppendBestEffort(journal.Event{
 					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
 					Error: &journal.ErrorDetail{
 						Code:    "legacy_claim_ownership_unresolved",
@@ -1792,7 +1792,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 						code = "resume_unresolvable_gaggle"
 						message = fmt.Sprintf("run %q references inactive gaggle %q — recover with `goobers run abort %s`", id.RunID, id.Gaggle, id.RunID)
 					}
-					_ = log.Append(journal.Event{
+					log.AppendBestEffort(journal.Event{
 						Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
 						Error: &journal.ErrorDetail{
 							Code:    code,
@@ -1857,7 +1857,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					}
 				}
 				if log != nil {
-					_ = log.Append(ev)
+					log.AppendBestEffort(ev)
 				}
 			}(id.RunID, id.Gaggle, id.Workflow, gooberDigest, rn, runLayout, untrack)
 		}
