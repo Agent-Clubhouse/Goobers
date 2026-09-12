@@ -626,6 +626,50 @@ func TestSchedulerStatusProjectsRefillOccupancyAndBlockingCondition(t *testing.T
 	}
 }
 
+func TestSchedulerStatusPersistsLatestWorkerConfigDivergencePerWorker(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	clock := now
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return clock }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendReport := func(worker, state, message string) {
+		t.Helper()
+		if err := log.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+			"worker": worker, "state": state, "workerDigest": "sha256:worker", "daemonDigest": "sha256:daemon",
+			"reason": "network down", "message": message,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendReport("worker-a", "not-checked", "not checked")
+	clock = clock.Add(time.Minute)
+	appendReport("worker-b", "not-active", "not active")
+	clock = clock.Add(time.Minute)
+	appendReport("worker-a", "in-sync", "recovered")
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.WorkerConfigDivergence) != 2 {
+		t.Fatalf("WorkerConfigDivergence = %+v", status.WorkerConfigDivergence)
+	}
+	if got := status.WorkerConfigDivergence[0]; got.Worker != "worker-a" || got.State != "in-sync" || got.Message != "recovered" || !got.At.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("worker-a latest = %+v", got)
+	}
+	if got := status.WorkerConfigDivergence[1]; got.Worker != "worker-b" || got.State != "not-active" || got.Message != "not active" {
+		t.Fatalf("worker-b latest = %+v", got)
+	}
+}
+
 func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	machine := fixtureMachine(t)

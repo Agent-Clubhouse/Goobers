@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,8 +16,20 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/podauth"
 )
+
+type recordingDivergenceAppender struct {
+	events chan journal.Event
+}
+
+func (r *recordingDivergenceAppender) Append(event journal.Event) error {
+	if r.events != nil {
+		r.events <- event
+	}
+	return nil
+}
 
 func TestWorkerDigestMintFailureReportsUnavailableAndRecovers(t *testing.T) {
 	var calls atomic.Int32
@@ -27,6 +40,7 @@ func TestWorkerDigestMintFailureReportsUnavailableAndRecovers(t *testing.T) {
 	t.Cleanup(server.Close)
 	var available atomic.Bool
 	messages := make(chan string, 16)
+	events := make(chan journal.Event, 16)
 	seams := &workerSeams{logf: func(format string, args ...any) { messages <- fmt.Sprintf(format, args...) }}
 	seams.snapshot.Store(&workerConfigSnapshot{digest: "sha256:original"})
 	watcher := startWorkerDivergenceWatcher(context.Background(), seams, server.Client(), server.URL, func() (string, error) {
@@ -34,7 +48,7 @@ func TestWorkerDigestMintFailureReportsUnavailableAndRecovers(t *testing.T) {
 			return "", errors.New("credential unavailable")
 		}
 		return "restored", nil
-	}, 10*time.Millisecond)
+	}, 10*time.Millisecond, "worker-a", &recordingDivergenceAppender{events: events})
 	t.Cleanup(watcher.Stop)
 	select {
 	case message := <-messages:
@@ -44,6 +58,7 @@ func TestWorkerDigestMintFailureReportsUnavailableAndRecovers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("missing credential failure report")
 	}
+	assertDivergenceEvent(t, events, "worker-a", workerDivergenceNotChecked)
 	available.Store(true)
 	select {
 	case message := <-messages:
@@ -53,11 +68,24 @@ func TestWorkerDigestMintFailureReportsUnavailableAndRecovers(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("credential recovery was not checked")
 	}
+	assertDivergenceEvent(t, events, "worker-a", workerDivergenceInSync)
 	watcher.Stop()
 	select {
 	case <-watcher.done:
 	default:
 		t.Fatal("Stop returned before watcher finished")
+	}
+}
+
+func assertDivergenceEvent(t *testing.T, events <-chan journal.Event, worker, state string) {
+	t.Helper()
+	select {
+	case event := <-events:
+		if event.Type != journal.EventWorkerConfigDivergence || event.Runner["worker"] != worker || event.Runner["state"] != state {
+			t.Fatalf("divergence event = %+v", event)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("missing %s divergence event", state)
 	}
 }
 
@@ -90,11 +118,12 @@ func TestWorkerDigestKeyAuthenticatesPollingAndDetectsRecovery(t *testing.T) {
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
 	messages := make(chan string, 16)
+	events := make(chan journal.Event, 16)
 	seams := &workerSeams{logf: func(format string, args ...any) { messages <- fmt.Sprintf(format, args...) }}
 	seams.snapshot.Store(&workerConfigSnapshot{digest: "sha256:original"})
-	watcher := startWorkerDivergenceWatcher(context.Background(), seams, server.Client(), server.URL, func() (string, error) { mints.Add(1); return source() }, 10*time.Millisecond)
+	watcher := startWorkerDivergenceWatcher(context.Background(), seams, server.Client(), server.URL, func() (string, error) { mints.Add(1); return source() }, 10*time.Millisecond, "worker-a", &recordingDivergenceAppender{events: events})
 	t.Cleanup(watcher.Stop)
-	for _, want := range []string{"divergence: none", "daemon has sha256:changed", "divergence: none"} {
+	for i, want := range []string{"divergence: none", "daemon has sha256:changed", "divergence: none"} {
 		select {
 		case message := <-messages:
 			if !strings.Contains(message, want) {
@@ -103,6 +132,7 @@ func TestWorkerDigestKeyAuthenticatesPollingAndDetectsRecovery(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("authenticated watcher did not report divergence and recovery")
 		}
+		assertDivergenceEvent(t, events, "worker-a", []string{workerDivergenceInSync, workerDivergenceDiverged, workerDivergenceInSync}[i])
 	}
 	watcher.Stop()
 	// Stop may cancel the next poll after minting but before its HTTP request
@@ -164,4 +194,37 @@ func TestWorkerDigestFetchRefusesRedirectAndOversizedPayload(t *testing.T) {
 	if _, err := fetchDaemonConfigDigest(context.Background(), large.Client(), large.URL, "worker-secret"); err == nil {
 		t.Fatal("unbounded response accepted")
 	}
+}
+
+func TestRemoteWorkerDivergenceAppenderUsesAuthoritativeDaemonPlane(t *testing.T) {
+	var got journal.Event
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != apicontract.WorkerConfigDivergencePath || request.Header.Get("Authorization") != "Bearer worker-token" {
+			t.Fatalf("request = %s %s auth=%q", request.Method, request.URL.Path, request.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(request.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(server.Close)
+	appender := &remoteWorkerDivergenceAppender{client: server.Client(), baseURL: server.URL, tokenSource: func() (string, error) { return "worker-token", nil }}
+	if err := appender.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{"worker": "worker-a", "state": "not-active"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != journal.EventWorkerConfigDivergence || got.Runner["state"] != "not-active" {
+		t.Fatalf("event = %+v", got)
+	}
+}
+
+func TestInactiveWorkerDivergenceIsAFirstClassTransition(t *testing.T) {
+	events := make(chan journal.Event, 1)
+	message, err := recordInactiveWorkerDivergence(&recordingDivergenceAppender{events: events}, "worker-a", "sha256:worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(message, "NOT ACTIVE") {
+		t.Fatalf("message = %q", message)
+	}
+	assertDivergenceEvent(t, events, "worker-a", workerDivergenceNotActive)
 }

@@ -34,6 +34,8 @@ type instanceState struct {
 	refusalOrder          []string
 	refusals              map[string]WorkflowRefusalStatus
 	refillBlocked         map[localscheduler.WorkflowIdentity]string
+	workerDivergenceOrder []string
+	workerDivergence      map[string]WorkerConfigDivergenceStatus
 }
 
 // snapshot folds every event appended since the previous call and returns a
@@ -89,6 +91,24 @@ func (s *instanceState) apply(event journal.Event) {
 		// reload, and refill blockers may have changed with the config.
 		s.resetRefusals()
 		s.refillBlocked = nil
+	case journal.EventWorkerConfigDivergence:
+		worker := runnerString(event.Runner, "worker")
+		if worker == "" {
+			break
+		}
+		if s.workerDivergence == nil {
+			s.workerDivergence = make(map[string]WorkerConfigDivergenceStatus)
+		}
+		if _, known := s.workerDivergence[worker]; !known {
+			s.workerDivergenceOrder = append(s.workerDivergenceOrder, worker)
+		}
+		s.workerDivergence[worker] = WorkerConfigDivergenceStatus{
+			Worker: worker, State: journal.WorkerConfigDivergenceState(runnerString(event.Runner, "state")),
+			WorkerDigest: runnerString(event.Runner, "workerDigest"),
+			DaemonDigest: runnerString(event.Runner, "daemonDigest"),
+			Reason:       runnerString(event.Runner, "reason"),
+			Message:      runnerString(event.Runner, "message"), At: event.Time,
+		}
 	case journal.EventTickSkipped:
 		if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
 			candidate = candidate.UTC()
@@ -169,5 +189,7 @@ func (s instanceState) clone() instanceState {
 	clone.refusalOrder = append([]string(nil), s.refusalOrder...)
 	clone.refusals = maps.Clone(s.refusals)
 	clone.refillBlocked = maps.Clone(s.refillBlocked)
+	clone.workerDivergenceOrder = append([]string(nil), s.workerDivergenceOrder...)
+	clone.workerDivergence = maps.Clone(s.workerDivergence)
 	return clone
 }

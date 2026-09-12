@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // Worker config-tree divergence detection (#4153).
@@ -71,11 +73,16 @@ func workerDigestTokenSource(instanceRoot, staticToken string) (func() (string, 
 	if err != nil || signer == nil {
 		return nil, err
 	}
-	owner, err := os.Hostname()
-	if err != nil {
-		return nil, err
-	}
+	owner := workerDivergenceWorkerID()
 	return func() (string, error) { return signer.MintWorkerConfigDigest(owner, 2*time.Minute) }, nil
+}
+
+func workerDivergenceWorkerID() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "unknown-host"
+	}
+	return host
 }
 
 // divergenceReport is one comparison's outcome.
@@ -92,6 +99,114 @@ type divergenceReport struct {
 	Diverged bool
 	// Unavailable explains why no comparison could be made.
 	Unavailable string
+}
+
+const (
+	workerDivergenceInSync     = string(journal.WorkerConfigDivergenceInSync)
+	workerDivergenceDiverged   = string(journal.WorkerConfigDivergenceDiverged)
+	workerDivergenceNotChecked = string(journal.WorkerConfigDivergenceNotChecked)
+	workerDivergenceNotActive  = string(journal.WorkerConfigDivergenceNotActive)
+)
+
+// State is the stable, machine-readable classification recorded in the
+// instance journal. Message remains the full operator-facing report.
+func (r divergenceReport) State() string {
+	switch {
+	case r.Unavailable != "":
+		return workerDivergenceNotChecked
+	case r.Diverged:
+		return workerDivergenceDiverged
+	default:
+		return workerDivergenceInSync
+	}
+}
+
+type workerDivergenceAppender interface {
+	Append(journal.Event) error
+}
+
+type remoteWorkerDivergenceAppender struct {
+	client      *http.Client
+	baseURL     string
+	tokenSource func() (string, error)
+}
+
+func (a *remoteWorkerDivergenceAppender) Append(event journal.Event) error {
+	body, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal worker config-divergence event: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimSuffix(a.baseURL, "/")+apicontract.WorkerConfigDivergencePath, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if a.tokenSource != nil {
+		token, err := a.tokenSource()
+		if err != nil {
+			return fmt.Errorf("mint worker config-divergence credential: %w", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := a.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	boundedClient := *client
+	boundedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := boundedClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("daemon worker config-divergence plane returned %s", response.Status)
+	}
+	return nil
+}
+
+func recordWorkerDivergence(appender workerDivergenceAppender, worker, state string, report divergenceReport, message string) error {
+	return appender.Append(journal.Event{
+		Type: journal.EventWorkerConfigDivergence,
+		Runner: map[string]any{
+			"worker":       worker,
+			"state":        state,
+			"workerDigest": report.WorkerDigest,
+			"daemonDigest": report.DaemonDigest,
+			"reason":       report.Unavailable,
+			"message":      message,
+		},
+	})
+}
+
+func recordInactiveWorkerDivergence(appender workerDivergenceAppender, worker, workerDigest string) (string, error) {
+	message := "worker config divergence: NOT ACTIVE — configure api.podTokenKeyFile or GOOBERS_POD_TOKEN; " +
+		"this worker cannot compare its config tree with the daemon's (#4153)"
+	return message, recordWorkerDivergence(appender, worker, workerDivergenceNotActive, divergenceReport{WorkerDigest: workerDigest}, message)
+}
+
+func configureWorkerDivergence(ctx context.Context, seams *workerSeams, instanceRoot, daemonAPI string, stdout, stderr io.Writer) (*workerConfigWatcher, error) {
+	workerIdentity := "worker:" + workerDivergenceWorkerID()
+	tokenSource, err := workerDigestTokenSource(instanceRoot, workerEnvOr("GOOBERS_POD_TOKEN", ""))
+	if err != nil {
+		return nil, err
+	}
+	appender := &remoteWorkerDivergenceAppender{client: http.DefaultClient, baseURL: daemonAPI, tokenSource: tokenSource}
+	if tokenSource == nil {
+		if _, err := recordInactiveWorkerDivergence(appender, workerIdentity, seams.currentDigest()); err != nil {
+			pf(stderr, "warning: goobers worker: record config-divergence state: %v\n", err)
+		}
+		pf(stderr, "warning: goobers worker: config-divergence checking is NOT ACTIVE — configure api.podTokenKeyFile or GOOBERS_POD_TOKEN; "+
+			"this worker cannot compare its config tree with the daemon's (#4153)\n")
+		return nil, nil
+	}
+	watcher := startWorkerDivergenceWatcher(ctx, seams, http.DefaultClient, daemonAPI, tokenSource,
+		workerDivergenceCheckInterval, workerIdentity, appender)
+	pf(stdout, "goobers worker: checking config-tree divergence against %s every %s\n", daemonAPI, workerDivergenceCheckInterval)
+	return watcher, nil
 }
 
 // Message renders the report for an operator.
@@ -182,6 +297,8 @@ func startWorkerDivergenceWatcher(
 	baseURL string,
 	tokenSource func() (string, error),
 	interval time.Duration,
+	worker string,
+	appender workerDivergenceAppender,
 ) *workerConfigWatcher {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -190,7 +307,7 @@ func startWorkerDivergenceWatcher(
 		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		var last string
+		var lastLogged, lastRecorded string
 		for {
 			select {
 			case <-ctx.Done():
@@ -205,11 +322,17 @@ func startWorkerDivergenceWatcher(
 				cancelRequest()
 				report := compareConfigDigests(seams.currentDigest(), daemonDigest, err)
 				message := report.Message()
-				if message == last {
-					continue
+				if message != lastLogged {
+					lastLogged = message
+					seams.log("%s", message)
 				}
-				last = message
-				seams.log("%s", message)
+				if message != lastRecorded {
+					if err := recordWorkerDivergence(appender, worker, report.State(), report, message); err != nil {
+						seams.log("worker config divergence: journal transition: %v", err)
+						continue
+					}
+					lastRecorded = message
+				}
 			}
 		}
 	}()
