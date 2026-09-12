@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -365,7 +366,7 @@ func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error)
 				return false, fmt.Errorf("worktree: parse registered path %q: %w", registeredPath, err)
 			}
 		}
-		if filepath.Clean(registeredPath) == filepath.Clean(path) {
+		if sameWorktreePath(registeredPath, path) {
 			return true, nil
 		}
 		registeredInfo, registeredErr := os.Stat(registeredPath)
@@ -375,6 +376,28 @@ func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error)
 		}
 	}
 	return false, nil
+}
+
+// sameWorktreePath keeps registration checks meaningful after the worktree
+// directory itself has disappeared. EvalSymlinks cannot resolve an absent
+// leaf, but its managed parent still exists; resolving that parent handles
+// platform aliases such as macOS /var -> /private/var. Windows path identity
+// is case-insensitive even when neither leaf remains for os.SameFile.
+func sameWorktreePath(left, right string) bool {
+	left = canonicalAbsentLeafPath(left)
+	right = canonicalAbsentLeafPath(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func canonicalAbsentLeafPath(path string) string {
+	path = filepath.Clean(path)
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		return filepath.Join(parent, filepath.Base(path))
+	}
+	return path
 }
 
 // processAlive reports whether pid names a live process. Indirected through
