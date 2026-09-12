@@ -3696,7 +3696,13 @@ Stage and smoke-check a binary, then request supervised activation. Policies
 are manual, on-release (default), and on-main. Manual requires a release tag;
 on-main builds the configured branch. on-release resolves the newest stable
 release unless --include-prerelease is set, which considers all GitHub
-releases and only stages a target strictly newer than the running build.
+releases.
+
+EVERY policy refuses a target that is not strictly newer than the running
+build -- manual included. There is no downgrade flag and no rollback path
+here: self-update only moves forward, and a supervised update that turns
+out unhealthy is reverted by the supervisor's own rollback, not by staging
+an older tag. To move to an older build deliberately, install it directly.
 
 Releases are resolved from the canonical Goobers product repository
 (Agent-Clubhouse/Goobers) by default, independent of any workload
@@ -3709,7 +3715,7 @@ a private release mirror).
 
 ~~~console
 $ goobers self-update --policy on-release
-$ goobers self-update --policy manual --target v0.1.0
+$ goobers self-update --policy manual --target v0.5.0
 ~~~
 
 ## `goobers service`
