@@ -14,7 +14,8 @@ A PR is mergeable only when CI is green, where green means:
 | Lint | golangci-lint (`make lint`) | zero issues |
 | Vet | `go vet` (`make test` or its own step) | clean |
 | Unit tests | `go test ./...` (`make test`) | all pass |
-| Coverage | `make cover-check` | total ≥ **70%** (ratcheting target) |
+| Go coverage | `make cover-check` | testable Go logic total ≥ **70%** (ratcheting target) |
+| Canvas extension coverage | `make extension-test` | Node line ≥ **68%**, branch ≥ **73%**, function ≥ **64%** |
 | Complexity | `make complexity` (in `make ci`) | no new function ≥ **cc 40** outside the baseline |
 | Acceptance | suites in this dir | all pass |
 
@@ -27,6 +28,13 @@ stays thin and the gate is runnable locally (`make ci`).
 `make test`/`make cover` writes `coverage.out`; **`go run ./test/coveragegate [threshold]`**
 (default 70, or `$COVERAGE_THRESHOLD`) fails with exit 1 if coverage is below the
 threshold, printing the excluded file set + per-function coverage + the total.
+
+The shipped canvas extension is measured separately because it is JavaScript,
+not part of Go's `coverage.out`. `make extension-test` runs Node's test coverage
+over every production `.mjs` beneath `.github/extensions/goobers-portal`,
+excludes the test modules from the denominator, and enforces the committed
+line/branch/function floors above. The required `checks` group invokes the same
+flags and floors directly, with every test file explicitly inventoried.
 
 It measures coverage over the module's **testable logic**: non-logic code is excluded
 from the denominator so the number stays a precise signal (and won't be diluted, or
