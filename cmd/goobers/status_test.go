@@ -133,6 +133,68 @@ func TestStatusOnRealInstanceWithNoRunsSucceeds(t *testing.T) {
 	}
 }
 
+// TestStatusCollapsesManualOnlyWorkflows is #4883's production-shaped
+// regression: adding any number of intentionally unscheduled probes costs one
+// summary line on the default operator board, not one warning, queue block,
+// and workflow row per probe.
+func TestStatusCollapsesManualOnlyWorkflows(t *testing.T) {
+	root := initScheduledDemo(t)
+	code, baseline, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("baseline status: code=%d stderr=%q", code, stderr)
+	}
+
+	workflowDir := filepath.Join(root, "config", "gaggles", "example", "workflows")
+	template, err := os.ReadFile(filepath.Join(workflowDir, "default-implement.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const manualCount = 12
+	for i := 0; i < manualCount; i++ {
+		name := fmt.Sprintf("manual-probe-%02d", i)
+		definition := strings.Replace(string(template), "name: default-implement", "name: "+name, 1)
+		definition = strings.Replace(definition, "    - type: schedule\n      schedule: \"@every 24h\"", "    - type: manual", 1)
+		if err := os.WriteFile(filepath.Join(workflowDir, name+".yaml"), []byte(definition), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, collapsed, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("collapsed status: code=%d stderr=%q", code, stderr)
+	}
+	if got := strings.Count(collapsed, "manual-only workflows hidden from default status detail"); got != 1 {
+		t.Fatalf("collapsed status summary count=%d, want 1:\n%s", got, collapsed)
+	}
+	if delta := strings.Count(collapsed, "\n") - strings.Count(baseline, "\n"); delta != 1 {
+		t.Fatalf("adding %d manual workflows added %d default status lines, want 1\nbaseline:\n%s\nwith probes:\n%s", manualCount, delta, baseline, collapsed)
+	}
+	for i := 0; i < manualCount; i++ {
+		name := fmt.Sprintf("manual-probe-%02d", i)
+		if strings.Contains(collapsed, name) {
+			t.Fatalf("default status exposed collapsed workflow %q:\n%s", name, collapsed)
+		}
+	}
+
+	code, expanded, stderr := runArgs(t, "status", "--all", root)
+	if code != 0 {
+		t.Fatalf("status --all: code=%d stderr=%q", code, stderr)
+	}
+	for _, want := range []string{"manual-probe-00", "manual-probe-11", "has no schedule trigger"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("status --all omitted %q:\n%s", want, expanded)
+		}
+	}
+
+	code, selected, stderr := runArgs(t, "status", "--workflow=manual-probe-07", root)
+	if code != 0 {
+		t.Fatalf("status --workflow: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(selected, "manual-probe-07") || strings.Contains(selected, "workflow \"manual-probe-06\" has no schedule trigger") {
+		t.Fatalf("status --workflow did not expose only the selected manual warning:\n%s", selected)
+	}
+}
+
 func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
 	root := initScheduledDemo(t)
 	initCompletedAt := time.Date(2026, time.July, 14, 12, 0, 0, 0, time.UTC)

@@ -358,6 +358,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"status": {
 		{name: "agents", desc: "List in-flight agentic stages by role"},
+		{name: "all", desc: "Show individual detail for manual-only workflows"},
 		{name: "daemon", desc: "Report daemon health and identity"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "phase", takesArg: true, desc: "Filter by phase"},

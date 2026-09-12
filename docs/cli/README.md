@@ -4070,7 +4070,7 @@ $ goobers stats --since 24h --json
 validate config, show warnings, list runs, report daemon health, or list live agentic stages
 
 ~~~text
-Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
+Usage: goobers status [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]
 
 Validate active config, show warnings, and list runs under an instance's
 runs/ directory with their current phase, newest first (default path ".").
@@ -4080,6 +4080,8 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,
 and next steps from the existing daemon projection, never current claim authority.
+Manual-only workflows are summarized by default; use --all or --workflow to show
+their individual warnings, queue evidence, and workflow-summary rows. JSON stays exhaustive.
 At most 16 filtered workflows are shown, with omissions reported; narrow --gaggle
 and --workflow or use queue-explain for a specific PR. Missing evidence is unknown.
 It lists parked backlog items too — open issues carrying a park disposition without
