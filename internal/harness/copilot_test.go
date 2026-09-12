@@ -84,12 +84,12 @@ func (f *fakeCopilotModelLister) ListModels(_ context.Context, command, env []st
 	return append([]CopilotModelInfo(nil), response...), f.err
 }
 
-func TestCopilotAdapterUsesSeparateModelDiscoveryCommand(t *testing.T) {
+func TestCopilotAdapterUsesDirectModelDiscoveryForCustomLauncher(t *testing.T) {
 	modelLister := &fakeCopilotModelLister{models: testCopilotModelList()}
 	adapter := &CopilotAdapter{
-		Command:               []string{"launcher", "copilot"},
-		ModelDiscoveryCommand: []string{"copilot"},
-		ModelLister:           modelLister,
+		Command:                 []string{"launcher", "copilot"},
+		RequireLauncherContract: true,
+		ModelLister:             modelLister,
 	}
 
 	if _, err := adapter.discoverModels(context.Background()); err != nil {
@@ -98,6 +98,21 @@ func TestCopilotAdapterUsesSeparateModelDiscoveryCommand(t *testing.T) {
 	if len(modelLister.lastCommand) != 1 ||
 		!strings.EqualFold(strings.TrimSuffix(filepath.Base(modelLister.lastCommand[0]), ".exe"), "copilot") {
 		t.Fatalf("model discovery command = %q, want direct Copilot", modelLister.lastCommand)
+	}
+}
+
+func TestCopilotAdapterUsesConfiguredCommandForDirectLauncher(t *testing.T) {
+	modelLister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot-fixture"},
+		ModelLister: modelLister,
+	}
+
+	if _, err := adapter.discoverModels(context.Background()); err != nil {
+		t.Fatalf("discoverModels: %v", err)
+	}
+	if !slices.Equal(modelLister.lastCommand, []string{"copilot-fixture"}) {
+		t.Fatalf("model discovery command = %q, want configured direct command", modelLister.lastCommand)
 	}
 }
 
