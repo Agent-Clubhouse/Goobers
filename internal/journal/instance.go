@@ -255,6 +255,36 @@ func ReadInstanceLogAfterSeq(dir string, seq uint64) ([]Event, error) {
 	return events, nil
 }
 
+// InstanceLogState identifies the current instance-journal file. The file
+// identity distinguishes removal and recreation at the same generation.
+type InstanceLogState struct {
+	Generation int
+	Exists     bool
+	info       os.FileInfo
+}
+
+// SameJournal reports whether two states describe the same generation file.
+func (s InstanceLogState) SameJournal(other InstanceLogState) bool {
+	return s.Exists && other.Exists && s.Generation == other.Generation &&
+		s.info != nil && other.info != nil && os.SameFile(s.info, other.info)
+}
+
+// ReadInstanceLogState returns the current instance journal's identity.
+func ReadInstanceLogState(dir string) (InstanceLogState, error) {
+	path, generation, err := resolveInstanceEventsPath(dir)
+	if err != nil {
+		return InstanceLogState{}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return InstanceLogState{Generation: generation}, nil
+		}
+		return InstanceLogState{}, fmt.Errorf("journal: stat instance log generation: %w", err)
+	}
+	return InstanceLogState{Generation: generation, Exists: true, info: info}, nil
+}
+
 func highestEventSeq(events []Event) uint64 {
 	var highest uint64
 	for _, ev := range events {

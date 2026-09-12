@@ -755,8 +755,20 @@ type statusOptions struct {
 	limit    int
 }
 
-func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runSummary, error) {
-	summaries, err := reads.ListStatusRuns(ctx)
+func listStatusRuns(ctx context.Context, reads readservice.StatusReader, options ...statusOptions) ([]runSummary, error) {
+	var request readservice.StatusRunOptions
+	if len(options) > 0 {
+		request.Gaggle = options[0].gaggle
+		request.Workflow = options[0].workflow
+		request.Limit = options[0].limit
+		if request.Limit > 0 {
+			request.Limit++ // one-row lookahead keeps the omitted-runs hint truthful
+		}
+		for phase := range options[0].phases {
+			request.Phases = append(request.Phases, phase)
+		}
+	}
+	summaries, err := reads.ListStatusRuns(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -774,6 +786,23 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader) ([]runS
 		}
 	}
 	return runs, nil
+}
+
+func statusFleetRuns(facts []readservice.StatusFleetFact) []runSummary {
+	var runs []runSummary
+	for _, fact := range facts {
+		for _, terminal := range fact.TerminalRuns {
+			runs = append(runs, runSummary{
+				RunID: terminal.ID, Workflow: terminal.Workflow, Gaggle: terminal.Gaggle,
+				Phase: terminal.Phase, StartedAt: terminal.StartedAt, LastActivityAt: terminal.LastActivityAt,
+				Operator: terminal.Operator,
+			})
+		}
+		for i := 0; i < fact.ActiveRuns; i++ {
+			runs = append(runs, runSummary{Workflow: fact.Workflow, Gaggle: fact.Gaggle, Phase: journal.PhaseRunning})
+		}
+	}
+	return runs
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {
@@ -1037,16 +1066,24 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		gaggle:   *gaggleFilter,
 		limit:    *limit,
 	}
-
-	loadRuns := func() ([]runSummary, error) {
-		return listStatusRuns(context.Background(), reads)
+	if agentsMode {
+		options.limit = 0
+		options.phases = map[journal.RunPhase]struct{}{journal.PhaseRunning: {}}
 	}
+
+	runLoader := &statusRunLoader{
+		layout: l, sources: sources, journal: reads, options: options, needFleet: supportsWatch && !agentsMode,
+	}
+	loadRuns := runLoader.Load
 	loadFleetSummary := func(
 		workflows []apiv1.Workflow,
 		runs []runSummary,
 		schedulerStatus readservice.SchedulerStatus,
 		now time.Time,
 	) (statusFleetSummary, error) {
+		if runLoader.projected {
+			runs = runLoader.fleetRuns
+		}
 		lastEvals, err := statusWorkflowLastEvals(l)
 		if err != nil {
 			return statusFleetSummary{}, err
@@ -1131,7 +1168,13 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		printValidationWarnings(stdout, textWarnings)
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()
-		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText)); err != nil {
+		loadChangedRuns := func(context.Context) (map[string]struct{}, error) {
+			if !runLoader.projected {
+				return nil, nil
+			}
+			return runLoader.changed, nil
+		}
+		if err := watchStatus(ctx, *interval, options, stdout, loadRuns, withRecoveryStatusText(l, options, loadStatusText), loadChangedRuns); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
@@ -1353,7 +1396,7 @@ func truncateStatusCell(value string, width int) string {
 
 func renderOlderRunsHint(stdout io.Writer, olderRuns int) {
 	if olderRuns > 0 {
-		pf(stdout, "%d older runs; use --limit 0 for all\n", olderRuns)
+		pln(stdout, "older runs omitted; use --limit 0 for all")
 	}
 }
 
@@ -1375,6 +1418,7 @@ func watchStatus(
 	stdout io.Writer,
 	loadRuns func() ([]runSummary, error),
 	loadStatusText func(context.Context, []runSummary, time.Time) (string, error),
+	loadProjectedChanges ...func(context.Context) (map[string]struct{}, error),
 ) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1398,7 +1442,17 @@ func watchStatus(
 			return err
 		}
 		runs, olderRuns := selectStatusRuns(allRuns, options)
-		renderStatusWatchFrame(stdout, statusText, runs, changedStatusRuns(previous, current), now)
+		changed := changedStatusRuns(previous, current)
+		if len(loadProjectedChanges) > 0 && loadProjectedChanges[0] != nil {
+			projected, err := loadProjectedChanges[0](ctx)
+			if err != nil {
+				return err
+			}
+			for runID := range projected {
+				changed[runID] = struct{}{}
+			}
+		}
+		renderStatusWatchFrame(stdout, statusText, runs, changed, now)
 		renderOlderRunsHint(stdout, olderRuns)
 		previous = current
 
