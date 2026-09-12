@@ -14,7 +14,7 @@ Exactly one mode is required per invocation.
 instance.yaml's schema revision. They are separate remedies over separate
 files, so they are never combined in one run.
 
-Mechanically migrate every workflow in a config directory (default path
+Mechanically migrate every workflow under an instance root (default path
 ".") from its current dslVersion to <version>, one registered version
 step at a time (DVL-6). Prints a reviewable unified diff per changed
 workflow file by default; --write applies the diff to each file in
