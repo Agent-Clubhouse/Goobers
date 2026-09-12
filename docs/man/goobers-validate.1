@@ -6,16 +6,16 @@ goobers validate \- validate an instance or checked-in config source tree
 \fBgoobers validate\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
+Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). Placement findings (RNR001/RNR003) are errors when
 instance.yaml declares a runners: inventory that cannot satisfy some
 stage, and warnings otherwise. --source-tree validates a checked-in
-config source tree using instance.yaml.example and the path itself as
-config/; because the tree carries no real instance.yaml, its placement
-solve runs against the example inventory and is advisory-only
-(warnings, never errors). --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+config source tree and the path itself as config/. With --instance, its
+placement and capability solve uses that real instance document. Without
+--instance, the solve uses instance.yaml.example, is advisory-only
+(warnings, never errors), and the output states that limitation. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
@@ -29,6 +29,7 @@ a repository is larger than the checkout-size threshold. Exit codes:
 goobers validate
 goobers validate --json
 goobers validate --check-harness --check-repos
+goobers validate --source-tree --instance /etc/goobers/instance.yaml ./config-repo
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)

@@ -236,8 +236,12 @@ func TestValidateReportsSingleRepoEmptyProjectFallback(t *testing.T) {
 			}
 			envelope := decodeDiagnosticsEnvelope(t, stdout)
 			assertDiagnosticsSchema(t, stdout)
-			if envelope.Counts.Infos != 1 {
-				t.Fatalf("validate --json info count=%d, want 1; findings=%+v", envelope.Counts.Infos, envelope.Findings)
+			wantInfos := 1
+			if sourceTree {
+				wantInfos++ // SOURCE001 names the example-instance advisory solve.
+			}
+			if envelope.Counts.Infos != wantInfos {
+				t.Fatalf("validate --json info count=%d, want %d; findings=%+v", envelope.Counts.Infos, wantInfos, envelope.Findings)
 			}
 			var fallback *diagnosticFinding
 			for i := range envelope.Findings {
