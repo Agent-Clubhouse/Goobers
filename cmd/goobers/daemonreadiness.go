@@ -45,3 +45,29 @@ func daemonStartupStoppedByShutdown(ctx context.Context, err error) bool {
 	}
 	return errors.Is(err, shutdownErr)
 }
+
+// daemonStartupFailure turns a failed startup operation into the daemon's
+// documented exit status. Keeping this classification beside the predicate
+// prevents each startup phase from growing its own cancellation branch while
+// still leaving phase-specific diagnostics at the call site.
+func daemonStartupFailure(ctx context.Context, err error, report func()) int {
+	if daemonStartupStoppedByShutdown(ctx, err) {
+		return 0
+	}
+	report()
+	return 1
+}
+
+// daemonStartupWarning reports a degraded startup operation, unless the
+// operation stopped because daemon shutdown was already requested. The return
+// value tells the caller to stop startup cleanly in that latter case.
+func daemonStartupWarning(ctx context.Context, err error, report func()) bool {
+	if err == nil {
+		return false
+	}
+	if daemonStartupStoppedByShutdown(ctx, err) {
+		return true
+	}
+	report()
+	return false
+}

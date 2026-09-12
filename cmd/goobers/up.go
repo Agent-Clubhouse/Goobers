@@ -487,12 +487,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		setup, err = buildSchedulerSetup(ctx, l, &wg, setupOptions...)
 	}
 	if err != nil {
-		if daemonStartupStoppedByShutdown(ctx, err) {
-			return 0
-		}
-		printValidationIssues(stderr, validationReportFromError(err))
-		pf(stderr, "error: initialize daemon scheduler: %v\n", err)
-		return 1
+		return daemonStartupFailure(ctx, err, func() {
+			printValidationIssues(stderr, validationReportFromError(err))
+			pf(stderr, "error: initialize daemon scheduler: %v\n", err)
+		})
 	}
 	pf(stdout, "startup: scheduler initialized\n")
 	// #4070: say, every start, whether one stage's memory is bounded. Stage
@@ -600,14 +598,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// rather than the exceptional one. A check that could not complete is a
 	// warning; a schedule that is actually there refuses the boot.
 	if scheduleErr, mayStart := checkEngineScheduleInvariant(ctx, engineClient, setup.InstanceLog); scheduleErr != nil {
-		if daemonStartupStoppedByShutdown(ctx, scheduleErr) {
+		if !mayStart {
+			return daemonStartupFailure(ctx, scheduleErr, func() {
+				pf(stderr, "error: %v\n", scheduleErr)
+			})
+		}
+		if daemonStartupWarning(ctx, scheduleErr, func() {
+			pf(stderr, "warning: %v\n", scheduleErr)
+		}) {
 			return 0
 		}
-		if !mayStart {
-			pf(stderr, "error: %v\n", scheduleErr)
-			return 1
-		}
-		pf(stderr, "warning: %v\n", scheduleErr)
 	}
 	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
 	// verifies a live-authored journal against a re-projection, so a source
@@ -615,11 +615,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// divergence.
 	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, engineClient, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals, blobStore)
 	if err != nil {
-		if daemonStartupStoppedByShutdown(ctx, err) {
-			return 0
-		}
-		pf(stderr, "error: start engine projection reconciler: %v\n", err)
-		return 1
+		return daemonStartupFailure(ctx, err, func() {
+			pf(stderr, "error: start engine projection reconciler: %v\n", err)
+		})
 	}
 	defer stopEngineProjection()
 	// #3876 (decision 005 D1, piece 6): teach the guards the run-id ->
@@ -629,11 +627,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// warning, not a boot failure: it degrades to the pre-#3876 behaviour, in
 	// which direct runs still reattach correctly.
 	engineGuards, openEngineRuns, engineScanErr := attachEngineOpenRunResolver(ctx, engineClient, engineGuards, ownedGaggleSet(setup.Machines))
-	if engineScanErr != nil {
-		if daemonStartupStoppedByShutdown(ctx, engineScanErr) {
-			return 0
-		}
+	if daemonStartupWarning(ctx, engineScanErr, func() {
 		pf(stderr, "warning: %v\n", engineScanErr)
+	}) {
+		return 0
 	}
 	for _, runID := range reportOrphanedEngineRuns(l, setup.InstanceLog, openEngineRuns) {
 		pf(stderr, "warning: engine run %s is open on the engine with no local run directory\n", runID)
@@ -1030,11 +1027,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			return reapErr
 		})
 		if reapErr != nil {
-			if daemonStartupStoppedByShutdown(ctx, reapErr) {
-				return 0
-			}
-			pf(stderr, "error: reap worktrees for gaggle %s: %v\n", gaggle, reapErr)
-			return 1
+			return daemonStartupFailure(ctx, reapErr, func() {
+				pf(stderr, "error: reap worktrees for gaggle %s: %v\n", gaggle, reapErr)
+			})
 		}
 		for _, w := range warnings {
 			pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
@@ -1050,11 +1045,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			return reapErr
 		})
 		if reapErr != nil {
-			if daemonStartupStoppedByShutdown(ctx, reapErr) {
-				return 0
-			}
-			pf(stderr, "error: reap legacy worktrees: %v\n", reapErr)
-			return 1
+			return daemonStartupFailure(ctx, reapErr, func() {
+				pf(stderr, "error: reap legacy worktrees: %v\n", reapErr)
+			})
 		}
 		for _, w := range warnings {
 			pf(stdout, "warning: skipped worktree cleanup %s: %v\n", w.Path, w.Err)
@@ -1163,11 +1156,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
-		if daemonStartupStoppedByShutdown(ctx, err) {
-			return 0
-		}
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return daemonStartupFailure(ctx, err, func() {
+			pf(stderr, "error: %v\n", err)
+		})
 	}
 	runDirs, err := l.RunDirs()
 	if err != nil {
@@ -1318,11 +1309,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// known (issue #127).
 	resumed, warned, reattached, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, engineGuards, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
 	if err != nil {
-		if daemonStartupStoppedByShutdown(ctx, err) {
-			return 0
-		}
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return daemonStartupFailure(ctx, err, func() {
+			pf(stderr, "error: %v\n", err)
+		})
 	}
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
@@ -1344,11 +1333,15 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// same as the periodic sweep: a renewal failure here does not fail daemon
 	// start, since the claim ledger's own reap is what it would fail open to.
 	if len(resumed) > 0 {
-		if _, _, err := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
-			if daemonStartupStoppedByShutdown(ctx, err) {
-				return 0
-			}
-			pf(stdout, "warning: renew resumed claims: %v\n", err)
+		_, _, renewErr := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease)
+		if isJournaledClaimsLockTimeout(renewErr) {
+			renewErr = nil
+		}
+		if daemonStartupWarning(ctx, renewErr, func() {
+			// renewErr is non-nil whenever the reporter runs.
+			pf(stdout, "warning: renew resumed claims: %v\n", renewErr)
+		}) {
+			return 0
 		}
 	}
 	for _, runID := range warned {
@@ -1703,11 +1696,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// A signal before readiness is still a clean daemon shutdown. The same
 		// cancellation after readiness already exits 0 below; preserve that
 		// documented contract across the startup boundary (#4875).
-		if daemonStartupStoppedByShutdown(ctx, err) {
-			return 0
-		}
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return daemonStartupFailure(ctx, err, func() {
+			pf(stderr, "error: %v\n", err)
+		})
 	}
 	apiAddressPublished := true
 	defer func() {
