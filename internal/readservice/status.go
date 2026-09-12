@@ -21,9 +21,27 @@ const providerQuotaResumePrefix = localscheduler.ReasonProviderQuota + ": resume
 
 // StatusReader is the shared read boundary used by local status adapters.
 type StatusReader interface {
-	ListStatusRuns(context.Context) ([]RunSummary, error)
+	ListStatusRuns(context.Context, StatusRunOptions) ([]RunSummary, error)
 	TimeToFirstPR(context.Context) (telemetry.TimeToFirstPRMetric, error)
 	SchedulerStatus(context.Context) (SchedulerStatus, error)
+}
+
+// StatusRunOptions bounds and scopes the run population needed by a status
+// adapter. A zero value preserves the historical exhaustive read.
+type StatusRunOptions struct {
+	Gaggle   string
+	Workflow string
+	Phases   []journal.RunPhase
+	Limit    int
+}
+
+// StatusFleetFact is the bounded run population needed to compute one
+// workflow's status summary without reusing the display page.
+type StatusFleetFact struct {
+	Gaggle       string
+	Workflow     string
+	ActiveRuns   int
+	TerminalRuns []RunSummary
 }
 
 // SchedulerStatus is scheduler state projected from the instance journal for
@@ -145,55 +163,167 @@ type RunReplacement struct {
 // WorkItemLookup reads the current provider state for a claimed item.
 type WorkItemLookup func(context.Context, string, string) (providers.WorkItem, error)
 
-// ListStatusRuns returns every readable run in display order. Individual
-// malformed historical journals are omitted so status remains best-effort.
-//
-// `status`'s callers need the FULL run population, not a page of it: the
-// fleet summary and the in-flight agent probe both aggregate across every
-// run, and only the CLI table itself truncates to --limit (applied locally,
-// after this call returns — see cmd/goobers/status.go's selectStatusRuns).
-// So the fix for #4249 is not to bound this result — it is to stop sourcing
-// it by opening and parsing every run journal (`runSummariesForStage`,
-// os.ReadDir + journal.OpenRead per run) when the read-model projection can
-// answer the same rows with zero journal opens. Falls back to the journal
-// walk only when the projection is unavailable, so an instance without one
-// keeps today's behavior unchanged.
-func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
+// ListStatusRuns returns readable runs in display order. Individual malformed
+// historical journals are omitted so status remains best-effort. When a read
+// model is attached, scope and limit are pushed into its indexed query instead
+// of being applied after an exhaustive projection read (#4863).
+func (s *Local) ListStatusRuns(ctx context.Context, options StatusRunOptions) ([]RunSummary, error) {
 	if s.readModelReads && s.sources.ReadModel != nil {
-		return s.listStatusRunsFromReadModel(ctx)
+		return s.listStatusRunsFromReadModel(ctx, options)
 	}
 	return s.runSummaries(ctx, true)
 }
 
-// listStatusRunsFromReadModel pages through every projected run (§15.9's
-// "list/unrestricted" combination — an empty ListOptions is a supported,
-// indexed query shape, not a fallback) rather than opening a journal per row.
-// The store caps each page at its own maxListLimit regardless of what is
-// requested, so this loops on the returned cursor; even a fleet of 11,040
-// runs is a few dozen indexed queries, not 11,040 file opens.
-func (s *Local) listStatusRunsFromReadModel(ctx context.Context) ([]RunSummary, error) {
+type statusRunQuery struct {
+	gaggle           string
+	workflow         string
+	phases           []journal.RunPhase
+	residualWorkflow string
+	residualPhases   map[journal.RunPhase]struct{}
+}
+
+func normalizeStatusRunQuery(options StatusRunOptions) statusRunQuery {
+	query := statusRunQuery{gaggle: options.Gaggle, workflow: options.Workflow, phases: options.Phases}
+	// The read model's closed indexed set does not contain workflow by itself
+	// or gaggle+workflow+phase. Keep those predicates correct by paging an
+	// indexed supported subset until the requested number of matches is found.
+	switch {
+	case query.workflow != "" && query.gaggle == "":
+		query.residualWorkflow = query.workflow
+		query.workflow = ""
+	case query.workflow != "" && len(query.phases) > 0:
+		query.residualPhases = make(map[journal.RunPhase]struct{}, len(query.phases))
+		for _, phase := range query.phases {
+			query.residualPhases[phase] = struct{}{}
+		}
+		query.phases = nil
+	}
+	if len(query.phases) == 0 {
+		query.phases = []journal.RunPhase{""}
+	}
+	return query
+}
+
+func (s *Local) listStatusRunsFromReadModel(ctx context.Context, options StatusRunOptions) ([]RunSummary, error) {
 	observedAt := s.now()
-	var (
-		out    []RunSummary
-		cursor readmodel.ListCursor
-	)
-	for {
-		page, err := s.sources.ReadModel.ListRuns(ctx, readmodel.ListOptions{Cursor: cursor})
-		if err != nil {
-			return nil, err
+	query := normalizeStatusRunQuery(options)
+	out := make([]RunSummary, 0, options.Limit)
+	for _, phase := range query.phases {
+		var (
+			cursor     readmodel.ListCursor
+			phaseCount int
+		)
+		for {
+			pageLimit := options.Limit
+			if pageLimit > 0 {
+				pageLimit -= phaseCount
+			}
+			if pageLimit > 200 || pageLimit == 0 && options.Limit > 0 {
+				pageLimit = 200
+			}
+			page, err := s.sources.ReadModel.ListRuns(ctx, readmodel.ListOptions{
+				Gaggle: query.gaggle, Workflow: query.workflow, Phase: phase,
+				Limit: pageLimit, Cursor: cursor, IncludeNoWork: true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range page.Runs {
+				if query.residualWorkflow != "" && row.Workflow != query.residualWorkflow {
+					continue
+				}
+				if len(query.residualPhases) > 0 {
+					if _, ok := query.residualPhases[row.Phase]; !ok {
+						continue
+					}
+				}
+				out = append(out, summaryFromReadModel(row, observedAt))
+				phaseCount++
+			}
+			if !page.HasMore || options.Limit > 0 && phaseCount >= options.Limit {
+				break
+			}
+			cursor = page.Next
 		}
-		for _, row := range page.Runs {
-			out = append(out, summaryFromReadModel(row, observedAt))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].ID < out[j].ID
 		}
-		if !page.HasMore {
-			break
-		}
-		cursor = page.Next
+		return out[i].StartedAt.After(out[j].StartedAt)
+	})
+	if options.Limit > 0 && len(out) > options.Limit {
+		out = out[:options.Limit]
 	}
 	if err := s.decorateOperatorClaims(ctx, out, observedAt); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// StatusFleetFacts returns exact active counts, the latest ten terminal
+// outcomes, and the complete leading infra-failure streak for each configured
+// workflow. Work is independent of unrelated run history; an unusually long
+// current failure streak is necessarily read in full so its reported length
+// remains exact.
+func (s *Local) StatusFleetFacts(ctx context.Context) ([]StatusFleetFact, error) {
+	if !s.readModelReads || s.sources.ReadModel == nil {
+		return nil, ErrReadModelUnavailable
+	}
+	activeRows, err := s.sources.ReadModel.ActiveRunCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active := make(map[string]int, len(activeRows))
+	for _, row := range activeRows {
+		active[row.Gaggle+"\x00"+row.Workflow] = row.Count
+	}
+	definitions := s.definitions.Load().set.Workflows
+	seen := make(map[string]bool)
+	facts := make([]StatusFleetFact, 0, len(definitions))
+	for _, definition := range definitions {
+		key := definition.Spec.Gaggle + "\x00" + definition.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		fact := StatusFleetFact{Gaggle: definition.Spec.Gaggle, Workflow: definition.Name, ActiveRuns: active[key]}
+		var cursor readmodel.ListCursor
+		breakerSeen := false
+		for {
+			page, err := s.sources.ReadModel.ListRuns(ctx, readmodel.ListOptions{
+				Gaggle: definition.Spec.Gaggle, Workflow: definition.Name,
+				Limit: 200, Cursor: cursor, IncludeNoWork: true, OrderBy: readmodel.OrderLastActivity,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range page.Runs {
+				if !row.Terminal {
+					continue
+				}
+				summary := summaryFromReadModel(row, s.now())
+				fact.TerminalRuns = append(fact.TerminalRuns, summary)
+				if !statusInfraFailure(summary) {
+					breakerSeen = true
+				}
+				if len(fact.TerminalRuns) >= 10 && breakerSeen {
+					break
+				}
+			}
+			if len(fact.TerminalRuns) >= 10 && breakerSeen || !page.HasMore {
+				break
+			}
+			cursor = page.Next
+		}
+		facts = append(facts, fact)
+	}
+	return facts, nil
+}
+
+func statusInfraFailure(run RunSummary) bool {
+	return run.Phase == journal.PhaseFailed && run.Operator.LatestError != nil &&
+		telemetry.ClassifyError(run.Operator.LatestError.Code).InfraFault()
 }
 
 func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, now time.Time) error {
