@@ -506,12 +506,20 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// Makefile's `extension-test` target relies on POSIX shell for the
 		// `*.test.mjs` pattern) still runs every suite, and the
 		// `TestExtensionTestCheckUsesNodeAndCoversAllTestFiles` guard fails
-		// fast when a newly added *.test.mjs file is not wired here.
+		// fast when a newly added *.test.mjs file is not wired here. Coverage
+		// includes every production module, excludes the tests themselves, and
+		// ratchets the line/branch/function values measured when #4841 landed.
 		check{
 			label:   "extension-test",
 			command: tools.nodeCommand,
 			args: []string{
 				"--test",
+				"--experimental-test-coverage",
+				"--test-coverage-include=.github/extensions/goobers-portal/*.mjs",
+				"--test-coverage-exclude=.github/extensions/goobers-portal/*.test.mjs",
+				"--test-coverage-lines=68",
+				"--test-coverage-branches=73",
+				"--test-coverage-functions=64",
 				".github/extensions/goobers-portal/actions-source.test.mjs",
 				".github/extensions/goobers-portal/client.test.mjs",
 				".github/extensions/goobers-portal/extension.test.mjs",

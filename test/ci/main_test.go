@@ -445,7 +445,24 @@ func TestExtensionTestCheckUsesNodeAndCoversAllTestFiles(t *testing.T) {
 	if len(current.args) == 0 || current.args[0] != "--test" {
 		t.Fatalf("extension-test args = %q, first arg must be --test", current.args)
 	}
-	testFiles := current.args[1:]
+	for _, want := range []string{
+		"--experimental-test-coverage",
+		"--test-coverage-include=.github/extensions/goobers-portal/*.mjs",
+		"--test-coverage-exclude=.github/extensions/goobers-portal/*.test.mjs",
+		"--test-coverage-lines=68",
+		"--test-coverage-branches=73",
+		"--test-coverage-functions=64",
+	} {
+		if !slices.Contains(current.args, want) {
+			t.Errorf("extension-test args omit coverage ratchet %q: %q", want, current.args)
+		}
+	}
+	var testFiles []string
+	for _, arg := range current.args[1:] {
+		if !strings.HasPrefix(arg, "--") && strings.HasSuffix(arg, ".test.mjs") {
+			testFiles = append(testFiles, arg)
+		}
+	}
 	dir := ".github/extensions/goobers-portal/"
 	seen := map[string]bool{}
 	for _, arg := range testFiles {

@@ -348,7 +348,11 @@ portal-ci: portal-audit portal-build portal-test portal-e2e portal-deadcode port
 ## extension-test: Run the canvas extension Node --test suites for goobers-portal.
 .PHONY: extension-test
 extension-test:
-	node --test .github/extensions/goobers-portal/*.test.mjs
+	node --test --experimental-test-coverage \
+		'--test-coverage-include=.github/extensions/goobers-portal/*.mjs' \
+		'--test-coverage-exclude=.github/extensions/goobers-portal/*.test.mjs' \
+		--test-coverage-lines=68 --test-coverage-branches=73 --test-coverage-functions=64 \
+		.github/extensions/goobers-portal/*.test.mjs
 
 ## cover: Show total test coverage.
 .PHONY: cover
