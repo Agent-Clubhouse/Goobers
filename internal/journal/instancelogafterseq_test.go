@@ -60,6 +60,44 @@ func TestReadInstanceLogAfterSeqReturnsOnlyLaterEvents(t *testing.T) {
 	}
 }
 
+func TestInstanceLogStateDistinguishesRecreatedGenerationZero(t *testing.T) {
+	dir := t.TempDir()
+	appendInstanceEvents(t, dir, Event{Type: EventRunnerAnnotation})
+	before, err := ReadInstanceLogState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendInstanceEvents(t, dir, Event{Type: EventTickSkipped})
+	continued, err := ReadInstanceLogState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.identity == "" || before.identity != continued.identity || !before.SameJournal(continued) {
+		t.Fatalf("continued journal states = %#v, %#v; want one durable identity", before, continued)
+	}
+	path, err := InstanceEventsPath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	appendInstanceEvents(t, dir, Event{Type: EventTickSkipped})
+	after, err := ReadInstanceLogState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.identity == "" || after.identity == "" {
+		t.Fatalf("journal identities = %q, %q; want two durable identities", before.identity, after.identity)
+	}
+	if before.identity == after.identity {
+		t.Fatalf("recreated generation-zero journal retained identity %q", before.identity)
+	}
+	if before.SameJournal(after) {
+		t.Fatal("recreated generation-zero journal matches its prior state")
+	}
+}
+
 func TestReadInstanceLogAfterSeqToleratesMissingJournal(t *testing.T) {
 	events, err := ReadInstanceLogAfterSeq(t.TempDir(), 0)
 	if err != nil {

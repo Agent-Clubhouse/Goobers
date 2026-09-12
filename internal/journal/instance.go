@@ -1,9 +1,13 @@
 package journal
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +54,11 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	if err != nil {
 		return nil, RecoverReport{}, err
 	}
+	_, statErr := os.Stat(path)
+	eventsExisted := statErr == nil
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, RecoverReport{}, fmt.Errorf("journal: stat instance log: %w", statErr)
+	}
 	events, tornBytes, err := readEvents(path)
 	if err != nil {
 		return nil, RecoverReport{}, err
@@ -57,6 +66,9 @@ func OpenInstanceLog(dir string, opts ...Option) (*InstanceLog, RecoverReport, e
 	report := RecoverReport{TornBytes: tornBytes}
 	report.LastSeq = highestEventSeq(events)
 	if err := truncateTornTail(path, tornBytes); err != nil {
+		return nil, RecoverReport{}, err
+	}
+	if _, err := ensureInstanceLogID(dir, eventsExisted); err != nil {
 		return nil, RecoverReport{}, err
 	}
 
@@ -260,17 +272,29 @@ func ReadInstanceLogAfterSeq(dir string, seq uint64) ([]Event, error) {
 type InstanceLogState struct {
 	Generation int
 	Exists     bool
+	identity   string
 	info       os.FileInfo
 }
 
 // SameJournal reports whether two states describe the same generation file.
 func (s InstanceLogState) SameJournal(other InstanceLogState) bool {
-	return s.Exists && other.Exists && s.Generation == other.Generation &&
-		s.info != nil && other.info != nil && os.SameFile(s.info, other.info)
+	if !s.Exists || !other.Exists || s.Generation != other.Generation {
+		return false
+	}
+	if s.identity != "" || other.identity != "" {
+		if s.identity == "" || s.identity != other.identity {
+			return false
+		}
+	}
+	return s.info != nil && other.info != nil && os.SameFile(s.info, other.info)
 }
 
 // ReadInstanceLogState returns the current instance journal's identity.
 func ReadInstanceLogState(dir string) (InstanceLogState, error) {
+	identity, err := readInstanceLogID(dir)
+	if err != nil {
+		return InstanceLogState{}, err
+	}
 	path, generation, err := resolveInstanceEventsPath(dir)
 	if err != nil {
 		return InstanceLogState{}, err
@@ -278,11 +302,53 @@ func ReadInstanceLogState(dir string) (InstanceLogState, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return InstanceLogState{Generation: generation}, nil
+			return InstanceLogState{Generation: generation, identity: identity}, nil
 		}
 		return InstanceLogState{}, fmt.Errorf("journal: stat instance log generation: %w", err)
 	}
-	return InstanceLogState{Generation: generation, Exists: true, info: info}, nil
+	return InstanceLogState{Generation: generation, Exists: true, identity: identity, info: info}, nil
+}
+
+func ensureInstanceLogID(dir string, eventsExisted bool) (string, error) {
+	if eventsExisted {
+		identity, err := readInstanceLogID(dir)
+		if err != nil || identity != "" {
+			return identity, err
+		}
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("journal: generate instance log identity: %w", err)
+	}
+	identity := hex.EncodeToString(random[:])
+	if err := writeFileAtomic(filepath.Join(dir, fileInstanceLogID), []byte(identity+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("journal: persist instance log identity: %w", err)
+	}
+	return identity, nil
+}
+
+func readInstanceLogID(dir string) (string, error) {
+	path := filepath.Join(dir, fileInstanceLogID)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("journal: stat instance log identity: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != 33 {
+		return "", fmt.Errorf("journal: invalid instance log identity file %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("journal: read instance log identity: %w", err)
+	}
+	identity := strings.TrimSuffix(string(data), "\n")
+	decoded, decodeErr := hex.DecodeString(identity)
+	if len(data) != 33 || decodeErr != nil || len(decoded) != 16 || identity != strings.ToLower(identity) || identity == strings.Repeat("0", 32) {
+		return "", fmt.Errorf("journal: invalid instance log identity in %s", path)
+	}
+	return identity, nil
 }
 
 func highestEventSeq(events []Event) uint64 {
