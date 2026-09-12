@@ -31,6 +31,17 @@ proofs are cached for that Goobers process. Changing a wrapper requires
 restarting that process. A separate worker or stage process performs
 its own proof; verification is never written to configuration or shared storage.
 
+Model discovery is not sent through a custom launcher. Goobers connects the
+Copilot SDK directly to `copilot` for that server-mode exchange, then uses the
+configured launcher for authentication preflight and workflow execution. This
+keeps SDK transport and logged-in-user authentication owned by the SDK client
+instead of requiring every launcher to proxy the Copilot server protocol.
+
+A configured command that is the Copilot CLI itself under another path —
+`/usr/local/bin/copilot`, say — is not a wrapper, and discovery keeps using it.
+Only a genuine launcher is bypassed, so pinning the CLI by absolute path does
+not silently add a requirement that `copilot` also be on `PATH`.
+
 ```json
 {"version":1,"sessionMode":"adapter-managed"}
 ```
