@@ -147,6 +147,10 @@ Two further rules the same check enforces:
   this metadata. Regenerate it with `make docs` (or `go run ./test/designstatus
   -write`); the merge gate fails if it is stale, so a new design cannot be added
   without appearing in the index.
+- **`docs/guides/README.md` is generated.** It indexes every guide by its
+  level-one title. Regenerate it with `make docs` (or `go run
+  ./test/markdownlinks -write`); the markdown-links merge check rejects index
+  drift and any guide unreachable from that index, `docs/cli`, or `docs/man`.
 - **A citation into somebody's home directory must say it is unreachable.** A
   path like `~/source/Reviews/finding.md` cannot be resolved by any other
   reader, so a document containing one must also contain the phrase *"not

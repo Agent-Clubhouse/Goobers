@@ -102,11 +102,12 @@ manifests:
 manifests-check: manifests
 	git diff --exit-code -- config/crd/bases
 
-## docs: Regenerate all committed documentation derived from runtime registries.
+## docs: Regenerate committed documentation and corpus indexes.
 .PHONY: docs
 docs:
 	$(GO) run ./cmd/goobers __generate-docs docs
 	$(GO) run ./test/designstatus -write
+	$(GO) run ./test/markdownlinks -write
 
 ## test-integration: Run declared-dependency integration tests (missing tools skip locally).
 .PHONY: test-integration
