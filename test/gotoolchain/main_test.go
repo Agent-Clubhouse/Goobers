@@ -79,6 +79,11 @@ func TestGoImageVersion(t *testing.T) {
 			want:    "1.26.6",
 		},
 		{
+			name:    "tag qualified by immutable digest",
+			content: "ARG GO_IMAGE=docker.io/library/golang:1.26.6@sha256:0123456789abcdef\n",
+			want:    "1.26.6",
+		},
+		{
 			name:    "registry host with a port is not mistaken for a tag",
 			content: "ARG GO_IMAGE=registry.example:5000/library/golang:1.26.6\n",
 			want:    "1.26.6",
@@ -111,7 +116,7 @@ func TestGoImageVersion(t *testing.T) {
 		{
 			name:    "unparseable: digest pin carries no version",
 			content: "ARG GO_IMAGE=docker.io/library/golang@sha256:abc123\n",
-			wantErr: `cannot read a Go version from ARG GO_IMAGE tag "abc123"`,
+			wantErr: "has no image tag",
 		},
 		{
 			name:    "missing argument",

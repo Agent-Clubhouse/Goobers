@@ -58,6 +58,18 @@ updates:
         patterns:
           - "*"
 
+  - package-ecosystem: "pip"
+    directory: "/deploy/monitoring"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      monitoring-pip:
+        patterns:
+          - "*"
+
   - package-ecosystem: "npm"
     directory: "/samples/getting-started-task-api"
     schedule:

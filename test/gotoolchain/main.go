@@ -99,8 +99,9 @@ func goDirectiveVersion(content string) (string, error) {
 
 // goImageVersion extracts the Go version from the Dockerfile's GO_IMAGE build
 // argument default (e.g. docker.io/library/golang:1.26.6 -> 1.26.6). A tag
-// carrying a base-image variant (1.26.6-bookworm) still yields its version; a
-// tag that names no version at all (latest, or a bare digest pin) is an error
+// carrying a base-image variant (1.26.6-bookworm) or immutable digest still
+// yields its version; a reference that names no version at all (latest, or a
+// bare digest pin) is an error
 // rather than a silent pass, because this check cannot vouch for a toolchain it
 // cannot read.
 func goImageVersion(content string) (string, error) {
@@ -108,6 +109,10 @@ func goImageVersion(content string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no `ARG %s=` default found", goImageArg)
 	}
+	// A tag-qualified digest keeps the human-readable version before the @.
+	// Strip only the digest suffix; a digest-only reference then correctly has
+	// no tag and is rejected below.
+	reference, _, _ = strings.Cut(reference, "@")
 	// Split the tag off the final path element so a registry host:port
 	// (registry:5000/library/golang:1.26.6) is not mistaken for one.
 	name := reference[strings.LastIndex(reference, "/")+1:]
