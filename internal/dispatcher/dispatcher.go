@@ -33,13 +33,14 @@ const (
 	// a generic timeout.
 	DefaultWindowsScheduleToStart = 45 * time.Minute
 	// DefaultDeadlineMargin pads the stage timeout into the pod's
-	// activeDeadlineSeconds — the always-on orphan backstop (dispatcher §5):
+	// activeDeadlineSeconds — the always-on orphan-execution backstop (§5):
 	// wide enough that the stage's own policy-classed timeout enforcement
-	// always fires first, bounded so a dispatcher crash cannot leak a pod
-	// indefinitely.
+	// always fires first, bounded so a dispatcher crash cannot leave the pod's
+	// container executing indefinitely. Kubernetes retains the stopped Pod
+	// object until an explicit deletion.
 	DefaultDeadlineMargin = 10 * time.Minute
 	// DefaultStageTimeout backs a stage that declares no timeout, so every
-	// pod still carries a finite activeDeadlineSeconds (the backstop is
+	// pod still carries a finite activeDeadlineSeconds (the execution bound is
 	// always-on, never conditional on declaration).
 	DefaultStageTimeout = time.Hour
 	// DefaultSupervisionInterval paces the supervise loop's pod polls and
@@ -79,11 +80,10 @@ type Config struct {
 	// per replica.
 	//
 	// A rollout gives the replacement worker a NEW pod name, so stage pods
-	// left by the outgoing one fall outside every sweep's scope. That is the
-	// intended trade: the sweep's job is to reclaim ITS OWN interrupted
-	// attempts, and the always-on activeDeadlineSeconds stamp (dispatcher §5)
-	// is what bounds every other leak. Deleting a pod on a guess is the
-	// failure this whole path is built to avoid.
+	// left by the outgoing one fall outside every later owner-scoped sweep.
+	// activeDeadlineSeconds eventually stops their containers, but does not
+	// delete the retained Pod objects. Deleting a possibly live pod on a guess
+	// is the failure this path is built to avoid.
 	//
 	// Empty stamps no owner label and makes SweepOrphans refuse: an ownerless
 	// fleet cannot be swept safely by one of its members.
@@ -734,8 +734,8 @@ type Report struct {
 	// outcome (a confirmed success or a confirmed PodFailed), so Dispatch's
 	// returned error still reflects the settled result and this field carries
 	// the disposal failure alongside it. Disposed==false means DELETE failed;
-	// the leak is bounded by activeDeadlineSeconds and the restart reconcile
-	// sweep (dispatcher §5).
+	// activeDeadlineSeconds bounds any remaining execution; the owner-scoped
+	// restart reconcile may delete the Pod object (dispatcher §5).
 	DisposeErr error
 	// QueuedAt and PodStartedAt bound the schedule-to-start wait for
 	// provenance.
@@ -878,9 +878,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// result and spending an infra retry re-dispatching an already-settled
 	// (possibly MUTATING) stage. So record the disposal failure on the report
 	// as the leak signal (Disposed is false for a refused DELETE; accepted
-	// deletion with unconfirmed disappearance sets DisposeErr too). Leaks are
-	// bounded by activeDeadlineSeconds and restart reconcile (dispatcher §5), and
-	// let the settled path fall through: PodFailed → ErrStageFailed, success →
+	// deletion with unconfirmed disappearance sets DisposeErr too). Execution is
+	// bounded by activeDeadlineSeconds; the owner-scoped restart reconcile may
+	// delete the retained object (dispatcher §5). The settled path still falls
+	// through: PodFailed → ErrStageFailed, success →
 	// nil. When superviseErr is already non-nil there is no settled outcome to
 	// protect; that infra error is returned unchanged and DisposeErr rides
 	// alongside on the report. superviseErr is never overwritten here, because

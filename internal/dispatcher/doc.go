@@ -16,7 +16,8 @@
 // (delivery decisions 004/015 — internal/runnercap.RunnerClassValue is the
 // single producer of the value), the deny-first posture labels the
 // per-runner-class NetworkPolicies select on, and the always-on
-// activeDeadlineSeconds orphan backstop (dispatcher §5).
+// activeDeadlineSeconds orphan-execution bound (dispatcher §5). The deadline
+// stops a container; it does not delete the retained Pod API object.
 //
 // SCOPE SEAMS, stated plainly:
 //

@@ -341,9 +341,11 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s as owner %s; dispatch queues %s\n",
 			*dispatchNamespace, owner, strings.Join(dispatch.Queues, ", "))
 		// Decision 003's worker-hygiene graft, run BEFORE this worker polls
-		// anything: reclaim the stage pods this same owner left behind when it
-		// last stopped, asking the engine about each one. A pod whose attempt
-		// is still executing is adopted (left running, its surrender still
+		// anything: reconcile stage pods carrying this worker pod's owner label,
+		// asking the engine about each one. A rollout changes that label, leaving
+		// the replaced worker's pods outside both this sweep and the replacement's
+		// owner-scoped sweep. A pod whose attempt is still executing is adopted
+		// (left running, its surrender still
 		// lands); only a settled attempt's pod is disposed. Never fatal — see
 		// sweepWorkerStageOrphans.
 		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)

@@ -19,8 +19,9 @@ import (
 // the graft it adopted instead states the rule the other way round: an attempt
 // whose workflow is still Running is ADOPTED — left alone — and only a
 // POSITIVELY settled attempt is disposed. Every remaining case (Temporal
-// unreachable, the answer ambiguous, the pod unaddressable) leaves the pod and
-// lets the always-on activeDeadlineSeconds stamp reclaim it. Deleting a pod
+// unreachable, the answer ambiguous, the pod unaddressable) leaves the pod.
+// activeDeadlineSeconds eventually stops its container but retains the Pod
+// object for an explicit deletion. Deleting a pod
 // whose attempt might still be executing destroys in-flight work and, for a
 // mutating stage, does it invisibly; leaving one costs at most one stage
 // timeout of cluster capacity.
@@ -87,10 +88,10 @@ type RunStates interface {
 // §5, constraint (a)): cross-namespace ownerReferences are NOT used (k8s GC
 // silently deletes a dependent whose namespaced owner lives in another
 // namespace — silent-delete-reads-as-eviction), so on restart the dispatcher
-// lists the pods IT labeled and disposes the ones whose attempt is settled.
-// activeDeadlineSeconds is the always-on backstop between restarts; together
-// the design is per-attempt-leak-BOUNDED, not zero-leak, which is the accepted
-// v1 posture.
+// lists the pods carrying its CURRENT owner label and disposes the ones whose
+// attempt is settled. activeDeadlineSeconds bounds execution between restarts;
+// it does not bound retention of Pod objects that no later worker owner can
+// select.
 //
 // Two scopes narrow what a sweep can reach, and both are load-bearing:
 //
@@ -108,7 +109,7 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 	}
 	owner := d.cfg.ownerLabel()
 	if owner == "" {
-		return nil, errors.New("dispatcher: orphan sweep requires Config.Owner — an unscoped sweep would dispose other workers' stage pods")
+		return nil, errors.New("dispatcher: orphan sweep requires Config.Owner to select only pods stamped for this worker")
 	}
 	pods, err := d.pods.ListPods(ctx, d.cfg.Namespace, sweepSelector(owner))
 	if err != nil {
@@ -122,7 +123,8 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 		if !ok {
 			// Selected but not addressable: no identity annotations, so there
 			// is no workflow execution to describe and no resolver can answer.
-			// Leave it (the deadline stamp reclaims it) and say so — a pod in
+			// Leave it and say so. Its deadline stops execution but does not
+			// delete the Pod object. A pod in
 			// this state means something stamped LabelOwner without going
 			// through stampIdentityAnnotations, or dispatched an attempt whose
 			// OwningWorkflowID was never set, both bugs on the create path.
@@ -136,9 +138,10 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 		}
 		// One pod's delete error must not strand the rest of the batch.
 		// Accumulate and keep going; the aggregated error is returned after the
-		// loop, and `deleted` reflects every pod actually removed. (The sweep
-		// also re-runs on every restart, so a pod that errors here is retried,
-		// not lost.)
+		// loop, and `deleted` reflects every pod actually removed. A later
+		// same-owner process restart retries the pod. A rollout changes the owner
+		// label, so its replacement cannot select this pod with the current
+		// sweep.
 		if err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt}); err != nil {
 			errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
 			continue
@@ -159,7 +162,8 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 // no execution to describe, and the only remaining way to reach a verdict
 // would be to GUESS an id from the run and stage — the exact lossy address
 // this annotation replaced. Missing it therefore means "leave the pod", which
-// is the safe direction, and the deadline stamp still reclaims it.
+// is the safe direction. Its deadline still stops execution, but the retained
+// Pod object requires an explicit deletion once that is safe.
 func podAttempt(pod *corev1.Pod) (PodAttempt, bool) {
 	owningWorkflowID := pod.Annotations[AnnotationOwningWorkflowID]
 	runID := pod.Annotations[AnnotationRunID]
