@@ -249,28 +249,7 @@ func (e *LoginSelfReportRefusedError) Error() string {
 // comment instead of growing a new one every run. GitHub scopes comment IDs
 // repo-wide, not per-issue, so the edit endpoint takes no issue number.
 func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, commentID, body string) error {
-	if err := requireOwnerRepo(repo); err != nil {
-		return err
-	}
-	if commentID == "" {
-		return fmt.Errorf("comment id is required")
-	}
-	body, err := withAttribution(body, p.attribution, "comment-update")
-	if err != nil {
-		return err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
-	if err != nil {
-		return err
-	}
-	var comment restComment
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, &comment); err != nil {
-		return err
-	}
-	if ref, ok := commentMutationRef(ProviderGitHub, repo, comment); ok {
-		p.recordExternalRef(ctx, ref)
-	}
-	return nil
+	return updateRESTComment(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, repo, commentID, body)
 }
 
 // DeleteComment removes an issue/PR comment. A missing comment is already in
@@ -512,99 +491,7 @@ func (p *GitHubProvider) scanWorkItemLabelTransitions(
 // an external-ref mutation with before/after field digests so the run journal can
 // trace it.
 func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.Milestone != nil && *req.Milestone <= 0 {
-		return WorkItem{}, fmt.Errorf("milestone number must be positive")
-	}
-	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.ExpectedRevision != "" {
-		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
-			return WorkItem{}, err
-		}
-	}
-
-	fields := map[string]FieldDigest{}
-	patch := map[string]interface{}{}
-	if req.Title != nil {
-		patch["title"] = *req.Title
-		fields["title"] = FieldDigest{Before: digestString(before.Title), After: digestString(*req.Title)}
-	}
-	if req.Body != nil {
-		patch["body"] = *req.Body
-		fields["body"] = FieldDigest{Before: digestString(before.Body), After: digestString(*req.Body)}
-	}
-	if req.Assignee != nil {
-		assignees := []string{}
-		if *req.Assignee != "" {
-			assignees = append(assignees, *req.Assignee)
-		}
-		patch["assignees"] = assignees
-		fields["assignee"] = FieldDigest{Before: digestString(before.Assignee), After: digestString(*req.Assignee)}
-	}
-	if req.Milestone != nil {
-		milestoneBefore := ""
-		if before.Parent != nil && before.Parent.Type == "milestone" {
-			milestoneBefore = before.Parent.ID
-		}
-		milestoneAfter := strconv.Itoa(*req.Milestone)
-		patch["milestone"] = *req.Milestone
-		fields["milestone"] = FieldDigest{Before: digestString(milestoneBefore), After: digestString(milestoneAfter)}
-	}
-	if req.State != "" {
-		state := strings.ToLower(req.State)
-		if state != "open" && state != "closed" {
-			return WorkItem{}, fmt.Errorf("unsupported state %q (want open or closed)", req.State)
-		}
-		patch["state"] = state
-		fields["state"] = FieldDigest{Before: digestString(before.State), After: digestString(state)}
-	}
-	if len(patch) > 0 {
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if err := p.do(ctx, http.MethodPatch, endpoint, patch, nil); err != nil {
-			return WorkItem{}, err
-		}
-	}
-
-	if req.Comment != "" {
-		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
-	}
-
-	if labelsChanged(req) {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels); err != nil {
-			return WorkItem{}, err
-		}
-		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
-		fields["labels"] = FieldDigest{Before: digestLabels(before.Labels), After: digestLabels(after)}
-	}
-
-	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if len(fields) > 0 {
-		p.recordExternalRef(ctx, ExternalRef{
-			Provider:  ProviderGitHub,
-			Ref:       issueRef(req.Repository, req.ID),
-			URL:       final.URL,
-			Operation: updateOperation(req),
-			Fields:    fields,
-		})
-	}
-	return final, nil
+	return updateRESTWorkItem(ctx, p, ProviderGitHub, p.BaseURL, req)
 }
 
 // ClaimWorkItem writes a best-effort claiming marker (a label plus a run-id
@@ -687,62 +574,7 @@ func (p *GitHubProvider) recordClaimFailure(ctx context.Context, req ClaimWorkIt
 }
 
 func (p *GitHubProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.RunID == "" {
-		return WorkItem{}, fmt.Errorf("run id is required to release an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-
-	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if claimed && winner != req.RunID {
-		if !req.LedgerAuthorized {
-			return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
-		}
-	}
-	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	releasedRunID := req.RunID
-	if claimed {
-		releasedRunID = winner
-		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if before.HasLabel(label) {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.ID),
-		URL:       final.URL,
-		Operation: "claim-release",
-		Outcome:   "success",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"claim":  {Before: digestString("run=" + releasedRunID), After: digestString("released")},
-			"labels": {Before: digestLabels(before.Labels), After: digestLabels(final.Labels)},
-		},
-	})
-	return final, nil
+	return releaseRESTWorkItemClaim(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
 }
 
 // ReconcileOrphanedWorkItemClaim closes any historical provider claim epoch,
@@ -881,31 +713,7 @@ func (p *GitHubProvider) postComment(ctx context.Context, repo RepositoryRef, id
 // identity. Retry-safe callers perform exact-marker adoption around this raw
 // non-idempotent POST.
 func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return Comment{}, err
-	}
-	if id == "" {
-		return Comment{}, errIssueIDRequired
-	}
-	body, err := withAttribution(body, p.attribution, "comment")
-	if err != nil {
-		return Comment{}, err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
-	if err != nil {
-		return Comment{}, err
-	}
-	var comment restComment
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
-		return Comment{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(repo, id),
-		URL:       comment.HTMLURL,
-		Operation: "comment",
-	})
-	return mapGitHubComment(comment), nil
+	return createRESTWorkItemComment(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, repo, id, body, mapGitHubComment)
 }
 
 func mapGitHubComment(c restComment) Comment {

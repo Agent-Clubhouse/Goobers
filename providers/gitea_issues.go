@@ -206,36 +206,11 @@ func (p *GiteaProvider) FindWorkItemsByMarker(ctx context.Context, repo Reposito
 	if err := p.ready(); err != nil {
 		return nil, err
 	}
-	if err := requireOwnerRepo(repo); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
-		return nil, fmt.Errorf("single-line work item marker is required")
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues")
-	if err != nil {
-		return nil, err
-	}
-	endpoint, err = addQuery(endpoint, url.Values{"state": []string{"all"}, "type": []string{"issues"}})
-	if err != nil {
-		return nil, err
-	}
-	var matches []WorkItem
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var issues []giteaIssue
-		if err := json.Unmarshal(page, &issues); err != nil {
-			return fmt.Errorf("decode issues page: %w", err)
-		}
-		for _, issue := range issues {
-			if issue.PullRequest == nil && containsExactLine(issue.Body, marker) {
-				matches = append(matches, mapGiteaIssue(issue))
-			}
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return matches, nil
+	return findRESTWorkItemsByMarker(ctx, p, p.BaseURL, repo, marker,
+		url.Values{"state": []string{"all"}, "type": []string{"issues"}},
+		mapGiteaIssue, func(issue giteaIssue) restMarkerIssue {
+			return restMarkerIssue{Body: issue.Body, IsPullRequest: issue.PullRequest != nil}
+		})
 }
 
 // ListComments returns the comments on a Gitea issue, oldest first.
@@ -290,28 +265,7 @@ func (p *GiteaProvider) UpdateComment(ctx context.Context, repo RepositoryRef, c
 	if err := p.ready(); err != nil {
 		return err
 	}
-	if err := requireOwnerRepo(repo); err != nil {
-		return err
-	}
-	if commentID == "" {
-		return fmt.Errorf("comment id is required")
-	}
-	body, err := withAttribution(body, p.attribution, "comment-update")
-	if err != nil {
-		return err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
-	if err != nil {
-		return err
-	}
-	var comment restComment
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, &comment); err != nil {
-		return err
-	}
-	if ref, ok := commentMutationRef(ProviderGitea, repo, comment); ok {
-		p.recordExternalRef(ctx, ref)
-	}
-	return nil
+	return updateRESTComment(ctx, p, ProviderGitea, p.BaseURL, p.attribution, repo, commentID, body)
 }
 
 // DeleteComment removes an issue/PR comment. A missing comment is already in
@@ -338,31 +292,7 @@ func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo Reposito
 	if err := p.ready(); err != nil {
 		return Comment{}, err
 	}
-	if err := requireOwnerRepo(repo); err != nil {
-		return Comment{}, err
-	}
-	if id == "" {
-		return Comment{}, errIssueIDRequired
-	}
-	body, err := withAttribution(body, p.attribution, "comment")
-	if err != nil {
-		return Comment{}, err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
-	if err != nil {
-		return Comment{}, err
-	}
-	var comment restComment
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
-		return Comment{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(repo, id),
-		URL:       comment.HTMLURL,
-		Operation: "comment",
-	})
-	return mapGiteaComment(comment), nil
+	return createRESTWorkItemComment(ctx, p, ProviderGitea, p.BaseURL, p.attribution, repo, id, body, mapGiteaComment)
 }
 
 // CreateWorkItem creates a Gitea issue. Gitea takes label IDs, not names, so
@@ -463,98 +393,7 @@ func (p *GiteaProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRe
 	if err := p.ready(); err != nil {
 		return WorkItem{}, err
 	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.Milestone != nil && *req.Milestone <= 0 {
-		return WorkItem{}, fmt.Errorf("milestone number must be positive")
-	}
-	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.ExpectedRevision != "" {
-		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
-			return WorkItem{}, err
-		}
-	}
-
-	fields := map[string]FieldDigest{}
-	patch := map[string]interface{}{}
-	if req.Title != nil {
-		patch["title"] = *req.Title
-		fields["title"] = FieldDigest{Before: digestString(before.Title), After: digestString(*req.Title)}
-	}
-	if req.Body != nil {
-		patch["body"] = *req.Body
-		fields["body"] = FieldDigest{Before: digestString(before.Body), After: digestString(*req.Body)}
-	}
-	if req.Assignee != nil {
-		assignees := []string{}
-		if *req.Assignee != "" {
-			assignees = append(assignees, *req.Assignee)
-		}
-		patch["assignees"] = assignees
-		fields["assignee"] = FieldDigest{Before: digestString(before.Assignee), After: digestString(*req.Assignee)}
-	}
-	if req.Milestone != nil {
-		milestoneBefore := ""
-		if before.Parent != nil && before.Parent.Type == "milestone" {
-			milestoneBefore = before.Parent.ID
-		}
-		patch["milestone"] = *req.Milestone
-		fields["milestone"] = FieldDigest{Before: digestString(milestoneBefore), After: digestString(strconv.Itoa(*req.Milestone))}
-	}
-	if req.State != "" {
-		state := strings.ToLower(req.State)
-		if state != "open" && state != "closed" {
-			return WorkItem{}, fmt.Errorf("unsupported state %q (want open or closed)", req.State)
-		}
-		patch["state"] = state
-		fields["state"] = FieldDigest{Before: digestString(before.State), After: digestString(state)}
-	}
-	if len(patch) > 0 {
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if err := p.do(ctx, http.MethodPatch, endpoint, patch, nil); err != nil {
-			return WorkItem{}, err
-		}
-	}
-
-	if req.Comment != "" {
-		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
-	}
-
-	if labelsChanged(req) {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels); err != nil {
-			return WorkItem{}, err
-		}
-		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
-		fields["labels"] = FieldDigest{Before: digestLabels(before.Labels), After: digestLabels(after)}
-	}
-
-	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if len(fields) > 0 {
-		p.recordExternalRef(ctx, ExternalRef{
-			Provider:  ProviderGitea,
-			Ref:       issueRef(req.Repository, req.ID),
-			URL:       final.URL,
-			Operation: updateOperation(req),
-			Fields:    fields,
-		})
-	}
-	return final, nil
+	return updateRESTWorkItem(ctx, p, ProviderGitea, p.BaseURL, req)
 }
 
 // UpdateWorkItemStatus mirrors Goobers processing status to Gitea labels,
@@ -680,60 +519,7 @@ func (p *GiteaProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 	if err := p.ready(); err != nil {
 		return WorkItem{}, err
 	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.RunID == "" {
-		return WorkItem{}, fmt.Errorf("run id is required to release an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-
-	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if claimed && winner != req.RunID && !req.LedgerAuthorized {
-		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
-	}
-	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	releasedRunID := req.RunID
-	if claimed {
-		releasedRunID = winner
-		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if before.HasLabel(label) {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, req.ID),
-		URL:       final.URL,
-		Operation: "claim-release",
-		Outcome:   "success",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"claim":  {Before: digestString("run=" + releasedRunID), After: digestString("released")},
-			"labels": {Before: digestLabels(before.Labels), After: digestLabels(final.Labels)},
-		},
-	})
-	return final, nil
+	return releaseRESTWorkItemClaim(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req)
 }
 
 // finishClaim loads the final item, records the claim mutation, and reports

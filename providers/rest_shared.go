@@ -43,6 +43,27 @@ type restClaimReader interface {
 	AuthenticatedLogin(ctx context.Context) (string, error)
 }
 
+// restMutationRecorder is the decoded-request seam plus the mutation journal
+// callback shared by both REST providers.
+type restMutationRecorder interface {
+	restDoer
+	recordExternalRef(context.Context, ExternalRef)
+}
+
+// restWorkItemMutator adds the common issue workflow used by shared updates.
+// The HTTP details remain provider-owned.
+type restWorkItemMutator interface {
+	restMutationRecorder
+	GetWorkItem(context.Context, RepositoryRef, string) (WorkItem, error)
+	applyLabelChanges(context.Context, RepositoryRef, string, []string, []string) error
+	postComment(context.Context, RepositoryRef, string, string) error
+}
+
+type restClaimMutationProvider interface {
+	restWorkItemMutator
+	restClaimReader
+}
+
 // restComment is the issue-comment payload both backends return.
 type restComment struct {
 	ID        int64      `json:"id"`
@@ -255,4 +276,352 @@ func repositoryRef(kind ProviderKind, repo *restRepository) *RepositoryRef {
 		Name:     repo.Name,
 		URL:      repo.HTMLURL,
 	}
+}
+
+func updateRESTComment(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, repo RepositoryRef, commentID, body string) error {
+	if err := requireOwnerRepo(repo); err != nil {
+		return err
+	}
+	if commentID == "" {
+		return fmt.Errorf("comment id is required")
+	}
+	body, err := withAttribution(body, attribution, "comment-update")
+	if err != nil {
+		return err
+	}
+	endpoint, err := joinURL(baseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
+	if err != nil {
+		return err
+	}
+	var comment restComment
+	if err := c.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, &comment); err != nil {
+		return err
+	}
+	if ref, ok := commentMutationRef(kind, repo, comment); ok {
+		c.recordExternalRef(ctx, ref)
+	}
+	return nil
+}
+
+func createRESTWorkItemComment(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, repo RepositoryRef, id, body string, mapComment func(restComment) Comment) (Comment, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return Comment{}, err
+	}
+	if id == "" {
+		return Comment{}, errIssueIDRequired
+	}
+	body, err := withAttribution(body, attribution, "comment")
+	if err != nil {
+		return Comment{}, err
+	}
+	endpoint, err := joinURL(baseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
+	if err != nil {
+		return Comment{}, err
+	}
+	var comment restComment
+	if err := c.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
+		return Comment{}, err
+	}
+	c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(repo, id), URL: comment.HTMLURL, Operation: "comment"})
+	return mapComment(comment), nil
+}
+
+func updateRESTWorkItem(ctx context.Context, c restWorkItemMutator, kind ProviderKind, baseURL string, req UpdateWorkItemRequest) (WorkItem, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return WorkItem{}, err
+	}
+	if req.ID == "" {
+		return WorkItem{}, errIssueIDRequired
+	}
+	if req.Milestone != nil && *req.Milestone <= 0 {
+		return WorkItem{}, fmt.Errorf("milestone number must be positive")
+	}
+	before, err := c.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
+	}
+
+	fields := map[string]FieldDigest{}
+	patch := map[string]interface{}{}
+	if req.Title != nil {
+		patch["title"] = *req.Title
+		fields["title"] = FieldDigest{Before: digestString(before.Title), After: digestString(*req.Title)}
+	}
+	if req.Body != nil {
+		patch["body"] = *req.Body
+		fields["body"] = FieldDigest{Before: digestString(before.Body), After: digestString(*req.Body)}
+	}
+	if req.Assignee != nil {
+		assignees := []string{}
+		if *req.Assignee != "" {
+			assignees = append(assignees, *req.Assignee)
+		}
+		patch["assignees"] = assignees
+		fields["assignee"] = FieldDigest{Before: digestString(before.Assignee), After: digestString(*req.Assignee)}
+	}
+	if req.Milestone != nil {
+		milestoneBefore := ""
+		if before.Parent != nil && before.Parent.Type == "milestone" {
+			milestoneBefore = before.Parent.ID
+		}
+		milestoneAfter := strconv.Itoa(*req.Milestone)
+		patch["milestone"] = *req.Milestone
+		fields["milestone"] = FieldDigest{Before: digestString(milestoneBefore), After: digestString(milestoneAfter)}
+	}
+	if req.State != "" {
+		state := strings.ToLower(req.State)
+		if state != "open" && state != "closed" {
+			return WorkItem{}, fmt.Errorf("unsupported state %q (want open or closed)", req.State)
+		}
+		patch["state"] = state
+		fields["state"] = FieldDigest{Before: digestString(before.State), After: digestString(state)}
+	}
+	if len(patch) > 0 {
+		endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		if err := c.do(ctx, http.MethodPatch, endpoint, patch, nil); err != nil {
+			return WorkItem{}, err
+		}
+	}
+	if req.Comment != "" {
+		if err := c.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
+			return WorkItem{}, err
+		}
+		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
+	}
+	if labelsChanged(req) {
+		if err := c.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels); err != nil {
+			return WorkItem{}, err
+		}
+		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
+		fields["labels"] = FieldDigest{Before: digestLabels(before.Labels), After: digestLabels(after)}
+	}
+	final, err := c.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	if len(fields) > 0 {
+		c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(req.Repository, req.ID), URL: final.URL, Operation: updateOperation(req), Fields: fields})
+	}
+	return final, nil
+}
+
+func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, kind ProviderKind, baseURL string, attribution Attribution, req ClaimWorkItemRequest) (WorkItem, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return WorkItem{}, err
+	}
+	if req.ID == "" {
+		return WorkItem{}, errIssueIDRequired
+	}
+	if req.RunID == "" {
+		return WorkItem{}, fmt.Errorf("run id is required to release an item")
+	}
+	label := req.ClaimLabel
+	if label == "" {
+		label = LabelClaimed
+	}
+	winner, claimed, err := claimWinner(ctx, c, baseURL, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	if claimed && winner != req.RunID && !req.LedgerAuthorized {
+		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
+	}
+	before, err := c.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	releasedRunID := req.RunID
+	if claimed {
+		releasedRunID = winner
+		if err := postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
+			return WorkItem{}, err
+		}
+	}
+	if before.HasLabel(label) {
+		if err := c.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
+			return WorkItem{}, err
+		}
+	}
+	final, err := c.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
+		return WorkItem{}, err
+	}
+	c.recordExternalRef(ctx, ExternalRef{
+		Provider: kind, Ref: issueRef(req.Repository, req.ID), URL: final.URL, Operation: "claim-release", Outcome: "success", RunID: req.RunID,
+		Fields: map[string]FieldDigest{
+			"claim":  {Before: digestString("run=" + releasedRunID), After: digestString("released")},
+			"labels": {Before: digestLabels(before.Labels), After: digestLabels(final.Labels)},
+		},
+	})
+	return final, nil
+}
+
+type restMarkerIssue struct {
+	Body          string
+	IsPullRequest bool
+}
+
+func findRESTWorkItemsByMarker[T any](ctx context.Context, c restPager, baseURL string, repo RepositoryRef, marker string, query url.Values, mapIssue func(T) WorkItem, issueMeta func(T) restMarkerIssue) ([]WorkItem, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
+		return nil, fmt.Errorf("single-line work item marker is required")
+	}
+	endpoint, err := joinURL(baseURL, "repos", repo.Owner, repo.Name, "issues")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, query)
+	if err != nil {
+		return nil, err
+	}
+	var matches []WorkItem
+	if err := c.getAllPages(ctx, endpoint, func(page []byte) error {
+		var issues []T
+		if err := json.Unmarshal(page, &issues); err != nil {
+			return fmt.Errorf("decode issues page: %w", err)
+		}
+		for _, issue := range issues {
+			meta := issueMeta(issue)
+			if !meta.IsPullRequest && containsExactLine(meta.Body, marker) {
+				matches = append(matches, mapIssue(issue))
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return matches, nil
+}
+
+type restClosedPull struct {
+	Number  int    `json:"number"`
+	Merged  bool   `json:"merged"`
+	HTMLURL string `json:"html_url"`
+}
+
+func closeRESTPullRequest(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	if req.PullID == "" {
+		return ClosePullRequestResult{}, errPullIDRequired
+	}
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
+	if err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	var out restClosedPull
+	if err := c.do(ctx, http.MethodPatch, endpoint, map[string]string{"state": "closed"}, &out); err != nil {
+		return ClosePullRequestResult{}, err
+	}
+	if req.Comment != "" {
+		if err := postAttributedComment(ctx, c, baseURL, attribution, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
+			return ClosePullRequestResult{}, err
+		}
+	}
+	state, operation := "closed", "close"
+	if out.Merged {
+		state, operation = "merged", "merge"
+	}
+	fields := map[string]FieldDigest{"state": {After: digestString(state)}}
+	if req.Comment != "" {
+		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
+	}
+	c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(req.Repository, req.PullID), URL: out.HTMLURL, Operation: operation, Fields: fields})
+	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
+}
+
+func restPullRequestFiles(ctx context.Context, c restPager, baseURL string, repo RepositoryRef, pullID string, includePatch bool) ([]ChangedFile, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if pullID == "" {
+		return nil, errPullIDRequired
+	}
+	endpoint, err := joinURL(baseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
+	if err != nil {
+		return nil, err
+	}
+	var files []githubPullRequestFile
+	if err := c.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageOut []githubPullRequestFile
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode pull files page: %w", err)
+		}
+		files = append(files, pageOut...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	out := make([]ChangedFile, 0, len(files))
+	for _, f := range files {
+		changed := ChangedFile{Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Integrity: apiintegrity.Unapproved}
+		if includePatch {
+			changed.Patch = f.Patch
+		}
+		out = append(out, changed)
+	}
+	return out, nil
+}
+
+type restReviewResponse struct {
+	ID      int64  `json:"id"`
+	HTMLURL string `json:"html_url"`
+}
+
+func submitRESTPullRequestReview(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req PullRequestReviewRequest) (PullRequestReviewResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestReviewResult{}, err
+	}
+	if req.PullID == "" {
+		return PullRequestReviewResult{}, errPullIDRequired
+	}
+	if req.CommitSHA == "" {
+		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
+	}
+	if req.Body == "" {
+		return PullRequestReviewResult{}, fmt.Errorf("review body is required")
+	}
+	reviewBody, err := withAttribution(req.Body, attribution, "pull-request-review")
+	if err != nil {
+		return PullRequestReviewResult{}, err
+	}
+	events := map[ReviewDecision]string{ReviewDecisionChangesRequested: "REQUEST_CHANGES", ReviewDecisionComment: "COMMENT"}
+	switch kind {
+	case ProviderGitHub:
+		events[ReviewDecisionApproved] = "APPROVE"
+	case ProviderGitea:
+		events[ReviewDecisionApproved] = "APPROVED"
+	default:
+		return PullRequestReviewResult{}, fmt.Errorf("unsupported REST review provider %q", kind)
+	}
+	event, ok := events[req.Decision]
+	if !ok {
+		return PullRequestReviewResult{}, fmt.Errorf("unsupported review decision %q", req.Decision)
+	}
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "reviews")
+	if err != nil {
+		return PullRequestReviewResult{}, err
+	}
+	var out restReviewResponse
+	if err := c.do(ctx, http.MethodPost, endpoint, map[string]string{"body": reviewBody, "commit_id": req.CommitSHA, "event": event}, &out); err != nil {
+		return PullRequestReviewResult{}, err
+	}
+	c.recordExternalRef(ctx, ExternalRef{
+		Provider: kind, Ref: issueRef(req.Repository, req.PullID), URL: out.HTMLURL, Operation: "review",
+		Fields: map[string]FieldDigest{
+			"body": {After: digestString(req.Body)}, "commitSha": {After: digestString(req.CommitSHA)}, "decision": {After: digestString(string(req.Decision))},
+		},
+	})
+	return PullRequestReviewResult{ID: out.ID, URL: out.HTMLURL, CommitSHA: req.CommitSHA, Decision: req.Decision}, nil
 }

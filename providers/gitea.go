@@ -850,43 +850,7 @@ func (p *GiteaProvider) ClosePullRequest(ctx context.Context, req ClosePullReque
 	if err := p.ready(); err != nil {
 		return ClosePullRequestResult{}, err
 	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	if req.PullID == "" {
-		return ClosePullRequestResult{}, errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
-	if err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	var out giteaPull
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"state": "closed"}, &out); err != nil {
-		return ClosePullRequestResult{}, err
-	}
-	if req.Comment != "" {
-		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
-			return ClosePullRequestResult{}, err
-		}
-	}
-	state := "closed"
-	operation := "close"
-	if out.Merged {
-		state = "merged"
-		operation = "merge"
-	}
-	fields := map[string]FieldDigest{"state": {After: digestString(state)}}
-	if req.Comment != "" {
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, req.PullID),
-		URL:       out.HTMLURL,
-		Operation: operation,
-		Fields:    fields,
-	})
-	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
+	return closeRESTPullRequest(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req)
 }
 
 // MergePullRequest merges a Gitea pull request via POST .../pulls/{index}/merge.
@@ -1240,36 +1204,7 @@ func (p *GiteaProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef
 	if err := p.ready(); err != nil {
 		return nil, err
 	}
-	if err := requireOwnerRepo(repo); err != nil {
-		return nil, err
-	}
-	if pullID == "" {
-		return nil, errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
-	if err != nil {
-		return nil, err
-	}
-	var files []githubPullRequestFile
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageOut []githubPullRequestFile
-		if err := json.Unmarshal(page, &pageOut); err != nil {
-			return fmt.Errorf("decode pull files page: %w", err)
-		}
-		files = append(files, pageOut...)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	out := make([]ChangedFile, 0, len(files))
-	for _, f := range files {
-		out = append(out, ChangedFile{
-			Path: f.Filename, PreviousPath: f.PreviousFilename, Status: f.Status,
-			Additions: f.Additions, Deletions: f.Deletions,
-			Integrity: apiintegrity.Unapproved,
-		})
-	}
-	return out, nil
+	return restPullRequestFiles(ctx, p, p.BaseURL, repo, pullID, false)
 }
 
 // CompareCommits reports base and head's common ancestor plus the file-level
@@ -1400,66 +1335,7 @@ func (p *GiteaProvider) SubmitPullRequestReview(ctx context.Context, req PullReq
 	if err := p.ready(); err != nil {
 		return PullRequestReviewResult{}, err
 	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	if req.PullID == "" {
-		return PullRequestReviewResult{}, errPullIDRequired
-	}
-	if req.CommitSHA == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
-	}
-	if req.Body == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("review body is required")
-	}
-	reviewBody, err := withAttribution(req.Body, p.attribution, "pull-request-review")
-	if err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	var event string
-	switch req.Decision {
-	case ReviewDecisionApproved:
-		event = "APPROVED"
-	case ReviewDecisionChangesRequested:
-		event = "REQUEST_CHANGES"
-	case ReviewDecisionComment:
-		event = "COMMENT"
-	default:
-		return PullRequestReviewResult{}, fmt.Errorf("unsupported review decision %q", req.Decision)
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "reviews")
-	if err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	body := map[string]string{
-		"event":     event,
-		"body":      reviewBody,
-		"commit_id": req.CommitSHA,
-	}
-	var out struct {
-		ID      int64  `json:"id"`
-		HTMLURL string `json:"html_url"`
-	}
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
-		return PullRequestReviewResult{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, req.PullID),
-		URL:       out.HTMLURL,
-		Operation: "review",
-		Fields: map[string]FieldDigest{
-			"body":      {After: digestString(req.Body)},
-			"commitSha": {After: digestString(req.CommitSHA)},
-			"decision":  {After: digestString(string(req.Decision))},
-		},
-	})
-	return PullRequestReviewResult{
-		ID:        out.ID,
-		URL:       out.HTMLURL,
-		CommitSHA: req.CommitSHA,
-		Decision:  req.Decision,
-	}, nil
+	return submitRESTPullRequestReview(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req)
 }
 
 // UpdateBranch incorporates a pull request's base branch into its head through
