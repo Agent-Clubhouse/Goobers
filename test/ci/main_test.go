@@ -55,6 +55,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"no-phone-home",
 		"stage-name-lint",
 		"vet",
+		"uncovered-build-tags",
 		"flake-policy",
 		"complexity",
 		"design-doc-status",
@@ -136,6 +137,20 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	if schemaCoverageCheck.label != "schema-description-coverage" ||
 		!reflect.DeepEqual(schemaCoverageCheck.args, []string{"test", "-v", "-run", "^TestDescriptionCoverage$", "./api/schemas"}) {
 		t.Fatalf("schema description coverage check = %#v", schemaCoverageCheck)
+	}
+
+	buildTagsCheck := checkByLabel(t, gotChecks, "uncovered-build-tags")
+	const wantBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture"
+	wantBuildTagsArgs := []string{
+		"vet", "-tags", wantBuildTags, "./...",
+	}
+	if uncoveredBuildTags != wantBuildTags {
+		t.Fatalf("uncovered build tags = %q, want %q", uncoveredBuildTags, wantBuildTags)
+	}
+	if buildTagsCheck.command != "custom-go" ||
+		buildTagsCheck.group != groupPreflight ||
+		!reflect.DeepEqual(buildTagsCheck.args, wantBuildTagsArgs) {
+		t.Fatalf("uncovered build-tag check = %#v, want custom-go %q in %q", buildTagsCheck, wantBuildTagsArgs, groupPreflight)
 	}
 
 	buildCheck := checkByLabel(t, gotChecks, "build-goobers")
@@ -318,7 +333,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check runtime-acquisitions tidy-check no-phone-home stage-name-lint vet flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check runtime-acquisitions tidy-check no-phone-home stage-name-lint vet uncovered-build-tags flake-policy complexity design-doc-status markdown-links workflow-inventory npm-registry go-toolchain stack-parity build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }

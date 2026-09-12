@@ -129,6 +129,7 @@
       "stage-name-lint:go-modules",
       "test:go-modules",
       "tidy-check:go-modules",
+      "uncovered-build-tags:go-modules",
       "validate-configs:go-modules",
       "vet:go-modules",
       "workflow-inventory:go-modules"
