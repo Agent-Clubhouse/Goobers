@@ -638,6 +638,44 @@ func TestADOProviderRepoAndBacklogOperations(t *testing.T) {
 	}
 }
 
+func TestADOUpdateWorkItemStatusDoneRecordsClose(t *testing.T) {
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, r *http.Request) {
+		state, tags, rev := "Active", "goobers/status:claimed", 3
+		if r.Method == http.MethodPatch {
+			state, tags, rev = "Done", "goobers/status:done", 4
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"id": 42, "rev": rev, "url": "item-url",
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue", "System.Title": "Fix",
+				"System.State": state, "System.Tags": tags,
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	recorder := &recordingRecorder{}
+	provider := NewADOProvider("org", "project", "token", func(provider *ADOProvider) {
+		provider.BaseURL = server.URL
+		provider.SetMutationRecorder(recorder)
+	})
+	item, err := provider.UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"}, ID: "42", Status: WorkItemStatusDone,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItemStatus: %v", err)
+	}
+	if item.State != "closed" {
+		t.Fatalf("state = %q, want closed", item.State)
+	}
+	ref, ok := recorder.last()
+	if !ok || ref.Provider != ProviderADO || ref.Ref != "ado#42" || ref.Operation != "close" {
+		t.Fatalf("close mutation = %+v (ok=%v)", ref, ok)
+	}
+}
+
 func TestADOProviderListPullRequests(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests", func(w http.ResponseWriter, r *http.Request) {

@@ -710,6 +710,25 @@ func TestGitHubUpdateWorkItemEditsLabelsCloseComment(t *testing.T) {
 	}
 }
 
+func TestGitHubUpdateWorkItemStatusDoneRecordsClose(t *testing.T) {
+	m := newIssueMock()
+	recorder := &recordingRecorder{}
+	provider, repo := newIssueProvider(t, m, WithMutationRecorder(recorder))
+	item, err := provider.UpdateWorkItemStatus(context.Background(), UpdateWorkItemStatusRequest{
+		Repository: repo, ID: "7", Status: WorkItemStatusDone,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkItemStatus: %v", err)
+	}
+	if item.State != "closed" {
+		t.Fatalf("state = %q, want closed", item.State)
+	}
+	ref, ok := recorder.last()
+	if !ok || ref.Provider != ProviderGitHub || ref.Ref != "acme/app#7" || ref.Operation != "close" {
+		t.Fatalf("close mutation = %+v (ok=%v)", ref, ok)
+	}
+}
+
 func TestGitHubUpdateWorkItemAssignee(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
