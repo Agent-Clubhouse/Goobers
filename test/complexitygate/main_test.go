@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -338,7 +339,7 @@ func TestEvaluateRejectsDirectBaselineAdditionOutsideSealedSeed(t *testing.T) {
 	functions := []function{{Path: "new.go", Symbol: "NewOversized", BodyLines: 250, Allowed: true}}
 
 	problems, _ := evaluate(functions, base, limits)
-	if len(problems) != 1 || !strings.Contains(problems[0], "not admitted by the sealed migration inventory") {
+	if len(problems) != 1 || !strings.Contains(problems[0], "does not match the sealed current ceiling") {
 		t.Fatalf("problems = %v, want direct matching baseline row rejected despite allow", problems)
 	}
 }
@@ -431,6 +432,24 @@ func TestBaselineForFunctionsDoesNotAdmitNewOversizedFunction(t *testing.T) {
 	}
 	if _, exists := next.BodyLengths[key("new.go", "New")]; exists {
 		t.Fatal("updater admitted a new oversized function into the body-length baseline")
+	}
+}
+
+func TestWriteBodyLengthSeedTracksTightenedCurrentCeilings(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "body_length_seed.go")
+	ceilings := map[string]int{"z.go\tZ": 220, "a.go\tA": 201}
+	if err := writeBodyLengthSeed(path, ceilings); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"a.go\tA": 201`) || !strings.Contains(text, `"z.go\tZ": 220`) ||
+		strings.Index(text, `"a.go\tA"`) > strings.Index(text, `"z.go\tZ"`) {
+		t.Fatalf("generated sealed ceilings = %s", text)
 	}
 }
 
@@ -642,6 +661,65 @@ func TestRunUpdateCannotBaselineNewOversizedFunction(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "NewOversized") || !strings.Contains(stderr.String(), "not in the baseline") {
 		t.Fatalf("stderr=%q, want new oversized-function refusal", stderr.String())
+	}
+}
+
+func TestRunRejectsDirectBodyBaselineGrowthAfterPriorTighten(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	initGitRepository(t, root)
+	sourcePath := filepath.Join(root, "cmd", "goobers", "up.go")
+	source := strings.Replace(longSequentialFunction, "NewOversized", "runUpContextWithForce", 1)
+	writeFile(t, sourcePath, source)
+	functions, err := scanTree(root)
+	if err != nil || len(functions) != 1 {
+		t.Fatalf("scan initial source = %+v, err %v", functions, err)
+	}
+	prior := functions[0].BodyLines
+	baselinePath := filepath.Join(root, defaultBaselinePath)
+	writeFile(t, baselinePath, fmt.Sprintf("!ratchet-budget 0\n!body-length-cap 10\n!body-length\tcmd/goobers/up.go\trunUpContextWithForce\t%d\n", prior))
+	commitAll(t, root)
+
+	source = strings.Replace(source, "\treturn value", "\tvalue++\n\treturn value", 1)
+	writeFile(t, sourcePath, source)
+	writeFile(t, baselinePath, fmt.Sprintf("!ratchet-budget 0\n!body-length-cap 10\n!body-length\tcmd/goobers/up.go\trunUpContextWithForce\t%d\n", prior+1))
+
+	var stdout, stderr bytes.Buffer
+	args := []string{"-root", root, "-hard", "100", "-ratchet", "99", "-report", "98", "-body-length", "10"}
+	if code := run(args, &stdout, &stderr); code != 1 {
+		t.Fatalf("direct post-tighten growth exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), fmt.Sprintf("body length would grow from %d to %d", prior, prior+1)) ||
+		!strings.Contains(stderr.String(), "baseline differs from HEAD") {
+		t.Fatalf("stderr = %q, want authoritative HEAD-row growth refusal", stderr.String())
+	}
+}
+
+func TestRunRejectsCommittedBodyReboundBelowOriginalSeedCeiling(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	initGitRepository(t, root)
+	sourcePath := filepath.Join(root, "cmd", "goobers", "up.go")
+	source := strings.Replace(longSequentialFunction, "NewOversized", "runUpContextWithForce", 1)
+	writeFile(t, sourcePath, source)
+	functions, err := scanTree(root)
+	if err != nil || len(functions) != 1 {
+		t.Fatalf("scan source = %+v, err %v", functions, err)
+	}
+	// Model a candidate commit that contains both a post-tighten rebound and a
+	// matching generated-row edit. HEAD therefore contains the raised row too;
+	// only the independently sealed current ceiling can reject it.
+	baselinePath := filepath.Join(root, defaultBaselinePath)
+	writeFile(t, baselinePath, fmt.Sprintf("!ratchet-budget 0\n!body-length-cap 10\n!body-length\tcmd/goobers/up.go\trunUpContextWithForce\t%d\n", functions[0].BodyLines))
+	commitAll(t, root)
+
+	var stdout, stderr bytes.Buffer
+	args := []string{"-root", root, "-hard", "100", "-ratchet", "99", "-report", "98", "-body-length", "10"}
+	if code := run(args, &stdout, &stderr); code != 1 {
+		t.Fatalf("committed rebound exit = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does not match the sealed current ceiling 1560") {
+		t.Fatalf("stderr = %q, want sealed-current-ceiling refusal", stderr.String())
 	}
 }
 
