@@ -33,11 +33,12 @@ func prepareDaemonReadiness(ctx context.Context, reads *readservice.Local, addre
 	return publishDaemonAPIAddress(addressPath, address)
 }
 
-// daemonReadinessStoppedByShutdown distinguishes cancellation of the daemon's
-// root lifecycle from a failure of the readiness observation itself. The
-// latter includes the private initialActiveCountsTimeout while the root
-// context is still live and must continue to fail startup.
-func daemonReadinessStoppedByShutdown(ctx context.Context, err error) bool {
+// daemonStartupStoppedByShutdown distinguishes cancellation of the daemon's
+// root lifecycle from a failure of a startup operation itself. A private
+// operation timeout while the root context is still live, or an unrelated
+// error that happens while shutdown is also in progress, must continue to fail
+// startup.
+func daemonStartupStoppedByShutdown(ctx context.Context, err error) bool {
 	shutdownErr := ctx.Err()
 	if shutdownErr == nil {
 		return false
