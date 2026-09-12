@@ -121,8 +121,9 @@ The guided flow inspects the repository, derives what it can, adapts the
 canonical workflows, prepares required repository metadata, and validates the
 resulting instance. It does not execute a workflow.
 
-Follow the [quickstart tutorial](docs/guides/quickstart.md) for the complete
-learning path. For manual or agent-assisted setup, use
+Follow [Learn Goobers](docs/guides/learn-goobers.md) for the complete
+progressive path from first success through authoring and operations. For
+manual or agent-assisted setup, use
 [Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md) or
 the release-matched [Getting Started skill](skills/goobers-getting-started/SKILL.md).
 
@@ -131,8 +132,10 @@ the release-matched [Getting Started skill](skills/goobers-getting-started/SKILL
 | Goal | Start here |
 | --- | --- |
 | Understand the product model | [Concepts](docs/concepts/README.md) |
-| Learn with a credential-free workflow | [Quickstart tutorial](docs/guides/quickstart.md) |
+| Learn Goobers from first run through production operations | [Learn Goobers](docs/guides/learn-goobers.md) |
+| Run the extended disposable GitHub lab | [Quickstart lab](docs/guides/quickstart.md) |
 | Learn to author, test, and debug workflow YAML | [Workflow authoring tutorial](docs/guides/learn-workflow-authoring.md) |
+| Operate, harden, and extend an instance | [Operations tutorial](docs/guides/learn-goobers-operations.md) |
 | Configure a real repository | [Arbitrary repository onboarding](docs/guides/arbitrary-repo-onboarding.md) |
 | Install on a specific host | [Linux](docs/guides/quickstart-linux.md), [macOS](docs/guides/quickstart-macos.md), or [Windows](docs/guides/quickstart-windows.md) |
 | Operate an instance | [Daemon supervision](docs/guides/supervision.md), [worktree and local-branch retention](docs/guides/worktree-retention.md) |

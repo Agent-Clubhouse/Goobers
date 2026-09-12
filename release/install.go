@@ -183,7 +183,7 @@ case ":${PATH:-}:" in
 	*":${install_dir}:"*) ;;
 	*) printf 'Add %s to PATH before opening a new shell.\n' "$install_dir" ;;
 esac
-printf '\nNext steps (see %s/docs/guides/quickstart.md):\n' "$docs_dir"
+printf '\nNext steps (see %s/docs/guides/learn-goobers.md):\n' "$docs_dir"
 printf '  Credential-free tour:   %s init --demo ./demo-instance && %s run demo ./demo-instance\n' "$binary" "$binary"
 printf '  Set up your repository: %s init --guided\n' "$binary"
 `

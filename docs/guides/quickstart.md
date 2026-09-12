@@ -1,9 +1,11 @@
-# Quickstart tutorial (tier 1, local)
+# Quickstart lab: disposable issue to pull request
 
-This is the canonical **learning path**, not the procedure for configuring a
-real application repository. Follow sections 1 and 2 in order: start with a
-credential-free local demo, then graduate to a disposable GitHub-backed run.
-Delete those tutorial repositories and instances when you are done.
+This is the extended disposable GitHub lab for
+[Learn Goobers](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/learn-goobers.md),
+not the procedure for configuring a real application repository. Start with
+the credential-free first-success chapter, then use this lab to exercise a
+disposable GitHub-backed run. Delete the tutorial repository and Instance when
+you are done.
 
 For Azure DevOps, use the [production onboarding guide](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md#3-initialize-the-instance):
 `init --template=standard --provider=ado`, then `connect organization/project/repository`.
@@ -16,9 +18,11 @@ adapts the production-oriented canonical workflow modules to your repository.
 
 | Goal | Route |
 | --- | --- |
-| See the workflow model without credentials | Section 1: zero-credential demo |
+| Follow the complete progressive curriculum | [Learn Goobers](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/learn-goobers.md) |
+| See the workflow model without credentials | [Learn Goobers: first success](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/learn-goobers.md#chapter-1-first-success-without-credentials) |
 | Exercise one disposable issue-to-PR run | Sections 1-2: complete tutorial |
 | Learn to author and debug workflow YAML | [Workflow authoring tutorial](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/learn-workflow-authoring.md) |
+| Learn operations, hardening, and extension | [Operations tutorial](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/learn-goobers-operations.md) |
 | Configure a real repository | `goobers init --guided` and [Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md) |
 | Hand-author every configuration layer | [Manual configuration](#manualadvanced-alternative-bare-init) |
 

@@ -24,14 +24,18 @@ add:
 
 The final graph separates decisions from mutations:
 
-```text
-query-backlog -> implement -> review-gate
-                    ^          | pass
-                    |          v
-                    +------ local-ci -> local-ci-gate
-                                      | pass
-                                      v
-                                  push-branch -> open-pr -> complete
+```mermaid
+flowchart LR
+    query["query-backlog"] --> implement
+    implement --> review{"review-gate"}
+    review -- pass --> ci["local-ci"]
+    review -- needs-changes --> implement
+    review -- fail --> abort(["abort"])
+    ci --> ciGate{"local-ci-gate"}
+    ciGate -- pass --> push["push-branch"]
+    ciGate -- fail --> implement
+    push --> pr["open-pr"]
+    pr --> complete(["complete"])
 ```
 
 `review-gate.needs-changes` and `local-ci-gate.fail` return to `implement`.
@@ -468,14 +472,14 @@ Do not use a production backlog as a tutorial fixture.
 For the unmodified quickstart template, compilation produces this linear state
 sequence:
 
-```text
-query-backlog
-  -> implement
-  -> review
-  -> local-ci
-  -> push-branch
-  -> open-pr
-  -> successful terminal
+```mermaid
+flowchart LR
+    query["query-backlog"] --> implement
+    implement --> review
+    review --> ci["local-ci"]
+    ci --> push["push-branch"]
+    push --> pr["open-pr"]
+    pr --> complete(["successful terminal"])
 ```
 
 After a run, inspect it with:
