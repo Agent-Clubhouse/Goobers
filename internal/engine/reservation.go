@@ -147,7 +147,7 @@ func AbandonReservation(in RunInput, startedAt, finishedAt time.Time, cause stri
 		Error: &journal.ErrorDetail{Code: "run_failed", Message: cause},
 	})
 	rec.appendAt(finishedAt, journal.Event{
-		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed),
+		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Disposition: journal.RunDispositionProduced,
 	})
 	rec.assignEmitKeys()
 	ops := make([]livejournal.Op, 0, len(rec.proj.Ops))

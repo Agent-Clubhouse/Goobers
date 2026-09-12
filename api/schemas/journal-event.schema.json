@@ -198,6 +198,12 @@
       "type": "string",
       "x-conformance": "normative"
     },
+    "disposition": {
+      "description": "Whether a terminal run performed work. New run.finished events carry produced or no-work; absence is accepted for journals written before disposition was introduced.",
+      "type": "string",
+      "enum": ["produced", "no-work"],
+      "x-conformance": "normative"
+    },
     "workflowVersion": {
       "description": "Immutable workflow version re-asserted by run.resumed.",
       "type": "integer",

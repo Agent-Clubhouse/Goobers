@@ -231,6 +231,14 @@ const (
 // engine's empty-string successful terminal target.
 const TargetComplete = "@complete"
 
+// Terminal run dispositions are durable run.finished facts. Unknown is the
+// live/read-model default; a terminal producer writes produced or no-work.
+const (
+	RunDispositionUnknown  = "unknown"
+	RunDispositionProduced = "produced"
+	RunDispositionNoWork   = "no-work"
+)
+
 // AttemptClass tags why a non-initial stage attempt exists. Policy and human
 // attempts are conformance-normative; infra attempts (an infrastructure
 // failure retried by the runner) are excluded from the conformance set
@@ -358,6 +366,11 @@ type Event struct {
 	// Status is the terminal status for run.finished / stage.finished, or the
 	// prior terminal phase for run.resumed. Normative.
 	Status string `json:"status,omitempty"`
+	// Disposition records whether a terminal run performed work. Normative on
+	// run.finished: no-work is the runner's authoritative first-step short
+	// circuit, produced is every other terminal. Empty is accepted only for
+	// journals written before this field existed.
+	Disposition string `json:"disposition,omitempty"`
 	// WorkflowVersion is the immutable workflow version re-asserted by a
 	// run.resumed action. Normative.
 	WorkflowVersion int `json:"workflowVersion,omitempty"`
