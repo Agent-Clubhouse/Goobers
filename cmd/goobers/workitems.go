@@ -22,6 +22,25 @@ type workItemReader interface {
 }
 
 func runWorkItems(args []string, stdout, stderr io.Writer) int {
+	return runWorkItemsWithReader(args, stdout, stderr, func(layout instance.Layout, rebuild bool) (workItemReader, io.Closer, error) {
+		db, err := openRollup(layout, rebuild)
+		if err != nil {
+			return nil, nil, err
+		}
+		reader, err := readservice.NewTelemetry(db)
+		if err != nil {
+			_ = db.Close()
+			return nil, nil, err
+		}
+		return reader, db, nil
+	})
+}
+
+func runWorkItemsWithReader(
+	args []string,
+	stdout, stderr io.Writer,
+	openReader func(instance.Layout, bool) (workItemReader, io.Closer, error),
+) int {
 	fs := newCLIFlagSet("work-items", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	provider := fs.String("provider", "", "filter to one provider")
@@ -55,17 +74,12 @@ func runWorkItems(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
 	}
-	db, err := openRollup(instance.NewLayout(root), *rebuild)
+	reader, closer, err := openReader(instance.NewLayout(root), *rebuild)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	defer func() { _ = db.Close() }()
-	reader, err := readservice.NewTelemetry(db)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
+	defer func() { _ = closer.Close() }()
 
 	if *externalID != "" {
 		return writeWorkItem(reader, *provider, *repository, *kind, *externalID, *jsonOutput, stdout, stderr)

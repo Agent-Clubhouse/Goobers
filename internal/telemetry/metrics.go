@@ -14,6 +14,8 @@ import (
 	apimetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc/credentials"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // The Goobers metric catalog. Every instrument here is documented in
@@ -38,12 +40,18 @@ const (
 	MetricWorkActive = "goobers.work.active"
 	// MetricStageMetricValue reports stage-emitted metrics.jsonl values.
 	MetricStageMetricValue = "goobers.stage.metric.value"
+	// MetricRedactionsTotal counts scrub operations that removed secret
+	// material, separated by registry and pattern layer.
+	MetricRedactionsTotal = journal.MetricRedactionsTotal
 )
 
 const (
 	// MetricAttrSpanKind distinguishes run/task/gate/scheduler work on
 	// MetricWorkActive, which has no stage type of its own for run spans.
 	MetricAttrSpanKind = "goobers.span.kind"
+	// MetricAttrRedactionLayer distinguishes exact registry matches from the
+	// pattern backstop on MetricRedactionsTotal.
+	MetricAttrRedactionLayer = "layer"
 
 	metricNameAttribute = "goobers.metric.name"
 
@@ -94,6 +102,7 @@ type instruments struct {
 	stageRetries  apimetric.Int64Counter
 	gateDecisions apimetric.Int64Counter
 	escalations   apimetric.Int64Counter
+	redactions    apimetric.Int64Counter
 	activeWork    apimetric.Int64UpDownCounter
 	stageMetrics  apimetric.Float64Histogram
 	worktreeBytes apimetric.Int64Gauge
@@ -133,6 +142,9 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst.escalations, err = meter.Int64Counter(MetricEscalations,
 		apimetric.WithUnit("{escalation}"), apimetric.WithDescription("Stages and gates escalated to a human."))
 	record(err)
+	inst.redactions, err = meter.Int64Counter(MetricRedactionsTotal,
+		apimetric.WithUnit("{event}"), apimetric.WithDescription("Scrub events that removed secret material, separated by layer."))
+	record(err)
 	inst.activeWork, err = meter.Int64UpDownCounter(MetricWorkActive,
 		apimetric.WithUnit("{span}"), apimetric.WithDescription("In-flight runs and stages."))
 	record(err)
@@ -150,6 +162,15 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 		return nil, errors.Join(errs...)
 	}
 	return inst, nil
+}
+
+type redactionMetricObserver struct {
+	counter apimetric.Int64Counter
+}
+
+func (o redactionMetricObserver) Redaction(layer journal.RedactionLayer) {
+	o.counter.Add(context.Background(), 1,
+		apimetric.WithAttributes(attribute.String(MetricAttrRedactionLayer, string(layer))))
 }
 
 // cardinalityLimiter caps the distinct values one metric attribute key may

@@ -1911,10 +1911,16 @@ func TestCompileAdmissionUnknownHarness(t *testing.T) {
 }
 
 func TestCompileAdmissionUsesRegisteredHarnessNames(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].Capabilities = []string{string(capability.AgentModel)}
 	goobers := map[string]apiv1.GooberSpec{
-		"coder": {Role: "coder", Harness: apiv1.Harness("alternate")},
+		"coder": {
+			Role:         "coder",
+			Harness:      apiv1.Harness("alternate"),
+			Capabilities: []string{string(capability.AgentModel)},
+		},
 	}
-	def := Definition{Name: "x", Version: 1, Spec: linearSpec()}
+	def := Definition{Name: "x", Version: 1, Spec: spec}
 
 	if _, err := compileAcknowledged(def, WithGoobers(goobers), WithKnownHarnesses([]string{"alternate"})); err != nil {
 		t.Fatalf("registered harness should compile, got %v", err)
@@ -1925,7 +1931,7 @@ func TestCompileAdmissionUsesRegisteredHarnessNames(t *testing.T) {
 	}
 }
 
-func TestCompileAdmissionRequiresModelCapabilityForTokenBackedHarness(t *testing.T) {
+func TestCompileAdmissionRequiresModelCapabilityForRegisteredHarness(t *testing.T) {
 	spec := linearSpec()
 	spec.Tasks[0].Capabilities = []string{string(capability.AgentModel)}
 
@@ -1957,9 +1963,9 @@ func TestCompileAdmissionRequiresModelCapabilityForTokenBackedHarness(t *testing
 			wantAccepted: true,
 		},
 		{
-			name:         "custom harness does not require platform model credential",
-			harness:      apiv1.Harness("alternate"),
-			wantAccepted: true,
+			name:    "registered custom harness requires platform model credential",
+			harness: apiv1.Harness("alternate"),
+			wantErr: `task "implement" uses goober "coder" (harness: alternate) but the goober does not grant capability "agent:model"; the harness will receive no model credential`,
 		},
 		{
 			name:     "claude code goober grant missing",

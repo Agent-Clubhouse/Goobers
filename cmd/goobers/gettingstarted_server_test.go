@@ -732,9 +732,9 @@ func TestGettingStartedAllowlistRejections(t *testing.T) {
 func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
 	workdir := t.TempDir()
 	server := newTestGuidedServer(t, workdir)
+	calls := stubGuidedExec(t, "printf 'initialized guided instance\\n'")
 	defaultInstancePath := server.instancePath
 	selectedInstancePath := filepath.Join(t.TempDir(), "widgets-goobers")
-	server.errorLog = log.New(guidedInitIdentityTestWriter{t: t, root: selectedInstancePath}, "", 0)
 	body := `{
 		"template":"guided",
 		"guided":{
@@ -755,12 +755,18 @@ func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
 		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
 	}
 	response := decodeGuidedResponse[guidedInitBody](t, recorder)
-	wantStdout := manualServiceRootHeader(t, selectedInstancePath) + fmt.Sprintf(
-		"Created 2 workflow module(s) in the Goobers Instance at %s.",
-		selectedInstancePath,
-	)
+	wantStdout := "initialized guided instance\n"
 	if response.ExitCode != 0 || response.Stdout != wantStdout {
 		t.Fatalf("guided init response = %+v", response)
+	}
+	wantArgv := []string{
+		"init", "--template=standard", "--provider=github", "--repo=acme/widgets",
+		"--branch=main", "--issue-scope=", "--workflows=backlog-curation,work-nomination",
+		"--harness=copilot", "--github-cli-user=octocat", "--repo-auth-kind=", "--repo-token-env=",
+		"--work-tracking-token-env=", "--pr-token-env=", "--push-token-env=", selectedInstancePath,
+	}
+	if len(*calls) != 1 || !reflect.DeepEqual((*calls)[0], wantArgv) {
+		t.Fatalf("guided init argv = %v, want %v", *calls, wantArgv)
 	}
 	if server.instancePath != selectedInstancePath {
 		t.Fatalf("server instance path = %q, want selected neighboring path %q", server.instancePath, selectedInstancePath)
@@ -768,24 +774,45 @@ func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
 	if _, err := os.Stat(defaultInstancePath); !os.IsNotExist(err) {
 		t.Fatalf("guided init created the default instance path: %v", err)
 	}
-	for _, path := range []string{
-		filepath.Join(selectedInstancePath, instance.ConfigFileName),
-		filepath.Join(selectedInstancePath, instance.ConfigDirName, "gaggles", "widgets", "workflows", "backlog-curation.yaml"),
-		filepath.Join(selectedInstancePath, instance.ConfigDirName, "gaggles", "widgets", "workflows", "work-nomination.yaml"),
-	} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("guided init did not create %s: %v", path, err)
-		}
+}
+
+func TestGuidedStandardInitArgvCarriesAllConfiguration(t *testing.T) {
+	input := &guidedInitOptionsInput{
+		Branch: "release/next", Workflows: []string{"implementation", "backlog-curation"},
+		IssueScope: "assigned", PullRequestCI: false, CICommand: []string{"npm", "run", "ci"},
+		RequiredCapabilities: []string{"node@24", "os=linux"}, Harness: "claude-code",
+		RepoTokenEnv: "REPO_TOKEN", WorkTrackingTokenEnv: "ISSUES_TOKEN", PullRequestTokenEnv: "PR_TOKEN",
+		RepoPushTokenEnv: "PUSH_TOKEN", OptionalModelTokenEnv: "MODEL_TOKEN", GitHubCLIUser: "octocat", AuthKind: "pat",
 	}
-	if _, err := os.Stat(filepath.Join(
-		selectedInstancePath,
-		instance.ConfigDirName,
-		"gaggles",
-		"widgets",
-		"workflows",
-		"implementation.yaml",
-	)); !os.IsNotExist(err) {
-		t.Fatalf("guided init created unselected implementation workflow: %v", err)
+	got := guidedStandardInitArgv("acme/widgets", "github", "octocat", "/instance", input)
+	want := []string{
+		"init", "--template=standard", "--provider=github", "--repo=acme/widgets", "--branch=release/next",
+		"--issue-scope=assigned", "--workflows=implementation,backlog-curation", "--harness=claude-code",
+		"--assigned-to=octocat", `--ci-command=["npm","run","ci"]`, "--required-capabilities=node@24,os=linux",
+		"--model-token-env=MODEL_TOKEN", "--github-cli-user=octocat", "--repo-auth-kind=pat", "--repo-token-env=REPO_TOKEN",
+		"--work-tracking-token-env=ISSUES_TOKEN", "--pr-token-env=PR_TOKEN", "--push-token-env=PUSH_TOKEN", "/instance",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestGettingStartedGuidedInitReportsCLIRefusalWithoutChangingInstance(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	original := server.instancePath
+	selected := filepath.Join(t.TempDir(), "selected")
+	stubGuidedExec(t, "printf 'invalid options' >&2; exit 2")
+	body := fmt.Sprintf(`{"template":"guided","guided":{"provider":"github","owner":"acme","name":"widgets","instancePath":%q,"branch":"main","workflows":["implementation"],"issueScope":"all","pullRequestCI":true,"harness":"copilot","githubCLIUser":"octocat"}}`, filepath.ToSlash(selected))
+	recorder := guidedPost(http.HandlerFunc(server.serveGuided), "/guided/actions/init-instance", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedInitBody](t, recorder)
+	if response.ExitCode != 2 || response.Stderr != "invalid options" {
+		t.Fatalf("refusal response = %+v", response)
+	}
+	if server.instancePath != original {
+		t.Fatalf("failed init changed server instance path to %q", server.instancePath)
 	}
 }
 

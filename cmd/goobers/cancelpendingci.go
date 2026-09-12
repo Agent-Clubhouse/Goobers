@@ -30,6 +30,20 @@ type cancelPendingCIResult struct {
 }
 
 func runCancelPendingCI(args []string, stdout, stderr io.Writer) int {
+	return runCancelPendingCIWithProvider(args, stdout, stderr, func(root string, repo providers.RepositoryRef) (providers.Provider, error) {
+		return newProviderForStage(
+			root, repo, false,
+			withStageProviderCapability(capability.ProviderCICancel),
+			withStageProviderMutations("pr"),
+		)
+	})
+}
+
+func runCancelPendingCIWithProvider(
+	args []string,
+	stdout, stderr io.Writer,
+	providerForStage func(string, providers.RepositoryRef) (providers.Provider, error),
+) int {
 	fs := newCLIFlagSet("cancel-pending-ci", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "cancel-pending-ci")
@@ -57,11 +71,7 @@ func runCancelPendingCI(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	stageProvider, err := newProviderForStage(
-		root, repo, false,
-		withStageProviderCapability(capability.ProviderCICancel),
-		withStageProviderMutations("pr"),
-	)
+	stageProvider, err := providerForStage(root, repo)
 	if err != nil {
 		return writeCancelPendingCIResult(resultFile, cancelPendingCIResult{
 			Status: "failed", Reason: "provider setup failed", HeadSHA: headSHA, PullNumber: pullNumber,

@@ -66,7 +66,7 @@ func checkDemoNetworkIsolation(demo, insecure bool, goos string, stderr io.Write
 	return 0, demoUnisolated, linuxUserNSRestricted
 }
 
-const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--provider=github|ado] --ci-command <JSON-argv> --required-capabilities <list> [--harness <name>]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]] | --template=standard [--repo <repository>] [--branch <name>] [--issue-scope=all|assigned] [--assigned-to <identity>] [--pr-ci | --ci-command <JSON-argv> --required-capabilities <list>] [--workflows <list>] [--provider=github|ado] [--repo-auth-kind <kind>] [--repo-token-env <name>] [--work-tracking-token-env <name>] [--pr-token-env <name>] [--push-token-env <name>] [--github-cli-user <name>] [--model-token-env <name>] [--harness <name>]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
@@ -82,8 +82,12 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"select the repository's Resource owner, choose Only select repositories, and\n" +
 	"grant the permissions documented in docs/guides/github-token-scopes.md.\n" +
 	"--template=standard non-interactively seeds backlog-curation and implementation\n" +
-	"with their three canonical personas. It requires an explicit --ci-command\n" +
-	"JSON argv array and comma-separated --required-capabilities (e.g. node@24).\n" +
+	"with their three canonical personas by default. Use --workflows to select\n" +
+	"implementation, backlog-curation, and/or work-nomination. --repo accepts a\n" +
+	"GitHub owner/name or Azure DevOps identity; --branch defaults to main.\n" +
+	"Implementation requires either --pr-ci or an explicit --ci-command JSON argv\n" +
+	"array plus comma-separated --required-capabilities (e.g. node@24).\n" +
+	"Use --issue-scope=assigned with --assigned-to to limit implementation work.\n" +
 	"Use --provider=ado for Azure DevOps placeholders and GOOBERS_ADO_TOKEN;\n" +
 	"the default provider is github. See docs/guides/ado-authentication.md.\n" +
 	"It creates placeholders: configure repository identity and credential refs\n" +
@@ -136,6 +140,19 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	ciCommand := fs.String("ci-command", "", "with --template=standard, required local CI command as a JSON argv array")
 	requiredCapabilities := fs.String("required-capabilities", "", "with --template=standard, required comma-separated toolchain capabilities")
 	provider := fs.String("provider", "", "with --template=standard, repository provider (github or ado; defaults to github)")
+	repo := fs.String("repo", "", "with --template=standard, repository (GitHub owner/name or Azure DevOps URL)")
+	branch := fs.String("branch", "", "with --template=standard, repository branch (defaults to main)")
+	issueScope := fs.String("issue-scope", "", "with --template=standard, select all or assigned issues")
+	assignedTo := fs.String("assigned-to", "", "with --template=standard --issue-scope=assigned, provider identity")
+	pullRequestCI := fs.Bool("pr-ci", false, "with --template=standard, use pull-request CI instead of a local command")
+	workflows := fs.String("workflows", "", "with --template=standard, comma-separated guided workflow modules")
+	repoAuthKind := fs.String("repo-auth-kind", "", "with --template=standard and Azure DevOps, azcli or pat")
+	repoTokenEnv := fs.String("repo-token-env", "", "with --template=standard, repository token environment variable")
+	workTrackingTokenEnv := fs.String("work-tracking-token-env", "", "with --template=standard, work-tracking token environment variable")
+	pullRequestTokenEnv := fs.String("pr-token-env", "", "with --template=standard, pull-request token environment variable")
+	repoPushTokenEnv := fs.String("push-token-env", "", "with --template=standard, repository push token environment variable")
+	modelTokenEnv := fs.String("model-token-env", "", "with --template=standard, optional model token environment variable")
+	githubCLIUser := fs.String("github-cli-user", "", "with --template=standard, authenticated GitHub CLI account")
 	harness := fs.String("harness", "", "with --template, the agent harness every seeded goober uses (copilot, claude-code)")
 	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
 	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
@@ -143,7 +160,19 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	standard, standardErr := standardInitOptions(*template, *harness, *ciCommand, *requiredCapabilities, *provider)
+	standardFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { standardFlags[f.Name] = true })
+	standard, standardErr := standardInitOptions(standardInitInput{
+		Template: *template, Harness: *harness, CICommand: *ciCommand, Capabilities: *requiredCapabilities,
+		Provider: *provider, Repo: *repo, Branch: *branch, IssueScope: *issueScope, AssignedTo: *assignedTo,
+		PullRequestCI: *pullRequestCI, Workflows: *workflows, RepoAuthKind: *repoAuthKind,
+		RepoTokenEnv: *repoTokenEnv, WorkTrackingTokenEnv: *workTrackingTokenEnv,
+		PullRequestTokenEnv: *pullRequestTokenEnv, RepoPushTokenEnv: *repoPushTokenEnv,
+		ModelTokenEnv: *modelTokenEnv, GitHubCLIUser: *githubCLIUser,
+		AnyStandardOption: hasStandardInitFlag(standardFlags), WorkflowsSet: standardFlags["workflows"], RepoAuthKindSet: standardFlags["repo-auth-kind"],
+		RepoTokenEnvSet: standardFlags["repo-token-env"], WorkTrackingTokenEnvSet: standardFlags["work-tracking-token-env"],
+		PullRequestTokenEnvSet: standardFlags["pr-token-env"], RepoPushTokenEnvSet: standardFlags["push-token-env"],
+	})
 	if standardErr != nil {
 		pf(stderr, "error: %v\n", standardErr)
 		return 2
