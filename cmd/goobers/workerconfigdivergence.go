@@ -1,17 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // Worker config-tree divergence detection (#4153).
@@ -56,6 +61,17 @@ import (
 // GET per worker per minute.
 const workerDivergenceCheckInterval = time.Minute
 
+func newWorkerDivergenceHandlerOption(log *journal.InstanceLog, cfg *instance.Config) (httpapi.HandlerOption, error) {
+	recorder, err := newWorkerDivergenceJournalRecorder(log)
+	if err != nil {
+		return nil, fmt.Errorf("initialize journal: %w", err)
+	}
+	if err := recordDaemonWorkerDivergenceAvailability(recorder, cfg); err != nil {
+		return nil, fmt.Errorf("record daemon availability: %w", err)
+	}
+	return httpapi.WithWorkerConfigDivergence(recorder.Append), nil
+}
+
 // workerDigestTokenSource keeps static-token deployments compatible while a
 // split worker uses its existing shared key for a separate, short-lived worker
 // identity. Tokens are minted per request, never retained beyond a poll.
@@ -71,11 +87,33 @@ func workerDigestTokenSource(instanceRoot, staticToken string) (func() (string, 
 	if err != nil || signer == nil {
 		return nil, err
 	}
-	owner, err := os.Hostname()
+	owner := workerDivergenceWorkerID()
+	return func() (string, error) { return signer.MintWorkerConfigDigest(owner, 2*time.Minute) }, nil
+}
+
+// workerDivergenceReportTokenSource deliberately ignores GOOBERS_POD_TOKEN:
+// that bearer authenticates a run's stage pod, not a resident worker host.
+// Only the shared-key worker credential binds the hostname the daemon stamps
+// into durable worker-health state.
+func workerDivergenceReportTokenSource(instanceRoot string) (func() (string, error), error) {
+	cfg, err := instance.LoadConfig(instance.NewLayout(instanceRoot).ConfigFile())
 	if err != nil {
 		return nil, err
 	}
+	signer, err := podTokenMinter(cfg)
+	if err != nil || signer == nil {
+		return nil, err
+	}
+	owner := workerDivergenceWorkerID()
 	return func() (string, error) { return signer.MintWorkerConfigDigest(owner, 2*time.Minute) }, nil
+}
+
+func workerDivergenceWorkerID() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "unknown-host"
+	}
+	return host
 }
 
 // divergenceReport is one comparison's outcome.
@@ -92,6 +130,252 @@ type divergenceReport struct {
 	Diverged bool
 	// Unavailable explains why no comparison could be made.
 	Unavailable string
+}
+
+const (
+	workerDivergenceInSync     = string(journal.WorkerConfigDivergenceInSync)
+	workerDivergenceDiverged   = string(journal.WorkerConfigDivergenceDiverged)
+	workerDivergenceNotChecked = string(journal.WorkerConfigDivergenceNotChecked)
+	workerDivergenceNotActive  = string(journal.WorkerConfigDivergenceNotActive)
+)
+
+// State is the stable, machine-readable classification recorded in the
+// instance journal. Message remains the full operator-facing report.
+func (r divergenceReport) State() string {
+	switch {
+	case r.Unavailable != "":
+		return workerDivergenceNotChecked
+	case r.Diverged:
+		return workerDivergenceDiverged
+	default:
+		return workerDivergenceInSync
+	}
+}
+
+type workerDivergenceAppender interface {
+	Append(journal.Event) error
+}
+
+type remoteWorkerDivergenceAppender struct {
+	client      *http.Client
+	baseURL     string
+	tokenSource func() (string, error)
+}
+
+type localWorkerDivergenceAppender struct{ layout instance.Layout }
+
+func (a localWorkerDivergenceAppender) Append(event journal.Event) error {
+	log, _, err := journal.OpenInstanceLog(a.layout.SchedulerDir())
+	if err != nil {
+		return err
+	}
+	if err := log.Append(event); err != nil {
+		_ = log.Close()
+		return err
+	}
+	return log.Close()
+}
+
+func (a *remoteWorkerDivergenceAppender) Append(event journal.Event) error {
+	body, err := json.Marshal(map[string]string{
+		"state":        divergenceRunnerString(event, "state"),
+		"workerDigest": divergenceRunnerString(event, "workerDigest"),
+		"daemonDigest": divergenceRunnerString(event, "daemonDigest"),
+		"reason":       divergenceRunnerString(event, "reason"),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal worker config-divergence event: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimSuffix(a.baseURL, "/")+apicontract.WorkerConfigDivergencePath, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if a.tokenSource != nil {
+		token, err := a.tokenSource()
+		if err != nil {
+			return fmt.Errorf("mint worker config-divergence credential: %w", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := a.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	boundedClient := *client
+	boundedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := boundedClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("daemon worker config-divergence plane returned %s", response.Status)
+	}
+	return nil
+}
+
+func divergenceRunnerString(event journal.Event, key string) string {
+	value, _ := event.Runner[key].(string)
+	return value
+}
+
+func recordWorkerDivergence(appender workerDivergenceAppender, worker, state string, report divergenceReport, message string) error {
+	return appender.Append(journal.Event{
+		Type: journal.EventWorkerConfigDivergence,
+		Runner: map[string]any{
+			"worker":       worker,
+			"state":        state,
+			"workerDigest": report.WorkerDigest,
+			"daemonDigest": report.DaemonDigest,
+			"reason":       report.Unavailable,
+			"message":      message,
+		},
+	})
+}
+
+func recordInactiveWorkerDivergence(appender workerDivergenceAppender, worker, workerDigest string) (string, error) {
+	message := "worker config divergence: NOT ACTIVE — configure api.podTokenKeyFile; " +
+		"this worker cannot durably report its config-tree state to the daemon (#4153)"
+	return message, recordWorkerDivergence(appender, worker, workerDivergenceNotActive, divergenceReport{WorkerDigest: workerDigest}, message)
+}
+
+// workerDivergenceJournalRecorder makes retries idempotent against the
+// daemon's durable journal, including after daemon restart. Only an exact
+// repeat of the latest report for one worker is suppressed; A -> B -> A is
+// three real transitions and remains three events.
+type workerDivergenceJournalRecorder struct {
+	mu                    sync.Mutex
+	log                   *journal.InstanceLog
+	latest                map[string]string
+	reportingSentinelOpen bool
+}
+
+func newWorkerDivergenceJournalRecorder(log *journal.InstanceLog) (*workerDivergenceJournalRecorder, error) {
+	if log == nil {
+		return nil, errors.New("worker config divergence: instance journal is required")
+	}
+	recorder := &workerDivergenceJournalRecorder{log: log, latest: make(map[string]string)}
+	events, err := journal.ReadInstanceLog(log.Dir())
+	if err != nil {
+		return nil, fmt.Errorf("worker config divergence: replay instance journal: %w", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventWorkerConfigDivergence {
+			recorder.remember(event)
+		}
+	}
+	return recorder, nil
+}
+
+func (r *workerDivergenceJournalRecorder) Append(event journal.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	worker := divergenceRunnerString(event, "worker")
+	fingerprint := workerDivergenceFingerprint(event)
+	resolvesSentinel := r.reportingSentinelOpen && worker != "" && worker != journal.WorkerConfigDivergenceReportingCapability
+	if worker != "" && r.latest[worker] == fingerprint && !resolvesSentinel {
+		return nil
+	}
+	if err := r.log.Append(event); err != nil {
+		return err
+	}
+	r.remember(event)
+	return nil
+}
+
+func (r *workerDivergenceJournalRecorder) remember(event journal.Event) {
+	worker := divergenceRunnerString(event, "worker")
+	// A real worker report resolves the daemon-lifetime capability sentinel.
+	// Forget its fingerprint as well as letting the read-model fold hide it,
+	// so the next daemon startup can author a genuinely new "awaiting" period.
+	if worker == journal.WorkerConfigDivergenceReportingCapability {
+		r.reportingSentinelOpen = true
+	} else if worker != "" {
+		r.reportingSentinelOpen = false
+		delete(r.latest, journal.WorkerConfigDivergenceReportingCapability)
+	}
+	if worker != "" {
+		r.latest[worker] = workerDivergenceFingerprint(event)
+	}
+}
+
+func workerDivergenceFingerprint(event journal.Event) string {
+	parts := []string{
+		divergenceRunnerString(event, "state"),
+		divergenceRunnerString(event, "workerDigest"),
+		divergenceRunnerString(event, "daemonDigest"),
+		divergenceRunnerString(event, "reason"),
+		divergenceRunnerString(event, "message"),
+	}
+	var out strings.Builder
+	for _, part := range parts {
+		fmt.Fprintf(&out, "%d:%s", len(part), part)
+	}
+	return out.String()
+}
+
+// recordDaemonWorkerDivergenceAvailability is the authoritative split-
+// topology NOT ACTIVE path. A worker without a signing key cannot attest its
+// hostname to the daemon, so the daemon records the unavailable capability
+// itself instead of accepting an unauthenticated or stage-token write.
+func recordDaemonWorkerDivergenceAvailability(recorder workerDivergenceAppender, cfg *instance.Config) error {
+	if cfg == nil || !cfg.EngineProjectionEnabled() {
+		return nil
+	}
+	state := workerDivergenceNotActive
+	reason := "api.podTokenKeyFile is not configured"
+	message := "worker config divergence: NOT ACTIVE — daemon has no api.podTokenKeyFile, so remote workers cannot durably attest config-tree state"
+	if cfg.API.PodTokenKeyFile != "" {
+		state = workerDivergenceNotChecked
+		reason = "awaiting authenticated per-worker report"
+		message = "worker config divergence: NOT CHECKED — remote reporting is active and awaiting authenticated per-worker state"
+	}
+	return recorder.Append(journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+		"worker": journal.WorkerConfigDivergenceReportingCapability, "state": state,
+		"reason": reason, "message": message,
+	}})
+}
+
+func configureWorkerDivergence(ctx context.Context, seams *workerSeams, instanceRoot, daemonAPI string, stdout, stderr io.Writer) (*workerConfigWatcher, error) {
+	workerIdentity := "worker:" + workerDivergenceWorkerID()
+	digestTokenSource, err := workerDigestTokenSource(instanceRoot, workerEnvOr("GOOBERS_POD_TOKEN", ""))
+	if err != nil {
+		return nil, err
+	}
+	reportTokenSource, err := workerDivergenceReportTokenSource(instanceRoot)
+	if err != nil {
+		return nil, err
+	}
+	if reportTokenSource == nil {
+		// The local instance journal is the only trustworthy no-credential
+		// write path. In a split topology this copy may not be daemon-owned;
+		// the daemon independently records that remote reporting is unavailable
+		// when it has no worker signing key.
+		localAppender := localWorkerDivergenceAppender{layout: instance.NewLayout(instanceRoot)}
+		_, openErr := recordInactiveWorkerDivergence(localAppender, workerIdentity, seams.currentDigest())
+		if openErr != nil {
+			pf(stderr, "warning: goobers worker: record config-divergence state: %v\n", openErr)
+		}
+		pf(stderr, "warning: goobers worker: config-divergence reporting is NOT ACTIVE — configure api.podTokenKeyFile; "+
+			"GOOBERS_POD_TOKEN authenticates a stage run and cannot attest worker health (#4153)\n")
+		if digestTokenSource == nil {
+			return nil, nil
+		}
+		watcher := startWorkerDivergenceWatcher(ctx, seams, http.DefaultClient, daemonAPI, digestTokenSource,
+			workerDivergenceCheckInterval, workerIdentity, localAppender)
+		pf(stdout, "goobers worker: checking config-tree divergence against %s every %s; durable remote reporting is not active\n",
+			daemonAPI, workerDivergenceCheckInterval)
+		return watcher, nil
+	}
+	appender := &remoteWorkerDivergenceAppender{client: http.DefaultClient, baseURL: daemonAPI, tokenSource: reportTokenSource}
+	watcher := startWorkerDivergenceWatcher(ctx, seams, http.DefaultClient, daemonAPI, digestTokenSource,
+		workerDivergenceCheckInterval, workerIdentity, appender)
+	pf(stdout, "goobers worker: checking config-tree divergence against %s every %s\n", daemonAPI, workerDivergenceCheckInterval)
+	return watcher, nil
 }
 
 // Message renders the report for an operator.
@@ -182,6 +466,8 @@ func startWorkerDivergenceWatcher(
 	baseURL string,
 	tokenSource func() (string, error),
 	interval time.Duration,
+	worker string,
+	appender workerDivergenceAppender,
 ) *workerConfigWatcher {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -190,12 +476,24 @@ func startWorkerDivergenceWatcher(
 		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		var last string
+		var lastLogged, lastRecorded string
+		var pending *journal.Event
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Preserve transition ordering across a failed delivery: retry the
+				// old state before observing and publishing a newer one. The daemon
+				// suppresses an exact retry durably, covering a lost response.
+				if pending != nil {
+					if err := appender.Append(*pending); err != nil {
+						seams.log("worker config divergence: journal transition: %v", err)
+						continue
+					}
+					lastRecorded = divergenceRunnerString(*pending, "message")
+					pending = nil
+				}
 				requestCtx, cancelRequest := context.WithTimeout(ctx, 15*time.Second)
 				token, err := tokenSource()
 				var daemonDigest string
@@ -205,11 +503,23 @@ func startWorkerDivergenceWatcher(
 				cancelRequest()
 				report := compareConfigDigests(seams.currentDigest(), daemonDigest, err)
 				message := report.Message()
-				if message == last {
-					continue
+				if message != lastLogged {
+					lastLogged = message
+					seams.log("%s", message)
 				}
-				last = message
-				seams.log("%s", message)
+				if message != lastRecorded {
+					event := journal.Event{Type: journal.EventWorkerConfigDivergence, Runner: map[string]any{
+						"worker": worker, "state": report.State(),
+						"workerDigest": report.WorkerDigest, "daemonDigest": report.DaemonDigest,
+						"reason": report.Unavailable, "message": message,
+					}}
+					if err := appender.Append(event); err != nil {
+						seams.log("worker config divergence: journal transition: %v", err)
+						pending = &event
+						continue
+					}
+					lastRecorded = message
+				}
 			}
 		}
 	}()

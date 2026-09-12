@@ -270,14 +270,15 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
-	Root              *statusRootIdentity              `json:"root,omitempty"`
-	QueueEligibility  *statusQueueEvidence             `json:"queueEligibility,omitempty"`
-	EngineFallbacks   []readmodel.EngineFallback       `json:"engineFallbacks,omitempty"`
-	Warnings          []validate.CodedWarning          `json:"warnings"`
-	TimeToFirstPR     *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
-	DaemonRestart     *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
-	IsolationMandates map[string][]string              `json:"isolationMandates,omitempty"`
-	Maintenance       *readservice.MaintenanceStatus   `json:"maintenance,omitempty"`
+	Root                   *statusRootIdentity                        `json:"root,omitempty"`
+	QueueEligibility       *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
+	EngineFallbacks        []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
+	Warnings               []validate.CodedWarning                    `json:"warnings"`
+	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
+	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
+	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
+	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -317,6 +318,15 @@ func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) 
 			replacement.ReplacementRunID,
 			replacement.ItemID,
 		)
+	}
+	return text.String()
+}
+
+func workerConfigDivergenceStatusLines(status readservice.SchedulerStatus, now time.Time) string {
+	var text strings.Builder
+	for _, report := range status.WorkerConfigDivergence {
+		fmt.Fprintf(&text, "Worker %s config divergence [%s, %s]: %s\n",
+			report.Worker, strings.ToUpper(string(report.State)), formatLastActivity(now, report.At), report.Message)
 	}
 	return text.String()
 }
@@ -1047,6 +1057,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			text.WriteString(daemonRestartStatusLine(status, now))
 			text.WriteString(providerQuotaStatusLine(status, now))
 			text.WriteString(maintenanceStatusLine(status))
+			text.WriteString(workerConfigDivergenceStatusLines(status, now))
 			text.WriteString(refusedWorkflowStatusLines(status))
 			text.WriteString(isolationMandateStatusLines(status))
 			text.WriteString(engineFallbackStatusLines(status))
@@ -1142,6 +1153,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
 		var engineFallbacks []readmodel.EngineFallback
+		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
 		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
@@ -1154,6 +1166,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
 				engineFallbacks = status.EngineFallbacks
+				workerConfigDivergence = status.WorkerConfigDivergence
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
 				parked = &snapshot
@@ -1166,19 +1179,20 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			baselineBlockers = &snapshot
 		}
 		output := statusJSONOutput{
-			Root:              optionalStatusRoot(supportsWatch, l, now),
-			QueueEligibility:  optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
-			EngineFallbacks:   engineFallbacks,
-			Warnings:          warnings,
-			TimeToFirstPR:     timeToFirstPR,
-			DaemonRestart:     daemonRestart,
-			Maintenance:       maintenance,
-			RefusedWorkflows:  refusedWorkflows,
-			IsolationMandates: isolationMandates,
-			Summary:           fleetSummary,
-			ParkedBacklog:     parked,
-			BaselineBlockers:  baselineBlockers,
-			Runs:              statusRecoverySummaries(l, runs, now),
+			Root:                   optionalStatusRoot(supportsWatch, l, now),
+			QueueEligibility:       optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
+			EngineFallbacks:        engineFallbacks,
+			WorkerConfigDivergence: workerConfigDivergence,
+			Warnings:               warnings,
+			TimeToFirstPR:          timeToFirstPR,
+			DaemonRestart:          daemonRestart,
+			Maintenance:            maintenance,
+			RefusedWorkflows:       refusedWorkflows,
+			IsolationMandates:      isolationMandates,
+			Summary:                fleetSummary,
+			ParkedBacklog:          parked,
+			BaselineBlockers:       baselineBlockers,
+			Runs:                   statusRecoverySummaries(l, runs, now),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)

@@ -97,6 +97,7 @@
         "claims_lock_timeout",
         "config.reloaded",
         "config.reload.rejected",
+        "runner.config_divergence",
         "daemon.started",
         "daemon.clean_shutdown",
         "daemon.dirty_restart",

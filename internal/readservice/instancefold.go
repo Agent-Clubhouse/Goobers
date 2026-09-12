@@ -34,6 +34,8 @@ type instanceState struct {
 	refusalOrder          []string
 	refusals              map[string]WorkflowRefusalStatus
 	refillBlocked         map[localscheduler.WorkflowIdentity]string
+	workerDivergenceOrder []string
+	workerDivergence      map[string]WorkerConfigDivergenceStatus
 }
 
 // snapshot folds every event appended since the previous call and returns a
@@ -89,6 +91,32 @@ func (s *instanceState) apply(event journal.Event) {
 		// reload, and refill blockers may have changed with the config.
 		s.resetRefusals()
 		s.refillBlocked = nil
+	case journal.EventWorkerConfigDivergence:
+		worker := runnerString(event.Runner, "worker")
+		if worker == "" {
+			break
+		}
+		// The daemon-owned capability sentinel describes the period before any
+		// authenticated worker has reported. A later real worker report proves
+		// that reporting is active, so retaining "awaiting" beside that report
+		// would be false. Removing it in the fold makes replay and restart obey
+		// the same event ordering without requiring a synthetic clear event.
+		if worker != journal.WorkerConfigDivergenceReportingCapability {
+			s.clearWorkerDivergence(journal.WorkerConfigDivergenceReportingCapability)
+		}
+		if s.workerDivergence == nil {
+			s.workerDivergence = make(map[string]WorkerConfigDivergenceStatus)
+		}
+		if _, known := s.workerDivergence[worker]; !known {
+			s.workerDivergenceOrder = append(s.workerDivergenceOrder, worker)
+		}
+		s.workerDivergence[worker] = WorkerConfigDivergenceStatus{
+			Worker: worker, State: journal.WorkerConfigDivergenceState(runnerString(event.Runner, "state")),
+			WorkerDigest: runnerString(event.Runner, "workerDigest"),
+			DaemonDigest: runnerString(event.Runner, "daemonDigest"),
+			Reason:       runnerString(event.Runner, "reason"),
+			Message:      runnerString(event.Runner, "message"), At: event.Time,
+		}
 	case journal.EventTickSkipped:
 		if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
 			candidate = candidate.UTC()
@@ -141,6 +169,19 @@ func (s *instanceState) apply(event journal.Event) {
 	}
 }
 
+func (s *instanceState) clearWorkerDivergence(worker string) {
+	if _, known := s.workerDivergence[worker]; !known {
+		return
+	}
+	delete(s.workerDivergence, worker)
+	for i, candidate := range s.workerDivergenceOrder {
+		if candidate == worker {
+			s.workerDivergenceOrder = append(s.workerDivergenceOrder[:i], s.workerDivergenceOrder[i+1:]...)
+			return
+		}
+	}
+}
+
 func (s *instanceState) blockRefill(gaggle, workflow, blocking string) {
 	if s.refillBlocked == nil {
 		s.refillBlocked = make(map[localscheduler.WorkflowIdentity]string)
@@ -169,5 +210,7 @@ func (s instanceState) clone() instanceState {
 	clone.refusalOrder = append([]string(nil), s.refusalOrder...)
 	clone.refusals = maps.Clone(s.refusals)
 	clone.refillBlocked = maps.Clone(s.refillBlocked)
+	clone.workerDivergenceOrder = append([]string(nil), s.workerDivergenceOrder...)
+	clone.workerDivergence = maps.Clone(s.workerDivergence)
 	return clone
 }

@@ -94,6 +94,29 @@ func TestDaemonRestartStatusLine(t *testing.T) {
 	}
 }
 
+func TestWorkerConfigDivergenceStatusLinesIncludesNotActive(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	got := workerConfigDivergenceStatusLines(readservice.SchedulerStatus{WorkerConfigDivergence: []readservice.WorkerConfigDivergenceStatus{{
+		Worker: "worker-a", State: "not-active", Message: "worker config divergence: NOT ACTIVE", At: now.Add(-time.Minute),
+	}}}, now)
+	want := "Worker worker-a config divergence [NOT-ACTIVE, 1m0s ago]: worker config divergence: NOT ACTIVE\n"
+	if got != want {
+		t.Fatalf("status lines = %q, want %q", got, want)
+	}
+}
+
+func TestStatusJSONIncludesWorkerConfigDivergence(t *testing.T) {
+	blob, err := json.Marshal(statusJSONOutput{WorkerConfigDivergence: []readservice.WorkerConfigDivergenceStatus{{
+		Worker: "worker-a", State: journal.WorkerConfigDivergenceDiverged, Message: "mismatch",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"workerConfigDivergence":[{"worker":"worker-a","state":"diverged"`) {
+		t.Fatalf("status JSON = %s", blob)
+	}
+}
+
 // TestStatusRejectsNonInstanceRoot is issue #142: a typo'd or otherwise
 // nonexistent path used to fall through to listRuns finding no runs/ dir,
 // printing the misleading "no runs found" at exit 0 — indistinguishable from

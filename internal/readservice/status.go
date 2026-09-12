@@ -40,10 +40,23 @@ type SchedulerStatus struct {
 	// force: the set resets at each daemon start and each accepted config
 	// reload, because the scheduler re-journals current refusals at both
 	// boundaries. Empty on zero-declaration instances.
-	RefusedWorkflows []WorkflowRefusalStatus
-	RefillOccupancy  []RefillOccupancyStatus
-	Retention        *RetentionStatus
-	Maintenance      *MaintenanceStatus
+	RefusedWorkflows       []WorkflowRefusalStatus
+	RefillOccupancy        []RefillOccupancyStatus
+	Retention              *RetentionStatus
+	Maintenance            *MaintenanceStatus
+	WorkerConfigDivergence []WorkerConfigDivergenceStatus
+}
+
+// WorkerConfigDivergenceStatus is the last config-tree comparison reported by
+// one worker. Older journals simply project an empty slice.
+type WorkerConfigDivergenceStatus struct {
+	Worker       string                              `json:"worker"`
+	State        journal.WorkerConfigDivergenceState `json:"state"`
+	WorkerDigest string                              `json:"workerDigest,omitempty"`
+	DaemonDigest string                              `json:"daemonDigest,omitempty"`
+	Reason       string                              `json:"reason,omitempty"`
+	Message      string                              `json:"message"`
+	At           time.Time                           `json:"at"`
 }
 
 // WorkflowRefusalStatus is one boot-refused workflow and its solver
@@ -356,6 +369,9 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		}
 	}
 	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}
+	for _, worker := range projected.workerDivergenceOrder {
+		status.WorkerConfigDivergence = append(status.WorkerConfigDivergence, projected.workerDivergence[worker])
+	}
 	if s.sources.Config != nil {
 		status.IsolationMandates = s.sources.Config.PlacementInventory("").ClassMandates
 	}

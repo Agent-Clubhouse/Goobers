@@ -26,6 +26,24 @@ func IsRunnerNamespace(t EventType) bool {
 // harness all switch on it. Values are dotted and versioned with the envelope.
 type EventType string
 
+// WorkerConfigDivergenceState is the closed operational state vocabulary for
+// worker-to-daemon config-tree comparison reports.
+type WorkerConfigDivergenceState string
+
+const (
+	// WorkerConfigDivergenceReportingCapability is the daemon-owned sentinel
+	// used until an authenticated worker proves that remote reporting is live.
+	WorkerConfigDivergenceReportingCapability = "worker:remote-reporting"
+	// WorkerConfigDivergenceInSync means both known digests match.
+	WorkerConfigDivergenceInSync WorkerConfigDivergenceState = "in-sync"
+	// WorkerConfigDivergenceDiverged means both digests are known and differ.
+	WorkerConfigDivergenceDiverged WorkerConfigDivergenceState = "diverged"
+	// WorkerConfigDivergenceNotChecked means a comparison could not be made.
+	WorkerConfigDivergenceNotChecked WorkerConfigDivergenceState = "not-checked"
+	// WorkerConfigDivergenceNotActive means polling has no authentication source.
+	WorkerConfigDivergenceNotActive WorkerConfigDivergenceState = "not-active"
+)
+
 // The event taxonomy (issue #8). Every run's journal is a sequence of these.
 const (
 	// EventRunStarted opens a run; carries the pinned identity echoed from run.yaml.
@@ -205,6 +223,9 @@ const (
 	// EventConfigReloadRejected records a changed config directory that failed
 	// validation and was not applied.
 	EventConfigReloadRejected EventType = "config.reload.rejected"
+	// EventWorkerConfigDivergence records a worker's observed config-tree
+	// relationship with the daemon. Its operational payload lives under Runner.
+	EventWorkerConfigDivergence EventType = "runner.config_divergence"
 	// EventDaemonStarted records a daemon lifetime beginning after it acquires
 	// the instance lock.
 	EventDaemonStarted EventType = "daemon.started"
