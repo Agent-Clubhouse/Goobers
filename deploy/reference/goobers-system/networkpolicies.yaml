@@ -214,15 +214,16 @@ spec:
         - protocol: TCP
           port: 8080
 ---
-# #4828: the mode-3 dispatcher's stage pods (goobers.dev/role: stage,
-# internal/runnercap.RoleStage) live in gaggle namespaces, one per gaggle, and
-# every dispatched stage's journal-emit/blob-put/artifact-record/surrender
+# #4828: when the mode-3 dispatcher is manually pointed at a labeled gaggle
+# namespace, its stage pods carry goobers.dev/role: stage
+# (internal/runnercap.RoleStage), and every dispatched stage's
+# journal-emit/blob-put/artifact-record/surrender
 # call targets this same daemon endpoint (the same port allow-worker-daemon
 # above grants the worker). NAMESPACE selector and POD selector are composed
 # in a SINGLE peer element (AND, not two list elements that would OR) — the
 # same decision-012 composition internal/netpolrender.composeCrossNamespacePeer
-# uses for the egress mirror of this grant — so this rule reaches every
-# gaggle namespace generically via the shared goobers.dev/gaggle-namespace
+# uses for the egress mirror of this grant — so this rule can reach every
+# labeled gaggle namespace generically via the shared goobers.dev/gaggle-namespace
 # marker (../gaggle-namespace/base/namespace.yaml) rather than naming one
 # namespace, and never widens to non-stage pods sharing a gaggle namespace.
 # Selector shared with #3585's proposed per-runner-class narrowing of this
