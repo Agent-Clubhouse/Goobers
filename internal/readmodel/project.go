@@ -18,14 +18,12 @@ import (
 // Every terminal run is classified into one of the two accounting buckets:
 // no-work for the explicit first-stage short circuit, produced otherwise.
 const (
-	DispositionUnknown  = "unknown"
-	DispositionProduced = "produced"
-	// DispositionNoWork marks a run that touched exactly one stage and that
-	// stage's terminal status was apiv1.ResultNoWork (#2188). Expressed as a
-	// bare string rather than importing api/v1alpha1: event.Status is already
-	// a bare string by the time it reaches the projector, and this package
-	// has no other reason to depend on the API layer.
-	DispositionNoWork = "no-work"
+	DispositionUnknown  = journal.RunDispositionUnknown
+	DispositionProduced = journal.RunDispositionProduced
+	// DispositionNoWork marks a run whose first execution step reported
+	// no-work (#2188). The terminal journal event carries that authoritative
+	// runner decision; the legacy fallback reconstructs it from attempts.
+	DispositionNoWork = journal.RunDispositionNoWork
 )
 
 // Projection: journal events to a run row.
@@ -574,16 +572,42 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	// Recomputed from the full fold every time (not carried from prev), so
 	// incremental and whole-history projection agree (§14.9) exactly like
 	// row.Stages above.
-	row.Disposition = runDisposition(row, out)
+	row.Disposition = runDisposition(row, out, outNodes, events)
 
 	return Projection{Run: row, Stages: out, Nodes: outNodes}
 }
 
-func runDisposition(row RunRow, stages []StageRow) string {
+func runDisposition(row RunRow, stages []StageRow, nodes []NodeRow, events []journal.Event) string {
 	if !row.Terminal {
 		return DispositionUnknown
 	}
-	if row.Phase == journal.PhaseCompleted && len(stages) == 1 && stages[0].LastStatus == DispositionNoWork {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != journal.EventRunFinished {
+			continue
+		}
+		switch events[i].Disposition {
+		case DispositionNoWork, DispositionProduced:
+			return events[i].Disposition
+		}
+		break
+	}
+	// Legacy journals predate the authoritative terminal field. Reconstruct
+	// their engine/runner steps from attempt-bearing nodes, not the unique
+	// stage-name map: a same-stage re-entry and a gate-before-poll both have
+	// more than one execution step even though only one task reports no-work.
+	steps := 0
+	for _, node := range nodes {
+		steps += node.Attempts
+	}
+	// Entering a parallel is itself an engine step but is not represented by a
+	// run_node row. Full rebuilds (including the migration replay) have the
+	// immutable event history available, so preserve that part explicitly.
+	for _, event := range events {
+		if event.Type == journal.EventParallelStarted {
+			steps++
+		}
+	}
+	if row.Phase == journal.PhaseCompleted && steps == 1 && len(stages) == 1 && stages[0].LastStatus == DispositionNoWork {
 		return DispositionNoWork
 	}
 	return DispositionProduced

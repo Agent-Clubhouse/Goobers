@@ -1315,11 +1315,14 @@ func TestRunnerNoWorkResultShortCircuitsToCompleted(t *testing.T) {
 			t.Fatalf("empty no-work tick recorded run-branch provenance: %+v", event)
 		}
 	}
+	if terminal := events[len(events)-1]; terminal.Type != journal.EventRunFinished || terminal.Disposition != journal.RunDispositionNoWork {
+		t.Fatalf("terminal event = %+v, want durable no-work disposition", terminal)
+	}
 }
 
 func TestRunnerMultiStageNoWorkDoesNotSignalIdlePoll(t *testing.T) {
 	const runID = "run-multi-stage-no-work"
-	r, _ := newTestRunner(t, map[string]stubTaskResult{
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
 		runID + ":query-backlog": {status: apiv1.ResultSuccess},
 		runID + ":curate":        {status: apiv1.ResultNoWork, summary: "nothing to curate"},
 	}, nil)
@@ -1339,6 +1342,17 @@ func TestRunnerMultiStageNoWorkDoesNotSignalIdlePoll(t *testing.T) {
 	}
 	if res.NoWork {
 		t.Fatal("productive multi-stage run was exposed to the scheduler as an idle poll")
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal := events[len(events)-1]; terminal.Type != journal.EventRunFinished || terminal.Disposition != journal.RunDispositionProduced {
+		t.Fatalf("terminal event = %+v, want durable produced disposition", terminal)
 	}
 }
 

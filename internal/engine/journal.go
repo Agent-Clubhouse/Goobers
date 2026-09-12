@@ -727,10 +727,10 @@ func runCanceledCause(err error) string {
 	return "run canceled on the engine: " + err.Error()
 }
 
-// runFinished closes the projection with the terminal phase, mapped to the
-// local runner's run.finished vocabulary.
-func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase) {
-	r.append(ctx, journal.Event{Type: journal.EventRunFinished, Status: string(phase)})
+// runFinished closes the projection with the terminal phase and authoritative
+// work disposition, mapped to the local runner's run.finished vocabulary.
+func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase, disposition string) {
+	r.append(ctx, journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition})
 }
 
 // PhaseForStatus maps the engine's RunResult status onto the local runner's

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/testsuite"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
@@ -17,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 // recordingEngineStarter is an engine.Starter that records what it was asked
@@ -37,6 +39,52 @@ type engineStarterMinuteSchedule struct{}
 
 func (engineStarterMinuteSchedule) Next(after time.Time) time.Time {
 	return after.Add(time.Minute)
+}
+
+type engineStarterNoWorkDeterministic struct{}
+
+func (engineStarterNoWorkDeterministic) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultNoWork, Summary: "queue empty"}, nil
+}
+
+func realDSL3NoWorkResult(t *testing.T) engine.RunResult {
+	t.Helper()
+	enabled := true
+	in := engine.RunInput{
+		RunID:                  "real-dsl3-no-work",
+		Gaggle:                 "web",
+		WorkflowName:           "poll",
+		Version:                1,
+		DSLVersion:             "3.0",
+		PreviewFeaturesEnabled: &enabled,
+		RepoRef:                apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "web", Start: "poll",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "* * * * *"}},
+			Tasks: []apiv1.Task{{
+				Name: "poll", Type: apiv1.TaskDeterministic, Goal: "poll",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			}},
+		},
+	}
+	var suite testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&suite)
+	env.RegisterActivity(&engine.Activities{
+		Det:        engineStarterNoWorkDeterministic{},
+		Workspaces: routingTempWorkspaces{t: t},
+	})
+	env.ExecuteWorkflow(engine.Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("execute real DSL 3 no-work workflow: %v", err)
+	}
+	var result engine.RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("decode real DSL 3 no-work result: %v", err)
+	}
+	if !result.NoWork || result.Steps != 1 {
+		t.Fatalf("real DSL 3 result = %+v, want first-step no-work", result)
+	}
+	return result
 }
 
 func (s *recordingEngineStarter) Start(_ context.Context, in engine.RunInput) (engine.StartResult, error) {
@@ -372,12 +420,7 @@ func TestDSL3EngineNoWorkRepeatedlyEngagesIdleBackoff(t *testing.T) {
 	now := base
 	temporal := &fakeEngineWorkflows{
 		status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED,
-		result: engine.RunResult{
-			Status:     engine.StatusCompleted,
-			FinalState: "implement",
-			Steps:      1,
-			NoWork:     true,
-		},
+		result: realDSL3NoWorkResult(t),
 	}
 	fixture := newEngineStarterFixture(t, temporal, &recordingEngineStarter{})
 	fixture.starter.def.DSLVersion = "3.0"

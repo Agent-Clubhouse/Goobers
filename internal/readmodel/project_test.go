@@ -607,6 +607,33 @@ func TestProjectionClassifiesTerminalDisposition(t *testing.T) {
 	}
 }
 
+func TestLegacyNoWorkInferenceCountsExecutionsNotUniqueStageNames(t *testing.T) {
+	tests := map[string][]journal.Event{
+		"same-stage re-entry": {
+			ev(1, time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "poll" }),
+			ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) { e.Stage, e.Status = "poll", "success" }),
+			ev(3, 3*time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "poll" }),
+			ev(4, 4*time.Second, journal.EventStageFinished, func(e *journal.Event) { e.Stage, e.Status = "poll", "no-work" }),
+			ev(5, 5*time.Second, journal.EventRunFinished, func(e *journal.Event) { e.Status = string(journal.PhaseCompleted) }),
+		},
+		"gate before poll": {
+			ev(1, time.Second, journal.EventGateStarted, func(e *journal.Event) { e.Gate = "ready" }),
+			ev(2, 2*time.Second, journal.EventGateEvaluated, func(e *journal.Event) { e.Gate, e.Target = "ready", "poll" }),
+			ev(3, 3*time.Second, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "poll" }),
+			ev(4, 4*time.Second, journal.EventStageFinished, func(e *journal.Event) { e.Stage, e.Status = "poll", "no-work" }),
+			ev(5, 5*time.Second, journal.EventRunFinished, func(e *journal.Event) { e.Status = string(journal.PhaseCompleted) }),
+		},
+	}
+	for name, events := range tests {
+		t.Run(name, func(t *testing.T) {
+			run := ProjectRun(testIdentity(), Projection{}, events).Run
+			if run.Disposition != DispositionProduced {
+				t.Fatalf("disposition = %q, want %q; a later no-work step must not erase earlier work", run.Disposition, DispositionProduced)
+			}
+		})
+	}
+}
+
 // TestResumeReopensATerminalRun pins the case that would otherwise leave a live
 // run looking finished to every list.
 //

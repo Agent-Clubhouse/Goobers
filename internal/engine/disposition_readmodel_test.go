@@ -19,16 +19,18 @@ func TestDSL3TerminalRunsHaveClosedDispositionAccounting(t *testing.T) {
 	spec := crSpec("poll", []apiv1.Task{crTask("poll", "")}, nil)
 
 	for _, tc := range []struct {
-		name   string
-		stages *scriptedStages
+		name        string
+		stages      *scriptedStages
+		disposition string
 	}{
 		{
-			name: "no-work",
+			name:        "no-work",
+			disposition: readmodel.DispositionNoWork,
 			stages: &scriptedStages{results: map[string][]apiv1.ResultEnvelope{
 				"poll": {{Status: apiv1.ResultNoWork, Summary: "queue empty"}},
 			}},
 		},
-		{name: "produced", stages: &scriptedStages{}},
+		{name: "produced", stages: &scriptedStages{}, disposition: readmodel.DispositionProduced},
 	} {
 		in := projectionInput("dsl3-disposition-"+tc.name, spec)
 		in.DSLVersion = "3.0"
@@ -36,6 +38,10 @@ func TestDSL3TerminalRunsHaveClosedDispositionAccounting(t *testing.T) {
 			Det:        tc.stages,
 			Workspaces: testWorkspaces(t),
 		}, false)
+		terminal := projection.Ops[len(projection.Ops)-1].Event
+		if terminal == nil || terminal.Disposition != tc.disposition {
+			t.Fatalf("%s terminal event disposition = %+v, want %q", tc.name, terminal, tc.disposition)
+		}
 		if _, err := ProjectRun(runsDir, projection); err != nil {
 			t.Fatalf("project %s engine journal: %v", tc.name, err)
 		}
