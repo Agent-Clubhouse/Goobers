@@ -1248,7 +1248,7 @@ func TestAdditionalReposCapabilityRuntimeSupport(t *testing.T) {
 			}}
 			workflow := apiv1.Workflow{
 				ObjectMeta: metav1.ObjectMeta{Name: "reference-reader"},
-				DSLVersion: supportmatrix.NextDSLVersion,
+				DSLVersion: supportmatrix.V2DSLVersion,
 				Spec: apiv1.WorkflowSpec{
 					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
 				},
@@ -1336,7 +1336,7 @@ func TestSubprocessTimeoutWarningWiredIntoValidate(t *testing.T) {
 			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{}}
 			workflow := apiv1.Workflow{
 				ObjectMeta: metav1.ObjectMeta{Name: "example-workflow"},
-				DSLVersion: supportmatrix.NextDSLVersion,
+				DSLVersion: supportmatrix.V2DSLVersion,
 				Spec: apiv1.WorkflowSpec{
 					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
 				},
@@ -1385,7 +1385,7 @@ func TestAdditionalReposCapabilityRuntimeSupportForAgenticGate(t *testing.T) {
 			}}
 			workflow := apiv1.Workflow{
 				ObjectMeta: metav1.ObjectMeta{Name: "reference-review"},
-				DSLVersion: supportmatrix.NextDSLVersion,
+				DSLVersion: supportmatrix.V2DSLVersion,
 				Spec: apiv1.WorkflowSpec{
 					Gaggle: "example",
 					Start:  "prepare",
@@ -1493,13 +1493,13 @@ func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
 		{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Workflow"},
 			ObjectMeta: metav1.ObjectMeta{Name: "legacy"},
-			DSLVersion: supportmatrix.CurrentDSLVersion,
+			DSLVersion: supportmatrix.V1DSLVersion,
 			Spec:       apiv1.WorkflowSpec{Gaggle: "example"},
 		},
 		{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Workflow"},
 			ObjectMeta: metav1.ObjectMeta{Name: "next"},
-			DSLVersion: supportmatrix.NextDSLVersion,
+			DSLVersion: supportmatrix.V2DSLVersion,
 			Spec:       apiv1.WorkflowSpec{Gaggle: "example"},
 		},
 	} {
@@ -1511,8 +1511,8 @@ func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
 		Gaggle:    "example",
 		Workflows: []string{"next"},
 	})
-	if len(definitions) != 1 || definitions[0].DSLVersion != supportmatrix.NextDSLVersion {
-		t.Fatalf("feature definitions = %+v, want only DSL %q", definitions, supportmatrix.NextDSLVersion)
+	if len(definitions) != 1 || definitions[0].DSLVersion != supportmatrix.V2DSLVersion {
+		t.Fatalf("feature definitions = %+v, want only DSL %q", definitions, supportmatrix.V2DSLVersion)
 	}
 }
 
@@ -1520,7 +1520,7 @@ func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
 // fallback: a gaggle (or goober) with zero workflows must have its features
 // checked at the newest supported DSL version. The pre-#3297 fallback was an
 // unpinned wf.Definition{}, which the version router rewrote to
-// supportmatrix.CurrentDSLVersion ("1.4", deprecated) — so every workflow-less
+// supportmatrix.V1DSLVersion ("1.4", deprecated) — so every workflow-less
 // gaggle would fail validation the moment 1.4 turns unsupported (declared for
 // v0.5.0), with an error its author cannot act on because GaggleSpec has no
 // dslVersion field.
@@ -1533,13 +1533,13 @@ func TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion(t *testing.T) {
 			t.Fatalf("%s definitions = %+v, want exactly one fallback probe", kind, definitions)
 		}
 		got := definitions[0].DSLVersion
-		if got == "" || got == supportmatrix.CurrentDSLVersion {
+		if got == "" || got == supportmatrix.V1DSLVersion {
 			t.Fatalf("%s fallback DSL version = %q; must not be unpinned or the deprecated %q",
-				kind, got, supportmatrix.CurrentDSLVersion)
+				kind, got, supportmatrix.V1DSLVersion)
 		}
-		if got != supportmatrix.NextDSLVersion {
+		if got != supportmatrix.V2DSLVersion {
 			t.Fatalf("%s fallback DSL version = %q, want newest supported %q",
-				kind, got, supportmatrix.NextDSLVersion)
+				kind, got, supportmatrix.V2DSLVersion)
 		}
 	}
 

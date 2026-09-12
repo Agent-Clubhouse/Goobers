@@ -9,11 +9,11 @@ import (
 
 func TestEffectiveInRecordsActualRemovalWithoutRewritingPromise(t *testing.T) {
 	matrix := GetDSL()
-	legacy := matrix[CurrentDSLVersion]
+	legacy := matrix[V1DSLVersion]
 	if legacy.EffectiveIn != "v0.4.0" || legacy.Level != LevelUnsupported {
 		t.Fatalf("legacy support = %+v, want actual v0.4.0 removal", legacy)
 	}
-	if !reflect.DeepEqual(legacy.History, betaTwoSupportMatrix()[CurrentDSLVersion].History) {
+	if !reflect.DeepEqual(legacy.History, betaTwoSupportMatrix()[V1DSLVersion].History) {
 		t.Fatal("the correction must preserve the history already published in beta.2")
 	}
 	for _, release := range []string{"v0.4.0", "v0.5.0"} {
@@ -67,9 +67,9 @@ func TestEffectiveInCannotBypassOtherSupportTransitions(t *testing.T) {
 
 func TestPublishedEffectiveInCannotBeRemoved(t *testing.T) {
 	released, current := GetDSL(), GetDSL()
-	row := current[CurrentDSLVersion]
+	row := current[V1DSLVersion]
 	row.EffectiveIn = ""
-	current[CurrentDSLVersion] = row
+	current[V1DSLVersion] = row
 	err := validateSupportMatrixEvolution(released, current, "v0.4.0",
 		map[string]releaseVersion{"1.4": {minor: 1}, "2.0": {minor: 1}})
 	if err == nil || !strings.Contains(err.Error(), "effectiveIn correction must not change") {

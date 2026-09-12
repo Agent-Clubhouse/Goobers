@@ -64,10 +64,10 @@ func TestCompareDSLVersions(t *testing.T) {
 func TestNewestSupported(t *testing.T) {
 	// The live matrix: 2.0 is the only LevelSupported version, so anything that
 	// resolves an unpinned object (#3297) must land there — not on the
-	// deprecated CurrentDSLVersion.
+	// deprecated V1DSLVersion.
 	got, ok := GetDSL().NewestSupported()
-	if !ok || got != NextDSLVersion {
-		t.Fatalf("GetDSL().NewestSupported() = %q, %v, want %q, true", got, ok, NextDSLVersion)
+	if !ok || got != V2DSLVersion {
+		t.Fatalf("GetDSL().NewestSupported() = %q, %v, want %q, true", got, ok, V2DSLVersion)
 	}
 
 	// Numeric major/minor order, not lexicographic: "10.0" beats "9.0" even
@@ -99,33 +99,33 @@ func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 	// three-step lifecycle history ending at unsupported. It still resolves
 	// in the matrix so a 1.4 document gets DVL030 (naming `goobers fix`)
 	// rather than an opaque unknown-version error.
-	current, ok := matrix.Lookup(CurrentDSLVersion)
+	current, ok := matrix.Lookup(V1DSLVersion)
 	if !ok {
-		t.Fatalf("DSL version %q is missing", CurrentDSLVersion)
+		t.Fatalf("DSL version %q is missing", V1DSLVersion)
 	}
 	if current.Level != LevelUnsupported {
-		t.Fatalf("DSL version %q level = %q, want %q", CurrentDSLVersion, current.Level, LevelUnsupported)
+		t.Fatalf("DSL version %q level = %q, want %q", V1DSLVersion, current.Level, LevelUnsupported)
 	}
-	if current.Replacement != NextDSLVersion {
-		t.Fatalf("DSL version %q replacement = %q, want %q", CurrentDSLVersion, current.Replacement, NextDSLVersion)
+	if current.Replacement != V2DSLVersion {
+		t.Fatalf("DSL version %q replacement = %q, want %q", V1DSLVersion, current.Replacement, V2DSLVersion)
 	}
 	if len(current.History) != 3 ||
 		current.History[0] != (SupportTransition{Level: LevelSupported, SinceVersion: initialSupportVersion}) ||
 		current.History[1].Level != LevelDeprecated ||
 		current.History[2].Level != LevelUnsupported {
-		t.Fatalf("DSL version %q history = %+v", CurrentDSLVersion, current.History)
+		t.Fatalf("DSL version %q history = %+v", V1DSLVersion, current.History)
 	}
 
-	next, ok := matrix.Lookup(NextDSLVersion)
+	next, ok := matrix.Lookup(V2DSLVersion)
 	if !ok {
-		t.Fatalf("DSL version %q is missing", NextDSLVersion)
+		t.Fatalf("DSL version %q is missing", V2DSLVersion)
 	}
 	if next.Level != LevelSupported {
-		t.Fatalf("DSL version %q level = %q, want %q", NextDSLVersion, next.Level, LevelSupported)
+		t.Fatalf("DSL version %q level = %q, want %q", V2DSLVersion, next.Level, LevelSupported)
 	}
 	if len(next.History) != 1 ||
 		next.History[0] != (SupportTransition{Level: LevelSupported, SinceVersion: initialSupportVersion}) {
-		t.Fatalf("DSL version %q history = %+v", NextDSLVersion, next.History)
+		t.Fatalf("DSL version %q history = %+v", V2DSLVersion, next.History)
 	}
 	for version, support := range matrix {
 		if _, _, ok := parseDSLVersion(version); !ok {
@@ -138,16 +138,16 @@ func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 		}
 	}
 
-	matrix[CurrentDSLVersion] = VersionSupport{Level: LevelSupported}
-	if GetDSL()[CurrentDSLVersion].Level != LevelUnsupported {
+	matrix[V1DSLVersion] = VersionSupport{Level: LevelSupported}
+	if GetDSL()[V1DSLVersion].Level != LevelUnsupported {
 		t.Fatal("GetDSL exposed the package's backing map")
 	}
 
 	matrix = GetDSL()
-	mutated := matrix[CurrentDSLVersion]
+	mutated := matrix[V1DSLVersion]
 	mutated.History[0].Level = LevelUnsupported
-	matrix[CurrentDSLVersion] = mutated
-	if GetDSL()[CurrentDSLVersion].History[0].Level != LevelSupported {
+	matrix[V1DSLVersion] = mutated
+	if GetDSL()[V1DSLVersion].History[0].Level != LevelSupported {
 		t.Fatal("GetDSL exposed the package's backing lifecycle history")
 	}
 }

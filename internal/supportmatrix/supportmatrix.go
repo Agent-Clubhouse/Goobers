@@ -39,15 +39,14 @@ const (
 )
 
 const (
-	// CurrentDSLVersion is the legacy 1.4 language version. It is DROPPED
+	// V1DSLVersion is the legacy 1.4 language version. It is DROPPED
 	// (unsupported; issue #3507) and is no longer a default for unpinned
-	// workflows — a missing dslVersion is now a hard error. The constant name
-	// is retained (a rename would churn ~60 files) and the string still keys
-	// the matrix's 1.4 entry and the migrator's 1.4→2.0 recovery edge.
-	CurrentDSLVersion = "1.4"
-	// NextDSLVersion is the copy-forward language version with its own
+	// workflows — a missing dslVersion is now a hard error. The string still
+	// keys the matrix's 1.4 entry and the migrator's 1.4→2.0 recovery edge.
+	V1DSLVersion = "1.4"
+	// V2DSLVersion is the copy-forward language version with its own
 	// interpreter and semantics.
-	NextDSLVersion = "2.0"
+	V2DSLVersion = "2.0"
 	// V3DSLVersion is the Goobernetes language version (dsl-3.0.md): the
 	// runsOn/runners/repoFrom surface. PREVIEW while the Goobernetes v1 waves
 	// land — DVL010/DVL011 gate it behind the instance preview opt-in; GA is a
@@ -148,7 +147,7 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 	// ruling on #4271, 2026-09-09). Retraction is the recorded, auditable
 	// exception validateEffectiveIn requires for an effectiveIn correction
 	// that predates its published transition — see supportpolicy.go.
-	CurrentDSLVersion: {
+	V1DSLVersion: {
 		Level:       LevelUnsupported,
 		EffectiveIn: "v0.4.0",
 		Retraction: &Retraction{
@@ -160,14 +159,14 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 				"renumbering the release to v0.5.0 or restoring the removed " +
 				"interpreter (#4271, #4708).",
 		},
-		Replacement: NextDSLVersion,
+		Replacement: V2DSLVersion,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
 			{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
 			{Level: LevelUnsupported, SinceVersion: "v0.5.0"},
 		},
 	},
-	NextDSLVersion: {
+	V2DSLVersion: {
 		Level: LevelSupported,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
@@ -232,7 +231,7 @@ func (m SupportMatrix) Versions() []Version {
 // LevelSupported, using Versions()'s numeric major/minor order. Callers that
 // must pick a version for an object with no pin of its own (a workflow-less
 // gaggle or goober, #3297) derive it from here rather than from
-// CurrentDSLVersion: the transitional default is deprecated, and resolving an
+// V1DSLVersion: the transitional default is deprecated, and resolving an
 // unpinned object there would fail validation the moment it turns unsupported
 // — with no dslVersion field on those specs for the author to act on. ok is
 // false when no version is currently LevelSupported, a state
