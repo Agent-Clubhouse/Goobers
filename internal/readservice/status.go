@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -45,6 +46,7 @@ type SchedulerStatus struct {
 	Retention              *RetentionStatus
 	Maintenance            *MaintenanceStatus
 	WorkerConfigDivergence []WorkerConfigDivergenceStatus
+	TelemetryRetention     *TelemetryRetentionStatus
 }
 
 // WorkerConfigDivergenceStatus is the last config-tree comparison reported by
@@ -57,6 +59,19 @@ type WorkerConfigDivergenceStatus struct {
 	Reason       string                              `json:"reason,omitempty"`
 	Message      string                              `json:"message"`
 	At           time.Time                           `json:"at"`
+}
+
+// TelemetryRetentionStatus is the effective automatic telemetry-retention
+// policy plus the latest successfully journaled evaluation of that policy.
+type TelemetryRetentionStatus struct {
+	Enabled        bool       `json:"enabled"`
+	Window         string     `json:"window"`
+	MaxRuns        int        `json:"maxRuns"`
+	FirstEnable    string     `json:"firstEnable"`
+	EnforceAt      *time.Time `json:"enforceAt,omitempty"`
+	LastPassAt     *time.Time `json:"lastPassAt,omitempty"`
+	LastPassMode   string     `json:"lastPassMode,omitempty"`
+	CandidateCount int        `json:"candidateCount"`
 }
 
 // WorkflowRefusalStatus is one boot-refused workflow and its solver
@@ -374,6 +389,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	}
 	if s.sources.Config != nil {
 		status.IsolationMandates = s.sources.Config.PlacementInventory("").ClassMandates
+		status.TelemetryRetention = telemetryRetentionStatus(s.sources.Config, projected.telemetryRetention)
 	}
 	for _, key := range projected.engineFallbacks.order {
 		status.EngineFallbacks = append(status.EngineFallbacks, projected.engineFallbacks.items[key])
@@ -412,6 +428,36 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		status.Maintenance = maintenanceStatus(s.sources.RetentionStats())
 	}
 	return status, nil
+}
+
+func telemetryRetentionStatus(config *instance.Config, latest *TelemetryRetentionStatus) *TelemetryRetentionStatus {
+	if config == nil {
+		return nil
+	}
+	retentionConfig := instance.TelemetryRetentionConfig{}
+	if config.Telemetry.Retention != nil {
+		retentionConfig = *config.Telemetry.Retention
+	}
+	window, err := retentionConfig.WindowDuration()
+	if err != nil {
+		return nil // validated configs cannot reach this path
+	}
+	status := TelemetryRetentionStatus{
+		Enabled:     retentionConfig.EnabledEffective(),
+		Window:      window.String(),
+		MaxRuns:     retentionConfig.MaxRunLimit(),
+		FirstEnable: retentionConfig.FirstEnable,
+	}
+	if status.FirstEnable == "" {
+		status.FirstEnable = "gracePeriod"
+	}
+	if latest != nil {
+		status.EnforceAt = latest.EnforceAt
+		status.LastPassAt = latest.LastPassAt
+		status.LastPassMode = latest.LastPassMode
+		status.CandidateCount = latest.CandidateCount
+	}
+	return &status
 }
 
 func workflowRefillOccupancy(

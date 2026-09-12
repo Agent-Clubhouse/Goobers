@@ -228,16 +228,48 @@ func pruneConfiguredTelemetryRetention(
 // runUpContextWithForce (rather than inlined at its one call site) so this
 // dryRun/real branch doesn't grow that already-large function's cyclomatic
 // complexity — the same reason startPeriodicSweep exists (#4323).
-func reportTelemetryPruned(stdout io.Writer, results []retention.Result, dryRun bool) {
-	for _, result := range results {
-		if dryRun {
-			// Reporting only, not yet deleted — see telemetry-retention-state.json
-			// / `goobers status`.
-			pf(stdout, "telemetry retention candidate (grace period, not deleted) run=%q reason=%s\n", result.RunID, result.Reason)
-			continue
-		}
-		pf(stdout, "telemetry pruned run=%q reason=%s\n", result.RunID, result.Reason)
+func reportTelemetryPruned(stdout io.Writer, results []retention.Result, dryRun, enabled bool) {
+	mode := "enforcing"
+	if !enabled {
+		mode = "disabled"
+	} else if dryRun {
+		mode = "dry-run"
 	}
+	pf(stdout, "telemetry retention: candidates=%d mode=%s\n", len(results), mode)
+}
+
+// recordTelemetryRetentionPass publishes the bounded operational result that
+// status and portal replay. Candidate identities remain in the derived state
+// file and startup no longer logs them one by one.
+func recordTelemetryRetentionPass(
+	log *journal.InstanceLog,
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	results []retention.Result,
+	dryRun bool,
+) error {
+	if log == nil || !config.EnabledEffective() {
+		return nil
+	}
+	state, ok, err := readTelemetryRetentionState(layout)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("telemetry retention: successful pass did not persist state")
+	}
+	mode := "enforcing"
+	if dryRun {
+		mode = "dry-run"
+	}
+	runner := map[string]any{
+		"mode":           mode,
+		"candidateCount": len(results),
+	}
+	if !state.EnforceAt.IsZero() {
+		runner["enforceAt"] = state.EnforceAt.UTC().Format(time.RFC3339Nano)
+	}
+	return log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: runner})
 }
 
 // compactSchedulerRetention bounds the scheduler journal and rollup rows. A

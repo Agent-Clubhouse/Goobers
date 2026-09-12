@@ -36,6 +36,7 @@ type instanceState struct {
 	refillBlocked         map[localscheduler.WorkflowIdentity]string
 	workerDivergenceOrder []string
 	workerDivergence      map[string]WorkerConfigDivergenceStatus
+	telemetryRetention    *TelemetryRetentionStatus
 }
 
 // snapshot folds every event appended since the previous call and returns a
@@ -141,6 +142,19 @@ func (s *instanceState) apply(event journal.Event) {
 		}
 	case journal.EventDaemonDirtyRestart:
 		s.dirtyReason = event.Reason
+	case journal.EventTelemetryRetentionPass:
+		status := &TelemetryRetentionStatus{
+			LastPassMode:   runnerString(event.Runner, "mode"),
+			CandidateCount: runnerInt(event.Runner, "candidateCount"),
+		}
+		if !event.Time.IsZero() {
+			at := event.Time
+			status.LastPassAt = &at
+		}
+		if enforceAt, err := time.Parse(time.RFC3339Nano, runnerString(event.Runner, "enforceAt")); err == nil {
+			status.EnforceAt = &enforceAt
+		}
+		s.telemetryRetention = status
 	case journal.EventDaemonStarted:
 		s.resetRefusals()
 		s.refillBlocked = nil
@@ -206,6 +220,18 @@ func (s instanceState) clone() instanceState {
 		restart.RunIDs = append([]string(nil), s.restart.RunIDs...)
 		restart.Replacements = append([]RunReplacement(nil), s.restart.Replacements...)
 		clone.restart = &restart
+	}
+	if s.telemetryRetention != nil {
+		status := *s.telemetryRetention
+		if status.EnforceAt != nil {
+			at := *status.EnforceAt
+			status.EnforceAt = &at
+		}
+		if status.LastPassAt != nil {
+			at := *status.LastPassAt
+			status.LastPassAt = &at
+		}
+		clone.telemetryRetention = &status
 	}
 	clone.refusalOrder = append([]string(nil), s.refusalOrder...)
 	clone.refusals = maps.Clone(s.refusals)
