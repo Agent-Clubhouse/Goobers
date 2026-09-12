@@ -1,9 +1,57 @@
 package instance
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestStageMemoryLimitDocumentationMatchesUnboundedDefault(t *testing.T) {
+	bound, err := (&RunnerConfig{}).ResolveStageMemoryBound()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.Enforced() {
+		t.Fatalf("empty runner.stageMemoryLimit unexpectedly enforces %d bytes", bound.MaxBytes)
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(filepath.Dir(thisFile), "config.go"), nil, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var documentation string
+	ast.Inspect(file, func(node ast.Node) bool {
+		field, ok := node.(*ast.Field)
+		if !ok || len(field.Names) != 1 || field.Names[0].Name != "StageMemoryLimit" || field.Doc == nil {
+			return true
+		}
+		documentation = field.Doc.Text()
+		return false
+	})
+	for _, want := range []string{"Empty means UNBOUNDED", "TestPodLimitLessReserveWouldNotHaveStoppedTheIncident"} {
+		if !strings.Contains(documentation, want) {
+			t.Errorf("StageMemoryLimit documentation missing %q:\n%s", want, documentation)
+		}
+	}
+	for _, contradiction := range []string{"EMPTY IS NOT UNBOUNDED", "bound is DERIVED"} {
+		if strings.Contains(documentation, contradiction) {
+			t.Errorf("StageMemoryLimit documentation contradicts the resolver with %q", contradiction)
+		}
+	}
+	for _, want := range []string{"UNBOUNDED", "OOM-killed", "Set runner.stageMemoryLimit"} {
+		if !strings.Contains(UnboundedStageMemoryWarning, want) {
+			t.Errorf("startup warning lost prominent %q guidance: %q", want, UnboundedStageMemoryWarning)
+		}
+	}
+}
 
 func TestResolveStageMemoryBound(t *testing.T) {
 	tests := []struct {
