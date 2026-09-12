@@ -117,6 +117,20 @@ func TestStatusJSONIncludesWorkerConfigDivergence(t *testing.T) {
 	}
 }
 
+func TestTelemetryRetentionStatusLine(t *testing.T) {
+	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	enforceAt := passAt.Add(7 * 24 * time.Hour)
+	got := telemetryRetentionStatusLine(readservice.SchedulerStatus{TelemetryRetention: &readservice.TelemetryRetentionStatus{
+		Enabled: true, Window: "30d", MaxRuns: 900, FirstEnable: "gracePeriod",
+		LastPassAt: &passAt, LastPassMode: "dry-run", CandidateCount: 17, EnforceAt: &enforceAt,
+	}})
+	for _, want := range []string{"enabled=true", "window=30d", "max-runs=900", "last-pass=dry-run", "candidates=17", "enforcement=2026-09-19T08:00:00Z"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("status line %q does not contain %q", got, want)
+		}
+	}
+}
+
 // TestStatusRejectsNonInstanceRoot is issue #142: a typo'd or otherwise
 // nonexistent path used to fall through to listRuns finding no runs/ dir,
 // printing the misleading "no runs found" at exit 0 — indistinguishable from

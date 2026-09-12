@@ -178,6 +178,66 @@ func TestListStatusRunsProjectsOperatorSummary(t *testing.T) {
 	}
 }
 
+func TestTelemetryRetentionStatusReplaysAcrossReadersAndInstanceAPI(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	passAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	journaledAt := passAt.Add(10 * time.Minute)
+	enforceAt := passAt.Add(7 * 24 * time.Hour)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return journaledAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: map[string]any{
+		"mode": "dry-run", "candidateCount": 17, "passAt": passAt.Format(time.RFC3339Nano),
+		"enforceAt": enforceAt.Format(time.RFC3339Nano),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config := &instance.Config{Telemetry: instance.TelemetryConfig{Retention: &instance.TelemetryRetentionConfig{
+		Window: "30d", MaxRuns: 900,
+	}}}
+	newService := func() *Local {
+		service, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions(), Config: config}, func() bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+
+	for i, service := range []*Local{newService(), newService()} {
+		status, err := service.SchedulerStatus(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := status.TelemetryRetention
+		if got == nil || !got.Enabled || got.Window != "30d" || got.MaxRuns != 900 ||
+			got.FirstEnable != "gracePeriod" || got.LastPassMode != "dry-run" || got.CandidateCount != 17 ||
+			got.LastPassAt == nil || !got.LastPassAt.Equal(passAt) || got.EnforceAt == nil || !got.EnforceAt.Equal(enforceAt) {
+			t.Fatalf("reader %d retention status = %+v", i, got)
+		}
+		api, err := service.Instance(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(api.TelemetryRetention, got) {
+			t.Fatalf("reader %d instance retention = %+v, scheduler = %+v", i, api.TelemetryRetention, got)
+		}
+	}
+	disabled := false
+	config.Telemetry.Retention.Enabled = &disabled
+	disabledStatus, err := newService().SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := disabledStatus.TelemetryRetention
+	if got == nil || got.Enabled || got.EnforceAt != nil || got.LastPassMode != "dry-run" || got.CandidateCount != 17 {
+		t.Fatalf("disabled policy retained misleading enforcement state or lost history: %+v", got)
+	}
+}
+
 func TestListStatusRunsProjectsTerminalOperatorSummary(t *testing.T) {
 	for _, phase := range []journal.RunPhase{journal.PhaseCompleted, journal.PhaseFailed} {
 		t.Run(string(phase), func(t *testing.T) {

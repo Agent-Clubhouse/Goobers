@@ -1090,18 +1090,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if setup.Config.Telemetry.Retention != nil {
 		telemetryRetentionConfig = *setup.Config.Telemetry.Retention
 	}
-	var telemetryPruned []retention.Result
+	var telemetryPrunedCount int
 	var telemetryPrunedDryRun bool
 	telemetryErr := runStartupPhase(stdout, tracker, "telemetry-retention-prune", "", func() error {
-		var pruneErr error
-		telemetryPruned, telemetryPrunedDryRun, pruneErr = pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, time.Now())
-		return pruneErr
+		var err error
+		telemetryPrunedCount, telemetryPrunedDryRun, err = pruneAndRecordTelemetryRetention(setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, time.Now())
+		return err
 	})
 	if telemetryErr != nil {
 		pf(stderr, "error: prune retained telemetry: %v\n", telemetryErr)
 		return 1
 	}
-	reportTelemetryPruned(stdout, telemetryPruned, telemetryPrunedDryRun)
+	reportTelemetryPruned(stdout, telemetryPrunedCount, telemetryPrunedDryRun, telemetryRetentionConfig.EnabledEffective())
 
 	// Prune crash-abandoned orphan runs and run-creation staging directories
 	// before anything else touches the runs tree (#2035): a mid-Create crash's
@@ -1535,10 +1535,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-telemetryRetentionTicker.C:
-				_, _, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
-				if err == nil {
-					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
-				}
+				err := runPeriodicTelemetryRetention(ctx, setup.InstanceLog, l, telemetryRetentionConfig, setup.RollupDB, journalGenerationCleanupErrors, now)
 				telemetryRetentionErrors.report(err)
 				migrationBackupCleanupErrors.report(sweepMigrationBackups(l, setup, now))
 			}

@@ -235,6 +235,9 @@ const (
 	// EventDaemonDirtyRestart records startup finding a previous daemon lock
 	// without a subsequent clean-shutdown event.
 	EventDaemonDirtyRestart EventType = "daemon.dirty_restart"
+	// EventTelemetryRetentionPass records one successful automatic telemetry
+	// retention evaluation. Its operational summary is carried under Runner.
+	EventTelemetryRetentionPass EventType = "telemetry.retention.pass"
 	// EventDaemonUpdateDrainStarted records the stable supervisor beginning a
 	// graceful drain for a validated binary handoff.
 	EventDaemonUpdateDrainStarted EventType = "daemon.update.drain_started"
@@ -572,7 +575,8 @@ func (e Event) IsConformanceNormative() bool {
 	}
 	switch e.Type {
 	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired,
-		EventInitCompleted, EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
+		EventInitCompleted, EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart,
+		EventTelemetryRetentionPass:
 		// Gate markers and torn-write repair are durability/operational
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.

@@ -298,6 +298,7 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventDaemonStarted, Runner: map[string]any{"pid": 42}},
 		{Type: EventDaemonCleanShutdown, Reason: "graceful shutdown completed", Runner: map[string]any{"pid": 42}},
 		{Type: EventDaemonDirtyRestart, Reason: "previous daemon lock remained without a clean-shutdown event", Runner: map[string]any{"pid": 42}},
+		{Type: EventTelemetryRetentionPass, Runner: map[string]any{"mode": "dry-run", "candidateCount": 7, "enforceAt": "2026-09-20T12:00:00Z"}},
 	} {
 		if err := log.Append(ev); err != nil {
 			t.Fatalf("Append %s: %v", ev.Type, err)

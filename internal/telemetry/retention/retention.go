@@ -37,9 +37,10 @@ type Options struct {
 
 // Result describes one selected or deleted run.
 type Result struct {
-	RunID  string
-	RunDir string
-	Reason string
+	RunID     string    `json:"runId"`
+	RunDir    string    `json:"runDir"`
+	Reason    string    `json:"reason"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 // Summary carries pass-level context a caller needs beyond the per-run
@@ -160,7 +161,7 @@ func discoverRuns(runRoots []string) ([]runInfo, error) {
 				return nil, fmt.Errorf("telemetry retention: read phase for run %s: %w", identity.RunID, err)
 			}
 			runs = append(runs, runInfo{
-				Result:    Result{RunID: identity.RunID, RunDir: dir},
+				Result:    Result{RunID: identity.RunID, RunDir: dir, StartedAt: identity.StartedAt},
 				startedAt: identity.StartedAt,
 				terminal:  phase != journal.PhaseRunning,
 			})
@@ -176,6 +177,80 @@ func discoverRuns(runRoots []string) ([]runInfo, error) {
 		return runs[i].RunDir < runs[j].RunDir
 	})
 	return runs, nil
+}
+
+// PruneCandidates enforces only a previously selected, durable candidate
+// manifest. It never expands the pass by reapplying policy: runs that become
+// eligible after the manifest was prepared belong to a later pass. Missing
+// candidates are treated as already completed so an interrupted pass is
+// idempotent; a path or identity mismatch is preserved rather than allowing a
+// stale manifest to delete a recreated run.
+func PruneCandidates(layout instance.Layout, db *rollup.DB, candidates []Result, opts Options) ([]Result, error) {
+	if db == nil {
+		return nil, fmt.Errorf("telemetry retention rollup is required")
+	}
+	runRoots, err := layout.RunDirs()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCandidateManifest(runRoots, candidates); err != nil {
+		return nil, err
+	}
+	maintenanceLocks, err := journal.AcquireRunRootMaintenanceLocks(runRoots)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = maintenanceLocks.Release() }()
+	if err := preflightInterruptedPrunes(runRoots); err != nil {
+		return nil, err
+	}
+	if err := finishInterruptedPrunes(runRoots, db, opts.BeforeDelete); err != nil {
+		return nil, err
+	}
+	runs, err := discoverRuns(runRoots)
+	if err != nil {
+		return nil, err
+	}
+	current := make(map[string]runInfo, len(runs))
+	for _, run := range runs {
+		current[run.RunID] = run
+	}
+	pruned := make([]Result, 0, len(candidates))
+	for _, candidate := range candidates {
+		run, exists := current[candidate.RunID]
+		if !exists || !run.terminal || filepath.Clean(run.RunDir) != filepath.Clean(candidate.RunDir) ||
+			!run.startedAt.Equal(candidate.StartedAt) {
+			continue
+		}
+		run.Reason = candidate.Reason
+		deleted, err := pruneOne(run.Result, db, opts.BeforeDelete)
+		if err != nil {
+			return pruned, err
+		}
+		if deleted {
+			pruned = append(pruned, run.Result)
+		}
+	}
+	return pruned, nil
+}
+
+func validateCandidateManifest(runRoots []string, candidates []Result) error {
+	roots := make(map[string]bool, len(runRoots))
+	for _, root := range runRoots {
+		roots[filepath.Clean(root)] = true
+	}
+	seen := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		dir := filepath.Clean(candidate.RunDir)
+		if candidate.RunID == "" || candidate.StartedAt.IsZero() || !roots[filepath.Dir(dir)] {
+			return fmt.Errorf("telemetry retention: invalid candidate manifest entry for run %q", candidate.RunID)
+		}
+		if seen[candidate.RunID] {
+			return fmt.Errorf("telemetry retention: duplicate candidate manifest entry for run %q", candidate.RunID)
+		}
+		seen[candidate.RunID] = true
+	}
+	return nil
 }
 
 func selectCandidates(runs []runInfo, policy Policy, now time.Time) (candidates []Result, oldestRetainedAt time.Time) {
