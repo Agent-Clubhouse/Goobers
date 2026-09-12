@@ -26,8 +26,6 @@ spec:
     - label-issue
   conditionalPolicyActions:
     - approve-issue
-  skills:
-    - analysis
   tools:
     - github
     - telemetry

@@ -7,8 +7,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+func assertNoStandardMissingSkillWarnings(t *testing.T, report *validate.Report) {
+	t.Helper()
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("standard scaffold emitted a missing-skill-package warning: %+v", warning)
+		}
+	}
+}
 
 func TestInitStandardNonInteractive(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "standard")
@@ -20,6 +30,7 @@ func TestInitStandardNonInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
+	assertNoStandardMissingSkillWarnings(t, report)
 	if len(set.Workflows) != 2 || len(set.Goobers) != 3 {
 		t.Fatalf("got %d workflows and %d goobers, want canonical pair and its three personas", len(set.Workflows), len(set.Goobers))
 	}
@@ -53,6 +64,7 @@ func TestInitStandardADO(t *testing.T) {
 	if err != nil || report.HasErrors() {
 		t.Fatalf("load: %v report=%+v", err, report)
 	}
+	assertNoStandardMissingSkillWarnings(t, report)
 	if len(set.Gaggles) != 1 || set.Gaggles[0].Spec.Project.Provider != "ado" || set.Gaggles[0].Spec.Project.Project != "your-project" || set.Gaggles[0].Spec.Backlog.Provider != "ado" || set.Gaggles[0].Spec.Backlog.Project != "your-project" {
 		t.Fatalf("ADO identity not preserved: %+v", set.Gaggles)
 	}
