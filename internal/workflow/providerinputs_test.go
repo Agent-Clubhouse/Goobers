@@ -42,13 +42,13 @@ func TestCheckProviderStageInputsRejectsRetiredLiteralAndDynamicInputs(t *testin
 	}
 }
 
-func TestCheckProviderStageInputsAllowsCurrentAndUnknownInputs(t *testing.T) {
+func TestCheckProviderStageInputsAllowsCurrentAndExternalInputs(t *testing.T) {
 	def := Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{
 		{
 			Name:   "query",
 			Type:   apiv1.TaskDeterministic,
 			Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim", "--resweep"}},
-			Inputs: map[string]string{"resweepMaxItems": "5", "resweepReadyLabel": "ready", "extensionInput": "allowed"},
+			Inputs: map[string]string{"resweepMaxItems": "5", "resweepReadyLabel": "ready"},
 		},
 		{
 			Name:   "external",
@@ -58,6 +58,19 @@ func TestCheckProviderStageInputsAllowsCurrentAndUnknownInputs(t *testing.T) {
 		},
 	}}}
 	if problems := CheckProviderStageInputs(def); len(problems) != 0 {
-		t.Fatalf("problems = %q, want current and open-schema inputs accepted", problems)
+		t.Fatalf("problems = %q, want current built-in and external inputs accepted", problems)
+	}
+}
+
+func TestCheckProviderStageInputsRejectsUndeclaredBuiltInInput(t *testing.T) {
+	def := Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{{
+		Name:   "query",
+		Type:   apiv1.TaskDeterministic,
+		Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}},
+		Inputs: map[string]string{"extensionInput": "not-a-backlog-query-input"},
+	}}}}
+	problems := CheckProviderStageInputs(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `undeclared input "extensionInput"`) {
+		t.Fatalf("problems = %q, want undeclared built-in input refusal", problems)
 	}
 }

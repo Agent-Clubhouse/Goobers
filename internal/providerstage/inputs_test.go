@@ -4,21 +4,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/builtincmd"
 )
 
 func TestBacklogQueryInputsDeclareCurrentAndRetiredSchema(t *testing.T) {
 	inputs := Inputs("backlog-query")
-	wantNames := []string{
-		"assignedTo", "contestedFileMinPRs", "curation", "deprioritizeContestedFiles",
-		"excludeLabels", "fieldOrder", "fieldPredicate", "filterParkLabels",
-		"labelPredicate", "leaseDuration", "maxItems", "parkLabels", "requireLabels",
-		"respectAssignee", "resultFile", "resweepInterval", "resweepMaxItems",
-		"resweepReadyLabel", "selectionPriority", "staleAfterDays", "staleAutoClose",
-		"trustLabel",
-	}
-	gotNames := make([]string, 0, len(inputs))
 	for _, input := range inputs {
-		gotNames = append(gotNames, input.Name)
 		if input.Type == "" {
 			t.Errorf("input %q has no type", input.Name)
 		}
@@ -30,10 +22,6 @@ func TestBacklogQueryInputsDeclareCurrentAndRetiredSchema(t *testing.T) {
 			t.Errorf("retired input %q lacks retirement or replacement metadata", input.Name)
 		}
 	}
-	if !slices.Equal(gotNames, wantNames) {
-		t.Fatalf("backlog-query input names = %q, want %q", gotNames, wantNames)
-	}
-
 	index := slices.IndexFunc(inputs, func(input Input) bool { return input.Name == "resweepInterval" })
 	if index < 0 {
 		t.Fatal("resweepInterval is missing from backlog-query input schema")
@@ -42,6 +30,52 @@ func TestBacklogQueryInputsDeclareCurrentAndRetiredSchema(t *testing.T) {
 	if retired.State != InputRetired || retired.Type != InputDuration ||
 		retired.RetiredSince != "2026-09-08" || !strings.Contains(retired.Replacement, "--claim --resweep") {
 		t.Fatalf("resweepInterval metadata = %+v", retired)
+	}
+}
+
+// TestBuiltInCommandsHaveInputSchemas is the structural completeness guard:
+// the workflow-callable built-in inventory drives the assertion, so adding a
+// command fails until its input contract is declared (even when currently
+// empty). Unknown external executables remain intentionally outside it.
+func TestBuiltInCommandsHaveInputSchemas(t *testing.T) {
+	for _, command := range builtincmd.Names() {
+		if _, ok := inputSchemas[command]; !ok {
+			t.Errorf("workflow-callable built-in %q has no declared input schema", command)
+		}
+	}
+	for command := range inputSchemas {
+		if !builtincmd.Known(command) {
+			t.Errorf("input schema %q has no workflow-callable built-in command", command)
+		}
+	}
+}
+
+func TestProviderInputSchemasAreWellFormed(t *testing.T) {
+	for command := range inputSchemas {
+		for _, version := range []string{"2.0", "3.0"} {
+			seen := map[string]bool{}
+			for _, input := range InputsForVersion(command, version) {
+				if strings.TrimSpace(input.Name) == "" || input.Type == "" {
+					t.Errorf("%s at DSL %s has incomplete input metadata: %+v", command, version, input)
+				}
+				if seen[input.Name] {
+					t.Errorf("%s at DSL %s declares input %q more than once", command, version, input.Name)
+				}
+				seen[input.Name] = true
+				switch input.State {
+				case InputCurrent:
+					if input.RetiredSince != "" || input.Replacement != "" {
+						t.Errorf("current input %s/%s carries retirement metadata", command, input.Name)
+					}
+				case InputRetired:
+					if strings.TrimSpace(input.RetiredSince) == "" || strings.TrimSpace(input.Replacement) == "" {
+						t.Errorf("retired input %s/%s lacks actionable metadata", command, input.Name)
+					}
+				default:
+					t.Errorf("input %s/%s has invalid state %q", command, input.Name, input.State)
+				}
+			}
+		}
 	}
 }
 
