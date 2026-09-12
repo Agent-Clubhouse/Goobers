@@ -239,7 +239,7 @@ func TestListStatusRunsProjectsTerminalOperatorSummary(t *testing.T) {
 				got.Liveness != "terminal" {
 				t.Fatalf("liveness = %+v", got)
 			}
-			if got.Trajectory != "parked" || got.NextTransition != "" ||
+			if got.Trajectory != "terminal" || got.NextTransition != "" ||
 				got.Claim.ProviderMarker != "recorded" {
 				t.Fatalf("terminal projection = %+v", got)
 			}
@@ -269,8 +269,8 @@ func TestOperatorTrajectory(t *testing.T) {
 			t.Errorf("operatorTrajectory(%q) = %q, want %q", stage, got, want)
 		}
 	}
-	if got := operatorTrajectory("implementation", journal.PhaseCompleted); got != "parked" {
-		t.Fatalf("terminal trajectory = %q, want parked", got)
+	if got := operatorTrajectory("implementation", journal.PhaseCompleted); got != "terminal" {
+		t.Fatalf("terminal trajectory = %q, want terminal", got)
 	}
 }
 

@@ -227,8 +227,8 @@ func TestOperatorTrajectoryDefaultsActiveStagesToImplementing(t *testing.T) {
 			t.Errorf("OperatorTrajectory(%q, running) = %q, want implementing", stage, got)
 		}
 	}
-	if got := OperatorTrajectory("query-backlog", journal.PhaseCompleted); got != "parked" {
-		t.Fatalf("terminal trajectory = %q, want parked", got)
+	if got := OperatorTrajectory("query-backlog", journal.PhaseCompleted); got != "terminal" {
+		t.Fatalf("terminal trajectory = %q, want terminal", got)
 	}
 }
 

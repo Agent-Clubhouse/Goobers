@@ -911,7 +911,7 @@ func declaredNodeParents(runID string, nodes []NodeRow, graph *workflow.Graph) [
 // OperatorTrajectory classifies a run's current stage for operator-facing status.
 func OperatorTrajectory(stage string, phase journal.RunPhase) string {
 	if phase != journal.PhaseRunning {
-		return "parked"
+		return "terminal"
 	}
 	stage = strings.ToLower(stage)
 	switch {

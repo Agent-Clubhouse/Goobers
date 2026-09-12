@@ -244,7 +244,7 @@ func newWireFixtures() wireFixtures {
 			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status"},
 			CurrentStage:      "review",
 			Liveness:          "terminal",
-			Trajectory:        "parked",
+			Trajectory:        "terminal",
 			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
 			NextTransition:    "",
 			PotentialBlockers: []string{},
