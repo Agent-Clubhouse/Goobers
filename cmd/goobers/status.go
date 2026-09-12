@@ -938,8 +938,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	warnings := report.CLIWarnings()
-	textWorkflows, hiddenManualWorkflows := statusTextWorkflows(set.Workflows, showAllWorkflows, *workflowFilter)
-	textWarnings := statusTextWarnings(warnings, set.Workflows, hiddenManualWorkflows, showAllWorkflows, *workflowFilter)
+	showManualWorkflowDetails := !supportsWatch || showAllWorkflows
+	textWorkflows, hiddenManualWorkflows := statusTextWorkflows(set.Workflows, showManualWorkflowDetails, *workflowFilter)
+	textWarnings := statusTextWarnings(warnings, set.Workflows, hiddenManualWorkflows, showManualWorkflowDetails, *workflowFilter)
 	sources := readservice.LocalSources{
 		Layout:      l,
 		Config:      cfg,

@@ -193,6 +193,16 @@ func TestStatusCollapsesManualOnlyWorkflows(t *testing.T) {
 	if !strings.Contains(selected, "manual-probe-07") || strings.Contains(selected, "workflow \"manual-probe-06\" has no schedule trigger") {
 		t.Fatalf("status --workflow did not expose only the selected manual warning:\n%s", selected)
 	}
+
+	code, runsList, stderr := runArgs(t, "runs", "list", root)
+	if code != 0 {
+		t.Fatalf("runs list: code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(runsList, "workflow \"manual-probe-00\" has no schedule trigger") ||
+		!strings.Contains(runsList, "workflow \"manual-probe-11\" has no schedule trigger") ||
+		strings.Contains(runsList, "use --all") {
+		t.Fatalf("runs list no longer preserves exhaustive warning output:\n%s", runsList)
+	}
 }
 
 func TestStatusReportsTimeToFirstPRFromJournal(t *testing.T) {
