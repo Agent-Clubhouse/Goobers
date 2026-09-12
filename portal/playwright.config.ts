@@ -2,11 +2,13 @@ import { defineConfig, devices } from "@playwright/test";
 
 const fixturePort = process.env.PORTAL_E2E_PORT ?? "4173";
 const realPort = process.env.PORTAL_E2E_REAL_PORT ?? "4174";
+const controlPort = process.env.PORTAL_E2E_CONTROL_PORT ?? "4175";
 const fixtureBaseURL = `http://127.0.0.1:${fixturePort}`;
 const realBaseURL = `http://127.0.0.1:${realPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
+  globalTeardown: "./e2e/real-daemon-teardown.mjs",
   outputDir: "./node_modules/.cache/playwright-results",
   fullyParallel: true,
   timeout: 20_000,
@@ -33,10 +35,11 @@ export default defineConfig({
     },
     {
       command: "node e2e/real-daemon.mjs",
-      env: { PORTAL_E2E_REAL_PORT: realPort },
+      env: { PORTAL_E2E_CONTROL_PORT: controlPort, PORTAL_E2E_REAL_PORT: realPort },
       url: realBaseURL,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 180_000,
+      gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },
     },
   ],
 });
