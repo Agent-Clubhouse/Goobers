@@ -380,6 +380,9 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
+      - name: Validate lint timeout margin
+        run: go test ./test/ci -run ^TestLintTimeoutHasMeasuredMargin$ -count=1
+
       - name: Set up golangci-lint
         uses: ./.github/actions/setup-golangci-lint
         timeout-minutes: 8
