@@ -1453,6 +1453,7 @@ func reportTelemetryRetentionPolicy(l instance.Layout, now time.Time, stdout io.
 	if err != nil || !ok {
 		return
 	}
+	state, _ = normalizeRetentionGraceState(state, now)
 	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
 	cutoff := ""
 	if !state.OldestRetainedAt.IsZero() {
@@ -1489,6 +1490,7 @@ func reportWorktreeRetentionPolicy(l instance.Layout, now time.Time, stdout io.W
 	if err != nil || !ok {
 		return
 	}
+	state, _ = normalizeRetentionGraceState(state, now)
 	lastPassAgo := now.Sub(state.LastPassAt).Truncate(time.Second)
 	switch {
 	case state.LastPassDryRun && !state.EnforceAt.IsZero():

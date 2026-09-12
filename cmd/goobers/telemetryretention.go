@@ -17,15 +17,8 @@ import (
 
 const telemetryRetentionSweepInterval = 6 * time.Hour
 
-// telemetryRetentionGraceWindow is #3056/#4253's "safe first-enable"
-// duration: the first time an instance's existing run telemetry is found to
-// already exceed the (now opt-out by default) retention policy, pruning
-// stays a dry run — reporting exactly what would be deleted, deleting
-// nothing — for this long before real enforcement begins.
-const telemetryRetentionGraceWindow = 7 * 24 * time.Hour
-
 // telemetryRetentionLargeFirstEnforceFraction is #4824's second safety net,
-// on top of the timed grace window above: even after the grace window has
+// on top of the shared timed grace window: even after the grace window has
 // elapsed, a FIRST real enforcement pass that would prune more than this
 // fraction of an instance's current run history stays dry-run instead of
 // proceeding automatically. The timed window alone is fine for a handful of
@@ -58,35 +51,7 @@ const telemetryRetentionStateSchema = "goobers.dev/telemetry-retention-state/v1"
 // itself reads it to decide whether a grace window is already running (and,
 // if so, whether it has elapsed) rather than re-deciding from scratch on
 // every restart.
-type telemetryRetentionState struct {
-	Schema string `json:"schema"`
-	// DetectedAt/EnforceAt are zero until the first pass that actually finds
-	// data exceeding policy starts the grace window; EnforceAt is when real
-	// deletion begins (DetectedAt + telemetryRetentionGraceWindow).
-	DetectedAt     time.Time `json:"detectedAt,omitempty"`
-	EnforceAt      time.Time `json:"enforceAt,omitempty"`
-	LastPassAt     time.Time `json:"lastPassAt"`
-	LastPassDryRun bool      `json:"lastPassDryRun"`
-	CandidateCount int       `json:"candidateCount"`
-	PrunedCount    int       `json:"prunedCount"`
-	// TotalRuns/OldestRetainedAt are the last pass's full picture (#4824):
-	// how many runs exist in total, and how far back history would actually
-	// reach if the policy enforced right now — `goobers status` reads these
-	// to print the effective cutoff age, not only a raw candidate count.
-	TotalRuns        int       `json:"totalRuns,omitempty"`
-	OldestRetainedAt time.Time `json:"oldestRetainedAt,omitempty"`
-	// EnforceAcknowledged records that a real enforcement pass has actually
-	// run for this instance at least once. Until it has, a pass that would
-	// prune more than telemetryRetentionLargeFirstEnforceFraction of current
-	// history stays dry-run regardless of whether the timed grace window has
-	// elapsed — see that constant's doc comment.
-	EnforceAcknowledged bool `json:"enforceAcknowledged,omitempty"`
-	// LargeFirstEnforceBlocked reports that the pass just recorded was held
-	// dry specifically by the large-first-enforcement gate (as opposed to
-	// the ordinary timed grace window) — status uses this to explain why
-	// enforcement has not started even though EnforceAt is already past.
-	LargeFirstEnforceBlocked bool `json:"largeFirstEnforceBlocked,omitempty"`
-}
+type telemetryRetentionState = retentionGraceState
 
 func telemetryRetentionStatePath(layout instance.Layout) string {
 	return filepath.Join(layout.SchedulerDir(), telemetryRetentionStateFile)
@@ -122,6 +87,14 @@ func writeTelemetryRetentionState(layout instance.Layout, state telemetryRetenti
 		return fmt.Errorf("telemetry retention: write state: %w", err)
 	}
 	return nil
+}
+
+// telemetryRetentionPassIsDryRun is the telemetry policy's named adapter to
+// the shared first-enable decision. Keeping the adapter makes it possible to
+// prove both deletion paths stay equivalent without maintaining two copies of
+// the decision itself.
+func telemetryRetentionPassIsDryRun(state telemetryRetentionState, immediate bool, now time.Time) bool {
+	return retentionPassIsDryRun(state, immediate, now)
 }
 
 func pruneTelemetryRetention(
@@ -184,8 +157,8 @@ func pruneConfiguredTelemetryRetention(
 	if err != nil {
 		return nil, false, err
 	}
+	state, _ = normalizeRetentionGraceState(state, now)
 	immediate := config.ImmediateFirstEnable()
-	withinGrace := !state.EnforceAt.IsZero() && now.Before(state.EnforceAt)
 	// A grace window that has never started (EnforceAt still zero) also runs
 	// dry — this is the probe pass that decides whether a window needs to
 	// start at all. This must key off EnforceAt, not "does a state file
@@ -197,7 +170,7 @@ func pruneConfiguredTelemetryRetention(
 	// period. An instance with nothing yet to prune stays harmlessly dry-run
 	// forever (there is nothing a real pass would do differently), only
 	// actually starting the window the first time it finds real candidates.
-	dryRun = !immediate && (withinGrace || state.EnforceAt.IsZero())
+	dryRun = telemetryRetentionPassIsDryRun(state, immediate, now)
 
 	// #4824's second safety net: even once the timed grace window has fully
 	// elapsed, a pass that has never actually enforced for real on this
@@ -230,7 +203,7 @@ func pruneConfiguredTelemetryRetention(
 
 	if dryRun && !immediate && state.EnforceAt.IsZero() && len(results) > 0 {
 		state.DetectedAt = now
-		state.EnforceAt = now.Add(telemetryRetentionGraceWindow)
+		state.EnforceAt = now.Add(retentionGraceWindow)
 	}
 	state.LastPassAt = now
 	state.LastPassDryRun = dryRun

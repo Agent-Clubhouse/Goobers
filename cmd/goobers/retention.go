@@ -161,6 +161,10 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 		return err
 	}
 	now := retentionNow()
+	state, repaired := normalizeRetentionGraceState(state, now)
+	if repaired {
+		pf(stderr, "warning: corrected invalid worktree retention grace state; enforcement deferred until %s\n", state.EnforceAt.UTC().Format(time.RFC3339))
+	}
 	dryRun := cfg.DryRun || retentionPassIsDryRun(state, cfg.ImmediateFirstEnable(), now)
 
 	managers, runsByRoot, err := retentionManagers(l, setup)

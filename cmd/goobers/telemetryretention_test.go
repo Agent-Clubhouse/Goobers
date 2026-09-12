@@ -115,7 +115,7 @@ func TestConfiguredTelemetryRetentionOptOutStartsGraceWindowThenEnforces(t *test
 	}
 
 	// After the grace window elapses, enforcement begins for real.
-	afterGrace := now.Add(telemetryRetentionGraceWindow + time.Hour)
+	afterGrace := now.Add(retentionGraceWindow + time.Hour)
 	results, dryRun, err = pruneConfiguredTelemetryRetention(instanceLayout, config, db, afterGrace)
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +167,39 @@ func TestConfiguredTelemetryRetentionNoCandidatesNeverStartsGraceWindow(t *testi
 	}
 	if !state.EnforceAt.IsZero() {
 		t.Fatalf("state.EnforceAt = %s, want zero — no grace window should start with nothing to prune", state.EnforceAt)
+	}
+}
+
+func TestConfiguredTelemetryRetentionPersistsConservativeClockRepair(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	db, err := rollup.Open(layout.TelemetryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	state := telemetryRetentionState{
+		DetectedAt: now.Add(time.Hour),
+		EnforceAt:  now.Add(time.Hour).Add(retentionGraceWindow),
+		TotalRuns:  9,
+	}
+	if err := writeTelemetryRetentionState(layout, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, dryRun, err := pruneConfiguredTelemetryRetention(layout, instance.TelemetryRetentionConfig{Window: "24h", MaxRuns: 500}, db, now); err != nil {
+		t.Fatal(err)
+	} else if !dryRun {
+		t.Fatal("future-dated grace state allowed telemetry deletion")
+	}
+
+	got, ok, err := readTelemetryRetentionState(layout)
+	if err != nil || !ok {
+		t.Fatalf("read repaired state: ok=%v err=%v", ok, err)
+	}
+	if !got.DetectedAt.Equal(now) || !got.EnforceAt.Equal(now.Add(retentionGraceWindow)) {
+		t.Fatalf("persisted repair = (%s, %s), want fresh window from %s", got.DetectedAt, got.EnforceAt, now)
 	}
 }
 
@@ -381,7 +414,7 @@ func TestConfiguredTelemetryRetentionLargeFirstEnforcementRequiresAcknowledgemen
 	// After the grace window elapses, an ordinary pass would enforce for
 	// real — but pruning 9 of 10 runs exceeds the large-first-enforcement
 	// fraction, so this must stay dry instead.
-	afterGrace := now.Add(telemetryRetentionGraceWindow + time.Hour)
+	afterGrace := now.Add(retentionGraceWindow + time.Hour)
 	results, dryRun, err := pruneConfiguredTelemetryRetention(instanceLayout, config, db, afterGrace)
 	if err != nil {
 		t.Fatal(err)
@@ -601,7 +634,7 @@ func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
 
 	graceState := telemetryRetentionState{
 		DetectedAt:       now.Add(-time.Hour),
-		EnforceAt:        now.Add(6 * 24 * time.Hour),
+		EnforceAt:        now.Add(-time.Hour).Add(retentionGraceWindow),
 		LastPassAt:       now.Add(-time.Minute),
 		LastPassDryRun:   true,
 		CandidateCount:   3,
@@ -622,6 +655,7 @@ func TestReportTelemetryRetentionPolicySurfacesStatus(t *testing.T) {
 
 	// #4824: enforcement held pending explicit operator acknowledgement.
 	blockedState := telemetryRetentionState{
+		DetectedAt:               now.Add(-retentionGraceWindow - time.Hour),
 		EnforceAt:                now.Add(-time.Hour),
 		LastPassAt:               now.Add(-time.Minute),
 		LastPassDryRun:           true,

@@ -23,9 +23,9 @@ const retentionGraceWindow = 7 * 24 * time.Hour
 // deleting the file restarts grace detection from the next pass, exactly as on
 // a fresh instance.
 //
-// The shape mirrors telemetryRetentionState deliberately. That one predates
-// this file and still carries its own copy; this is the reusable form, and the
-// telemetry side can adopt it without a behavior change.
+// Both worktree and telemetry retention persist this common shape. The final
+// fields are telemetry-only status details; omitempty keeps them out of the
+// worktree state document.
 type retentionGraceState struct {
 	Schema string `json:"schema"`
 	// DetectedAt/EnforceAt stay zero until the first pass that actually finds
@@ -37,6 +37,33 @@ type retentionGraceState struct {
 	LastPassDryRun bool      `json:"lastPassDryRun"`
 	CandidateCount int       `json:"candidateCount"`
 	PrunedCount    int       `json:"prunedCount"`
+	// TotalRuns/OldestRetainedAt are telemetry retention's last-pass view,
+	// used to report the effective history cutoff rather than only a count.
+	TotalRuns        int       `json:"totalRuns,omitempty"`
+	OldestRetainedAt time.Time `json:"oldestRetainedAt,omitempty"`
+	// EnforceAcknowledged and LargeFirstEnforceBlocked belong to telemetry's
+	// additional large-first-enforcement safety gate.
+	EnforceAcknowledged      bool `json:"enforceAcknowledged,omitempty"`
+	LargeFirstEnforceBlocked bool `json:"largeFirstEnforceBlocked,omitempty"`
+}
+
+// normalizeRetentionGraceState rejects clocks that cannot have been produced
+// by recordRetentionPass. Resetting the window from now is the conservative
+// repair: malformed or future state can delay deletion, but can never make it
+// happen earlier than a fresh first-enable grace window.
+func normalizeRetentionGraceState(state retentionGraceState, now time.Time) (retentionGraceState, bool) {
+	detectedMissing := state.DetectedAt.IsZero()
+	enforceMissing := state.EnforceAt.IsZero()
+	valid := detectedMissing == enforceMissing
+	if !detectedMissing {
+		valid = valid && !state.DetectedAt.After(now) && state.EnforceAt.Equal(state.DetectedAt.Add(retentionGraceWindow))
+	}
+	if valid {
+		return state, false
+	}
+	state.DetectedAt = now
+	state.EnforceAt = now.Add(retentionGraceWindow)
+	return state, true
 }
 
 func retentionGraceStatePath(layout instance.Layout, file string) string {

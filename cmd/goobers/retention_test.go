@@ -136,6 +136,37 @@ func TestPruneConfiguredRetentionDefaultsOnAndHoldsAGraceWindow(t *testing.T) {
 	}
 }
 
+func TestPruneConfiguredRetentionPersistsConservativeClockRepair(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	state := retentionGraceState{
+		DetectedAt: now.Add(time.Hour),
+		EnforceAt:  now.Add(time.Hour).Add(retentionGraceWindow),
+	}
+	if err := writeRetentionGraceState(layout, worktreeRetentionStateFile, worktreeRetentionStateSchema, state); err != nil {
+		t.Fatal(err)
+	}
+	restore := retentionNow
+	retentionNow = func() time.Time { return now }
+	t.Cleanup(func() { retentionNow = restore })
+
+	var stdout, stderr bytes.Buffer
+	setup := &schedulerSetup{Config: &instance.Config{}}
+	if err := pruneConfiguredRetention(context.Background(), layout, setup, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "corrected invalid worktree retention grace state") {
+		t.Fatalf("repair emitted no operator warning: %q", stderr.String())
+	}
+	got, ok, err := readRetentionGraceState(layout, worktreeRetentionStateFile)
+	if err != nil || !ok {
+		t.Fatalf("read repaired state: ok=%v err=%v", ok, err)
+	}
+	if !got.DetectedAt.Equal(now) || !got.EnforceAt.Equal(now.Add(retentionGraceWindow)) {
+		t.Fatalf("persisted repair = (%s, %s), want fresh window from %s", got.DetectedAt, got.EnforceAt, now)
+	}
+}
+
 // TestPruneConfiguredRetentionExplicitOptOutDoesNothing keeps the escape hatch
 // honest: #4253 flipped the default, it did not remove the ability to say no.
 func TestPruneConfiguredRetentionExplicitOptOutDoesNothing(t *testing.T) {
@@ -470,7 +501,8 @@ func TestReportWorktreeRetentionPolicySurfacesTheGraceWindow(t *testing.T) {
 		t.Fatalf("reported with no state: %q", stdout.String())
 	}
 
-	enforceAt := now.Add(48 * time.Hour)
+	detectedAt := now.Add(-time.Hour)
+	enforceAt := detectedAt.Add(retentionGraceWindow)
 	write := func(state retentionGraceState) {
 		t.Helper()
 		if err := writeRetentionGraceState(layout, worktreeRetentionStateFile, worktreeRetentionStateSchema, state); err != nil {
@@ -478,7 +510,7 @@ func TestReportWorktreeRetentionPolicySurfacesTheGraceWindow(t *testing.T) {
 		}
 	}
 
-	write(retentionGraceState{LastPassAt: now.Add(-time.Minute), LastPassDryRun: true, EnforceAt: enforceAt, CandidateCount: 3})
+	write(retentionGraceState{DetectedAt: detectedAt, LastPassAt: now.Add(-time.Minute), LastPassDryRun: true, EnforceAt: enforceAt, CandidateCount: 3})
 	stdout.Reset()
 	reportWorktreeRetentionPolicy(layout, now, &stdout)
 	got := stdout.String()
