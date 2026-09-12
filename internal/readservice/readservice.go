@@ -75,6 +75,7 @@ type Health struct {
 	Instance         InstanceIdentity        `json:"instance"`
 	Freshness        Freshness               `json:"freshness"`
 	DefinitionReload *DefinitionReloadStatus `json:"definitionReload,omitempty"`
+	Startup          *StartupStatus          `json:"startup,omitempty"`
 	// Update reports whether a newer release exists, so the portal can surface
 	// what #4903 gave only terminal users. Nil means no check has run yet (a
 	// daemon that just started, or one with updateCheck.enabled: false) —
@@ -178,6 +179,7 @@ type Local struct {
 	now              func() time.Time
 	definitions      atomic.Pointer[definitionSnapshot]
 	definitionReload atomic.Pointer[DefinitionReloadStatus]
+	startupStatus    func() *StartupStatus
 
 	// activeSampler, when non-nil, serves active-run counts from a background
 	// sample. Projected services sample read.db; services without a projection
@@ -388,6 +390,7 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 	return Health{
 		Update:           s.updateAvailability(),
 		DefinitionReload: s.definitionReloadSnapshot(),
+		Startup:          s.startupStatusSnapshot(),
 		APIVersion:       APIVersion,
 		SchemaVersion:    SchemaVersion,
 		Build: BuildMetadata{

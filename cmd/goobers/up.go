@@ -713,6 +713,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 1
 	}
+	reads.AttachStartupStatus(func() *readservice.StartupStatus {
+		if ready.Load() {
+			return nil
+		}
+		phase, target, since := tracker.snapshot()
+		if phase == "" {
+			return nil
+		}
+		return &readservice.StartupStatus{
+			Phase:  phase,
+			Target: target,
+			Since:  since,
+		}
+	})
 	attachFreshnessSignals(reads, setup)
 	if *disableReadModelReads {
 		// The design §6.6 rollback, made operator-reachable (#2036):
@@ -951,6 +965,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	probes := &daemonProbeState{
 		apiListening:            &apiListening,
 		lastTriggerSweepAtNanos: &lastTriggerSweepAtNanos,
+		startup:                 tracker,
 		ready:                   &ready,
 		configLoaded:            &configLoaded,
 		stateOpen:               &stateOpen,
@@ -971,6 +986,42 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
+	var webhookServer *httpapi.Server
+	if err := runStartupPhase(stdout, tracker, "api-bind", apiListenAddress(setup.Config), apiServer.Start); err != nil {
+		pf(stderr, "error: start HTTP API: %v\n", err)
+		return 1
+	}
+	apiListening.Store(true)
+	defer apiListening.Store(false)
+	if err := publishDaemonAPIAddress(apiAddressPath, apiServer.Address()); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	apiAddressPublished := true
+	defer func() {
+		if apiAddressPublished {
+			if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
+				pf(stderr, "error: %v\n", err)
+			}
+		}
+	}()
+	apiStopped := false
+	defer func() {
+		if apiStopped {
+			return
+		}
+		stopDaemon()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+		defer shutdownCancel()
+		if err := apiServer.Shutdown(shutdownCtx); err != nil {
+			pf(stderr, "error: %v\n", err)
+		}
+		if webhookServer != nil {
+			if err := webhookServer.Shutdown(shutdownCtx); err != nil {
+				pf(stderr, "error: shut down webhook listener: %v\n", err)
+			}
+		}
+	}()
 	// Rebuild the claim-renewal set from the LEDGER plus run liveness before
 	// any reap is permitted — DS6's load-bearing ordering
 	// (distributed-state-and-coordination.md §10): this process's in-memory
@@ -1168,7 +1219,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// for them. Admission is still validated against the request context.
 	triggerPlane.AttachDispatchContext(ctx)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
-	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
+	webhookServer, err = buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
 		return daemonStartupFailure(ctx, err, func() {
 			pf(stderr, "error: %v\n", err)
@@ -1231,38 +1282,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	cancelPlane.AttachRelease(sched.ReleaseRun)
 
-	if err := runStartupPhase(stdout, tracker, "api-bind", apiListenAddress(setup.Config), apiServer.Start); err != nil {
-		pf(stderr, "error: start HTTP API: %v\n", err)
-		return 1
-	}
-	apiListening.Store(true)
-	defer apiListening.Store(false)
 	if webhookServer != nil {
 		if err := runStartupPhase(stdout, tracker, "webhook-listener-start", webhookServer.Address(), webhookServer.Start); err != nil {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-			_ = apiServer.Shutdown(shutdownCtx)
-			shutdownCancel()
 			pf(stderr, "error: start webhook listener: %v\n", err)
 			return 1
 		}
 	}
-	apiStopped := false
-	defer func() {
-		if apiStopped {
-			return
-		}
-		stopDaemon()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-		defer shutdownCancel()
-		if err := apiServer.Shutdown(shutdownCtx); err != nil {
-			pf(stderr, "error: %v\n", err)
-		}
-		if webhookServer != nil {
-			if err := webhookServer.Shutdown(shutdownCtx); err != nil {
-				pf(stderr, "error: shut down webhook listener: %v\n", err)
-			}
-		}
-	}()
 
 	openPRs := newOpenPRLoop(ctx, setup.OpenPRRefresher)
 	defer openPRs.Stop()
@@ -1705,7 +1730,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		go func() { configDone <- reloader.Run(ctx) }()
 	}
 
-	if err := prepareDaemonReadiness(ctx, reads, apiAddressPath, apiServer.Address(), stdout); err != nil {
+	if err := prepareDaemonReadiness(ctx, reads, tracker, stdout); err != nil {
 		// A signal before readiness is still a clean daemon shutdown. The same
 		// cancellation after readiness already exits 0 below; preserve that
 		// documented contract across the startup boundary (#4875).
@@ -1713,15 +1738,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: %v\n", err)
 		})
 	}
-	apiAddressPublished := true
-	defer func() {
-		if apiAddressPublished {
-			if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
-				pf(stderr, "error: %v\n", err)
-			}
-		}
-	}()
-
 	fleetConnectorDone, fleetConnectorStarted, fleetConnectorErr := startDaemonFleetConnector(ctx, root)
 	if fleetConnectorErr != nil {
 		pf(stdout, "warning: Fleet connector unavailable: %v\n", fleetConnectorErr)

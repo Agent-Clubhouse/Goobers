@@ -36,6 +36,7 @@ type daemonProbeState struct {
 	schedulerTicked         *atomic.Bool
 	lastTickAtNanos         *atomic.Int64 // unix nanoseconds; 0 = no tick recorded yet
 	lastTriggerSweepAtNanos *atomic.Int64
+	startup                 *startupPhaseTracker
 	livenessTimeout         time.Duration
 	now                     func() time.Time
 }
@@ -64,7 +65,7 @@ func (d *daemonProbeState) liveness() bool {
 
 // readiness implements httpapi.ReadinessCheck.
 func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
-	return httpapi.ReadinessStatus{
+	status := httpapi.ReadinessStatus{
 		// The single Ready gate every authenticated caller already sees on
 		// /api/v1/health.Ready — never recomputed from Checks below, so the
 		// two surfaces cannot drift out of lockstep. Startup also waits for
@@ -87,6 +88,16 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 			"sweepsStarted":  d.sweepsStarted.Load(),
 		},
 	}
+	if !status.Ready && d.startup != nil {
+		phase, _, since := d.startup.snapshot()
+		if phase != "" {
+			status.Startup = &httpapi.StartupStatus{
+				Phase: phase,
+				Since: since,
+			}
+		}
+	}
+	return status
 }
 
 // A listener or startup liveness grace is not proof that a scheduler can
