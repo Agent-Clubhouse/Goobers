@@ -66,7 +66,7 @@ func TestDSL3TerminalRunsHaveClosedDispositionAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open SQL verifier: %v", err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { _ = db.Close() })
 	for disposition, want := range map[string]int{
 		readmodel.DispositionUnknown:  0,
 		readmodel.DispositionProduced: 1,
