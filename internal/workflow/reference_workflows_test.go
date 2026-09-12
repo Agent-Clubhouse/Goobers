@@ -89,6 +89,26 @@ func TestReferenceWorkflowsREADMEInventoryAndMergePosture(t *testing.T) {
 	if !strings.Contains(string(acceptanceRaw), validationOutput) {
 		t.Errorf("docs/V0-ACCEPTANCE.md validation sample does not match loaded definitions; want %q", validationOutput)
 	}
+	acceptanceSummary := fmt.Sprintf("today loads **%d goobers and %d workflows**", len(roles), len(workflows))
+	if !strings.Contains(string(acceptanceRaw), acceptanceSummary) {
+		t.Errorf("docs/V0-ACCEPTANCE.md summary does not match loaded definitions; want %q", acceptanceSummary)
+	}
+
+	// Architecture states the current count but delegates the detailed roster
+	// to the checked inventory. Pin both facts so neither can drift silently.
+	architectureRaw, err := os.ReadFile(filepath.Join("..", "..", "docs", "ARCHITECTURE.md"))
+	if err != nil {
+		t.Fatalf("read architecture: %v", err)
+	}
+	for _, want := range []string{"reference-workflows/README.md", "is the count and roster of record"} {
+		if !strings.Contains(string(architectureRaw), want) {
+			t.Errorf("docs/ARCHITECTURE.md omits checked inventory ownership %q", want)
+		}
+	}
+	architectureSummary := fmt.Sprintf("currently loads **%d goobers and %d workflows**", len(roles), len(workflows))
+	if !strings.Contains(string(architectureRaw), architectureSummary) {
+		t.Errorf("docs/ARCHITECTURE.md summary does not match loaded definitions; want %q", architectureSummary)
+	}
 	for _, role := range roles {
 		if !strings.Contains(readme, "`"+role+"`") {
 			t.Errorf("README inventory omits goober role %q", role)

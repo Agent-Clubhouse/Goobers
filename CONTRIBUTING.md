@@ -197,18 +197,28 @@ inherits the daemon environment. This contract does not make stage execution
 hermetic. For another repository, configure its real non-interactive merge-gate
 command instead. **CI:** each validation job maps to the same contract:
 
+<!-- ci-required-jobs:start -->
+
 | GitHub Actions job | Tier correspondence |
 |---|---|
-| `checks` | `make ci` (`go run ./test/ci` is its portable implementation) |
+| `preflight (lint · format · policy · vet · build)` | Fast source, policy, vet, build, and configuration admission gate |
+| `dead-code analysis` | Reachability checks for Go and portal production code |
+| `checks` | Portal, canvas-extension, generated-contract, and manifest slice of `make ci` |
+| `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
+| `lint (${{ matrix.goos }})` | `golangci-lint` across Linux, macOS, and Windows |
 | `darwin gate (build · vet)` | The macOS build + `go vet` slice of `verify-fast` |
 | `windows gate (build · vet · runtime smoke)` | The Windows `go vet` + build slice of `verify-fast`, plus a runtime smoke |
 | `Go vulnerability scan` | Standalone `make vulncheck` gate for reachable standard-library and dependency vulnerabilities |
-| `make ci` aggregate | Required status for the merge tier, Windows compile slice, and vulnerability scan; it runs no additional validation |
-| `unit` | Standalone `make ci` gate |
+| `unit race shard ${{ matrix.shard }} (linux)` | Hermetic whole-tree unit suite split into Linux race shards |
+| `unit coverage gate (linux)` | Whole-tree Go coverage profile and threshold gate |
 | `unit behavioral suite (macos)` | Whole-tree behavioural suite, plus the `make cover-gate` coverage-threshold gate against the profile that run produces |
+| `shipped workflow contracts (${{ matrix.os }})` | Shipped workflow contract suite on Linux, macOS, and Windows |
 | `declared-dependency integration` | Full-tier `make test-integration-strict` gate with every inventoried executable provisioned, plus the envtest control-plane gate (`KUBEBUILDER_ASSETS`) |
-| `sandbox confinement` | Full-tier `make sandbox-check` gate with native sandbox availability required |
-| `linux node validation` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
+| `sandbox confinement (${{ matrix.os }})` | Full-tier `make sandbox-check` gate with native sandbox availability required |
+| `linux node validation (#636/#639)` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
+| `make ci (fmt-check · vet · build · test · lint)` | Required aggregate status for all rows above; it runs no additional validation |
+
+<!-- ci-required-jobs:end -->
 
 The dedicated vulnerability, integration, sandbox, and Linux-node CI jobs invoke
 their corresponding Make targets. The vulnerability target also runs daily from
