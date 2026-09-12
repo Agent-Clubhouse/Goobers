@@ -214,11 +214,11 @@ command instead. **CI:** each validation job maps to the same contract:
 | `windows gate (build · vet · runtime smoke)` | The Windows `go vet` + build slice of `verify-fast`, plus a runtime smoke |
 | `Go vulnerability scan` | Standalone `make vulncheck` gate for reachable standard-library and dependency vulnerabilities |
 | `unit race shard ${{ matrix.shard }} (linux)` | Hermetic whole-tree unit suite split into Linux race shards |
-| `unit coverage gate (linux)` | Whole-tree Go coverage profile and threshold gate |
-| `unit behavioral suite (macos)` | Whole-tree behavioural suite, plus the `make cover-gate` coverage-threshold gate against the profile that run produces |
-| `shipped workflow contracts (${{ matrix.os }})` | Shipped workflow contract suite on Linux, macOS, and Windows |
+| `unit coverage gate (linux)` | Whole-tree Go coverage profile and threshold gate, plus the per-test timing ledger |
+| `macOS runtime (unit · shipped · sandbox)` | Whole-tree behavioural suite and shipped-workflow contracts, plus required native Seatbelt confinement on PRs, consolidated onto one macOS allocation |
+| `shipped workflow contracts (${{ matrix.os }})` | Shipped workflow contract suite on Linux and Windows; the macOS leg is consolidated above |
 | `declared-dependency integration` | Full-tier `make test-integration-strict` gate with every inventoried executable provisioned, plus the envtest control-plane gate (`KUBEBUILDER_ASSETS`) |
-| `sandbox confinement (${{ matrix.os }})` | Full-tier `make sandbox-check` gate with native sandbox availability required |
+| `sandbox confinement (ubuntu-latest)` | Full-tier `make sandbox-check` gate with native bubblewrap availability required; macOS Seatbelt is consolidated above |
 | `linux node validation (#636/#639)` | Full-tier `make linux-node-validation` platform acceptance gate for the shipped binary, daemon lifecycle, and Windows seams |
 | `make ci (fmt-check · vet · build · test · lint)` | Required aggregate status for all rows above; it runs no additional validation |
 
