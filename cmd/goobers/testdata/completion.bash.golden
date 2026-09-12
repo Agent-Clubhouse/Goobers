@@ -67,10 +67,10 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --instance --strict"
             ;;
         lint)
-            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
+            flags+=" --json --github-annotations --check-harness --check-repos --source-tree --instance --strict"
             ;;
         fix)
             flags+=" --to --instance-schema --write"

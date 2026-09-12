@@ -401,12 +401,13 @@ func assertQuickstartSourceValid(t *testing.T, root string) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("decode validation result: %v\n%s", err, stdout)
 	}
-	if !result.OK || len(result.Findings) != 2 {
+	if !result.OK || len(result.Findings) != 3 {
 		t.Fatalf("validation result = %s", stdout)
 	}
 	for _, finding := range result.Findings {
-		if finding.Code != placeholderFindingCode || finding.Severity != "warning" {
-			t.Fatalf("quickstart source has non-placeholder finding %+v", finding)
+		if (finding.Code != placeholderFindingCode || finding.Severity != "warning") &&
+			(finding.Code != sourceTreeAdvisoryCode || finding.Severity != diagnosticSeverityInfo) {
+			t.Fatalf("quickstart source has unexpected finding %+v", finding)
 		}
 	}
 }

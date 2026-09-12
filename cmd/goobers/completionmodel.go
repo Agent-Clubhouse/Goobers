@@ -175,6 +175,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Validate a checked-in config source tree"},
+		{name: "instance", takesArg: true, desc: "Real instance document for source-tree placement and capability solving"},
 		{name: "strict", desc: "Treat config warnings as validation errors"},
 	},
 	"lint": {
@@ -183,6 +184,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "check-harness", desc: "Verify referenced agent harnesses are installed and signed in"},
 		{name: "check-repos", desc: "Verify target repositories are reachable"},
 		{name: "source-tree", desc: "Lint a checked-in config source tree"},
+		{name: "instance", takesArg: true, desc: "Real instance document for source-tree placement and capability solving"},
 		{name: "strict", desc: "Treat config warnings as validation errors"},
 	},
 	"up": {

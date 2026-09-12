@@ -48,8 +48,8 @@ That source-only command solves placement and runner capabilities against the
 checked-in `instance.yaml.example`, so it prints that those findings are
 advisory. If CI has read-only access to the deployed instance document, invoke
 the CLI directly with `--source-tree --instance /path/to/instance.yaml` to make
-that solve authoritative; an unsatisfied declared runner inventory then fails
-the check instead of warning.
+that solve authoritative; an unsatisfied declared runner inventory or a missing
+legacy `runner.capabilities` claim then fails the check instead of warning.
 
 ## Allow expected warnings without hiding drift
 

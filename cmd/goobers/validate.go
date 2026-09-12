@@ -385,16 +385,14 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// validation below. --source-tree without --instance solves against
 	// instance.yaml.example, so its findings are advisory-only warnings by
 	// definition — see appendStaticRealityWarnings.
-	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, cfg, set, goobers, report,
-		(options.sourceTree && options.instancePath == "") || options.startupPreflight)
-	placementErrors := 0
-	for _, finding := range staticRealityWarnings {
-		diagnostics.add(finding.file, finding.path, string(finding.warning.Code),
-			string(finding.warning.Severity), finding.warning.Explanation)
-		pln(stdout, finding.warning.String())
-		if finding.warning.Severity == validate.Error {
-			placementErrors++
-		}
+	advisorySourceSolve := options.sourceTree && options.instancePath == ""
+	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, configFile, cfg, set, goobers, report,
+		advisorySourceSolve || options.startupPreflight,
+		options.sourceTree && options.instancePath != "")
+	placementErrors, capabilityErrors := emitStaticRealityFindings(stdout, diagnostics, staticRealityWarnings)
+	if capabilityErrors > 0 {
+		pf(stdout, "\nthe real instance cannot satisfy the configuration (%d capability error(s))\n", capabilityErrors)
+		return 1
 	}
 	if placementErrors > 0 {
 		pf(stdout, "\nthe declared runners: inventory cannot satisfy the configuration (%d placement error(s))\n", placementErrors)
@@ -511,6 +509,27 @@ func validateConfigPaths(options validateOptions, stdout io.Writer, diagnostics 
 	pf(stdout, "NOTE: %s\n", sourceTreeAdvisoryMessage)
 	diagnostics.add(diagnosticFile(options.root, configFile), "/", sourceTreeAdvisoryCode, diagnosticSeverityInfo, sourceTreeAdvisoryMessage)
 	return configFile, configDir
+}
+
+func emitStaticRealityFindings(
+	stdout io.Writer,
+	diagnostics *diagnosticCollector,
+	findings []realityWarning,
+) (placementErrors, capabilityErrors int) {
+	for _, finding := range findings {
+		diagnostics.add(finding.file, finding.path, string(finding.warning.Code),
+			string(finding.warning.Severity), finding.warning.Explanation)
+		pln(stdout, finding.warning.String())
+		if finding.warning.Severity != validate.Error {
+			continue
+		}
+		if finding.warning.Code == validate.WarningUnclaimedRunnerCapability {
+			capabilityErrors++
+		} else {
+			placementErrors++
+		}
+	}
+	return placementErrors, capabilityErrors
 }
 
 // isStrictNeutralWarning reports whether code is one of the warnings
