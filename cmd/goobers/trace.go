@@ -890,6 +890,10 @@ func historyDescription(record journal.AgentProgress) string {
 		return record.Summary
 	case record.Decision != "":
 		return record.Decision
+	case record.Blocker != "":
+		return record.Blocker
+	case record.Question != "":
+		return record.Question
 	case record.NextAction != "":
 		return record.NextAction
 	case len(record.Progress) > 0:

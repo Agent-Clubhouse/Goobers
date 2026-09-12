@@ -383,6 +383,76 @@ func TestTraceRendersAgentProgressAndHistory(t *testing.T) {
 	}
 }
 
+func TestTraceRendersBlockerAndQuestionHistoryText(t *testing.T) {
+	root := t.TempDir()
+	const runID = "trace-progress-history-text"
+	run := newTraceTestRun(t, root, runID)
+
+	for _, progress := range []journal.AgentProgress{
+		{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      runID,
+			Stage:      "implement",
+			Attempt:    1,
+			Sequence:   1,
+			Kind:       journal.AgentProgressBlocker,
+			Source:     journal.AgentProgressSourceModel,
+			Fidelity:   journal.AgentFidelityPartial,
+			OccurredAt: time.Now(),
+			Blocker:    "Waiting for provider access",
+		},
+		{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      runID,
+			Stage:      "implement",
+			Attempt:    1,
+			Sequence:   2,
+			Kind:       journal.AgentProgressQuestion,
+			Source:     journal.AgentProgressSourceModel,
+			Fidelity:   journal.AgentFidelityPartial,
+			OccurredAt: time.Now(),
+			Question:   "Should I retry once credentials are refreshed?",
+		},
+		{
+			Schema:     "goobers.dev/journal/agent-progress/v1",
+			AgentID:    "worker-1",
+			RunID:      runID,
+			Stage:      "implement",
+			Attempt:    1,
+			Sequence:   3,
+			Kind:       journal.AgentProgressNextAction,
+			Source:     journal.AgentProgressSourceModel,
+			Fidelity:   journal.AgentFidelityPartial,
+			OccurredAt: time.Now(),
+			NextAction: "Poll for refreshed credentials",
+		},
+	} {
+		progress := progress
+		if err := run.Append(journal.Event{Type: journal.EventAgentProgress, Progress: &progress}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "trace", runID, root)
+	if code != 0 {
+		t.Fatalf("trace: code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		"history (3 records):",
+		"[#2 blocker model] Waiting for provider access",
+		"[#3 question model] Should I retry once credentials are refreshed?",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("trace output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestTraceListsRecordedTranscripts(t *testing.T) {
 	root := t.TempDir()
 	const runID = "transcript-list"
