@@ -935,7 +935,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		all = fs.Bool("all", false, "show individual detail for manual-only workflows")
 	}
 	fs.Usage = helpUsage(stderr, command)
-	if err := fs.Parse(args); err != nil {
+	if !parseFlagsBeforePath(fs, args, stderr) {
 		return 2
 	}
 	showAllWorkflows := statusOptionalBool(all)
