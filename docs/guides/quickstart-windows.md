@@ -317,10 +317,15 @@ Press Ctrl+C or Ctrl+Break in the daemon console to request a graceful drain.
 The Windows validation uses Ctrl+Break against a dedicated console and
 requires a clean exit plus a `daemon.clean_shutdown` journal event.
 
-This foreground/manual lifecycle is the scope validated here. For unattended
-operation under the Service Control Manager, follow
-[Daemon supervision → Windows](supervision.md#windows-windows-service); Windows
-Service installation is a separate deployment concern.
+This foreground/manual lifecycle is the scope validated here. At the end of
+`goobers init --guided`, Windows users can choose the default-enabled option to
+install and start the per-user Scheduled Task supervisor. It runs at interactive
+sign-in as the current Windows account so user-scoped provider and harness
+credentials remain available.
+
+For unattended machine-wide operation under the Service Control Manager, follow
+[Daemon supervision → Windows](supervision.md#windows-windows-service). The SCM
+service runs as LocalSystem by default and is a separate deployment concern.
 
 ## Deltas from the macOS/Linux flow
 
