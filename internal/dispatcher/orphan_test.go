@@ -99,6 +99,7 @@ func TestSweepOrphansReclaimsTerminalPodsAcrossOwnersAndLeavesLiveOnes(t *testin
 	seedStagePod(t, mine, pods, "run-mine", "pod-mine")
 	seedStagePod(t, theirs, pods, "run-theirs-done", "pod-theirs-done")
 	seedStagePod(t, theirs, pods, "run-theirs-live", "pod-theirs-live")
+	seedStagePod(t, theirs, pods, "run-theirs-unknown", "pod-theirs-unknown")
 
 	d, err := New(mine, pods, nil, confirmGate{confirmed: true}, nil)
 	if err != nil {
@@ -108,6 +109,7 @@ func TestSweepOrphansReclaimsTerminalPodsAcrossOwnersAndLeavesLiveOnes(t *testin
 		"run-mine":        RunStateTerminal,
 		"run-theirs-done": RunStateTerminal,
 		"run-theirs-live": RunStateLive,
+		// run-theirs-unknown is absent and therefore indeterminate.
 	})
 	if err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
@@ -116,9 +118,28 @@ func TestSweepOrphansReclaimsTerminalPodsAcrossOwnersAndLeavesLiveOnes(t *testin
 		t.Fatalf("deleted %v, want terminal pods from both worker generations", deleted)
 	}
 	for _, name := range pods.deleted {
-		if name == "pod-theirs-live" {
-			t.Fatal("sweep deleted a foreign owner's live stage pod")
+		if name == "pod-theirs-live" || name == "pod-theirs-unknown" {
+			t.Fatalf("sweep deleted foreign owner's nonterminal stage pod %s", name)
 		}
+	}
+}
+
+func TestSweepOrphansDoesNotCrossInstanceBoundary(t *testing.T) {
+	pods := &fakePodAPI{}
+	mine := testConfig()
+	other := testConfig()
+	other.InstanceID = "fedcba9876543210fedcba9876543210"
+	seedStagePod(t, mine, pods, "run-mine", "pod-mine")
+	seedStagePod(t, other, pods, "run-other", "pod-other")
+	d, err := New(mine, pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := d.SweepOrphans(context.Background(), stateTable{
+		"run-mine": RunStateTerminal, "run-other": RunStateTerminal,
+	})
+	if err != nil || len(deleted) != 1 || deleted[0] != "pod-mine" {
+		t.Fatalf("deleted %v, %v; want only this instance's terminal pod", deleted, err)
 	}
 }
 
@@ -132,18 +153,32 @@ func TestSweepOrphansRequiresResolver(t *testing.T) {
 	}
 }
 
-func TestSweepOrphansDoesNotRequireCurrentOwnerLabel(t *testing.T) {
+func TestSweepOrphansReclaimsOwnerlessPodInItsInstance(t *testing.T) {
 	cfg := testConfig()
-	cfg.Owner = ""
 	pods := &fakePodAPI{}
-	seedStagePod(t, testConfig(), pods, "run-done", "pod-done")
+	ownerless := testConfig()
+	ownerless.Owner = ""
+	seedStagePod(t, ownerless, pods, "run-done", "pod-done")
 	d, err := New(cfg, pods, nil, confirmGate{confirmed: true}, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	deleted, err := d.SweepOrphans(context.Background(), stateTable{"run-done": RunStateTerminal})
 	if err != nil || len(deleted) != 1 || deleted[0] != "pod-done" {
-		t.Fatalf("ownerless replacement sweep = %v, %v", deleted, err)
+		t.Fatalf("ownerless pod sweep = %v, %v", deleted, err)
+	}
+}
+
+func TestSweepOrphansRequiresStableInstanceScope(t *testing.T) {
+	cfg := testConfig()
+	cfg.InstanceID = ""
+	d, err := New(cfg, &fakePodAPI{}, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.SweepOrphans(context.Background(), stateTable{})
+	if err == nil || !strings.Contains(err.Error(), "InstanceID") {
+		t.Fatalf("missing instance scope error = %v", err)
 	}
 }
 

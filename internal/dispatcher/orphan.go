@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -102,7 +103,11 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 	if runs == nil {
 		return nil, errors.New("dispatcher: orphan sweep requires a RunStates resolver")
 	}
-	pods, err := d.pods.ListPods(ctx, d.cfg.Namespace, sweepSelector())
+	if !instance.ValidIdentity(d.cfg.InstanceID) {
+		return nil, errors.New("dispatcher: orphan sweep requires Config.InstanceID to avoid crossing instance boundaries")
+	}
+	instanceID := d.cfg.InstanceID
+	pods, err := d.pods.ListPods(ctx, d.cfg.Namespace, sweepSelector(instanceID))
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: list labeled stage pods for orphan sweep: %w", err)
 	}
@@ -173,14 +178,16 @@ func podAttempt(pod *corev1.Pod) (PodAttempt, bool) {
 	}, true
 }
 
-// sweepSelector selects product-owned stage pods across worker generations.
-// LabelOwner is deliberately not included because worker pod names change on
-// rollout; RunStateTerminal is the deletion authorization.
-func sweepSelector() map[string]string {
+// sweepSelector selects product-owned stage pods for one durable instance
+// across worker generations. LabelOwner is deliberately not included because
+// worker pod names change on rollout; RunStateTerminal is the deletion
+// authorization inside the stable instance scope.
+func sweepSelector(instanceID string) map[string]string {
 	return map[string]string{
 		LabelManagedBy: ManagedByValue,
 		// The role label is the shared runnercap constant, so the sweep and
 		// the stamp cannot drift.
 		runnercap.LabelRole: runnercap.RoleStage,
+		LabelInstance:       instanceID,
 	}
 }
