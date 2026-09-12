@@ -22,10 +22,13 @@ var (
 // and recovery deadline. It is not proof that the referenced objects exist;
 // capture must verify durability before publishing it or authorizing cleanup.
 type Record struct {
-	Version       int       `json:"version"`
-	RunID         string    `json:"runId"`
-	RepositoryKey string    `json:"repositoryKey"`
-	Ref           string    `json:"ref"`
+	Version       int    `json:"version"`
+	RunID         string `json:"runId"`
+	RepositoryKey string `json:"repositoryKey"`
+	Ref           string `json:"ref"`
+	// BaseRef is the remote ref selected by the owning run. It is optional so
+	// version-1 records written before the field was introduced remain valid.
+	BaseRef       string    `json:"baseRef,omitempty"`
 	BaseSHA       string    `json:"baseSha"`
 	SnapshotSHA   string    `json:"snapshotSha"`
 	PatchDigest   string    `json:"patchDigest"`
@@ -82,6 +85,9 @@ func (r Record) validateSnapshot() error {
 	if !validRepositoryKey(r.RepositoryKey) {
 		return fmt.Errorf("invalid recovery repository identity")
 	}
+	if r.BaseRef != "" && !validRecoveryBaseRef(r.BaseRef) {
+		return fmt.Errorf("invalid recovery base ref")
+	}
 	if !gitObjectID.MatchString(r.BaseSHA) || !gitObjectID.MatchString(r.SnapshotSHA) || len(r.BaseSHA) != len(r.SnapshotSHA) {
 		return fmt.Errorf("invalid recovery Git object identity")
 	}
@@ -92,6 +98,30 @@ func (r Record) validateSnapshot() error {
 		return fmt.Errorf("recovery deadline must follow capture time")
 	}
 	return nil
+}
+
+func validRecoveryBaseRef(ref string) bool {
+	if gitObjectID.MatchString(ref) {
+		return true
+	}
+	if len(ref) > 4096 || !utf8.ValidString(ref) ||
+		(!strings.HasPrefix(ref, "refs/heads/") && !strings.HasPrefix(ref, "refs/tags/")) ||
+		strings.ContainsAny(ref, " ~^:?*[\\") || strings.Contains(ref, "..") ||
+		strings.Contains(ref, "@{") || strings.Contains(ref, "//") ||
+		strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") {
+		return false
+	}
+	for _, r := range ref {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	for _, part := range strings.Split(ref, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	return true
 }
 
 func validRepositoryKey(key string) bool {

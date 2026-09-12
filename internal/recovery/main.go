@@ -10,17 +10,20 @@ import (
 	"time"
 )
 
-// FetchCurrentMain resolves main by fetching the caller-verified repository
+// FetchCurrentBase resolves baseRef by fetching the caller-verified repository
 // URL, not a cached tracking branch. The caller must bind that URL to the
 // retained record's repository identity and supply only trusted Git credential
 // environment entries. It leaves HEAD, the index and FETCH_HEAD unchanged.
-// The result is main as observed by this fetch, not a lease on the remote ref.
-func FetchCurrentMain(ctx context.Context, repository, remoteURL string, credentialEnvironment []string) (string, error) {
+// The result is the base as observed by this fetch, not a lease on the remote ref.
+func FetchCurrentBase(ctx context.Context, repository, remoteURL, baseRef string, credentialEnvironment []string) (string, error) {
 	if err := validateCredentialEnvironment(credentialEnvironment, remoteURL); err != nil {
 		return "", err
 	}
 	if remoteURL == "" || strings.HasPrefix(remoteURL, "-") || strings.ContainsAny(remoteURL, "\x00\r\n") {
-		return "", fmt.Errorf("invalid recovery main remote")
+		return "", fmt.Errorf("invalid recovery base remote")
+	}
+	if !validRecoveryBaseRef(baseRef) {
+		return "", fmt.Errorf("invalid recovery base ref")
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
@@ -36,16 +39,16 @@ func FetchCurrentMain(ctx context.Context, repository, remoteURL string, credent
 	}()
 	if err := recoveryGitWithEnv(ctx, repository, io.Discard, credentialEnvironment,
 		"fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--",
-		remoteURL, "refs/heads/main:"+ref); err != nil {
-		return "", fmt.Errorf("fetch current recovery main: %w", err)
+		remoteURL, baseRef+":"+ref); err != nil {
+		return "", fmt.Errorf("fetch current recovery base %q: %w", baseRef, err)
 	}
 	var output boundedRefOutput
 	if err := recoveryGit(ctx, repository, &output, "rev-parse", "--verify", ref+"^{commit}"); err != nil {
-		return "", fmt.Errorf("resolve fetched recovery main: %w", err)
+		return "", fmt.Errorf("resolve fetched recovery base %q: %w", baseRef, err)
 	}
 	sha := strings.TrimSpace(output.String())
 	if !gitObjectID.MatchString(sha) {
-		return "", fmt.Errorf("invalid fetched main identity")
+		return "", fmt.Errorf("invalid fetched base identity")
 	}
 	return sha, nil
 }

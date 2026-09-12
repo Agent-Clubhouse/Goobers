@@ -19,11 +19,26 @@ import (
 
 func TestIntegrationPinnedRecoveryArchivesBeforeNextRunReset(t *testing.T) {
 	testdep.Require(t, "git")
+	for _, fixture := range []struct {
+		name   string
+		branch string
+	}{
+		{name: "main", branch: "main"},
+		{name: "master", branch: "master"},
+		{name: "slash", branch: "release/2026.09"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			runPinnedRecoveryBaseBranchFixture(t, fixture.branch)
+		})
+	}
+}
+
+func runPinnedRecoveryBaseBranchFixture(t *testing.T, baseBranch string) {
 	// A freshly initialized bare mirror may have an unborn master HEAD even
-	// though the source uses main. Its clone then has mirror/main but no local
-	// main branch. Recovery must not depend on the machine's Git defaults.
+	// though the source uses another branch. Its clone then has a mirror ref
+	// but no matching local branch. Recovery must not depend on Git defaults.
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
-	if err := os.WriteFile(globalConfig, []byte("[init]\n\tdefaultBranch = master\n"), 0o600); err != nil {
+	if err := os.WriteFile(globalConfig, []byte("[init]\n\tdefaultBranch = unrelated\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
@@ -33,7 +48,7 @@ func TestIntegrationPinnedRecoveryArchivesBeforeNextRunReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := t.TempDir()
-	recoveryCLIGit(t, source, "init", "--initial-branch=main")
+	recoveryCLIGit(t, source, "init", "--initial-branch="+baseBranch)
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	ctx := context.Background()
 	manager, err := worktree.NewManager(t.TempDir())
@@ -52,15 +67,22 @@ func TestIntegrationPinnedRecoveryArchivesBeforeNextRunReset(t *testing.T) {
 		}
 		defer func() { _ = run.Close() }()
 	}
-	lease, err := manager.AcquirePinned(ctx, worktree.PinnedOptions{RepoURL: source, RunID: "pinned-source", BaseRef: "main", Branch: "goobers/implementation/pinned-source"})
+	lease, err := manager.AcquirePinned(ctx, worktree.PinnedOptions{RepoURL: source, RunID: "pinned-source", BaseRef: baseBranch, Branch: "goobers/implementation/pinned-source"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = lease.Release() }()
-	if got := recoveryCLIGit(t, lease.Worktree.Path, "for-each-ref", "--format=%(refname)", "refs/heads/main"); got != "" {
-		t.Fatalf("regression fixture unexpectedly has a local main branch: %s", got)
+	if got := recoveryCLIGit(t, lease.Worktree.Path, "for-each-ref", "--format=%(refname)", "refs/heads/"+baseBranch); got != "" {
+		t.Fatalf("regression fixture unexpectedly has a local base branch: %s", got)
 	}
-	recoveryCLIGit(t, lease.Worktree.Path, "rev-parse", "--verify", "refs/remotes/mirror/main^{commit}")
+	recoveryCLIGit(t, lease.Worktree.Path, "rev-parse", "--verify", "refs/remotes/mirror/"+baseBranch+"^{commit}")
+	// This is the first stage handoff from #4926: it happens before destructive
+	// pinned preparation and must use the base recorded in custody.
+	if err := lease.Worktree.PreparePinned(ctx, worktree.PinnedPrepareOptions{
+		BaseRef: baseBranch, Branch: "goobers/implementation/pinned-source",
+	}); err != nil {
+		t.Fatalf("prepare first pinned stage from %q: %v", baseBranch, err)
+	}
 	if err := os.WriteFile(filepath.Join(lease.Worktree.Path, "implementation.txt"), []byte("retained pinned implementation"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +97,7 @@ func TestIntegrationPinnedRecoveryArchivesBeforeNextRunReset(t *testing.T) {
 	if entry.Record.RunID != "pinned-source" {
 		t.Fatal("retained wrong run")
 	}
-	next, err := manager.AcquirePinned(ctx, worktree.PinnedOptions{RepoURL: source, RunID: "pinned-next", BaseRef: "main", Branch: "goobers/implementation/pinned-next", CleanPolicy: worktree.PinnedCleanIgnoredSafe})
+	next, err := manager.AcquirePinned(ctx, worktree.PinnedOptions{RepoURL: source, RunID: "pinned-next", BaseRef: baseBranch, Branch: "goobers/implementation/pinned-next", CleanPolicy: worktree.PinnedCleanIgnoredSafe})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +106,7 @@ func TestIntegrationPinnedRecoveryArchivesBeforeNextRunReset(t *testing.T) {
 		t.Fatalf("fixture did not reset implementation: %v", err)
 	}
 	restored := t.TempDir()
-	recoveryCLIGit(t, restored, "init", "--initial-branch=main")
+	recoveryCLIGit(t, restored, "init", "--initial-branch="+baseBranch)
 	if err := recovery.ImportSnapshotBundle(ctx, restored, filepath.Join(filepath.Dir(entry.RecordPath), "snapshot.bundle"), entry.Record, 512<<20); err != nil {
 		t.Fatal(err)
 	}

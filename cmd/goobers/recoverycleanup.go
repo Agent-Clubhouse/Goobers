@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
@@ -82,9 +83,13 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 		if err != nil {
 			return err
 		}
+		baseRef, err := recoveryCleanupBaseRef(target)
+		if err != nil {
+			return err
+		}
 		request := recovery.RetentionRequest{
 			Repository: target.Path, RepositoryKey: key, RunID: target.OwnerRunID,
-			BaseRef: recoveryCleanupBaseRef(target), IdentityTime: captureAt, RetainUntil: captureAt.Add(retainWindow),
+			BaseRef: baseRef, IdentityTime: captureAt, RetainUntil: captureAt.Add(retainWindow),
 			InventoryRoot: root, CleanupRoots: []string{cleanupRoot},
 			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(), SkipEmpty: true,
 			EvictFull: recoveryEvictFunc(layout, cfg, manager, key),
@@ -98,11 +103,12 @@ func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanu
 	}
 }
 
-func recoveryCleanupBaseRef(target worktree.CleanupTarget) string {
-	if target.Pinned {
-		return "refs/remotes/mirror/main"
+func recoveryCleanupBaseRef(target worktree.CleanupTarget) (string, error) {
+	baseRef := strings.TrimSpace(target.BaseRef)
+	if baseRef == "" {
+		return "", fmt.Errorf("recovery cleanup requires the owning run's base reference")
 	}
-	return "refs/heads/main"
+	return baseRef, nil
 }
 
 // Standalone abort/startup/stall finalizers may construct their own Manager.

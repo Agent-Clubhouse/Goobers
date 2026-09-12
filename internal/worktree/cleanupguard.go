@@ -22,6 +22,9 @@ type CleanupTarget struct {
 	WorktreeID string
 	OwnerRunID string
 	Gaggle     string
+	// BaseRef is copied from durable workspace ownership. It is the base
+	// selected for the owning run, not a default inferred at cleanup time.
+	BaseRef string
 	// Pinned identifies a managed clone whose base branches live under the
 	// mirror remote, rather than the local branches of a linked worktree.
 	Pinned bool
@@ -36,14 +39,14 @@ func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRun
 }
 
 func (m *Manager) prepareMarkerCleanup(ctx context.Context, path, worktreeID string, mk marker) error {
-	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
 func (m *Manager) prepareMarkerExit(ctx context.Context, path, worktreeID string, mk marker, keep bool) error {
 	if !keep {
 		return m.prepareMarkerCleanup(ctx, path, worktreeID, mk)
 	}
-	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
 // Keeping or releasing a workspace may capture recovery, but does not retire

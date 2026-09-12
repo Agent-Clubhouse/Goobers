@@ -211,6 +211,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if err != nil {
 		return nil, err
 	}
+	cleanupBaseRef := resolvedCleanupBaseRef(ctx, repoDir, opts.BaseRef)
 	key := repoKey(opts.RepoURL)
 	directory := worktreeDirectoryName(opts.RunID)
 	path := filepath.Join(m.runsDirForKey(key), directory)
@@ -311,6 +312,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		OwnerRunID:       opts.OwnerRunID,
 		Gaggle:           opts.Gaggle,
 		Directory:        directory,
+		BaseRef:          cleanupBaseRef,
 		Branch:           opts.Branch,
 		Writer:           m.writerIdentity,
 		PID:              pid,
@@ -446,6 +448,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	lockHeld = false
 	m.observeUsage(ctx, UsageOperationCreate, opts.OwnerRunID, opts.RunID, worktreeBytes, worktreeMeasured, measurementErr)
 	return wt, nil
+}
+
+// resolvedCleanupBaseRef records the exact ref namespace Git selected for the
+// run. Object IDs and other non-symbolic revisions remain unchanged.
+func resolvedCleanupBaseRef(ctx context.Context, repository, baseRef string) string {
+	resolved, err := gitOutput(ctx, repository, "rev-parse", "--symbolic-full-name", baseRef)
+	if err == nil && strings.TrimSpace(resolved) != "" {
+		return strings.TrimSpace(resolved)
+	}
+	return baseRef
 }
 
 func retryBotIdentityConfig(ctx context.Context, op func() error) error {

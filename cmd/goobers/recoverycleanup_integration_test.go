@@ -25,14 +25,16 @@ func TestIntegrationRecoveryCleanupArchivesBeforeRemovingActiveRunWorktree(t *te
 		if terminal {
 			name = "standalone-terminal"
 		}
-		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false) })
+		t.Run(name, func(t *testing.T) { runRecoveryCleanupFixture(t, terminal, false, false, "main") })
 	}
-	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false) })
-	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true) })
-	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true) })
+	t.Run("terminal-after-stage-removal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, true, false, "main") })
+	t.Run("abandoned-preparation-stage", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, true, "main") })
+	t.Run("abandoned-preparation-terminal", func(t *testing.T) { runRecoveryCleanupFixture(t, true, false, true, "main") })
+	t.Run("master-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, "master") })
+	t.Run("slash-base", func(t *testing.T) { runRecoveryCleanupFixture(t, false, false, false, "release/2026.09") })
 }
 
-func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned bool) {
+func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, abandoned bool, baseBranch string) {
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -42,7 +44,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	previousCloneURL := repoCloneURL
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
 	t.Cleanup(func() { repoCloneURL = previousCloneURL })
-	recoveryCLIGit(t, source, "init", "--initial-branch=main")
+	recoveryCLIGit(t, source, "init", "--initial-branch="+baseBranch)
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	const runID = "cleanup-recovery"
 	startedAt := time.Now().UTC()
@@ -68,7 +70,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	option(manager) // A configuration reload must replace, not duplicate.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: "main", Branch: "goobers/implementation/" + runID})
+	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: runID + "-stage", OwnerRunID: runID, BaseRef: baseBranch, Branch: "goobers/implementation/" + runID})
 	if err != nil {
 		t.Fatal(err)
 	}
