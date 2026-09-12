@@ -262,6 +262,53 @@ func gatherSiblingContextStageInput(stderr io.Writer) (gatherSiblingContextInput
 	return gatherSiblingContextInput{selectedNumber: selectedNumber, selectedNumberInt: number, base: providerInput("base", providerBaseBranch()), advisoryMode: advisoryMode}, true
 }
 
+// siblingOwnershipScope is the one question this stage's classification turns
+// on: which PRs count as OURS. It bundles the author scope, the head prefixes
+// the branch-name heuristic matches, and the automation identity the author
+// comparison uses, because they are read, validated, and consumed together —
+// and because resolving the identity can now FAIL (#4345), which the ADO path
+// that shares gatherSiblingContextStageInput has no concept of.
+type siblingOwnershipScope struct {
+	authorScope         string
+	headPrefixes        []string
+	managedHeadPrefix   string
+	listHeadPrefix      string
+	expectedAuthorLogin string
+}
+
+// gatherSiblingContextOwnershipScope resolves that scope, reporting to stderr
+// and returning false on the two ways it can be unusable: an authorScope input
+// outside the vocabulary, and an unresolvable automation identity.
+func gatherSiblingContextOwnershipScope(
+	ctx context.Context, root string, provider remediationProvider, stderr io.Writer,
+) (siblingOwnershipScope, bool) {
+	authorScope := providerInput("authorScope", authorScopeGoobers)
+	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
+		return siblingOwnershipScope{}, false
+	}
+	managedHeadPrefix := providerBranchNamespace()
+	listHeadPrefix := managedHeadPrefix
+	if authorScope == authorScopeAny {
+		listHeadPrefix = ""
+	}
+	expectedAuthorLogin, err := daemonIdentityAuthorLogin(ctx, root, provider)
+	if err != nil {
+		// #4345: in a pod with no resolved identity, advisory-mode
+		// classification would otherwise silently fall back to branch
+		// prefixes and disagree with the identical run on self.
+		pf(stderr, "error: %v\n", err)
+		return siblingOwnershipScope{}, false
+	}
+	return siblingOwnershipScope{
+		authorScope:         authorScope,
+		headPrefixes:        mergeReviewHeadPrefixes(),
+		managedHeadPrefix:   managedHeadPrefix,
+		listHeadPrefix:      listHeadPrefix,
+		expectedAuthorLogin: expectedAuthorLogin,
+	}, true
+}
+
 func runGatherSiblingContextCore(root string, repo providers.RepositoryRef, provider remediationProvider, noCache, noVerdictCache bool, stdout, stderr io.Writer) int {
 	input, ok := gatherSiblingContextStageInput(stderr)
 	if !ok {
@@ -271,28 +318,17 @@ func runGatherSiblingContextCore(root string, repo providers.RepositoryRef, prov
 	selectedNumber := input.selectedNumberInt
 	base := input.base
 	advisoryMode := input.advisoryMode
-	headPrefixes := mergeReviewHeadPrefixes()
-	authorScope := providerInput("authorScope", authorScopeGoobers)
-	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
-		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
-		return 1
-	}
-	managedHeadPrefix := providerBranchNamespace()
-	listHeadPrefix := managedHeadPrefix
-	if authorScope == authorScopeAny {
-		listHeadPrefix = ""
-	}
-
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	expectedAuthorLogin, err := daemonIdentityAuthorLogin(ctx, root, provider)
-	if err != nil {
-		// #4345: in a pod with no resolved identity, advisory-mode
-		// classification would otherwise silently fall back to branch
-		// prefixes and disagree with the identical run on self.
-		pf(stderr, "error: %v\n", err)
+	scope, ok := gatherSiblingContextOwnershipScope(ctx, root, provider, stderr)
+	if !ok {
 		return 1
 	}
+	headPrefixes := scope.headPrefixes
+	authorScope := scope.authorScope
+	managedHeadPrefix := scope.managedHeadPrefix
+	listHeadPrefix := scope.listHeadPrefix
+	expectedAuthorLogin := scope.expectedAuthorLogin
 	// SkipCheckState: the list is the always-fresh probe (one request), but
 	// per-candidate check-state resolution is two more requests per PR. It is
 	// resolved below after file-list memoization so same-head CI reruns are
