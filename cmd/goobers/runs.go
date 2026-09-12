@@ -19,7 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 )
 
-const runsHelp = "Usage: goobers runs <command> [flags] [path]\n\n" +
+const runsHelp = "Usage: goobers runs [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n" +
+	"       goobers runs <command> [flags] [path]\n\n" +
 	"Commands:\n" +
 	"  list    alias for the goobers status run table (same flags)\n" +
 	"  du      report per-run journal and artifact bytes, largest first\n"
@@ -35,6 +36,12 @@ func runRuns(args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	default:
+		// The original read verb predates the list/du split. Keep `runs list` as
+		// the discoverable form while accepting the issue's direct
+		// `goobers runs --api ...` spelling as the run-table alias.
+		if strings.HasPrefix(args[0], "-") {
+			return runRunsList(args, stdout, stderr)
+		}
 		pf(stderr, "goobers runs: unknown subcommand %q\n\n", args[0])
 		usage(stderr)
 		return 2

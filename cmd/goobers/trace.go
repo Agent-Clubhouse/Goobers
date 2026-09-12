@@ -52,7 +52,7 @@ func runTraceWithFollowContextAndFactory(
 	)
 }
 
-const traceHelp = "Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n" +
+const traceHelp = "Usage: goobers trace [--api=<url>] [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n" +
 	"Show a run's journal events and, if the telemetry rollup has ingested it,\n" +
 	"its trace spans. Use --transcripts to show all recorded agent transcripts,\n" +
 	"or --transcript to select one stage. Use --summary for run metadata and\n" +
@@ -79,6 +79,7 @@ func runTraceWithFactories(
 	showVerdicts := fs.Bool("verdicts", false, "show review verdict content")
 	showTranscripts := fs.Bool("transcripts", false, "show every recorded agent-stage transcript")
 	transcriptStage := fs.String("transcript", "", "show recorded transcript data for one stage")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	fs.Usage = helpUsage(stderr, "trace")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -121,16 +122,11 @@ func runTraceWithFactories(
 	}
 
 	l := instance.NewLayout(root)
-	runID, err := resolveRunID(l, runID)
+	endpoint, reads, runID, err := traceReadSource(context.Background(), *api, root, fs.NArg() == 2, runID, l, stderr, newOfflineRuns)
 	if errors.Is(err, iofs.ErrNotExist) {
 		pf(stderr, "error: no run %q found in %s; list runs with 'goobers status'\n", fs.Arg(0), root)
 		return 1
 	}
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	reads, err := newOfflineRuns(l)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -206,7 +202,15 @@ func runTraceWithFactories(
 		transcripts = nil
 	}
 	now := time.Now()
-	recoveryState := runRecoveryView(ctx, l, runID, now)
+	// Recovery and attribution are read from the instance root, which a
+	// remote trace does not have: `l` is the local [path], not the daemon's
+	// root, so reading it would mix another instance's records into this run.
+	var recoveryState *recoveryView
+	var attribution *creditgraph.RunRecord
+	if endpoint == "" {
+		recoveryState = runRecoveryView(ctx, l, runID, now)
+		attribution = loadTraceAttribution(l, runID)
+	}
 	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
 	verdicts := loadVerdictViews(ctx, reads, runID, ledger.Events)
@@ -214,6 +218,13 @@ func runTraceWithFactories(
 	if err != nil {
 		pf(stderr, "error: agent progress: %v\n", err)
 		return 2
+	}
+	if err := confirmRemoteReadIdentity(ctx, reads); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if endpoint != "" {
+		pf(stderr, "%s", remoteTraceOmissionNote)
 	}
 	if *jsonOutput {
 		result := traceJSONResult{
@@ -228,7 +239,7 @@ func runTraceWithFactories(
 			Events:        traceJSONEvents(ledger.Events),
 			Spans:         spans,
 			Verdicts:      verdicts,
-			Attribution:   loadTraceAttribution(l, runID),
+			Attribution:   attribution,
 			Recovery:      recoveryState,
 			AgentProgress: agentProgress,
 			Lineage:       detail.Lineage,
@@ -244,7 +255,7 @@ func runTraceWithFactories(
 		return 0
 	}
 	if *summary {
-		printTraceSummary(stdout, detail, state, repasses, now, l, runID, recoveryState, verdicts)
+		printTraceSummary(stdout, detail, state, repasses, now, attribution, recoveryState, verdicts)
 		return 0
 	}
 	ciFailures, err := traceCIFailures(ctx, reads, runID, ledger.Events)
@@ -309,6 +320,28 @@ func maybePrintTraceTranscripts(
 		return true, 2
 	}
 	return true, 0
+}
+
+func traceReadSource(ctx context.Context, api, root string, rootExplicit bool, runID string, layout instance.Layout, diagnostic io.Writer, newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error)) (string, readservice.OfflineRuns, string, error) {
+	endpoint, err := remoteDaemonAPIBase(api)
+	if err != nil {
+		return "", nil, "", err
+	}
+	var reads readservice.OfflineRuns
+	if endpoint != "" {
+		reads, err = prepareRemoteReads(ctx, endpoint, root, rootExplicit, diagnostic)
+	} else {
+		reads, err = newOfflineRuns(layout)
+	}
+	if err != nil {
+		return "", nil, "", err
+	}
+	if endpoint != "" {
+		runID, err = resolveRemoteRunID(ctx, reads, runID)
+	} else {
+		runID, err = resolveRunID(layout, runID)
+	}
+	return endpoint, reads, runID, err
 }
 
 func followTrace(
@@ -477,13 +510,12 @@ func printTraceSummary(
 	state *journal.State,
 	repasses int,
 	now time.Time,
-	layout instance.Layout,
-	runID string,
+	attribution *creditgraph.RunRecord,
 	recoveryState *recoveryView,
 	verdicts []verdictView,
 ) {
 	printTraceRunSummary(stdout, detail, state, repasses, now)
-	printTraceAttributionSummary(stdout, loadTraceAttribution(layout, runID))
+	printTraceAttributionSummary(stdout, attribution)
 	printRecoveryView(stdout, recoveryState)
 	pln(stdout, "")
 	renderVerdicts(stdout, verdicts)
