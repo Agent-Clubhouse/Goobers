@@ -53,8 +53,8 @@ type escalationInspection struct {
 	Verdicts     []verdictView                `json:"verdicts,omitempty"`
 }
 
-const escalationsHelp = "Usage: goobers escalations [--json] [path]\n" +
-	"       goobers escalations show [--json] [--include-verdict] <run-id> [path]\n" +
+const escalationsHelp = "Usage: goobers escalations [--json] [--api=<url>] [path]\n" +
+	"       goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]\n" +
 	"       goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]\n\n" +
 	"List escalated runs newest first. Use `escalations show` to inspect an\n" +
 	"escalation cause and the artifacts available before and after each stage,\n" +
@@ -64,6 +64,7 @@ func runEscalations(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("escalations", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit escalated runs as JSON")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	fs.Usage = helpUsage(stderr, "escalations")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -77,7 +78,17 @@ func runEscalations(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(0)
 	}
 
-	reads, err := readservice.NewOfflineRuns(instance.NewLayout(root))
+	endpoint, err := remoteDaemonAPIBase(*api)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	var reads readservice.OfflineRuns
+	if endpoint != "" {
+		reads, err = prepareRemoteReads(context.Background(), endpoint, root, fs.NArg() == 1, stderr)
+	} else {
+		reads, err = readservice.NewOfflineRuns(instance.NewLayout(root))
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -98,7 +109,7 @@ func runEscalations(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const escalationsShowHelp = "Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]\n\n" +
+const escalationsShowHelp = "Usage: goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]\n\n" +
 	"Show an escalation's structured cause and per-stage artifact timeline.\n" +
 	"Use --include-verdict to include reviewer verdict rationale and findings.\n"
 
@@ -107,6 +118,7 @@ func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the escalation inspection as JSON")
 	includeVerdict := fs.Bool("include-verdict", false, "include review verdict content")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	fs.Usage = helpUsage(stderr, "escalations show")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -121,16 +133,31 @@ func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 	}
 
 	layout := instance.NewLayout(root)
-	runID, err := resolveRunID(layout, fs.Arg(0))
-	if errors.Is(err, iofs.ErrNotExist) {
-		pf(stderr, "error: no run %q found in %s; list escalations with 'goobers escalations'\n", fs.Arg(0), root)
-		return 1
+	endpoint, err := remoteDaemonAPIBase(*api)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	var reads readservice.OfflineRuns
+	if endpoint != "" {
+		reads, err = prepareRemoteReads(context.Background(), endpoint, root, fs.NArg() == 2, stderr)
+	} else {
+		reads, err = readservice.NewOfflineRuns(layout)
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	reads, err := readservice.NewOfflineRuns(layout)
+	var runID string
+	if endpoint != "" {
+		runID, err = resolveRemoteRunID(context.Background(), reads, fs.Arg(0))
+	} else {
+		runID, err = resolveRunID(layout, fs.Arg(0))
+	}
+	if errors.Is(err, iofs.ErrNotExist) {
+		pf(stderr, "error: no run %q found in %s; list escalations with 'goobers escalations'\n", fs.Arg(0), root)
+		return 1
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

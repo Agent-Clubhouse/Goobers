@@ -677,7 +677,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 // runRunTable help: `status` supports --daemon/--watch and reports the extra
 // workflow/PR lines, while `runs list` is the flag-reduced alias. runRunTable
 // selects between them via helpUsage(stderr, command) (#1095).
-const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
+const statusHelp = "Usage: goobers status [--api=<url>] [--daemon | --agents | --json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Normal and daemon status identify the root path, durable instance ID, and owning PID,\n" +
@@ -702,7 +702,7 @@ const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phas
 	"--watch are refused because the probe reports only the live moment.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
-const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
+const runsListHelp = "Usage: goobers runs list [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
 	"Alias for the goobers status run table, with the same flags (minus --daemon/--watch).\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
@@ -754,6 +754,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	gaggleFilter := fs.String("gaggle", "", "filter by gaggle name")
 	limit := fs.Int("limit", 50, "maximum number of runs to show (default: 50; 0 for all)")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	// Only `status` supports --daemon, --watch/--interval, and the #712 pause
 	// line — all daemon/process runtime state, not part of `runs list`'s
 	// plain, scriptable run table.
@@ -805,19 +806,10 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 
-	phases := make(map[journal.RunPhase]struct{})
-	if *phaseFilter != "" {
-		for _, value := range strings.Split(*phaseFilter, ",") {
-			phase := journal.RunPhase(strings.TrimSpace(value))
-			switch phase {
-			case journal.PhaseRunning, journal.PhaseCompleted, journal.PhaseFailed,
-				journal.PhaseAborted, journal.PhaseEscalated:
-				phases[phase] = struct{}{}
-			default:
-				pf(stderr, "error: invalid phase %q (want running, completed, failed, aborted, or escalated)\n", value)
-				return 2
-			}
-		}
+	phases, err := parseStatusPhases(*phaseFilter)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
@@ -830,6 +822,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	root := "."
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
+	}
+	if code, handled := maybeRunRemoteRunTable(*api, root, fs.NArg() == 1, supportsWatch, daemon, agents, watch, interval, *jsonOutput, statusOptions{
+		phases: phases, workflow: *workflowFilter, gaggle: *gaggleFilter, limit: *limit,
+	}, stdout, stderr); handled {
+		return code
 	}
 
 	l := instance.NewLayout(root)
@@ -1130,6 +1127,23 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	printStatusRecovery(stdout, l, runs, now)
 	renderOlderRunsHint(stdout, olderRuns)
 	return 0
+}
+
+func parseStatusPhases(filter string) (map[journal.RunPhase]struct{}, error) {
+	phases := make(map[journal.RunPhase]struct{})
+	if filter == "" {
+		return phases, nil
+	}
+	for _, value := range strings.Split(filter, ",") {
+		phase := journal.RunPhase(strings.TrimSpace(value))
+		switch phase {
+		case journal.PhaseRunning, journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+			phases[phase] = struct{}{}
+		default:
+			return nil, fmt.Errorf("invalid phase %q (want running, completed, failed, aborted, or escalated)", value)
+		}
+	}
+	return phases, nil
 }
 
 func selectStatusRuns(runs []runSummary, options statusOptions) ([]runSummary, int) {
