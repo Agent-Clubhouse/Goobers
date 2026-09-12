@@ -294,12 +294,14 @@ func scanFile(path string, source []byte) ([]function, error) {
 			continue
 		}
 		allowed, blank := allowance(file, declared)
+		start := fileSet.PositionFor(declared.Pos(), false)
+		end := fileSet.PositionFor(declared.End(), false)
 		functions = append(functions, function{
 			Path:       path,
 			Symbol:     symbolName(declared),
 			Complexity: complexity(declared),
-			BodyLines:  fileSet.Position(declared.End()).Line - fileSet.Position(declared.Pos()).Line + 1,
-			Line:       fileSet.Position(declared.Pos()).Line,
+			BodyLines:  end.Line - start.Line + 1,
+			Line:       start.Line,
 			Allowed:    allowed,
 			AllowBlank: blank,
 		})
@@ -653,6 +655,19 @@ func evaluateBodyLengths(functions []function, base baseline, limit int) (proble
 	if base.BodyLengthCap != limit {
 		return []string{fmt.Sprintf("complexitygate: body-length cap is %d in the baseline, but the configured fixed cap is %d", base.BodyLengthCap, limit)}, nil
 	}
+	invalidEntries := make(map[string]bool)
+	for entryKey, recorded := range base.BodyLengths {
+		ceiling, seeded := bodyLengthSeedCeilings[entryKey]
+		if seeded && recorded <= ceiling {
+			continue
+		}
+		invalidEntries[entryKey] = true
+		path, symbol, _ := strings.Cut(entryKey, "\t")
+		problems = append(problems, fmt.Sprintf(
+			"complexitygate: body-length baseline entry %s %s at %d was not admitted by the sealed migration inventory",
+			path, symbol, recorded,
+		))
+	}
 	seen := make(map[string]bool)
 	for _, current := range functions {
 		if current.BodyLines < limit {
@@ -661,6 +676,9 @@ func evaluateBodyLengths(functions []function, base baseline, limit int) (proble
 		entryKey := key(current.Path, current.Symbol)
 		recorded, baselined := base.BodyLengths[entryKey]
 		seen[entryKey] = true
+		if invalidEntries[entryKey] {
+			continue
+		}
 		switch {
 		case !baselined:
 			problems = append(problems, fmt.Sprintf(
@@ -765,7 +783,8 @@ func baselineForFunctions(functions []function, limits thresholds, previous, can
 		}
 		entryKey := key(measured.Path, measured.Symbol)
 		_, alreadyBaselined := bodyLengthEntry(previous, entryKey)
-		if seedBodyLengths || alreadyBaselined {
+		_, seeded := bodyLengthSeedCeilings[entryKey]
+		if (seedBodyLengths && seeded) || alreadyBaselined {
 			next.BodyLengths[entryKey] = measured.BodyLines
 		}
 	}

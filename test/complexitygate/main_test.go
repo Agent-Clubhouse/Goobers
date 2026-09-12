@@ -119,6 +119,25 @@ func (s store[T]) Get() {}
 	}
 }
 
+func TestScanFileBodyLengthUsesPhysicalPositions(t *testing.T) {
+	t.Parallel()
+	source := `package sample
+
+func Physical() int {
+	value := 1
+	//line generated.go:900
+	return value
+}
+`
+	functions, err := scanFile("sample/sample.go", []byte(source))
+	if err != nil {
+		t.Fatalf("scanFile: %v", err)
+	}
+	if len(functions) != 1 || functions[0].Line != 3 || functions[0].BodyLines != 5 {
+		t.Fatalf("functions = %+v, want physical line 3 and five-line declaration despite //line", functions)
+	}
+}
+
 func TestScanTreeSkipsTestFilesAndVendoredTrees(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -306,6 +325,21 @@ func TestEvaluateBodyLengthHasNoAllowExemption(t *testing.T) {
 	problems, _ = evaluate(functions, base, limits)
 	if len(problems) != 1 || !strings.Contains(problems[0], "grew from the baselined 1560 to 1561") {
 		t.Fatalf("problems = %v, want body-length growth failure", problems)
+	}
+}
+
+func TestEvaluateRejectsDirectBaselineAdditionOutsideSealedSeed(t *testing.T) {
+	t.Parallel()
+	limits := thresholds{hardCap: 40, ratchet: 25, report: 15, body: 200}
+	entryKey := key("new.go", "NewOversized")
+	base := testBaseline(t, 0, map[string]int{})
+	base.BodyLengthCap = 200
+	base.BodyLengths[entryKey] = 250
+	functions := []function{{Path: "new.go", Symbol: "NewOversized", BodyLines: 250, Allowed: true}}
+
+	problems, _ := evaluate(functions, base, limits)
+	if len(problems) != 1 || !strings.Contains(problems[0], "not admitted by the sealed migration inventory") {
+		t.Fatalf("problems = %v, want direct matching baseline row rejected despite allow", problems)
 	}
 }
 
@@ -666,6 +700,12 @@ func TestRepositoryBaselineIsCurrent(t *testing.T) {
 		measured, exists := measuredBodyLengths[entryKey]
 		if !exists || measured > lines || lines < base.BodyLengthCap {
 			t.Errorf("body-length baseline %q = %d, measured %d, exists=%t", entryKey, lines, measured, exists)
+		}
+	}
+	for entryKey, reason := range base.BodyJustifications {
+		lines, exists := base.BodyLengths[entryKey]
+		if !exists || reason.Target != lines {
+			t.Errorf("body justification %q targets %d, want an existing body entry at that exact length", entryKey, reason.Target)
 		}
 	}
 	for entryKey, measured := range measuredBodyLengths {
