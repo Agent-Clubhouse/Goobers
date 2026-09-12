@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -30,4 +31,16 @@ func prepareDaemonReadiness(ctx context.Context, reads *readservice.Local, addre
 		return fmt.Errorf("initialize active-run counts: %w", err)
 	}
 	return publishDaemonAPIAddress(addressPath, address)
+}
+
+// daemonReadinessStoppedByShutdown distinguishes cancellation of the daemon's
+// root lifecycle from a failure of the readiness observation itself. The
+// latter includes the private initialActiveCountsTimeout while the root
+// context is still live and must continue to fail startup.
+func daemonReadinessStoppedByShutdown(ctx context.Context, err error) bool {
+	shutdownErr := ctx.Err()
+	if shutdownErr == nil {
+		return false
+	}
+	return errors.Is(err, shutdownErr)
 }

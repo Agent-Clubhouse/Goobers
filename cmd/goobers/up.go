@@ -1667,6 +1667,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 
 	if err := prepareDaemonReadiness(ctx, reads, apiAddressPath, apiServer.Address(), stdout); err != nil {
+		// A signal before readiness is still a clean daemon shutdown. The same
+		// cancellation after readiness already exits 0 below; preserve that
+		// documented contract across the startup boundary (#4875).
+		if daemonReadinessStoppedByShutdown(ctx, err) {
+			return 0
+		}
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
