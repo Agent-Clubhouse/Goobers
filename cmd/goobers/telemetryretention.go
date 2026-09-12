@@ -272,6 +272,38 @@ func recordTelemetryRetentionPass(
 	return log.Append(journal.Event{Type: journal.EventTelemetryRetentionPass, Runner: runner})
 }
 
+// pruneAndRecordTelemetryRetention sequences the pass and its observable
+// journal event: the caller does not report success until the state-backed
+// summary is published.
+func pruneAndRecordTelemetryRetention(
+	log *journal.InstanceLog,
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	now time.Time,
+) ([]retention.Result, bool, error) {
+	results, dryRun, err := pruneConfiguredTelemetryRetention(layout, config, db, now)
+	if err != nil {
+		return results, dryRun, err
+	}
+	return results, dryRun, recordTelemetryRetentionPass(log, layout, config, results, dryRun)
+}
+
+func runPeriodicTelemetryRetention(
+	ctx context.Context,
+	log *journal.InstanceLog,
+	layout instance.Layout,
+	config instance.TelemetryRetentionConfig,
+	db *rollup.DB,
+	cleanupErrors *sweepErrorReporter,
+	now time.Time,
+) error {
+	if _, _, err := pruneAndRecordTelemetryRetention(log, layout, config, db, now); err != nil {
+		return err
+	}
+	return compactSchedulerRetention(ctx, config, db, log, cleanupErrors, now)
+}
+
 // compactSchedulerRetention bounds the scheduler journal and rollup rows. A
 // stale-generation cleanup failure is reported through cleanupErrors (a nil
 // reporter simply drops it) rather than returned: the compaction itself
