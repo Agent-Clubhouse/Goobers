@@ -1,6 +1,7 @@
 package cancelreceipt
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,41 @@ import (
 	"testing"
 	"time"
 )
+
+func TestOpenMigratesUnversionedStoreWithoutLosingRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-receipts.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(migrations[0]); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(
+		`INSERT INTO cancellations(key,actor,payload,created_ns) VALUES(?,?,?,?)`,
+		"legacy", "operator", []byte("run-1"), created.UnixNano(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	receipt, fresh, err := s.Begin(t.Context(), "legacy", "operator", []byte("run-1"), created.Add(time.Hour))
+	if err != nil || fresh || receipt.Complete {
+		t.Fatalf("migrated receipt = %+v, fresh=%v, err=%v", receipt, fresh, err)
+	}
+	var version int
+	if err := s.db.QueryRow(`SELECT version FROM schema_meta`).Scan(&version); err != nil || version != len(migrations) {
+		t.Fatalf("schema version = %d, %v; want %d", version, err, len(migrations))
+	}
+}
 
 func TestOpenRecordsSchemaVersionAndRejectsNewerStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipts.db")

@@ -17,6 +17,12 @@ func Migrate(ctx context.Context, db *sql.DB, store string, migrations []string)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	var metadataExisted int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'schema_meta'`).Scan(&metadataExisted); err != nil {
+		return fmt.Errorf("%s: inspect schema metadata: %w", store, err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("%s: create schema metadata: %w", store, err)
 	}
@@ -24,7 +30,7 @@ func Migrate(ctx context.Context, db *sql.DB, store string, migrations []string)
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(version), 0) FROM schema_meta`).Scan(&count, &version); err != nil {
 		return fmt.Errorf("%s: read schema version: %w", store, err)
 	}
-	if count > 1 {
+	if (metadataExisted == 1 && count != 1) || count > 1 {
 		return fmt.Errorf("%s: schema_meta contains %d rows; restore the database from backup", store, count)
 	}
 	if version < 0 {
