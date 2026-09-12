@@ -5,12 +5,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/safeopen"
 	"github.com/goobers/goobers/internal/readprobe"
 )
 
@@ -328,22 +330,51 @@ func ensureInstanceLogID(dir string, eventsExisted bool) (string, error) {
 }
 
 func readInstanceLogID(dir string) (string, error) {
+	return readInstanceLogIDWith(dir, safeopen.OpenAt)
+}
+
+func readInstanceLogIDWith(dir string, openAt func(*os.File, string) (*os.File, error)) (identity string, err error) {
 	path := filepath.Join(dir, fileInstanceLogID)
-	info, err := os.Lstat(path)
+	before, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("journal: stat instance log identity: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Size() != 33 {
+	if !before.Mode().IsRegular() || before.Size() != 33 {
 		return "", fmt.Errorf("journal: invalid instance log identity file %s", path)
 	}
-	data, err := os.ReadFile(path)
+	directory, err := safeopen.Open(dir)
+	if err != nil {
+		return "", fmt.Errorf("journal: open instance log directory: %w", err)
+	}
+	defer func() {
+		if closeErr := directory.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	f, err := openAt(directory, fileInstanceLogID)
+	if err != nil {
+		return "", fmt.Errorf("journal: open instance log identity: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	after, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("journal: stat opened instance log identity: %w", err)
+	}
+	if !after.Mode().IsRegular() || after.Size() != 33 || !os.SameFile(before, after) {
+		return "", fmt.Errorf("journal: instance log identity changed while opening %s", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 34))
 	if err != nil {
 		return "", fmt.Errorf("journal: read instance log identity: %w", err)
 	}
-	identity := strings.TrimSuffix(string(data), "\n")
+	identity = strings.TrimSuffix(string(data), "\n")
 	decoded, decodeErr := hex.DecodeString(identity)
 	if len(data) != 33 || decodeErr != nil || len(decoded) != 16 || identity != strings.ToLower(identity) || identity == strings.Repeat("0", 32) {
 		return "", fmt.Errorf("journal: invalid instance log identity in %s", path)
