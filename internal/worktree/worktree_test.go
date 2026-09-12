@@ -1054,7 +1054,7 @@ func TestManager_CreateUsesFixedLengthDirectoryAndPreservesFullIDs(t *testing.T)
 		if err != nil {
 			t.Fatalf("read marker for %q: %v", runID, err)
 		}
-		if mk.RunID != runID || mk.OwnerRunID != "full-owner-run-id" || mk.Directory != directory || mk.Writer != "worker-pod-a" {
+		if mk.RunID != runID || mk.OwnerRunID != "full-owner-run-id" || mk.Directory != directory || mk.BaseRef != "refs/heads/main" || mk.Writer != "worker-pod-a" {
 			t.Fatalf("marker lost ownership identity: %+v", mk)
 		}
 		directories = append(directories, directory)

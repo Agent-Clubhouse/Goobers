@@ -10,6 +10,7 @@ import (
 
 func TestRecoveryEventFoldKeepsLatestWindowAndRejectsSpoofs(t *testing.T) {
 	record := storageTestRecord()
+	record.BaseRef = "refs/heads/master"
 	initial, err := RetainedEvent(record)
 	if err != nil {
 		t.Fatal(err)

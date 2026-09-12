@@ -15,13 +15,14 @@ func RetainedEvent(record Record) (journal.Event, error) {
 	if err := record.Validate(); err != nil {
 		return journal.Event{}, err
 	}
-	return journal.Event{
+	event := journal.Event{
 		RunID: record.RunID,
 		Type:  journal.EventRunnerAnnotation,
 		Runner: map[string]any{
 			"operation":             "recovery-retained",
 			"recoveryRepositoryKey": record.RepositoryKey,
 			"recoveryRef":           record.Ref,
+			"recoveryBaseRef":       record.BaseRef,
 			"recoveryBaseSHA":       record.BaseSHA,
 			"recoverySnapshotSHA":   record.SnapshotSHA,
 			"recoveryPatchDigest":   record.PatchDigest,
@@ -30,5 +31,9 @@ func RetainedEvent(record Record) (journal.Event, error) {
 			"recoveryRetainUntil":   record.RetainUntil.UTC().Format(time.RFC3339Nano),
 			"recoveryCreatedAt":     record.CreatedAt.UTC().Format(time.RFC3339Nano),
 		},
-	}, nil
+	}
+	if record.BaseRef == "" {
+		delete(event.Runner, "recoveryBaseRef")
+	}
+	return event, nil
 }

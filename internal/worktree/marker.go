@@ -32,11 +32,15 @@ type marker struct {
 	OwnerRunID       string `json:"owner_run_id,omitempty"`
 	Gaggle           string `json:"gaggle,omitempty"`
 	Directory        string `json:"directory,omitempty"`
-	Branch           string `json:"branch,omitempty"`
-	StartRef         string `json:"start_ref,omitempty"`
-	AssetPathGuard   bool   `json:"asset_path_guard,omitempty"`
-	Writer           string `json:"writer,omitempty"`
-	PID              int    `json:"pid"`
+	// BaseRef is the base identity selected when this workspace was created.
+	// Cleanup recovery must use this durable value rather than current config:
+	// a repository's configured branch can change while a run is in flight.
+	BaseRef        string `json:"base_ref,omitempty"`
+	Branch         string `json:"branch,omitempty"`
+	StartRef       string `json:"start_ref,omitempty"`
+	AssetPathGuard bool   `json:"asset_path_guard,omitempty"`
+	Writer         string `json:"writer,omitempty"`
+	PID            int    `json:"pid"`
 	// PIDStartedAt is PID's own OS-reported start time at marker-creation
 	// time (#2052), best-effort — empty when proc.StartTime couldn't
 	// determine it (unsupported platform/kernel, or a transient read

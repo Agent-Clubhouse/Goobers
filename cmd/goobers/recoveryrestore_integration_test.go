@@ -40,18 +40,20 @@ func recoveryCLIGit(t *testing.T, repository string, args ...string) string {
 func TestIntegrationRecoveryRestoreCommandUsesFreshMainAndPreservesCheckout(t *testing.T) {
 	testdep.Require(t, "git")
 	for _, mode := range []string{"record", "issue", "http-issue", "resume-issue", "resume-prepared", "resume-adopted"} {
-		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode, false) })
+		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode, false, "main") })
 	}
+	t.Run("record-master", func(t *testing.T) { testRecoveryRestoreCommand(t, "record", false, "master") })
+	t.Run("record-slash-base", func(t *testing.T) { testRecoveryRestoreCommand(t, "record", false, "release/2026.09") })
 }
 
 func TestIntegrationRecoveryCommandsUseConfiguredGiteaRepository(t *testing.T) {
 	testdep.Require(t, "git")
 	for _, mode := range []string{"record", "resume-issue", "http-issue"} {
-		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode, true) })
+		t.Run(mode, func(t *testing.T) { testRecoveryRestoreCommand(t, mode, true, "main") })
 	}
 }
 
-func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool) {
+func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool, baseBranch string) {
 	resume := strings.HasPrefix(mode, "resume-")
 	t.Setenv("GOOBERS_GITHUB_TOKEN", "local-only-recovery-fixture-token")
 	root := initDemo(t)
@@ -76,7 +78,7 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool) {
 		t.Fatal(err)
 	}
 	source, destination, retained := t.TempDir(), t.TempDir(), t.TempDir()
-	recoveryCLIGit(t, source, "init", "--initial-branch=main")
+	recoveryCLIGit(t, source, "init", "--initial-branch="+baseBranch)
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
 	base := recoveryCLIGit(t, source, "rev-parse", "HEAD")
 	recoveryCLIGit(t, destination, "clone", source, ".")
@@ -88,6 +90,9 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool) {
 	}
 	now := time.Now().UTC().Add(-45 * 24 * time.Hour)
 	record := recovery.Record{Version: 1, RunID: "cli-recovery", RepositoryKey: identity.CanonicalKey(), BaseSHA: base, CreatedAt: now, RetainUntil: now.Add(time.Hour)}
+	if baseBranch != "main" {
+		record.BaseRef = "refs/heads/" + baseBranch
+	}
 	record.SnapshotSHA, err = recovery.CaptureSnapshot(context.Background(), source, record.RunID, now)
 	if err != nil {
 		t.Fatal(err)
@@ -103,9 +108,9 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool) {
 	if _, err := recovery.PublishRetainedState(context.Background(), source, retained, []string{source}, record, 1<<20); err != nil {
 		t.Fatal(err)
 	}
-	// Advance main without committing the retained implementation file.
-	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "advance main")
-	main := recoveryCLIGit(t, source, "rev-parse", "HEAD")
+	// Advance the base without committing the retained implementation file.
+	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "advance base")
+	liveBase := recoveryCLIGit(t, source, "rev-parse", "HEAD")
 	args := []string{"--record", filepath.Join(retained, recovery.RecordFileName), "--repository", destination, "--branch", "operator-recovery", root}
 	var stdout, stderr bytes.Buffer
 	if code := runRecoveryRestore(args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "retention deadline has expired") {
@@ -179,8 +184,8 @@ func testRecoveryRestoreCommand(t *testing.T, mode string, gitea bool) {
 	if code := invoke(); code != 0 {
 		t.Fatalf("restore command returned %d: %s", code, stderr.String())
 	}
-	if parent := recoveryCLIGit(t, destination, "rev-parse", target+"^"); parent != main {
-		t.Fatalf("restore used stale main: %s != %s", parent, main)
+	if parent := recoveryCLIGit(t, destination, "rev-parse", target+"^"); parent != liveBase {
+		t.Fatalf("restore used stale base: %s != %s", parent, liveBase)
 	}
 	if data := recoveryCLIGit(t, destination, "show", target+":implementation.txt"); data != "retained implementation" {
 		t.Fatalf("wrong restored content: %q", data)

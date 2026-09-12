@@ -9,6 +9,7 @@ import (
 
 func TestRetainedEventSurvivesInstanceJournalRoundTrip(t *testing.T) {
 	record := storageTestRecord()
+	record.BaseRef = "refs/heads/master"
 	event, err := RetainedEvent(record)
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +36,7 @@ func TestRetainedEventSurvivesInstanceJournalRoundTrip(t *testing.T) {
 	}
 	for key, expected := range map[string]string{
 		"recoveryRef": record.Ref, "recoveryPatchDigest": record.PatchDigest,
-		"recoveryBaseSHA": record.BaseSHA, "recoveryRetainUntil": record.RetainUntil.UTC().Format(time.RFC3339Nano),
+		"recoveryBaseRef": record.BaseRef, "recoveryBaseSHA": record.BaseSHA, "recoveryRetainUntil": record.RetainUntil.UTC().Format(time.RFC3339Nano),
 	} {
 		if got.Runner[key] != expected {
 			t.Fatalf("lost recovery field %s: %v", key, got.Runner[key])
