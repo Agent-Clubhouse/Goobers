@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 
@@ -150,6 +151,31 @@ func TestEngineHITLApproveDeliversIntentAndTouchesNoRunner(t *testing.T) {
 	}
 	if after := journalDigest(t, runDir); string(after) != string(before) {
 		t.Fatal("the daemon wrote to an engine-driven run's journal; only the workflow may author it")
+	}
+}
+
+// TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection proves the
+// intervention service uses the shared owned-run resolver (#4858). The
+// authoritative scoped journal is escalated and carries generation one; the
+// independent legacy projection is deliberately left running, making the
+// selected generation a direct assertion that resolution preferred scoped.
+func TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection(t *testing.T) {
+	deliverer := &recordingDeliverer{ack: engine.HITLAck{Resumed: true, ResumeState: "implement"}}
+	const runID = "engine-hitl-dual-projection"
+	service, _ := engineHITLFixture(t, runID, deliverer)
+	definitions := service.definitions.Snapshot()
+	definitions.legacyRunner = definitions.runners["example"]
+	service.definitions.Replace(definitions)
+	createDriverRun(t, service.layout.RunsDir(), runID, "terminal-intervention", "example", journal.DriverEngine, time.Now(), nil)
+
+	if _, err := service.Approve(context.Background(), httpapi.InterventionRequest{
+		RunID: runID, Stage: "review", Actor: "ops", Decision: "pass", IdempotencyKey: "dual-projection-key",
+	}); err != nil {
+		t.Fatalf("approve dual-projected engine run: %v", err)
+	}
+	intent := deliverer.last(t)
+	if intent.ExpectedTerminalGeneration != 1 {
+		t.Fatalf("terminal generation = %d, want scoped journal generation 1", intent.ExpectedTerminalGeneration)
 	}
 }
 

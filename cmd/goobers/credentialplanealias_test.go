@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestCredentialPlaneLegacyRuntimeAliasResolvesOnce(t *testing.T) {
@@ -84,5 +86,20 @@ func TestCredentialPlaneRunAliasesPreserveAmbiguity(t *testing.T) {
 				t.Fatalf("duplicate ownership refusal = %d %s", planeErr.Status, planeErr.Code)
 			}
 		})
+	}
+}
+
+func TestCredentialPlaneDoesNotCollapseDifferentEngineRunIdentities(t *testing.T) {
+	machine := compileCredentialPlaneMachine(t, credentialPlaneSpec())
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+	markRunYAMLEngineDriven(t, filepath.Join(service.layout.ForGaggle("web").RunsDir(), runID))
+	createDriverRun(t, service.layout.RunsDir(), runID, "different-workflow", "web", journal.DriverEngine, time.Now(), nil)
+
+	_, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "implement", Capabilities: []string{"repo:push"},
+	})
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusConflict || planeErr.Code != "ambiguous_run_id" {
+		t.Fatalf("different engine identities = %d %s, want 409 ambiguous_run_id", planeErr.Status, planeErr.Code)
 	}
 }
