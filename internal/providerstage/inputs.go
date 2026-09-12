@@ -11,12 +11,18 @@ import (
 type InputType string
 
 const (
-	InputString     InputType = "string"
-	InputBoolean    InputType = "boolean"
-	InputInteger    InputType = "integer"
-	InputDuration   InputType = "duration"
+	// InputString identifies a scalar string input.
+	InputString InputType = "string"
+	// InputBoolean identifies a boolean input.
+	InputBoolean InputType = "boolean"
+	// InputInteger identifies an integer input.
+	InputInteger InputType = "integer"
+	// InputDuration identifies a duration string input.
+	InputDuration InputType = "duration"
+	// InputStringList identifies a list of string values.
 	InputStringList InputType = "string-list"
-	InputPath       InputType = "path"
+	// InputPath identifies a filesystem path input.
+	InputPath InputType = "path"
 )
 
 // InputState records whether a declared provider-stage input can still be
@@ -26,7 +32,9 @@ const (
 type InputState string
 
 const (
+	// InputCurrent marks an input as accepted by current provider stages.
 	InputCurrent InputState = "current"
+	// InputRetired marks an input as rejected with migration guidance.
 	InputRetired InputState = "retired"
 )
 
