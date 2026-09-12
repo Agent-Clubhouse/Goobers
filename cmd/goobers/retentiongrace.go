@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry/retention"
 )
 
 // retentionGraceWindow is how long a retention policy reports what it would
@@ -19,9 +20,9 @@ import (
 const retentionGraceWindow = 7 * 24 * time.Hour
 
 // retentionGraceState records where a retention policy is in its first-enable
-// grace window, and what its last pass did. It is derived, not authoritative:
-// deleting the file restarts grace detection from the next pass, exactly as on
-// a fresh instance.
+// grace window, and what its last pass did. The policy projection is derived;
+// PendingTelemetryPass is an authoritative deletion manifest until its
+// bounded summary reaches the instance journal.
 //
 // Both worktree and telemetry retention persist this common shape. The final
 // fields are telemetry-only status details; omitempty keeps them out of the
@@ -45,23 +46,24 @@ type retentionGraceState struct {
 	// additional large-first-enforcement safety gate.
 	EnforceAcknowledged      bool `json:"enforceAcknowledged,omitempty"`
 	LargeFirstEnforceBlocked bool `json:"largeFirstEnforceBlocked,omitempty"`
-	// PendingTelemetryPass is the durable outbox for an automatic telemetry
-	// prune whose bounded instance-journal summary has not been acknowledged.
-	// Worktree retention never sets it.
+	// PendingTelemetryPass is the durable outbox and exact deletion manifest
+	// for an automatic telemetry prune whose bounded instance-journal summary
+	// has not been acknowledged. Worktree retention never sets it.
 	PendingTelemetryPass *telemetryRetentionPass `json:"pendingTelemetryPass,omitempty"`
 }
 
 type telemetryRetentionPass struct {
-	ID               string        `json:"id"`
-	Phase            string        `json:"phase"`
-	At               time.Time     `json:"at"`
-	DryRun           bool          `json:"dryRun"`
-	CandidateCount   int           `json:"candidateCount"`
-	EnforceAt        time.Time     `json:"enforceAt,omitempty"`
-	PolicyWindow     time.Duration `json:"policyWindow,omitempty"`
-	PolicyMaxRuns    int           `json:"policyMaxRuns,omitempty"`
-	TotalRuns        int           `json:"totalRuns,omitempty"`
-	OldestRetainedAt time.Time     `json:"oldestRetainedAt,omitempty"`
+	ID               string             `json:"id"`
+	Phase            string             `json:"phase"`
+	At               time.Time          `json:"at"`
+	DryRun           bool               `json:"dryRun"`
+	CandidateCount   int                `json:"candidateCount"`
+	EnforceAt        time.Time          `json:"enforceAt,omitempty"`
+	PolicyWindow     time.Duration      `json:"policyWindow,omitempty"`
+	PolicyMaxRuns    int                `json:"policyMaxRuns,omitempty"`
+	TotalRuns        int                `json:"totalRuns,omitempty"`
+	OldestRetainedAt time.Time          `json:"oldestRetainedAt,omitempty"`
+	Candidates       []retention.Result `json:"candidates,omitempty"`
 }
 
 // normalizeRetentionGraceState rejects clocks that cannot have been produced

@@ -249,7 +249,7 @@ func pruneConfiguredTelemetryRetentionPassWithWriter(
 		state.EnforceAt = now.Add(retentionGraceWindow)
 	}
 	if journalPass && pending == nil {
-		pending, err = newTelemetryRetentionPass(config, now, dryRun, len(results), state.EnforceAt, summary)
+		pending, err = newTelemetryRetentionPass(config, now, dryRun, results, state.EnforceAt, summary)
 		if err != nil {
 			return results, dryRun, err
 		}
@@ -324,7 +324,7 @@ func executeTelemetryRetentionPass(
 				return nil, retention.Summary{}, nil, err
 			}
 		}
-		prepared, err := newTelemetryRetentionPass(config, now, false, len(precheckResults), state.EnforceAt, precheckSummary)
+		prepared, err := newTelemetryRetentionPass(config, now, false, precheckResults, state.EnforceAt, precheckSummary)
 		if err != nil {
 			return nil, retention.Summary{}, nil, err
 		}
@@ -334,15 +334,55 @@ func executeTelemetryRetentionPass(
 			return nil, retention.Summary{}, nil, err
 		}
 	}
+	if pending != nil {
+		results, err := pruneTelemetryRetentionCandidates(layout, db, pending.Candidates, now)
+		return results, precheckSummary, pending, err
+	}
 	results, summary, err := pruneTelemetryRetention(layout, config, db, now, dryRun)
 	return results, summary, pending, err
+}
+
+func pruneTelemetryRetentionCandidates(
+	layout instance.Layout,
+	db *rollup.DB,
+	candidates []retention.Result,
+	now time.Time,
+) ([]retention.Result, error) {
+	var err error
+	ownedDB := false
+	if db == nil {
+		db, err = rollup.Open(layout.TelemetryDB())
+		if err != nil {
+			return nil, err
+		}
+		ownedDB = true
+	}
+	if ownedDB {
+		defer func() { _ = db.Close() }()
+	}
+	triggerGuard, closeTriggerGuard, err := openTriggerPruneGuard(layout, false, now)
+	if err != nil {
+		return nil, err
+	}
+	defer closeTriggerGuard()
+	recoveryGuard, closeRecoveryGuard, err := openRecoveryCustodyPruneGuard(layout, false)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRecoveryGuard()
+	return retention.PruneCandidates(
+		layout,
+		db,
+		candidates,
+		retention.Options{Now: now, BeforeDelete: combineBeforeDeleteGuards(triggerGuard, recoveryGuard)},
+	)
 }
 
 func newTelemetryRetentionPass(
 	config instance.TelemetryRetentionConfig,
 	at time.Time,
 	dryRun bool,
-	candidateCount int,
+	candidates []retention.Result,
 	enforceAt time.Time,
 	summary retention.Summary,
 ) (*telemetryRetentionPass, error) {
@@ -354,18 +394,22 @@ func newTelemetryRetentionPass(
 	if _, err := rand.Read(id[:]); err != nil {
 		return nil, fmt.Errorf("telemetry retention: create pass id: %w", err)
 	}
-	return &telemetryRetentionPass{
+	pass := &telemetryRetentionPass{
 		ID:               fmt.Sprintf("%x", id[:]),
 		Phase:            telemetryRetentionPassPrepared,
 		At:               at,
 		DryRun:           dryRun,
-		CandidateCount:   candidateCount,
+		CandidateCount:   len(candidates),
 		EnforceAt:        enforceAt,
 		PolicyWindow:     window,
 		PolicyMaxRuns:    config.MaxRunLimit(),
 		TotalRuns:        summary.TotalRuns,
 		OldestRetainedAt: summary.OldestRetainedStartedAt,
-	}, nil
+	}
+	if !dryRun {
+		pass.Candidates = append([]retention.Result(nil), candidates...)
+	}
+	return pass, nil
 }
 
 // reportTelemetryPruned prints one startup-log line per pruneConfiguredTelemetryRetention
@@ -487,9 +531,12 @@ func validateTelemetryRetentionPass(pass telemetryRetentionPass) error {
 	}
 	switch pass.Phase {
 	case telemetryRetentionPassCompleted:
+		if !pass.DryRun && len(pass.Candidates) != pass.CandidateCount {
+			return fmt.Errorf("telemetry retention: completed pass %s has an incomplete candidate manifest", pass.ID)
+		}
 		return nil
 	case telemetryRetentionPassPrepared:
-		if pass.DryRun || pass.PolicyWindow <= 0 || pass.PolicyMaxRuns <= 0 {
+		if pass.DryRun || pass.PolicyWindow <= 0 || pass.PolicyMaxRuns <= 0 || len(pass.Candidates) != pass.CandidateCount {
 			return fmt.Errorf("telemetry retention: invalid prepared pass %s", pass.ID)
 		}
 		return nil
@@ -555,13 +602,7 @@ func reconcilePendingTelemetryRetentionPass(
 		return pass, true, err
 	}
 	if pass.Phase == telemetryRetentionPassPrepared {
-		results, _, err := pruneTelemetryRetentionPolicy(
-			layout,
-			retention.Policy{Window: pass.PolicyWindow, MaxRuns: pass.PolicyMaxRuns},
-			db,
-			pass.At,
-			false,
-		)
+		results, err := pruneTelemetryRetentionCandidates(layout, db, pass.Candidates, pass.At)
 		if err != nil {
 			return pass, true, err
 		}

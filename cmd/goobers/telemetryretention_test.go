@@ -165,13 +165,16 @@ func TestTelemetryRetentionReconcilesPreparedPassAfterCrash(t *testing.T) {
 	root := initDeterministicDemo(t)
 	layout := instance.NewLayout(root)
 	runDir := createTelemetryRetentionRun(t, layout.ForGaggle("example"), "automatic-old", now.Add(-48*time.Hour))
+	lateDir := createActiveTelemetryRetentionRun(t, layout.ForGaggle("example"), "late-terminal", now.Add(-48*time.Hour))
 	db, err := rollup.Open(layout.TelemetryDB())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if err := db.IngestRun(context.Background(), runDir); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{runDir, lateDir} {
+		if err := db.IngestRun(context.Background(), dir); err != nil {
+			t.Fatal(err)
+		}
 	}
 	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -194,6 +197,21 @@ func TestTelemetryRetentionReconcilesPreparedPassAfterCrash(t *testing.T) {
 	if _, _, err := pruneAndRecordTelemetryRetentionWithWriter(log, layout, config, db, now, crashAfterPrepare); err == nil {
 		t.Fatal("pre-crash pass unexpectedly succeeded")
 	}
+	state, ok, err := readTelemetryRetentionState(layout)
+	if err != nil || !ok || state.PendingTelemetryPass == nil || len(state.PendingTelemetryPass.Candidates) != 1 ||
+		state.PendingTelemetryPass.Candidates[0].RunID != "automatic-old" {
+		t.Fatalf("frozen prepared manifest: ok=%v state=%+v err=%v", ok, state, err)
+	}
+	late, _, err := journal.Recover(lateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Close(); err != nil {
+		t.Fatal(err)
+	}
 	count, dryRun, err := pruneAndRecordTelemetryRetention(log, layout, config, db, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +222,10 @@ func TestTelemetryRetentionReconcilesPreparedPassAfterCrash(t *testing.T) {
 	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
 		t.Fatalf("reconciled prepared pass left run: %v", err)
 	}
-	state, ok, err := readTelemetryRetentionState(layout)
+	if _, err := os.Stat(lateDir); err != nil {
+		t.Fatalf("reconciled pass absorbed newly eligible run: %v", err)
+	}
+	state, ok, err = readTelemetryRetentionState(layout)
 	if err != nil || !ok || state.PendingTelemetryPass != nil || !state.LastPassAt.Equal(now) {
 		t.Fatalf("reconciled state: ok=%v state=%+v err=%v", ok, state, err)
 	}
@@ -950,6 +971,27 @@ func createTelemetryRetentionRun(t *testing.T, layout instance.Layout, runID str
 		t.Fatal(err)
 	}
 	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return run.Dir()
+}
+
+func createActiveTelemetryRetentionRun(t *testing.T, layout instance.Layout, runID string, startedAt time.Time) string {
+	t.Helper()
+	if err := os.MkdirAll(layout.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithClock(func() time.Time { return startedAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.RecordArtifact("transcript.jsonl", []byte("transcript\n")); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.Close(); err != nil {
