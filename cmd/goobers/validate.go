@@ -153,7 +153,7 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 	instancePath := fs.String("instance", "", "with --source-tree, solve placement and capabilities against this real instance.yaml")
 	strict := fs.Bool("strict", false, "treat config warnings as validation errors")
 	fs.Usage = helpUsage(stderr, name)
-	if err := fs.Parse(args); err != nil {
+	if !parseFlagsBeforePath(fs, args, stderr) {
 		return 2
 	}
 	if fs.NArg() > 1 {
