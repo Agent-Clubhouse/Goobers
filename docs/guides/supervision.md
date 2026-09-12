@@ -232,9 +232,10 @@ whose credentials the instance references.
 
 > **Status.** The required Windows CI gate builds and vets the full binary on a
 > native Windows runner and runs the `internal/winsvc` transition tests on
-> every push and pull request. Native Service Control Manager lifecycle
-> verification — install, start, query, stop, and uninstall of the packaged
-> service — remains open in [#2438](https://github.com/Agent-Clubhouse/Goobers/issues/2438).
+> every pull request, merge group, and push to main. Native Service Control
+> Manager lifecycle verification — install, start, query, stop, and uninstall
+> of the packaged service — remains open in
+> [#2438](https://github.com/Agent-Clubhouse/Goobers/issues/2438).
 
 ---
 
