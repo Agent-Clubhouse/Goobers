@@ -1,6 +1,7 @@
-# Per-gaggle namespace template (k8s-infra-shape.md §3: one namespace per
-# gaggle, GAG-012; workload identity per gaggle, SEC-001/002; §5 deny-first
-# networking). Stamp a gaggle by overlaying this base — see ../examples/.
+# Target per-gaggle namespace template (k8s-infra-shape.md §3, GAG-012,
+# SEC-001/002). The current worker does not derive dispatch namespace or
+# ServiceAccount from a Gaggle declaration; see README.md and #4897 before
+# stamping more than the single-gaggle supported topology.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

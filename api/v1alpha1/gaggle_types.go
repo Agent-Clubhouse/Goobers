@@ -4,8 +4,10 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // GaggleSpec defines a siloed workforce within an instance. A gaggle targets one
 // project codebase and exactly one backlog (singleton), and contains its own
-// goobers and workflows (which reference it by name). Isolation is realized as a
-// namespace + identity per gaggle (GAG-001..006, SEC-001/002).
+// goobers and workflows (which reference it by name). Isolation declares the
+// target namespace + identity per gaggle (GAG-001..006, SEC-001/002). The
+// active mode-3 worker does not yet route from this declaration: its single
+// --dispatch-namespace value controls every gaggle queue it polls (#4897).
 type GaggleSpec struct {
 	// Cost overrides instance-wide external cost publication. An omitted or
 	// null enabled value inherits the instance default; local accounting remains active.
@@ -202,15 +204,19 @@ type GaggleSandbox struct {
 	Agentic string `json:"agentic,omitempty" yaml:"agentic,omitempty"`
 }
 
-// GaggleIsolation captures the isolation boundary for a gaggle: its Kubernetes
-// namespace and the workload identity its runs assume.
+// GaggleIsolation declares the target isolation boundary for a gaggle. The
+// quarantined operator consumes Namespace, but the active mode-3 worker does
+// not; see Namespace and #4897.
 type GaggleIsolation struct {
-	// Namespace is the k8s namespace this gaggle's pods/secrets live in. Must be
-	// unique per gaggle so credentials/work/telemetry do not leak across gaggles.
+	// Namespace is the k8s namespace reserved for this gaggle's pods and secrets
+	// in the target/operator topology. It is still required for schema
+	// compatibility, but does not select the active mode-3 dispatch namespace:
+	// one --dispatch-namespace value controls every gaggle queue a worker polls.
+	// Do not treat this declaration alone as an enforced isolation boundary.
 	// +kubebuilder:validation:Required
 	Namespace string `json:"namespace" yaml:"namespace"`
-	// IdentityRef names the per-gaggle Azure workload identity (managed-identity
-	// federation) used to reach Key Vault, providers, and telemetry.
+	// IdentityRef names the target per-gaggle Azure workload identity
+	// (managed-identity federation). The active dispatcher does not consume it.
 	// +optional
 	IdentityRef string `json:"identityRef,omitempty" yaml:"identityRef,omitempty"`
 }

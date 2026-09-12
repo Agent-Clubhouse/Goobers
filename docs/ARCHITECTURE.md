@@ -550,7 +550,7 @@ See the security alert intake guide under `docs/guides/`.
 |---|---|---|---|
 | 1 — Solo | None (local trust) | Env vars / token file, redacted from journals | Worktree + process isolation, capability-scoped credential injection |
 | 2 — Team | Optional OIDC on portal/daemon | Env/file or team secret store | + per-goober credential scoping (shipped, #823); sandboxed stage execution (V1, mechanism per ADR 0001) |
-| 3 — Cloud | Entra ID (OIDC) | **Azure Key Vault** | Per-gaggle namespaces + identities, network policy (existing `SEC-*`) |
+| 3 — Cloud | Entra ID (OIDC) | **Azure Key Vault** | Target: per-gaggle namespaces + identities and network policy (`SEC-*`); active mode-3 dispatch still uses one worker-wide namespace (#4897) |
 
 The protocol (OIDC) and the seam (an `Authenticator` + a secret-resolver interface)
 are constant; tiers select implementations. The Tutor write-boundary (`SEC-021`) is
