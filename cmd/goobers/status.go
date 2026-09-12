@@ -1172,12 +1172,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				parked = &snapshot
 			}
 		}
-		var baselineBlockers *statusBaselineBlockers
-		// Omitted when nothing is parked, like the other optional sections: a
-		// healthy instance's JSON keeps exactly the shape it had before.
-		if snapshot, err := loadStatusBaselineBlockers(l); err == nil && snapshot.Total > 0 {
-			baselineBlockers = &snapshot
-		}
+		baselineBlockers := optionalStatusBaselineBlockers(l)
 		output := statusJSONOutput{
 			Root:                   optionalStatusRoot(supportsWatch, l, now),
 			QueueEligibility:       optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
