@@ -389,6 +389,7 @@ export interface Instance extends ContractVersion {
   maintenance?: MaintenanceStatus;
   telemetryRetention?: TelemetryRetentionStatus;
   journalHealth?: JournalHealthStatus;
+  storageHealth?: StorageHealthStatus;
   memoryHighWater?: number;
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
@@ -397,6 +398,19 @@ export interface Instance extends ContractVersion {
 
 export interface JournalHealthStatus {
   appendsDropped: number;
+}
+
+export interface StorageHealthStatus {
+  tier: "healthy" | "warning" | "admission-stopped" | "measurement-unavailable";
+  path?: string;
+  freeBytes: number;
+  totalBytes?: number;
+  warningFloorBytes?: number;
+  warningFloorPercent?: number;
+  criticalFloorBytes?: number;
+  criticalFloorPercent?: number;
+  measuredAt?: string;
+  error?: string;
 }
 
 export interface TelemetryRetentionStatus {

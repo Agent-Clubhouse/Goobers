@@ -3947,3 +3947,77 @@ func TestExternalTelemetryConnectorsByName(t *testing.T) {
 		t.Fatalf("index = %v for a nil *Config, want nil", index)
 	}
 }
+
+func TestResolveStorageThresholdsDefaults(t *testing.T) {
+	// No config at all: defaults apply, and the critical byte floor is
+	// clamped to the (also-defaulted) recovery archive bound.
+	rc := RunConditions{}
+	recovery := RecoverySnapshotConfig{}
+	thresholds := rc.ResolveStorageThresholds(recovery)
+
+	wantCritical := int64(DefaultRecoverySnapshotMaxCount) * DefaultRecoverySnapshotMaxArchiveBytes
+	if thresholds.CriticalFloorBytes != wantCritical {
+		t.Fatalf("CriticalFloorBytes = %d, want the recovery archive bound %d", thresholds.CriticalFloorBytes, wantCritical)
+	}
+	if thresholds.WarningFloorBytes != wantCritical*2 {
+		t.Fatalf("WarningFloorBytes = %d, want 2x the critical floor (%d)", thresholds.WarningFloorBytes, wantCritical*2)
+	}
+	if thresholds.WarningFloorPercent != DefaultStorageWarningFloorPercent {
+		t.Fatalf("WarningFloorPercent = %v, want the default %v", thresholds.WarningFloorPercent, DefaultStorageWarningFloorPercent)
+	}
+	if thresholds.CriticalFloorPercent != DefaultStorageCriticalFloorPercent {
+		t.Fatalf("CriticalFloorPercent = %v, want the default %v", thresholds.CriticalFloorPercent, DefaultStorageCriticalFloorPercent)
+	}
+	if thresholds.CheckInterval != DefaultStorageCheckInterval {
+		t.Fatalf("CheckInterval = %v, want the default %v", thresholds.CheckInterval, DefaultStorageCheckInterval)
+	}
+}
+
+func TestResolveStorageThresholdsOperatorOverrideBelowRecoveryBoundIsHonored(t *testing.T) {
+	// #4873: an explicit operator floor below the recovery bound is a
+	// deliberate choice, not something the resolver should second-guess.
+	rc := RunConditions{Storage: &StorageHealthConfig{CriticalFloorBytes: 1 << 20}}
+	recovery := RecoverySnapshotConfig{MaxSnapshots: 10, MaxArchiveBytes: 1 << 30}
+	thresholds := rc.ResolveStorageThresholds(recovery)
+	if thresholds.CriticalFloorBytes != 1<<20 {
+		t.Fatalf("CriticalFloorBytes = %d, want the explicit operator value 1<<20 honored as-is", thresholds.CriticalFloorBytes)
+	}
+}
+
+func TestResolveStorageThresholdsCustomCheckInterval(t *testing.T) {
+	rc := RunConditions{Storage: &StorageHealthConfig{CheckInterval: "5m"}}
+	thresholds := rc.ResolveStorageThresholds(RecoverySnapshotConfig{})
+	if thresholds.CheckInterval != 5*time.Minute {
+		t.Fatalf("CheckInterval = %v, want 5m", thresholds.CheckInterval)
+	}
+}
+
+func TestStorageHealthConfigValidate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg     *StorageHealthConfig
+		wantErr bool
+	}{
+		"nil is valid":                     {cfg: nil},
+		"zero value is valid":              {cfg: &StorageHealthConfig{}},
+		"negative warning bytes":           {cfg: &StorageHealthConfig{WarningFloorBytes: -1}, wantErr: true},
+		"negative critical bytes":          {cfg: &StorageHealthConfig{CriticalFloorBytes: -1}, wantErr: true},
+		"warning percent over 100":         {cfg: &StorageHealthConfig{WarningFloorPercent: 101}, wantErr: true},
+		"critical percent negative":        {cfg: &StorageHealthConfig{CriticalFloorPercent: -1}, wantErr: true},
+		"critical bytes exceeds warning":   {cfg: &StorageHealthConfig{WarningFloorBytes: 1 << 20, CriticalFloorBytes: 1 << 30}, wantErr: true},
+		"critical percent exceeds warning": {cfg: &StorageHealthConfig{WarningFloorPercent: 5, CriticalFloorPercent: 10}, wantErr: true},
+		"critical below warning is fine":   {cfg: &StorageHealthConfig{WarningFloorBytes: 1 << 30, CriticalFloorBytes: 1 << 20}},
+		"invalid check interval":           {cfg: &StorageHealthConfig{CheckInterval: "not-a-duration"}, wantErr: true},
+		"zero check interval rejected":     {cfg: &StorageHealthConfig{CheckInterval: "0s"}, wantErr: true},
+		"valid check interval":             {cfg: &StorageHealthConfig{CheckInterval: "90s"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := tc.cfg.validate()
+			if tc.wantErr && err == nil {
+				t.Fatal("validate() = nil, want an error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validate() = %v, want nil", err)
+			}
+		})
+	}
+}
