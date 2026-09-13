@@ -116,15 +116,15 @@ func (h *dashboardStartingHandler) ServeHTTP(response http.ResponseWriter, reque
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Goobers is starting</title>
 <style>
-:root{color-scheme:light dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f172a;color:#e2e8f0}
-main{width:min(42rem,calc(100% - 3rem));padding:2.5rem;border:1px solid #334155;border-radius:1rem;background:#111827;box-shadow:0 24px 80px #02061780}
-.eyebrow{color:#5eead4;font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+:root{color-scheme:light;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--bg:#f4f3ef;--surface:#fbfaf7;--panel:#fff;--ink:#202026;--muted:#6f6d78;--line:#dfddd7;--accent:#6847d9;--accent-soft:#eee9ff;--accent-ink:#4c2db8}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink)}
+main{width:min(42rem,calc(100% - 3rem));padding:2.5rem;border:1px solid var(--line);border-radius:1rem;background:var(--panel);box-shadow:0 24px 80px #20202614}
+.eyebrow{color:var(--accent-ink);font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
 h1{margin:.5rem 0 1rem;font-size:clamp(2rem,6vw,3.5rem)}
-.summary{color:#cbd5e1;line-height:1.6}
-.status{margin-top:2rem;padding:1rem 1.25rem;border-radius:.75rem;background:#1e293b}
-.phase{font-weight:700}.detail,.elapsed{margin:.4rem 0 0;color:#94a3b8}
-.pulse{display:inline-block;width:.65rem;height:.65rem;margin-right:.55rem;border-radius:50%;background:#2dd4bf;animation:pulse 1.4s infinite}
+.summary{color:var(--muted);line-height:1.6}
+.status{margin-top:2rem;padding:1rem 1.25rem;border:1px solid color-mix(in srgb,var(--accent) 22%,var(--line));border-radius:.75rem;background:var(--accent-soft)}
+.phase{color:var(--accent-ink);font-weight:700}.detail,.elapsed{margin:.4rem 0 0;color:var(--muted)}
+.pulse{display:inline-block;width:.65rem;height:.65rem;margin-right:.55rem;border-radius:50%;background:var(--accent);animation:pulse 1.4s infinite}
 @keyframes pulse{50%{opacity:.3;transform:scale(.75)}}
 </style>
 </head><body><main><div class="eyebrow">Goobers dashboard</div><h1>Goobers is starting</h1>
