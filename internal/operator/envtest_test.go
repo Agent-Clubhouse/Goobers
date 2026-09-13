@@ -1,6 +1,8 @@
-//go:build integration
+//go:build integration && !windows
 
 package operator
+
+// controller-runtime v0.25.0 does not compile envtest on Windows (upstream #3586).
 
 import (
 	"context"
