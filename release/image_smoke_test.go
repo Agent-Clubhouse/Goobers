@@ -129,10 +129,13 @@ func TestImageDSL3SmokeAnnotatesWorkflowPreviewOnEveryPlatform(t *testing.T) {
 		writeTarget string
 	}{
 		{
-			name:        "linux",
-			script:      linuxImageDSL3Smoke,
-			workflow:    "workflow=/tmp/dsl3-demo/config/gaggles/demo/workflows/demo.yaml",
-			manifest:    "/tmp/dsl3-demo/config/manifest.yaml",
+			name:   "linux",
+			script: linuxImageDSL3Smoke,
+			// Parameterised so TestShippedImageProbesRunWithRealBinary can
+			// execute this script against a temp directory; the image still
+			// uses /tmp/dsl3-demo via the default.
+			workflow:    `workflow="$demo"/config/gaggles/demo/workflows/demo.yaml`,
+			manifest:    "config/manifest.yaml",
 			readTarget:  `done < "$workflow" > "$preview_workflow"`,
 			writeTarget: `mv "$preview_workflow" "$workflow"`,
 		},

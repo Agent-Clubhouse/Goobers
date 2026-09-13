@@ -20,10 +20,24 @@ type imageDSL3SmokeEvidence struct {
 	Output     string   `json:"output"`
 }
 
-const linuxImageStageSmoke = `goobers init --allow-ephemeral --template=quickstart /tmp/quickstart-instance
-goobers validate /tmp/quickstart-instance
-goobers init --allow-ephemeral --demo --insecure /tmp/demo-instance
-GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo /tmp/demo-instance
+// linuxImageStagePrepare is the container-free half: scaffolding and
+// validation. TestShippedImageProbesRunWithRealBinary executes it verbatim in
+// ordinary CI, so a product change that invalidates the probe is caught before
+// a tag is signed rather than after — v0.4.0-rc.5 was signed and notarized
+// before its probe turned out not to validate.
+//
+// GOOBERS_STAGE_SMOKE_DIR moves the target directory for that test; the image
+// always uses the default paths.
+const linuxImageStagePrepare = `root="${GOOBERS_STAGE_SMOKE_DIR:-/tmp}"
+goobers init --allow-ephemeral --template=quickstart "$root/quickstart-instance"
+goobers validate "$root/quickstart-instance"
+goobers init --allow-ephemeral --demo --insecure "$root/demo-instance"
+`
+
+// The run stays image-only: a hermetic stage re-invokes goobers through a
+// sanitized environment that does not inherit a test's temporary PATH, so only
+// an image with goobers on the system path can execute it.
+const linuxImageStageSmoke = linuxImageStagePrepare + `GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo "$root/demo-instance"
 `
 
 const windowsImageStageSmoke = `$ErrorActionPreference = 'Stop'
@@ -43,9 +57,13 @@ if ($LASTEXITCODE -ne 0) { throw 'Image mock demo execution failed' }
 
 // The Workflow annotation is the supported, explicit preview opt-in. It is
 // applied only to this fresh fixture; fix migrates the workflow mechanically.
-const linuxImageDSL3Smoke = `goobers init --allow-ephemeral --demo --insecure /tmp/dsl3-demo
-workflow=/tmp/dsl3-demo/config/gaggles/demo/workflows/demo.yaml
-preview_workflow=/tmp/dsl3-demo/config/gaggles/demo/workflows/demo-preview.yaml
+// Same split as the stage probe. #5068's acknowledgement logic is unchanged;
+// only the target directory is parameterised and the sandboxed run separated
+// so CI can execute the half that failed the rc.5 release.
+const linuxImageDSL3Prepare = `demo="${GOOBERS_DSL3_SMOKE_DIR:-/tmp/dsl3-demo}"
+goobers init --allow-ephemeral --demo --insecure "$demo"
+workflow="$demo"/config/gaggles/demo/workflows/demo.yaml
+preview_workflow="$demo"/config/gaggles/demo/workflows/demo-preview.yaml
 while IFS= read -r line; do
   printf '%s\n' "$line"
   if [ "$line" = 'metadata:' ]; then
@@ -53,9 +71,11 @@ while IFS= read -r line; do
   fi
 done < "$workflow" > "$preview_workflow"
 mv "$preview_workflow" "$workflow"
-goobers fix --to 3.0 --write /tmp/dsl3-demo
-goobers validate /tmp/dsl3-demo
-GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo /tmp/dsl3-demo
+goobers fix --to 3.0 --write "$demo"
+goobers validate "$demo"
+`
+
+const linuxImageDSL3Smoke = linuxImageDSL3Prepare + `GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo "$demo"
 `
 
 const windowsImageDSL3Smoke = `$ErrorActionPreference = 'Stop'
