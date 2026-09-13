@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -490,6 +491,82 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	probes := &daemonProbeState{
+		apiListening:            &apiListening,
+		lastTriggerSweepAtNanos: &lastTriggerSweepAtNanos,
+		startup:                 tracker,
+		ready:                   &ready,
+		configLoaded:            &configLoaded,
+		stateOpen:               &stateOpen,
+		resumeComplete:          &resumeComplete,
+		sweepsStarted:           &sweepsStarted,
+		schedulerTicked:         &schedulerTicked,
+		lastTickAtNanos:         &lastTickAtNanos,
+		livenessTimeout:         livenessTimeout,
+		now:                     time.Now,
+	}
+	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
+	startingHandler := httpapi.WrapWithProbes(
+		http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			http.Error(response, "daemon is starting", http.StatusServiceUnavailable)
+		}),
+		probes.liveness,
+		probes.readiness,
+	)
+	apiHandler, err := httpapi.NewSwitchHandler(
+		startingHandler,
+		startupConfig.API.Auth != nil || !instance.IsLoopbackListenAddress(apiListenAddress(startupConfig)),
+	)
+	if err != nil {
+		pf(stderr, "error: initialize startup HTTP API: %v\n", err)
+		return 1
+	}
+	var apiServerOpts []httpapi.ServerOption
+	if tlsConfig := startupConfig.API.TLS; tlsConfig != nil {
+		apiServerOpts = append(apiServerOpts, httpapi.WithTLS(tlsConfig.CertFile, tlsConfig.KeyFile))
+	}
+	apiServer, err := httpapi.NewServer(apiListenAddress(startupConfig), apiHandler, apiLog, apiServerOpts...)
+	if err != nil {
+		pf(stderr, "error: initialize HTTP API: %v\n", err)
+		return 1
+	}
+	if err := runStartupPhase(stdout, tracker, "api-bind", apiListenAddress(startupConfig), apiServer.Start); err != nil {
+		pf(stderr, "error: start HTTP API: %v\n", err)
+		return 1
+	}
+	apiListening.Store(true)
+	defer apiListening.Store(false)
+	var webhookServer *httpapi.Server
+	apiStopped := false
+	defer func() {
+		if apiStopped {
+			return
+		}
+		stopDaemon()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+		defer shutdownCancel()
+		if err := apiServer.Shutdown(shutdownCtx); err != nil {
+			pf(stderr, "error: %v\n", err)
+		}
+		if webhookServer != nil {
+			if err := webhookServer.Shutdown(shutdownCtx); err != nil {
+				pf(stderr, "error: shut down webhook listener: %v\n", err)
+			}
+		}
+	}()
+	if err := publishDaemonAPIAddress(apiAddressPath, apiServer.Address()); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	apiAddressPublished := true
+	defer func() {
+		if apiAddressPublished {
+			if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
+				pf(stderr, "error: %v\n", err)
+			}
+		}
+	}()
+	tracker.set("scheduler-setup", root)
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
@@ -745,7 +822,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	defer stopReadServiceWorker(stopActiveSampler, "active-run sampler", stderr)
 	stopSchedulerProjector := reads.StartSchedulerStateProjector(0)
 	defer stopReadServiceWorker(stopSchedulerProjector, "scheduler-state projector", stderr)
-	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
 	// swaps in the OIDC authenticator plus the role-floor authorizer, and
@@ -956,72 +1032,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// for a non-loopback bind with no human authenticator configured, just
 	// above). Every other path keeps going through the versioned handler
 	// exactly as before; WrapWithProbes forwards authenticatedTransport() and
-	// shutdown() straight through so NewServer's SEC-043 gate below and
+	// shutdown() straight through so the server's SEC-043 posture and
 	// apiHandler's own SSE-close lifecycle both keep working unchanged.
-	//
-	// The checks themselves live on daemonProbeState (daemon_probes.go) —
-	// a named type, not two inline closures — so they are directly unit
-	// testable without a real daemon.
-	probes := &daemonProbeState{
-		apiListening:            &apiListening,
-		lastTriggerSweepAtNanos: &lastTriggerSweepAtNanos,
-		startup:                 tracker,
-		ready:                   &ready,
-		configLoaded:            &configLoaded,
-		stateOpen:               &stateOpen,
-		resumeComplete:          &resumeComplete,
-		sweepsStarted:           &sweepsStarted,
-		schedulerTicked:         &schedulerTicked,
-		lastTickAtNanos:         &lastTickAtNanos,
-		livenessTimeout:         livenessTimeout,
-		now:                     time.Now,
-	}
 	handler = httpapi.WrapWithProbes(handler, probes.liveness, probes.readiness)
-	var apiServerOpts []httpapi.ServerOption
-	if tlsConfig := setup.Config.API.TLS; tlsConfig != nil {
-		apiServerOpts = append(apiServerOpts, httpapi.WithTLS(tlsConfig.CertFile, tlsConfig.KeyFile))
-	}
-	apiServer, err := httpapi.NewServer(apiListenAddress(setup.Config), handler, apiLog, apiServerOpts...)
-	if err != nil {
-		pf(stderr, "error: initialize HTTP API: %v\n", err)
+	if err := apiHandler.Set(handler); err != nil {
+		pf(stderr, "error: activate HTTP API: %v\n", err)
 		return 1
 	}
-	var webhookServer *httpapi.Server
-	if err := runStartupPhase(stdout, tracker, "api-bind", apiListenAddress(setup.Config), apiServer.Start); err != nil {
-		pf(stderr, "error: start HTTP API: %v\n", err)
-		return 1
-	}
-	apiListening.Store(true)
-	defer apiListening.Store(false)
-	if err := publishDaemonAPIAddress(apiAddressPath, apiServer.Address()); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	apiAddressPublished := true
-	defer func() {
-		if apiAddressPublished {
-			if err := removeDaemonAPIAddress(apiAddressPath); err != nil {
-				pf(stderr, "error: %v\n", err)
-			}
-		}
-	}()
-	apiStopped := false
-	defer func() {
-		if apiStopped {
-			return
-		}
-		stopDaemon()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), httpShutdownGrace)
-		defer shutdownCancel()
-		if err := apiServer.Shutdown(shutdownCtx); err != nil {
-			pf(stderr, "error: %v\n", err)
-		}
-		if webhookServer != nil {
-			if err := webhookServer.Shutdown(shutdownCtx); err != nil {
-				pf(stderr, "error: shut down webhook listener: %v\n", err)
-			}
-		}
-	}()
 	// Rebuild the claim-renewal set from the LEDGER plus run liveness before
 	// any reap is permitted — DS6's load-bearing ordering
 	// (distributed-state-and-coordination.md §10): this process's in-memory

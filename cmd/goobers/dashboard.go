@@ -305,13 +305,37 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	}
 
 	errorLog := log.New(stderr, "dashboard: ", log.LstdFlags)
+	loopback := dashboardHostIsLoopback(host)
+	var api dashboardAPI
+	var portalHandler http.Handler
+	apiPrepared := false
+	if !loopback && config.API.Auth != nil {
+		api, err = prepareDashboardAPI(ctx, layout, config, errorLog, loopback, waitForDaemon.duration())
+		if err != nil {
+			pf(stderr, "error: initialize dashboard API: %v\n", err)
+			return 1
+		}
+		portalHandler, err = newDashboardHandler(assets, api.handler, api.mode, layout.Root)
+		if err != nil {
+			pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
+			return 1
+		}
+		apiPrepared = true
+	}
 	listener, err := listenDashboard(host, port)
 	if err != nil {
+		if apiPrepared {
+			_ = api.close()
+		}
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
-	handler := newDashboardHandlerSwitch(newDashboardStartingHandler(layout, config))
+	initialHandler := http.Handler(newDashboardStartingHandler(layout, config))
+	if apiPrepared {
+		initialHandler = portalHandler
+	}
+	handler := newDashboardHandlerSwitch(initialHandler)
 	requestContext, cancelRequests := context.WithCancel(ctx)
 	server := &http.Server{
 		Handler:           handler,
@@ -341,7 +365,12 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	pln(stdout, dashboardURL)
 	if !*noOpen {
 		if err := launchDashboardBrowser(ctx, dashboardURL); err != nil {
-			shutdownErr := stopDashboardServer(server, cancelRequests)
+			var shutdownErr error
+			if apiPrepared {
+				shutdownErr = stopDashboard(server, cancelRequests, api)
+			} else {
+				shutdownErr = stopDashboardServer(server, cancelRequests)
+			}
 			if ctx.Err() != nil {
 				if shutdownErr != nil {
 					pf(stderr, "error: shut down dashboard: %v\n", shutdownErr)
@@ -354,22 +383,24 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		}
 	}
 
-	api, err := prepareDashboardAPI(ctx, layout, config, errorLog, dashboardHostIsLoopback(host), waitForDaemon.duration())
-	if err != nil {
-		_ = stopDashboardServer(server, cancelRequests)
-		if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, context.Canceled) {
-			return 0
+	if !apiPrepared {
+		api, err = prepareDashboardAPI(ctx, layout, config, errorLog, loopback, waitForDaemon.duration())
+		if err != nil {
+			_ = stopDashboardServer(server, cancelRequests)
+			if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, context.Canceled) {
+				return 0
+			}
+			pf(stderr, "error: initialize dashboard API: %v\n", err)
+			return 1
 		}
-		pf(stderr, "error: initialize dashboard API: %v\n", err)
-		return 1
+		portalHandler, err = newDashboardHandler(assets, api.handler, api.mode, layout.Root)
+		if err != nil {
+			_ = stopDashboardServer(server, cancelRequests)
+			pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
+			return 1
+		}
+		handler.set(portalHandler)
 	}
-	portalHandler, err := newDashboardHandler(assets, api.handler, api.mode, layout.Root)
-	if err != nil {
-		_ = stopDashboardServer(server, cancelRequests)
-		pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
-		return 1
-	}
-	handler.set(portalHandler)
 	pf(stderr, "dashboard: mode=%s\n", api.mode)
 
 	select {

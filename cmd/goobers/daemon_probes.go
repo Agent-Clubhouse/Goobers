@@ -76,12 +76,8 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 			"apiListening":      d.apiListening != nil && d.apiListening.Load(),
 			"schedulerReady":    d.ready.Load() && d.freshHeartbeat(d.lastTickAtNanos),
 			"triggerSweepReady": d.ready.Load() && d.freshHeartbeat(d.lastTriggerSweepAtNanos),
-			// configLoaded and stateOpen both flip before the HTTP listener
-			// itself ever opens (runUpContextWithForce sets them, then calls
-			// apiServer.Start() only afterward) — so in practice neither can
-			// ever be observed false over HTTP; they are included anyway as
-			// literal readiness diagnostics per #3806's own ask, informational
-			// rather than load-bearing for this pair.
+			// The API listener opens before scheduler setup, so these checks
+			// identify whether configuration and durable state have caught up.
 			"configLoaded":   d.configLoaded.Load(),
 			"stateOpen":      d.stateOpen.Load(),
 			"resumeComplete": d.resumeComplete.Load(),
