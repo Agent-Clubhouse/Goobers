@@ -331,9 +331,9 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		return 1
 	}
 
-	initialHandler := http.Handler(newDashboardStartingHandler(layout, config))
-	if apiPrepared {
-		initialHandler = portalHandler
+	initialHandler := portalHandler
+	if !apiPrepared {
+		initialHandler = newDashboardStartingHandler(layout, config)
 	}
 	handler := newDashboardHandlerSwitch(initialHandler)
 	requestContext, cancelRequests := context.WithCancel(ctx)
