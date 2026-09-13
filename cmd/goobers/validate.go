@@ -299,7 +299,6 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 			strings.ToUpper(string(placeholderSeverity)), placeholderFindingCode, finding.file, finding.message)
 		diagnostics.add(finding.file, "/", placeholderFindingCode, string(placeholderSeverity), finding.message)
 	}
-
 	// api/validate's cross-reference checks (above) mirror most of
 	// workflow.Compile's own semantic analysis (CheckReachability/
 	// CheckSchedules/CheckGateOutcomes/CheckWorkflowAdmission), but this is the one
@@ -479,9 +478,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		// change the exit code (same contract as the #1547 size warning).
 		checkRepositoryReality(root, configDir, cfg, set, stores, stdout, diagnostics)
 	}
-	if options.checkDispatchNamespaces {
-		checkGaggleDispatchNamespaces(root, configDir, set, stdout, diagnostics)
-	}
+	checkGaggleDispatchNamespacesIfRequested(options, root, configDir, set, stdout, diagnostics)
 	printDSLVersionSummary(stdout, set.Workflows)
 	// Three codes are strict-neutral by ruling: they print and land in
 	// diagnostics but are excluded from --strict's promotion. Each is a

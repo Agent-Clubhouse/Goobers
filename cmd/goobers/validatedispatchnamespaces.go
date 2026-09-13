@@ -19,6 +19,18 @@ import (
 // use to provision access before enabling or expanding mode-3 dispatch.
 const WarningDispatchNamespaceUnready = "GNS001"
 
+// checkGaggleDispatchNamespacesIfRequested guards checkGaggleDispatchNamespaces
+// on validateOptions.checkDispatchNamespaces here rather than in
+// runValidateConfig's own body: that function is already at its frozen
+// body-length ceiling (test/complexitygate), and every line the guard would
+// have added there is one this wrapper absorbs instead.
+func checkGaggleDispatchNamespacesIfRequested(options validateOptions, root, configDir string, set *instance.ConfigSet, stdout io.Writer, diagnostics *diagnosticCollector) {
+	if !options.checkDispatchNamespaces {
+		return
+	}
+	checkGaggleDispatchNamespaces(root, configDir, set, stdout, diagnostics)
+}
+
 // checkGaggleDispatchNamespaces is advisory-only, exactly like
 // checkRepositoryReality: a live cluster check never changes validate's exit
 // code, because a config that is otherwise valid must stay valid to run in
