@@ -42,7 +42,7 @@ func TestStartProjectorRoutesRepairWritesThroughCommitLoop(t *testing.T) {
 	}
 	t.Cleanup(func() { newRepairSweeper = original })
 
-	stop, _, _ := startProjector(context.Background(), store, watermarks, layout, nil)
+	stop, _, _, _ := startProjector(context.Background(), store, watermarks, layout, nil)
 	defer stop()
 
 	if repairWriter == store {
@@ -80,7 +80,7 @@ func TestStartProjectorUsesDefaultRetentionWindowWhenUnset(t *testing.T) {
 	}
 	t.Cleanup(func() { newRetentionLoop = original })
 
-	stop, _, _ := startProjector(context.Background(), store, watermarks, layout, &instance.Config{})
+	stop, _, _, _ := startProjector(context.Background(), store, watermarks, layout, &instance.Config{})
 	defer stop()
 	if !captured.Bounded() || captured.Days() != instance.DefaultProjectionFullFidelityDays {
 		t.Fatalf("retention window = %s, want %dd default", captured, instance.DefaultProjectionFullFidelityDays)
@@ -119,7 +119,7 @@ func TestStartProjectorAllowsExplicitOptOutRetentionWindow(t *testing.T) {
 	if err := cfg.Retention.UnmarshalJSON([]byte(`{"projectionFullFidelityDays":0}`)); err != nil {
 		t.Fatalf("mark retention field configured: %v", err)
 	}
-	stop, _, _ := startProjector(context.Background(), store, watermarks, layout, cfg)
+	stop, _, _, _ := startProjector(context.Background(), store, watermarks, layout, cfg)
 	defer stop()
 	if captured.Bounded() || captured.Days() != 0 {
 		t.Fatalf("retention window = %s, want unbounded opt-out", captured)
@@ -144,7 +144,7 @@ func TestStartProjectorExposesStats(t *testing.T) {
 	}
 	defer func() { _ = watermarks.Close() }()
 
-	stop, _, stats := startProjector(context.Background(), store, watermarks, layout, &instance.Config{})
+	stop, _, stats, _ := startProjector(context.Background(), store, watermarks, layout, &instance.Config{})
 	defer stop()
 
 	if stats == nil {

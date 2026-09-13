@@ -67,6 +67,38 @@ func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIden
 	return counts, runs, nil
 }
 
+func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+	counts := map[WorkflowIdentity]int{}
+	runs := map[string]WorkflowIdentity{}
+	for _, runDir := range runDirs {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		rd, err := journal.OpenRead(runDir)
+		if err != nil {
+			if errors.Is(err, journal.ErrNotRunDirectory) || errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("open run journal %q: %w", filepath.Base(runDir), err)
+		}
+		phase, err := rd.PhaseBounded(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read phase for run %q: %w", filepath.Base(runDir), err)
+		}
+		if phase != journal.PhaseRunning {
+			continue
+		}
+		id, err := rd.Identity()
+		if err != nil {
+			continue
+		}
+		identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
+		counts[identity]++
+		runs[id.RunID] = identity
+	}
+	return counts, runs, nil
+}
+
 func visitActiveRunsContext(ctx context.Context, runsDir string, visit func(journal.RunIdentity)) error {
 	if err := ctx.Err(); err != nil {
 		return err

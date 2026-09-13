@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -115,7 +116,11 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 	if isJournaledClaimsLockTimeout(claimErr) {
 		claimErr = nil
 	}
-	return errors.Join(worktreeErr, annotationErr, noOpErr, claimErr)
+	err := errors.Join(worktreeErr, annotationErr, noOpErr, claimErr)
+	if err == nil {
+		err = journal.ClearRunActive(filepath.Join(l.RunsDir(), runID))
+	}
+	return err
 }
 
 func worktreeDispositionJournaled(schedulerDir, runID, worktreeID, status string) (bool, error) {

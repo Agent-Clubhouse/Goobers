@@ -282,6 +282,7 @@ func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
 		context.Background(), l, setup.Runners, nil, setup.RunnerRegistry, nil, setup.Machines, setup.GooberDigests, setup.RepoRefs,
 		setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks,
 		func(_ string, workflow string) { released = append(released, workflow) }, &wg,
+		[]string{filepath.Join(removed.RunsDir(), runID)},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -298,6 +299,9 @@ func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
 	}
 	if entry, ok := reopened.LookupScoped(claimKey); ok {
 		t.Fatalf("removed gaggle's terminal claim survived startup cleanup: %+v", entry)
+	}
+	if marked, err := journal.ActiveRunDirs(removed.RunsDir()); err != nil || len(marked) != 0 {
+		t.Fatalf("terminal recovery marker survived successful finalization: marked=%v err=%v", marked, err)
 	}
 }
 

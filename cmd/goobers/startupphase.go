@@ -27,6 +27,22 @@ func (t *startupPhaseTracker) set(phase, target string) {
 	t.phase, t.target, t.started = phase, target, time.Now()
 }
 
+func (t *startupPhaseTracker) update(phase, target string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.phase == phase {
+		t.target = target
+	}
+}
+
+func (t *startupPhaseTracker) clear(phase string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.phase == phase {
+		t.phase, t.target, t.started = "", "", time.Time{}
+	}
+}
+
 func (t *startupPhaseTracker) snapshot() (phase, target string, since time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -48,6 +64,7 @@ func startupTimestamp() string { return time.Now().UTC().Format(time.RFC3339Nano
 func runStartupPhase(w io.Writer, tracker *startupPhaseTracker, phase, target string, fn func() error) error {
 	if tracker != nil {
 		tracker.set(phase, target)
+		defer tracker.clear(phase)
 	}
 	start := time.Now()
 	pf(w, "%s startup phase=%s status=start target=%q\n", startupTimestamp(), phase, target)
