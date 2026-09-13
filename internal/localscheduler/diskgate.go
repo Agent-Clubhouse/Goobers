@@ -207,9 +207,14 @@ func (g *StorageGate) UnderPressure() (bool, string) {
 	if g.tier != StorageCritical {
 		return false, ""
 	}
+	// The effective floor, not the raw criticalFloorBytes config value: when a
+	// percent floor is also configured (or is the only one set), the higher of
+	// the two is what actually decided this tier (see effectiveFloor), and
+	// reporting the raw byte value alone would understate it.
+	floor := effectiveFloor(g.criticalFloorBytes, g.criticalFloorPercent, g.footprint.TotalBytes)
 	return true, fmt.Sprintf("%s free of %s available on %s (floor %s)",
 		diskstat.FormatBytes(g.footprint.AvailableBytes), diskstat.FormatBytes(g.footprint.TotalBytes), g.path,
-		diskstat.FormatBytes(uint64(g.criticalFloorBytes)))
+		diskstat.FormatBytes(floor))
 }
 
 // StorageHealthStats is a race-safe snapshot of the gate's current state, for

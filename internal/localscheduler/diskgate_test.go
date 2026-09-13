@@ -78,6 +78,19 @@ func TestStorageGateByteFloorTakesPrecedenceWhenStricter(t *testing.T) {
 	}
 }
 
+func TestStorageGateUnderPressureReportsTheEffectiveFloorNotTheRawBytesConfig(t *testing.T) {
+	const total = 100 * 1024 * 1024 * 1024 // 100Gi
+	// Percent-only critical floor (5% of 100Gi = 5Gi): criticalFloorBytes is
+	// zero, so the detail message must report the resolved 5Gi floor, not the
+	// raw zero config value.
+	gate := gateWith(0, 0, 0, 5, footprintAt(1<<30, total))
+	gate.Sample()
+	_, detail := gate.UnderPressure()
+	if !strings.Contains(detail, "5.0Gi") {
+		t.Fatalf("detail = %q, want it to report the effective 5Gi floor, not the unset criticalFloorBytes", detail)
+	}
+}
+
 func TestStorageGateHysteresisHoldsCriticalUntilPastTheResumeMargin(t *testing.T) {
 	const total = 100 * 1024 * 1024 * 1024
 	criticalFloor := uint64(5 << 30)
