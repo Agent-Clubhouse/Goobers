@@ -390,6 +390,59 @@ func TestTriggerPlaneConcurrentDuplicateDeliveriesMintOnce(t *testing.T) {
 	}
 }
 
+// TestTriggerPlaneRefusesNewDispatchUntilSchedulerReady is #4252's gate:
+// the trigger plane is the one HTTP path that admits brand-new dispatch, and
+// the Kubernetes Service starts routing traffic as soon as the daemon is
+// merely plane-ready — well before crash-resume (scheduler-ready) completes
+// — so this plane must refuse admission itself rather than assume the
+// Service withheld the request. A refusal must not poison the RequestID: the
+// same request retried once ready mints normally.
+func TestTriggerPlaneRefusesNewDispatchUntilSchedulerReady(t *testing.T) {
+	stub := &stubTriggerer{}
+	service := newDaemonTriggerService()
+	service.dispatch = stub
+	schedulerReady := false
+	service.withSchedulerReadyGate(func() bool { return schedulerReady })
+	ctx := context.Background()
+
+	request := httpapi.TriggerRequest{Gaggle: "example", Workflow: "implementation", RequestID: "resume-window"}
+	_, err := service.Trigger(ctx, request)
+	if err == nil {
+		t.Fatal("Trigger while scheduler is not ready must be refused, not admitted")
+	}
+	var interventionErr *httpapi.InterventionError
+	if !errors.As(err, &interventionErr) {
+		t.Fatalf("err = %v (%T), want *httpapi.InterventionError", err, err)
+	}
+	if interventionErr.Status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", interventionErr.Status, http.StatusServiceUnavailable)
+	}
+	if stub.mints != 0 {
+		t.Fatalf("mints = %d, want zero while refused", stub.mints)
+	}
+
+	// Once scheduler-ready, the SAME RequestID mints normally — the refusal
+	// above must not have poisoned it.
+	schedulerReady = true
+	retried, err := service.Trigger(ctx, request)
+	if err != nil || retried.Duplicate || retried.RunID != "run-1" {
+		t.Fatalf("retry once ready = %+v, err = %v", retried, err)
+	}
+}
+
+// TestTriggerPlaneNilSchedulerReadyGateAdmitsAsBefore locks the nil-gate
+// default: a construction that never calls withSchedulerReadyGate (every
+// pre-#4252 test, and any future one that does not care) keeps admitting
+// exactly as it always did.
+func TestTriggerPlaneNilSchedulerReadyGateAdmitsAsBefore(t *testing.T) {
+	stub := &stubTriggerer{}
+	service := newDaemonTriggerService()
+	service.dispatch = stub
+	if _, err := service.Trigger(context.Background(), httpapi.TriggerRequest{Workflow: "implementation", RequestID: "no-gate"}); err != nil {
+		t.Fatalf("Trigger with no scheduler-ready gate wired: %v", err)
+	}
+}
+
 // TestTriggerPlaneDedupesRedeliveredRequests is the trigger dedupe test: a
 // redelivered RequestID answers the originally-minted run instead of minting
 // a second one, and a failed delivery does not poison its RequestID.

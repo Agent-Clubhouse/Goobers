@@ -94,8 +94,8 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	cmd/goobers/status.go	runRunTable	380
 !body-length	cmd/goobers/telemetryquery.go	runTelemetryQuery	206
 !body-length	cmd/goobers/trace.go	runTraceWithFactories	225
-!body-length-justification	cmd/goobers/up.go	runUpContextWithForce	1607	#5019 wires the readiness-gate route's service and recovery-gate predicate into the existing apiHandlerOpts pipeline
-!body-length	cmd/goobers/up.go	runUpContextWithForce	1607
+!body-length-justification	cmd/goobers/up.go	runUpContextWithForce	1632	#4252 (rebased onto #5019's 1607): named startup-gate flip logging (5 logGateFlip call sites) plus the plane-ready/scheduler-ready split (a new atomic, its probe wiring, and the trigger-plane admission gate) — growth is additive instrumentation/gating, not new control flow depth
+!body-length	cmd/goobers/up.go	runUpContextWithForce	1632
 !body-length	cmd/goobers/validate.go	runValidateConfig	278
 !body-length	cmd/goobers/worker.go	runWorker	274
 !body-length	internal/apicontract/wire.go	newWireFixtures	776
