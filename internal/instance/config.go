@@ -1598,6 +1598,13 @@ type RecoverySnapshotConfig struct {
 	// purely by age, regardless of landing proof. Omitted means
 	// DefaultRecoverySnapshotRetainWindow (30 days).
 	RetainWindow string `json:"retainWindow,omitempty" yaml:"retainWindow,omitempty"`
+	// MaxVolumeBytes declares the capacity of the volume recovery snapshots
+	// are written to. Omitted or zero means unbounded: no worst-case check is
+	// made. When set, config load refuses a MaxSnapshots x MaxArchiveBytes
+	// declared worst case that exceeds it (#4862) — a configuration that
+	// could not possibly fit is refused at load rather than at the write that
+	// eventually fills the volume.
+	MaxVolumeBytes int64 `json:"maxVolumeBytes,omitempty" yaml:"maxVolumeBytes,omitempty"`
 }
 
 // MaxSnapshotsEffective resolves the configured inventory cap.

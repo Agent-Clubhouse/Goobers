@@ -1139,6 +1139,11 @@
               "$ref": "#/$defs/duration",
               "default": "720h",
               "examples": ["720h"]
+            },
+            "maxVolumeBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Capacity of the volume recovery snapshots are written to. Omitted or zero means unbounded: no worst-case check is made. When set, config load refuses a maxSnapshots x maxArchiveBytes declared worst case that exceeds it (#4862)."
             }
           }
         }

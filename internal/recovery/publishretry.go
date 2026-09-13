@@ -22,8 +22,12 @@ func resumeArchivePublication(ctx context.Context, repository, directory string,
 	if err != nil {
 		return Record{}, err
 	}
+	format, err := inspectBundleFormat(archive)
+	if err != nil {
+		return Record{}, err
+	}
 	bound := prepared
-	bound.ArchiveDigest, bound.ArchiveBytes = digest, info.Size()
+	bound.ArchiveDigest, bound.ArchiveBytes, bound.ArchiveFormat = digest, info.Size(), format
 	return republishRetainedState(ctx, repository, directory, prepared, bound, maxBytes)
 }
 
@@ -35,7 +39,7 @@ func republishRetainedState(ctx context.Context, repository, directory string, p
 		return Record{}, ErrRecordConflict
 	}
 	prepared.CreatedAt, prepared.RetainUntil = existing.CreatedAt, existing.RetainUntil
-	prepared.ArchiveDigest, prepared.ArchiveBytes = existing.ArchiveDigest, existing.ArchiveBytes
+	prepared.ArchiveDigest, prepared.ArchiveBytes, prepared.ArchiveFormat = existing.ArchiveDigest, existing.ArchiveBytes, existing.ArchiveFormat
 	if prepared != existing {
 		return Record{}, ErrRecordConflict
 	}
