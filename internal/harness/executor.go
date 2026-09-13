@@ -584,9 +584,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, nil, err
 	}
 	out, runErr = e.runAdapter(ctx, req, nestedAdapter)
-	if mcpErr := requiredMCPInfrastructureFailure(out.MCPServerFailures); mcpErr != nil {
-		runErr = errors.Join(runErr, mcpErr)
-	}
+	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
 		if !hasAppender {
 			runErr = errors.Join(runErr, fmt.Errorf(
@@ -756,23 +754,9 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			stderr = &ptr
 		}
 		wrapped := fmt.Errorf("harness: %s: %w", e.adapter.Name(), runErr)
-		// Tag a session timeout at the invoke seam (#724) so the runner can
-		// recognize it and apply a stage's OnTimeout salvage policy without
-		// importing this package or matching on error strings — mirroring how
-		// worktree-provision transients are marked invoke.InfrastructureFailure.
-		if errors.Is(runErr, ErrTimeout) {
-			return out, transcript, stderr, invoke.Timeout(wrapped)
-		}
-		if errors.Is(runErr, errRequiredMCPUnavailable) {
-			return out, transcript, stderr, invoke.InfrastructureFailure(
-				executor.StageFailure(ErrorCodeRequiredMCPUnavailable, wrapped),
-			)
-		}
-		if errors.Is(runErr, ErrNoCompletion) {
-			return out, transcript, stderr, invoke.InfrastructureFailure(wrapped)
-		}
-		return out, transcript, stderr, wrapped
+		return out, transcript, stderr, classifyHarnessRunError(runErr, wrapped)
 	}
+
 	if len(out.Payload) == 0 {
 		// Defense in depth: an Adapter contract violation (nil error, empty
 		// payload) still fails closed rather than surfacing a zero-value
@@ -781,6 +765,25 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return out, transcript, nil, invoke.InfrastructureFailure(err)
 	}
 	return out, transcript, nil, nil
+}
+
+func classifyHarnessRunError(runErr, wrapped error) error {
+	// Tag a session timeout at the invoke seam (#724) so the runner can
+	// recognize it and apply a stage's OnTimeout salvage policy without
+	// importing this package or matching on error strings — mirroring how
+	// worktree-provision transients are marked invoke.InfrastructureFailure.
+	switch {
+	case errors.Is(runErr, ErrTimeout):
+		return invoke.Timeout(wrapped)
+	case errors.Is(runErr, errRequiredMCPUnavailable):
+		return invoke.InfrastructureFailure(
+			executor.StageFailure(ErrorCodeRequiredMCPUnavailable, wrapped),
+		)
+	case errors.Is(runErr, ErrNoCompletion):
+		return invoke.InfrastructureFailure(wrapped)
+	default:
+		return wrapped
+	}
 }
 
 func applyNestedExecutionPolicy(env apiv1.InvocationEnvelope, effective apiv1.ChildExecutionPolicy) apiv1.InvocationEnvelope {

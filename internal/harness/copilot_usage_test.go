@@ -191,7 +191,7 @@ func TestCopilotUsagePreparationFailsBeforeLauncherAndCleansFailedHandshake(t *t
 				return nil
 			}}
 			adapter := &CopilotAdapter{Command: []string{"wrapper"}, Runner: runner, RequireLauncherContract: true}
-			_, err := adapter.prepareCopilotCaptures(context.Background(), RunRequest{HarnessVersion: "1.0.83", Workspace: workspace}, []string{"wrapper"}, nil)
+			_, err := adapter.prepareCopilotCaptures(context.Background(), RunRequest{HarnessVersion: "1.0.83", Workspace: workspace}, []string{"wrapper"}, nil, nil)
 			if blocked {
 				if err == nil || !strings.Contains(err.Error(), "prepare fresh Copilot usage capture") || calls != 0 {
 					t.Fatalf("preparation did not refuse before launcher: calls=%d err=%v", calls, err)
