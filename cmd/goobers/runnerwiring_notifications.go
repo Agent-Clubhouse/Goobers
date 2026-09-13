@@ -421,30 +421,31 @@ func failureStreakKey(repo providers.RepositoryRef, itemID string) string {
 }
 
 // loadFailureStreakCount returns the last persisted failure-streak count for
-// an item, or 0 if none has ever been recorded. The shared annotation fold
-// preserves newest-wins semantics while reading only newly appended records.
-func loadFailureStreakCount(l instance.Layout, repo providers.RepositoryRef, itemID string) (int, error) {
-	return annotationsForInstance(l.SchedulerDir()).failureStreak(l.SchedulerDir(), failureStreakKey(repo, itemID))
+// an item, or 0 if none has ever been recorded. Reads the Goobers#3025
+// scheduler-state key; an absent key migrates on read from the legacy
+// failure-streak comment marker (see loadFailureStreakState).
+func loadFailureStreakCount(ctx context.Context, poster gate.Commenter, l instance.Layout, repo providers.RepositoryRef, itemID string) (int, error) {
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return 0, fmt.Errorf("open failure-streak state: %w", err)
+	}
+	record, err := loadFailureStreakState(ctx, store, poster, l, repo, itemID)
+	if err != nil {
+		return 0, err
+	}
+	return record.Count, nil
 }
 
 // writeFailureStreakCount persists an item's current failure-streak count to
-// the instance journal.
+// the Goobers#3025 scheduler-state key — the authoritative value every
+// subsequent read (including a status/read-model consumer with no provider
+// API access) returns, regardless of what the human-visible comment says.
 func writeFailureStreakCount(l instance.Layout, repo providers.RepositoryRef, itemID string, count int, runID, stage string) error {
-	annotations, err := openStageAnnotator(l)
+	store, err := openStageStateStore(l)
 	if err != nil {
-		return fmt.Errorf("open instance log for failure streak: %w", err)
+		return fmt.Errorf("open failure-streak state: %w", err)
 	}
-	defer func() { _ = annotations.Close() }()
-	return annotations.Append(journal.Event{
-		Type:  journal.EventRunnerAnnotation,
-		RunID: runID,
-		Stage: stage,
-		Runner: map[string]any{
-			"annotation": failureStreakAnnotation,
-			"key":        failureStreakKey(repo, itemID),
-			"count":      count,
-		},
-	})
+	return writeFailureStreakState(stateContext(), store, l, repo, itemID, count, runID, stage)
 }
 
 // applyCircuitBreaker increments the failure streak for each claimed item and
@@ -480,23 +481,24 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 	}
 	for _, item := range items {
 		repoRef, itemID := item.Repo, item.ItemID
-		prevCount, loadErr := loadFailureStreakCount(l, repoRef, itemID)
+		prevCount, loadErr := loadFailureStreakCount(ctx, poster, l, repoRef, itemID)
 		if loadErr != nil {
 			errs = append(errs, fmt.Errorf("load failure streak state on %s#%s: %w", repoRef.Name, itemID, loadErr))
 			continue
 		}
 		count := prevCount + 1
 
-		if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, stage, runID, runURL); err != nil {
-			// A rate-limited (or otherwise failed) comment write must not
-			// advance the persisted streak: the human-visible comment and the
-			// cached count would drift apart, and "I couldn't post" is not
-			// evidence the item failed again (#4364).
-			errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
-			continue
-		}
+		// The authoritative update happens FIRST (Goobers#3025): the streak
+		// that gates the circuit breaker must not depend on a provider
+		// comment write succeeding. The comment is posted after, as a
+		// best-effort projection — its failure is still reported, but it
+		// never blocks or rolls back the persisted count.
 		if err := writeFailureStreakCount(l, repoRef, itemID, count, runID, stage); err != nil {
 			errs = append(errs, fmt.Errorf("persist failure streak state on %s#%s: %w", repoRef.Name, itemID, err))
+			continue
+		}
+		if err := gate.UpsertFailureComment(ctx, poster, repoRef, itemID, count, stage, runID, runURL); err != nil {
+			errs = append(errs, fmt.Errorf("upsert failure comment on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 
 		if count >= failureStreakThreshold {
@@ -528,11 +530,11 @@ func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 	var errs []error
 	for _, item := range items {
 		repoRef, itemID := item.Repo, item.ItemID
-		if err := gate.ResetFailureComment(ctx, poster, repoRef, itemID, runID, runURL); err != nil {
-			errs = append(errs, fmt.Errorf("reset failure streak on %s#%s: %w", repoRef.Name, itemID, err))
-		}
 		if err := writeFailureStreakCount(l, repoRef, itemID, 0, runID, ""); err != nil {
 			errs = append(errs, fmt.Errorf("reset failure streak state on %s#%s: %w", repoRef.Name, itemID, err))
+		}
+		if err := gate.ResetFailureComment(ctx, poster, repoRef, itemID, runID, runURL); err != nil {
+			errs = append(errs, fmt.Errorf("reset failure streak on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 		// A completed run resets the streak that motivated any still-pending
 		// park for this item, so the outbox entry is moot rather than owed

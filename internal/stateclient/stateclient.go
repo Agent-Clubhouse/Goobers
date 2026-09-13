@@ -193,6 +193,28 @@ var resweepStateKeyPattern = regexp.MustCompile(`^backlog-resweep-[0-9a-f]{64}\.
 // input.
 var prRemediationNoopKeyPattern = regexp.MustCompile(`^pr-remediation-noop-[0-9a-f]{64}\.json$`)
 
+// failureStreakKeyPattern matches the PER-ITEM failure-streak record,
+// failure-streak-<sha256 of the item's provider/repository/item-id key>.json,
+// pinned to the same 64-lowercase-hex digest as the other keyed records above
+// and for the same reason.
+//
+// It joins the namespace per Goobers#3025: the streak count that trips the
+// circuit breaker (goobers:needs-human, ready removed) was reconstructed from
+// a provider-comment marker before this, editable by anyone with comment
+// access, unavailable to a status/read-model consumer without a provider API
+// call, and impossible for Azure DevOps to update in place (work items cannot
+// have their comments edited). One key per (provider, repository, item) keeps
+// a pod's compare-and-swap contained to the single item it is entitled to
+// change, the same pr-remediation-noop precedent.
+var failureStreakKeyPattern = regexp.MustCompile(`^failure-streak-[0-9a-f]{64}\.json$`)
+
+// verdictStateKeyPattern matches the PER-PULL-REQUEST remediation verdict
+// record, remediation-verdict-<sha256 of the PR's repository-scoped key>.json,
+// the second of the two Goobers#3025 marker families: the merge-review verdict
+// that drives remediation routing/budgets, previously carried only as a
+// `<!-- verdict-json: ... -->` payload embedded in a PR comment.
+var verdictStateKeyPattern = regexp.MustCompile(`^remediation-verdict-[0-9a-f]{64}\.json$`)
+
 // The backlog-health READY-TRANSITION cursor (Goobers#3948), the one key in
 // this namespace that does not live directly in the scheduler directory and
 // the one whose name is not a digest.
@@ -317,6 +339,18 @@ func PRRemediationNoopKey(digest string) string {
 	return "pr-remediation-noop-" + digest + ".json"
 }
 
+// FailureStreakKey names the failure-streak record for one item's record-key
+// digest (Goobers#3025).
+func FailureStreakKey(digest string) string {
+	return "failure-streak-" + digest + ".json"
+}
+
+// RemediationVerdictKey names the remediation-verdict record for one PR's
+// record-key digest (Goobers#3025).
+func RemediationVerdictKey(digest string) string {
+	return "remediation-verdict-" + digest + ".json"
+}
+
 // ValidKey reports whether key is one of the closed scheduler-state keys.
 func ValidKey(key string) bool {
 	switch key {
@@ -326,7 +360,9 @@ func ValidKey(key string) bool {
 	return scanCursorKeyPattern.MatchString(key) ||
 		resweepStateKeyPattern.MatchString(key) ||
 		prRemediationNoopKeyPattern.MatchString(key) ||
-		backlogHealthCursorKeyPattern.MatchString(key)
+		backlogHealthCursorKeyPattern.MatchString(key) ||
+		failureStreakKeyPattern.MatchString(key) ||
+		verdictStateKeyPattern.MatchString(key)
 }
 
 // Value is one scheduler-state read: the bytes and the ETag that addresses
