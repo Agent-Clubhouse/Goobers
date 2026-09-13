@@ -79,9 +79,17 @@ const (
 	// preview-level dslVersion on an instance that has opted in.
 	WarningPreviewDSLVersionOptedIn WarningCode = "DVL010"
 	// ErrorPreviewDSLVersionBlocked identifies a workflow pinned to a
-	// preview-level dslVersion on an instance that has NOT opted in —
-	// closed-by-default (DVL-3, #863).
+	// preview-level dslVersion that carries no acknowledgement of its OWN —
+	// closed-by-default (DVL-3, #863). Per the DSL 3.0 v0.4.0 ruling (#4220),
+	// authorization is explicit per Workflow, matching the object that owns
+	// dslVersion; a Manifest- or Gaggle-level annotation does not satisfy it.
 	ErrorPreviewDSLVersionBlocked WarningCode = "DVL011"
+	// WarningManifestPreviewAnnotationDeprecated identifies a Manifest that
+	// still sets goobers.dev/allow-preview-features. Per #4220, the
+	// Manifest-level annotation no longer authorizes any Workflow's preview
+	// dslVersion — distinct from ErrorPreviewDSLVersionBlocked, which fires on
+	// the WORKFLOW that is actually missing its own acknowledgement.
+	WarningManifestPreviewAnnotationDeprecated WarningCode = "DVL012"
 	// WarningDeprecatedDSLVersion identifies a workflow pinned to a
 	// deprecated dslVersion — loads, but names its replacement and
 	// unsupported-after release.
@@ -1184,13 +1192,18 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 		}
 	}
 
-	// Workflow state machine integrity.
+	// Workflow state machine integrity. Preview-DSL authorization is per
+	// Workflow (#4220 — the DSL 3.0 v0.4.0 ruling): each workflow's OWN
+	// metadata.annotations govern its own dslVersion and feature checks, with
+	// no inheritance from the Manifest's (or its gaggle's) annotation.
 	for _, indexed := range ix.workflows {
-		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
-		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview,
+		workflowAllowPreview := wf.PreviewFeaturesEnabled(indexed.definition.Annotations)
+		ix.checkWorkflow(r, indexed.definition, indexed.file, workflowAllowPreview)
+		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, workflowAllowPreview,
 			sortedSuppressedFeatureConsequences(suppressedFeatureConsequences[indexed.definition.DSLVersion])...)
 	}
-	ix.checkWorkflowsCompile(r, allowPreview)
+	ix.checkWorkflowsCompile(r)
+	ix.checkManifestPreviewAnnotationDeprecated(r)
 
 	// Every referenceNotFound call in this pass (including from checkWorkflow
 	// above) was buffered, not yet added to r — flush now that the run's full
@@ -1317,12 +1330,12 @@ func checkWorkflowDSLVersion(r *Report, w apiv1.Workflow, file string, allowPrev
 	case supportmatrix.LevelPreview:
 		if !allowPreview {
 			r.addCoded(ErrorPreviewDSLVersionBlocked, Error, file, "Workflow", w.Name,
-				"dslVersion %q is preview and this instance has not opted in; set metadata.annotations[%q]=%q on the Manifest to allow it",
+				"dslVersion %q is preview and this workflow has not acknowledged it; set metadata.annotations[%q]=%q on THIS Workflow to allow it (a Manifest- or Gaggle-level annotation does not authorize it — #4220)",
 				version, wf.PreviewFeaturesAnnotation, "true")
 			return
 		}
 		r.addWarning(WarningPreviewDSLVersionOptedIn, file, w.Spec.Gaggle, "Workflow", w.Name,
-			"dslVersion %q is preview; this instance has opted in via metadata.annotations[%q]", version, wf.PreviewFeaturesAnnotation)
+			"dslVersion %q is preview; this workflow has opted in via its own metadata.annotations[%q]", version, wf.PreviewFeaturesAnnotation)
 	case supportmatrix.LevelDeprecated:
 		r.addWarning(WarningDeprecatedDSLVersion, file, w.Spec.Gaggle, "Workflow", w.Name,
 			"dslVersion %q is deprecated (replacement %q, unsupported after %s); migrate with `goobers fix --to %s`",
@@ -1611,6 +1624,49 @@ func (ix *index) allowPreviewFeatures(r *Report) bool {
 	r.add(errorPreviewAnnotation, Error, ix.manifestFile[manifest.Name], "Manifest", manifest.Name,
 		"metadata.annotations[%q] must be %q or %q", wf.PreviewFeaturesAnnotation, "true", "false")
 	return false
+}
+
+// checkManifestPreviewAnnotationDeprecated warns when the Manifest still
+// carries goobers.dev/allow-preview-features. Per the DSL 3.0 v0.4.0 ruling
+// (#4220), the Manifest-level annotation no longer authorizes any Workflow's
+// preview dslVersion — each Workflow must carry its own acknowledgement,
+// matching the object that owns dslVersion, with no inheritance from the
+// Manifest or its Gaggle. This is deliberately a DIFFERENT code from
+// ErrorPreviewDSLVersionBlocked (the per-workflow refusal below), so an
+// operator is never left guessing whether a stale global annotation or a
+// missing workflow acknowledgement is the problem: this warning fires
+// whenever the Manifest sets the annotation at all, regardless of whether any
+// workflow still needs it, and names every currently preview-pinned workflow
+// that is missing its own acknowledgement — the mechanical migration is to
+// add the annotation to each one, then remove it from the Manifest.
+func (ix *index) checkManifestPreviewAnnotationDeprecated(r *Report) {
+	if len(ix.manifests) != 1 {
+		return
+	}
+	manifest := ix.manifests[0]
+	if _, set := manifest.Annotations[wf.PreviewFeaturesAnnotation]; !set {
+		return
+	}
+	var unacknowledged []string
+	for _, identity := range sortedWorkflowIdentities(ix.workflows) {
+		w := ix.workflows[identity].definition
+		support, ok := dslSupportMatrix().Lookup(w.DSLVersion)
+		if !ok || support.Level != supportmatrix.LevelPreview {
+			continue
+		}
+		if !wf.PreviewFeaturesEnabled(w.Annotations) {
+			unacknowledged = append(unacknowledged, fmt.Sprintf("%s/%s", w.Spec.Gaggle, w.Name))
+		}
+	}
+	msg := "metadata.annotations[%q] on the Manifest no longer authorizes any Workflow's preview dslVersion (#4220 — DSL 3.0 v0.4.0 ruling); it is deprecated and non-authorizing. Add metadata.annotations[%q]=%q to each workflow that needs it, then remove this annotation."
+	if len(unacknowledged) == 0 {
+		r.addWarning(WarningManifestPreviewAnnotationDeprecated, ix.manifestFile[manifest.Name], "", "Manifest", manifest.Name,
+			msg, wf.PreviewFeaturesAnnotation, wf.PreviewFeaturesAnnotation, "true")
+		return
+	}
+	r.addWarning(WarningManifestPreviewAnnotationDeprecated, ix.manifestFile[manifest.Name], "", "Manifest", manifest.Name,
+		msg+" Currently missing their own acknowledgement (refused separately, DVL011): %s",
+		wf.PreviewFeaturesAnnotation, wf.PreviewFeaturesAnnotation, "true", strings.Join(unacknowledged, ", "))
 }
 
 // checkGaggleConnections enforces MGV-4's repo-token-ref coherence (#1011):
@@ -2351,7 +2407,7 @@ func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definiti
 // (known automated checks, known harnesses) stay unset, as they are for those
 // checks, so this reports nothing that depends on runtime wiring the loader
 // cannot see.
-func (ix *index) checkWorkflowsCompile(r *Report, allowPreview bool) {
+func (ix *index) checkWorkflowsCompile(r *Report) {
 	if r.HasErrors() || len(ix.pendingReferenceIssues) > 0 {
 		return
 	}
@@ -2359,9 +2415,11 @@ func (ix *index) checkWorkflowsCompile(r *Report, allowPreview bool) {
 	for _, identity := range sortedWorkflowIdentities(ix.workflows) {
 		indexed := ix.workflows[identity]
 		w := indexed.definition
+		// Preview authorization is per-Workflow (#4220): this workflow's OWN
+		// metadata.annotations, never the Manifest's or its gaggle's.
 		opts := []wf.Option{
 			wf.WithGoobers(goobers),
-			wf.WithPreviewFeatures(allowPreview),
+			wf.WithPreviewFeatures(wf.PreviewFeaturesEnabled(w.Annotations)),
 		}
 		if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
 			opts = append(opts,
@@ -2369,7 +2427,7 @@ func (ix *index) checkWorkflowsCompile(r *Report, allowPreview bool) {
 				wf.WithGaggleRunsOn(gaggle.Spec.RunsOn),
 			)
 		}
-		def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
+		def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec, Annotations: w.Annotations}
 		if _, err := wf.Compile(def, opts...); err != nil {
 			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
 		}

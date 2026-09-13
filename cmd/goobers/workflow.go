@@ -80,10 +80,12 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer) int {
 	for _, wf := range set.Workflows {
 		if wf.Name == name {
 			if *dot {
+				// Preview authorization is per-Workflow (#4220): wf's OWN
+				// annotations, never the Manifest's or its gaggle's.
 				machine, err := workflow.Compile(workflow.Definition{
-					Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+					Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
 				}, workflow.WithPreviewFeatures(
-					set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations),
+					workflow.PreviewFeaturesEnabled(wf.Annotations),
 				))
 				if err != nil {
 					pf(stderr, "error: compile workflow %q: %v\n", wf.Name, err)

@@ -15,9 +15,15 @@ import (
 // (WF-016). The Registry is used by the run starter (outside the workflow
 // function), so its mutex does not affect workflow determinism.
 type Registry struct {
-	mu                   sync.RWMutex
-	defs                 map[string][]wf.Definition // name -> versions; index+1 == version
-	allowPreviewFeatures bool
+	mu   sync.RWMutex
+	defs map[string][]wf.Definition // name -> versions; index+1 == version
+	// forcePreviewFeatures is a test-only escape hatch that treats every
+	// definition registered here as preview-acknowledged regardless of its
+	// own annotations. Production callers must not set this: per the DSL 3.0
+	// v0.4.0 ruling (#4220), preview authorization is explicit per Workflow
+	// (wf.Definition.Annotations), with no Registry- or instance-wide
+	// inheritance — see Compile.
+	forcePreviewFeatures bool
 }
 
 // NewRegistry returns an empty Registry.
@@ -25,12 +31,16 @@ func NewRegistry() *Registry {
 	return &Registry{defs: make(map[string][]wf.Definition)}
 }
 
-// NewRegistryWithPreviewFeatures returns an empty Registry with the instance's
-// explicit preview-feature acknowledgement.
+// NewRegistryWithPreviewFeatures returns an empty Registry that treats every
+// definition registered into it as preview-acknowledged, bypassing each
+// definition's own annotation. It exists for tests exercising preview DSL
+// syntax/semantics directly; production wiring uses NewRegistry and lets each
+// Workflow's own goobers.dev/allow-preview-features annotation (carried on
+// wf.Definition.Annotations) govern its own compilation (#4220).
 func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
 	return &Registry{
 		defs:                 make(map[string][]wf.Definition),
-		allowPreviewFeatures: enabled,
+		forcePreviewFeatures: enabled,
 	}
 }
 
@@ -87,9 +97,12 @@ func shapeProblems(spec apiv1.WorkflowSpec) []string {
 	return problems
 }
 
-// Compile validates def with the same preview policy used for registration.
+// Compile validates def with the same preview policy used for registration:
+// def's OWN annotations, per #4220 — a Manifest or Gaggle annotation does not
+// authorize it, and no other workflow's acknowledgement carries over.
 func (r *Registry) Compile(def wf.Definition) (*wf.Machine, error) {
-	return wf.Compile(def, wf.WithPreviewFeatures(r.allowPreviewFeatures))
+	allowPreview := r.forcePreviewFeatures || wf.PreviewFeaturesEnabled(def.Annotations)
+	return wf.Compile(def, wf.WithPreviewFeatures(allowPreview))
 }
 
 // Get returns a specific pinned version of a workflow (1-based).
@@ -206,7 +219,8 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 	if !ok {
 		return RunInput{}, fmt.Errorf("workflow %q version %d is not registered", name, version)
 	}
-	return RunInputFor(name, def, r.allowPreviewFeatures, s)
+	allowPreview := r.forcePreviewFeatures || wf.PreviewFeaturesEnabled(def.Annotations)
+	return RunInputFor(name, def, allowPreview, s)
 }
 
 // RunInputFor pins an already-resolved definition into a RunInput, applying
@@ -221,9 +235,11 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 // Building the RunInput directly from the definition keeps name, Version,
 // DSLVersion and Spec exactly as compiled.
 //
-// allowPreviewFeatures is the instance's preview-feature posture
-// (Registry.allowPreviewFeatures); it is pinned into the run so the walk's
-// preview gating is decided at start, not re-read mid-run.
+// allowPreviewFeatures is pinned into the run so the walk's preview gating is
+// decided at start, not re-read mid-run. Per the DSL 3.0 v0.4.0 ruling
+// (#4220), callers must derive it from def's OWN Annotations
+// (wf.PreviewFeaturesEnabled(def.Annotations)) — a Manifest- or Gaggle-level
+// annotation does not authorize it.
 func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s StartSpec) (RunInput, error) {
 	// R9 run-start refusal: a definition declaring parallels, a bandit
 	// experiment, a cumulative usage budget or an outbox has no engine walk

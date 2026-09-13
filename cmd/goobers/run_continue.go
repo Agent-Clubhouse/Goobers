@@ -294,11 +294,13 @@ func currentWorkflowMachine(root string, source journal.RunIdentity) (*workflow.
 		if definition.Name != source.Workflow || definition.Spec.Gaggle != source.Gaggle {
 			continue
 		}
+		// Preview authorization is per-Workflow (#4220): definition's OWN
+		// annotations, never the Manifest's or its gaggle's.
 		return workflow.Compile(workflow.Definition{
 			Name: definition.Name, Version: source.WorkflowVersion,
-			DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+			DSLVersion: definition.DSLVersion, Spec: definition.Spec, Annotations: definition.Annotations,
 		}, workflow.WithPreviewFeatures(
-			set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations),
+			workflow.PreviewFeaturesEnabled(definition.Annotations),
 		))
 	}
 	return nil, fmt.Errorf("workflow %q for gaggle %q is not configured", source.Workflow, source.Gaggle)

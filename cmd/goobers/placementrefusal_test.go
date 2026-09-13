@@ -31,6 +31,8 @@ kind: Workflow
 dslVersion: "3.0"
 metadata:
   name: win-build
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   gaggle: example
   triggers:
@@ -60,14 +62,13 @@ runners:
 `
 
 // declareInventory rewrites the scaffolded instance.yaml with the declared
-// self inventory, and opts the manifest into preview DSL versions so the 3.0
-// workflow loads (DSL 3.0 is preview until its supportmatrix flip).
+// self inventory. It no longer opts the Manifest into preview DSL versions
+// (#4220: that annotation is deprecated/non-authorizing) — the *V30WorkflowYAML
+// consts in this file carry their own goobers.dev/allow-preview-features
+// acknowledgement instead.
 func declareInventory(t *testing.T, root string) {
 	t.Helper()
 	replaceInFile(t, filepath.Join(root, "instance.yaml"), "runner: {}", "runner: {}\n"+declaredSelfInventoryYAML)
-	replaceInFile(t, filepath.Join(root, "config", "manifest.yaml"),
-		"metadata:\n  name: example-instance",
-		"metadata:\n  name: example-instance\n  annotations:\n    goobers.dev/allow-preview-features: \"true\"")
 }
 
 func writeSecondWorkflow(t *testing.T, root, yaml string) {
@@ -104,6 +105,8 @@ kind: Workflow
 dslVersion: "3.0"
 metadata:
   name: win-build
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   gaggle: example
   triggers:
@@ -842,6 +845,8 @@ kind: Workflow
 dslVersion: "3.0"
 metadata:
   name: win-build
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   gaggle: example
   triggers:
