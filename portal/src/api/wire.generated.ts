@@ -204,6 +204,15 @@ export const goWireFixtures = {
     "journalHealth": {
       "appendsDropped": 2
     },
+    "storageHealth": {
+      "tier": "admission-stopped",
+      "path": "/instances/fixture",
+      "freeBytes": 1073741824,
+      "totalBytes": 107374182400,
+      "warningFloorBytes": 10737418240,
+      "criticalFloorBytes": 5368709120,
+      "measuredAt": "2026-07-18T12:32:56Z"
+    },
     "memoryGateEnabled": false,
     "fsyncDisabled": false,
     "fleetEnrolled": false

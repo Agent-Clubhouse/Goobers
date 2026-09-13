@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/platform/memstat"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -123,6 +124,29 @@ func journalHealthStatusLine(status readservice.SchedulerStatus) string {
 		status.JournalHealth.AppendsDropped)
 }
 
+// storageHealthStatusLine reports tiered low-disk protection's current tier
+// (#4873). Silent when healthy, matching journalHealthStatusLine's
+// only-say-something-when-it-matters convention.
+func storageHealthStatusLine(status readservice.SchedulerStatus) string {
+	health := status.StorageHealth
+	if health == nil || health.Tier == "" || health.Tier == "healthy" {
+		return ""
+	}
+	if health.Tier == "measurement-unavailable" {
+		detail := ""
+		if health.Error != "" {
+			detail = ": " + health.Error
+		}
+		return fmt.Sprintf("Warning: storage health measurement unavailable%s\n", detail)
+	}
+	verb := "degraded"
+	if health.Tier == "admission-stopped" {
+		verb = "admission stopped"
+	}
+	return fmt.Sprintf("Warning: storage health %s (%s free of %s total on %s)\n",
+		verb, memstat.FormatBytes(health.FreeBytes), memstat.FormatBytes(health.TotalBytes), health.Path)
+}
+
 func renderSchedulerStatus(
 	text *strings.Builder,
 	summary statusFleetSummary,
@@ -135,6 +159,7 @@ func renderSchedulerStatus(
 	text.WriteString(maintenanceStatusLine(status))
 	text.WriteString(telemetryRetentionStatusLine(status))
 	text.WriteString(journalHealthStatusLine(status))
+	text.WriteString(storageHealthStatusLine(status))
 	text.WriteString(workerConfigDivergenceStatusLines(status, now))
 	text.WriteString(refusedWorkflowStatusLines(status))
 	text.WriteString(isolationMandateStatusLines(status))
@@ -341,6 +366,7 @@ type statusJSONOutput struct {
 	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
 	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
 	JournalHealth          *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
+	StorageHealth          *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -1331,6 +1357,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var maintenance *readservice.MaintenanceStatus
 		var telemetryRetention *readservice.TelemetryRetentionStatus
 		var journalHealth *readservice.JournalHealthStatus
+		var storageHealth *readservice.StorageHealthStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
 		var engineFallbacks []readmodel.EngineFallback
@@ -1346,6 +1373,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				maintenance = status.Maintenance
 				telemetryRetention = status.TelemetryRetention
 				journalHealth = status.JournalHealth
+				storageHealth = status.StorageHealth
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
 				engineFallbacks = status.EngineFallbacks
@@ -1367,6 +1395,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			Maintenance:            maintenance,
 			TelemetryRetention:     telemetryRetention,
 			JournalHealth:          journalHealth,
+			StorageHealth:          storageHealth,
 			RefusedWorkflows:       refusedWorkflows,
 			IsolationMandates:      isolationMandates,
 			Summary:                fleetSummary,
@@ -1670,6 +1699,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 				liveness.Age.Truncate(time.Second), liveness.Timeout, liveRuns)
 			reportDaemonBehavior(stdout, identity.Behavior)
 			reportLiveDaemonJournalHealth(l, stdout)
+			reportLiveDaemonStorageHealth(l, stdout)
 			reportFleetEnrollment(l.Root, stdout)
 			reportUpdateCheck(l.Root, stdout)
 			reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)
@@ -1683,6 +1713,7 @@ func reportDaemonStatus(l instance.Layout, now time.Time, stdout, stderr io.Writ
 			liveness.Age.Truncate(time.Second), liveRuns)
 		reportDaemonBehavior(stdout, identity.Behavior)
 		reportLiveDaemonJournalHealth(l, stdout)
+		reportLiveDaemonStorageHealth(l, stdout)
 		reportFleetEnrollment(l.Root, stdout)
 		reportUpdateCheck(l.Root, stdout)
 		reportPendingTriggerQueue(l.SchedulerDir(), now, stdout)

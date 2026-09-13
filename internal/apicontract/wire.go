@@ -145,8 +145,12 @@ func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt ti
 			Workflows:  1,
 			ActiveRuns: 1,
 		},
-		Warnings:           []validate.CodedWarning{warning},
-		JournalHealth:      &readservice.JournalHealthStatus{AppendsDropped: 2},
+		Warnings:      []validate.CodedWarning{warning},
+		JournalHealth: &readservice.JournalHealthStatus{AppendsDropped: 2},
+		StorageHealth: &readservice.StorageHealthStatus{
+			Tier: "admission-stopped", Path: "/instances/fixture", FreeBytes: 1 << 30, TotalBytes: 100 << 30,
+			WarningFloorBytes: 10 << 30, CriticalFloorBytes: 5 << 30, MeasuredAt: startedAt,
+		},
 		TelemetryRetention: telemetryRetentionWireFixture(startedAt, finishedAt),
 	}
 }

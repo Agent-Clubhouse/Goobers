@@ -78,3 +78,60 @@ func (e *daemonJournalHealthHTTPError) Error() string {
 	}
 	return "daemon journal health unavailable"
 }
+
+// reportLiveDaemonStorageHealth mirrors reportLiveDaemonJournalHealth for
+// tiered low-disk protection (#4873): the gate's sampled tier is this
+// process's own in-memory state, so `goobers status` run from a separate
+// invocation reads it over the live daemon's API rather than reconstructing
+// it from the journal.
+func reportLiveDaemonStorageHealth(layout instance.Layout, output io.Writer) {
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	health, err := readLiveDaemonStorageHealth(context.Background(), layout, client)
+	if err != nil || health == nil {
+		return
+	}
+	pf(output, "%s", storageHealthStatusLine(readservice.SchedulerStatus{StorageHealth: health}))
+}
+
+// readLiveDaemonStorageHealth is readLiveDaemonJournalHealth's exact shape,
+// against the same endpoint and root-identity check, for the sibling field.
+func readLiveDaemonStorageHealth(ctx context.Context, layout instance.Layout, client *http.Client) (*readservice.StorageHealthStatus, error) {
+	endpoint, err := localDaemonAPIBase(layout)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, daemonJournalHealthTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+apicontract.InstancePath, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return nil, &daemonJournalHealthHTTPError{status: response.StatusCode}
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxRemoteTriggerResponseBody+1))
+	if err != nil || len(body) > maxRemoteTriggerResponseBody {
+		return nil, &daemonJournalHealthHTTPError{}
+	}
+	var value readservice.Instance
+	if err := json.Unmarshal(body, &value); err != nil {
+		return nil, err
+	}
+	expectedID, err := instance.ReadRootIdentity(layout.Root)
+	if err != nil {
+		return nil, err
+	}
+	if value.RootIdentity == nil || value.RootIdentity.ID != expectedID {
+		return nil, &daemonJournalHealthHTTPError{}
+	}
+	return value.StorageHealth, nil
+}
