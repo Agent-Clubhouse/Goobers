@@ -35,11 +35,15 @@ metadata:
   name: goobers-dispatcher
 subjects:
   # The worker's OWN ServiceAccount (../../goobers-system/worker-rbac.yaml),
-  # bound cross-namespace — not a new identity. This grant authorizes the
-  # worker's ONE --dispatch-namespace value, but does not scope the queues it
-  # polls. All loaded gaggles share that worker-wide namespace; copied unscoped
-  # workers with different namespace flags race nondeterministically for the
-  # same queues, so this grant does not enforce per-gaggle isolation (#4897).
+  # bound cross-namespace — not a new identity. The active mode-3 dispatcher
+  # now routes each stage pod into ITS OWN gaggle's isolation.namespace
+  # (#4897): a worker that dispatches into more than one gaggle needs this
+  # exact Role/RoleBinding applied once per gaggle namespace it serves — this
+  # kustomize base plus one examples/<gaggle> overlay per namespace (see
+  # examples/gaggle-a and examples/gaggle-b) — and the worker's own
+  # boot-time preflight check refuses to start if any declared namespace is
+  # missing this grant, so a namespace an operator forgot to provision is
+  # caught before a stage is ever claimed, not after.
   - kind: ServiceAccount
     name: goobers-worker
     namespace: goobers-system

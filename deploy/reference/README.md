@@ -231,18 +231,23 @@ the class-independent floor (default-deny-all + allow-dns).
 The base also ships `dispatcher-rbac.yaml`, binding the **existing** `goobers-worker`
 ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to create,
 get, delete and list pods in this gaggle's namespace, and read the worker's own
-Deployment (DI-9 template read). This is what lets a worker whose `--dispatch-namespace`
-names this gaggle actually dispatch pod-per-stage runs into it (#4286); stage pods
-themselves still get no token mount and no RBAC grants at all. The included
-`goobers-stage` ServiceAccount is a target-topology template, not one the current
-dispatcher selects. `--dispatch-namespace` takes a single value, but the
-worker still polls every gaggle queue loaded from its config. All loaded
-gaggles therefore share that worker-wide namespace; `spec.isolation.namespace`
-does not enforce per-gaggle isolation. Copies with different namespace flags
-still poll the same unscoped queues and race nondeterministically, so whichever
-copy wins decides where a pod lands. Issue #4897 leaves the resolution open:
-possible choices include dedicated queue scoping, dynamic gaggle-to-namespace
-mapping, or demoting the isolation field.
+Deployment (DI-9 template read). This is what lets a worker actually dispatch
+pod-per-stage runs into a gaggle namespace (#4286); stage pods themselves still get
+no token mount and no RBAC grants at all. The included `goobers-stage` ServiceAccount
+is still a target-topology template, not one the current dispatcher selects — every
+stage pod runs under its namespace's default ServiceAccount (workload identity
+federation, `spec.isolation.identityRef`, is tracked separately from #4897). As of
+#4897, `--dispatch-namespace` no longer names a pod namespace at all — it is only
+the non-empty flag that enables mode-3 dispatch. The worker instead routes EACH
+stage pod to its OWNING gaggle's `spec.isolation.namespace`, resolved per attempt
+from the config it already loads; there is no worker-wide fallback. A worker
+that polls more than one gaggle's queues therefore needs this base applied once
+per gaggle namespace (see `examples/gaggle-a` and `examples/gaggle-b`) — its
+boot-time preflight checks every declared namespace's existence and this
+worker's RBAC access to it before polling or dispatching anything, and refuses
+to start, naming the gap, if one is missing or under-provisioned. Two gaggles
+may still explicitly declare the SAME namespace; that shared topology is
+supported and unaffected by this routing.
 
 ## Operating notes from a real cluster
 

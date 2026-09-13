@@ -21,12 +21,12 @@ import (
 
 func testConfig() Config {
 	return Config{
-		Namespace:       "gaggle-alpha",
-		Owner:           "goobers-worker-0",
-		EmbeddedCommit:  "0123456789abcdef0123456789abcdef01234567",
-		EmbeddedVersion: "v0.1.0",
-		BlobEndpoint:    "http://goobers-api.goobers-system:7777",
-		WriteAPIBase:    "http://goobers-api.goobers-system:7777",
+		GaggleNamespaces: map[string]string{"alpha": "gaggle-alpha"},
+		Owner:            "goobers-worker-0",
+		EmbeddedCommit:   "0123456789abcdef0123456789abcdef01234567",
+		EmbeddedVersion:  "v0.1.0",
+		BlobEndpoint:     "http://goobers-api.goobers-system:7777",
+		WriteAPIBase:     "http://goobers-api.goobers-system:7777",
 	}
 }
 

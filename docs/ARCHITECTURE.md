@@ -550,7 +550,7 @@ See the security alert intake guide under `docs/guides/`.
 |---|---|---|---|
 | 1 — Solo | None (local trust) | Env vars / token file, redacted from journals | Worktree + process isolation, capability-scoped credential injection |
 | 2 — Team | Optional OIDC on portal/daemon | Env/file or team secret store | + per-goober credential scoping (shipped, #823); sandboxed stage execution (V1, mechanism per ADR 0001) |
-| 3 — Cloud | Entra ID (OIDC) | **Azure Key Vault** | Target: per-gaggle namespaces + identities and network policy (`SEC-*`); all gaggles loaded by an active mode-3 worker share one worker-wide namespace, so per-gaggle isolation is not enforced (#4897) |
+| 3 — Cloud | Entra ID (OIDC) | **Azure Key Vault** | Per-gaggle namespaces (`SEC-*`, #4897): the active mode-3 worker routes each gaggle's stage pods into its own declared namespace, validated by a startup preflight; per-gaggle workload identity/network policy remain target-state |
 
 The protocol (OIDC) and the seam (an `Authenticator` + a secret-resolver interface)
 are constant; tiers select implementations. The Tutor write-boundary (`SEC-021`) is

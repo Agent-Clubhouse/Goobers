@@ -62,9 +62,13 @@ without these adopter settings fails closed; it is not a ready-to-apply cluster.
 
 This floor fixes the namespace-policy mismatch, not multi-tenant isolation.
 Shared workers still share filesystem, service identity and other process
-resources across same-operator gaggles. The templates can give stage pods
-separate per-runner-class policies in gaggle namespaces, but the current
-worker does not route by `spec.isolation.namespace`: one worker-wide flag
-controls every loaded gaggle queue. Copied workers with different flag values
-race nondeterministically for those same queues; this does not enforce
-per-gaggle namespace isolation (#4897).
+resources across same-operator gaggles — routing each gaggle's stage pods to
+its own namespace (#4897) does not by itself federate a distinct workload
+identity per gaggle (`spec.isolation.identityRef` is not yet consumed; see
+../gaggle-namespace/base/serviceaccount.yaml). The templates give stage pods
+separate per-runner-class policies in gaggle namespaces, and the worker now
+routes by `spec.isolation.namespace`: each stage pod is created in ITS OWN
+gaggle's declared namespace, resolved per attempt, with no worker-wide
+fallback. A worker that serves more than one gaggle namespace needs the
+matching RBAC grant provisioned in every one of them before it starts —
+its boot-time preflight refuses to dispatch otherwise.

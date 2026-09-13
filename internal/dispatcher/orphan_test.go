@@ -61,7 +61,7 @@ func TestSweepOrphans(t *testing.T) {
 	// A foreign pod in the namespace: not dispatcher-labeled, never touched.
 	foreign := &corev1.Pod{}
 	foreign.Name = "unrelated"
-	foreign.Namespace = testConfig().Namespace
+	foreign.Namespace = testConfig().GaggleNamespaces[testAttempt().Gaggle]
 	if err := pods.CreatePod(context.Background(), foreign); err != nil {
 		t.Fatalf("CreatePod: %v", err)
 	}

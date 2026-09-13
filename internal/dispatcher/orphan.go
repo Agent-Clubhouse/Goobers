@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -101,6 +102,11 @@ type RunStates interface {
 //     attempts disposes them.
 //   - by STATE: only RunStateTerminal deletes. See RunState.
 //
+// A worker now dispatches into as many namespaces as it has declared gaggles
+// (#4897, Config.GaggleNamespaces): a sweep that only listed one namespace
+// would leave every other gaggle's settled stage pods stranded forever, so
+// this lists and disposes across every DISTINCT declared namespace.
+//
 // Returns the names of the pods it disposed. A pod that could not be addressed
 // or deleted is left, and named in the aggregated error.
 func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string, error) {
@@ -111,44 +117,67 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 	if owner == "" {
 		return nil, errors.New("dispatcher: orphan sweep requires Config.Owner to select only pods stamped for this worker")
 	}
-	pods, err := d.pods.ListPods(ctx, d.cfg.Namespace, sweepSelector(owner))
-	if err != nil {
-		return nil, fmt.Errorf("dispatcher: list labeled stage pods for orphan sweep: %w", err)
-	}
 	var deleted []string
 	var errs []error
-	for i := range pods {
-		pod := &pods[i]
-		attempt, ok := podAttempt(pod)
-		if !ok {
-			// Selected but not addressable: no identity annotations, so there
-			// is no workflow execution to describe and no resolver can answer.
-			// Leave it and say so. Its deadline stops execution but does not
-			// delete the Pod object. A pod in
-			// this state means something stamped LabelOwner without going
-			// through stampIdentityAnnotations, or dispatched an attempt whose
-			// OwningWorkflowID was never set, both bugs on the create path.
-			errs = append(errs, fmt.Errorf(
-				"dispatcher: stage pod %s/%s carries no attempt identity (%s/%s/%s); left in place",
-				pod.Namespace, pod.Name, AnnotationOwningWorkflowID, AnnotationRunID, AnnotationStage))
+	for _, namespace := range distinctNamespaces(d.cfg.GaggleNamespaces) {
+		pods, err := d.pods.ListPods(ctx, namespace, sweepSelector(owner))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("dispatcher: list labeled stage pods for orphan sweep in %s: %w", namespace, err))
 			continue
 		}
-		if runs.RunState(ctx, attempt) != RunStateTerminal {
-			continue
+		for i := range pods {
+			pod := &pods[i]
+			attempt, ok := podAttempt(pod)
+			if !ok {
+				// Selected but not addressable: no identity annotations, so there
+				// is no workflow execution to describe and no resolver can answer.
+				// Leave it and say so. Its deadline stops execution but does not
+				// delete the Pod object. A pod in
+				// this state means something stamped LabelOwner without going
+				// through stampIdentityAnnotations, or dispatched an attempt whose
+				// OwningWorkflowID was never set, both bugs on the create path.
+				errs = append(errs, fmt.Errorf(
+					"dispatcher: stage pod %s/%s carries no attempt identity (%s/%s/%s); left in place",
+					pod.Namespace, pod.Name, AnnotationOwningWorkflowID, AnnotationRunID, AnnotationStage))
+				continue
+			}
+			if runs.RunState(ctx, attempt) != RunStateTerminal {
+				continue
+			}
+			// One pod's delete error must not strand the rest of the batch.
+			// Accumulate and keep going; the aggregated error is returned after the
+			// loop, and `deleted` reflects every pod actually removed. A later
+			// same-owner process restart retries the pod. A rollout changes the owner
+			// label, so its replacement cannot select this pod with the current
+			// sweep.
+			if err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt}); err != nil {
+				errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
+				continue
+			}
+			deleted = append(deleted, pod.Name)
 		}
-		// One pod's delete error must not strand the rest of the batch.
-		// Accumulate and keep going; the aggregated error is returned after the
-		// loop, and `deleted` reflects every pod actually removed. A later
-		// same-owner process restart retries the pod. A rollout changes the owner
-		// label, so its replacement cannot select this pod with the current
-		// sweep.
-		if err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt}); err != nil {
-			errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
-			continue
-		}
-		deleted = append(deleted, pod.Name)
 	}
 	return deleted, errors.Join(errs...)
+}
+
+// distinctNamespaces returns the sorted, deduplicated namespace values a
+// gaggle-namespace map declares — sorted so a sweep visits namespaces in a
+// deterministic order regardless of Go's randomized map iteration.
+func distinctNamespaces(gaggleNamespaces map[string]string) []string {
+	seen := make(map[string]struct{}, len(gaggleNamespaces))
+	var namespaces []string
+	for _, namespace := range gaggleNamespaces {
+		if namespace == "" {
+			continue
+		}
+		if _, ok := seen[namespace]; ok {
+			continue
+		}
+		seen[namespace] = struct{}{}
+		namespaces = append(namespaces, namespace)
+	}
+	sort.Strings(namespaces)
+	return namespaces
 }
 
 // podAttempt reads one pod's attempt identity back off its metadata. The

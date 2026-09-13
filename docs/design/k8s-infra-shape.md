@@ -38,31 +38,36 @@ vendor-neutral form.
 | Goobers dispatcher | Deployment(s) per (gaggle × runner-type) task queue | `goobers-system` or per-gaggle | `internal/dispatcher` — serves the queue and **creates one fresh pod per stage attempt**, disposing it after surrender. This is the mode-3 substrate (`goobernetes-architecture.md` §3, `docs/ARCHITECTURE.md` §3.4). |
 | Stage pods | One ephemeral pod **per stage attempt**, created by the dispatcher | per-gaggle (target); one worker-wide `--dispatch-namespace` today | Never reused; reuse is a correctness bug. Restrictions are stamped by the dispatcher as the pod creator (`goobernetes-restrictions.md` D7). |
 | Goobers workers | Deployment(s) per task-queue | `goobers-system` or per-gaggle | `goobers worker` (v2-cloud-scale A1.6); HPA-scalable. **Superseded as the execution substrate** (`goobernetes-architecture.md` §10): a resident worker executing stage activities as goroutines is not the target model. |
-| Agent stage pods | Ephemeral pods/Jobs | per-gaggle namespaces (target; see current limitation below) | Spawned per stage attempt (DEP-004..007); never long-lived |
+| Agent stage pods | Ephemeral pods/Jobs | per-gaggle namespaces (#4897) | Spawned per stage attempt (DEP-004..007); never long-lived |
 | Daemon API + portal | Deployment + static assets | `goobers-system` | `/api/v1` read + authed mutation surface; SSE through ingress |
 | Sandbox environments | Team-defined (Jobs/CRDs/external) | per-gaggle or team-chosen | BYO provisioner contract (v2-cloud-scale C4) |
 
 ## 3. Namespaces, identity, RBAC
 
-The bullets below are the target Tier-3 boundary, not behavior the current
-mode-3 worker derives from `Gaggle.spec.isolation`. Today one worker accepts one
-`--dispatch-namespace`, polls every `(gaggle × runner)` queue loaded from its
-config tree, and creates every stage pod it wins in that one namespace (#4897).
-Copying the unscoped worker with a different namespace does not partition the
-queues: the copies race nondeterministically for all gaggles, so the winning
-worker determines the pod namespace. This does not enforce per-gaggle
-isolation. Issue #4897 leaves the architecture decision open; dedicated queue
-scoping, dynamic gaggle-to-namespace mapping, and demotion of the isolation
-field are possible resolutions, with none selected here.
+The active mode-3 worker now derives each stage pod's namespace from
+`Gaggle.spec.isolation.namespace` (#4897, resolved): a worker polls every
+`(gaggle × runner)` queue loaded from its config tree, but resolves the pod
+namespace per attempt from the OWNING gaggle's own declaration — never a
+worker-wide default, and never inherited or falls back to
+`--dispatch-namespace` (that flag is now only the non-empty signal that
+enables mode-3 dispatch). Two gaggles may explicitly declare the same
+namespace; that shared topology is supported. Before polling or dispatching
+anything, the worker validates every declared namespace exists and that its
+own credentials hold the RBAC grants dispatch needs there, and fails startup
+by name otherwise — a worker never discovers a Forbidden after a stage has
+already been claimed from the backlog. Workload identity per gaggle
+(`isolation.identityRef`) remains unimplemented in the active dispatcher (see
+below); it is tracked separately from this namespace-routing fix.
 
 - **`goobers-system`** — control plane (operator, workers, API). One service account per
   component, least-privilege Roles; the operator alone holds CRD-reconcile rights.
-- **One namespace per gaggle** (GAG-012, target): stage pods, sandbox resources, and
-  secrets for that gaggle live there. The quarantined operator can provision and label
-  these from the Gaggle CR; the active worker does not route from that field.
-- **Workload identity per gaggle** (SEC-001/002, target): each gaggle namespace's pods run as a
+- **One namespace per gaggle** (GAG-012, delivered by #4897): stage pods, sandbox
+  resources, and secrets for that gaggle live there. Both the active mode-3 worker and
+  the quarantined operator provision/route against the same Gaggle CR field.
+- **Workload identity per gaggle** (SEC-001/002, still target): each gaggle namespace's pods run as a
   distinct federated identity; the secret resolver scopes refs per gaggle — gaggle A's pods
-  cannot resolve gaggle B's secrets even with cluster access equal.
+  cannot resolve gaggle B's secrets even with cluster access equal. Every stage pod
+  currently runs under its namespace's default ServiceAccount regardless of gaggle.
 - **Human access:** portal/API auth via customer OIDC issuer (Entra as a configured
   issuer, #38 ladder), roles view/operate/admin mapped in Goobers config — cluster RBAC is
   for operators of the cluster, Goobers RBAC is for users of Goobers; the two are not

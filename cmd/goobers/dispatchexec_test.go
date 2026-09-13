@@ -944,8 +944,8 @@ func envDefaultDenyProbe(t *testing.T, defaultDeny, cliStage bool) map[string]st
 		runner.Restrictions = []string{string(runnercap.RestrictionEnvDefaultDeny)}
 	}
 	pod, err := dispatcher.RenderPod(dispatcher.Config{
-		Namespace:    "gaggle-e2e",
-		WriteAPIBase: server.URL,
+		GaggleNamespaces: map[string]string{attempt.Gaggle: "gaggle-e2e"},
+		WriteAPIBase:     server.URL,
 	}, attempt, runner)
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)

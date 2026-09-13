@@ -61,7 +61,7 @@ func podStageEnv(t *testing.T, root string, repo providers.RepositoryRef) {
 	}
 
 	pod, err := dispatcher.RenderPod(
-		dispatcher.Config{Namespace: "gaggle-e2e", BotLogins: botLogins},
+		dispatcher.Config{GaggleNamespaces: map[string]string{"e2e": "gaggle-e2e"}, BotLogins: botLogins},
 		dispatcher.Attempt{
 			RunID:    "run-3914",
 			Gaggle:   "e2e",
