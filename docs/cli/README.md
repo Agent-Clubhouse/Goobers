@@ -2285,7 +2285,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict treats warnings as validation errors. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -4483,7 +4483,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict treats config warnings as validation errors. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable

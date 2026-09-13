@@ -18,7 +18,9 @@ inputs:
     required: false
     default: "."
   strict:
-    description: Treat config warnings as validation errors (goobers validate --strict).
+    description: >-
+      Promote config warnings except strict-neutral DVL020, REF012, RNR006,
+      and WS001 to validation errors (goobers validate --strict).
     required: false
     default: "false"
   allowed-warnings-file:
