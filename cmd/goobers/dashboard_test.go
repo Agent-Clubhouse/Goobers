@@ -1018,8 +1018,8 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 	case <-time.After(2 * time.Second):
 		t.Fatal("dashboard did not stop after cancellation")
 	}
-	if stderr.String() != "dashboard: mode=daemon\n" {
-		t.Fatalf("dashboard mode output = %q, want daemon mode", stderr.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("dashboard cancellation output = %q, want no diagnostic before mode selection", stderr.String())
 	}
 	if stdout.String() != dashboardAddress+"\n" {
 		t.Fatalf("dashboard output = %q, want %q", stdout.String(), dashboardAddress+"\n")

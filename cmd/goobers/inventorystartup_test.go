@@ -60,7 +60,7 @@ func testDaemonInitialCounts(t *testing.T, mode string) {
 	}
 	t.Cleanup(func() { newDaemonReadService = original })
 	ctx, cancel := context.WithCancel(context.Background())
-	stdout := newStartupHoldWriter("startup phase=active-counts status=waiting")
+	stdout := newStartupHoldWriter("startup phase=active-counts status=start")
 	stderr := newStartupHoldWriter("never-hold-stderr")
 	done := make(chan int, 1)
 	go func() { done <- runUpContext(ctx, []string{"--quiet", root}, stdout, stderr) }()
