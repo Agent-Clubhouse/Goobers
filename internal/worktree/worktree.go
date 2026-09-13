@@ -906,12 +906,29 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 	if err := retryOnFileLock(ctx, func() error {
 		return runCleanupGit(ctx, repoDir, "worktree remove", "worktree", "remove", "--force", wt.Path)
 	}); err != nil {
-		if worktreeMeasured && markerErr == nil {
+		var timeoutErr *GitCleanupTimeoutError
+		if errors.As(err, &timeoutErr) {
+			return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, err)
+		}
+		registered, inspectErr := worktreeRegistered(ctx, repoDir, wt.Path)
+		if inspectErr != nil {
+			return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, errors.Join(err, inspectErr))
+		}
+		if !registered {
+			if removeErr := retryOnFileLock(ctx, func() error { return os.RemoveAll(wt.Path) }); removeErr != nil {
+				return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, errors.Join(err, removeErr))
+			}
+			if pruneErr := runCleanupGit(ctx, repoDir, "worktree prune", "worktree", "prune"); pruneErr != nil {
+				return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, errors.Join(err, pruneErr))
+			}
+		} else if worktreeMeasured && markerErr == nil {
 			if usageErr := writeMarker(markerPath, mk); usageErr != nil {
 				measurementErr = errors.Join(measurementErr, fmt.Errorf("worktree: persist usage for run %s: %w", wt.RunID, usageErr))
 			}
 		}
-		return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, err)
+		if registered {
+			return fmt.Errorf("worktree: remove for run %s: %w", wt.RunID, err)
+		}
 	}
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: unregister run %s: %w", wt.RunID, err)
