@@ -58,6 +58,22 @@ const (
 	// flaky-infra blip's failure count but far short of leaving a gaggle to
 	// run dead for most of a day.
 	statusFailureStreakThreshold = 20
+	// statusFailureRateWindow, statusFailureRateMaxSamples,
+	// statusFailureRateMinSamples, and statusFailureRateThreshold implement
+	// #4880's rate-based companion alarm. statusFailureStreakThreshold above
+	// is blind to a lane that interleaves failures and successes near 1:1:
+	// no matter how bad the overall rate, a single interleaved success or
+	// non-infra failure resets the consecutive count to zero. This signal
+	// instead evaluates up to the statusFailureRateMaxSamples most recent
+	// terminal runs within the trailing statusFailureRateWindow, requires at
+	// least statusFailureRateMinSamples of them (so a lane with only a
+	// handful of runs can't trip on a noisy small sample), and alarms once
+	// the failure fraction reaches statusFailureRateThreshold. These figures
+	// are the maintainer's fixed #4880 ruling, not new configuration.
+	statusFailureRateWindow     = 24 * time.Hour
+	statusFailureRateMaxSamples = 20
+	statusFailureRateMinSamples = 10
+	statusFailureRateThreshold  = 0.5
 )
 
 func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -399,6 +415,10 @@ type statusWorkflowSummary struct {
 	// statusFailureStreakThreshold (#4263) — most callers should treat a nil
 	// streak as "no alarm", not "no failures".
 	FailureStreak *statusFailureStreak `json:"failureStreak,omitempty"`
+	// FailureRate is non-nil only once the lane both meets
+	// statusFailureRateMinSamples and reaches statusFailureRateThreshold
+	// (#4880) — independent of, and can be non-nil alongside, FailureStreak.
+	FailureRate *statusFailureRate `json:"failureRate,omitempty"`
 }
 
 // statusFailureStreak names a run of consecutive infra-classified failures
@@ -438,6 +458,73 @@ func statusWorkflowFailureStreak(terminal []runSummary) *statusFailureStreak {
 		FirstFailedAt: statusRunOutcomeTime(oldest),
 		FirstError:    statusErrorMessage(oldest.Operator.LatestError),
 	}
+}
+
+// statusFailureRate names a rate-based degradation signal for one
+// (gaggle, workflow) lane (#4880), computed independently of
+// statusFailureStreak: it does not require consecutiveness, so a lane whose
+// runs interleave failures and successes near 1:1 still trips it even though
+// no unbroken streak ever forms. There is no persisted alarm state — it is
+// recomputed from the current runs on every call, so it clears naturally
+// once the rolling sample ages out of the window or drops below
+// statusFailureRateMinSamples.
+type statusFailureRate struct {
+	SampleSize   int       `json:"sampleSize"`
+	FailureCount int       `json:"failureCount"`
+	Rate         float64   `json:"rate"`
+	WindowStart  time.Time `json:"windowStart"`
+	WindowEnd    time.Time `json:"windowEnd"`
+}
+
+// statusWorkflowFailureRate evaluates up to statusFailureRateMaxSamples of
+// terminal's most recent runs that finished within statusFailureRateWindow of
+// now (terminal is sorted most-recent-first per buildStatusFleetSummary), and
+// reports degradation once the qualifying sample both meets
+// statusFailureRateMinSamples and reaches statusFailureRateThreshold.
+func statusWorkflowFailureRate(terminal []runSummary, now time.Time) *statusFailureRate {
+	cutoff := now.Add(-statusFailureRateWindow)
+	var qualifying []runSummary
+	for _, run := range terminal {
+		if len(qualifying) >= statusFailureRateMaxSamples {
+			break
+		}
+		if statusRunOutcomeTime(run).Before(cutoff) {
+			break
+		}
+		qualifying = append(qualifying, run)
+	}
+	if len(qualifying) < statusFailureRateMinSamples {
+		return nil
+	}
+	failures := 0
+	for _, run := range qualifying {
+		if statusRunIsRateFailure(run) {
+			failures++
+		}
+	}
+	rate := float64(failures) / float64(len(qualifying))
+	if rate < statusFailureRateThreshold {
+		return nil
+	}
+	return &statusFailureRate{
+		SampleSize:   len(qualifying),
+		FailureCount: failures,
+		Rate:         rate,
+		WindowStart:  statusRunOutcomeTime(qualifying[len(qualifying)-1]),
+		WindowEnd:    statusRunOutcomeTime(qualifying[0]),
+	}
+}
+
+// statusRunIsRateFailure reports whether run counts as a failure for
+// statusWorkflowFailureRate: any non-completed terminal phase, or a run that
+// completed but was blocked by worktree_remove_failed (the maintainer's
+// #4880 ruling — a run whose only defect was a stuck worktree cleanup must
+// not read as healthy just because its recorded phase is "completed").
+func statusRunIsRateFailure(run runSummary) bool {
+	if run.Phase != journal.PhaseCompleted {
+		return true
+	}
+	return run.Operator.LatestError != nil && run.Operator.LatestError.Code == "worktree_remove_failed"
 }
 
 // statusErrorMessage prefers the human-readable message the runner attached
@@ -627,6 +714,7 @@ func buildStatusFleetSummary(
 		// a sustained streak (#4263) must not depend on a window sized for a
 		// success-rate ratio.
 		workflowSummary.FailureStreak = statusWorkflowFailureStreak(terminal)
+		workflowSummary.FailureRate = statusWorkflowFailureRate(terminal, now)
 		if len(terminal) > statusSuccessRateWindow {
 			terminal = terminal[:statusSuccessRateWindow]
 		}
@@ -755,6 +843,11 @@ func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now 
 		if streak := workflow.FailureStreak; streak != nil {
 			pf(stdout, "ALARM: %s has failed %d consecutive times (infra) since %s: %.80s\n",
 				name, streak.Length, streak.FirstFailedAt.UTC().Format(time.RFC3339), streak.FirstError)
+		}
+		if rate := workflow.FailureRate; rate != nil {
+			pf(stdout, "ALARM: %s failed %d/%d runs (%.0f%%) between %s and %s\n",
+				name, rate.FailureCount, rate.SampleSize, rate.Rate*100,
+				rate.WindowStart.UTC().Format(time.RFC3339), rate.WindowEnd.UTC().Format(time.RFC3339))
 		}
 	}
 	pf(stdout, "\n")
