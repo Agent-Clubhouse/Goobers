@@ -132,7 +132,9 @@ func testPrePRRecovery(t *testing.T, mode string, pinned bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// Pinned recovery can exceed a minute under concurrent Windows CI I/O;
+	// keep the run bounded without letting TempDir cleanup race an active pin.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	result, err := r.Start(ctx, runner.StartInput{RunID: runID, Machine: recoveryExhaustionMachine(t), Gaggle: "example", RepoRef: apiv1.RepoRef{Provider: apiv1.Provider(configured.Provider), Owner: configured.Owner, Name: configured.Name, Branch: "main"}})
 	if err != nil || result.Phase != journal.PhaseEscalated {
