@@ -18,6 +18,13 @@ type RootIdentity struct {
 	LifecycleProblem   string     `json:"lifecycleProblem,omitempty"`
 }
 
+// InspectRootIdentity is the exported form of inspectRootIdentity, for
+// callers outside Local that need durable root identity without pulling in
+// the rest of the inventory read path — the #5019 readiness route, which
+// must stay servable before Local's other sources (read model, active-run
+// counts) have opened.
+func InspectRootIdentity(root string) *RootIdentity { return inspectRootIdentity(root) }
+
 func inspectRootIdentity(root string) *RootIdentity {
 	result := &RootIdentity{}
 	id, err := instance.ReadRootIdentity(root)

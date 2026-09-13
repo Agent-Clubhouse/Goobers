@@ -63,6 +63,11 @@ type PathParameters = Readonly<Record<string, string>>;
 
 const clientRoutes = {
   health: apiRoutes.health,
+  // The readiness-gate endpoint (#5019): the one route reachable while
+  // crash-orphan recovery is still running. No portal UI consumes it yet —
+  // a startup-banner surface would be the first caller — but the
+  // exhaustiveness check requires the full contract here as it grows.
+  readiness: apiRoutes.readiness,
   instance: apiRoutes.instance,
   portalConfig: apiRoutes.portalConfig,
   gaggles: apiRoutes.gaggles,

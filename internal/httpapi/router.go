@@ -538,6 +538,15 @@ type Router struct {
 	admissionOnce  sync.Once
 	admission      *admissionController
 	aggregateReads aggregateFlightGroup
+
+	// recoveryGate reports whether the daemon has finished crash-orphan
+	// recovery (#5019). nil (every existing Router construction: tests, the
+	// local-only `goobers run` handler, etc.) leaves the gate open, matching
+	// behavior before this field existed. Set, it blocks every route except
+	// one marked apicontract.Route.RecoverySafe with a 503 rather than
+	// letting a handler run against subsystems recovery has not finished
+	// opening yet.
+	recoveryGate func() bool
 }
 
 // ensureAdmission creates the controller on first use.
@@ -567,6 +576,8 @@ type handlerConfig struct {
 	podRunGaggle           func(context.Context, string) (string, error)
 	configDigest           func() string
 	workerConfigDivergence func(journal.Event) error
+	instanceReadiness      InstanceReadinessService
+	recoveryGate           func() bool
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -640,6 +651,36 @@ func WithConfigDigest(digest func() string) HandlerOption {
 			return errors.New("http api: config digest source is required")
 		}
 		c.configDigest = digest
+		return nil
+	}
+}
+
+// WithInstanceReadinessService registers the readiness-gate route's data
+// source (#5019). Omitted, RouteInstanceReadiness still registers (the
+// contract requires it) but answers 503/instance_readiness_unavailable
+// rather than a nil-pointer panic.
+func WithInstanceReadinessService(svc InstanceReadinessService) HandlerOption {
+	return func(c *handlerConfig) error {
+		if svc == nil {
+			return errors.New("http API instance readiness service is required")
+		}
+		c.instanceReadiness = svc
+		return nil
+	}
+}
+
+// WithRecoveryGate wires the predicate every versioned route except
+// RouteInstanceReadiness is blocked behind (#5019): while ready() reports false,
+// Router.serve refuses every other route with 503 rather than letting a
+// handler run against subsystems crash-orphan recovery has not finished
+// opening yet. Unset, the default for every existing Router construction,
+// leaves the gate open — unchanged from behavior before this option existed.
+func WithRecoveryGate(ready func() bool) HandlerOption {
+	return func(c *handlerConfig) error {
+		if ready == nil {
+			return errors.New("http API recovery gate predicate is required")
+		}
+		c.recoveryGate = ready
 		return nil
 	}
 }
@@ -806,6 +847,15 @@ func (r *Router) HandleByMethod(routeIDsByMethod map[string]apicontract.RouteID,
 // Handle so HandleByMethod's multi-method dispatch reuses it exactly rather
 // than re-implementing auth/admission/budget a second way.
 func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http.ResponseWriter, request *http.Request) {
+	// The recovery gate (#5019) is checked before authentication, like
+	// admission and budget below are checked after it — the ordering that
+	// matters here is that a request against a still-recovering daemon never
+	// reaches a handler whose subsystems have not opened yet, regardless of
+	// whether it would otherwise have authenticated.
+	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryGate() {
+		writeError(w, http.StatusServiceUnavailable, "recovering", "daemon is completing crash recovery")
+		return
+	}
 	principal, err := r.authenticator.Authenticate(request)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthenticated", "request is not authenticated")
@@ -892,6 +942,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 	if err != nil {
 		return nil, err
 	}
+	router.recoveryGate = config.recoveryGate
 	registerV1Routes(router, reader, errorLog, config)
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
@@ -915,6 +966,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 }
 
 func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.Logger, config handlerConfig) {
+	registerInstanceReadinessRoute(router, config.instanceReadiness, errorLog)
 	router.Handle(apicontract.RouteHealth, func(w http.ResponseWriter, request *http.Request) {
 		health, err := reader.Health(request.Context())
 		if err != nil {
