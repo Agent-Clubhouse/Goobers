@@ -77,7 +77,7 @@ func initializeRecoveryMirror(ctx context.Context, parent, destination, repoURL 
 	// Persist configuration before publishing the directory. The archive intake
 	// separately makes imported objects and refs durable before acknowledging.
 	for _, name := range []string{"HEAD", "config"} {
-		file, err := os.Open(filepath.Join(staging, name))
+		file, err := os.OpenFile(filepath.Join(staging, name), os.O_RDWR, 0)
 		if err != nil {
 			return err
 		}
