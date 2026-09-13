@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -120,6 +121,34 @@ func failureStreakBody(count int, stage, latestRunID, latestRunURL string) strin
 			"<!-- goobers:failure-streak data-count=\"%d\" -->",
 		count, stageInfo, latestRunID, latestRunURL, providers.LabelNeedsHuman, count,
 	)
+}
+
+// failureStreakDataCountPattern extracts the marker's data-count attribute.
+// Used only for Goobers#3025's one-release migration-on-read: an instance
+// upgrading to the durable scheduler-state key still has its prior streak
+// recorded solely in this comment marker, and that value must seed the new
+// key rather than silently resetting to zero.
+var failureStreakDataCountPattern = regexp.MustCompile(`data-count="(\d+)"`)
+
+// ParseFailureStreakCount extracts the count recorded in a failure-streak
+// marker comment, or false if body carries no marker or the marker is
+// malformed. A malformed count (missing digits, or a value regexp cannot have
+// produced) is reported as false, never as zero — the caller must treat an
+// unparsable legacy value as "no legacy value to migrate", not "count is
+// zero", so a corrupted comment cannot silently reset an item's streak.
+func ParseFailureStreakCount(body string) (int, bool) {
+	if !strings.Contains(body, failureStreakMarker) {
+		return 0, false
+	}
+	m := failureStreakDataCountPattern.FindStringSubmatch(body)
+	if m == nil {
+		return 0, false
+	}
+	count, err := strconv.Atoi(m[1])
+	if err != nil || count < 0 {
+		return 0, false
+	}
+	return count, true
 }
 
 // UpsertFailureComment creates or updates the single failure-streak tracking
