@@ -515,6 +515,26 @@ func (s *Scheduler) ReconcileAll(runsDirs []string, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("localscheduler: reconcile active runs: %w", err)
 	}
+	return s.reconcileDurableState(runsDirs, active, runs, now)
+}
+
+// ReconcileRunDirs is the startup recovery variant of ReconcileAll. The caller
+// supplies the non-terminal inventory, so retained terminal history is not
+// opened again before readiness.
+func (s *Scheduler) ReconcileRunDirs(runsDirs, recoveryRunDirs []string, now time.Time) error {
+	active, runs, err := activeRunsFromRunDirs(context.Background(), recoveryRunDirs)
+	if err != nil {
+		return fmt.Errorf("localscheduler: reconcile active runs: %w", err)
+	}
+	return s.reconcileDurableState(runsDirs, active, runs, now)
+}
+
+func (s *Scheduler) reconcileDurableState(
+	runsDirs []string,
+	active map[WorkflowIdentity]int,
+	runs map[string]WorkflowIdentity,
+	now time.Time,
+) error {
 	s.conditions.ReconcileWorkflows(active)
 	s.mu.Lock()
 	s.reconciledRuns = runs

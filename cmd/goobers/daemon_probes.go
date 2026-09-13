@@ -45,8 +45,8 @@ type daemonProbeState struct {
 func (d *daemonProbeState) liveness() bool {
 	if !d.schedulerTicked.Load() {
 		// Grace before the scheduler's first tick: a long legitimate
-		// crash-resume (resumeInterruptedRunsWithRunners, unbounded, scales
-		// with interrupted-run count) must not read as a wedged main loop.
+		// crash-resume (proportional to the interrupted-run inventory) must
+		// not read as a wedged main loop.
 		// Liveness is deliberately decoupled from startup/resume completion
 		// — only a heartbeat that WAS established and then went stale
 		// reports unhealthy; readiness, not liveness, gates on startup

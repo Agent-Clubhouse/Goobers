@@ -48,11 +48,11 @@ func startProjector(
 	watermarks *intake.Store,
 	l instance.Layout,
 	cfg *instance.Config,
-) (func(), func() readmodel.RetentionStats, func() projector.Stats) {
+) (func(), func() readmodel.RetentionStats, func() projector.Stats, bool) {
 	runsDirs, err := l.RunDirs()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: resolve runs directories for projector: %v\n", err)
-		return func() {}, nil, nil
+		return func() {}, nil, nil, false
 	}
 
 	// The change feed the SSE stream will tail (#1929). Wired here so the
@@ -93,16 +93,20 @@ func startProjector(
 	// The restart pass runs after Start, so its commits go through the same
 	// serialized loop as live ones. Running it before would mean two writers
 	// existed briefly, which is the one thing the commit loop exists to prevent.
+	restartComplete := false
 	if result, err := p.Restart(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: projector restart pass: %v\n", err)
-	} else if result.Drained > 0 || result.Reprojected > 0 || result.Missing > 0 {
-		fmt.Fprintf(os.Stderr, "projector restart: drained %d, reprojected %d, missing %d\n",
-			result.Drained, result.Reprojected, result.Missing)
+	} else {
+		restartComplete = true
+		if result.Drained > 0 || result.Reprojected > 0 || result.Missing > 0 {
+			fmt.Fprintf(os.Stderr, "projector restart: drained %d, reprojected %d, missing %d\n",
+				result.Drained, result.Reprojected, result.Missing)
+		}
 	}
 	return func() {
 		stopSweep()
 		stop()
-	}, retention.Stats, p.Stats
+	}, retention.Stats, p.Stats, restartComplete
 }
 
 // attachFreshnessSignals gives the read service the daemon-only sources behind
