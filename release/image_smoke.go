@@ -41,16 +41,18 @@ goobers run demo $demo
 if ($LASTEXITCODE -ne 0) { throw 'Image mock demo execution failed' }
 `
 
-// The Manifest annotation is the supported, explicit preview opt-in. It is
+// The Workflow annotation is the supported, explicit preview opt-in. It is
 // applied only to this fresh fixture; fix migrates the workflow mechanically.
 const linuxImageDSL3Smoke = `goobers init --allow-ephemeral --demo --insecure /tmp/dsl3-demo
+workflow=/tmp/dsl3-demo/config/gaggles/demo/workflows/demo.yaml
+preview_workflow=/tmp/dsl3-demo/config/gaggles/demo/workflows/demo-preview.yaml
 while IFS= read -r line; do
   printf '%s\n' "$line"
   if [ "$line" = 'metadata:' ]; then
     printf '  annotations:\n    goobers.dev/allow-preview-features: "true"\n'
   fi
-done < /tmp/dsl3-demo/config/manifest.yaml > /tmp/dsl3-demo/config/manifest-preview.yaml
-mv /tmp/dsl3-demo/config/manifest-preview.yaml /tmp/dsl3-demo/config/manifest.yaml
+done < "$workflow" > "$preview_workflow"
+mv "$preview_workflow" "$workflow"
 goobers fix --to 3.0 --write /tmp/dsl3-demo
 goobers validate /tmp/dsl3-demo
 GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1 goobers run demo /tmp/dsl3-demo
@@ -60,11 +62,11 @@ const windowsImageDSL3Smoke = `$ErrorActionPreference = 'Stop'
 $demo = Join-Path $env:TEMP 'goobers-image-dsl3-smoke'
 goobers init --allow-ephemeral --demo --insecure $demo
 if ($LASTEXITCODE -ne 0) { throw 'Image DSL 3.0 demo initialization failed' }
-$manifest = Join-Path $demo 'config\manifest.yaml'
-$text = [IO.File]::ReadAllText($manifest)
+$workflow = Join-Path $demo 'config\gaggles\demo\workflows\demo.yaml'
+$text = [IO.File]::ReadAllText($workflow)
 $annotation = 'metadata:' + [Environment]::NewLine + '  annotations:' + [Environment]::NewLine + '    goobers.dev/allow-preview-features: "true"'
 $text = [regex]::Replace($text, '(?m)^metadata:\r?$', $annotation)
-[IO.File]::WriteAllText($manifest, $text, (New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($workflow, $text, (New-Object Text.UTF8Encoding($false)))
 goobers fix --to 3.0 --write $demo
 if ($LASTEXITCODE -ne 0) { throw 'Image DSL 3.0 migration failed' }
 goobers validate $demo

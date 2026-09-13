@@ -119,6 +119,50 @@ func TestImageDSL3SmokeUsesFreshOfflineContainer(t *testing.T) {
 	}
 }
 
+func TestImageDSL3SmokeAnnotatesWorkflowPreviewOnEveryPlatform(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		script      string
+		workflow    string
+		manifest    string
+		readTarget  string
+		writeTarget string
+	}{
+		{
+			name:        "linux",
+			script:      linuxImageDSL3Smoke,
+			workflow:    "workflow=/tmp/dsl3-demo/config/gaggles/demo/workflows/demo.yaml",
+			manifest:    "/tmp/dsl3-demo/config/manifest.yaml",
+			readTarget:  `done < "$workflow" > "$preview_workflow"`,
+			writeTarget: `mv "$preview_workflow" "$workflow"`,
+		},
+		{
+			name:        "windows",
+			script:      windowsImageDSL3Smoke,
+			workflow:    `$workflow = Join-Path $demo 'config\gaggles\demo\workflows\demo.yaml'`,
+			manifest:    `config\manifest.yaml`,
+			readTarget:  `[IO.File]::ReadAllText($workflow)`,
+			writeTarget: `[IO.File]::WriteAllText($workflow,`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, want := range []string{
+				tc.workflow,
+				tc.readTarget,
+				tc.writeTarget,
+				`goobers.dev/allow-preview-features: "true"`,
+			} {
+				if !strings.Contains(tc.script, want) {
+					t.Fatalf("DSL 3.0 smoke does not target the demo Workflow; missing %q", want)
+				}
+			}
+			if strings.Contains(tc.script, tc.manifest) {
+				t.Fatalf("DSL 3.0 smoke must not annotate the Manifest; found %q", tc.manifest)
+			}
+		})
+	}
+}
+
 func TestReleaseRefusesImageBatchWhenDSL3FailsAfterDSL2(t *testing.T) {
 	useImageTestBinaries(t)
 	engine := useFakeImageEngine(t, Target{OS: "linux", Arch: "arm64"})
