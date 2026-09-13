@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/httpapi"
@@ -61,6 +62,121 @@ type dashboardAPI struct {
 	handler http.Handler
 	mode    dashboardMode
 	close   func() error
+}
+
+type dashboardHandlerSwitch struct {
+	mu      sync.RWMutex
+	handler http.Handler
+}
+
+func newDashboardHandlerSwitch(handler http.Handler) *dashboardHandlerSwitch {
+	return &dashboardHandlerSwitch{handler: handler}
+}
+
+func (s *dashboardHandlerSwitch) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	s.mu.RLock()
+	handler := s.handler
+	s.mu.RUnlock()
+	handler.ServeHTTP(response, request)
+}
+
+func (s *dashboardHandlerSwitch) set(handler http.Handler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.handler = handler
+}
+
+type dashboardStartingHandler struct {
+	layout            instance.Layout
+	scheme            string
+	configuredAddress string
+	started           time.Time
+	client            *http.Client
+}
+
+func newDashboardStartingHandler(layout instance.Layout, config *instance.Config) http.Handler {
+	return &dashboardStartingHandler{
+		layout:            layout,
+		scheme:            daemonAPIScheme(config),
+		configuredAddress: config.APIListenAddress(),
+		started:           time.Now().UTC(),
+		client:            &http.Client{Timeout: 750 * time.Millisecond},
+	}
+}
+
+func (h *dashboardStartingHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
+	if request.URL.Path == httpapi.ReadinessPath {
+		h.serveReadiness(response, request)
+		return
+	}
+	response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	response.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = io.WriteString(response, `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Goobers is starting</title>
+<style>
+:root{color-scheme:light dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f172a;color:#e2e8f0}
+main{width:min(42rem,calc(100% - 3rem));padding:2.5rem;border:1px solid #334155;border-radius:1rem;background:#111827;box-shadow:0 24px 80px #02061780}
+.eyebrow{color:#5eead4;font-size:.8rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+h1{margin:.5rem 0 1rem;font-size:clamp(2rem,6vw,3.5rem)}
+.summary{color:#cbd5e1;line-height:1.6}
+.status{margin-top:2rem;padding:1rem 1.25rem;border-radius:.75rem;background:#1e293b}
+.phase{font-weight:700}.detail,.elapsed{margin:.4rem 0 0;color:#94a3b8}
+.pulse{display:inline-block;width:.65rem;height:.65rem;margin-right:.55rem;border-radius:50%;background:#2dd4bf;animation:pulse 1.4s infinite}
+@keyframes pulse{50%{opacity:.3;transform:scale(.75)}}
+</style>
+</head><body><main><div class="eyebrow">Goobers dashboard</div><h1>Goobers is starting</h1>
+<p class="summary">The daemon is completing required recovery and validation before it can safely accept work. This page will open the dashboard automatically when startup finishes.</p>
+<section class="status"><div class="phase"><span class="pulse"></span><span id="phase">Waiting for the daemon API</span></div>
+<p class="detail" id="detail">The local API has not started listening yet.</p><p class="elapsed" id="elapsed"></p></section>
+<script>
+const descriptions={
+'api-bind':'Opening the local API so startup progress can be observed.',
+'worktree-reap-crash-orphan':'Recovering worktrees left by an interrupted run before scheduling resumes.',
+'telemetry-retention-prune':'Pruning expired telemetry according to the instance retention policy.',
+'orphan-run-prune':'Cleaning incomplete run directories left by an interrupted startup.',
+'webhook-listener-start':'Starting the configured webhook listener.',
+'waiting-for-daemon-api':'Waiting for the daemon API to begin listening.'
+};
+function elapsed(since){if(!since)return '';const seconds=Math.max(0,Math.floor((Date.now()-Date.parse(since))/1000));
+return seconds<60?seconds+' seconds elapsed':Math.floor(seconds/60)+'m '+seconds%60+'s elapsed'}
+async function poll(){try{const r=await fetch('/readyz',{cache:'no-store'});const s=await r.json();
+if(s.ready){location.reload();return}const p=s.startup||{};const phase=p.phase||'waiting-for-daemon-api';
+document.getElementById('phase').textContent=phase.replaceAll('-',' ');
+document.getElementById('detail').textContent=descriptions[phase]||'Goobers is completing a required startup operation.';
+document.getElementById('elapsed').textContent=elapsed(p.since)}catch(e){}
+setTimeout(poll,1000)}poll();
+</script></main></body></html>`)
+}
+
+func (h *dashboardStartingHandler) serveReadiness(response http.ResponseWriter, request *http.Request) {
+	status := httpapi.ReadinessStatus{
+		Ready: false,
+		Startup: &httpapi.StartupStatus{
+			Phase: "waiting-for-daemon-api",
+			Since: h.started,
+		},
+	}
+	address, err := dashboardDaemonAPIAddress(h.layout, h.configuredAddress)
+	if err == nil {
+		target := h.scheme + "://" + address + httpapi.ReadinessPath
+		proxyRequest, requestErr := http.NewRequestWithContext(request.Context(), http.MethodGet, target, nil)
+		if requestErr == nil {
+			proxyResponse, responseErr := h.client.Do(proxyRequest)
+			if responseErr == nil {
+				defer func() { _ = proxyResponse.Body.Close() }()
+				response.Header().Set("Content-Type", "application/json")
+				response.WriteHeader(proxyResponse.StatusCode)
+				_, _ = io.Copy(response, proxyResponse.Body)
+				return
+			}
+		}
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(response).Encode(status)
 }
 
 type standaloneDashboardReader struct {
@@ -189,26 +305,37 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	}
 
 	errorLog := log.New(stderr, "dashboard: ", log.LstdFlags)
-	api, err := prepareDashboardAPI(ctx, layout, config, errorLog, dashboardHostIsLoopback(host), waitForDaemon.duration())
-	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, context.Canceled) {
-			return 0
+	loopback := dashboardHostIsLoopback(host)
+	var api dashboardAPI
+	var portalHandler http.Handler
+	apiPrepared := false
+	if !loopback && config.API.Auth != nil {
+		api, err = prepareDashboardAPI(ctx, layout, config, errorLog, loopback, waitForDaemon.duration())
+		if err != nil {
+			pf(stderr, "error: initialize dashboard API: %v\n", err)
+			return 1
 		}
-		pf(stderr, "error: initialize dashboard API: %v\n", err)
-		return 1
-	}
-
-	handler, err := newDashboardHandler(assets, api.handler, api.mode, layout.Root)
-	if err != nil {
-		pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
-		return 1
+		portalHandler, err = newDashboardHandler(assets, api.handler, api.mode, layout.Root)
+		if err != nil {
+			pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
+			return 1
+		}
+		apiPrepared = true
 	}
 	listener, err := listenDashboard(host, port)
 	if err != nil {
-		pf(stderr, "error: %v\n", errors.Join(err, api.close()))
+		if apiPrepared {
+			_ = api.close()
+		}
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
+	initialHandler := portalHandler
+	if !apiPrepared {
+		initialHandler = newDashboardStartingHandler(layout, config)
+	}
+	handler := newDashboardHandlerSwitch(initialHandler)
 	requestContext, cancelRequests := context.WithCancel(ctx)
 	server := &http.Server{
 		Handler:           handler,
@@ -231,15 +358,19 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 	if err != nil {
 		cancelRequests()
 		_ = server.Close()
-		pf(stderr, "error: resolve dashboard address: %v\n", errors.Join(err, api.close()))
+		pf(stderr, "error: resolve dashboard address: %v\n", err)
 		return 1
 	}
 	dashboardURL := "http://" + net.JoinHostPort(host, portText) + "/"
 	pln(stdout, dashboardURL)
-	pf(stderr, "dashboard: mode=%s\n", api.mode)
 	if !*noOpen {
 		if err := launchDashboardBrowser(ctx, dashboardURL); err != nil {
-			shutdownErr := stopDashboard(server, cancelRequests, api)
+			var shutdownErr error
+			if apiPrepared {
+				shutdownErr = stopDashboard(server, cancelRequests, api)
+			} else {
+				shutdownErr = stopDashboardServer(server, cancelRequests)
+			}
 			if ctx.Err() != nil {
 				if shutdownErr != nil {
 					pf(stderr, "error: shut down dashboard: %v\n", shutdownErr)
@@ -251,6 +382,26 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 			return 1
 		}
 	}
+
+	if !apiPrepared {
+		api, err = prepareDashboardAPI(ctx, layout, config, errorLog, loopback, waitForDaemon.duration())
+		if err != nil {
+			_ = stopDashboardServer(server, cancelRequests)
+			if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, context.Canceled) {
+				return 0
+			}
+			pf(stderr, "error: initialize dashboard API: %v\n", err)
+			return 1
+		}
+		portalHandler, err = newDashboardHandler(assets, api.handler, api.mode, layout.Root)
+		if err != nil {
+			_ = stopDashboardServer(server, cancelRequests)
+			pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
+			return 1
+		}
+		handler.set(portalHandler)
+	}
+	pf(stderr, "dashboard: mode=%s\n", api.mode)
 
 	select {
 	case <-ctx.Done():
@@ -843,11 +994,15 @@ func serveDashboardIndex(response http.ResponseWriter, request *http.Request, in
 }
 
 func stopDashboard(server *http.Server, cancelRequests context.CancelFunc, api dashboardAPI) error {
-	cancelRequests()
 	apiErr := api.close()
+	return errors.Join(stopDashboardServer(server, cancelRequests), apiErr)
+}
+
+func stopDashboardServer(server *http.Server, cancelRequests context.CancelFunc) error {
+	cancelRequests()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return errors.Join(server.Shutdown(ctx), apiErr)
+	return server.Shutdown(ctx)
 }
 
 func openDashboardBrowser(ctx context.Context, address string) error {

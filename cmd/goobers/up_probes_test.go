@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,7 +37,7 @@ func TestUpServesUnauthenticatedProbesOnRealDaemon(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := &daemonStartedWriter{started: make(chan struct{})}
-	var stderr bytes.Buffer
+	var stderr syncBuffer
 	done := make(chan int, 1)
 	go func() {
 		done <- runUpContext(ctx, []string{"--quiet", root}, started, &stderr)
@@ -101,8 +102,12 @@ func TestUpServesUnauthenticatedProbesOnRealDaemon(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("daemon did not shut down")
 	}
-	if !strings.Contains(stderr.String(), rootID) || !strings.Contains(stderr.String(), canonicalStatusRoot(root)) {
-		t.Fatalf("startup omitted mutation target: %s", stderr.String())
+	stderrText := stderr.String()
+	statusRoot := canonicalStatusRoot(root)
+	hasID := strings.Contains(stderrText, rootID)
+	hasRoot := strings.Contains(stderrText, strconv.Quote(statusRoot))
+	if !hasID || !hasRoot {
+		t.Fatalf("startup omitted mutation target hasID=%t hasRoot=%t id=%q root=%q: %s", hasID, hasRoot, rootID, statusRoot, stderrText)
 	}
 }
 

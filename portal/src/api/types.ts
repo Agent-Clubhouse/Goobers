@@ -325,6 +325,7 @@ export interface ConfigAuthoringErrorEnvelope {
 
 export interface Health extends ContractVersion {
 	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+  startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
   readState?: ReadState;
   ready: boolean;

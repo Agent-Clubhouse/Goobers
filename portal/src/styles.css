@@ -8671,6 +8671,19 @@ code,
   max-width: 620px;
 }
 
+.guided-complete-setup {
+  align-items: center;
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+  margin: 12px 0 4px;
+  max-width: 620px;
+}
+
+.guided-complete-setup .guided-check {
+  text-align: left;
+}
+
 .guided-complete-mascot {
   height: min(250px, 48vw);
   margin: -18px 0 6px;

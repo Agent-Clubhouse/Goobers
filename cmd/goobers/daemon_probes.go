@@ -36,6 +36,7 @@ type daemonProbeState struct {
 	schedulerTicked         *atomic.Bool
 	lastTickAtNanos         *atomic.Int64 // unix nanoseconds; 0 = no tick recorded yet
 	lastTriggerSweepAtNanos *atomic.Int64
+	startup                 *startupPhaseTracker
 	livenessTimeout         time.Duration
 	now                     func() time.Time
 }
@@ -64,7 +65,7 @@ func (d *daemonProbeState) liveness() bool {
 
 // readiness implements httpapi.ReadinessCheck.
 func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
-	return httpapi.ReadinessStatus{
+	status := httpapi.ReadinessStatus{
 		// The single Ready gate every authenticated caller already sees on
 		// /api/v1/health.Ready — never recomputed from Checks below, so the
 		// two surfaces cannot drift out of lockstep. Startup also waits for
@@ -75,18 +76,24 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 			"apiListening":      d.apiListening != nil && d.apiListening.Load(),
 			"schedulerReady":    d.ready.Load() && d.freshHeartbeat(d.lastTickAtNanos),
 			"triggerSweepReady": d.ready.Load() && d.freshHeartbeat(d.lastTriggerSweepAtNanos),
-			// configLoaded and stateOpen both flip before the HTTP listener
-			// itself ever opens (runUpContextWithForce sets them, then calls
-			// apiServer.Start() only afterward) — so in practice neither can
-			// ever be observed false over HTTP; they are included anyway as
-			// literal readiness diagnostics per #3806's own ask, informational
-			// rather than load-bearing for this pair.
+			// The API listener opens before scheduler setup, so these checks
+			// identify whether configuration and durable state have caught up.
 			"configLoaded":   d.configLoaded.Load(),
 			"stateOpen":      d.stateOpen.Load(),
 			"resumeComplete": d.resumeComplete.Load(),
 			"sweepsStarted":  d.sweepsStarted.Load(),
 		},
 	}
+	if !status.Ready && d.startup != nil {
+		phase, _, since := d.startup.snapshot()
+		if phase != "" {
+			status.Startup = &httpapi.StartupStatus{
+				Phase: phase,
+				Since: since,
+			}
+		}
+	}
+	return status
 }
 
 // A listener or startup liveness grace is not proof that a scheduler can
