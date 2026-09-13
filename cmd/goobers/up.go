@@ -914,6 +914,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// can always answer them. An instance with no rollup answers "no
 		// telemetry rollup yet", exactly as the local path does.
 		httpapi.WithTelemetryDefectAggregateService(newDaemonTelemetryDefectAggregateService(l)),
+		// The readiness-gate endpoint and the recovery gate it is exempt from
+		// (#5019): wired unconditionally, like the containment above,
+		// because every daemon build has a Layout and a startup phase
+		// tracker regardless of which optional services below it configures.
+		httpapi.WithInstanceReadinessService(&daemonInstanceReadinessService{instanceRoot: l.Root, tracker: tracker, ready: ready.Load}),
+		httpapi.WithRecoveryGate(ready.Load),
 	)
 	if liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal
@@ -1006,6 +1012,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// shutdown() straight through so the server's SEC-043 posture and
 	// apiHandler's own SSE-close lifecycle both keep working unchanged.
 	handler = httpapi.WrapWithProbes(handler, probes.liveness, probes.readiness)
+	// apiHandler.Set swaps the real versioned router in for startStartupAPI's
+	// placeholder — the listener has been bound and serving since before
+	// scheduler setup even began (#4999), so this is a hot swap, not a bind.
+	// Everything but RouteInstanceReadiness (and RouteHealth) refuses with
+	// 503 from here until crash-orphan Reap and every phase below completes
+	// and `ready` flips true — the recovery gate in Router.serve (#5019).
 	if err := apiHandler.Set(handler); err != nil {
 		pf(stderr, "error: activate HTTP API: %v\n", err)
 		return 1
@@ -1270,6 +1282,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	cancelPlane.AttachRelease(sched.ReleaseRun)
 
+	// api-bind itself runs much earlier (#4999's startStartupAPI, before
+	// scheduler setup even begins), and apiHandler.Set(handler) above already
+	// swaps in the real versioned router before crash-orphan Reap runs below
+	// — the recovery gate in Router.serve (#5019) is what keeps every route
+	// but RouteInstanceReadiness (and RouteHealth) unavailable in between.
 	if webhookServer != nil {
 		if err := runStartupPhase(stdout, tracker, "webhook-listener-start", webhookServer.Address(), webhookServer.Start); err != nil {
 			pf(stderr, "error: start webhook listener: %v\n", err)

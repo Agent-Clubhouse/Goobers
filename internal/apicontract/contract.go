@@ -19,8 +19,16 @@ const (
 	// V1Prefix is the versioned root for daemon API routes.
 	V1Prefix = "/api/v1"
 
-	HealthPath                   = V1Prefix + "/health"
-	InstancePath                 = V1Prefix + "/instance"
+	HealthPath   = V1Prefix + "/health"
+	InstancePath = V1Prefix + "/instance"
+	// InstanceReadinessPath is the crash-recovery-safe identity/readiness
+	// endpoint (#5019): the one versioned route the recovery gate never
+	// blocks, so an operator or probe can tell "still recovering" from
+	// "dead" during the window before InstancePath and every other
+	// versioned route open. Named distinctly from httpapi.ReadinessPath
+	// (the pre-router, unauthenticated /readyz) — this is the richer,
+	// authenticated sibling of InstancePath, not a replacement for /readyz.
+	InstanceReadinessPath        = InstancePath + "/readiness"
 	PortalConfigPath             = V1Prefix + "/portal/config"
 	GagglesPath                  = V1Prefix + "/gaggles"
 	GaggleGoobersPath            = V1Prefix + "/gaggles/{gaggle}/goobers"
@@ -240,6 +248,7 @@ const (
 	RouteConfigDigest             RouteID = "configDigest"
 	RouteWorkerConfigDivergence   RouteID = "workerConfigDivergence"
 	RouteHealth                   RouteID = "health"
+	RouteInstanceReadiness        RouteID = "readiness"
 	RouteInstance                 RouteID = "instance"
 	RoutePortalConfig             RouteID = "portalConfig"
 	RouteGaggles                  RouteID = "gaggles"
@@ -339,6 +348,12 @@ type Route struct {
 	// server gives up on is reported as a 503 the client can act on rather than
 	// racing the client's own timeout.
 	Budget time.Duration
+	// RecoverySafe marks a route reachable while the daemon is still
+	// completing crash-orphan recovery, before every other versioned route
+	// opens (#5019). True only for RouteHealth and RouteInstanceReadiness:
+	// the recovery gate in httpapi.Router.serve refuses everything else,
+	// including RouteInstance, until recovery completes.
+	RecoverySafe bool
 }
 
 // CostClass names what a route costs to serve.
@@ -398,7 +413,19 @@ const (
 )
 
 var v1Routes = []Route{
-	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	// RouteHealth is RecoverySafe (#5019): #4999 landed readservice.Health's
+	// Startup field (phase/target/since) specifically so an authenticated
+	// caller can see startup progress, and every source healthUnannotated
+	// reads (the journal-freshness stat, definitions.Load, the scheduler
+	// heartbeat file, the update-check cache, startupStatusSnapshot) is safe
+	// before crash-orphan recovery completes — unlike RouteInstance, it never
+	// touches active-run counts or anything else recovery gates on.
+	{ID: RouteHealth, Method: http.MethodGet, Path: HealthPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
+	// RouteInstanceReadiness is the other RecoverySafe route (#5019): it must
+	// answer while crash-orphan recovery is still running, so its handler
+	// cannot depend on readservice.Reader (which is not safe to query until
+	// recovery completes) the way every other read route here does.
+	{ID: RouteInstanceReadiness, Method: http.MethodGet, Path: InstanceReadinessPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget, RecoverySafe: true},
 	{ID: RouteConfigDigest, Method: http.MethodGet, Path: ConfigDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	// A worker's divergence report is a machine-to-daemon journal seam, not an
 	// operator mutation that every product surface must expose. Class it with
