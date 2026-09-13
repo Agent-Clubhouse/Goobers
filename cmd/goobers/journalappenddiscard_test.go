@@ -68,6 +68,12 @@ import (
 type arbitrary struct{}
 func (arbitrary) Append(journal.Event) error { return nil }
 type InstanceAppender interface { Append(journal.Event) error }
+var global *journal.InstanceLog
+var packageClosure = func() { global.Append(journal.Event{}) }
+var unrelatedClosure = func() {
+	var other arbitrary
+	other.Append(journal.Event{})
+}
 func hostile(parameter *journal.InstanceLog, intended livejournal.InstanceAppender, misleading InstanceAppender, other arbitrary) error {
 	parameter.Append(journal.Event{})
 	_ = (parameter.Append)(journal.Event{})
@@ -108,6 +114,12 @@ func hostile(parameter *journal.InstanceLog, intended livejournal.InstanceAppend
 	parameter.AppendBestEffort(journal.Event{})
 	return parameter.Append(journal.Event{})
 }
+func orderedReassignment(parameter *journal.InstanceLog, other arbitrary) error {
+	method := other.Append
+	method(journal.Event{})
+	method = parameter.Append
+	return method(journal.Event{})
+}
 `)
 	writeFixtureFile(t, repo, "platform.go", `package fixture
 import "github.com/goobers/goobers/internal/journal"
@@ -131,11 +143,11 @@ type platformAppender = arbitrary
 
 	findings := discardedInstanceAppends(t, repo, trackedProductionGoFiles(t, repo))
 	// The original nine shapes plus copied and branch-merged method values, a
-	// method value inside a function literal, an embedded/promoted method, and
-	// the common file whose receiver is an InstanceLog only on Windows.
+	// nested method value, an embedded/promoted method, the common file whose
+	// receiver is an InstanceLog only on Windows, and a package-scope closure.
 	// Arbitrary/misleading Append types and all propagated results remain legal.
-	if len(findings) != 14 {
-		t.Fatalf("findings = %d, want 14:\n%s", len(findings), strings.Join(findings, "\n"))
+	if len(findings) != 15 {
+		t.Fatalf("findings = %d, want 15:\n%s", len(findings), strings.Join(findings, "\n"))
 	}
 }
 
@@ -257,120 +269,240 @@ func packageContainsCandidate(repo string, absoluteFiles []string, candidates ma
 }
 
 func discardedAppendsInFile(files *token.FileSet, parsed *ast.File, info *types.Info) []string {
-	var findings []string
+	findings := make(map[string]struct{})
+	for _, body := range journalFunctionBodies(parsed) {
+		analyzeAliasBlock(body.List, make(aliasState), files, info, findings)
+	}
+	result := make([]string, 0, len(findings))
+	for finding := range findings {
+		result = append(result, finding)
+	}
+	return result
+}
+
+func journalFunctionBodies(parsed *ast.File) []*ast.BlockStmt {
+	var bodies []*ast.BlockStmt
 	for _, declaration := range parsed.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Body == nil {
+		switch typed := declaration.(type) {
+		case *ast.FuncDecl:
+			if typed.Body != nil {
+				bodies = append(bodies, typed.Body)
+			}
+		case *ast.GenDecl:
+			ast.Inspect(typed, func(node ast.Node) bool {
+				function, ok := node.(*ast.FuncLit)
+				if !ok {
+					return true
+				}
+				bodies = append(bodies, function.Body)
+				return false
+			})
+		}
+	}
+	return bodies
+}
+
+type aliasState map[types.Object]bool
+
+func analyzeAliasBlock(statements []ast.Stmt, state aliasState, files *token.FileSet, info *types.Info, findings map[string]struct{}) aliasState {
+	for _, statement := range statements {
+		state = analyzeAliasStatement(statement, state, files, info, findings)
+	}
+	return state
+}
+
+func analyzeAliasStatement(statement ast.Stmt, state aliasState, files *token.FileSet, info *types.Info, findings map[string]struct{}) aliasState {
+	switch typed := statement.(type) {
+	case *ast.BlockStmt:
+		return analyzeAliasBlock(typed.List, state, files, info, findings)
+	case *ast.IfStmt:
+		if typed.Init != nil {
+			state = analyzeAliasStatement(typed.Init, state, files, info, findings)
+		}
+		thenState := analyzeAliasBlock(typed.Body.List, cloneAliasState(state), files, info, findings)
+		elseState := cloneAliasState(state)
+		if typed.Else != nil {
+			elseState = analyzeAliasStatement(typed.Else, elseState, files, info, findings)
+		}
+		return joinAliasStates(thenState, elseState)
+	case *ast.ForStmt:
+		if typed.Init != nil {
+			state = analyzeAliasStatement(typed.Init, state, files, info, findings)
+		}
+		return analyzeAliasLoop(typed.Body.List, typed.Post, state, files, info, findings)
+	case *ast.RangeStmt:
+		loopState := cloneAliasState(state)
+		clearAliasTarget(loopState, typed.Key, info)
+		clearAliasTarget(loopState, typed.Value, info)
+		return analyzeAliasLoop(typed.Body.List, nil, loopState, files, info, findings)
+	case *ast.SwitchStmt:
+		if typed.Init != nil {
+			state = analyzeAliasStatement(typed.Init, state, files, info, findings)
+		}
+		return analyzeAliasClauses(typed.Body.List, state, files, info, findings)
+	case *ast.TypeSwitchStmt:
+		if typed.Init != nil {
+			state = analyzeAliasStatement(typed.Init, state, files, info, findings)
+		}
+		return analyzeAliasClauses(typed.Body.List, state, files, info, findings)
+	case *ast.SelectStmt:
+		return analyzeAliasClauses(typed.Body.List, state, files, info, findings)
+	case *ast.LabeledStmt:
+		return analyzeAliasStatement(typed.Stmt, state, files, info, findings)
+	}
+
+	recordDiscardedAliasCall(statement, state, files, info, findings)
+	analyzeNestedClosures(statement, state, files, info, findings)
+	switch typed := statement.(type) {
+	case *ast.AssignStmt:
+		assignAliasValues(state, typed.Lhs, typed.Rhs, info)
+	case *ast.DeclStmt:
+		if declaration, ok := typed.Decl.(*ast.GenDecl); ok {
+			for _, spec := range declaration.Specs {
+				if values, ok := spec.(*ast.ValueSpec); ok {
+					assignAliasValues(state, identsToExpressions(values.Names), values.Values, info)
+				}
+			}
+		}
+	}
+	return state
+}
+
+func analyzeAliasLoop(body []ast.Stmt, post ast.Stmt, entry aliasState, files *token.FileSet, info *types.Info, findings map[string]struct{}) aliasState {
+	current := cloneAliasState(entry)
+	for {
+		exit := analyzeAliasBlock(body, cloneAliasState(current), files, info, findings)
+		if post != nil {
+			exit = analyzeAliasStatement(post, exit, files, info, findings)
+		}
+		next := joinAliasStates(entry, exit)
+		if equalAliasStates(current, next) {
+			return next
+		}
+		current = next
+	}
+}
+
+func analyzeAliasClauses(clauses []ast.Stmt, entry aliasState, files *token.FileSet, info *types.Info, findings map[string]struct{}) aliasState {
+	result := cloneAliasState(entry)
+	for _, statement := range clauses {
+		clause, ok := statement.(*ast.CaseClause)
+		if !ok {
+			if communication, ok := statement.(*ast.CommClause); ok {
+				result = joinAliasStates(result, analyzeAliasBlock(communication.Body, cloneAliasState(entry), files, info, findings))
+			}
 			continue
 		}
-		methodValues := instanceAppendMethodValues(function.Body, info)
-		ast.Inspect(function.Body, func(node ast.Node) bool {
-			switch statement := node.(type) {
-			case *ast.AssignStmt:
-				if len(statement.Lhs) == 1 && isBlankIdentifier(statement.Lhs[0]) && len(statement.Rhs) == 1 && isInstanceAppendCall(statement.Rhs[0], info, methodValues) {
-					findings = append(findings, physicalPosition(files, statement.Pos()))
-				}
-			case *ast.DeclStmt:
-				if declaration, ok := statement.Decl.(*ast.GenDecl); ok {
-					for _, spec := range declaration.Specs {
-						values, ok := spec.(*ast.ValueSpec)
-						if !ok {
-							continue
-						}
-						for i, name := range values.Names {
-							if name.Name == "_" && i < len(values.Values) && isInstanceAppendCall(values.Values[i], info, methodValues) {
-								findings = append(findings, physicalPosition(files, values.Pos()))
-							}
+		result = joinAliasStates(result, analyzeAliasBlock(clause.Body, cloneAliasState(entry), files, info, findings))
+	}
+	return result
+}
+
+func recordDiscardedAliasCall(statement ast.Stmt, state aliasState, files *token.FileSet, info *types.Info, findings map[string]struct{}) {
+	var expression ast.Expr
+	switch typed := statement.(type) {
+	case *ast.AssignStmt:
+		if len(typed.Lhs) == 1 && isBlankIdentifier(typed.Lhs[0]) && len(typed.Rhs) == 1 {
+			expression = typed.Rhs[0]
+		}
+	case *ast.DeclStmt:
+		if declaration, ok := typed.Decl.(*ast.GenDecl); ok {
+			for _, spec := range declaration.Specs {
+				if values, ok := spec.(*ast.ValueSpec); ok {
+					for i, name := range values.Names {
+						if name.Name == "_" && i < len(values.Values) && isInstanceAppendCall(values.Values[i], info, state) {
+							findings[physicalPosition(files, values.Pos())] = struct{}{}
 						}
 					}
 				}
-			case *ast.ExprStmt:
-				if isInstanceAppendCall(statement.X, info, methodValues) {
-					findings = append(findings, physicalPosition(files, statement.Pos()))
-				}
-			case *ast.DeferStmt:
-				if isInstanceAppendCall(statement.Call, info, methodValues) {
-					findings = append(findings, physicalPosition(files, statement.Pos()))
-				}
-			case *ast.GoStmt:
-				if isInstanceAppendCall(statement.Call, info, methodValues) {
-					findings = append(findings, physicalPosition(files, statement.Pos()))
-				}
 			}
+		}
+	case *ast.ExprStmt:
+		expression = typed.X
+	case *ast.DeferStmt:
+		expression = typed.Call
+	case *ast.GoStmt:
+		expression = typed.Call
+	}
+	if expression != nil && isInstanceAppendCall(expression, info, state) {
+		findings[physicalPosition(files, statement.Pos())] = struct{}{}
+	}
+}
+
+func analyzeNestedClosures(node ast.Node, state aliasState, files *token.FileSet, info *types.Info, findings map[string]struct{}) {
+	ast.Inspect(node, func(node ast.Node) bool {
+		function, ok := node.(*ast.FuncLit)
+		if !ok {
 			return true
-		})
-	}
-	return findings
-}
-
-type methodValueFlow struct {
-	destination types.Object
-	source      types.Object
-	seed        bool
-}
-
-// instanceAppendMethodValues computes a conservative whole-function fixed
-// point. A destination is tainted if any assignment can give it an instance
-// Append method value; a later assignment cannot erase a path that remains
-// possible through a branch or closure.
-func instanceAppendMethodValues(body *ast.BlockStmt, info *types.Info) map[types.Object]bool {
-	var flows []methodValueFlow
-	ast.Inspect(body, func(node ast.Node) bool {
-		switch statement := node.(type) {
-		case *ast.AssignStmt:
-			flows = append(flows, methodValueFlows(statement.Lhs, statement.Rhs, info)...)
-		case *ast.DeclStmt:
-			declaration, ok := statement.Decl.(*ast.GenDecl)
-			if !ok {
-				return true
-			}
-			for _, spec := range declaration.Specs {
-				if values, ok := spec.(*ast.ValueSpec); ok {
-					flows = append(flows, methodValueFlows(identsToExpressions(values.Names), values.Values, info)...)
-				}
-			}
 		}
-		return true
+		analyzeAliasBlock(function.Body.List, cloneAliasState(state), files, info, findings)
+		return false
 	})
-
-	tainted := make(map[types.Object]bool)
-	changed := true
-	for changed {
-		changed = false
-		for _, flow := range flows {
-			if tainted[flow.destination] || (!flow.seed && !tainted[flow.source]) {
-				continue
-			}
-			tainted[flow.destination] = true
-			changed = true
-		}
-	}
-	return tainted
 }
 
-func methodValueFlows(lhs, rhs []ast.Expr, info *types.Info) []methodValueFlow {
-	var flows []methodValueFlow
+func assignAliasValues(state aliasState, lhs, rhs []ast.Expr, info *types.Info) {
+	values := make([]bool, len(lhs))
+	for i := range lhs {
+		if i < len(rhs) {
+			values[i] = aliasExpressionTainted(rhs[i], state, info)
+		}
+	}
 	for i, left := range lhs {
 		identifier, ok := unparen(left).(*ast.Ident)
-		if !ok || identifier.Name == "_" || i >= len(rhs) {
+		if !ok || identifier.Name == "_" {
 			continue
 		}
-		destination := info.ObjectOf(identifier)
-		if destination == nil {
-			continue
-		}
-		right := unparen(rhs[i])
-		if isInstanceAppendMethod(right, info) {
-			flows = append(flows, methodValueFlow{destination: destination, seed: true})
-			continue
-		}
-		if source, ok := right.(*ast.Ident); ok {
-			if object := info.ObjectOf(source); object != nil {
-				flows = append(flows, methodValueFlow{destination: destination, source: object})
-			}
+		if object := info.ObjectOf(identifier); object != nil {
+			state[object] = values[i]
 		}
 	}
-	return flows
+}
+
+func aliasExpressionTainted(expression ast.Expr, state aliasState, info *types.Info) bool {
+	expression = unparen(expression)
+	if isInstanceAppendMethod(expression, info) {
+		return true
+	}
+	identifier, ok := expression.(*ast.Ident)
+	return ok && state[info.ObjectOf(identifier)]
+}
+
+func clearAliasTarget(state aliasState, expression ast.Expr, info *types.Info) {
+	if identifier, ok := unparen(expression).(*ast.Ident); ok {
+		state[info.ObjectOf(identifier)] = false
+	}
+}
+
+func cloneAliasState(state aliasState) aliasState {
+	result := make(aliasState, len(state))
+	for object, tainted := range state {
+		result[object] = tainted
+	}
+	return result
+}
+
+func joinAliasStates(states ...aliasState) aliasState {
+	result := make(aliasState)
+	for _, state := range states {
+		for object, tainted := range state {
+			result[object] = result[object] || tainted
+		}
+	}
+	return result
+}
+
+func equalAliasStates(left, right aliasState) bool {
+	for object, tainted := range left {
+		if right[object] != tainted {
+			return false
+		}
+	}
+	for object, tainted := range right {
+		if left[object] != tainted {
+			return false
+		}
+	}
+	return true
 }
 
 func isInstanceAppendCall(expression ast.Expr, info *types.Info, aliases map[types.Object]bool) bool {
