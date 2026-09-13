@@ -59,6 +59,17 @@ const (
 	// MetricRecoveryRestoreFailures counts recovery bundle restore failures,
 	// labeled by a bounded failure class.
 	MetricRecoveryRestoreFailures = "goobers.recovery.restore.failures"
+	// MetricStorageFreeBytes reports the most recent free-space sample of the
+	// filesystem containing the instance root (#4873).
+	MetricStorageFreeBytes = "goobers.storage.free_bytes"
+	// MetricStorageHealthTierChanges counts tiered low-disk protection tier
+	// transitions (#4873), tagged by MetricAttrStorageTier — the tier this
+	// transition entered, not the one it left. Dimensionless per journal
+	// entries would lose exactly the information an operator needs first
+	// ("did we just start refusing runs, or did we recover?"), and the tier
+	// is a small, fixed, non-sensitive set of values, unlike the paths and
+	// error text MetricJournalAppendsDropped's doc explains staying off of.
+	MetricStorageHealthTierChanges = "goobers.storage.health.tier_changes"
 )
 
 const (
@@ -75,6 +86,10 @@ const (
 	// full bundle (MetricRecoverySnapshotFallback) or why a restore failed
 	// (MetricRecoveryRestoreFailures).
 	MetricAttrRecoveryReason = "goobers.recovery.reason"
+	// MetricAttrStorageTier labels MetricStorageHealthTierChanges with the
+	// tier a transition entered: "healthy", "warning", "admission-stopped",
+	// or "measurement-unavailable" (localscheduler.StorageTier.String()).
+	MetricAttrStorageTier = "goobers.storage.tier"
 
 	metricNameAttribute = "goobers.metric.name"
 
@@ -137,6 +152,8 @@ type instruments struct {
 	recoverySnapshotBytes    apimetric.Float64Histogram
 	recoverySnapshotFallback apimetric.Int64Counter
 	recoveryRestoreFailures  apimetric.Int64Counter
+	storageFreeBytes         apimetric.Int64Gauge
+	storageHealthChanges     apimetric.Int64Counter
 	limiter                  *cardinalityLimiter
 }
 
@@ -201,6 +218,12 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	record(err)
 	inst.recoveryRestoreFailures, err = meter.Int64Counter(MetricRecoveryRestoreFailures,
 		apimetric.WithUnit("{failure}"), apimetric.WithDescription("Recovery bundle restore failures, by reason."))
+	record(err)
+	inst.storageFreeBytes, err = meter.Int64Gauge(MetricStorageFreeBytes,
+		apimetric.WithUnit("By"), apimetric.WithDescription("Most recent free-space sample of the filesystem containing the instance root."))
+	record(err)
+	inst.storageHealthChanges, err = meter.Int64Counter(MetricStorageHealthTierChanges,
+		apimetric.WithUnit("{transition}"), apimetric.WithDescription("Tiered low-disk protection tier transitions, tagged by the tier entered."))
 	record(err)
 
 	if len(errs) != 0 {

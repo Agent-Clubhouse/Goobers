@@ -26,6 +26,8 @@ type scanResult struct {
 	dependencies map[string]bool
 }
 
+const integrationTestTimeout = "30m"
+
 func main() {
 	goCommand := flag.String("go", "go", "Go command used to run integration tests")
 	flag.Parse()
@@ -58,8 +60,7 @@ func run(root, goCommand string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "  %s - %s\n", dependency.Name, dependency.InstallHint)
 	}
 
-	args := []string{"test", "-v", "-tags=integration", "-run=^TestIntegration"}
-	args = append(args, result.packages...)
+	args := integrationTestArgs(result.packages)
 	command := exec.Command(goCommand, args...)
 	command.Dir = root
 	command.Env = os.Environ()
@@ -70,6 +71,17 @@ func run(root, goCommand string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func integrationTestArgs(packages []string) []string {
+	args := []string{
+		"test",
+		"-v",
+		"-tags=integration",
+		"-run=^TestIntegration",
+		"-timeout=" + integrationTestTimeout,
+	}
+	return append(args, packages...)
 }
 
 func validateInventory(used map[string]bool) error {

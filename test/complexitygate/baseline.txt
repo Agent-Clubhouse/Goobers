@@ -16,7 +16,7 @@
 !ratchet-budget 187
 api/validate/validate.go	(*index).checkWorkflow	57
 cmd/goobers/applyverdict.go	runApplyVerdict	83
-cmd/goobers/daemon.go	buildSchedulerDefinitions	53
+cmd/goobers/daemon.go	buildSchedulerDefinitions	52
 cmd/goobers/daemon.go	buildSchedulerSetupWithConfigPolicy	49
 cmd/goobers/dispatchexec.go	runDeclaredStage	44
 cmd/goobers/init.go	runInitWithInputForOS	57
@@ -74,9 +74,9 @@ providers/ado_workitems.go	(*ADOProvider).ListWorkItems	47
 test/nophonehome/main.go	tokenizeScript	45
 !body-length-cap 200
 !body-length	api/validate/validate.go	(*index).checkWorkflow	240
-!body-length	cmd/goobers/applyverdict.go	runApplyVerdict	517
+!body-length	cmd/goobers/applyverdict.go	runApplyVerdict	514
 !body-length	cmd/goobers/backlogquery.go	runBacklogQueryMode	299
-!body-length	cmd/goobers/daemon.go	buildSchedulerDefinitions	355
+!body-length	cmd/goobers/daemon.go	buildSchedulerDefinitions	354
 !body-length	cmd/goobers/daemon.go	buildSchedulerSetupWithConfigPolicy	401
 !body-length	cmd/goobers/daemon.go	resumeInterruptedRunsWithRunners	204
 !body-length	cmd/goobers/dispatchexec.go	runDeclaredStage	380
@@ -91,11 +91,12 @@ test/nophonehome/main.go	tokenizeScript	45
 !body-length	cmd/goobers/runnerwiring.go	buildRunnerConfig	278
 !body-length	cmd/goobers/runtime_capabilities.go	init	762
 !body-length	cmd/goobers/stalledruns.go	sweepStalledRuns	221
-!body-length	cmd/goobers/status.go	runRunTable	380
+!body-length-justification	cmd/goobers/status.go	runRunTable	383	#4873 adds storageHealth to the JSON status output alongside journalHealth
+!body-length	cmd/goobers/status.go	runRunTable	383
 !body-length	cmd/goobers/telemetryquery.go	runTelemetryQuery	206
 !body-length	cmd/goobers/trace.go	runTraceWithFactories	225
-!body-length-justification	cmd/goobers/up.go	runUpContextWithForce	1632	#4252 (rebased onto #5019's 1607): named startup-gate flip logging (5 logGateFlip call sites) plus the plane-ready/scheduler-ready split (a new atomic, its probe wiring, and the trigger-plane admission gate) — growth is additive instrumentation/gating, not new control flow depth
-!body-length	cmd/goobers/up.go	runUpContextWithForce	1632
+!body-length-justification	cmd/goobers/up.go	runUpContextWithForce	1637	#4873 wires tiered low-disk protection's startup sample, disk gate, and periodic ticker into daemon startup, on top of #4252's growth already merged to main
+!body-length	cmd/goobers/up.go	runUpContextWithForce	1637
 !body-length	cmd/goobers/validate.go	runValidateConfig	278
 !body-length	cmd/goobers/worker.go	runWorker	274
 !body-length	internal/apicontract/wire.go	newWireFixtures	776

@@ -55,6 +55,24 @@ func TestRetryOnFileLockSucceedsAfterTransientLocks(t *testing.T) {
 	}
 }
 
+func TestRetryOnFileLockWithBudgetUsesExtendedAttempts(t *testing.T) {
+	calls := 0
+	attempts := fileLockRetryAttempts + 1
+	err := retryOnFileLockWithBudget(context.Background(), attempts, 0, func() error {
+		calls++
+		if calls < attempts {
+			return errors.New("used by another process")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retryOnFileLockWithBudget returned %v, want nil", err)
+	}
+	if calls != attempts {
+		t.Fatalf("op called %d times, want %d", calls, attempts)
+	}
+}
+
 // TestRetryOnFileLockDoesNotRetryDeterministic proves a non-lock error is
 // returned on the first attempt without wasting the retry budget.
 func TestRetryOnFileLockDoesNotRetryDeterministic(t *testing.T) {

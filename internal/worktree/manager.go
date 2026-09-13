@@ -1056,6 +1056,10 @@ func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string
 const (
 	fileLockRetryAttempts = 6
 	fileLockRetryBackoff  = 250 * time.Millisecond
+
+	// Once Git confirms a worktree is unregistered, allow recently exited
+	// agent subprocesses up to ten seconds to release their directory handles.
+	unregisteredWorktreeRetryAttempts = 41
 )
 
 // isTransientFileLockError reports whether err looks like a momentary OS-level
@@ -1092,13 +1096,17 @@ func isTransientFileLockError(err error) bool {
 // and aborts early if ctx is cancelled. Non-lock errors are returned
 // immediately without retry, so deterministic failures are not masked.
 func retryOnFileLock(ctx context.Context, op func() error) error {
+	return retryOnFileLockWithBudget(ctx, fileLockRetryAttempts, fileLockRetryBackoff, op)
+}
+
+func retryOnFileLockWithBudget(ctx context.Context, attempts int, backoff time.Duration, op func() error) error {
 	var err error
-	for attempt := 0; attempt < fileLockRetryAttempts; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
 				return errors.Join(err, ctx.Err())
-			case <-time.After(fileLockRetryBackoff):
+			case <-time.After(backoff):
 			}
 		}
 		if err = op(); err == nil || !isTransientFileLockError(err) {
