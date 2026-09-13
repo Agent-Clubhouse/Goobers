@@ -4,9 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	wf "github.com/goobers/goobers/internal/workflow"
-	"sigs.k8s.io/yaml"
 )
 
 func TestWS001SuggestedYAMLShapesValidateAgainstGeneratedSchema(t *testing.T) {
