@@ -553,7 +553,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return applyAdvisoryVerdict(
-			ctx, prProvider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
+			ctx, root, prProvider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
 			*verdict, runID, resultFile, publishAdvisory, stdout, stderr,
 		)
 	}
@@ -666,7 +666,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			// *issue* comments and submit a native review, neither of which exists
 			// on ADO, so the ADO path returns here.
 			if adoProvider, ok := provider.(*providers.ADOProvider); ok {
-				return publishADONonPassVerdict(ctx, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
+				return publishADONonPassVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
 			}
 			pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 			return 1
@@ -698,7 +698,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// bridge (they return before reaching here); this gate is reached on ADO
 		// only for a PASS.
 		if adoProvider, ok := provider.(*providers.ADOProvider); ok && verdict.Decision == apiv1.VerdictPass {
-			return publishADOPassVerdict(ctx, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
+			return publishADOPassVerdict(ctx, root, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
 		}
 		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 		return 1
@@ -822,6 +822,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	if err := validateVerdictForPublish(posted); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("validate verdict for PR #%d", selectedNumber), err, resultFile)
+	}
+	// Authoritative KV write BEFORE the sticky status comment (Goobers#3025/
+	// #5030) — see publishADOPassVerdict's identical ordering rationale.
+	if err := writeVerdictState(root, repo, selectedNumber, posted); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
 	}
 	comment := renderScopeGateStateComment(
 		renderVerdictComment(posted),
@@ -992,6 +997,7 @@ func verdictEscalationStillBlocks(ctx context.Context, provider providers.Provid
 
 func applyAdvisoryVerdict(
 	ctx context.Context,
+	root string,
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	selectedNumber int,
@@ -1035,6 +1041,13 @@ func applyAdvisoryVerdict(
 	}
 	if verdict.SourceRunID == "" {
 		verdict.SourceRunID = runID
+	}
+	// Authoritative KV write BEFORE the sticky status comment (Goobers#3025/
+	// #5030) — see publishADOPassVerdict's identical ordering rationale.
+	if root != "" {
+		if err := writeVerdictState(root, repo, selectedNumber, verdict); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
+		}
 	}
 	comment := renderScopeGateStateComment(
 		renderVerdictComment(verdict),
@@ -1607,6 +1620,7 @@ type adoPassVerdictPublisher interface {
 // published-verdict gate advances to merge-pr. See the ADO merge epic (#2061).
 func publishADOPassVerdict(
 	ctx context.Context,
+	root string,
 	provider adoPassVerdictPublisher,
 	repo providers.RepositoryRef,
 	selectedNumber int,
@@ -1632,6 +1646,14 @@ func publishADOPassVerdict(
 	verdict.Decision = apiv1.VerdictPass
 	verdict.HeadSHA = current.HeadSHA
 	verdict.BaseSHA = current.BaseSHA
+	// Authoritative KV write BEFORE the PR-thread comment (Goobers#3025/#5030):
+	// the comment is a best-effort projection ADO cannot edit in place, so it
+	// must never be the value gather-pr-context's read depends on.
+	if root != "" {
+		if err := writeVerdictState(root, repo, selectedNumber, verdict); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
+		}
+	}
 	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
@@ -1671,6 +1693,7 @@ func publishADOPassVerdict(
 // epic (#2061).
 func publishADONonPassVerdict(
 	ctx context.Context,
+	root string,
 	provider *providers.ADOProvider,
 	repo providers.RepositoryRef,
 	selectedNumber int,
@@ -1744,6 +1767,13 @@ func publishADONonPassVerdict(
 	// back from the thread, mirroring the GitHub path's posted.HeadSHA/BaseSHA.
 	verdict.HeadSHA = current.HeadSHA
 	verdict.BaseSHA = current.BaseSHA
+	// Authoritative KV write BEFORE the PR-thread comment (Goobers#3025/#5030) —
+	// see publishADOPassVerdict's identical ordering rationale.
+	if root != "" {
+		if err := writeVerdictState(root, repo, selectedNumber, verdict); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
+		}
+	}
 	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
 	}
