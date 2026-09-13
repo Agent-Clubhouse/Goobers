@@ -32,6 +32,22 @@ func TestHasIntegrationTag(t *testing.T) {
 	}
 }
 
+func TestIntegrationTestArgsSetPackageTimeout(t *testing.T) {
+	got := integrationTestArgs([]string{"./cmd/goobers", "./internal/recovery"})
+	want := []string{
+		"test",
+		"-v",
+		"-tags=integration",
+		"-run=^TestIntegration",
+		"-timeout=30m",
+		"./cmd/goobers",
+		"./internal/recovery",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("integrationTestArgs() = %q, want %q", got, want)
+	}
+}
+
 func TestScanIntegrationDiscoversPackagesAndDependencies(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "alpha/regular_test.go", "package alpha\n")
