@@ -2,9 +2,10 @@
 // capabilities shared by the Go API and portal client.
 package apicontract
 
-//go:generate go run ./cmd/generate -contract-output ../../portal/src/api/contract.generated.ts -fixtures-output ../../portal/src/api/wire.generated.ts
+//go:generate go run ./cmd/generate -contract-output ../../portal/src/api/contract.generated.ts -fixtures-output ../../portal/src/api/wire.generated.ts -manifest-output ../../portal/src/api/contract.generated.json
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -981,6 +982,60 @@ func TypeScriptContract() ([]byte, error) {
 	output.WriteString("  | { id: string; class: typeof actionClasses.runtimeMutation; capability: RuntimeMutationCapabilityId }\n")
 	output.WriteString("  | { id: string; class: Exclude<ActionClass, typeof actionClasses.runtimeMutation>; capability?: never };\n")
 	return []byte(output.String()), nil
+}
+
+type compatibilityManifest struct {
+	SchemaVersion int                          `json:"schemaVersion"`
+	APIVersion    string                       `json:"apiVersion"`
+	Routes        []compatibilityManifestRoute `json:"routes"`
+}
+
+type compatibilityManifestRoute struct {
+	ID           RouteID      `json:"id"`
+	Method       string       `json:"method"`
+	Path         string       `json:"path"`
+	ActionClass  ActionClass  `json:"actionClass"`
+	Capability   CapabilityID `json:"capability,omitempty"`
+	Cost         CostClass    `json:"cost"`
+	BudgetMS     int64        `json:"budgetMs,omitempty"`
+	Streaming    bool         `json:"streaming"`
+	RecoverySafe bool         `json:"recoverySafe"`
+}
+
+// CompatibilityManifest renders the language-neutral daemon route contract
+// consumed by embedding hosts and remote API gateways.
+func CompatibilityManifest() ([]byte, error) {
+	if err := ValidateRoutes(v1Routes, v1Routes); err != nil {
+		return nil, fmt.Errorf("validate route contract: %w", err)
+	}
+	if err := ValidateRoutes(v1ConfigAuthoringRoutes, v1ConfigAuthoringRoutes); err != nil {
+		return nil, fmt.Errorf("validate configuration authoring route contract: %w", err)
+	}
+
+	routes := make([]compatibilityManifestRoute, 0, len(v1Routes)+len(v1ConfigAuthoringRoutes))
+	for _, route := range append(V1Routes(), V1ConfigAuthoringRoutes()...) {
+		routes = append(routes, compatibilityManifestRoute{
+			ID:           route.ID,
+			Method:       route.Method,
+			Path:         route.Path,
+			ActionClass:  route.ActionClass,
+			Capability:   route.Capability,
+			Cost:         route.Cost,
+			BudgetMS:     route.Budget.Milliseconds(),
+			Streaming:    route.Cost == CostStream,
+			RecoverySafe: route.RecoverySafe,
+		})
+	}
+
+	output, err := json.MarshalIndent(compatibilityManifest{
+		SchemaVersion: 1,
+		APIVersion:    "v1",
+		Routes:        routes,
+	}, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal compatibility manifest: %w", err)
+	}
+	return append(output, '\n'), nil
 }
 
 func writeTypeScriptRoutes(output *strings.Builder, name string, routes []Route) {
