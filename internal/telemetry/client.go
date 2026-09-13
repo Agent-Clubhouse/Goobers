@@ -117,6 +117,42 @@ func (c *Client) InstanceJournalAppendDropped() {
 	c.instruments.journalDrops.Add(context.Background(), 1)
 }
 
+// SnapshotCaptured implements internal/recovery's SnapshotObserver (that
+// package sits downstream of this one in the import graph, so the interface
+// it declares uses plain strings rather than a type imported from here).
+// bytes and format are bounded/verified by the recovery package before this
+// is called: format is one of two literal strings, and bytes is the
+// archive's own byte budget.
+func (c *Client) SnapshotCaptured(format string, bytes int64) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	attrs := c.instruments.attributeSet(attribute.String(MetricAttrRecoverySnapshotFormat, format))
+	ctx := context.Background()
+	c.instruments.recoverySnapshotFormat.Add(ctx, 1, attrs)
+	c.instruments.recoverySnapshotBytes.Record(ctx, float64(bytes), attrs)
+}
+
+// SnapshotFallback implements internal/recovery's SnapshotObserver. reason is
+// one of that package's FallbackReason constants.
+func (c *Client) SnapshotFallback(reason string) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	c.instruments.recoverySnapshotFallback.Add(context.Background(), 1,
+		c.instruments.attributeSet(attribute.String(MetricAttrRecoveryReason, reason)))
+}
+
+// SnapshotRestoreFailed implements internal/recovery's SnapshotObserver.
+// reason is one of that package's RestoreFailureReason constants.
+func (c *Client) SnapshotRestoreFailed(reason string) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	c.instruments.recoveryRestoreFailures.Add(context.Background(), 1,
+		c.instruments.attributeSet(attribute.String(MetricAttrRecoveryReason, reason)))
+}
+
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
 func New(ctx context.Context, cfg Config) (*Client, error) {
 	// The SDK's default error handler logs every asynchronous export failure

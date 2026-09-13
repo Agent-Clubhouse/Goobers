@@ -59,7 +59,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	// Keep the run's exclusive writer open throughout cleanup. Recovery may
 	// read identity but must never try to reopen that writer.
 	defer func() { _ = run.Close() }()
-	option, err := recoveryCleanupOption(layout, cfg, workcopies, func(apiv1.RepoRef) (string, error) { return source, nil }, journal.NewRegistryScrubber())
+	option, err := recoveryCleanupOption(layout, cfg, workcopies, func(apiv1.RepoRef) (string, error) { return source, nil }, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

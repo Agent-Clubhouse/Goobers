@@ -100,7 +100,7 @@ func testPrePRRecovery(t *testing.T, mode string, pinned bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	option, err := recoveryCleanupOption(layout, cfg, layout.WorkcopiesDir(), cloneURL, journal.NewRegistryScrubber())
+	option, err := recoveryCleanupOption(layout, cfg, layout.WorkcopiesDir(), cloneURL, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
