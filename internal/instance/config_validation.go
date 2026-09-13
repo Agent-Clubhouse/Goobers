@@ -277,8 +277,44 @@ func (c RunConditions) validate() error {
 	if err := runcontrol.Validate("runConditions", c.RunControls()); err != nil {
 		return err
 	}
-	_, err := c.ClaimsLockTimeoutDuration()
-	return err
+	if _, err := c.ClaimsLockTimeoutDuration(); err != nil {
+		return err
+	}
+	return c.Storage.validate()
+}
+
+func (c *StorageHealthConfig) validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.WarningFloorBytes < 0 {
+		return fmt.Errorf("runConditions.storage.warningFloorBytes must not be negative")
+	}
+	if c.CriticalFloorBytes < 0 {
+		return fmt.Errorf("runConditions.storage.criticalFloorBytes must not be negative")
+	}
+	if c.WarningFloorPercent < 0 || c.WarningFloorPercent > 100 {
+		return fmt.Errorf("runConditions.storage.warningFloorPercent must be between 0 and 100, got %v", c.WarningFloorPercent)
+	}
+	if c.CriticalFloorPercent < 0 || c.CriticalFloorPercent > 100 {
+		return fmt.Errorf("runConditions.storage.criticalFloorPercent must be between 0 and 100, got %v", c.CriticalFloorPercent)
+	}
+	if c.WarningFloorBytes > 0 && c.CriticalFloorBytes > 0 && c.CriticalFloorBytes > c.WarningFloorBytes {
+		return fmt.Errorf("runConditions.storage.criticalFloorBytes (%d) must not exceed warningFloorBytes (%d)", c.CriticalFloorBytes, c.WarningFloorBytes)
+	}
+	if c.WarningFloorPercent > 0 && c.CriticalFloorPercent > 0 && c.CriticalFloorPercent > c.WarningFloorPercent {
+		return fmt.Errorf("runConditions.storage.criticalFloorPercent (%v) must not exceed warningFloorPercent (%v)", c.CriticalFloorPercent, c.WarningFloorPercent)
+	}
+	if c.CheckInterval != "" {
+		d, err := time.ParseDuration(c.CheckInterval)
+		if err != nil {
+			return fmt.Errorf("runConditions.storage.checkInterval %q: %w", c.CheckInterval, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("runConditions.storage.checkInterval must be positive, got %s", d)
+		}
+	}
+	return nil
 }
 
 func (c RetentionConfig) validate() error {

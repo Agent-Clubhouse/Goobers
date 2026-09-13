@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	apimetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -151,6 +152,23 @@ func (c *Client) SnapshotRestoreFailed(reason string) {
 	}
 	c.instruments.recoveryRestoreFailures.Add(context.Background(), 1,
 		c.instruments.attributeSet(attribute.String(MetricAttrRecoveryReason, reason)))
+}
+
+// StorageHealthSampled records one tiered low-disk protection reading
+// (#4873): the current free-byte gauge always updates, and tierChanged is
+// true only on the sample where the tier actually differs from the previous
+// one — the counter increments once per transition, not once per sample, so
+// a quiet instance sitting in one tier does not manufacture the appearance of
+// repeated events.
+func (c *Client) StorageHealthSampled(tier string, freeBytes uint64, tierChanged bool) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	ctx := context.Background()
+	c.instruments.storageFreeBytes.Record(ctx, int64(freeBytes))
+	if tierChanged {
+		c.instruments.storageHealthChanges.Add(ctx, 1, apimetric.WithAttributes(attribute.String(MetricAttrStorageTier, tier)))
+	}
 }
 
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
