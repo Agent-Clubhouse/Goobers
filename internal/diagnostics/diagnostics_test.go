@@ -49,15 +49,15 @@ func TestBundleExplainsANoWorkCycleWithoutASourceCheckout(t *testing.T) {
 	c.RunDirs = func(string) ([]string, error) { return []string{"run-a"}, nil }
 	c.Instance = func(string) (InstanceInfo, []CredentialPresence, error) {
 		return InstanceInfo{
-			ConfigDigest: "sha256:cafe",
-			Gaggles: []GaggleInfo{{
-				Name:      "goobers",
-				Workflows: []WorkflowInfo{{Name: "merge-review", DSLVersion: "2.0", DefinitionDigest: "sha256:beef"}},
-				Goobers:   []string{"reviewer"},
-			}},
-		}, []CredentialPresence{
-			CredentialPresenceFor("github:issues:write", "env", "GH_ISSUES", func(string) (string, bool) { return "", true }),
-		}, nil
+				ConfigDigest: "sha256:cafe",
+				Gaggles: []GaggleInfo{{
+					Name:      "goobers",
+					Workflows: []WorkflowInfo{{Name: "merge-review", DSLVersion: "2.0", DefinitionDigest: "sha256:beef"}},
+					Goobers:   []string{"reviewer"},
+				}},
+			}, []CredentialPresence{
+				CredentialPresenceFor("github:issues:write", "env", "GH_ISSUES", func(string) (string, bool) { return "", true }),
+			}, nil
 	}
 	c.Daemon = func(string, time.Time) (DaemonInfo, error) {
 		return DaemonInfo{Running: true, LockPresent: true, PID: 41, Version: "v1.2.3"}, nil
