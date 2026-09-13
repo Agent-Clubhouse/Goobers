@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	releaseSignaturePrincipal   = "scratch@local"
+	releaseSignaturePrincipal   = "mason@agent-clubhouse.com"
 	releaseSignatureFingerprint = "SHA256:FhUIcb6GKaWdMLpoeizCO0kCeaI68W5BCtYm3XHS4Qs"
 	releaseVerificationRecipe   = `TAG=v0.4.0-rc.2
 git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
