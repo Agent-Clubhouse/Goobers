@@ -626,6 +626,10 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	if err != nil {
 		return nil, err
 	}
+	namespace, err := cfg.namespaceFor(attempt.Gaggle)
+	if err != nil {
+		return nil, err
+	}
 
 	windows := runner.OS == osWindows
 	class := restrictionSet(runner.Restrictions)
@@ -674,7 +678,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),
-			Namespace:   cfg.Namespace,
+			Namespace:   namespace,
 			Labels:      labels,
 			Annotations: copyStringMap(attempt.ExtraAnnotations),
 		},
@@ -716,6 +720,10 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 		return nil, err
 	}
 	admin, err := assertWindowsIdentity(attempt, runner)
+	if err != nil {
+		return nil, err
+	}
+	namespace, err := cfg.namespaceFor(attempt.Gaggle)
 	if err != nil {
 		return nil, err
 	}
@@ -814,7 +822,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),
-			Namespace:   cfg.Namespace,
+			Namespace:   namespace,
 			Labels:      labels,
 			Annotations: annotations,
 		},

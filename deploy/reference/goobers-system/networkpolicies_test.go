@@ -50,25 +50,27 @@ func decodeInto(t *testing.T, d map[string]any, out any) {
 	}
 }
 
-func TestReferenceNamespaceGuidanceStatesCurrentRoutingWithoutChoosingPolicy(t *testing.T) {
+// TestReferenceNamespaceGuidanceStatesResolvedRouting keeps these reference
+// docs/manifests describing what the active mode-3 dispatcher actually does
+// post-#4897 (routes each stage pod to its OWNING gaggle's declared
+// namespace, validated by a startup preflight) rather than drifting back
+// toward the pre-fix "one worker-wide namespace, resolution left open" prose.
+func TestReferenceNamespaceGuidanceStatesResolvedRouting(t *testing.T) {
 	for path, required := range map[string][]string{
 		"worker-deployment.yaml": {
-			"all loaded gaggles share this", "race nondeterministically",
-			"dedicated queue", "dynamic gaggle-to-namespace mapping", "demoting", "isolation field",
+			"ITS OWN gaggle's", "no longer selects the pod namespace", "boot-time preflight",
 		},
 		"../README.md": {
-			"All loaded gaggles", "race nondeterministically",
-			"dedicated queue", "dynamic gaggle-to-namespace mapping", "demoting the isolation field",
+			"routes EACH", "OWNING gaggle's", "boot-time preflight",
 		},
 		"NETWORKING.md": {
-			"one worker-wide flag", "race nondeterministically", "does not enforce",
+			"ITS OWN", "boot-time preflight",
 		},
 		"../gaggle-namespace/base/dispatcher-rbac.yaml": {
-			"All loaded gaggles share", "race nondeterministically", "does not enforce",
+			"ITS OWN gaggle's isolation.namespace", "boot-time preflight",
 		},
 		"../../../docs/design/k8s-infra-shape.md": {
-			"race nondeterministically", "does not enforce per-gaggle isolation",
-			"dedicated queue", "dynamic gaggle-to-namespace mapping", "demotion of the isolation field",
+			"resolved", "OWNING gaggle's own declaration", "fails startup by name",
 		},
 	} {
 		data, err := os.ReadFile(path)
@@ -78,13 +80,13 @@ func TestReferenceNamespaceGuidanceStatesCurrentRoutingWithoutChoosingPolicy(t *
 		content := strings.Join(strings.Fields(string(data)), " ")
 		for _, phrase := range required {
 			if !strings.Contains(content, phrase) {
-				t.Errorf("%s: missing current-behavior phrase %q", path, phrase)
+				t.Errorf("%s: missing resolved-behavior phrase %q", path, phrase)
 			}
 		}
 		lower := strings.ToLower(content)
-		for _, policyClaim := range []string{"safe only", "supported topology", "recommended future"} {
-			if strings.Contains(lower, policyClaim) {
-				t.Errorf("%s: contains policy-bearing claim %q", path, policyClaim)
+		for _, staleClaim := range []string{"does not enforce per-gaggle isolation", "leaves the resolution open", "race nondeterministically"} {
+			if strings.Contains(lower, staleClaim) {
+				t.Errorf("%s: contains pre-#4897 limitation claim %q", path, staleClaim)
 			}
 		}
 	}
@@ -153,8 +155,8 @@ func TestDaemonIngressAdmitsRealWorkerAndStagePods(t *testing.T) {
 	// hand-copied (matches ../authenticated/main_test.go's
 	// TestPreparedTopologyNetworkPoliciesMatchRealStageLabels pattern).
 	pod, err := dispatcher.RenderPod(
-		dispatcher.Config{Namespace: "change-me-gaggle"},
-		dispatcher.Attempt{RunID: "run-4828", Stage: "probe", Number: 1},
+		dispatcher.Config{GaggleNamespaces: map[string]string{"change-me": "change-me-gaggle"}},
+		dispatcher.Attempt{RunID: "run-4828", Gaggle: "change-me", Stage: "probe", Number: 1},
 		dispatcher.RunnerSpec{
 			Name: "linux-pod", OS: "linux", HostKind: instance.RunnerHostImage,
 			Host:         "registry.example.test/goobers@sha256:" + strings.Repeat("a", 64),

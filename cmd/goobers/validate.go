@@ -64,7 +64,7 @@ const sourceTreeAdvisoryMessage = "--instance was not supplied; placement and ca
 
 var templateMarkers = []string{"your-org", "your-repo"}
 
-const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]\n\n" +
+const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
 	"path \".\"). Placement findings (RNR001/RNR003) are errors when\n" +
 	"instance.yaml declares a runners: inventory that cannot satisfy some\n" +
@@ -83,7 +83,13 @@ const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [-
 	"referenced by a goober (GBO-011) — installed, signed in, actionable\n" +
 	"guidance otherwise. --check-repos resolves each target repository's\n" +
 	"token, verifies authenticated git access, and (GitHub only) warns when\n" +
-	"a repository is larger than the checkout-size threshold. Exit codes:\n" +
+	"a repository is larger than the checkout-size threshold. " +
+	"--check-dispatch-namespaces additionally verifies, for each gaggle, that\n" +
+	"its declared isolation.namespace exists and this kubeconfig's credentials\n" +
+	"hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check\n" +
+	"the worker runs at startup, run here ahead of a rollout; silently skipped\n" +
+	"with no usable cluster credentials, and always advisory (never affects\n" +
+	"the exit code). Exit codes:\n" +
 	"0 = valid, 1 = validation errors, 2 = usage/IO error.\n"
 
 func runValidate(args []string, stdout, stderr io.Writer) int {
@@ -149,6 +155,7 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 	githubAnnotations := fs.Bool("github-annotations", false, "also write each finding to stderr as a GitHub Actions file annotation (#687)")
 	checkHarness := fs.Bool("check-harness", false, "also verify every referenced agent harness is installed and signed in")
 	checkRepos := fs.Bool("check-repos", false, "also verify every target repository is reachable with its configured credential")
+	checkDispatchNamespaces := fs.Bool("check-dispatch-namespaces", false, "also verify each gaggle's isolation.namespace exists and this kubeconfig's credentials can dispatch into it (#4897); silently skipped with no cluster credentials")
 	sourceTree := fs.Bool("source-tree", false, "validate a checked-in config tree containing instance.yaml.example, manifest.yaml, and gaggles/")
 	instancePath := fs.String("instance", "", "with --source-tree, solve placement and capabilities against this real instance.yaml")
 	strict := fs.Bool("strict", false, "treat config warnings as validation errors")
@@ -179,14 +186,15 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 		diagnostics = &diagnosticCollector{}
 	}
 	code := runValidateConfig(validateOptions{
-		root:                root,
-		sourceTree:          *sourceTree,
-		instancePath:        *instancePath,
-		checkHarness:        *checkHarness,
-		checkRepos:          *checkRepos,
-		strict:              *strict,
-		deferModelDiscovery: startupPreflight,
-		startupPreflight:    startupPreflight,
+		root:                    root,
+		sourceTree:              *sourceTree,
+		instancePath:            *instancePath,
+		checkHarness:            *checkHarness,
+		checkRepos:              *checkRepos,
+		checkDispatchNamespaces: *checkDispatchNamespaces,
+		strict:                  *strict,
+		deferModelDiscovery:     startupPreflight,
+		startupPreflight:        startupPreflight,
 	}, humanOut, humanErr, diagnostics)
 	if *githubAnnotations {
 		emitGitHubAnnotations(stderr, diagnostics)
@@ -202,12 +210,13 @@ func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer
 }
 
 type validateOptions struct {
-	root         string
-	sourceTree   bool
-	instancePath string
-	checkHarness bool
-	checkRepos   bool
-	strict       bool
+	root                    string
+	sourceTree              bool
+	instancePath            string
+	checkHarness            bool
+	checkRepos              bool
+	checkDispatchNamespaces bool
+	strict                  bool
 	// deferModelDiscovery is set only by the daemon's startup preflight —
 	// see runValidateAsDeferring (#3336). Never set from a CLI flag.
 	deferModelDiscovery bool
@@ -469,6 +478,9 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		// Advisory only — repo state is not config, so these warnings never
 		// change the exit code (same contract as the #1547 size warning).
 		checkRepositoryReality(root, configDir, cfg, set, stores, stdout, diagnostics)
+	}
+	if options.checkDispatchNamespaces {
+		checkGaggleDispatchNamespaces(root, configDir, set, stdout, diagnostics)
 	}
 	printDSLVersionSummary(stdout, set.Workflows)
 	// Three codes are strict-neutral by ruling: they print and land in

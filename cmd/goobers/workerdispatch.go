@@ -9,17 +9,20 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
@@ -27,6 +30,38 @@ import (
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/version"
 )
+
+// dispatchNamespacePreflightTimeout bounds the startup RBAC/existence check
+// (#4897) so an unreachable API server fails the worker's boot loudly and
+// promptly instead of hanging it indefinitely before it ever polls a queue.
+const dispatchNamespacePreflightTimeout = 30 * time.Second
+
+// preflightGaggleNamespaces is a seam beside dispatchKubeClient/newStageDispatcher:
+// a fake clientset's default SelfSubjectAccessReview reactor answers
+// "not allowed" rather than emulating real RBAC, which would fail every
+// wiring test that fakes the cluster. Tests exercising this seam directly
+// override it; every other wiring test overrides it to a no-op success, the
+// same way they already fake dispatchKubeClient.
+var preflightGaggleNamespaces = dispatcher.PreflightNamespaces
+
+// gaggleNamespacesFromConfig builds the gaggle -> isolation namespace map
+// (#4897) a dispatcher.Config needs to route each stage pod to its OWN
+// gaggle's declared namespace instead of one process-wide value. Every
+// gaggle's isolation.namespace is schema-required, so an empty value here
+// means a config that loaded despite failing that requirement — refused
+// rather than silently dispatching that gaggle nowhere.
+func gaggleNamespacesFromConfig(gaggles []apiv1.Gaggle) (map[string]string, error) {
+	namespaces := make(map[string]string, len(gaggles))
+	for i := range gaggles {
+		g := &gaggles[i]
+		namespace := strings.TrimSpace(g.Spec.Isolation.Namespace)
+		if namespace == "" {
+			return nil, fmt.Errorf("stage dispatch: gaggle %q declares no isolation.namespace", g.Name)
+		}
+		namespaces[g.Name] = namespace
+	}
+	return namespaces, nil
+}
 
 // stageDispatch is what buildStageDispatch wires: the dispatcher seam, the
 // surrender plane, the dispatch queues this worker must serve, and the same
@@ -84,7 +119,7 @@ var newStageDispatcher = dispatcher.New
 // explicitly rather than create a pod that would find no kit — and, crucially,
 // rather than fall back to reading whatever config tree is mounted, which is
 // the substitution the pin exists to prevent.
-func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner string, seams *workerSeams) (stageDispatch, error) {
+func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *workerSeams) (stageDispatch, error) {
 	if blobRoot == "" {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: a surrender plane is required — pass --blob-store")
 	}
@@ -131,10 +166,25 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 	if len(queues) == 0 {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: the instance at %s declares no non-self runner; --dispatch-namespace has nothing to serve", instanceRoot)
 	}
+	gaggleNamespaces, err := gaggleNamespacesFromConfig(set.Gaggles)
+	if err != nil {
+		return stageDispatch{}, err
+	}
 
 	client, err := dispatchKubeClient()
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
+	}
+	// #4897: fail startup clearly, before this worker polls or dispatches
+	// anything, when a declared gaggle namespace does not exist or this
+	// worker's own credentials lack the RBAC grants the dispatch/cleanup path
+	// depends on — never discover a Forbidden after a stage was already
+	// claimed from the backlog.
+	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), dispatchNamespacePreflightTimeout)
+	_, preflightErr := preflightGaggleNamespaces(preflightCtx, client, gaggleNamespaces)
+	cancelPreflight()
+	if preflightErr != nil {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: gaggle namespace preflight: %w", preflightErr)
 	}
 	build := version.Get()
 	d, err := newStageDispatcher(dispatcher.Config{
@@ -143,13 +193,13 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 		// The kit writer uses the same key and the worker's pinned config
 		// snapshots. A test constructor without seams still refuses agentic
 		// dispatch explicitly instead of creating a pod that would find no kit.
-		KitWriter:       agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
-		Namespace:       namespace,
-		Owner:           owner,
-		EmbeddedCommit:  build.Commit,
-		EmbeddedVersion: build.Version,
-		BlobEndpoint:    blobEndpoint,
-		WriteAPIBase:    daemonAPI,
+		KitWriter:        agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
+		GaggleNamespaces: gaggleNamespaces,
+		Owner:            owner,
+		EmbeddedCommit:   build.Commit,
+		EmbeddedVersion:  build.Version,
+		BlobEndpoint:     blobEndpoint,
+		WriteAPIBase:     daemonAPI,
 		// The same operator-declared passthrough list the local executor gets
 		// (runnerwiring_executors.go: shell.ExtraEnvAllowlist), so a stage on a
 		// runner class enforcing env:default-deny keeps the vars an operator

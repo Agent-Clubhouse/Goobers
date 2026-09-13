@@ -70,8 +70,16 @@ var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 
 // Config is the dispatcher's per-instance wiring.
 type Config struct {
-	// Namespace is the gaggle namespace stage pods are created in.
-	Namespace string
+	// GaggleNamespaces maps each gaggle name this dispatcher serves to the
+	// Kubernetes namespace its stage pods are created in — Gaggle.spec.
+	// isolation.namespace, keyed by gaggle name (#4897). A stage pod's
+	// namespace is resolved from its Attempt.Gaggle at render time; there is
+	// no process-wide default and no fallback. Two gaggles may map to the
+	// SAME namespace value deliberately (the supported shared topology), but
+	// an attempt whose gaggle has no entry is refused rather than guessing —
+	// silently placing a pod in the wrong gaggle's namespace is exactly the
+	// isolation break this map exists to close.
+	GaggleNamespaces map[string]string
 	// Owner identifies THIS dispatcher process among the workers sharing a
 	// namespace. It is stamped on every pod as LabelOwner and is the scope
 	// SweepOrphans sweeps within, so it must be stable across a restart of
@@ -581,8 +589,13 @@ func New(cfg Config, pods PodAPI, journal JournalRelay, gate SurrenderGate, capa
 	if gate == nil {
 		return nil, errors.New("dispatcher: SurrenderGate is required")
 	}
-	if cfg.Namespace == "" {
-		return nil, errors.New("dispatcher: Config.Namespace is required")
+	if len(cfg.GaggleNamespaces) == 0 {
+		return nil, errors.New("dispatcher: Config.GaggleNamespaces is required")
+	}
+	for gaggle, namespace := range cfg.GaggleNamespaces {
+		if strings.TrimSpace(namespace) == "" {
+			return nil, fmt.Errorf("dispatcher: Config.GaggleNamespaces[%q] must not be empty", gaggle)
+		}
 	}
 	return &Dispatcher{
 		cfg:      cfg,
@@ -593,6 +606,18 @@ func New(cfg Config, pods PodAPI, journal JournalRelay, gate SurrenderGate, capa
 		now:      time.Now,
 		sleep:    sleepCtx,
 	}, nil
+}
+
+// namespaceFor resolves the Kubernetes namespace one attempt's pod must be
+// created in, from its declared gaggle — the single lookup every render and
+// cleanup path in this package goes through, so there is exactly one place
+// that can drift from Config.GaggleNamespaces (#4897).
+func (c Config) namespaceFor(gaggle string) (string, error) {
+	namespace, ok := c.GaggleNamespaces[gaggle]
+	if !ok || namespace == "" {
+		return "", fmt.Errorf("dispatcher: gaggle %q has no declared isolation.namespace in this dispatcher's Config.GaggleNamespaces; refusing rather than guessing a namespace", gaggle)
+	}
+	return namespace, nil
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -1001,7 +1026,11 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 		}
 		return RenderPod(d.cfg, attempt, runner)
 	case instance.RunnerHostDeployment:
-		deployment, err := d.pods.GetDeployment(ctx, d.cfg.Namespace, runner.Host)
+		namespace, err := d.cfg.namespaceFor(attempt.Gaggle)
+		if err != nil {
+			return nil, err
+		}
+		deployment, err := d.pods.GetDeployment(ctx, namespace, runner.Host)
 		if err != nil {
 			return nil, fmt.Errorf("dispatcher: read template deployment %q for runner %q: %w", runner.Host, runner.Name, err)
 		}

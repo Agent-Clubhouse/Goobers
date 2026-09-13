@@ -6,9 +6,11 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // project codebase and exactly one backlog (singleton), and contains its own
 // goobers and workflows (which reference it by name). Isolation declares the
 // target namespace + identity per gaggle (GAG-001..006, SEC-001/002). The
-// active mode-3 worker does not yet route from this declaration: its single
-// --dispatch-namespace value is shared by every gaggle it loads and does not
-// enforce per-gaggle isolation (#4897).
+// active mode-3 worker routes every stage pod for this gaggle into its
+// declared isolation.namespace, and verifies that namespace's existence and
+// this worker's RBAC access to it before polling or dispatching any work
+// (#4897). IdentityRef is not yet consumed — every gaggle's stage pods still
+// run under their namespace's default ServiceAccount.
 type GaggleSpec struct {
 	// Cost overrides instance-wide external cost publication. An omitted or
 	// null enabled value inherits the instance default; local accounting remains active.
@@ -205,19 +207,24 @@ type GaggleSandbox struct {
 	Agentic string `json:"agentic,omitempty" yaml:"agentic,omitempty"`
 }
 
-// GaggleIsolation declares the target isolation boundary for a gaggle. The
-// quarantined operator consumes Namespace, but the active mode-3 worker does
-// not; see Namespace and #4897.
+// GaggleIsolation declares the isolation boundary for a gaggle. Both the
+// active mode-3 worker and the quarantined operator consume Namespace
+// (#4897); IdentityRef is declared by neither yet.
 type GaggleIsolation struct {
-	// Namespace is the k8s namespace reserved for this gaggle's pods and secrets
-	// in the target/operator topology. It is still required for schema
-	// compatibility, but does not select the active mode-3 dispatch namespace:
-	// all loaded gaggles share one worker-wide --dispatch-namespace value. This
-	// does not enforce per-gaggle isolation.
+	// Namespace is the k8s namespace this gaggle's stage pods and secrets are
+	// created in. The active mode-3 dispatcher routes every stage pod for
+	// this gaggle here — resolved from the pod's own Attempt.Gaggle, never a
+	// worker-wide default or fallback — and refuses to start dispatching
+	// until it has verified the namespace exists and this worker's
+	// credentials hold the RBAC grants dispatch needs there (#4897). Two
+	// gaggles may declare the SAME namespace deliberately; that shared
+	// topology is supported.
 	// +kubebuilder:validation:Required
 	Namespace string `json:"namespace" yaml:"namespace"`
 	// IdentityRef names the target per-gaggle Azure workload identity
-	// (managed-identity federation). The active dispatcher does not consume it.
+	// (managed-identity federation). The active dispatcher does not consume
+	// it yet — every gaggle's stage pods still run under their namespace's
+	// default ServiceAccount (#4897 scoped namespace routing only).
 	// +optional
 	IdentityRef string `json:"identityRef,omitempty" yaml:"identityRef,omitempty"`
 }

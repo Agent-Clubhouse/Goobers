@@ -4474,7 +4474,7 @@ $ goobers update-behind-pr
 validate an instance or checked-in config source tree
 
 ~~~text
-Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]
+Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). Placement findings (RNR001/RNR003) are errors when
@@ -4489,7 +4489,12 @@ config-repo PR check surfaces failures directly on the PR diff; composes with --
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
 token, verifies authenticated git access, and (GitHub only) warns when
-a repository is larger than the checkout-size threshold. Exit codes:
+a repository is larger than the checkout-size threshold. --check-dispatch-namespaces additionally verifies, for each gaggle, that
+its declared isolation.namespace exists and this kubeconfig's credentials
+hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check
+the worker runs at startup, run here ahead of a rollout; silently skipped
+with no usable cluster credentials, and always advisory (never affects
+the exit code). Exit codes:
 0 = valid, 1 = validation errors, 2 = usage/IO error.
 ~~~
 
@@ -4658,15 +4663,25 @@ Flags:
                              against across a reload; 0 disables
                              retention and refuses every superseded pin
                              (default 3; requires --instance)
-  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
-                             wires the dispatcher behind the stage-dispatch
-                             seam and serves the per-(gaggle x runner)
-                             dispatch queues derived from the instance's
-                             runners: inventory. Requires --instance and
-                             --blob-store (the surrender plane rides the
-                             same volume); cluster access uses in-cluster
-                             credentials or the standard kubeconfig rules
-                             (default $GOOBERS_DISPATCH_NAMESPACE)
+  --dispatch-namespace <ns>  enables mode-3 stage dispatch: wires the
+                             dispatcher behind the stage-dispatch seam and
+                             serves the per-(gaggle x runner) dispatch
+                             queues derived from the instance's runners:
+                             inventory. Each stage pod is created in ITS
+                             OWN gaggle's declared isolation.namespace
+                             (#4897) — this flag's value no longer selects
+                             the pod namespace and is kept only as the
+                             non-empty signal that enables mode-3 dispatch.
+                             Before polling or dispatching, the worker
+                             verifies every declared gaggle namespace
+                             exists and that this worker's credentials
+                             hold the RBAC grants dispatch needs there,
+                             failing startup by name otherwise. Requires
+                             --instance and --blob-store (the surrender
+                             plane rides the same volume); cluster access
+                             uses in-cluster credentials or the standard
+                             kubeconfig rules (default
+                             $GOOBERS_DISPATCH_NAMESPACE)
 
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which

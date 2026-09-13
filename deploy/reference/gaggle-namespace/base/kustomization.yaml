@@ -1,7 +1,11 @@
 # Target per-gaggle namespace template (k8s-infra-shape.md §3, GAG-012,
-# SEC-001/002). The current worker does not derive dispatch namespace or
-# ServiceAccount from a Gaggle declaration, so applying this template does not
-# enforce per-gaggle isolation; see README.md and #4897.
+# SEC-001/002). The active mode-3 worker derives each stage pod's namespace
+# from the OWNING gaggle's isolation.namespace (#4897): apply this template
+# once per gaggle namespace (see examples/gaggle-a, examples/gaggle-b) before
+# a worker dispatches into it — its boot-time preflight refuses to start
+# otherwise. The ServiceAccount here is still not SELECTED per gaggle (every
+# stage pod runs under its namespace's default ServiceAccount); see
+# serviceaccount.yaml and README.md.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

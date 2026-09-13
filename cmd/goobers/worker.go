@@ -71,15 +71,25 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             against across a reload; 0 disables\n" +
 	"                             retention and refuses every superseded pin\n" +
 	"                             (default 3; requires --instance)\n" +
-	"  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;\n" +
-	"                             wires the dispatcher behind the stage-dispatch\n" +
-	"                             seam and serves the per-(gaggle x runner)\n" +
-	"                             dispatch queues derived from the instance's\n" +
-	"                             runners: inventory. Requires --instance and\n" +
-	"                             --blob-store (the surrender plane rides the\n" +
-	"                             same volume); cluster access uses in-cluster\n" +
-	"                             credentials or the standard kubeconfig rules\n" +
-	"                             (default $GOOBERS_DISPATCH_NAMESPACE)\n\n" +
+	"  --dispatch-namespace <ns>  enables mode-3 stage dispatch: wires the\n" +
+	"                             dispatcher behind the stage-dispatch seam and\n" +
+	"                             serves the per-(gaggle x runner) dispatch\n" +
+	"                             queues derived from the instance's runners:\n" +
+	"                             inventory. Each stage pod is created in ITS\n" +
+	"                             OWN gaggle's declared isolation.namespace\n" +
+	"                             (#4897) — this flag's value no longer selects\n" +
+	"                             the pod namespace and is kept only as the\n" +
+	"                             non-empty signal that enables mode-3 dispatch.\n" +
+	"                             Before polling or dispatching, the worker\n" +
+	"                             verifies every declared gaggle namespace\n" +
+	"                             exists and that this worker's credentials\n" +
+	"                             hold the RBAC grants dispatch needs there,\n" +
+	"                             failing startup by name otherwise. Requires\n" +
+	"                             --instance and --blob-store (the surrender\n" +
+	"                             plane rides the same volume); cluster access\n" +
+	"                             uses in-cluster credentials or the standard\n" +
+	"                             kubeconfig rules (default\n" +
+	"                             $GOOBERS_DISPATCH_NAMESPACE)\n\n" +
 	"The worker identity reported to Temporal is versioned\n" +
 	"(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which\n" +
 	"build serves a queue.\n\n" +
@@ -140,7 +150,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
 	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
-	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "namespace to create mode-3 stage pods in; enables the dispatcher-backed stage-dispatch seam")
+	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "enables the dispatcher-backed stage-dispatch seam; each stage pod routes to its own gaggle's declared isolation.namespace (#4897), not to this value")
 	configReloadInterval := fs.Duration("config-reload-interval", workerConfigReloadInterval, "how often to re-read the instance config tree and rebuild changed gaggle seams; 0 disables reload")
 	configHistoryDepth := fs.Int("config-history-depth", workerConfigHistoryDepth, "how many superseded config trees to retain so an in-flight run pinned to one is still served its own kit; 0 disables retention")
 	fs.Usage = helpUsage(stderr, "worker")
@@ -330,7 +340,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
 			return 1
 		}
-		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot, owner, seams)
+		dispatch, derr := buildStageDispatch(*instanceRoot, *daemonAPI, *blobRoot, owner, seams)
 		if derr != nil {
 			pf(stderr, "error: %v\n", derr)
 			return 1
@@ -338,8 +348,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
 		engineRuntime.deps.Surrenders = dispatch.Surrenders
 		queues = mergeQueues(queues, dispatch.Queues)
-		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s as owner %s; dispatch queues %s\n",
-			*dispatchNamespace, owner, strings.Join(dispatch.Queues, ", "))
+		pf(stdout, "goobers worker: mode-3 stage dispatch enabled as owner %s, routing each gaggle's stage pods to its own declared isolation.namespace; dispatch queues %s\n",
+			owner, strings.Join(dispatch.Queues, ", "))
 		// Decision 003's worker-hygiene graft, run BEFORE this worker polls
 		// anything: reconcile stage pods carrying this worker pod's owner label,
 		// asking the engine about each one. A rollout changes that label, leaving
