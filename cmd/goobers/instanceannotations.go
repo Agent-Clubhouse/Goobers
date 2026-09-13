@@ -101,22 +101,29 @@ func (f *instanceAnnotationFold) apply(events []journal.Event) {
 				kind: kind,
 			}
 		}
-		if event.RunID != "" && event.Runner["worktreeID"] != nil {
-			worktreeID, _ := event.Runner["worktreeID"].(string)
-			worktreeStatus, _ := event.Runner["worktreeStatus"].(string)
-			if worktreeID != "" && worktreeStatus != "" {
-				if f.worktreeStates == nil {
-					f.worktreeStates = make(map[string]string)
-				}
-				f.worktreeStates[event.RunID+"\x00"+worktreeID] = worktreeStatus
-			}
-			if worktreeID != "" && worktreeStatus == "kept" {
-				if f.keptWorktrees == nil {
-					f.keptWorktrees = make(map[string]bool)
-				}
-				f.keptWorktrees[event.RunID+"\x00"+worktreeID] = true
-			}
+		f.applyWorktreeState(event)
+	}
+}
+
+func (f *instanceAnnotationFold) applyWorktreeState(event journal.Event) {
+	if event.RunID == "" || event.Runner["worktreeID"] == nil {
+		return
+	}
+	worktreeID, _ := event.Runner["worktreeID"].(string)
+	worktreeStatus, _ := event.Runner["worktreeStatus"].(string)
+	if worktreeID == "" || worktreeStatus == "" {
+		return
+	}
+	if f.worktreeStates == nil {
+		f.worktreeStates = make(map[string]string)
+	}
+	key := event.RunID + "\x00" + worktreeID
+	f.worktreeStates[key] = worktreeStatus
+	if worktreeStatus == "kept" {
+		if f.keptWorktrees == nil {
+			f.keptWorktrees = make(map[string]bool)
 		}
+		f.keptWorktrees[key] = true
 	}
 }
 

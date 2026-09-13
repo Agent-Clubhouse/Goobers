@@ -877,11 +877,7 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 				return err
 			}
 		}
-		if opts.Keep {
-			if err := wt.manager.prepareMarkerExit(ctx, wt.Path, wt.RunID, mk, true); err != nil {
-				return err
-			}
-		} else if err := wt.manager.prepareMarkerCleanupWithRetention(ctx, wt.key, wt.Path, markerPath, wt.RunID, mk); err != nil {
+		if err := wt.manager.prepareMarkerExitWithRetention(ctx, wt.key, wt.Path, markerPath, wt.RunID, mk, opts.Keep); err != nil {
 			return err
 		}
 		if err := wt.manager.restoreReservedBranchFromMarker(ctx, wt.key, wt.Path, mk); err != nil {

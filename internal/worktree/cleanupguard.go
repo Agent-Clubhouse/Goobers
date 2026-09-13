@@ -125,6 +125,13 @@ func (m *Manager) prepareMarkerExit(ctx context.Context, path, worktreeID string
 	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
+func (m *Manager) prepareMarkerExitWithRetention(ctx context.Context, key, path, markerPath, worktreeID string, mk marker, keep bool) error {
+	if keep {
+		return m.prepareMarkerExit(ctx, path, worktreeID, mk, true)
+	}
+	return m.prepareMarkerCleanupWithRetention(ctx, key, path, markerPath, worktreeID, mk)
+}
+
 // Keeping or releasing a workspace may capture recovery, but does not retire
 // its mutation sidecar. Receipt handoff waits until destructive cleanup/reuse.
 func (m *Manager) preparePreservedTarget(ctx context.Context, target CleanupTarget) error {
