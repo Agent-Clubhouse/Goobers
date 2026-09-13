@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,65 @@ import (
 // must remain intact; housekeeping may report a warning and try other targets,
 // but direct removal/replacement must still fail.
 var ErrCleanupDeferred = errors.New("worktree cleanup deferred pending durable handoff")
+
+// ErrCleanupRetained means cleanup was permanently quarantined because
+// destroying the target could lose data. The durable marker records the
+// operator-visible disposition and removes the target from prompt retries.
+var ErrCleanupRetained = errors.New("worktree cleanup retained for operator review")
+
+// CleanupDispositionUnknownBase identifies a target retained because its
+// historical marker has no trustworthy recovery base.
+const CleanupDispositionUnknownBase = "retained-unknown-base"
+
+// CleanupRetentionError requests a durable, non-retrying cleanup disposition.
+type CleanupRetentionError struct {
+	Disposition string
+	Cause       error
+}
+
+func (e *CleanupRetentionError) Error() string {
+	if e.Cause == nil {
+		return e.Disposition
+	}
+	return fmt.Sprintf("%s: %v", e.Disposition, e.Cause)
+}
+
+func (e *CleanupRetentionError) Unwrap() error { return e.Cause }
+
+// RetainCleanupTarget asks the manager to quarantine a target rather than
+// repeatedly retrying a cleanup whose safety cannot be established.
+func RetainCleanupTarget(disposition string, cause error) error {
+	return &CleanupRetentionError{Disposition: disposition, Cause: cause}
+}
+
+// VerifyCleanupTargetUnchanged proves that a legacy target has neither
+// advanced from its recorded creation commit nor accumulated tracked,
+// untracked, or conflicted working-tree state.
+func VerifyCleanupTargetUnchanged(ctx context.Context, target CleanupTarget) error {
+	startRef := strings.TrimSpace(target.StartRef)
+	if startRef == "" {
+		return fmt.Errorf("worktree cleanup cannot prove an unchanged target without its starting ref")
+	}
+	head, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup HEAD", "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot resolve HEAD: %w", err)
+	}
+	start, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup start", "rev-parse", "--verify", startRef+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot resolve starting ref: %w", err)
+	}
+	if head != start {
+		return fmt.Errorf("worktree cleanup target advanced from its recorded starting ref")
+	}
+	status, err := runCleanupGitOutput(ctx, target.Path, "inspect cleanup status", "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot inspect working-tree state: %w", err)
+	}
+	if status != "" {
+		return fmt.Errorf("worktree cleanup target contains unretained changes")
+	}
+	return nil
+}
 
 // CleanupTarget identifies the directory about to be destroyed. OwnerRunID
 // comes from its durable marker; an empty value must not be guessed from the
@@ -25,6 +85,10 @@ type CleanupTarget struct {
 	// BaseRef is copied from durable workspace ownership. It is the base
 	// selected for the owning run, not a default inferred at cleanup time.
 	BaseRef string
+	// StartRef is the exact HEAD observed immediately after workspace
+	// creation. Legacy compatibility may use it only to prove that a clean
+	// terminal target has not advanced since creation.
+	StartRef string
 	// Pinned identifies a managed clone whose base branches live under the
 	// mirror remote, rather than the local branches of a linked worktree.
 	Pinned bool
@@ -39,14 +103,36 @@ func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRun
 }
 
 func (m *Manager) prepareMarkerCleanup(ctx context.Context, path, worktreeID string, mk marker) error {
-	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+}
+
+func (m *Manager) prepareMarkerCleanupWithRetention(ctx context.Context, key, path, markerPath, worktreeID string, mk marker) error {
+	err := m.prepareMarkerCleanup(ctx, path, worktreeID, mk)
+	if err == nil {
+		return nil
+	}
+	var retain *CleanupRetentionError
+	if !errors.As(err, &retain) {
+		return err
+	}
+	if retainErr := m.markCleanupRetained(key, path, markerPath, mk, retain.Disposition); retainErr != nil {
+		return errors.Join(err, retainErr)
+	}
+	return fmt.Errorf("%w: %w: %w", ErrCleanupDeferred, ErrCleanupRetained, retain)
 }
 
 func (m *Manager) prepareMarkerExit(ctx context.Context, path, worktreeID string, mk marker, keep bool) error {
 	if !keep {
 		return m.prepareMarkerCleanup(ctx, path, worktreeID, mk)
 	}
-	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+}
+
+func (m *Manager) prepareMarkerExitWithRetention(ctx context.Context, key, path, markerPath, worktreeID string, mk marker, keep bool) error {
+	if keep {
+		return m.prepareMarkerExit(ctx, path, worktreeID, mk, true)
+	}
+	return m.prepareMarkerCleanupWithRetention(ctx, key, path, markerPath, worktreeID, mk)
 }
 
 // Keeping or releasing a workspace may capture recovery, but does not retire

@@ -760,7 +760,7 @@ func (m *Manager) forceClear(ctx context.Context, key, path, runID string) error
 	mk, markerErr := readMarker(markerPath)
 	switch {
 	case markerErr == nil:
-		if err := m.prepareMarkerCleanup(ctx, path, runID, mk); err != nil {
+		if err := m.prepareMarkerCleanupWithRetention(ctx, key, path, markerPath, runID, mk); err != nil {
 			return err
 		}
 		if err := m.restoreReservedBranchFromMarker(ctx, key, path, mk); err != nil {
@@ -877,7 +877,7 @@ func (wt *Worktree) Remove(ctx context.Context, opts RemoveOptions) error {
 				return err
 			}
 		}
-		if err := wt.manager.prepareMarkerExit(ctx, wt.Path, wt.RunID, mk, opts.Keep); err != nil {
+		if err := wt.manager.prepareMarkerExitWithRetention(ctx, wt.key, wt.Path, markerPath, wt.RunID, mk, opts.Keep); err != nil {
 			return err
 		}
 		if err := wt.manager.restoreReservedBranchFromMarker(ctx, wt.key, wt.Path, mk); err != nil {
