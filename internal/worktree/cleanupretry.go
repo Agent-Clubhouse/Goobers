@@ -119,6 +119,9 @@ func (m *Manager) cleanupRetryCandidates(ctx context.Context, warningLimit int) 
 			markerPath := filepath.Join(markersDir, entry.Name())
 			mk, err := readMarker(markerPath)
 			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
 				if len(warnings) < warningLimit {
 					warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
 				} else {

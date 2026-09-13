@@ -107,7 +107,7 @@ func TestIntegrationRecoveryCleanupHistoricalMissingBase(t *testing.T) {
 			}
 			option, err := recoveryCleanupOption(layout, cfg, workcopies, func(apiv1.RepoRef) (string, error) {
 				return source, nil
-			}, journal.NewRegistryScrubber())
+			}, journal.NewRegistryScrubber(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
