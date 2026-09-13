@@ -2,6 +2,7 @@ package readmodel
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -88,6 +89,39 @@ func TestAnalyzeGraphDeduplicatesParallelDeclaredEdges(t *testing.T) {
 	}
 	if duplicate.CriticalPath.Weight != unique.CriticalPath.Weight {
 		t.Fatalf("duplicate edge changed critical path: %+v / %+v", duplicate.CriticalPath, unique.CriticalPath)
+	}
+}
+
+func TestAnalyzeGraphSanitizesNonFiniteNodeWeights(t *testing.T) {
+	graph := AnalyticsGraph{
+		Nodes: []AnalyticsNode{
+			{ID: "start", Latency: 1},
+			{ID: "shared", Failure: math.Inf(1), Latency: 3},
+			{ID: "finish", Latency: math.NaN()},
+			{ID: "alternate", Failure: 0.2, Latency: 2},
+		},
+		Edges: []AnalyticsEdge{
+			{Source: "start", Target: "shared"},
+			{Source: "shared", Target: "finish"},
+			{Source: "start", Target: "alternate"},
+			{Source: "alternate", Target: "finish"},
+		},
+	}
+
+	result, err := AnalyzeGraph(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := result.CriticalPath.Nodes, []string{"start", "shared", "finish"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("critical path = %v, want %v", got, want)
+	}
+	if result.CriticalPath.Weight != 4 {
+		t.Fatalf("critical path weight = %v, want 4", result.CriticalPath.Weight)
+	}
+	for _, score := range result.Centrality {
+		if math.IsNaN(score.Score) || math.IsInf(score.Score, 0) {
+			t.Fatalf("centrality score = %+v, want finite", score)
+		}
 	}
 }
 

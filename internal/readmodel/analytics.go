@@ -2,6 +2,7 @@ package readmodel
 
 import (
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -97,7 +98,7 @@ func AnalyzeGraph(graph AnalyticsGraph) (GraphAnalytics, error) {
 }
 
 func nonNegative(value float64) float64 {
-	if value < 0 {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
 		return 0
 	}
 	return value
@@ -202,11 +203,36 @@ func longestPath(ids map[string]bool, adj map[string][]string, latency map[strin
 	}
 	best := CriticalPath{Nodes: []string{}}
 	for _, id := range sortedIDs(ids) {
-		if distance[id] > best.Weight || (distance[id] == best.Weight && pathLess(paths[id], best.Nodes, "")) {
+		if distance[id] > best.Weight || (distance[id] == best.Weight && bestPathLess(paths[id], best.Nodes)) {
 			best = CriticalPath{Nodes: paths[id], Weight: distance[id]}
 		}
 	}
 	return best
+}
+
+func bestPathLess(left, right []string) bool {
+	if len(right) == 0 {
+		return true
+	}
+	if len(left) > len(right) && hasPathPrefix(left, right) {
+		return true
+	}
+	if len(right) > len(left) && hasPathPrefix(right, left) {
+		return false
+	}
+	return pathLess(left, right, "")
+}
+
+func hasPathPrefix(path, prefix []string) bool {
+	if len(prefix) > len(path) {
+		return false
+	}
+	for i := range prefix {
+		if path[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func pathLess(left, right []string, suffix string) bool {

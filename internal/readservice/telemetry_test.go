@@ -920,6 +920,36 @@ func TestEligiblePromotionSignalsExcludesFallbacks(t *testing.T) {
 	}
 }
 
+func TestEligiblePromotionSignalsExcludesNonFiniteValues(t *testing.T) {
+	signals := []PromotionSignal{
+		{
+			Node: "stage:implement", Value: math.NaN(), Lower: 0.1, Upper: 0.9,
+			Source: string(readmodel.CausalRandomized), Caveat: "nan",
+			PromotionEligible: true,
+		},
+		{
+			Node: "stage:review", Value: 0.4, Lower: math.Inf(-1), Upper: 0.9,
+			Source: string(readmodel.CausalRandomized), Caveat: "inf",
+			PromotionEligible: true,
+		},
+		{
+			Node: "stage:finish", Value: 0.6, Lower: 0.5, Upper: math.Inf(1),
+			Source: string(readmodel.CausalRandomized), Caveat: "inf",
+			PromotionEligible: true,
+		},
+		{
+			Node: "stage:ship", Value: 0.2, Lower: 0.1, Upper: 0.3,
+			Source: string(readmodel.CausalRandomized), Caveat: "finite",
+			PromotionEligible: true,
+		},
+	}
+
+	got := EligiblePromotionSignals(signals)
+	if len(got) != 1 || got[0].Node != "stage:ship" {
+		t.Fatalf("eligible promotion signals = %+v", got)
+	}
+}
+
 func TestNormalizedPromotionFailureAggregatesIdentityCredits(t *testing.T) {
 	credits := []NodeCredit{
 		{Kind: "stage", Stage: "review", Identity: "sha256:a"},
@@ -940,6 +970,29 @@ func TestNormalizedPromotionFailureAggregatesIdentityCredits(t *testing.T) {
 	}
 	if failure["implement"] != 0 {
 		t.Fatalf("implement failure = %v, want zero without eligible signal", failure["implement"])
+	}
+}
+
+func TestNormalizedPromotionFailureSkipsNonFiniteSignals(t *testing.T) {
+	credits := []NodeCredit{
+		{Kind: "stage", Stage: "implement", Identity: "sha256:a"},
+		{Kind: "stage", Stage: "review", Identity: "sha256:b"},
+	}
+	signals := []PromotionSignal{
+		{Node: "stage:implement", Value: math.Inf(1), PromotionEligible: true},
+		{Node: "stage:review", Value: math.NaN(), PromotionEligible: true},
+		{Node: "stage:review", Value: 0.4, PromotionEligible: true},
+	}
+
+	failure, trusted, nodes := normalizedPromotionFailure(credits, signals)
+	if len(nodes) != 2 || len(trusted) != 1 || !trusted["review"] {
+		t.Fatalf("normalized node sets = %v / %v, want two credit nodes and one trusted review node", nodes, trusted)
+	}
+	if failure["review"] != 0.4 {
+		t.Fatalf("review failure = %v, want finite signal mean 0.4", failure["review"])
+	}
+	if failure["implement"] != 0 {
+		t.Fatalf("implement failure = %v, want zero when only invalid signals exist", failure["implement"])
 	}
 }
 

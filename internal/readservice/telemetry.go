@@ -142,9 +142,9 @@ func EligiblePromotionSignals(signals []PromotionSignal) []PromotionSignal {
 	for _, signal := range signals {
 		if signal.PromotionEligible &&
 			signal.Source != "correlational-fallback" &&
-			!math.IsNaN(signal.Value) && !math.IsInf(signal.Value, 0) &&
-			!math.IsNaN(signal.Lower) && !math.IsInf(signal.Lower, 0) &&
-			!math.IsNaN(signal.Upper) && !math.IsInf(signal.Upper, 0) &&
+			isFiniteFloat(signal.Value) &&
+			isFiniteFloat(signal.Lower) &&
+			isFiniteFloat(signal.Upper) &&
 			signal.Lower <= signal.Value && signal.Value <= signal.Upper {
 			eligible = append(eligible, signal)
 		}
@@ -1033,6 +1033,9 @@ func normalizedPromotionFailure(credits []NodeCredit, signals []PromotionSignal)
 	}
 	aggregates := make(map[string]aggregate, len(signals))
 	for _, signal := range signals {
+		if !isFiniteFloat(signal.Value) {
+			continue
+		}
 		node := normalizeAnalyticsNode(signal.Node)
 		item := aggregates[node]
 		item.total += signal.Value
@@ -1049,6 +1052,10 @@ func normalizedPromotionFailure(credits []NodeCredit, signals []PromotionSignal)
 		trustedFailure[node] = true
 	}
 	return failureByNode, trustedFailure, creditNodes
+}
+
+func isFiniteFloat(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func sameAnalyticsNodes(left, right map[string]bool) bool {
