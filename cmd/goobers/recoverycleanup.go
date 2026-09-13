@@ -14,17 +14,18 @@ import (
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
-func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber) (worktree.ManagerOption, error) {
+func recoveryCleanupOption(layout instance.Layout, cfg *instance.Config, cleanupRoot string, cloneURL func(apiv1.RepoRef) (string, error), scrubber journal.Scrubber, tel *telemetry.Client) (worktree.ManagerOption, error) {
 	identities, err := recoveryRepositoryIdentities(cfg, cloneURL)
 	if err != nil {
 		return nil, err
 	}
 	return func(manager *worktree.Manager) {
-		callback := recoveryCleanupHandler(layout, cfg, cleanupRoot, identities, scrubber, false, manager)
+		callback := recoveryCleanupHandler(layout, cfg, cleanupRoot, identities, scrubber, false, manager, tel)
 		_ = manager.SetCleanupGuard("recovery", callback)
 	}, nil
 }
@@ -50,8 +51,11 @@ func recoveryRepositoryIdentities(cfg *instance.Config, cloneURL func(apiv1.Repo
 	return identities, nil
 }
 
-func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, identities map[string]string, scrubber journal.Scrubber, terminal bool, manager *worktree.Manager) func(context.Context, worktree.CleanupTarget) error {
+func recoveryCleanupHandler(layout instance.Layout, cfg *instance.Config, cleanupRoot string, identities map[string]string, scrubber journal.Scrubber, terminal bool, manager *worktree.Manager, tel *telemetry.Client) func(context.Context, worktree.CleanupTarget) error {
 	return func(ctx context.Context, target worktree.CleanupTarget) error {
+		if tel != nil {
+			ctx = recovery.WithSnapshotObserver(ctx, tel)
+		}
 		key, ok := identities[target.RepositoryDigest]
 		if !ok || target.OwnerRunID == "" {
 			return fmt.Errorf("recovery cleanup requires verified repository and run ownership")
@@ -128,7 +132,7 @@ func installTerminalRecoveryGuard(layout instance.Layout, manager *worktree.Mana
 		if err != nil {
 			return err
 		}
-		callback := recoveryCleanupHandler(layout, cfg, manager.Root, identities, journal.NewRegistryScrubber(), true, manager)
+		callback := recoveryCleanupHandler(layout, cfg, manager.Root, identities, journal.NewRegistryScrubber(), true, manager, nil)
 		return callback(ctx, target)
 	})
 }

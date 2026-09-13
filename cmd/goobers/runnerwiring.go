@@ -174,7 +174,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// not retain a manager rooted in the opposite lifecycle namespace.
 		wtMgr = nil
 	}
-	recoveryOption, recoveryErr := recoveryCleanupOption(l, cfg, absoluteWorkcopiesRoot, cloneURLFn, sharedReg)
+	recoveryOption, recoveryErr := recoveryCleanupOption(l, cfg, absoluteWorkcopiesRoot, cloneURLFn, sharedReg, tel)
 	if recoveryErr != nil {
 		return runner.Config{}, nil, recoveryErr
 	}

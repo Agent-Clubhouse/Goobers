@@ -55,6 +55,9 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 	if err != nil {
 		return err
 	}
+	if s.setup.Telemetry != nil {
+		ctx = recovery.WithSnapshotObserver(ctx, s.setup.Telemetry)
+	}
 	err = manager.WithRecoveryMirror(ctx, url, func(repository string) error {
 		_, _, err := recovery.AcceptArchive(ctx, body, recovery.RetentionRequest{
 			Repository: repository, RepositoryKey: key, RunID: runID,
