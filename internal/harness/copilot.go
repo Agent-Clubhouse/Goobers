@@ -931,6 +931,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// happen before the session-id block below so the native transcript path
 	// derives from the confined COPILOT_HOME.
 	var confinement *copilotConfinement
+	var mcpLogDir string
 	if req.Sandbox != nil {
 		confinement, err = prepareCopilotConfinement(req.Workspace)
 		if err != nil {
@@ -939,6 +940,14 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		env = overrideEnv(env, "COPILOT_HOME", confinement.copilotHome)
 		env = overrideEnv(env, "TMPDIR", confinement.tempDir)
 		argv = append(argv, "--log-dir", confinement.logDir)
+		mcpLogDir = confinement.logDir
+	} else if req.GoobersIORegistered || len(req.MCPServers) > 0 {
+		mcpLogDir, err = os.MkdirTemp(filepath.Join(req.Workspace, ".goobers"), "copilot-log-")
+		if err != nil {
+			return Outcome{}, fmt.Errorf("harness: copilot-cli: prepare MCP diagnostics: %w", err)
+		}
+		defer func() { _ = os.RemoveAll(mcpLogDir) }()
+		argv = append(argv, "--log-dir", mcpLogDir)
 	}
 	if len(req.MCPServers) > 0 {
 		env, err = prepareCopilotMCP(ctx, req, env)
@@ -1103,12 +1112,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// #3456: name a registered-but-unusable MCP server instead of letting its
 	// tools go silently missing. The claude adapter reads this from a
 	// structured system/init event; Copilot has no transcript equivalent, so
-	// this reads the CLI's own run log — available because the confinement
-	// already pins --log-dir into the workspace. Unconfined runs have no
-	// run-scoped log directory, so the diagnostic stays nil rather than
-	// guessing from a shared one.
-	if confinement != nil {
-		out.MCPServerFailures = copilotMCPServerFailures(req, confinement.logDir)
+	// this reads the CLI's private run log rather than guessing from shared
+	// user-level logs.
+	if mcpLogDir != "" {
+		out.MCPServerFailures = copilotMCPServerFailures(req, mcpLogDir)
 	}
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))

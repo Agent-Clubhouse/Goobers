@@ -2,10 +2,12 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -53,6 +55,14 @@ func TestRefuseWhenRequiredMCPUnavailable(t *testing.T) {
 		{
 			name:          "handshake failure is also the availability code",
 			failures:      []MCPServerFailure{{Server: goobersIOServerName, Status: copilotMCPStatusHandshakeIncomplete}},
+			reported:      apiv1.ResultSuccess,
+			wantStatus:    apiv1.ResultFailure,
+			wantCode:      ErrorCodeRequiredMCPUnavailable,
+			wantRetryable: true,
+		},
+		{
+			name:          "removal after connection is also the availability code",
+			failures:      []MCPServerFailure{{Server: goobersIOServerName, Status: copilotMCPStatusRemovedAfterConnect}},
 			reported:      apiv1.ResultSuccess,
 			wantStatus:    apiv1.ResultFailure,
 			wantCode:      ErrorCodeRequiredMCPUnavailable,
@@ -215,5 +225,41 @@ func TestExecutorFailsWhenRequiredGoobersIOWasRejected(t *testing.T) {
 	}
 	if result.Error == nil || result.Error.Code != ErrorCodeRequiredMCPRejected {
 		t.Fatalf("error = %+v, want code %q", result.Error, ErrorCodeRequiredMCPRejected)
+	}
+}
+
+func TestExecutorRetriesRequiredGoobersIORemovedAfterConnectAsInfrastructure(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &mcpFailureFakeAdapter{
+		FakeAdapter: FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess, Summary: "untrusted success after tool removal",
+			})
+		}},
+		failures: []MCPServerFailure{{
+			Server: goobersIOServerName, Status: copilotMCPStatusRemovedAfterConnect,
+		}},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec, rec, rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err == nil {
+		t.Fatal("Invoke succeeded, want infrastructure failure so the runner launches a fresh process")
+	}
+	if !invoke.IsInfrastructureFailure(err) {
+		t.Fatalf("Invoke error = %v, want infrastructure failure", err)
+	}
+	var coded interface{ StageErrorCode() string }
+	if !errors.As(err, &coded) || coded.StageErrorCode() != ErrorCodeRequiredMCPUnavailable {
+		t.Fatalf("Invoke error = %v, want stage error code %q", err, ErrorCodeRequiredMCPUnavailable)
 	}
 }

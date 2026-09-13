@@ -584,6 +584,9 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		return Outcome{}, nil, nil, err
 	}
 	out, runErr = e.runAdapter(ctx, req, nestedAdapter)
+	if mcpErr := requiredMCPInfrastructureFailure(out.MCPServerFailures); mcpErr != nil {
+		runErr = errors.Join(runErr, mcpErr)
+	}
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
 		if !hasAppender {
 			runErr = errors.Join(runErr, fmt.Errorf(
@@ -759,6 +762,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		// worktree-provision transients are marked invoke.InfrastructureFailure.
 		if errors.Is(runErr, ErrTimeout) {
 			return out, transcript, stderr, invoke.Timeout(wrapped)
+		}
+		if errors.Is(runErr, errRequiredMCPUnavailable) {
+			return out, transcript, stderr, invoke.InfrastructureFailure(
+				executor.StageFailure(ErrorCodeRequiredMCPUnavailable, wrapped),
+			)
 		}
 		if errors.Is(runErr, ErrNoCompletion) {
 			return out, transcript, stderr, invoke.InfrastructureFailure(wrapped)
