@@ -33,16 +33,16 @@
         "backlog": { "$ref": "#/$defs/backlogRef", "description": "Singleton source of work-item truth for this gaggle." },
         "isolation": {
           "type": "object",
-          "description": "Per-gaggle namespace and workload-identity boundary.",
+          "description": "Per-gaggle namespace and workload-identity boundary. The active mode-3 worker routes every stage pod for this gaggle into its declared namespace and validates that namespace's existence and RBAC access before polling or dispatching (#4897); the quarantined operator also consumes this block for its own, separate reconcile path.",
           "additionalProperties": false,
           "required": ["namespace"],
           "properties": {
             "namespace": {
               "type": "string",
               "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
-              "description": "Kubernetes namespace reserved for this gaggle's workloads and secrets."
+              "description": "Kubernetes namespace this gaggle's stage pods are created in. The active mode-3 dispatcher routes each stage pod here from its Attempt's gaggle — never a worker-wide default — and refuses to start if the namespace does not exist or this worker's credentials lack the RBAC grants dispatch needs there (#4897). Two gaggles may declare the SAME namespace deliberately; that shared topology is supported."
             },
-            "identityRef": { "type": "string", "description": "Per-gaggle Azure workload identity used for external services." }
+            "identityRef": { "type": "string", "description": "Target per-gaggle Azure workload identity for external services. The active dispatcher does not yet consume this declaration — every gaggle's stage pods still run under their namespace's default ServiceAccount (#4897 scoped namespace routing only; workload identity federation is tracked separately)." }
           }
         },
         "additionalRepos": {

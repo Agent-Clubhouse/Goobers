@@ -73,6 +73,18 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	previous := repoCloneURL
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
 	t.Cleanup(func() { repoCloneURL = previous })
+	// Seed the same-keyed managed mirror directly with plain git, matching
+	// what a live run's own workspace provisioning already establishes by
+	// the time any run exists (WorkingCopy populates this mirror, and the
+	// run's `git worktree add` workspace shares its object storage) — so the
+	// base commit below is already present when recovery captures it. This
+	// must not go through manager.WorkingCopy itself: this test asserts
+	// archive publication performs no forge/remote git operation at all.
+	mirrorDir := filepath.Join(manager.Root, worktree.RepositoryDigest(source)[:16], "repo.git")
+	if err := os.MkdirAll(filepath.Dir(mirrorDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recoveryCLIGit(t, t.TempDir(), "clone", "--mirror", source, mirrorDir)
 	if err := os.WriteFile(filepath.Join(source, "implementation.txt"), []byte("remote worker changes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -139,10 +151,10 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	if err != nil || !found {
 		t.Fatalf("missing managed custody repository: found=%t err=%v", found, err)
 	}
-	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey(), deadline)
+	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey(), deadline, source)
 }
 
-func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryService, wire []byte, runID, key string, deadline time.Time) {
+func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryService, wire []byte, runID, key string, deadline time.Time, base string) {
 	t.Helper()
 	ctx := context.Background()
 	publishRecoveryOverAuthenticatedHTTP(t, service, wire, runID)
@@ -160,6 +172,10 @@ func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryServ
 	}
 	destination := t.TempDir()
 	recoveryCLIGit(t, destination, "init", "--bare")
+	// An independent host that already tracks the base branch, the same
+	// property a real managed mirror has, is what makes a delta bundle
+	// restorable here.
+	recoveryCLIGit(t, destination, "fetch", base, "main")
 	if err := recovery.ImportSnapshotBundle(ctx, destination, filepath.Join(filepath.Dir(entry.RecordPath), recovery.BundleFileName), entry.Record, 1<<20); err != nil {
 		t.Fatal(err)
 	}

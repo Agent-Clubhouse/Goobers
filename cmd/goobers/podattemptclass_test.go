@@ -75,7 +75,7 @@ func TestPodArtifactsPreserveDispatchedAttemptClass(t *testing.T) {
 					}
 				}))
 				t.Cleanup(server.Close)
-				cfg := dispatcher.Config{Namespace: "test", WriteAPIBase: server.URL}
+				cfg := dispatcher.Config{GaggleNamespaces: map[string]string{"test": "test"}, WriteAPIBase: server.URL}
 				attempt := dispatcher.Attempt{RunID: "lineage", Gaggle: "test", Workflow: "workflow", Stage: "curate", Number: tc.attempt, Class: tc.class, CLIStage: true}
 				runner := dispatcher.RunnerSpec{Name: "linux", OS: "linux", Host: "runner:test", Restrictions: []string{"env:default-deny"}}
 				var pod *corev1.Pod

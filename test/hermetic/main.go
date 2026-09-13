@@ -25,13 +25,15 @@ import (
 
 const integrationGuidance = "tag this test with //go:build integration and run it in the integration tier"
 const shardWeightsPath = ".github/unit-shard-weights.json"
+const shardWeightsArtifactName = "test-timings-macOS"
+const shardWeightsPlatform = "darwin"
 
 // shardWeightsMaxAge bounds how long the checked-in package measurements may
 // go without a refresh before TestCheckedInShardWeightsAreFresh fails: the
 // weights have no automated writer, so a hard cadence is what keeps the LPT
 // scheduler balancing against current package costs instead of a stale
 // snapshot.
-const shardWeightsMaxAge = 60 * 24 * time.Hour
+const shardWeightsMaxAge = 30 * 24 * time.Hour
 
 type toolSpec struct {
 	name     string
@@ -73,7 +75,15 @@ type shardWeights struct {
 }
 
 type shardWeightsSource struct {
-	GeneratedAt string `json:"generatedAt"`
+	Run                    int64   `json:"run"`
+	Jobs                   []int64 `json:"jobs"`
+	Artifact               int64   `json:"artifact"`
+	ArtifactName           string  `json:"artifactName"`
+	Commit                 string  `json:"commit"`
+	GeneratedAt            string  `json:"generatedAt"`
+	Platform               string  `json:"platform"`
+	Architecture           string  `json:"architecture"`
+	MinimumRecordedSeconds float64 `json:"minimumRecordedSeconds"`
 }
 
 func (w shardWeights) generatedAt() (time.Time, error) {
@@ -298,12 +308,39 @@ func loadShardWeights(root string) (shardWeights, error) {
 	if _, err := weights.generatedAt(); err != nil {
 		return shardWeights{}, fmt.Errorf("shard weights %s: %w", path, err)
 	}
+	if err := validateShardWeightSource(weights.Source); err != nil {
+		return shardWeights{}, fmt.Errorf("shard weights %s: %w", path, err)
+	}
 	for pkg, seconds := range weights.Packages {
 		if strings.TrimSpace(pkg) == "" || !validShardWeight(seconds) {
 			return shardWeights{}, fmt.Errorf("shard weights %s: package %q must have a finite positive duration", path, pkg)
 		}
 	}
 	return weights, nil
+}
+
+func validateShardWeightSource(source shardWeightsSource) error {
+	if source.Run <= 0 || source.Artifact <= 0 {
+		return errors.New("source must identify positive run and artifact IDs")
+	}
+	if len(source.Jobs) != 1 || source.Jobs[0] <= 0 {
+		return errors.New("source jobs must contain exactly one positive canonical producer job ID")
+	}
+	if source.ArtifactName != shardWeightsArtifactName || source.Platform != shardWeightsPlatform || strings.TrimSpace(source.Architecture) == "" {
+		return fmt.Errorf("source must identify the canonical %s/%s artifact and a recorded architecture", shardWeightsArtifactName, shardWeightsPlatform)
+	}
+	if len(source.Commit) != 40 {
+		return errors.New("source commit must be a full 40-character lowercase hexadecimal SHA")
+	}
+	for _, char := range source.Commit {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return errors.New("source commit must be a full 40-character lowercase hexadecimal SHA")
+		}
+	}
+	if !validShardWeight(source.MinimumRecordedSeconds) {
+		return errors.New("source minimumRecordedSeconds must be finite and positive")
+	}
+	return nil
 }
 
 func validShardWeight(seconds float64) bool {

@@ -69,7 +69,7 @@ type GuidedOptions struct {
 	PullRequestTokenEnv  string
 	RepoPushTokenEnv     string
 	// Harness selects the agent harness every generated agentic goober uses
-	// (apiv1.HarnessCopilot or apiv1.HarnessClaudeCode). Empty defaults to
+	// one of the supported harness names. Empty defaults to
 	// copilot (normalizeGuidedOptions), preserving prior guided-init
 	// behavior byte-for-byte for callers that don't set it (#2777).
 	Harness              string
@@ -527,7 +527,7 @@ func validateGuidedOptions(opts GuidedOptions) error {
 	switch apiv1.Harness(opts.Harness) {
 	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
 	default:
-		return fmt.Errorf("harness must be %q or %q", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode)
+		return fmt.Errorf("guided setup supports harness %q or %q; configure %q manually because generated templates declare restrictive tool lists that Codex CLI cannot enforce", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode, apiv1.HarnessCodex)
 	}
 	if len(opts.Workflows) == 0 {
 		return fmt.Errorf("select at least one workflow")

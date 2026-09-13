@@ -283,6 +283,7 @@ describe("GettingStartedPage", () => {
   });
 
   it("links completion to customization, validation, debugging, and Instance operations", async () => {
+    const user = userEvent.setup();
     window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(9));
     render(
       <GettingStartedPage
@@ -295,6 +296,7 @@ describe("GettingStartedPage", () => {
       />,
     );
 
+    expect(await screen.findByRole("heading", { name: "Finish setup" })).toBeInTheDocument();
     for (const linkName of [
       "Learn how to customize gaggles and workflows with an agent",
       "Learn how to inspect runs, journals, claims, and workcopies",
@@ -303,6 +305,8 @@ describe("GettingStartedPage", () => {
     ]) {
       expect(await screen.findByRole("link", { name: linkName })).toBeInTheDocument();
     }
+    await user.click(screen.getByRole("button", { name: "Finish setup" }));
+    expect(await screen.findByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
   });
 
   it("discovers the repository and submits provider-aware guided options", async () => {
@@ -666,6 +670,7 @@ describe("GettingStartedPage", () => {
 
   it("ends after checks with a customization prompt and server shutdown", async () => {
     const user = userEvent.setup();
+    const completeBodies: unknown[] = [];
     window.sessionStorage.setItem("goobers-wizard-path", JSON.stringify("own-repo"));
     window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(8));
     render(
@@ -681,7 +686,12 @@ describe("GettingStartedPage", () => {
               stderr: "",
             },
           }),
-          "/guided/actions/complete": () => ({ body: { complete: true } }),
+          "/guided/actions/complete": (init) => {
+            completeBodies.push(parseBody(init));
+            return {
+              body: { complete: true, scheduledTaskInstalled: true },
+            };
+          },
         })}
       />,
     );
@@ -690,11 +700,54 @@ describe("GettingStartedPage", () => {
     await user.click(screen.getByRole("button", { name: "Run checks" }));
     await screen.findByText(/All configuration, harness, and repository checks passed/);
     await continueWizard(user);
-    expect(screen.getByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Finish setup" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", {
+        name: /Start Goobers automatically when I sign in/,
+      }),
+    ).toBeChecked();
+    expect(screen.queryByText(/close this browser window/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Finish setup" }));
+    expect(completeBodies).toEqual([{ installScheduledTask: true }]);
+    expect(await screen.findByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/Goobers will start automatically when you sign in/),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument();
     expect(screen.getByText(/goobers-dsl-author/)).toBeInTheDocument();
     expect(screen.getByText(/close this browser window/i)).toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("allows Windows users to finish without installing a Scheduled Task", async () => {
+    const user = userEvent.setup();
+    const completeBodies: unknown[] = [];
+    window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(9));
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/complete": (init) => {
+            completeBodies.push(parseBody(init));
+            return {
+              body: { complete: true, scheduledTaskInstalled: false },
+            };
+          },
+        })}
+      />,
+    );
+
+    const startAtSignIn = await screen.findByRole("checkbox", {
+      name: /Start Goobers automatically when I sign in/,
+    });
+    await user.click(startAtSignIn);
+    await user.click(screen.getByRole("button", { name: "Finish setup" }));
+
+    expect(completeBodies).toEqual([{ installScheduledTask: false }]);
+    expect(await screen.findByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Goobers will start automatically when you sign in/),
+    ).not.toBeInTheDocument();
   });
 
   describe("state polling", () => {

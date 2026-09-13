@@ -253,7 +253,7 @@ func TestPartialPlaneConfigStampsNothing(t *testing.T) {
 			"the loopback/self-host posture, where the stage's file backends are the correct answer"},
 		{"no run identity", func(_ *Config, a *Attempt) { a.RunID = "" },
 			"the claims and journal planes contain every call to the caller's own run"},
-		{"no gaggle", func(_ *Config, a *Attempt) { a.Gaggle = "" },
+		{"no gaggle", func(c *Config, a *Attempt) { a.Gaggle = ""; c.GaggleNamespaces[""] = "gaggle-alpha" },
 			"the scheduler-state and telemetry planes are gaggle-scoped"},
 		{"one bearer missing", func(_ *Config, a *Attempt) { a.PlaneTokens.Journal = "" },
 			"three planes working and one refusing is the worst of both"},

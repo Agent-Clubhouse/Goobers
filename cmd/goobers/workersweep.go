@@ -16,8 +16,9 @@ package main
 // only what a resolver POSITIVELY settles, and this resolver settles an
 // attempt only on an answer from Temporal — Completed, Failed, or no such
 // execution. An unreachable frontend, a timed-out describe, an ambiguous
-// answer: all leave the pod, and the pod's always-on activeDeadlineSeconds
-// stamp reclaims it instead. That direction is the whole point. Decision 003
+// answer: all leave the pod. Its always-on activeDeadlineSeconds eventually
+// stops the container, but the Pod object remains until an explicit deletion.
+// That direction is the whole point. Decision 003
 // rejected the in-process-dispatcher option partly because the pre-existing
 // sweep was fail-closed toward DELETION and "would delete the worker's
 // engine-start pods"; deleting a pod whose stage is still running destroys
@@ -42,8 +43,9 @@ import (
 const (
 	// workerSweepBudget bounds the WHOLE sweep. It runs before the worker
 	// starts polling, so an engine that answers slowly must cost the worker a
-	// bounded startup delay and nothing more — an unswept pod is reclaimed by
-	// its deadline stamp, an unstarted worker serves no queue at all.
+	// bounded startup delay and nothing more — an unswept pod's execution is
+	// stopped by its deadline, though its Pod object remains; an unstarted
+	// worker serves no queue at all.
 	workerSweepBudget = 90 * time.Second
 	// workerSweepDescribeTimeout bounds ONE describe within that budget.
 	workerSweepDescribeTimeout = 10 * time.Second
@@ -134,8 +136,9 @@ func (r temporalRunStates) RunState(ctx context.Context, attempt dispatcher.PodA
 
 // status runs one bounded describe. It deliberately does NOT retry: the sweep
 // is hygiene running ahead of the worker's first poll, and the cost of giving
-// up is that a settled pod lives until its deadline — whereas the cost of
-// waiting is a worker that is not serving any queue.
+// up is that the pod object remains even after its deadline stops the
+// container — whereas the cost of waiting is a worker that is not serving
+// any queue.
 func (r temporalRunStates) status(ctx context.Context, workflowID string) sweepStatus {
 	if r.client == nil {
 		return sweepUnresolved

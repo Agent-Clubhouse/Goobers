@@ -48,6 +48,11 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		// A coordinate may legitimately carry "__" of its own (a repository
 		// or a label), which is exactly why the gaggle is not one of them.
 		BacklogHealthCursorKey("goobers", "github__o_r__needs__triage.json"),
+		// Goobers#3025: the per-item failure-streak record and the per-PR
+		// remediation-verdict record, the two marker families moved off
+		// provider comments onto this plane.
+		FailureStreakKey(digest),
+		RemediationVerdictKey(digest),
 	} {
 		if !ValidKey(key) {
 			t.Fatalf("ValidKey(%q) = false, want the closed namespace to admit it", key)
@@ -84,6 +89,17 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		"pr-remediation-noop-" + digest + "x.json",
 		"pr-remediation-noop-" + digest + ".json.tmp",
 		"pr-remediation-noop-" + digest + ".json/../claims.json",
+		"failure-streak-.json",
+		"failure-streak-" + strings.ToUpper(digest) + ".json",
+		"failure-streak-" + digest[:63] + ".json",
+		"failure-streak-" + digest + "x.json",
+		"failure-streak-" + digest + ".json.tmp",
+		"failure-streak-" + digest + ".json/../claims.json",
+		"remediation-verdict-.json",
+		"remediation-verdict-" + strings.ToUpper(digest) + ".json",
+		"remediation-verdict-" + digest[:63] + ".json",
+		"remediation-verdict-" + digest + "x.json",
+		"remediation-verdict-" + digest + ".json.tmp",
 		"sub/blocked.json",
 		// The backlog-health cursor's shape, probed for every way a key could
 		// acquire a second path element, a traversal, or a wire escape.

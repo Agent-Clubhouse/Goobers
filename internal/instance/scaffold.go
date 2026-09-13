@@ -86,7 +86,7 @@ func InitDemo(root string, observers ...InitIdentityObserver) (*InitResult, erro
 // embedded quickstart template.
 type QuickstartOptions struct {
 	// Harness overrides the agent harness every generated agentic goober
-	// uses (apiv1.HarnessCopilot or apiv1.HarnessClaudeCode). Empty keeps
+	// uses. Empty keeps
 	// the harness the template itself declares, so the default seeding is
 	// byte-identical to the embedded template.
 	Harness string
@@ -158,6 +158,9 @@ func ValidateQuickstartHarness(harness string) error {
 	switch apiv1.Harness(harness) {
 	case "", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
 		return nil
+	}
+	if apiv1.Harness(harness) == apiv1.HarnessCodex {
+		return fmt.Errorf("quickstart does not support harness %q because its generated goobers declare restrictive tool lists that Codex CLI cannot enforce", apiv1.HarnessCodex)
 	}
 	return fmt.Errorf("harness must be %q or %q", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode)
 }

@@ -288,14 +288,42 @@ func TestCIWorkflowUsesValidationMakeTargets(t *testing.T) {
 	unitLinuxCoverage := workflowJob(workflow, "unit-linux-coverage")
 	if !strings.Contains(unitLinuxCoverage, "runs-on: ubuntu-latest") ||
 		!strings.Contains(unitLinuxCoverage, "GOOBERS_CI_RACE: \"0\"") ||
+		!strings.Contains(unitLinuxCoverage, "GOOBERS_TEST_TIMING_FILE: test-timings/unit-${{ runner.os }}.json") ||
 		!strings.Contains(unitLinuxCoverage, "go run ./test/ci group unit") ||
 		!strings.Contains(unitLinuxCoverage, "make cover-gate") ||
+		!strings.Contains(unitLinuxCoverage, "Find previous main timing run") ||
+		!strings.Contains(unitLinuxCoverage, "Upload test timing") ||
 		strings.Contains(unitLinuxCoverage, "GOOBERS_CI_SHARD") {
-		t.Error("Linux coverage gate must run an unsharded whole-tree unit profile on Linux")
+		t.Error("Linux coverage gate must own the unsharded whole-tree profile and timing artifact")
 	}
 	unitMacOS := workflowJob(workflow, "unit-macos")
-	if !strings.Contains(unitMacOS, "make cover-gate") {
-		t.Error("the coverage threshold moved onto unit-macos; it must still run `make cover-gate` against the whole-tree profile that job already produces")
+	for _, required := range []string{
+		"name: macOS runtime (unit · shipped · sandbox)",
+		"runs-on: macos-latest",
+		"GOOBERS_CI_RACE: \"0\"",
+		"GOOBERS_CI_COVERAGE: \"0\"",
+		"go run ./test/ci group unit",
+		"go run ./test/ci group shipped",
+		"make sandbox-check",
+	} {
+		if !strings.Contains(unitMacOS, required) {
+			t.Errorf("consolidated macOS runtime job must contain %q", required)
+		}
+	}
+	if got := strings.Count(unitMacOS, "if: ${{ !cancelled()"); got != 2 {
+		t.Errorf("consolidated macOS runtime job has %d post-failure checks, want shipped plus PR-only sandbox", got)
+	}
+	for _, portable := range []string{"make cover-gate", "GOOBERS_TEST_TIMING_FILE", "Upload coverage profile", "Upload test timing"} {
+		if strings.Contains(unitMacOS, portable) {
+			t.Errorf("consolidated macOS runtime job must leave portable responsibility %q on Linux", portable)
+		}
+	}
+	if got := strings.Count(workflow, "runs-on: macos-latest"); got != 1 {
+		t.Errorf("CI workflow allocates %d direct macOS jobs, want exactly unit-macos", got)
+	}
+	if strings.Contains(workflowJob(workflow, "shipped"), "os: macos-latest") ||
+		strings.Contains(workflowJob(workflow, "sandbox"), "macos-latest") {
+		t.Error("shipped and sandbox jobs must not allocate a second macOS runner")
 	}
 	integration := workflowJob(workflow, "integration")
 	if !strings.Contains(integration, "KUBEBUILDER_ASSETS") {
@@ -440,9 +468,10 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 
 	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
+		header := strings.SplitN(section, "\n    steps:", 2)[0]
 		if section == "" {
 			t.Errorf("CI workflow is missing main validation job %q", job)
-		} else if strings.Contains(section, "github.event_name != 'push'") {
+		} else if strings.Contains(header, "github.event_name != 'push'") {
 			t.Errorf("main validation job %q must run on main pushes", job)
 		}
 	}
@@ -451,7 +480,9 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 		"vulnerability-scan", "required-ci",
 		"sandbox", "linux-validation",
 	} {
-		if section := workflowJob(workflow, job); !strings.Contains(section, "github.event_name != 'push'") {
+		section := workflowJob(workflow, job)
+		header := strings.SplitN(section, "\n    steps:", 2)[0]
+		if !strings.Contains(header, "github.event_name != 'push'") {
 			t.Errorf("PR-only job %q must not rerun on main pushes", job)
 		}
 	}
@@ -475,7 +506,8 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			continue
 		}
 		section := workflowJob(workflow, job)
-		if strings.Contains(section, "github.event_name != 'push'") {
+		header := strings.SplitN(section, "\n    steps:", 2)[0]
+		if strings.Contains(header, "github.event_name != 'push'") {
 			continue // PR-only: never validates main, nothing to escalate.
 		}
 		if !strings.Contains(escalationSection(workflow), "needs."+job+".result == 'failure'") {

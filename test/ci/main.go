@@ -82,6 +82,20 @@ var knownGroups = map[string]bool{
 	groupShipped:   true,
 }
 
+// uncoveredBuildTags names the four build tags with no coverage in any other
+// CI or Makefile command. Vet compiles their files without running the tagged
+// live-network, Docker, or authoring-capture tests (#4855).
+const uncoveredBuildTags = "topology_image,livegitea,livegiteawrite,authoringcapture"
+
+func versionLDFlags(metadata buildMetadata) string {
+	return fmt.Sprintf(
+		"-X %s.Version=%s -X %s.Commit=%s -X %s.Date=%s",
+		versionPackage, metadata.version,
+		versionPackage, metadata.commit,
+		versionPackage, metadata.date,
+	)
+}
+
 type executor interface {
 	run(check) ([]byte, error)
 }
@@ -167,6 +181,10 @@ func groupChecksOnly(all []check, group string) []check {
 //     Data races are a source-level property, so a single -race platform
 //     (Linux) suffices; a second OS can run the same behavioural suite without
 //     the ~3-5x instrumentation cost while preserving OS-specific coverage.
+//   - GOOBERS_CI_COVERAGE=0 strips coverage instrumentation from the unit
+//     suite when another whole-tree job owns the coverage gate. This keeps the
+//     macOS runtime pass behavioural rather than spending scarce runner time
+//     producing a profile that no gate consumes.
 //   - GOOBERS_CI_SHARD=i/n splits the unit suite across n runners (1-based i),
 //     dropping the coverage profile (partial per shard; the coverage *gate* is
 //     the separate full-tier cover-check). Timing capture stays with the
@@ -175,6 +193,7 @@ func groupChecksOnly(all []check, group string) []check {
 //     platforms without weakening the suite or changing its package set.
 func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 	raceEnabled := getenv("GOOBERS_CI_RACE") != "0"
+	coverageEnabled := getenv("GOOBERS_CI_COVERAGE") != "0"
 	shard := strings.TrimSpace(getenv("GOOBERS_CI_SHARD"))
 	testTimeout := strings.TrimSpace(getenv("GOOBERS_CI_TEST_TIMEOUT"))
 	// GOOBERS_LINT_GOOS cross-lints for another platform (e.g. darwin) from a
@@ -189,6 +208,10 @@ func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 		}
 		if !raceEnabled {
 			current.args = withoutArg(current.args, "-race")
+		}
+		if !coverageEnabled && current.label == "test" {
+			current.args = withoutArg(current.args, "-covermode=atomic")
+			current.args = withoutArg(current.args, "-coverprofile=coverage.out")
 		}
 		if shard != "" && current.label == "test" {
 			current.args = shardUnitArgs(current.args, shard)
@@ -307,12 +330,7 @@ func commandPackages(directory string) ([]string, error) {
 }
 
 func checks(commands []string, tools toolchain, metadata buildMetadata, goos, timingOutput string) []check {
-	ldflags := fmt.Sprintf(
-		"-X %s.Version=%s -X %s.Commit=%s -X %s.Date=%s",
-		versionPackage, metadata.version,
-		versionPackage, metadata.commit,
-		versionPackage, metadata.date,
-	)
+	ldflags := versionLDFlags(metadata)
 
 	result := []check{
 		{
@@ -329,6 +347,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "no-phone-home", command: tools.goCommand, args: []string{"run", "./test/nophonehome"}, group: groupChecks},
 		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
+		{label: "uncovered-build-tags", command: tools.goCommand, args: []string{"vet", "-tags", uncoveredBuildTags, "./..."}, group: groupPreflight},
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
 		// Complexity that was decomposed by hand regrows silently without an
 		// observer watching the baseline (#4231).
@@ -421,7 +440,7 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		// -count=1 disables Go's test-result cache for the merge-tier suite.
 		// Two reasons, both about not reporting work that did not happen.
 		// First, the coverage threshold is now enforced from this run's profile
-		// (unit-macos -> `make cover-gate`), so the run that produces the number
+		// (unit-linux-coverage -> `make cover-gate`), so the run that produces the number
 		// must be a real one. Second, it is the property the deleted
 		// `conformance` job uniquely had; carrying it here is what makes that
 		// deletion a no-op rather than a loosening. It costs nothing in CI,

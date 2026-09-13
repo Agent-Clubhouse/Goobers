@@ -175,6 +175,16 @@ func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T)
 	previousKube := dispatchKubeClient
 	dispatchKubeClient = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
 	t.Cleanup(func() { dispatchKubeClient = previousKube })
+	previousPreflight := preflightGaggleNamespaces
+	preflightGaggleNamespaces = fakeClusterHasNoRealRBACSoSkipPreflight
+	t.Cleanup(func() { preflightGaggleNamespaces = previousPreflight })
+	var built dispatcher.Config
+	previousNew := newStageDispatcher
+	newStageDispatcher = func(c dispatcher.Config, pods dispatcher.PodAPI, journal dispatcher.JournalRelay, gate dispatcher.SurrenderGate, capacity dispatcher.CapacityProber) (*dispatcher.Dispatcher, error) {
+		built = c
+		return previousNew(c, pods, journal, gate, capacity)
+	}
+	t.Cleanup(func() { newStageDispatcher = previousNew })
 	// The boot-time orphan sweep is the worker's only Temporal contact before
 	// it polls; refusing the dial exercises its skip path without a frontend.
 	previousDial := dialWorkerSweepTemporal
@@ -210,8 +220,16 @@ func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T)
 	if got.Deps.Surrenders == nil {
 		t.Error("surrender plane not wired; a dispatched stage's result would have nowhere to land")
 	}
-	if !strings.Contains(stdout.String(), "goobers-stages") {
-		t.Errorf("startup output does not name the dispatch namespace:\n%s", stdout.String())
+	// #4897: the flag's own value no longer selects a pod namespace, so the
+	// startup line describes per-gaggle routing instead, and the Config
+	// actually wired maps the "example" gaggle to ITS OWN declared
+	// isolation.namespace (the starter scaffold's gaggle-example) — never the
+	// flag's "goobers-stages" value.
+	if !strings.Contains(stdout.String(), "isolation.namespace") {
+		t.Errorf("startup output does not describe per-gaggle isolation.namespace routing:\n%s", stdout.String())
+	}
+	if got := built.GaggleNamespaces["example"]; got != "gaggle-example" {
+		t.Errorf("dispatcher.Config.GaggleNamespaces[example] = %q, want the gaggle's own declared isolation.namespace %q", got, "gaggle-example")
 	}
 }
 

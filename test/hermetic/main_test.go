@@ -505,8 +505,14 @@ func TestCheckedInShardWeightsAreFresh(t *testing.T) {
 	}
 	if age := time.Since(generated); age > shardWeightsMaxAge {
 		t.Fatalf("%s was generated %s (%.0f days ago), want no older than %.0f days: "+
-			"refresh it from a recent test-timings artifact and update source.generatedAt",
+			"regenerate it from a recent test-timings artifact with the documented testtiming weights command",
 			shardWeightsPath, generated.Format(time.RFC3339), age.Hours()/24, shardWeightsMaxAge.Hours()/24)
+	}
+}
+
+func TestShardWeightsRefreshCadenceIsThirtyDays(t *testing.T) {
+	if shardWeightsMaxAge != 30*24*time.Hour {
+		t.Fatalf("shardWeightsMaxAge = %s, want the documented 30-day manual refresh cadence", shardWeightsMaxAge)
 	}
 }
 
@@ -531,6 +537,39 @@ func TestLoadShardWeightsRequiresGeneratedAt(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "generatedAt") {
 				t.Fatalf("error = %v, want it to name generatedAt", err)
+			}
+		})
+	}
+}
+
+func TestValidateShardWeightSourceRequiresVerifiableProvenance(t *testing.T) {
+	valid := shardWeightsSource{
+		Run: 10, Jobs: []int64{20}, Artifact: 30, ArtifactName: "test-timings-macOS",
+		Commit: strings.Repeat("a", 40), GeneratedAt: "2026-09-12T20:48:16Z",
+		Platform: "darwin", Architecture: "arm64", MinimumRecordedSeconds: 3,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*shardWeightsSource)
+	}{
+		{name: "run", mutate: func(source *shardWeightsSource) { source.Run = 0 }},
+		{name: "jobs", mutate: func(source *shardWeightsSource) { source.Jobs = nil }},
+		{name: "multiple jobs", mutate: func(source *shardWeightsSource) { source.Jobs = []int64{20, 21} }},
+		{name: "zero job", mutate: func(source *shardWeightsSource) { source.Jobs = []int64{0} }},
+		{name: "artifact", mutate: func(source *shardWeightsSource) { source.Artifact = 0 }},
+		{name: "artifact name", mutate: func(source *shardWeightsSource) { source.ArtifactName = "test-timings-Linux" }},
+		{name: "short commit", mutate: func(source *shardWeightsSource) { source.Commit = "abc123" }},
+		{name: "platform", mutate: func(source *shardWeightsSource) { source.Platform = "linux" }},
+		{name: "architecture", mutate: func(source *shardWeightsSource) { source.Architecture = "" }},
+		{name: "minimum", mutate: func(source *shardWeightsSource) { source.MinimumRecordedSeconds = 0 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := valid
+			source.Jobs = append([]int64(nil), valid.Jobs...)
+			tt.mutate(&source)
+			if err := validateShardWeightSource(source); err == nil {
+				t.Fatalf("validateShardWeightSource accepted %+v", source)
 			}
 		})
 	}

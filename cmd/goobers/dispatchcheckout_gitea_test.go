@@ -51,7 +51,7 @@ func TestGiteaOriginDispatchCheckout(t *testing.T) {
 					}
 					var pod *corev1.Pod
 					d := checkoutDispatchFunc(func(ctx context.Context, a dispatcher.Attempt, _ []dispatcher.RunnerSpec) (dispatcher.Report, error) {
-						cfg := dispatcher.Config{Namespace: "local-test"}
+						cfg := dispatcher.Config{GaggleNamespaces: map[string]string{a.Gaggle: "local-test"}}
 						r := dispatcher.RunnerSpec{Name: "local", OS: "linux", HostKind: instance.RunnerHostImage, Host: "local:fixture", Restrictions: []string{"env:default-deny"}}
 						var renderErr error
 						if template {

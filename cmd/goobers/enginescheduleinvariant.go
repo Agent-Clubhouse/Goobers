@@ -94,7 +94,7 @@ func checkEngineScheduleInvariant(ctx context.Context, e *daemonEngineClient, lo
 		return err, true
 	}
 	if log != nil {
-		_ = log.Append(journal.Event{
+		log.AppendBestEffort(journal.Event{
 			Type:   journal.EventError,
 			Reason: "Temporal Schedules are configured on an engine-enabled instance",
 			Error: &journal.ErrorDetail{

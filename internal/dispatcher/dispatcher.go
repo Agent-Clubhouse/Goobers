@@ -33,13 +33,14 @@ const (
 	// a generic timeout.
 	DefaultWindowsScheduleToStart = 45 * time.Minute
 	// DefaultDeadlineMargin pads the stage timeout into the pod's
-	// activeDeadlineSeconds — the always-on orphan backstop (dispatcher §5):
+	// activeDeadlineSeconds — the always-on orphan-execution backstop (§5):
 	// wide enough that the stage's own policy-classed timeout enforcement
-	// always fires first, bounded so a dispatcher crash cannot leak a pod
-	// indefinitely.
+	// always fires first, bounded so a dispatcher crash cannot leave the pod's
+	// container executing indefinitely. Kubernetes retains the stopped Pod
+	// object until an explicit deletion.
 	DefaultDeadlineMargin = 10 * time.Minute
 	// DefaultStageTimeout backs a stage that declares no timeout, so every
-	// pod still carries a finite activeDeadlineSeconds (the backstop is
+	// pod still carries a finite activeDeadlineSeconds (the execution bound is
 	// always-on, never conditional on declaration).
 	DefaultStageTimeout = time.Hour
 	// DefaultSupervisionInterval paces the supervise loop's pod polls and
@@ -69,8 +70,16 @@ var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 
 // Config is the dispatcher's per-instance wiring.
 type Config struct {
-	// Namespace is the gaggle namespace stage pods are created in.
-	Namespace string
+	// GaggleNamespaces maps each gaggle name this dispatcher serves to the
+	// Kubernetes namespace its stage pods are created in — Gaggle.spec.
+	// isolation.namespace, keyed by gaggle name (#4897). A stage pod's
+	// namespace is resolved from its Attempt.Gaggle at render time; there is
+	// no process-wide default and no fallback. Two gaggles may map to the
+	// SAME namespace value deliberately (the supported shared topology), but
+	// an attempt whose gaggle has no entry is refused rather than guessing —
+	// silently placing a pod in the wrong gaggle's namespace is exactly the
+	// isolation break this map exists to close.
+	GaggleNamespaces map[string]string
 	// Owner identifies THIS dispatcher process among the workers sharing a
 	// namespace. It is stamped on every pod as LabelOwner and is the scope
 	// SweepOrphans sweeps within, so it must be stable across a restart of
@@ -79,11 +88,10 @@ type Config struct {
 	// per replica.
 	//
 	// A rollout gives the replacement worker a NEW pod name, so stage pods
-	// left by the outgoing one fall outside every sweep's scope. That is the
-	// intended trade: the sweep's job is to reclaim ITS OWN interrupted
-	// attempts, and the always-on activeDeadlineSeconds stamp (dispatcher §5)
-	// is what bounds every other leak. Deleting a pod on a guess is the
-	// failure this whole path is built to avoid.
+	// left by the outgoing one fall outside every later owner-scoped sweep.
+	// activeDeadlineSeconds eventually stops their containers, but does not
+	// delete the retained Pod objects. Deleting a possibly live pod on a guess
+	// is the failure this path is built to avoid.
 	//
 	// Empty stamps no owner label and makes SweepOrphans refuse: an ownerless
 	// fleet cannot be swept safely by one of its members.
@@ -581,8 +589,13 @@ func New(cfg Config, pods PodAPI, journal JournalRelay, gate SurrenderGate, capa
 	if gate == nil {
 		return nil, errors.New("dispatcher: SurrenderGate is required")
 	}
-	if cfg.Namespace == "" {
-		return nil, errors.New("dispatcher: Config.Namespace is required")
+	if len(cfg.GaggleNamespaces) == 0 {
+		return nil, errors.New("dispatcher: Config.GaggleNamespaces is required")
+	}
+	for gaggle, namespace := range cfg.GaggleNamespaces {
+		if strings.TrimSpace(namespace) == "" {
+			return nil, fmt.Errorf("dispatcher: Config.GaggleNamespaces[%q] must not be empty", gaggle)
+		}
 	}
 	return &Dispatcher{
 		cfg:      cfg,
@@ -593,6 +606,18 @@ func New(cfg Config, pods PodAPI, journal JournalRelay, gate SurrenderGate, capa
 		now:      time.Now,
 		sleep:    sleepCtx,
 	}, nil
+}
+
+// namespaceFor resolves the Kubernetes namespace one attempt's pod must be
+// created in, from its declared gaggle — the single lookup every render and
+// cleanup path in this package goes through, so there is exactly one place
+// that can drift from Config.GaggleNamespaces (#4897).
+func (c Config) namespaceFor(gaggle string) (string, error) {
+	namespace, ok := c.GaggleNamespaces[gaggle]
+	if !ok || namespace == "" {
+		return "", fmt.Errorf("dispatcher: gaggle %q has no declared isolation.namespace in this dispatcher's Config.GaggleNamespaces; refusing rather than guessing a namespace", gaggle)
+	}
+	return namespace, nil
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -734,8 +759,8 @@ type Report struct {
 	// outcome (a confirmed success or a confirmed PodFailed), so Dispatch's
 	// returned error still reflects the settled result and this field carries
 	// the disposal failure alongside it. Disposed==false means DELETE failed;
-	// the leak is bounded by activeDeadlineSeconds and the restart reconcile
-	// sweep (dispatcher §5).
+	// activeDeadlineSeconds bounds any remaining execution; the owner-scoped
+	// restart reconcile may delete the Pod object (dispatcher §5).
 	DisposeErr error
 	// QueuedAt and PodStartedAt bound the schedule-to-start wait for
 	// provenance.
@@ -878,9 +903,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// result and spending an infra retry re-dispatching an already-settled
 	// (possibly MUTATING) stage. So record the disposal failure on the report
 	// as the leak signal (Disposed is false for a refused DELETE; accepted
-	// deletion with unconfirmed disappearance sets DisposeErr too). Leaks are
-	// bounded by activeDeadlineSeconds and restart reconcile (dispatcher §5), and
-	// let the settled path fall through: PodFailed → ErrStageFailed, success →
+	// deletion with unconfirmed disappearance sets DisposeErr too). Execution is
+	// bounded by activeDeadlineSeconds; the owner-scoped restart reconcile may
+	// delete the retained object (dispatcher §5). The settled path still falls
+	// through: PodFailed → ErrStageFailed, success →
 	// nil. When superviseErr is already non-nil there is no settled outcome to
 	// protect; that infra error is returned unchanged and DisposeErr rides
 	// alongside on the report. superviseErr is never overwritten here, because
@@ -1000,7 +1026,11 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 		}
 		return RenderPod(d.cfg, attempt, runner)
 	case instance.RunnerHostDeployment:
-		deployment, err := d.pods.GetDeployment(ctx, d.cfg.Namespace, runner.Host)
+		namespace, err := d.cfg.namespaceFor(attempt.Gaggle)
+		if err != nil {
+			return nil, err
+		}
+		deployment, err := d.pods.GetDeployment(ctx, namespace, runner.Host)
 		if err != nil {
 			return nil, fmt.Errorf("dispatcher: read template deployment %q for runner %q: %w", runner.Host, runner.Name, err)
 		}

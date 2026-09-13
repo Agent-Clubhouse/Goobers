@@ -169,6 +169,7 @@ func assertAgentToolkitReferencesMatchRelease(t *testing.T, repoRoot string, ent
 		"skills/goobers-dsl-author/SKILL.md":                    "skills/goobers-dsl-author/SKILL.md",
 		"docs/ARCHITECTURE.md":                                  "docs/ARCHITECTURE.md",
 		"docs/cli/README.md":                                    "docs/cli/README.md",
+		"docs/guides/codex-harness.md":                          "docs/guides/codex-harness.md",
 		"docs/guides/stack-support.md":                          "docs/guides/stack-support.md",
 		"docs/reference/workflow-primitives/README.md":          "docs/reference/workflow-primitives/README.md",
 		"api/schemas/workflow.schema.json":                      "api/schemas/workflow.schema.json",
@@ -232,9 +233,10 @@ func assertAgentToolkitSchemaTermsMatchRelease(t *testing.T, repoRoot string, en
 			t.Errorf("bundled DSL reference is missing automated evaluator %q", check)
 		}
 	}
+	harnessDocs := append(append([]byte(nil), reference...), entries[agentToolkitProductRoot+"/docs/guides/codex-harness.md"]...)
 	for _, harness := range harnessConstants(t, repoRoot) {
-		if !bytes.Contains(reference, []byte("`"+harness+"`")) {
-			t.Errorf("bundled DSL reference is missing harness %q", harness)
+		if !bytes.Contains(harnessDocs, []byte("`"+harness+"`")) {
+			t.Errorf("bundled harness documentation is missing harness %q", harness)
 		}
 	}
 }

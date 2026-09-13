@@ -45,7 +45,7 @@ func PublishRetainedState(ctx context.Context, repository, directory string, cle
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Record{}, err
 	}
-	digest, err := PublishSnapshotBundle(ctx, repository, archive, prepared, maxBytes)
+	digest, format, err := PublishSnapshotBundle(ctx, repository, archive, prepared, maxBytes)
 	if err != nil {
 		return Record{}, err
 	}
@@ -53,7 +53,7 @@ func PublishRetainedState(ctx context.Context, repository, directory string, cle
 	if err != nil || !info.Mode().IsRegular() {
 		return Record{}, fmt.Errorf("inspect published recovery archive")
 	}
-	prepared.ArchiveDigest, prepared.ArchiveBytes = digest, info.Size()
+	prepared.ArchiveDigest, prepared.ArchiveBytes, prepared.ArchiveFormat = digest, info.Size(), format
 	if err := PublishRecord(filepath.Join(directory, RecordFileName), prepared); err != nil {
 		return Record{}, fmt.Errorf("publish retained metadata: %w", err)
 	}

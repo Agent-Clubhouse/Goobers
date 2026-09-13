@@ -59,6 +59,7 @@ type guidedServer struct {
 	instancePath   string
 	instancePinned bool
 	executable     string
+	platform       string
 	errorLog       *log.Logger
 	allowEphemeral bool
 
@@ -81,6 +82,7 @@ func newGuidedServer(workdir, instancePath string, errorLog *log.Logger) (*guide
 		workdir:      workdir,
 		instancePath: instancePath,
 		executable:   executable,
+		platform:     runtime.GOOS,
 		errorLog:     errorLog,
 		completed:    make(chan struct{}),
 	}, nil
@@ -194,12 +196,70 @@ func (s *guidedServer) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if !requireGuidedMethod(w, r, http.MethodPost) {
 		return
 	}
-	writeGuidedJSON(w, http.StatusOK, struct {
-		Complete bool `json:"complete"`
-	}{Complete: true})
+	var input guidedCompleteRequest
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	scheduledTaskInstalled := false
+	if input.InstallScheduledTask {
+		if s.platform != "windows" {
+			writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+				Code:    "scheduled_task_unsupported",
+				Message: "scheduled task supervision is only supported on Windows",
+			})
+			return
+		}
+		if err := ensureGuidedScheduledTask(r.Context(), s.instancePath); err != nil {
+			writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{
+				Code:    "scheduled_task_install_failed",
+				Message: fmt.Sprintf("start Goobers automatically at sign-in: %v", err),
+			})
+			return
+		}
+		scheduledTaskInstalled = true
+	}
+	writeGuidedJSON(w, http.StatusOK, guidedCompleteBody{
+		Complete:               true,
+		ScheduledTaskInstalled: scheduledTaskInstalled,
+	})
 	s.completionOnce.Do(func() {
 		close(s.completed)
 	})
+}
+
+type guidedCompleteRequest struct {
+	InstallScheduledTask bool `json:"installScheduledTask"`
+}
+
+type guidedCompleteBody struct {
+	Complete               bool `json:"complete"`
+	ScheduledTaskInstalled bool `json:"scheduledTaskInstalled"`
+}
+
+func ensureGuidedScheduledTask(ctx context.Context, instancePath string) error {
+	if err := prepareManualRoot(instance.NewLayout(instancePath), io.Discard); err != nil {
+		return err
+	}
+	manager, err := newScheduledTaskManager(instancePath)
+	if err != nil {
+		return err
+	}
+	status, err := manager.TaskStatus(ctx)
+	if err != nil {
+		return fmt.Errorf("query scheduled task: %w", err)
+	}
+	if !status.Installed {
+		if _, err := manager.InstallTask(ctx); err != nil {
+			return fmt.Errorf("install scheduled task: %w", err)
+		}
+		return nil
+	}
+	if !status.Running {
+		if _, err := manager.StartTask(ctx); err != nil {
+			return fmt.Errorf("start scheduled task: %w", err)
+		}
+	}
+	return nil
 }
 
 type guidedErrorBody struct {
@@ -294,7 +354,7 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 	suggestedStack, suggestedCICommand, suggestedCapability := detectCICommandDefault(s.workdir)
 	writeGuidedJSON(w, http.StatusOK, guidedStateBody{
 		Version:             guidedStateVersion,
-		Platform:            runtime.GOOS,
+		Platform:            s.platform,
 		Workdir:             s.workdir,
 		InstancePath:        s.instancePath,
 		InstancePathPinned:  s.instancePinned,

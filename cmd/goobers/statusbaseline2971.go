@@ -53,6 +53,16 @@ type statusBaselineBlockers struct {
 	Blockers []statusBaselineBlocker `json:"blockers"`
 }
 
+// optionalStatusBaselineBlockers omits an empty or unreadable snapshot so a
+// healthy instance's JSON keeps exactly the shape it had before.
+func optionalStatusBaselineBlockers(l instance.Layout) *statusBaselineBlockers {
+	snapshot, err := loadStatusBaselineBlockers(l)
+	if err != nil || snapshot.Total == 0 {
+		return nil
+	}
+	return &snapshot
+}
+
 // loadStatusBaselineBlockers reads the instance's unresolved shared blockers.
 // A missing store (detection never enabled, or never a red base) is an empty
 // snapshot, not an error.

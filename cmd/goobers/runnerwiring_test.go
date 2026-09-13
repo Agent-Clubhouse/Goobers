@@ -843,6 +843,30 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	if claude.SelfBin != "/opt/goobers/bin/goobers" {
 		t.Fatalf("adapter self binary = %q, want /opt/goobers/bin/goobers", claude.SelfBin)
 	}
+
+	adapter, err = registry.Get(string(apiv1.HarnessCodex))
+	if err != nil {
+		t.Fatalf("Get(codex): %v", err)
+	}
+	codex, ok := adapter.(*harness.CodexAdapter)
+	if !ok {
+		t.Fatalf("registered adapter = %T, want *harness.CodexAdapter", adapter)
+	}
+	if codex.Name() != "codex" {
+		t.Fatalf("adapter Name = %q, want codex", codex.Name())
+	}
+	if codex.EnvCapabilities[string(capability.AgentModel)] != codexModelEnv {
+		t.Fatalf("agent:model env = %q, want %q", codex.EnvCapabilities[string(capability.AgentModel)], codexModelEnv)
+	}
+	if codex.OptionalCredentialCapabilities[string(capability.AgentModel)] {
+		t.Fatal("agent:model must require an OpenAI API key for Codex")
+	}
+	if codex.InstanceRoot != "/instances/acme" {
+		t.Fatalf("adapter instance root = %q, want /instances/acme", codex.InstanceRoot)
+	}
+	if codex.SelfBin != "/opt/goobers/bin/goobers" {
+		t.Fatalf("adapter self binary = %q, want /opt/goobers/bin/goobers", codex.SelfBin)
+	}
 }
 
 // TestBuildHarnessRegistryAdaptersAreConformanceCovered is the tactical

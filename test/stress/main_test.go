@@ -522,11 +522,11 @@ func TestRepositoryStressWiring(t *testing.T) {
 		"go run ./test/stress -list",
 		"fromJSON(needs.plan.outputs.shards)",
 		"make stress STRESS_SHARD=",
-		"actions/upload-artifact@v7",
+		"actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7",
 		"flake-ledger:",
 		"github.event_name == 'schedule'",
 		"issues: write",
-		"actions/download-artifact@v8",
+		"actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8",
 		"go run ./test/flakeledger",
 	)
 }

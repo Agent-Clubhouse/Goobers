@@ -149,8 +149,9 @@ type DispatchStageInput struct {
 	//
 	// Empty is legal and means "unstamped": the dispatcher then stamps no
 	// owning-workflow annotation, and an unstamped pod is one the orphan
-	// sweep refuses to address at all (dispatcher.podAttempt) — left in place
-	// for activeDeadlineSeconds to reclaim. Fail toward leaving, never toward
+	// sweep refuses to address at all (dispatcher.podAttempt) — left in place.
+	// activeDeadlineSeconds stops its execution, but the retained Pod object
+	// still needs an explicit safe deletion. Fail toward leaving, never toward
 	// deleting. It carries the omitempty tag and is additive: an
 	// ActivityTaskScheduled payload Temporal already wrote decodes with it
 	// zero, which is exactly that unstamped case.

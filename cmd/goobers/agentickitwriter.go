@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
@@ -164,6 +165,10 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 		// Shape only — Ref names where a credential lives, never its value.
 		wireGrants = append(wireGrants, agentickit.Grant{Goober: g.Goober, Capability: g.Capability, Ref: g.Ref})
 	}
+	envCapabilities := buildEnvCapabilities()
+	if spec.Harness == apiv1.HarnessCodex {
+		envCapabilities[string(capability.AgentModel)] = codexModelEnv
+	}
 
 	return &agentickit.Kit{
 		Envelope:        env,
@@ -171,7 +176,7 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 		Goobers:         scoped,
 		Instructions:    instructions,
 		Assets:          assets,
-		EnvCapabilities: buildEnvCapabilities(),
+		EnvCapabilities: envCapabilities,
 		Grants:          wireGrants,
 		SandboxPosture:  string(instance.EffectiveAgenticSandbox(cfg, nil)),
 		HarnessCommand:  slices.Clone(cfg.Runner.HarnessCommand[string(spec.Harness)]),

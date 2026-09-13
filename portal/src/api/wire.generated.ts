@@ -191,6 +191,28 @@ export const goWireFixtures = {
         "explanation": "fixture warning"
       }
     ],
+    "telemetryRetention": {
+      "enabled": true,
+      "window": "90d",
+      "maxRuns": 500,
+      "firstEnable": "gracePeriod",
+      "enforceAt": "2026-07-18T12:36:56Z",
+      "lastPassAt": "2026-07-18T12:32:56Z",
+      "lastPassMode": "dry-run",
+      "candidateCount": 7
+    },
+    "journalHealth": {
+      "appendsDropped": 2
+    },
+    "storageHealth": {
+      "tier": "admission-stopped",
+      "path": "/instances/fixture",
+      "freeBytes": 1073741824,
+      "totalBytes": 107374182400,
+      "warningFloorBytes": 10737418240,
+      "criticalFloorBytes": 5368709120,
+      "measuredAt": "2026-07-18T12:32:56Z"
+    },
     "memoryGateEnabled": false,
     "fsyncDisabled": false,
     "fleetEnrolled": false

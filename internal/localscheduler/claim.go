@@ -1021,7 +1021,7 @@ func (l *ClaimLedger) journalWithRunner(eventType journal.EventType, entry Claim
 	if l.log == nil {
 		return
 	}
-	_ = l.log.Append(journal.Event{
+	l.log.AppendBestEffort(journal.Event{
 		Type:     eventType,
 		Name:     entry.ItemID,
 		Gaggle:   entry.Gaggle,

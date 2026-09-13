@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	daemonservice "github.com/goobers/goobers/internal/service"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -29,6 +30,7 @@ func newTestGuidedServer(t *testing.T, workdir string) *guidedServer {
 		workdir:      workdir,
 		instancePath: filepath.Join(workdir, "tutorial-instance"),
 		executable:   "goobers-under-test",
+		platform:     runtime.GOOS,
 		errorLog:     log.New(io.Discard, "", 0),
 		completed:    make(chan struct{}),
 	}
@@ -149,6 +151,105 @@ func TestGettingStartedCompleteSignalsServerShutdown(t *testing.T) {
 	case <-server.completed:
 	default:
 		t.Fatal("complete action did not signal server shutdown")
+	}
+}
+
+func TestGettingStartedCompleteInstallsWindowsScheduledTask(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	server.instancePath = serviceTestInstance(t)
+	server.platform = "windows"
+	manager := &fakeDaemonServiceManager{}
+	previous := newScheduledTaskManager
+	newScheduledTaskManager = func(root string) (scheduledTaskManager, error) {
+		if root != server.instancePath {
+			t.Fatalf("scheduled task root = %q, want %q", root, server.instancePath)
+		}
+		return identityTaskManager{manager}, nil
+	}
+	t.Cleanup(func() { newScheduledTaskManager = previous })
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/complete",
+		`{"installScheduledTask":true}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedCompleteBody](t, recorder)
+	if !response.Complete || !response.ScheduledTaskInstalled || !manager.installed {
+		t.Fatalf("complete response = %+v installed = %v", response, manager.installed)
+	}
+}
+
+func TestGettingStartedCompleteStartsExistingWindowsScheduledTask(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	server.instancePath = serviceTestInstance(t)
+	server.platform = "windows"
+	manager := &fakeDaemonServiceManager{
+		status: daemonservice.Status{Installed: true},
+	}
+	previous := newScheduledTaskManager
+	newScheduledTaskManager = func(string) (scheduledTaskManager, error) {
+		return identityTaskManager{manager}, nil
+	}
+	t.Cleanup(func() { newScheduledTaskManager = previous })
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/complete",
+		`{"installScheduledTask":true}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	if !manager.started || manager.installed {
+		t.Fatalf("started = %v installed = %v", manager.started, manager.installed)
+	}
+}
+
+func TestGettingStartedCompleteRejectsScheduledTaskOutsideWindows(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	server.platform = "linux"
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/complete",
+		`{"installScheduledTask":true}`,
+	)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-server.completed:
+		t.Fatal("failed complete action signaled server shutdown")
+	default:
+	}
+}
+
+func TestGettingStartedCompleteKeepsServerRunningWhenScheduledTaskFails(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	server.instancePath = serviceTestInstance(t)
+	server.platform = "windows"
+	manager := &fakeDaemonServiceManager{statusErr: fmt.Errorf("task scheduler unavailable")}
+	previous := newScheduledTaskManager
+	newScheduledTaskManager = func(string) (scheduledTaskManager, error) {
+		return identityTaskManager{manager}, nil
+	}
+	t.Cleanup(func() { newScheduledTaskManager = previous })
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/complete",
+		`{"installScheduledTask":true}`,
+	)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-server.completed:
+		t.Fatal("failed complete action signaled server shutdown")
+	default:
 	}
 }
 

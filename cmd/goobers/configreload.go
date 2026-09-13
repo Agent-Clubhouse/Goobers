@@ -73,12 +73,13 @@ func (l *openPRLoop) stopCurrent() {
 }
 
 type configReloader struct {
-	watching  bool
-	layout    instance.Layout
-	setup     *schedulerSetup
-	scheduler *localscheduler.Scheduler
-	openPRs   *openPRLoop
-	reads     *readservice.Local
+	watching       bool
+	layout         instance.Layout
+	setup          *schedulerSetup
+	scheduler      *localscheduler.Scheduler
+	openPRs        *openPRLoop
+	reads          *readservice.Local
+	cleanupRetries *terminalCleanupRetryRegistry
 	// mu serializes poll()/pollOnce() across the reloader's two independent
 	// callers (Run's own ticker, gated behind --watch-config, and #459's
 	// on-demand apply sweep, which is unconditional). Before #459, poll()
@@ -268,6 +269,7 @@ func (r *configReloader) poll(now time.Time) error {
 	r.setup.OpenPRRefresher = definitions.OpenPRRefresher
 	r.setup.Worktrees = definitions.Worktrees
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
+	r.cleanupRetries.Replace(definitions.WorktreesByGaggle, r.setup.LegacyWorktrees)
 	if r.setup.MergedPRCostReconciler != nil {
 		r.setup.MergedPRCostReconciler.Replace(definitions.Set)
 	}

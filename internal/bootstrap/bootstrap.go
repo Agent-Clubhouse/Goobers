@@ -22,14 +22,15 @@ import (
 )
 
 // RegisterGaggleWorkflows builds an engine.Registry from a loaded config set,
-// registering every workflow belonging to gaggle, with the instance's
-// explicit preview-feature acknowledgement applied. It also returns the
-// gaggle's configured repo. This is exactly what cmd/goobers engine-start
-// does before pinning a RunInput, extracted here so other callers (the
-// #2903 acceptance test included) build a registry through the same
-// production path rather than a parallel one nothing in production calls.
+// registering every workflow belonging to gaggle, with EACH workflow's own
+// preview-feature acknowledgement applied (#4220: no inheritance from the
+// Manifest or Gaggle). It also returns the gaggle's configured repo. This is
+// exactly what cmd/goobers engine-start does before pinning a RunInput,
+// extracted here so other callers (the #2903 acceptance test included) build
+// a registry through the same production path rather than a parallel one
+// nothing in production calls.
 func RegisterGaggleWorkflows(set *instance.ConfigSet, gaggle string) (*engine.Registry, apiv1.RepoRef, error) {
-	reg := engine.NewRegistryWithPreviewFeatures(set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations))
+	reg := engine.NewRegistry()
 	var project apiv1.RepoRef
 	for i := range set.Gaggles {
 		if set.Gaggles[i].Name == gaggle {
@@ -47,7 +48,7 @@ func RegisterGaggleWorkflows(set *instance.ConfigSet, gaggle string) (*engine.Re
 			// actually declares — a 3.0 workflow's runsOn then fails as if
 			// authored against 1.4. This is the one non-test call site that
 			// built a Definition without carrying the version explicitly.
-			def := workflow.Definition{Name: w.Name, DSLVersion: w.DSLVersion, Spec: w.Spec}
+			def := workflow.Definition{Name: w.Name, DSLVersion: w.DSLVersion, Spec: w.Spec, Annotations: w.Annotations}
 			if _, err := reg.RegisterDefinition(def); err != nil {
 				return nil, apiv1.RepoRef{}, fmt.Errorf("register workflow %q: %w", w.Name, err)
 			}

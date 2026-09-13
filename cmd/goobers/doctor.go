@@ -159,7 +159,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	checks := fs.String("checks", "", "comma-separated Kubernetes check IDs (omitted: all checks)")
 	timeout := fs.Duration("timeout", k8spreflight.DefaultTimeout, "per-probe timeout")
 	fs.Usage = helpUsage(stderr, "doctor")
-	if err := fs.Parse(args); err != nil {
+	if !parseFlagsBeforePath(fs, args, stderr) {
 		return 2
 	}
 	if *reportFormat != "text" && *reportFormat != "json" {

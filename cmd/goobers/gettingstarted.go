@@ -31,8 +31,10 @@ const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] 
 	"toolchain, asks only for instance placement and desired behavior, creates\n" +
 	"and validates the instance, and prepares required repository labels. It does\n" +
 	"not run a workflow. Back and Continue navigation stays inside the browser,\n" +
-	"while completed filesystem\n" +
-	"actions remain the source of truth across restarts. Token values never\n" +
+	"while completed filesystem actions remain the source of truth across\n" +
+	"restarts. On Windows, completion can install a per-user Scheduled Task that\n" +
+	"starts Goobers at interactive sign-in with the current user's credentials.\n" +
+	"Token values never\n" +
 	"reach the browser or configuration files. When a GitHub repository needs\n" +
 	"authentication, the repository step offers the GitHub CLI device/web flow;\n" +
 	"already-authenticated accounts and Azure DevOps setup are not changed. For\n" +

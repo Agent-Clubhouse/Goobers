@@ -19,11 +19,16 @@ const fixtureRoot = "../../test/fixtures/e2e/walking-skeleton"
 // fixture (whose manifest already opts into preview features) and adds a
 // second, 3.0, runsOn-bearing workflow alongside the existing 2.0 one.
 func TestRegisterGaggleWorkflowsPreservesDSLVersion(t *testing.T) {
+	// Preview authorization is per-Workflow (#4220): this workflow carries its
+	// own acknowledgement rather than relying on the fixture's Manifest-level
+	// annotation, which no longer authorizes it.
 	root := copyFixtureWithExtraWorkflow(t, fixtureRoot, "gaggles/acme-web/workflows/runson-3-0.yaml", `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "3.0"
 metadata:
   name: runson-3-0
+  annotations:
+    goobers.dev/allow-preview-features: "true"
 spec:
   gaggle: acme-web
   triggers:

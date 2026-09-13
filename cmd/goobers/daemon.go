@@ -460,7 +460,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 	}
 
-	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
+	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber), journal.WithInstanceAppendDropObserver(tel))
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
@@ -496,7 +496,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
 			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
 			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
-				_ = instanceLog.Append(journal.Event{
+				instanceLog.AppendBestEffort(journal.Event{
 					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
 					Error: &journal.ErrorDetail{
 						Code:    "legacy_claim_ownership_unresolved",
@@ -870,16 +870,15 @@ func buildSchedulerDefinitions(
 	// engineRuntime. Every engineStarter shares this holder and up.go attaches
 	// it once both exist.
 	engineRuntimeHolder := &engineRuntime{}
-	// The instance's preview posture, resolved exactly as
-	// bootstrap.RegisterGaggleWorkflows resolves it, so a run this daemon
-	// dispatches pins the same value a `goobers engine-start` run would.
-	allowPreviewFeatures := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
 
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
 		wf := &set.Workflows[i]
 		identity := localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}
 		machine := machines[identity]
+		// Preview authorization is per-Workflow (#4220): wf's OWN annotations,
+		// never the Manifest's or its gaggle's.
+		allowPreviewFeatures := workflow.PreviewFeaturesEnabled(wf.Annotations)
 		// #341: a workflow may declare more than one schedule-type trigger
 		// (e.g. a weekday cadence and a separate weekend one) — collect all
 		// of them rather than stopping at the first; Scheduler.Tick fires if
@@ -1450,8 +1449,9 @@ type shutdownStep struct {
 	run  func() error
 }
 
-// Shutdown flushes/closes the telemetry client, ingests any final scheduler
-// spans, and closes the rollup db, read model, watermarks, and instance log.
+// Shutdown ingests any final scheduler spans while the telemetry client can
+// still observe a diagnostic append failure, then flushes/closes telemetry and
+// closes the rollup db, read model, watermarks, and instance log.
 // It is nil-safe so a caller can defer it unconditionally regardless of
 // whether instance.yaml enabled telemetry (issue #129), it is bounded so a
 // wedged flush cannot hang the process, and it joins every step's error so a
@@ -1484,14 +1484,22 @@ func (s *schedulerSetup) shutdownSteps(ctx context.Context) []shutdownStep {
 	if testInjectedShutdownStepErr != nil {
 		steps = append(steps, shutdownStep{"test-injected failure", func() error { return testInjectedShutdownStepErr }})
 	}
+	// The rollup ingests spans from the local journal exporter, so drain that
+	// exporter before the final scheduler scan without shutting down metrics.
+	if s.Telemetry != nil {
+		steps = append(steps, shutdownStep{"telemetry local flush", func() error { return s.Telemetry.FlushLocal(ctx) }})
+	}
+	if s.RollupDB != nil {
+		steps = append(steps, shutdownStep{"scheduler telemetry ingest", func() error { return s.ingestSchedulerLog(ctx) }})
+	}
+	// Keep the metric provider alive through every best-effort journal append
+	// above. In particular, a failed final ingest can itself fail to append its
+	// diagnostic; AppendBestEffort must notify telemetry before its final flush.
 	if s.Telemetry != nil {
 		steps = append(steps, shutdownStep{"telemetry client", func() error { return s.Telemetry.Shutdown(ctx) }})
 	}
 	if s.RollupDB != nil {
-		steps = append(steps,
-			shutdownStep{"scheduler telemetry ingest", func() error { return s.ingestSchedulerLog(ctx) }},
-			shutdownStep{"telemetry rollup database", s.RollupDB.Close},
-		)
+		steps = append(steps, shutdownStep{"telemetry rollup database", s.RollupDB.Close})
 	}
 	// The projector stops BEFORE its store closes. Its commit loop holds the
 	// only writable handle, so closing read.db underneath a commit in flight
@@ -1792,7 +1800,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 						code = "resume_unresolvable_gaggle"
 						message = fmt.Sprintf("run %q references inactive gaggle %q — recover with `goobers run abort %s`", id.RunID, id.Gaggle, id.RunID)
 					}
-					_ = log.Append(journal.Event{
+					log.AppendBestEffort(journal.Event{
 						Type: journal.EventError, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
 						Error: &journal.ErrorDetail{
 							Code:    code,
@@ -1857,7 +1865,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					}
 				}
 				if log != nil {
-					_ = log.Append(ev)
+					log.AppendBestEffort(ev)
 				}
 			}(id.RunID, id.Gaggle, id.Workflow, gooberDigest, rn, runLayout, untrack)
 		}

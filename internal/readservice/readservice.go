@@ -75,6 +75,7 @@ type Health struct {
 	Instance         InstanceIdentity        `json:"instance"`
 	Freshness        Freshness               `json:"freshness"`
 	DefinitionReload *DefinitionReloadStatus `json:"definitionReload,omitempty"`
+	Startup          *StartupStatus          `json:"startup,omitempty"`
 	// Update reports whether a newer release exists, so the portal can surface
 	// what #4903 gave only terminal users. Nil means no check has run yet (a
 	// daemon that just started, or one with updateCheck.enabled: false) —
@@ -150,8 +151,17 @@ type LocalSources struct {
 	// is the whole point of the interface split — reconcileIndex writing to
 	// disk from the HTTP list path is how all 40,665 run directories on the
 	// live instance came to hold a .lock file.
-	ReadModel          readmodel.Reader
-	RetentionStats     func() readmodel.RetentionStats
+	ReadModel      readmodel.Reader
+	RetentionStats func() readmodel.RetentionStats
+	// InstanceLogStats is present only in the live daemon. Dropped appends are
+	// process-lifetime state because the failing journal cannot persist its own
+	// write failure; offline readers therefore report no journal-health value.
+	InstanceLogStats func() journal.InstanceLogStats
+	// StorageHealthStats is present only in the live daemon, mirroring
+	// InstanceLogStats: tiered low-disk protection's current tier (#4873) is
+	// this process's own sampled state, not something an offline reader can
+	// reconstruct from the journal.
+	StorageHealthStats func() localscheduler.StorageHealthStats
 	WorkItemLookup     WorkItemLookup
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration
@@ -174,6 +184,7 @@ type Local struct {
 	now              func() time.Time
 	definitions      atomic.Pointer[definitionSnapshot]
 	definitionReload atomic.Pointer[DefinitionReloadStatus]
+	startupStatus    func() *StartupStatus
 
 	// activeSampler, when non-nil, serves active-run counts from a background
 	// sample. Projected services sample read.db; services without a projection
@@ -384,6 +395,7 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 	return Health{
 		Update:           s.updateAvailability(),
 		DefinitionReload: s.definitionReloadSnapshot(),
+		Startup:          s.startupStatusSnapshot(),
 		APIVersion:       APIVersion,
 		SchemaVersion:    SchemaVersion,
 		Build: BuildMetadata{

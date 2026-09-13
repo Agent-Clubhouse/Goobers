@@ -44,7 +44,8 @@ func newFilterableSourceRepo(t *testing.T) (dir, url string) {
 // foreground pin that keeps auto maintenance from outliving the command and
 // writing into a mirror its caller is tearing down (#3990/#4000).
 var hardenedGitPrefix = "-c safe.bareRepository=all -c core.hooksPath=" + os.DevNull +
-	" -c core.fsmonitor=false -c maintenance.autoDetach=false -c gc.autoDetach=false"
+	" -c core.fsmonitor=false -c gc.auto=0 -c maintenance.auto=0" +
+	" -c maintenance.autoDetach=false -c gc.autoDetach=false"
 
 // missingObjectCount counts objects reachable from the repo's refs that are
 // not present locally — non-zero exactly when a promisor mirror is holding

@@ -20,8 +20,13 @@ rmSync(shutdownAck, { force: true });
 let cleaned = false;
 function cleanup() {
   if (cleaned) return;
+  rmSync(temporaryRoot, {
+    force: true,
+    recursive: true,
+    maxRetries: process.platform === "win32" ? 10 : 0,
+    retryDelay: 100,
+  });
   cleaned = true;
-  rmSync(temporaryRoot, { force: true, recursive: true });
 }
 
 function run(args, options = {}) {
@@ -74,11 +79,6 @@ let stopping = false;
 function stop(signal) {
   if (stopping) return;
   stopping = true;
-  // Playwright may terminate the wrapper before asynchronous child-exit
-  // callbacks run. Remove the disposable instance synchronously first; the
-  // executable lives in node_modules/.cache so Windows never has to unlink a
-  // running binary.
-  cleanup();
   if (!dashboard.killed) dashboard.kill(signal);
 }
 
@@ -92,9 +92,14 @@ dashboard.on("error", (error) => {
   process.exitCode = 1;
 });
 dashboard.on("exit", (code, signal) => {
-  cleanup();
   clearInterval(shutdownPoll);
-  if (stopping) writeFileSync(shutdownAck, "stopped\n");
+  try {
+    cleanup();
+    if (stopping) writeFileSync(shutdownAck, "stopped\n");
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
   if (!stopping && (code ?? 1) !== 0) {
     console.error(`real dashboard exited unexpectedly (${signal ?? code})`);
     process.exitCode = code ?? 1;

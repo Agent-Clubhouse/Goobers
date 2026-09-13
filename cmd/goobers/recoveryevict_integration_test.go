@@ -146,7 +146,7 @@ func TestIntegrationRecoveryCleanupEvictsLandedEntryUnderFullInventory(t *testin
 
 	// The inventory is now full (2/2). Drive one more cleanup — the
 	// "MaxSnapshots + 1"th — for a brand-new run.
-	option, err := recoveryCleanupOption(layout, cfg, workcopies, cloneURL, journal.NewRegistryScrubber())
+	option, err := recoveryCleanupOption(layout, cfg, workcopies, cloneURL, journal.NewRegistryScrubber(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

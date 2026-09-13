@@ -132,6 +132,11 @@ export interface GuidedInitResult {
   stderr: string;
 }
 
+export interface GuidedCompleteResult {
+  complete: boolean;
+  scheduledTaskInstalled: boolean;
+}
+
 /** `goobers validate --json` diagnostics envelope (fields we render). */
 export interface DiagnosticsFinding {
   file: string;
@@ -318,8 +323,8 @@ export class GuidedClient {
     );
   }
 
-  complete(): Promise<{ complete: boolean }> {
-    return this.post("/guided/actions/complete", {});
+  complete(installScheduledTask: boolean): Promise<GuidedCompleteResult> {
+    return this.post("/guided/actions/complete", { installScheduledTask });
   }
 
   initInstance(body: InitInstanceRequest = {}): Promise<GuidedInitResult> {

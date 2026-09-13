@@ -3,10 +3,20 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
 // #3651: a close that never returns used to hang `goobers up` forever because
@@ -92,4 +102,97 @@ func TestSchedulerSetupShutdownNilSafe(t *testing.T) {
 	if err := (&schedulerSetup{}).Shutdown(context.Background()); err != nil {
 		t.Fatalf("empty setup Shutdown: %v", err)
 	}
+}
+
+// #4873: the final scheduler ingest is itself a best-effort writer. Keep the
+// telemetry metric provider alive until both its ingest failure and the
+// resulting diagnostic-append failure cross the observable discard boundary.
+func TestSchedulerSetupShutdownExportsFinalIngestAppendDrop(t *testing.T) {
+	exporter := &shutdownDropExporter{}
+	tel, err := telemetry.New(context.Background(), telemetry.Config{
+		Exporter:             telemetry.ExporterStdout,
+		Stdout:               io.Discard,
+		MetricExporter:       exporter,
+		MetricExportInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	log, _, err := journal.OpenInstanceLog(filepath.Join(dir, "scheduler"), journal.WithInstanceAppendDropObserver(tel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := rollup.Open(filepath.Join(dir, "rollup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force the final ingest to fail and its best-effort diagnostic append to
+	// fail independently. Shutdown must still run every later close/flush.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	setup := &schedulerSetup{Telemetry: tel, RollupDB: db, InstanceLog: log}
+	if err := setup.Shutdown(context.Background()); err == nil || !strings.Contains(err.Error(), "scheduler telemetry ingest") {
+		t.Fatalf("Shutdown error = %v, want final scheduler ingest failure", err)
+	}
+	if got := log.Stats().AppendsDropped; got != 1 {
+		t.Fatalf("final ingest dropped appends = %d, want 1", got)
+	}
+	if observed, afterShutdown := exporter.result(); !observed || afterShutdown {
+		t.Fatalf("drop metric exported = %t, export after exporter shutdown = %t; want true, false", observed, afterShutdown)
+	}
+}
+
+type shutdownDropExporter struct {
+	mu                  sync.Mutex
+	shutdown            bool
+	observedDrop        bool
+	exportedAfterClosed bool
+}
+
+func (*shutdownDropExporter) Temporality(kind metric.InstrumentKind) metricdata.Temporality {
+	return metric.DefaultTemporalitySelector(kind)
+}
+
+func (*shutdownDropExporter) Aggregation(kind metric.InstrumentKind) metric.Aggregation {
+	return metric.DefaultAggregationSelector(kind)
+}
+
+func (e *shutdownDropExporter) Export(_ context.Context, collected *metricdata.ResourceMetrics) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.shutdown {
+		e.exportedAfterClosed = true
+	}
+	for _, scope := range collected.ScopeMetrics {
+		for _, measurement := range scope.Metrics {
+			if measurement.Name != telemetry.MetricJournalAppendsDropped {
+				continue
+			}
+			if sum, ok := measurement.Data.(metricdata.Sum[int64]); ok && len(sum.DataPoints) == 1 && sum.DataPoints[0].Value >= 1 {
+				e.observedDrop = true
+			}
+		}
+	}
+	return nil
+}
+
+func (*shutdownDropExporter) ForceFlush(context.Context) error { return nil }
+
+func (e *shutdownDropExporter) Shutdown(context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.shutdown = true
+	return nil
+}
+
+func (e *shutdownDropExporter) result() (bool, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.observedDrop, e.exportedAfterClosed
 }

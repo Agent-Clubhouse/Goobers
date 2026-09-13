@@ -15,7 +15,7 @@ func TestPhysicalPodIdentityPreservesJournalAndOwner(t *testing.T) {
 		a.Number = 1
 		a.PodAttempt = physical
 		a.OwningWorkflowID = "actual-owner-workflow"
-		cfg := Config{Namespace: "test"}
+		cfg := Config{GaggleNamespaces: map[string]string{a.Gaggle: "test"}}
 		for _, template := range []bool{false, true} {
 			var pod *corev1.Pod
 			var err error

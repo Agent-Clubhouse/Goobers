@@ -2,10 +2,11 @@
 
 This is a prepared-input Dockerfile for the `goobers-base` family in
 [the approved image contract](../../../docs/design/goobernetes-deployment-images.md).
-It has **not** been built or executed on a Windows container host. It does not
-publish an image, close #3275, or promote Windows support. The release engine's
-`-image-contexts` path prepares Windows and Linux inputs; native image validation,
-signing and publication remain release gates.
+Its presence alone does not publish an image, close #3275, or promote Windows
+support. The release engine's `-image-contexts` path prepares Windows and Linux
+inputs. Native Windows builds now run both in an optional prepublication workflow
+and as a mandatory gate in the tagged-release workflow; neither path publishes a
+container image or changes the Windows support tier.
 
 The runtime uses Server Core because its Windows API surface and built-in
 PowerShell support the MSYS2-based POSIX shell and offline ZIP/certificate setup.
@@ -80,8 +81,10 @@ the same release-engine inputs for both binaries and metadata.
 
 The engine downloads dependencies during preparation; Docker build does not
 fetch them. Do not use a checkout or instance root as the Docker build context.
-This path prepares unsigned build inputs. Official signing/publication ordering
-and matching the final signed Windows archive to its image remain pending.
+This manual path prepares unsigned build inputs. The tagged-release workflow
+separately signs `goobers.exe`, imports the final signed archive into the image
+context, and verifies a native image built from those exact inputs before GitHub
+release publication can proceed.
 
 Only the base-image pull requires registry access during the Docker build. The
 Dockerfile downloads no packages and verifies the supplied ZIP and release-file
@@ -89,7 +92,7 @@ checksums before extraction. Its explicit COPY list does not include arbitrary
 context contents, and `.dockerignore` excludes files outside that list from the
 builder context. ZIPs and the checksum verifier stay in the intermediate stage.
 
-## Native CI and manual verification
+## Native CI, optional precheck, and the release gate
 
 The existing required Windows CI lane runs `TestIntegrationWindowsImage*` with
 `-tags=integration` under explicit Windows PowerShell 5.1. These Windows-only
@@ -113,12 +116,23 @@ when verification fails, and never pushes an image. The demo allows unisolated
 `network: none` execution for this trusted, credential-free mock workload;
 this is not proof of Windows network enforcement.
 
-A manually dispatched workflow must first exist on the default branch. The
-required Windows CI lane can provide PowerShell evidence on a PR before that.
-Neither workflow has been executed by this preparation change. Review the actual
-run artifacts before making a native compatibility claim.
+This optional precheck first completed successfully on 2026-09-12 for
+`candidate_version=v0.4.0-rc.2` and `baseline_tag=v0.3.3`; its retained evidence
+is attached to [workflow run 34679030863](https://github.com/Agent-Clubhouse/Goobers/actions/runs/34679030863).
+It remains a manually requested early check, not a prerequisite that the tagged
+release workflow consumes. Whether maintainers should require, automate, or
+retire this extra pre-tag check remains tracked in #4895.
 
-## Native gates still required
+Every release tag independently runs the mandatory `native-windows-image` job in
+[`release.yml`](../../../.github/workflows/release.yml). That job consumes the
+final Authenticode-signed artifact by its exact artifact ID, rebuilds the Windows
+image through the release engine on `windows-2022`, requires native
+`windows/amd64` evidence for exactly one `goobers-base-windows` image, and retains
+the provenance. Both release validation and `verify-and-publish` depend on this
+job, so a failure prevents GitHub release publication. This is the authoritative
+publication gate; the optional workflow supplies earlier, additional evidence.
+
+## Additional native evidence for support claims
 
 On a compatible Windows container builder, build a local commit-tagged image:
 
@@ -134,7 +148,11 @@ Git and shell on PATH, both binary stamps, timezone entries, and Git workspace /
 HOME / temp writes. Administrative setup is confined to the build stage before
 `USER ContainerUser`.
 
-Before a release claim, additionally measure and retain:
+The tagged-release gate proves the image can be built natively from the final
+signed release inputs and satisfies the release engine's verification. It does
+not by itself establish every runtime or deployment property needed for a
+broader Windows support claim. Before such a claim, additionally measure and
+retain:
 
 1. Native image build, inspect output, OS build compatibility and binary stamps;
    tampered binary/dependency inputs must fail the build.
@@ -144,8 +162,8 @@ Before a release claim, additionally measure and retain:
    HOME and temp roots; a consumer image layer and direct `goobers` command override.
    Windows does not support Kubernetes `readOnlyRootFilesystem`; enforce/test the
    applicable Windows restriction backend instead of claiming a Linux mount flag.
-4. Required cross-node / cross-OS smoke evidence, Windows harness-family publishing
-   scope, and release-engine Windows signing/publication integration.
+4. Required cross-node / cross-OS smoke evidence and Windows harness-family
+   publishing scope.
 
-No native checks above have been run by the preparation change. Do not infer a
-support-matrix promotion from the presence of this Dockerfile.
+Do not infer a support-matrix promotion from the presence of this Dockerfile or
+from either native image workflow.

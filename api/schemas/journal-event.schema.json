@@ -48,7 +48,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, workflow.refused, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, workflow.refused, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, daemon.*, and telemetry.retention.pass (a bounded automatic-retention pass summary) are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -101,13 +101,14 @@
         "daemon.started",
         "daemon.clean_shutdown",
         "daemon.dirty_restart",
+        "telemetry.retention.pass",
         "daemon.update.drain_started",
         "daemon.update.restarted",
         "daemon.update.healthy",
         "daemon.update.rolled_back",
         "daemon.update.escalated"
       ],
-      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, runner-scoped bookkeeping, and notification output events are excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, telemetry.retention.pass, runner-scoped bookkeeping, and notification output events are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",

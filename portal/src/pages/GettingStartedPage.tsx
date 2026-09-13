@@ -3,6 +3,7 @@ import { AnimatedGoober } from "../components/AnimatedGoober";
 import { RecoveryCommand } from "../components/RecoveryAction";
 import {
   GuidedClient,
+  type GuidedCompleteResult,
   type DiagnosticsEnvelope,
   type GuidedInitOptions,
   type GuidedInitResult,
@@ -36,6 +37,7 @@ type BusyAction =
   | "init"
   | "prepare"
   | "validate"
+  | "complete"
   | null;
 type WizardPageId =
   | "welcome"
@@ -158,6 +160,13 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     stderr: string;
   } | null>(null);
   const [promptCopied, setPromptCopied] = useState(false);
+  const [startAtSignIn, setStartAtSignIn] = useSessionState(
+    "goobers-wizard-start-at-sign-in",
+    true,
+  );
+  const [completeResult, setCompleteResult] = useState<GuidedCompleteResult | null>(
+    null,
+  );
 
   const statePass = useRef<{ generation: number; controller: AbortController | null }>({
     generation: 0,
@@ -307,15 +316,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       setPageIndex(pages.length - 1);
     }
   }, [pageIndex, pages.length, setPageIndex]);
-
-  useEffect(() => {
-    if (pages[Math.min(pageIndex, pages.length - 1)]?.id !== "complete") {
-      return;
-    }
-    void client.complete().catch((error) => {
-      setActionError(error instanceof Error ? error.message : String(error));
-    });
-  }, [client, pageIndex, pages]);
 
   if (query.status === "loading") {
     return (
@@ -495,6 +495,13 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       "validate",
       () => client.validate({ checkHarness: true, checkRepos: true }),
       setValidateResult,
+    );
+
+  const finishSetup = () =>
+    void runAction(
+      "complete",
+      () => client.complete(state.platform === "windows" && startAtSignIn),
+      setCompleteResult,
     );
 
   const prepareRepository = (apply: boolean) =>
@@ -1245,17 +1252,50 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         );
       case "complete":
         return (
-          <WizardPage className="guided-complete-page" title="Goobers is ready">
+          <WizardPage
+            className="guided-complete-page"
+            title={completeResult ? "Goobers is ready" : "Finish setup"}
+          >
             <div aria-hidden="true" className="guided-complete-mascot">
               <AnimatedGoober />
             </div>
-            <p className="guided-welcome-lead">
-              Your configuration is ready, and the setup server has stopped.
-            </p>
+            <p className="guided-welcome-lead">Your configuration is ready.</p>
+            {completeResult && <p>The setup server has stopped.</p>}
             <p>
               Next, ask your coding agent to tailor the generated gaggle to this
               repository.
             </p>
+            {!completeResult && (
+              <div className="guided-complete-setup">
+                {state.platform === "windows" && (
+                  <label className="guided-check">
+                    <input
+                      checked={startAtSignIn}
+                      onChange={(event) => setStartAtSignIn(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>
+                      Start Goobers automatically when I sign in. The Scheduled Task
+                      runs as my current Windows account so it can use my user-scoped
+                      credentials.
+                    </span>
+                  </label>
+                )}
+                <button
+                  className="reconnect-button"
+                  disabled={busy !== null}
+                  onClick={finishSetup}
+                  type="button"
+                >
+                  {busy === "complete" ? "Finishing…" : "Finish setup"}
+                </button>
+              </div>
+            )}
+            {completeResult?.scheduledTaskInstalled && (
+              <p className="guided-success">
+                Goobers will start automatically when you sign in.
+              </p>
+            )}
             <div className="guided-prompt-copy">
               <code>{customizationPrompt}</code>
               <button
@@ -1292,7 +1332,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/instance-placement.md"
               label="Learn more about Instance layout and operational data"
             />
-            <p>You can now close this browser window.</p>
+            {completeResult && <p>You can now close this browser window.</p>}
           </WizardPage>
         );
     }

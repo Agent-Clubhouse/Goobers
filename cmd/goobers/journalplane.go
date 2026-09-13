@@ -128,7 +128,7 @@ func liveJournalDivergenceReporter(log *journal.InstanceLog) engine.DivergenceRe
 		return nil
 	}
 	return func(runID, detail string) {
-		_ = log.Append(journal.Event{
+		log.AppendBestEffort(journal.Event{
 			Type:  journal.EventError,
 			RunID: runID,
 			Error: &journal.ErrorDetail{Code: liveJournalDivergenceCode, Message: detail},

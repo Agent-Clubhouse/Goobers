@@ -18,17 +18,19 @@ import (
 )
 
 // dsl30Config renders a one-gaggle config tree whose Workflow section is
-// caller-supplied. optIn adds the instance preview acknowledgement that a
-// preview-level dslVersion pin requires (DVL011 otherwise).
+// caller-supplied. optIn adds the preview acknowledgement that a
+// preview-level dslVersion pin requires (DVL011 otherwise) — per the DSL 3.0
+// v0.4.0 ruling (#4220), that acknowledgement goes on the Workflow itself,
+// the object that owns dslVersion, never on the Manifest.
 func dsl30Config(optIn bool, workflowYAML string) string {
-	annotations := ""
 	if optIn {
-		annotations = "\n  annotations:\n    goobers.dev/allow-preview-features: \"true\""
+		workflowYAML = strings.Replace(workflowYAML, "metadata:\n  name:",
+			"metadata:\n  annotations:\n    goobers.dev/allow-preview-features: \"true\"\n  name:", 1)
 	}
 	return fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
 kind: Manifest
 metadata:
-  name: dsl30%s
+  name: dsl30
 spec:
   instance:
     name: dsl30
@@ -61,7 +63,7 @@ spec:
   instructions: instructions/coder.md
   capabilities: [agent:model]
 ---
-%s`, annotations, workflowYAML)
+%s`, workflowYAML)
 }
 
 func validateDSL30(t *testing.T, config string) *Report {

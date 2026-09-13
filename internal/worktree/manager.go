@@ -868,11 +868,9 @@ func flattenedSymlinks(root string, symlinkPaths []string, lstat func(string) (o
 //     "directory not empty". Detaching buys nothing here: the daemon already
 //     serializes mirror work behind the per-repo lock, and a fetch that
 //     returns while housekeeping is still running only moves that work onto
-//     an unsupervised process whose failures nobody reads. Maintenance still
-//     runs on exactly the same schedule (`gc.auto`/`maintenance.auto` are
-//     untouched), so mirror hygiene is unchanged. `gc.autoDetach` is git's
-//     older name for the same switch and is the fallback the newer key defers
-//     to; setting both covers every git version we support.
+//     an unsupervised process whose failures nobody reads. Automatic
+//     housekeeping is disabled for these commands; explicit maintenance runs
+//     remain available to the lifecycle that owns the mirror.
 func hardenedGitArgs(args []string) []string {
 	return append(append([]string{
 		"-c", "safe.bareRepository=all",
@@ -901,6 +899,8 @@ func hardenedGitArgs(args []string) []string {
 // Returns a fresh slice: callers append their own arguments to it.
 func ForegroundMaintenanceArgs() []string {
 	return []string{
+		"-c", "gc.auto=0",
+		"-c", "maintenance.auto=0",
 		"-c", "maintenance.autoDetach=false",
 		"-c", "gc.autoDetach=false",
 	}
@@ -1056,6 +1056,10 @@ func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string
 const (
 	fileLockRetryAttempts = 6
 	fileLockRetryBackoff  = 250 * time.Millisecond
+
+	// Once Git confirms a worktree is unregistered, allow recently exited
+	// agent subprocesses up to ten seconds to release their directory handles.
+	unregisteredWorktreeRetryAttempts = 41
 )
 
 // isTransientFileLockError reports whether err looks like a momentary OS-level
@@ -1092,13 +1096,17 @@ func isTransientFileLockError(err error) bool {
 // and aborts early if ctx is cancelled. Non-lock errors are returned
 // immediately without retry, so deterministic failures are not masked.
 func retryOnFileLock(ctx context.Context, op func() error) error {
+	return retryOnFileLockWithBudget(ctx, fileLockRetryAttempts, fileLockRetryBackoff, op)
+}
+
+func retryOnFileLockWithBudget(ctx context.Context, attempts int, backoff time.Duration, op func() error) error {
 	var err error
-	for attempt := 0; attempt < fileLockRetryAttempts; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
 				return errors.Join(err, ctx.Err())
-			case <-time.After(fileLockRetryBackoff):
+			case <-time.After(backoff):
 			}
 		}
 		if err = op(); err == nil || !isTransientFileLockError(err) {

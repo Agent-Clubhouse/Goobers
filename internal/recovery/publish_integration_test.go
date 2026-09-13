@@ -78,7 +78,7 @@ func TestIntegrationRetainedPublicationMetadataFailurePreservesArchive(t *testin
 	record.ArchiveDigest, record.ArchiveBytes = "", 0
 	// Seed the archive-first crash window explicitly. Malformed metadata must
 	// fail before publication, while preserving evidence already on disk.
-	if _, err := PublishSnapshotBundle(context.Background(), repository, filepath.Join(directory, BundleFileName), record, 1<<20); err != nil {
+	if _, _, err := PublishSnapshotBundle(context.Background(), repository, filepath.Join(directory, BundleFileName), record, 1<<20); err != nil {
 		t.Fatal(err)
 	}
 	metadata := filepath.Join(directory, RecordFileName)

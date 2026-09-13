@@ -2,8 +2,10 @@ package ingest_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -12,6 +14,10 @@ import (
 	"github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
+
+type appendDropObserver struct{ count atomic.Uint64 }
+
+func (o *appendDropObserver) InstanceJournalAppendDropped() { o.count.Add(1) }
 
 func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
 	store, err := intake.Open(filepath.Join(t.TempDir(), intake.FileName))
@@ -183,6 +189,29 @@ func TestRunTelemetryNilLogDoesNotPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 	ingest.RunTelemetry(nil, db, nil, l, "run-nil-log", nil)
+}
+
+func TestLogFailureObservesInstanceJournalAppendDrop(t *testing.T) {
+	observer := &appendDropObserver{}
+	log, _, err := journal.OpenInstanceLog(
+		filepath.Join(t.TempDir(), "scheduler"),
+		journal.WithInstanceAppendDropObserver(observer),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ingest.LogFailure(log, "run-failed-log", "telemetry_ingest_failed", errors.New("forced failure"))
+
+	if got := log.Stats().AppendsDropped; got != 1 {
+		t.Fatalf("dropped appends = %d, want 1", got)
+	}
+	if got := observer.count.Load(); got != 1 {
+		t.Fatalf("observer notifications = %d, want 1", got)
+	}
 }
 
 func TestRunTelemetryNilDBIsNoOp(t *testing.T) {

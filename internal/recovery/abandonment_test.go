@@ -10,6 +10,10 @@ import (
 
 func TestExplicitAbandonmentBindsExactSnapshot(t *testing.T) {
 	record := storageTestRecord()
+	// A non-empty ArchiveFormat (#4862) must round-trip through the journal
+	// event exactly, or a durable disk record with a real format never
+	// matches its own abandonment evidence.
+	record.ArchiveFormat = archiveFormatDelta
 	event, err := AbandonedEvent(record)
 	if err != nil {
 		t.Fatal(err)

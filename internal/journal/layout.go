@@ -21,6 +21,7 @@ const (
 	// instancegen.go). Run journals have no pointer — a run's events.jsonl
 	// never rotates — this is instance-log-only.
 	fileEventsPointer = fileEvents + ".current"
+	fileInstanceLogID = ".instance-journal-id"
 
 	dirInputs    = "inputs"
 	dirArtifacts = "artifacts"

@@ -16,6 +16,8 @@ import (
 // must exclusively own the receiving run's workspace and be entering cleanup.
 // It leaves HEAD/index/files unchanged, including dirty work that the caller
 // must capture separately. A failed handoff leaves the preparation recoverable.
+// With SkipEmpty, a preparation carrying no change against its parent is
+// deleted without consuming an inventory slot.
 func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, log PublicationJournal) error {
 	if log == nil {
 		return fmt.Errorf("prepared recovery cleanup requires a durable journal")
@@ -44,6 +46,16 @@ func RetainAbandonedPreparation(ctx context.Context, request RetentionRequest, l
 	digest, err := WriteSnapshotPatch(ctx, request.Repository, parent, commit, io.Discard)
 	if err != nil {
 		return err
+	}
+	// A preparation whose tree matches its parent protects no work: nothing
+	// was authored before it was abandoned. Publishing it anyway consumes a
+	// retention-floored inventory slot that neither expiry nor eviction can
+	// reclaim, so one burst of failed worktree preparations wedges the
+	// inventory for the whole floor and then fails every later run's durable
+	// handoff, unrelated to that burst (#4994). Delete the exact preparation
+	// directly instead, matching Retain's SkipEmpty contract.
+	if request.SkipEmpty && digest == emptyPatchDigest {
+		return deleteExactRecoveryRef(ctx, request.Repository, ref, commit)
 	}
 	snapshotRef, err := RefForSnapshot(request.RunID, commit)
 	if err != nil {

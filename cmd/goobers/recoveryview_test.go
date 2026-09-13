@@ -82,6 +82,12 @@ func TestTraceShowsEffectiveRecoveryDeadline(t *testing.T) {
 	if !strings.Contains(statusText.String(), record.Ref) || !strings.Contains(statusText.String(), deadline.Format(time.RFC3339Nano)) || strings.Contains(statusText.String(), "different-run") {
 		t.Fatalf("incorrect status recovery text: %s", statusText.String())
 	}
+	// Occupancy alone cannot tell a full inventory that drains shortly from
+	// one held behind a retain floor for weeks (#4994), so the line carries
+	// the earliest deadline at which any slot can next be reclaimed.
+	if want := fmt.Sprintf("recovery inventory: 1/128 (earliest retain until %s)", deadline.Format(time.RFC3339)); !strings.Contains(statusText.String(), want) {
+		t.Fatalf("status omitted %q: %s", want, statusText.String())
+	}
 	assertStatusCommandRecovery(t, layout.Root, runID, record.Ref, deadline)
 	assertRecoveryWatchRefresh(t, layout, runID, path, deadline)
 }

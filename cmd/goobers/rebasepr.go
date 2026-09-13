@@ -141,7 +141,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		}
 		transport = issueCommentRebaseTransport{issueProvider: issueProvider, handoffProvider: handoffProvider}
 	}
-	return runRebasePRCore(ctx, repo, resultFile, selectedNumber, selectedPRNumber, head, base,
+	return runRebasePRCore(ctx, root, repo, resultFile, selectedNumber, selectedPRNumber, head, base,
 		hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, remediate, pushToken, transport, stdout, stderr)
 }
 
@@ -220,7 +220,7 @@ func (t threadCommentRebaseTransport) ClearNeedsRemediation(ctx context.Context,
 	return t.provider.RemovePullRequestLabel(ctx, repo, selectedNumber, needsRemediationLabel)
 }
 
-func runRebasePRCore(ctx context.Context, repo providers.RepositoryRef, resultFile, selectedNumber string, selectedPRNumber int, head, base string, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap bool, remediate, pushToken string, transport rebasePRTransport, stdout, stderr io.Writer) int {
+func runRebasePRCore(ctx context.Context, root string, repo providers.RepositoryRef, resultFile, selectedNumber string, selectedPRNumber int, head, base string, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap bool, remediate, pushToken string, transport rebasePRTransport, stdout, stderr io.Writer) int {
 	attemptedHeadSHA := ""
 	rebaseBaseSHA := ""
 	conflict := false
@@ -248,7 +248,7 @@ func runRebasePRCore(ctx context.Context, repo providers.RepositoryRef, resultFi
 				return fail(fmt.Errorf("load post-merge remediation handoff for PR #%s: %w", selectedNumber, loginErr))
 			}
 			handoffs, hasHandoff, handoffErr := trustedSiblingOverlapHandoffs(
-				evidence.comments, botLogin, attemptedHeadSHA,
+				root, repo, selectedPRNumber, evidence.comments, botLogin, attemptedHeadSHA,
 				func(commentID, body string) error {
 					return transport.UpdateComment(ctx, repo, commentID, body)
 				},
@@ -626,6 +626,9 @@ type trustedSiblingHandoffs struct {
 }
 
 func trustedSiblingOverlapHandoffs(
+	root string,
+	repo providers.RepositoryRef,
+	prNumber int,
 	comments []providers.Comment,
 	author string,
 	targetHeadSHA string,
@@ -640,7 +643,7 @@ func trustedSiblingOverlapHandoffs(
 	}
 	var matches []matchingHandoff
 	seenPullNumbers := make(map[int]bool)
-	found := trustedSiblingHandoffs{verdict: gatherPRVerdict(comments, author)}
+	found := trustedSiblingHandoffs{verdict: gatherPRVerdict(root, repo, prNumber, comments, author)}
 	for i := len(comments) - 1; i >= 0; i-- {
 		if !isTrustedMergeReviewAuthor(comments[i].Author, author) {
 			continue

@@ -260,7 +260,7 @@ func TestPreparedTopologyConfigChangeRollsBothPodsAndDropsRemovedFiles(t *testin
 func TestPreparedTopologyNetworkPoliciesMatchRealStageLabels(t *testing.T) {
 	o := fixture(t)
 	docs := generated(t, o)
-	pod, err := dispatcher.RenderPod(dispatcher.Config{Namespace: o.StageNamespace}, dispatcher.Attempt{RunID: "run-1", Stage: "probe", Number: 1}, dispatcher.RunnerSpec{Name: "linux-pod", OS: "linux", Host: o.Image, HostKind: instance.RunnerHostImage, Restrictions: []string{string(runnercap.RestrictionNetworkNone)}})
+	pod, err := dispatcher.RenderPod(dispatcher.Config{GaggleNamespaces: map[string]string{"demo": o.StageNamespace}}, dispatcher.Attempt{RunID: "run-1", Gaggle: "demo", Stage: "probe", Number: 1}, dispatcher.RunnerSpec{Name: "linux-pod", OS: "linux", Host: o.Image, HostKind: instance.RunnerHostImage, Restrictions: []string{string(runnercap.RestrictionNetworkNone)}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,8 +2,9 @@
 
 A listening HTTP API does not mean startup has finished or that the daemon is
 currently consuming trigger requests. Query `GET /readyz` to distinguish them.
-This unauthenticated probe returns only readiness booleans, not configuration,
-run details, or credentials.
+This unauthenticated probe returns readiness booleans plus a disclosure-safe
+startup phase and timestamp while startup is incomplete. It does not return
+configuration, repository or gaggle names, run details, or credentials.
 
 The response's `checks` includes:
 
@@ -27,6 +28,13 @@ They are not recomputed from the diagnostic checks. Clients diagnosing trigger
 delays should inspect `schedulerReady` and `triggerSweepReady`, not infer trigger
 progress from HTTP 200 alone. `/healthz` separately reports process/scheduler
 liveness, including the existing grace period before the first scheduler tick.
+
+While `ready` is false, `startup.phase` identifies the operation currently
+blocking readiness and `startup.since` reports when it began. The authenticated
+`GET /api/v1/health` response includes the same phase plus its bounded target
+(for example, the gaggle whose crash-orphaned worktrees are being recovered).
+The dashboard uses the safe probe to explain startup progress before the full
+portal becomes available.
 
 No health probe is proof that an individual trigger was accepted or dispatched.
 Use the trigger submission's own result for that decision; do not automatically

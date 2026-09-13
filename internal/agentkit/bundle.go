@@ -157,6 +157,7 @@ func Build(source fs.FS, version, commit string) (Bundle, error) {
 		{"docs/design/notification-output.md", "docs/design/notification-output.md"},
 		{"docs/design/static-fan-out-fan-in.md", "docs/design/static-fan-out-fan-in.md"},
 		{"docs/feature-matrix.md", "docs/feature-matrix.md"},
+		{"docs/guides/codex-harness.md", "docs/guides/codex-harness.md"},
 		{"docs/guides/goobers-io-mcp.md", "docs/guides/goobers-io-mcp.md"},
 		{"docs/guides/quickstart.md", "docs/guides/quickstart.md"},
 		{"docs/guides/stack-support.md", "docs/guides/stack-support.md"},

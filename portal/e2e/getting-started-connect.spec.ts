@@ -121,7 +121,10 @@ async function routeGuided(page: Page, fixture: Fixture) {
         return;
       }
       if (path === "/guided/actions/complete") {
-        await route.fulfill({ json: { complete: true } });
+        expect(request.postDataJSON()).toEqual({ installScheduledTask: true });
+        await route.fulfill({
+          json: { complete: true, scheduledTaskInstalled: true },
+        });
         return;
       }
       if (path === "/guided/actions/run") {
@@ -215,6 +218,8 @@ test("configures a repository through the multi-page guided wizard", async ({ pa
   await expect(page.getByText(/All configuration, harness, and repository checks passed/)).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 
+  await expect(page.getByRole("heading", { name: "Finish setup" })).toBeVisible();
+  await page.getByRole("button", { name: "Finish setup" }).click();
   await expect(page.getByRole("heading", { name: "Goobers is ready" })).toBeVisible();
   await expect(page.getByText(/goobers-dsl-author/)).toBeVisible();
   await expect(page.getByText(/close this browser window/i)).toBeVisible();

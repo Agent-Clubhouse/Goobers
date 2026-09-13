@@ -178,6 +178,12 @@ and `Compact` itself all go through it. Generation 0 keeps the legacy bare
 `events.jsonl` name and has no pointer file, so a directory that predates this
 scheme, or has never compacted, needs no migration.
 
+Writers also maintain `.instance-journal-id`, a random durable identity for the
+current journal incarnation. Compaction preserves it, while recreating a
+missing journal rotates it. Incremental readers use it in addition to the
+generation so immediate filesystem inode reuse cannot make a removed and
+recreated generation-0 journal look like the file they previously folded.
+
 A reader that resolved a path before a compaction advances the pointer keeps
 reading that exact file, undisturbed, forever — Windows has nothing to object
 to, since nobody ever touches that path again. Stale generations are cleaned

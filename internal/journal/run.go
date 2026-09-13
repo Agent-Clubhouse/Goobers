@@ -88,12 +88,13 @@ func releaseRunLock(held *journalLock) {
 
 // config holds constructor options.
 type config struct {
-	tryRecoveryLocks bool
-	scrubber         Scrubber
-	now              func() time.Time
-	inputIntegrity   map[string]apiv1.Integrity
-	inputSource      map[string]string
-	appendObserver   func(runID string, seq uint64)
+	tryRecoveryLocks     bool
+	scrubber             Scrubber
+	now                  func() time.Time
+	inputIntegrity       map[string]apiv1.Integrity
+	inputSource          map[string]string
+	appendObserver       func(runID string, seq uint64)
+	instanceDropObserver InstanceAppendDropObserver
 }
 
 // Option configures a Run at creation/open.
@@ -116,6 +117,21 @@ func WithClock(now func() time.Time) Option {
 // Observers maintain derived state and must handle their own failures.
 func WithAppendObserver(observer func(runID string, seq uint64)) Option {
 	return func(c *config) { c.appendObserver = observer }
+}
+
+// InstanceAppendDropObserver receives one notification when an explicitly
+// best-effort instance-journal append fails. Implementations must not block:
+// this callback runs on the already-failing write path and exists so an
+// external telemetry sink can retain evidence the journal itself cannot.
+type InstanceAppendDropObserver interface {
+	InstanceJournalAppendDropped()
+}
+
+// WithInstanceAppendDropObserver attaches process-external observation to
+// explicitly best-effort InstanceLog appends. It has no effect on run journals
+// or on ordinary InstanceLog.Append calls whose errors remain caller-owned.
+func WithInstanceAppendDropObserver(observer InstanceAppendDropObserver) Option {
+	return func(c *config) { c.instanceDropObserver = observer }
 }
 
 // WithInputIntegrity labels immutable snapshots by logical input name. Inputs

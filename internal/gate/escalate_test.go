@@ -250,3 +250,24 @@ func TestResetFailureCommentNoopsWithoutMarker(t *testing.T) {
 		t.Fatalf("comments = %d, want no comments", len(poster.comments))
 	}
 }
+
+// TestParseFailureStreakCount covers Goobers#3025's migration-on-read input:
+// extracting the legacy count from a real marker, and refusing to fabricate a
+// count from anything else.
+func TestParseFailureStreakCount(t *testing.T) {
+	if got, ok := ParseFailureStreakCount(failureStreakBody(5, "implement", "run-1", "http://run-1")); !ok || got != 5 {
+		t.Fatalf("ParseFailureStreakCount(real marker) = %d, %v; want 5, true", got, ok)
+	}
+	for _, body := range []string{
+		"",
+		"no marker here at all",
+		"<!-- goobers:failure-streak -->",
+		`<!-- goobers:failure-streak data-count="" -->`,
+		`<!-- goobers:failure-streak data-count="not-a-number" -->`,
+		`<!-- goobers:failure-streak data-count="-1" -->`,
+	} {
+		if got, ok := ParseFailureStreakCount(body); ok {
+			t.Fatalf("ParseFailureStreakCount(%q) = %d, true; want false", body, got)
+		}
+	}
+}

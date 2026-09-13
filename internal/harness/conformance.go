@@ -13,5 +13,5 @@ package harness
 // this pair of checks is the tactical guard against that recurring: nothing
 // can be added to the harness registry without also being conformance-tested.
 func ConformanceCoveredAdapterNames() []string {
-	return []string{"copilot-cli", "claude-code"}
+	return []string{"copilot-cli", "claude-code", "codex"}
 }

@@ -49,18 +49,46 @@ The artifact is JSON with `schemaVersion: 1`:
 The Linux race shards use reviewed package measurements checked in at
 `.github/unit-shard-weights.json`. The hermetic runner assigns the longest
 packages first to the currently lightest shard; packages below the table's
-measurement threshold and packages added later use `defaultSeconds`. Refresh
-the table from successful race-shard logs or timing artifacts when the package
-mix or measured shard balance changes, and update its source metadata.
+three-second measurement threshold and packages added later use
+`defaultSeconds`.
 
-The table has no automated writer, so `source.generatedAt` (RFC 3339) records
-when it was last regenerated and `TestCheckedInShardWeightsAreFresh` fails once
-that stamp is more than **60 days** old. That is the documented refresh
-cadence: when the test fires, download a recent `test-timings-Linux` artifact,
-regenerate the per-package seconds from it, and commit the new table with
-`source.generatedAt` set to the regeneration time. `source.generatedAt` is
-required — the hermetic runner refuses to shard against a table that is missing
-it or carries an unparseable stamp.
+Refresh the table at least every **30 days**, and sooner when the package mix or
+measured shard balance changes. Use the latest successful `main`
+`test-timings-macOS` artifact and its GitHub API metadata:
+
+```sh
+REPOSITORY=Agent-Clubhouse/Goobers
+RUN_ID=$(gh run list --repo "$REPOSITORY" --workflow CI --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+ARTIFACT_ID=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" --paginate --jq '.artifacts[] | select(.name == "test-timings-macOS") | .id')
+JOB_ID=$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" --paginate --jq '.jobs[] | select(.name == "unit behavioral suite (macos)" and .conclusion == "success") | .id')
+TIMING_DIR=$(mktemp -d)
+gh run download --repo "$REPOSITORY" "$RUN_ID" --name test-timings-macOS --dir "$TIMING_DIR"
+gh api "repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$TIMING_DIR/artifact.json"
+gh api "repos/$REPOSITORY/actions/jobs/$JOB_ID" > "$TIMING_DIR/job.json"
+go run ./test/testtiming weights \
+  -timing "$TIMING_DIR/unit-macOS.json" \
+  -artifact-metadata "$TIMING_DIR/artifact.json" \
+  -job-metadata "$TIMING_DIR/job.json" \
+  -out .github/unit-shard-weights.json \
+  -minimum-seconds 3
+```
+
+The generator accepts only a completed successful canonical job on `main`,
+cross-checks the run and full commit SHA in both API records, and requires the
+artifact's `created_at` to fall within that job's execution window. It records
+that authoritative artifact timestamp as `source.generatedAt`; it never uses
+the command time or the eventual patch time. Run, job, artifact, commit,
+platform, architecture, and threshold remain in the checked-in source record so
+the measurement is independently traceable.
+
+The macOS job is the canonical source because it captures the complete unit
+suite in one artifact on every successful main push. Its ordinary (non-race)
+package durations are relative LPT weights for the Linux `-race` shards, not a
+prediction of their absolute runtime: race instrumentation and platform costs
+can scale packages differently. Keep the three-second floor to avoid encoding
+noise from tiny packages, and review actual Linux shard elapsed times after a
+refresh. `TestCheckedInShardWeightsAreFresh` enforces the 30-day artifact-age
+ceiling, while loader validation refuses missing or malformed provenance.
 
 Timing budgets are intentionally soft, and the comparison command always
 succeeds regardless of what the timing data shows -- test failures and

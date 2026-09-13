@@ -115,16 +115,22 @@ spec:
             - "/var/lib/goobers-blobs"
             # #4286: enables the dispatcher-backed pod-per-stage seam (mode
             # 3) — without it, the worker serves workspaces/gates but every
-            # real stage fails closed with "not configured". Takes a SINGLE
-            # namespace: one worker dispatches into one gaggle namespace, not
-            # one per gaggle (../gaggle-namespace/examples/ ships more than
-            # one — pick the one this Deployment serves, or copy this
-            # Deployment per gaggle for G2 dedicated mode, #656). The
-            # matching RBAC grant lives in
-            # ../gaggle-namespace/base/dispatcher-rbac.yaml, bound to this
-            # same goobers-worker ServiceAccount.
+            # real stage fails closed with "not configured". As of #4897,
+            # each stage pod is routed to ITS OWN gaggle's
+            # spec.isolation.namespace, resolved per attempt — this flag's
+            # value no longer selects the pod namespace and is kept only as
+            # the non-empty signal that enables mode-3 dispatch. This worker
+            # polls EVERY gaggle queue loaded from its config, so it needs
+            # the matching RBAC grant
+            # (../gaggle-namespace/base/dispatcher-rbac.yaml, bound to this
+            # same goobers-worker ServiceAccount) applied in EVERY gaggle
+            # namespace it may dispatch into — one gaggle-namespace overlay
+            # per declared namespace (see
+            # ../gaggle-namespace/examples/gaggle-a and .../gaggle-b). The
+            # worker's own boot-time preflight refuses to start if any
+            # declared namespace is missing or under-provisioned, naming it.
             - "--dispatch-namespace"
-            - "gaggle-a" # CHANGE-ME: the gaggle namespace this worker dispatches into
+            - "enabled" # CHANGE-ME: any non-empty value; see the flag's own --help for why it no longer names a namespace
           env:
             # Temporal frontend (§2); reachable from workers and operator only
             # (§5 — see ../temporal/networkpolicy-temporal.yaml). The worker

@@ -6,7 +6,7 @@ goobers validate \- validate an instance or checked-in config source tree
 \fBgoobers validate\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree [--instance <path>]] [--strict] [path]
+Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--check-dispatch-namespaces] [--source-tree [--instance <path>]] [--strict] [path]
 
 Validate an instance's instance.yaml and config/ directory (default
 path "."). Placement findings (RNR001/RNR003) are errors when
@@ -21,7 +21,12 @@ config-repo PR check surfaces failures directly on the PR diff; composes with --
 referenced by a goober (GBO-011) — installed, signed in, actionable
 guidance otherwise. --check-repos resolves each target repository's
 token, verifies authenticated git access, and (GitHub only) warns when
-a repository is larger than the checkout-size threshold. Exit codes:
+a repository is larger than the checkout-size threshold. --check-dispatch-namespaces additionally verifies, for each gaggle, that
+its declared isolation.namespace exists and this kubeconfig's credentials
+hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check
+the worker runs at startup, run here ahead of a rollout; silently skipped
+with no usable cluster credentials, and always advisory (never affects
+the exit code). Exit codes:
 0 = valid, 1 = validation errors, 2 = usage/IO error.
 .fi
 .SH EXAMPLES

@@ -111,26 +111,45 @@ func printStatusRecovery(out io.Writer, layout instance.Layout, runs []runSummar
 // recoveryInventoryOccupancy reports the recovery inventory's current entry
 // count against its configured cap (#4823 AC5), so an operator can see
 // pressure building before an ordinary worktree cleanup ever gets refused.
-func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (used, limit int, err error) {
+// The earliest retention deadline says when the next slot can be reclaimed,
+// which is what distinguishes ordinary pressure from an inventory wedged
+// behind a retain floor no eviction can shorten (#4994).
+func recoveryInventoryOccupancy(ctx context.Context, layout instance.Layout) (used, limit int, earliest time.Time, err error) {
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, time.Time{}, err
 	}
 	limit = cfg.Retention.RecoveryEffective().MaxSnapshotsEffective()
 	entries, err := recovery.ReadInventory(ctx, filepath.Join(layout.Root, "recovery"), limit)
 	if err != nil {
-		return 0, limit, err
+		return 0, limit, time.Time{}, err
 	}
-	return len(entries), limit, nil
+	for _, entry := range entries {
+		// The reservation's own record carries the deadline it was published
+		// with; renewals live in the sidecar. Only the effective deadline says
+		// when a slot actually frees.
+		record, err := recovery.ReadRetainedRecord(entry.RecordPath)
+		if err != nil {
+			return 0, limit, time.Time{}, err
+		}
+		if earliest.IsZero() || record.RetainUntil.Before(earliest) {
+			earliest = record.RetainUntil
+		}
+	}
+	return len(entries), limit, earliest, nil
 }
 
 func printRecoveryInventoryOccupancy(out io.Writer, layout instance.Layout) {
-	used, limit, err := recoveryInventoryOccupancy(context.Background(), layout)
+	used, limit, earliest, err := recoveryInventoryOccupancy(context.Background(), layout)
 	if err != nil {
 		pf(out, "recovery inventory: unavailable\n")
 		return
 	}
-	pf(out, "recovery inventory: %d/%d\n", used, limit)
+	if earliest.IsZero() {
+		pf(out, "recovery inventory: %d/%d\n", used, limit)
+		return
+	}
+	pf(out, "recovery inventory: %d/%d (earliest retain until %s)\n", used, limit, earliest.UTC().Format(time.RFC3339))
 }
 
 func printRecoveryView(out io.Writer, view *recoveryView) {

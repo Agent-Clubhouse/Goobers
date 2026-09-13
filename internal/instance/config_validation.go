@@ -277,8 +277,44 @@ func (c RunConditions) validate() error {
 	if err := runcontrol.Validate("runConditions", c.RunControls()); err != nil {
 		return err
 	}
-	_, err := c.ClaimsLockTimeoutDuration()
-	return err
+	if _, err := c.ClaimsLockTimeoutDuration(); err != nil {
+		return err
+	}
+	return c.Storage.validate()
+}
+
+func (c *StorageHealthConfig) validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.WarningFloorBytes < 0 {
+		return fmt.Errorf("runConditions.storage.warningFloorBytes must not be negative")
+	}
+	if c.CriticalFloorBytes < 0 {
+		return fmt.Errorf("runConditions.storage.criticalFloorBytes must not be negative")
+	}
+	if c.WarningFloorPercent < 0 || c.WarningFloorPercent > 100 {
+		return fmt.Errorf("runConditions.storage.warningFloorPercent must be between 0 and 100, got %v", c.WarningFloorPercent)
+	}
+	if c.CriticalFloorPercent < 0 || c.CriticalFloorPercent > 100 {
+		return fmt.Errorf("runConditions.storage.criticalFloorPercent must be between 0 and 100, got %v", c.CriticalFloorPercent)
+	}
+	if c.WarningFloorBytes > 0 && c.CriticalFloorBytes > 0 && c.CriticalFloorBytes > c.WarningFloorBytes {
+		return fmt.Errorf("runConditions.storage.criticalFloorBytes (%d) must not exceed warningFloorBytes (%d)", c.CriticalFloorBytes, c.WarningFloorBytes)
+	}
+	if c.WarningFloorPercent > 0 && c.CriticalFloorPercent > 0 && c.CriticalFloorPercent > c.WarningFloorPercent {
+		return fmt.Errorf("runConditions.storage.criticalFloorPercent (%v) must not exceed warningFloorPercent (%v)", c.CriticalFloorPercent, c.WarningFloorPercent)
+	}
+	if c.CheckInterval != "" {
+		d, err := time.ParseDuration(c.CheckInterval)
+		if err != nil {
+			return fmt.Errorf("runConditions.storage.checkInterval %q: %w", c.CheckInterval, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("runConditions.storage.checkInterval must be positive, got %s", d)
+		}
+	}
+	return nil
 }
 
 func (c RetentionConfig) validate() error {
@@ -303,6 +339,34 @@ func (c RetentionConfig) validate() error {
 	}
 	if c.FirstEnable != "" && c.FirstEnable != "gracePeriod" && c.FirstEnable != "immediate" {
 		return fmt.Errorf("retention.firstEnable must be %q or %q, got %q", "gracePeriod", "immediate", c.FirstEnable)
+	}
+	return c.RecoveryEffective().validate()
+}
+
+// validate refuses a recovery-snapshot configuration whose declared worst
+// case (every retained slot at its per-snapshot ceiling) could not possibly
+// fit the volume it is meant to protect (#4862).
+func (c RecoverySnapshotConfig) validate() error {
+	if c.MaxSnapshots < 0 {
+		return fmt.Errorf("retention.recovery.maxSnapshots must not be negative")
+	}
+	if c.MaxArchiveBytes < 0 {
+		return fmt.Errorf("retention.recovery.maxArchiveBytes must not be negative")
+	}
+	if c.MaxVolumeBytes < 0 {
+		return fmt.Errorf("retention.recovery.maxVolumeBytes must not be negative")
+	}
+	if _, err := c.RetainWindowEffective(); err != nil {
+		return err
+	}
+	if c.MaxVolumeBytes == 0 {
+		return nil
+	}
+	// Divide rather than multiply to avoid overflowing int64 on a large
+	// declared ceiling times a large snapshot count.
+	if c.MaxArchiveBytesEffective() > c.MaxVolumeBytes/int64(c.MaxSnapshotsEffective()) {
+		return fmt.Errorf("retention.recovery: maxSnapshots (%d) x maxArchiveBytes (%d) exceeds maxVolumeBytes (%d)",
+			c.MaxSnapshotsEffective(), c.MaxArchiveBytesEffective(), c.MaxVolumeBytes)
 	}
 	return nil
 }

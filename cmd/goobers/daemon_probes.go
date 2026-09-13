@@ -27,8 +27,16 @@ import (
 // cadence, for the cross-process readers (e.g. `goobers status`) that must
 // see it there; only this in-process probe's read path is memory-only.
 type daemonProbeState struct {
-	apiListening            *atomic.Bool
-	ready                   *atomic.Bool
+	apiListening *atomic.Bool
+	// planeReady (#4252): true once the FULL versioned handler — with the
+	// credential/blob/journal/surrender plane routes wired in — has been
+	// swapped into the SwitchHandler (up.go's apiHandler.Set), independent of
+	// resumeComplete/sweepsStarted/ready below. apiListening above flips
+	// earlier still (the bare listener bound, serving only /healthz/
+	// /readyz/503 via startStartupAPI) and is not sufficient on its own: a
+	// stage pod cannot reach those planes until the real handler is live.
+	planeReady              *atomic.Bool
+	ready                   *atomic.Bool // scheduler-ready: crash-resume + initial sweeps complete
 	configLoaded            *atomic.Bool
 	stateOpen               *atomic.Bool
 	resumeComplete          *atomic.Bool
@@ -36,6 +44,7 @@ type daemonProbeState struct {
 	schedulerTicked         *atomic.Bool
 	lastTickAtNanos         *atomic.Int64 // unix nanoseconds; 0 = no tick recorded yet
 	lastTriggerSweepAtNanos *atomic.Int64
+	startup                 *startupPhaseTracker
 	livenessTimeout         time.Duration
 	now                     func() time.Time
 }
@@ -64,29 +73,43 @@ func (d *daemonProbeState) liveness() bool {
 
 // readiness implements httpapi.ReadinessCheck.
 func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
-	return httpapi.ReadinessStatus{
-		// The single Ready gate every authenticated caller already sees on
-		// /api/v1/health.Ready — never recomputed from Checks below, so the
-		// two surfaces cannot drift out of lockstep. Startup also waits for
-		// the first active-count sample before opening this gate; the four
-		// subsystem checks below remain diagnostic, not an exhaustive gate.
-		Ready: d.ready.Load(),
+	planeReady := d.planeReady != nil && d.planeReady.Load()
+	status := httpapi.ReadinessStatus{
+		// #4252: /readyz's Ready (and so its HTTP status, and the reference
+		// deployment's readinessProbe/startupProbe) reflects plane-ready, NOT
+		// the full scheduler-ready gate /api/v1/health.Ready still exposes —
+		// see httpapi.ReadinessStatus's doc comment for why the split is
+		// deliberate.
+		Ready:          planeReady,
+		SchedulerReady: d.ready.Load(),
 		Checks: map[string]bool{
 			"apiListening":      d.apiListening != nil && d.apiListening.Load(),
 			"schedulerReady":    d.ready.Load() && d.freshHeartbeat(d.lastTickAtNanos),
 			"triggerSweepReady": d.ready.Load() && d.freshHeartbeat(d.lastTriggerSweepAtNanos),
-			// configLoaded and stateOpen both flip before the HTTP listener
-			// itself ever opens (runUpContextWithForce sets them, then calls
-			// apiServer.Start() only afterward) — so in practice neither can
-			// ever be observed false over HTTP; they are included anyway as
-			// literal readiness diagnostics per #3806's own ask, informational
-			// rather than load-bearing for this pair.
+			// The API listener opens before scheduler setup, so these checks
+			// identify whether configuration and durable state have caught up.
 			"configLoaded":   d.configLoaded.Load(),
 			"stateOpen":      d.stateOpen.Load(),
 			"resumeComplete": d.resumeComplete.Load(),
 			"sweepsStarted":  d.sweepsStarted.Load(),
 		},
 	}
+	// #4252: the Startup diagnostic exists to name what is blocking full
+	// (scheduler) readiness, which now stays interesting for a long time
+	// after Ready (plane-ready) has already flipped — a crash-resume with a
+	// large interrupted-run count is exactly the window an operator most
+	// needs "which phase, since when" for, and Ready flipping early must not
+	// hide that.
+	if !status.SchedulerReady && d.startup != nil {
+		phase, _, since := d.startup.snapshot()
+		if phase != "" {
+			status.Startup = &httpapi.StartupStatus{
+				Phase: phase,
+				Since: since,
+			}
+		}
+	}
+	return status
 }
 
 // A listener or startup liveness grace is not proof that a scheduler can

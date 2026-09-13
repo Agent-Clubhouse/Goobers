@@ -19,11 +19,13 @@ import (
 // and be private to the instance. The coordinator still owns inventory bounds,
 // metadata publication and cleanup authorization. Conflicting bytes are never
 // replaced, and a failed attempt must never be treated as cleanup permission.
-func PublishSnapshotBundle(ctx context.Context, repository, path string, record Record, maxBytes int64) (string, error) {
-	return publishArchive(ctx, path, maxBytes, func(w io.Writer) error {
-		_, err := WriteSnapshotBundle(ctx, repository, record, w, maxBytes)
-		return err
+func PublishSnapshotBundle(ctx context.Context, repository, path string, record Record, maxBytes int64) (digest, format string, err error) {
+	digest, err = publishArchive(ctx, path, maxBytes, func(w io.Writer) error {
+		var writeErr error
+		_, format, writeErr = WriteSnapshotBundle(ctx, repository, record, w, maxBytes)
+		return writeErr
 	})
+	return digest, format, err
 }
 
 func publishArchive(ctx context.Context, path string, maxBytes int64, stream func(io.Writer) error) (string, error) {

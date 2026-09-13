@@ -325,6 +325,7 @@ export interface ConfigAuthoringErrorEnvelope {
 
 export interface Health extends ContractVersion {
 	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string };
+  startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
   readState?: ReadState;
   ready: boolean;
@@ -386,10 +387,41 @@ export interface Instance extends ContractVersion {
   counts: InventoryCounts;
   warnings: ValidationWarning[];
   maintenance?: MaintenanceStatus;
+  telemetryRetention?: TelemetryRetentionStatus;
+  journalHealth?: JournalHealthStatus;
+  storageHealth?: StorageHealthStatus;
   memoryHighWater?: number;
   memoryGateEnabled: boolean;
   fsyncDisabled: boolean;
   fleetEnrolled: boolean;
+}
+
+export interface JournalHealthStatus {
+  appendsDropped: number;
+}
+
+export interface StorageHealthStatus {
+  tier: "healthy" | "warning" | "admission-stopped" | "measurement-unavailable";
+  path?: string;
+  freeBytes: number;
+  totalBytes?: number;
+  warningFloorBytes?: number;
+  warningFloorPercent?: number;
+  criticalFloorBytes?: number;
+  criticalFloorPercent?: number;
+  measuredAt?: string;
+  error?: string;
+}
+
+export interface TelemetryRetentionStatus {
+  enabled: boolean;
+  window: string;
+  maxRuns: number;
+  firstEnable: string;
+  enforceAt?: string;
+  lastPassAt?: string;
+  lastPassMode?: string;
+  candidateCount: number;
 }
 
 export type MaintenanceState = "none" | "queued" | "running" | "completed" | "failed" | "cancelled";

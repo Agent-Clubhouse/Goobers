@@ -372,6 +372,23 @@ func (c *CopilotAdapter) resolveConfig(ctx context.Context, model string, option
 	}, nil
 }
 
+// isDirectCopilotCommand reports whether command already invokes the Copilot
+// CLI itself rather than a wrapper. A launcher override is anything the
+// operator configured that is not the literal default `copilot`
+// (isDirectCopilotLauncher in cmd/goobers), so an absolute or otherwise
+// qualified path to the real binary — `/usr/local/bin/copilot` — arrives here
+// with RequireLauncherContract set even though nothing is proxying the SDK
+// transport. Substituting a bare `copilot` for those would drop the operator's
+// explicit path and require the CLI to also be on PATH, which pinning a path
+// is precisely the way to avoid depending on.
+func isDirectCopilotCommand(command []string) bool {
+	if len(command) != 1 {
+		return false
+	}
+	base := strings.TrimSuffix(filepath.Base(command[0]), ".exe")
+	return strings.EqualFold(base, "copilot")
+}
+
 func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilotModelCapabilities, error) {
 	c.modelsMu.Lock()
 	defer c.modelsMu.Unlock()
@@ -384,7 +401,11 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	if c.modelsErr != nil {
 		return nil, c.modelsErr
 	}
-	command := resolveStdioHarnessCommand(c.Command)
+	command := c.Command
+	if c.RequireLauncherContract && !isDirectCopilotCommand(command) {
+		command = []string{"copilot"}
+	}
+	command = resolveStdioHarnessCommand(command)
 	if len(command) == 0 {
 		return nil, fmt.Errorf("no command configured")
 	}

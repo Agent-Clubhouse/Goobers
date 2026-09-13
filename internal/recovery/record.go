@@ -28,14 +28,29 @@ type Record struct {
 	Ref           string `json:"ref"`
 	// BaseRef is the remote ref selected by the owning run. It is optional so
 	// version-1 records written before the field was introduced remain valid.
-	BaseRef       string    `json:"baseRef,omitempty"`
-	BaseSHA       string    `json:"baseSha"`
-	SnapshotSHA   string    `json:"snapshotSha"`
-	PatchDigest   string    `json:"patchDigest"`
-	ArchiveDigest string    `json:"archiveDigest"`
-	ArchiveBytes  int64     `json:"archiveBytes"`
+	BaseRef       string `json:"baseRef,omitempty"`
+	BaseSHA       string `json:"baseSha"`
+	SnapshotSHA   string `json:"snapshotSha"`
+	PatchDigest   string `json:"patchDigest"`
+	ArchiveDigest string `json:"archiveDigest"`
+	ArchiveBytes  int64  `json:"archiveBytes"`
+	// ArchiveFormat distinguishes a "delta" bundle, which omits history
+	// reachable from BaseSHA and requires that commit to already be present
+	// before restore, from a "full" self-contained bundle. Optional so
+	// records written before the field existed remain valid; empty means
+	// "full" (see archiveFormat).
+	ArchiveFormat string    `json:"archiveFormat,omitempty"`
 	CreatedAt     time.Time `json:"createdAt"`
 	RetainUntil   time.Time `json:"retainUntil"`
+}
+
+// archiveFormat resolves the effective bundle format, defaulting pre-#4862
+// records with no declared format to "full".
+func (r Record) archiveFormat() string {
+	if r.ArchiveFormat == archiveFormatDelta {
+		return archiveFormatDelta
+	}
+	return archiveFormatFull
 }
 
 // RefForRun returns a private Git ref, never a provider branch name. Rejecting
@@ -64,6 +79,9 @@ func (r Record) Validate() error {
 	}
 	if !patchDigest.MatchString(r.ArchiveDigest) || r.ArchiveBytes <= 0 {
 		return fmt.Errorf("recovery record requires an archive digest and positive size")
+	}
+	if r.ArchiveFormat != "" && r.ArchiveFormat != archiveFormatFull && r.ArchiveFormat != archiveFormatDelta {
+		return fmt.Errorf("invalid recovery archive format %q", r.ArchiveFormat)
 	}
 	return nil
 }

@@ -152,7 +152,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	}
 	candidate := *claimed
 	minSeverity := resolveMinSeverity(stderr)
-	action, err := updateBehindActionForPR(ctx, provider, repo, candidate, baseTips, behindByPR, minSeverity)
+	action, err := updateBehindActionForPR(ctx, root, provider, repo, candidate, baseTips, behindByPR, minSeverity)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("check PR #%d for API branch update", candidate.Number), err, "update-behind-result.json")
 	}
@@ -187,7 +187,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, action == updateBehindViaAPI)
 }
 
-func updateBehindActionForPR(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
+func updateBehindActionForPR(ctx context.Context, root string, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
 	if pr.CheckState == providers.CheckStateFailing {
 		return updateBehindRouteFull, nil
 	}
@@ -217,7 +217,7 @@ func updateBehindActionForPR(ctx context.Context, provider remediationProvider, 
 	if err != nil {
 		return updateBehindRouteFull, err
 	}
-	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(comments, verdictAuthor), pr.Number, minSeverity) {
+	if verdictHasSubstantiveFindingForPR(gatherPRVerdict(root, repo, pr.Number, comments, verdictAuthor), pr.Number, minSeverity) {
 		return updateBehindRouteFull, nil
 	}
 	if behind {

@@ -79,7 +79,7 @@ func assertDispatchCancellationCleanup(t *testing.T, ctx context.Context, server
 	t.Helper()
 	api, created, deleted := cancellationPods(t)
 	store := surrenderStore(t)
-	dispatch, err := dispatcher.New(dispatcher.Config{Namespace: "test", EmbeddedVersion: "v1", SupervisionInterval: time.Millisecond},
+	dispatch, err := dispatcher.New(dispatcher.Config{GaggleNamespaces: map[string]string{"web": "test"}, EmbeddedVersion: "v1", SupervisionInterval: time.Millisecond},
 		dispatcher.NewKubernetesPodAPI(api), nil, dispatcher.PlaneSurrenderGate{Plane: store}, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -56,7 +56,7 @@ func TestFailureStreakPersistsInJournalAcrossHandlerCalls(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("handler call %d: %v", i, err)
 		}
-		if got, err := loadFailureStreakCount(l, repo, "2701"); err != nil || got != i+1 {
+		if got, err := loadFailureStreakCount(context.Background(), fake, l, repo, "2701"); err != nil || got != i+1 {
 			t.Fatalf("streak after call %d = %d, %v; want %d", i, got, err, i+1)
 		}
 		if err := ledger.Release("2701", runID); err != nil {
@@ -75,11 +75,13 @@ func TestFailureStreakPersistsInJournalAcrossHandlerCalls(t *testing.T) {
 	}
 }
 
-// TestFailureStreakNotAdvancedWhenCommentWriteRateLimited is #4364's second
-// acceptance criterion: a rate-limited write while trying to record a failure
-// must not advance the cached streak — "I couldn't post" is not evidence the
-// item failed again.
-func TestFailureStreakNotAdvancedWhenCommentWriteRateLimited(t *testing.T) {
+// TestFailureStreakAdvancesEvenWhenCommentWriteRateLimited is Goobers#3025's
+// inversion of #4364's second acceptance criterion: the authoritative
+// scheduler-state record is written BEFORE the human-visible comment, so a
+// rate-limited (or otherwise failed) comment write is surfaced as an error
+// but can no longer block, roll back, or desync the persisted streak — the
+// comment is a best-effort projection, not the gate on the count.
+func TestFailureStreakAdvancesEvenWhenCommentWriteRateLimited(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{listErr: &providers.RateLimitError{
 		Provider: providers.ProviderGitHub, Endpoint: "/comments", Status: 403, Remaining: 0, Reset: time.Now().Add(time.Hour),
 	}}
@@ -114,9 +116,9 @@ func TestFailureStreakNotAdvancedWhenCommentWriteRateLimited(t *testing.T) {
 		t.Fatal("handler error = nil, want a surfaced rate-limit failure")
 	}
 	if len(fake.calls) != 0 {
-		t.Fatalf("label-mutation calls = %d, want 0 (never reaches the threshold check)", len(fake.calls))
+		t.Fatalf("label-mutation calls = %d, want 0 (count=1 has not reached the threshold)", len(fake.calls))
 	}
-	if got, err := loadFailureStreakCount(l, repo, "2702"); err != nil || got != 0 {
-		t.Fatalf("streak = %d, %v; want 0 (rate-limited comment write must not advance the cache)", got, err)
+	if got, err := loadFailureStreakCount(context.Background(), fake, l, repo, "2702"); err != nil || got != 1 {
+		t.Fatalf("streak = %d, %v; want 1 (the authoritative record advances regardless of the comment write's fate)", got, err)
 	}
 }

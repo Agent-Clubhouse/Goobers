@@ -6,11 +6,48 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/api/validate"
 )
+
+type instanceDropCounter struct{ count atomic.Uint64 }
+
+func (c *instanceDropCounter) InstanceJournalAppendDropped() { c.count.Add(1) }
+
+func TestInstanceLogBestEffortAppendCountsAndObservesFailures(t *testing.T) {
+	observer := &instanceDropCounter{}
+	log, _, err := OpenInstanceLog(filepath.Join(t.TempDir(), "scheduler"), WithInstanceAppendDropObserver(observer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.AppendBestEffort(Event{Type: EventTriggerFired, Workflow: "healthy"})
+	if got := log.Stats().AppendsDropped; got != 0 {
+		t.Fatalf("healthy appends dropped = %d, want 0", got)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = 32
+	var group sync.WaitGroup
+	for range attempts {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			log.AppendBestEffort(Event{Type: EventTriggerFired, Workflow: "after-close"})
+		}()
+	}
+	group.Wait()
+	if got := log.Stats().AppendsDropped; got != attempts {
+		t.Fatalf("failed appends dropped = %d, want %d", got, attempts)
+	}
+	if got := observer.count.Load(); got != attempts {
+		t.Fatalf("observer notifications = %d, want %d", got, attempts)
+	}
+}
 
 func TestInstanceLogRoundTrip(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "scheduler")
@@ -298,6 +335,7 @@ func TestInstanceLogEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventDaemonStarted, Runner: map[string]any{"pid": 42}},
 		{Type: EventDaemonCleanShutdown, Reason: "graceful shutdown completed", Runner: map[string]any{"pid": 42}},
 		{Type: EventDaemonDirtyRestart, Reason: "previous daemon lock remained without a clean-shutdown event", Runner: map[string]any{"pid": 42}},
+		{Type: EventTelemetryRetentionPass, Runner: map[string]any{"mode": "dry-run", "candidateCount": 7, "enforceAt": "2026-09-20T12:00:00Z"}},
 	} {
 		if err := log.Append(ev); err != nil {
 			t.Fatalf("Append %s: %v", ev.Type, err)

@@ -13,5 +13,6 @@
       "sideEffect": "none"
     }
   ],
-  "edges": []
+  "edges": [],
+  "sourceDefinition": {"Name":"golden","Version":1,"Spec":{"gaggle":"golden","triggers":[{"type":"manual"}],"readiness":{},"start":"build","tasks":[{"name":"build","type":"deterministic","goal":"build"}]}}
 }

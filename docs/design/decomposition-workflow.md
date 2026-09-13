@@ -296,8 +296,9 @@ On successful publication:
   relevant area labels, and becomes `goobers:ready` at the publication barrier;
 - dependencies order children where order is real, but independent children remain
   independently claimable; and
-- ordinary backlog curation keeps the tracking checklist synchronized as children
-  land.
+- ordinary backlog reconciliation derives tracking completeness from each native
+  or checklist-referenced child's live provider state. It does not synchronize
+  the Markdown `[ ]` / `[x]` marks in the parent's body.
 
 The decomposition workflow does not implement, merge, or close children. The
 existing implementation and merge-review workflows own those transitions.

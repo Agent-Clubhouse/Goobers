@@ -5,7 +5,9 @@
 version: "2"
 
 run:
-  timeout: 5m
+  # Keep at least 3x the median of the reviewed cross-platform CI samples in
+  # test/ci/lint-timing-samples.json; TestLintTimeoutHasMeasuredMargin guards it.
+  timeout: 15m
 
 linters:
   enable:

@@ -8,6 +8,24 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 )
 
+// TestRecoveryEventFoldRoundTripsArchiveFormat pins #4862: a journal-observed
+// record must decode with the same ArchiveFormat the disk record carries, or
+// every later comparison against that disk record (capture ordering,
+// abandonment evidence) spuriously reports a conflict.
+func TestRecoveryEventFoldRoundTripsArchiveFormat(t *testing.T) {
+	record := storageTestRecord()
+	record.BaseRef = "refs/heads/master"
+	record.ArchiveFormat = archiveFormatDelta
+	event, err := RetainedEvent(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := RecordsFromEvents([]journal.Event{event}, record.RunID)
+	if err != nil || len(got) != 1 || got[0] != record {
+		t.Fatalf("recovery fold lost archive format = %+v %v", got, err)
+	}
+}
+
 func TestRecoveryEventFoldKeepsLatestWindowAndRejectsSpoofs(t *testing.T) {
 	record := storageTestRecord()
 	record.BaseRef = "refs/heads/master"

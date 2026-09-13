@@ -78,6 +78,7 @@ spec:
                 enum:
                 - copilot
                 - claude-code
+                - codex
                 type: string
               harnessOptions:
                 additionalProperties:

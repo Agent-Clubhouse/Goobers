@@ -75,8 +75,9 @@ const (
 	// a live, possibly mutating, stage. Composing is a lossy address on a
 	// DELETE path; this is the verbatim one.
 	//
-	// Absent = unaddressable, not disposable: podAttempt refuses the pod and
-	// the sweep leaves it to activeDeadlineSeconds.
+	// Absent = unaddressable, not disposable: podAttempt refuses the pod.
+	// activeDeadlineSeconds still stops execution, but the Pod object remains
+	// because the sweep cannot authorize its deletion.
 	AnnotationOwningWorkflowID = "goobers.dev/owning-workflow-id"
 )
 
@@ -174,8 +175,8 @@ const (
 	// EnvStageTimeout carries the stage's effective timeout (Go duration
 	// string) so dispatch-exec bounds the command the same way the local
 	// executor bounds it, independent of the pod's activeDeadlineSeconds
-	// backstop (which exists to reclaim an orphaned pod, not to time the
-	// stage itself).
+	// execution bound (which stops an orphan's container after the margin,
+	// rather than defining the stage's own timeout or deleting its Pod object).
 	EnvStageTimeout = "GOOBERS_STAGE_TIMEOUT"
 	// EnvStageCapabilities carries the stage's declared credential capability
 	// NAMES as a JSON array. Names only: the pod resolves them against the
@@ -613,7 +614,7 @@ func sanitizeNameSegment(s string, maxLen int) string {
 // requests from the stage's runsOn minimums, limits from the runner ceiling,
 // the restriction bindings for the runner's OS, the derived non-overridable
 // runner-class label, the deny-first posture labels, the OS node selector and
-// Windows toleration, and the always-on activeDeadlineSeconds backstop.
+// Windows toleration, and the always-on activeDeadlineSeconds execution bound.
 func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, error) {
 	if err := refuseOverrides(attempt); err != nil {
 		return nil, err
@@ -622,6 +623,10 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		return nil, err
 	}
 	admin, err := assertWindowsIdentity(attempt, runner)
+	if err != nil {
+		return nil, err
+	}
+	namespace, err := cfg.namespaceFor(attempt.Gaggle)
 	if err != nil {
 		return nil, err
 	}
@@ -673,7 +678,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),
-			Namespace:   cfg.Namespace,
+			Namespace:   namespace,
 			Labels:      labels,
 			Annotations: copyStringMap(attempt.ExtraAnnotations),
 		},
@@ -715,6 +720,10 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 		return nil, err
 	}
 	admin, err := assertWindowsIdentity(attempt, runner)
+	if err != nil {
+		return nil, err
+	}
+	namespace, err := cfg.namespaceFor(attempt.Gaggle)
 	if err != nil {
 		return nil, err
 	}
@@ -813,7 +822,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),
-			Namespace:   cfg.Namespace,
+			Namespace:   namespace,
 			Labels:      labels,
 			Annotations: annotations,
 		},

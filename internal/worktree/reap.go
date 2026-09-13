@@ -35,7 +35,12 @@ const (
 	// ReapReasonStale means the worktree was intentionally kept
 	// (RemoveOptions.Keep) and has aged past ReapOptions.StaleAfter.
 	ReapReasonStale ReapReason = "stale"
+	// ReapReasonCleanupPending means a prior explicit teardown surrendered the
+	// worktree but one of its guarded cleanup steps deferred removal.
+	ReapReasonCleanupPending ReapReason = "cleanup-pending"
 )
+
+var errReapAuthorityChanged = errors.New("worktree: reap authority changed while waiting for repository lock")
 
 // ReapReasonMarkerless means the worktree had no marker at all — a crash
 // between `git worktree add` and the marker write (Manager.Create), which
@@ -58,8 +63,9 @@ type ReapWarning struct {
 }
 
 // Reap scans every managed working copy under Root for worktrees whose
-// marker shows either a dead owning process (a crash orphan) or a
-// keep-on-failure worktree older than opts.StaleAfter, and removes them. It
+// marker shows a dead owning process (a crash orphan), a surrendered cleanup
+// awaiting retry, or a keep-on-failure worktree older than opts.StaleAfter,
+// and removes them. It
 // also removes markerless directories still registered with git (a crash
 // between `git worktree add` and the marker write) and deregistered
 // markerless directories whose owning journal is terminal. Call it on daemon
@@ -161,6 +167,10 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 				continue
 			}
 			reason = ReapReasonOrphaned
+		case statusCleanupPending:
+			// Remove already recorded that the stage surrendered this tree.
+			// Retry immediately even while the owning daemon PID remains live.
+			reason = ReapReasonCleanupPending
 		case statusKept:
 			if opts.StaleAfter <= 0 || time.Since(mk.retainedAt()) <= opts.StaleAfter {
 				continue
@@ -176,6 +186,9 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			// worktree — reported for retry on the next sweep — rather
 			// than aborting every other worktree still queued for reaping.
 			var timeoutErr *GitCleanupTimeoutError
+			if errors.Is(err, errReapAuthorityChanged) {
+				continue
+			}
 			if errors.As(err, &timeoutErr) || errors.Is(err, ErrCleanupDeferred) {
 				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)})
 				continue
@@ -264,6 +277,9 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 		markerPath := m.markerPath(key, worktreeID)
 		if err := m.reapOne(ctx, key, path, markerPath, ownershipMarker); err != nil {
 			var timeoutErr *GitCleanupTimeoutError
+			if errors.Is(err, errReapAuthorityChanged) {
+				continue
+			}
 			if errors.As(err, &timeoutErr) || errors.Is(err, ErrCleanupDeferred) {
 				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap markerless run %s: %w", worktreeID, err)})
 				continue
@@ -296,9 +312,36 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
+	if mk != nil && !m.reapAuthorityStillCurrent(key, path, markerPath, *mk) {
+		return errReapAuthorityChanged
+	}
+	return m.reapOneLocked(ctx, key, path, markerPath, mk)
+}
 
-	cleanupMarker := marker{OwnerRunID: ownerRunID}
+// reapAuthorityStillCurrent closes the scan-to-delete race. A prompt retry or
+// another cleanup can remove the scanned workspace while reap waits for the
+// repository lock, after which Create may put a new active workspace at the
+// same deterministic path. Re-read the primary record under lock; markerless
+// recovery falls back to its ownership record. Only the exact scanned
+// identity and status may authorize the destructive tail.
+func (m *Manager) reapAuthorityStillCurrent(key, path, markerPath string, scanned marker) bool {
+	current, err := readMarker(markerPath)
+	if os.IsNotExist(err) {
+		current, err = readMarker(m.ownershipPath(key, filepath.Base(path)))
+	}
+	return err == nil && current.Status == scanned.Status && sameWorkspaceIdentity(current, scanned)
+}
+
+// reapOneLocked performs the destructive half of reaping while the caller
+// holds the repository lock. Keeping this authority in one function lets the
+// prompt cleanup-pending retry path revalidate both durable ownership records
+// under that lock and then use exactly the same guards and Git cleanup as the
+// broad/startup reaper.
+func (m *Manager) reapOneLocked(ctx context.Context, key, path, markerPath string, mk *marker) error {
+	worktreeID := filepath.Base(path)
+	cleanupMarker := marker{}
 	if mk != nil {
+		worktreeID = mk.RunID
 		cleanupMarker = *mk
 	}
 	if err := m.prepareMarkerCleanup(ctx, path, worktreeID, cleanupMarker); err != nil {
@@ -351,25 +394,15 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 }
 
 func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error) {
-	out, err := runCleanupGitOutput(ctx, repoDir, "worktree list", "worktree", "list", "--porcelain")
+	registered, err := registeredWorktrees(ctx, repoDir)
 	if err != nil {
 		return false, err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, "worktree ") {
-			continue
-		}
-		registeredPath := strings.TrimPrefix(line, "worktree ")
-		if strings.HasPrefix(registeredPath, `"`) {
-			registeredPath, err = strconv.Unquote(registeredPath)
-			if err != nil {
-				return false, fmt.Errorf("worktree: parse registered path %q: %w", registeredPath, err)
-			}
-		}
-		if sameWorktreePath(registeredPath, path) {
+	for _, entry := range registered {
+		if sameWorktreePath(entry.Path, path) {
 			return true, nil
 		}
-		registeredInfo, registeredErr := os.Stat(registeredPath)
+		registeredInfo, registeredErr := os.Stat(entry.Path)
 		pathInfo, pathErr := os.Stat(path)
 		if registeredErr == nil && pathErr == nil && os.SameFile(registeredInfo, pathInfo) {
 			return true, nil
@@ -398,6 +431,46 @@ func canonicalAbsentLeafPath(path string) string {
 		return filepath.Join(parent, filepath.Base(path))
 	}
 	return path
+}
+
+type registeredWorktree struct {
+	Path   string
+	Branch string
+}
+
+// registeredWorktrees parses Git's stable porcelain records once for callers
+// that need either path registration or branch occupancy. Keeping the parser
+// shared prevents Create's reconciliation path from interpreting quoted paths
+// differently from Reap's safety check.
+func registeredWorktrees(ctx context.Context, repoDir string) ([]registeredWorktree, error) {
+	out, err := runCleanupGitOutput(ctx, repoDir, "worktree list", "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var entries []registeredWorktree
+	var current *registeredWorktree
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			if current != nil {
+				entries = append(entries, *current)
+			}
+			path := strings.TrimPrefix(line, "worktree ")
+			if strings.HasPrefix(path, `"`) {
+				path, err = strconv.Unquote(path)
+				if err != nil {
+					return nil, fmt.Errorf("worktree: parse registered path %q: %w", path, err)
+				}
+			}
+			current = &registeredWorktree{Path: path}
+		case current != nil && strings.HasPrefix(line, "branch "):
+			current.Branch = strings.TrimPrefix(line, "branch ")
+		}
+	}
+	if current != nil {
+		entries = append(entries, *current)
+	}
+	return entries, nil
 }
 
 // processAlive reports whether pid names a live process. Indirected through

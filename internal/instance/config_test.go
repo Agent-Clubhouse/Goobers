@@ -1309,6 +1309,48 @@ func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
 	}
 }
 
+// TestRecoverySnapshotConfigRefusesWorstCaseOverVolume pins #4862's second
+// requirement: a recovery-snapshot config whose declared worst case (every
+// slot at its per-snapshot ceiling) cannot possibly fit the declared volume
+// is refused at load, not left to fail the first time the volume fills.
+func TestRecoverySnapshotConfigRefusesWorstCaseOverVolume(t *testing.T) {
+	// Omitted maxVolumeBytes stays unbounded: no worst-case check is made,
+	// even against the (large) resolved defaults.
+	if err := (RecoverySnapshotConfig{}).validate(); err != nil {
+		t.Fatalf("validate(unbounded volume) error = %v, want nil", err)
+	}
+	fits := RecoverySnapshotConfig{MaxSnapshots: 4, MaxArchiveBytes: 10, MaxVolumeBytes: 40}
+	if err := fits.validate(); err != nil {
+		t.Fatalf("validate(exactly fits) error = %v, want nil", err)
+	}
+	tooSmall := RecoverySnapshotConfig{MaxSnapshots: 4, MaxArchiveBytes: 10, MaxVolumeBytes: 39}
+	if err := tooSmall.validate(); err == nil || !strings.Contains(err.Error(), "maxVolumeBytes") {
+		t.Fatalf("validate(one byte short) error = %v, want a maxVolumeBytes error", err)
+	}
+	// Resolved defaults (128 snapshots x 512 MiB) apply when the axes are
+	// omitted, so an explicit volume too small for the DEFAULT worst case is
+	// refused too, not just an explicitly configured one.
+	defaultsExceedVolume := RecoverySnapshotConfig{MaxVolumeBytes: 1}
+	if err := defaultsExceedVolume.validate(); err == nil || !strings.Contains(err.Error(), "maxVolumeBytes") {
+		t.Fatalf("validate(volume too small for resolved defaults) error = %v, want a maxVolumeBytes error", err)
+	}
+	for name, cfg := range map[string]RecoverySnapshotConfig{
+		"negative maxSnapshots":    {MaxSnapshots: -1},
+		"negative maxArchiveBytes": {MaxArchiveBytes: -1},
+		"negative maxVolumeBytes":  {MaxVolumeBytes: -1},
+		"bad retainWindow":         {RetainWindow: "not-a-duration"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := cfg.validate(); err == nil {
+				t.Fatal("invalid recovery config accepted")
+			}
+		})
+	}
+	if err := (&Config{Retention: RetentionConfig{Recovery: &tooSmall}}).Validate(); err == nil || !strings.Contains(err.Error(), "maxVolumeBytes") {
+		t.Fatalf("Config.Validate did not surface the recovery volume check: %v", err)
+	}
+}
+
 func TestProjectionFullFidelityRetentionDaysPolicy(t *testing.T) {
 	if got := (*Config)(nil).ProjectionFullFidelityRetentionDays(); got != DefaultProjectionFullFidelityDays {
 		t.Fatalf("nil config default = %d, want %d", got, DefaultProjectionFullFidelityDays)
@@ -3903,5 +3945,79 @@ func TestExternalTelemetryConnectorsByName(t *testing.T) {
 	var nilConfig *Config
 	if index := nilConfig.ExternalTelemetryConnectorsByName(); index != nil {
 		t.Fatalf("index = %v for a nil *Config, want nil", index)
+	}
+}
+
+func TestResolveStorageThresholdsDefaults(t *testing.T) {
+	// No config at all: defaults apply, and the critical byte floor is
+	// clamped to the (also-defaulted) recovery archive bound.
+	rc := RunConditions{}
+	recovery := RecoverySnapshotConfig{}
+	thresholds := rc.ResolveStorageThresholds(recovery)
+
+	wantCritical := int64(DefaultRecoverySnapshotMaxCount) * DefaultRecoverySnapshotMaxArchiveBytes
+	if thresholds.CriticalFloorBytes != wantCritical {
+		t.Fatalf("CriticalFloorBytes = %d, want the recovery archive bound %d", thresholds.CriticalFloorBytes, wantCritical)
+	}
+	if thresholds.WarningFloorBytes != wantCritical*2 {
+		t.Fatalf("WarningFloorBytes = %d, want 2x the critical floor (%d)", thresholds.WarningFloorBytes, wantCritical*2)
+	}
+	if thresholds.WarningFloorPercent != DefaultStorageWarningFloorPercent {
+		t.Fatalf("WarningFloorPercent = %v, want the default %v", thresholds.WarningFloorPercent, DefaultStorageWarningFloorPercent)
+	}
+	if thresholds.CriticalFloorPercent != DefaultStorageCriticalFloorPercent {
+		t.Fatalf("CriticalFloorPercent = %v, want the default %v", thresholds.CriticalFloorPercent, DefaultStorageCriticalFloorPercent)
+	}
+	if thresholds.CheckInterval != DefaultStorageCheckInterval {
+		t.Fatalf("CheckInterval = %v, want the default %v", thresholds.CheckInterval, DefaultStorageCheckInterval)
+	}
+}
+
+func TestResolveStorageThresholdsOperatorOverrideBelowRecoveryBoundIsHonored(t *testing.T) {
+	// #4873: an explicit operator floor below the recovery bound is a
+	// deliberate choice, not something the resolver should second-guess.
+	rc := RunConditions{Storage: &StorageHealthConfig{CriticalFloorBytes: 1 << 20}}
+	recovery := RecoverySnapshotConfig{MaxSnapshots: 10, MaxArchiveBytes: 1 << 30}
+	thresholds := rc.ResolveStorageThresholds(recovery)
+	if thresholds.CriticalFloorBytes != 1<<20 {
+		t.Fatalf("CriticalFloorBytes = %d, want the explicit operator value 1<<20 honored as-is", thresholds.CriticalFloorBytes)
+	}
+}
+
+func TestResolveStorageThresholdsCustomCheckInterval(t *testing.T) {
+	rc := RunConditions{Storage: &StorageHealthConfig{CheckInterval: "5m"}}
+	thresholds := rc.ResolveStorageThresholds(RecoverySnapshotConfig{})
+	if thresholds.CheckInterval != 5*time.Minute {
+		t.Fatalf("CheckInterval = %v, want 5m", thresholds.CheckInterval)
+	}
+}
+
+func TestStorageHealthConfigValidate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg     *StorageHealthConfig
+		wantErr bool
+	}{
+		"nil is valid":                     {cfg: nil},
+		"zero value is valid":              {cfg: &StorageHealthConfig{}},
+		"negative warning bytes":           {cfg: &StorageHealthConfig{WarningFloorBytes: -1}, wantErr: true},
+		"negative critical bytes":          {cfg: &StorageHealthConfig{CriticalFloorBytes: -1}, wantErr: true},
+		"warning percent over 100":         {cfg: &StorageHealthConfig{WarningFloorPercent: 101}, wantErr: true},
+		"critical percent negative":        {cfg: &StorageHealthConfig{CriticalFloorPercent: -1}, wantErr: true},
+		"critical bytes exceeds warning":   {cfg: &StorageHealthConfig{WarningFloorBytes: 1 << 20, CriticalFloorBytes: 1 << 30}, wantErr: true},
+		"critical percent exceeds warning": {cfg: &StorageHealthConfig{WarningFloorPercent: 5, CriticalFloorPercent: 10}, wantErr: true},
+		"critical below warning is fine":   {cfg: &StorageHealthConfig{WarningFloorBytes: 1 << 30, CriticalFloorBytes: 1 << 20}},
+		"invalid check interval":           {cfg: &StorageHealthConfig{CheckInterval: "not-a-duration"}, wantErr: true},
+		"zero check interval rejected":     {cfg: &StorageHealthConfig{CheckInterval: "0s"}, wantErr: true},
+		"valid check interval":             {cfg: &StorageHealthConfig{CheckInterval: "90s"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := tc.cfg.validate()
+			if tc.wantErr && err == nil {
+				t.Fatal("validate() = nil, want an error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validate() = %v, want nil", err)
+			}
+		})
 	}
 }

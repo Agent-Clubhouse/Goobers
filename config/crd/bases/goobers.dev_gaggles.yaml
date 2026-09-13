@@ -49,8 +49,13 @@ spec:
             description: |-
               GaggleSpec defines a siloed workforce within an instance. A gaggle targets one
               project codebase and exactly one backlog (singleton), and contains its own
-              goobers and workflows (which reference it by name). Isolation is realized as a
-              namespace + identity per gaggle (GAG-001..006, SEC-001/002).
+              goobers and workflows (which reference it by name). Isolation declares the
+              target namespace + identity per gaggle (GAG-001..006, SEC-001/002). The
+              active mode-3 worker routes every stage pod for this gaggle into its
+              declared isolation.namespace, and verifies that namespace's existence and
+              this worker's RBAC access to it before polling or dispatching any work
+              (#4897). IdentityRef is not yet consumed — every gaggle's stage pods still
+              run under their namespace's default ServiceAccount.
             properties:
               additionalRepos:
                 description: |-
@@ -233,13 +238,21 @@ spec:
                 properties:
                   identityRef:
                     description: |-
-                      IdentityRef names the per-gaggle Azure workload identity (managed-identity
-                      federation) used to reach Key Vault, providers, and telemetry.
+                      IdentityRef names the target per-gaggle Azure workload identity
+                      (managed-identity federation). The active dispatcher does not consume
+                      it yet — every gaggle's stage pods still run under their namespace's
+                      default ServiceAccount (#4897 scoped namespace routing only).
                     type: string
                   namespace:
                     description: |-
-                      Namespace is the k8s namespace this gaggle's pods/secrets live in. Must be
-                      unique per gaggle so credentials/work/telemetry do not leak across gaggles.
+                      Namespace is the k8s namespace this gaggle's stage pods and secrets are
+                      created in. The active mode-3 dispatcher routes every stage pod for
+                      this gaggle here — resolved from the pod's own Attempt.Gaggle, never a
+                      worker-wide default or fallback — and refuses to start dispatching
+                      until it has verified the namespace exists and this worker's
+                      credentials hold the RBAC grants dispatch needs there (#4897). Two
+                      gaggles may declare the SAME namespace deliberately; that shared
+                      topology is supported.
                     type: string
                 required:
                 - namespace

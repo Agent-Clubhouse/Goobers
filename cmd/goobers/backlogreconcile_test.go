@@ -737,6 +737,47 @@ func TestTrackingChecklistIssueIDs(t *testing.T) {
 	}
 }
 
+func TestTrackingChecklistMarksDoNotOverrideLiveChildState(t *testing.T) {
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	tests := []struct {
+		name       string
+		body       string
+		childState string
+		wantOpen   bool
+	}{
+		{name: "checked child is still open", body: "- [x] #8", childState: "open", wantOpen: true},
+		{name: "unchecked child is already complete", body: "- [ ] #8", childState: "closed", wantOpen: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+			server.addIssue(7, "Tracking parent")
+			server.addIssue(8, "Checklist child")
+			server.setIssueState(8, tt.childState)
+
+			open, unverified, err := trackingItemHasOpenChildren(
+				context.Background(),
+				server.newGitHubProvider("token"),
+				repo,
+				providers.WorkItem{ID: "7", Body: tt.body},
+			)
+			if err != nil {
+				t.Fatalf("trackingItemHasOpenChildren: %v", err)
+			}
+			if unverified {
+				t.Fatal("unverified = true, want a verified checklist child")
+			}
+			if open != tt.wantOpen {
+				t.Fatalf("has open children = %t, want %t for body %q with live child state %q", open, tt.wantOpen, tt.body, tt.childState)
+			}
+		})
+	}
+}
+
 // TestParseBacklogReconcileRunIDRoundTripsFormat pins the shape
 // reserveBacklogClaimReconciliation persists into the claim ledger:
 // claims.go's claimHolderTerminal must keep parsing it to recover the

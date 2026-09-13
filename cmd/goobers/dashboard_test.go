@@ -877,7 +877,7 @@ func TestDashboardHandlerServesInstanceAssets(t *testing.T) {
 	}
 }
 
-func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) {
+func TestDashboardBindsWhileAttachingAndStopsCleanly(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
 	requestStarted := make(chan struct{})
@@ -896,12 +896,51 @@ func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) 
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var stdout, stderr bytes.Buffer
+	started := &dashboardURLWriter{url: make(chan string, 1)}
+	var stderr bytes.Buffer
 	done := make(chan int, 1)
 	args := dashboardTestArgs(t, "--port=auto", "--no-open", root)
 	go func() {
-		done <- runDashboardContext(ctx, args, &stdout, &stderr)
+		done <- runDashboardContext(ctx, args, started, &stderr)
 	}()
+
+	var address string
+	select {
+	case address = <-started.url:
+	case code := <-done:
+		t.Fatalf("dashboard exited before binding: code = %d, stderr = %q", code, stderr.String())
+	case <-time.After(5 * time.Second):
+		t.Fatal("dashboard did not bind while waiting for the daemon")
+	}
+	response, err := http.Get(address)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil || closeErr != nil {
+		cancel()
+		t.Fatal(errors.Join(readErr, closeErr))
+	}
+	startupPage := string(body)
+	if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(startupPage, "Goobers is starting") {
+		cancel()
+		t.Fatalf("startup response = %d %q", response.StatusCode, body)
+	}
+	for _, token := range []string{
+		"--bg:#f4f3ef",
+		"--panel:#fff",
+		"--ink:#202026",
+		"--accent:#6847d9",
+		"--accent-soft:#eee9ff",
+		"--accent-ink:#4c2db8",
+	} {
+		if !strings.Contains(startupPage, token) {
+			cancel()
+			t.Fatalf("startup response is missing portal theme token %q", token)
+		}
+	}
 
 	select {
 	case <-requestStarted:
@@ -919,9 +958,6 @@ func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) 
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("dashboard did not stop after cancellation")
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("dashboard printed URL before startup: %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("dashboard reported cancellation as an error: %q", stderr.String())
@@ -996,8 +1032,8 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 	case <-time.After(2 * time.Second):
 		t.Fatal("dashboard did not stop after cancellation")
 	}
-	if stderr.String() != "dashboard: mode=daemon\n" {
-		t.Fatalf("dashboard mode output = %q, want daemon mode", stderr.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("dashboard cancellation output = %q, want no diagnostic before mode selection", stderr.String())
 	}
 	if stdout.String() != dashboardAddress+"\n" {
 		t.Fatalf("dashboard output = %q, want %q", stdout.String(), dashboardAddress+"\n")
@@ -1257,20 +1293,30 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	if browserCalled {
 		t.Fatal("--no-open launched a browser")
 	}
-	response, err := http.Get(address)
-	if err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	body, readErr := io.ReadAll(response.Body)
-	closeErr := response.Body.Close()
-	if readErr != nil || closeErr != nil {
-		cancel()
-		t.Fatal(errors.Join(readErr, closeErr))
-	}
-	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `content="standalone"`) {
-		cancel()
-		t.Fatalf("portal response = %d %q", response.StatusCode, body)
+	var response *http.Response
+	var body []byte
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var err error
+		response, err = http.Get(address)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		body, err = io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if err != nil || closeErr != nil {
+			cancel()
+			t.Fatal(errors.Join(err, closeErr))
+		}
+		if response.StatusCode == http.StatusOK && strings.Contains(string(body), `content="standalone"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("portal did not replace startup page: last response = %d %q", response.StatusCode, body)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	events, err := http.Get(strings.TrimSuffix(address, "/") + httpapi.EventsPath)

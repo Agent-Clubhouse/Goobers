@@ -327,10 +327,9 @@ expect); unix targets use `.tar.gz`.
 
 `SHA256SUMS` is a coreutils `sha256sum -c`-compatible manifest — one
 `<hex>  <filename>` line per binary archive, `install.sh`, portable agent
-toolkit, onboarding payload, and authoritative `feature-registry.json` and
-`dsl-support-matrix.json`, sorted by filename. The generated release note
-remains editable for curation and is not checksummed. The same file verifies on
-every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
+toolkit, onboarding payload, authoritative `feature-registry.json` and
+`dsl-support-matrix.json`, and the published `RELEASE_NOTES.md`. The same file
+verifies on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This
 integrity check is in addition to, not instead of, the Authenticode
@@ -346,11 +345,13 @@ project publishes rather than something you already trust.
 **The tag signature.** Release tags are signed locally by the maintainer
 cutting them, not by CI. The signing key is published as
 [`.github/allowed_signers`](../../.github/allowed_signers), which is what makes
-`git tag -v` succeed for anyone other than the person who cut the tag:
+`git tag -v` succeed for anyone other than the person who cut the tag. From a
+trusted current checkout, set `TAG` to the release you downloaded and run:
 
 ```sh
-git fetch --tags
-git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.4.0-rc.2
+TAG=v0.4.0-rc.2
+git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v "${TAG}"
 ```
 
 A good signature prints `Good "git" signature for <principal> with ED25519 key
@@ -372,9 +373,12 @@ sha256sum --check SHA256SUMS        # GNU coreutils
 shasum -a 256 --check SHA256SUMS    # macOS
 ```
 
-`SHA256SUMS` itself is not self-covering — nothing can be. Its integrity comes
-from the tag: verify the signature first, then the checksums, and the chain
-holds end to end.
+`SHA256SUMS` itself is not self-covering, and the tag signature does not cover
+this separately generated file. Obtain the manifest and assets from the
+official GitHub Release over authenticated HTTPS, use the signature to verify
+the release's tag identity and source commit, and use the manifest to detect
+any change to the downloaded assets. Signing the generated manifest itself
+would require a separate publication mechanism.
 
 ## Signing posture
 

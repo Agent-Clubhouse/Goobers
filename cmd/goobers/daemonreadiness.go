@@ -22,15 +22,16 @@ func awaitDaemonActiveCounts(ctx context.Context, reads *readservice.Local) erro
 	return reads.WaitForInitialActiveRunSample(sampleCtx)
 }
 
-// prepareDaemonReadiness waits for the observation required by inventory before
-// publishing the daemon address. The listener already serves startup probes;
-// the caller opens the shared readiness and webhook gate only after this returns.
-func prepareDaemonReadiness(ctx context.Context, reads *readservice.Local, addressPath, address string, stdout io.Writer) error {
-	pf(stdout, "%s startup phase=active-counts status=waiting target=%q\n", startupTimestamp(), "api")
-	if err := awaitDaemonActiveCounts(ctx, reads); err != nil {
-		return fmt.Errorf("initialize active-run counts: %w", err)
-	}
-	return publishDaemonAPIAddress(addressPath, address)
+// prepareDaemonReadiness waits for the observation required by inventory.
+// The listener and its published address are already available for startup
+// probes; the caller opens the shared readiness and webhook gate afterward.
+func prepareDaemonReadiness(ctx context.Context, reads *readservice.Local, tracker *startupPhaseTracker, stdout io.Writer) error {
+	return runStartupPhase(stdout, tracker, "active-counts", "api", func() error {
+		if err := awaitDaemonActiveCounts(ctx, reads); err != nil {
+			return fmt.Errorf("initialize active-run counts: %w", err)
+		}
+		return nil
+	})
 }
 
 // daemonStartupStoppedByShutdown distinguishes cancellation of the daemon's

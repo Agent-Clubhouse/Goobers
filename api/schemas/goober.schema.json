@@ -20,7 +20,7 @@
         "role": { "type": "string", "minLength": 1, "examples": ["author"], "description": "Role specialization, such as coder, reviewer, or perf-hunter." },
         "displayName": { "type": "string", "description": "Human-facing goober name shown in the portal." },
         "instructions": { "type": "string", "minLength": 1, "examples": ["instructions.md"], "description": "Markdown instruction file path relative to the goober definition directory." },
-        "harness": { "type": "string", "enum": ["copilot", "claude-code"], "description": "Agent harness used for this goober. Omitted defaults to copilot." },
+        "harness": { "type": "string", "enum": ["copilot", "claude-code", "codex"], "description": "Agent harness used for this goober. Omitted defaults to copilot." },
         "model": { "type": "string", "description": "Harness-specific model name, validated by the selected adapter before a run starts." },
         "harnessOptions": { "type": "object", "description": "Opaque harness-specific settings validated by the selected adapter.", "additionalProperties": true },
         "timeoutSeconds": { "type": "integer", "minimum": 1, "description": "Default per-attempt wall-clock limit for this goober's agentic stages. A task timeout takes precedence." },

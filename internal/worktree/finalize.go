@@ -100,7 +100,7 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 				})
 				continue
 			}
-			if mk.Status != statusActive {
+			if mk.Status != statusActive && mk.Status != statusCleanupPending {
 				finalizeErr = errors.Join(finalizeErr,
 					fmt.Errorf("worktree: finalize run %s: marker %s has unknown status %q", runID, markerPath, mk.Status))
 				continue

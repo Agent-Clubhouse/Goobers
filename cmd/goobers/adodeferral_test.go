@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -50,9 +51,13 @@ func TestADODeferralPublishesHoldAndPreservesEvidence(t *testing.T) {
 			defer server.Close()
 			provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) { p.BaseURL = server.URL })
 			verdict := apiv1.Verdict{Decision: apiv1.VerdictDefer, ReasonCode: reason, Rationale: "  Wait for ordering.\n\nKeep the full rationale.  ", Findings: []apiv1.Finding{{Severity: apiv1.SeverityInfo, Message: "Original finding."}}, HeadSHA: "head", BaseSHA: "base"}
-			resultFile := filepath.Join(t.TempDir(), "result.json")
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "scheduler"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			resultFile := filepath.Join(root, "result.json")
 			var stdout, stderr bytes.Buffer
-			code := publishADONonPassVerdict(context.Background(), provider, providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}, 359, providers.PullRequestSummary{Number: 359, HeadSHA: "head", BaseSHA: "base"}, verdict, resultFile, &stdout, &stderr)
+			code := publishADONonPassVerdict(context.Background(), root, provider, providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}, 359, providers.PullRequestSummary{Number: 359, HeadSHA: "head", BaseSHA: "base"}, verdict, resultFile, &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("code=%d stderr=%s", code, stderr.String())
 			}

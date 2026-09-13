@@ -42,8 +42,10 @@ type conformanceAdapter struct {
 
 	// Tool allowlist dimension (a): declaring Tools: []string{"telemetry"}
 	// must make toolIncluded reachable and toolExcluded unreachable.
-	toolIncluded string
-	toolExcluded string
+	toolIncluded                string
+	toolExcluded                string
+	restrictiveToolsUnsupported bool
+	mcpCredentialEnv            string
 
 	// Isolation dimension (e): the env var this adapter redirects to
 	// isolate ambient user config from a run, and whether that redirection
@@ -71,6 +73,7 @@ func conformanceAdapters() []conformanceAdapter {
 			stub:                   func(t *testing.T) {},
 			toolIncluded:           "view",
 			toolExcluded:           "apply_patch",
+			mcpCredentialEnv:       "GOOBERS_MCP_CREDENTIAL_0_0=context-secret",
 			isolationEnvVar:        "COPILOT_HOME",
 			isolationUnconditional: false,
 		},
@@ -90,8 +93,31 @@ func conformanceAdapters() []conformanceAdapter {
 			stub:                   func(t *testing.T) { stubClaudeCredentialsHome(t) },
 			toolIncluded:           "Read",
 			toolExcluded:           "Write",
+			mcpCredentialEnv:       "GOOBERS_MCP_CREDENTIAL_0_0=context-secret",
 			isolationEnvVar:        "CLAUDE_CONFIG_DIR",
 			isolationUnconditional: true,
+		},
+		{
+			name: "codex",
+			build: func(runner ProcessRunner, selfBin string) Adapter {
+				return &CodexAdapter{
+					Command: []string{"codex"},
+					Runner:  runner,
+					EnvCapabilities: map[string]string{
+						"agent:model":   "TEST_MODEL_TOKEN",
+						"contents:read": "TEST_CONTEXT_TOKEN",
+					},
+					SelfBin: selfBin,
+					ModelCredential: func(context.Context) (string, error) {
+						return "sk-test-codex", nil
+					},
+				}
+			},
+			stub:                        func(t *testing.T) {},
+			restrictiveToolsUnsupported: true,
+			mcpCredentialEnv:            "CONTEXT_TOKEN=context-secret",
+			isolationEnvVar:             "CODEX_HOME",
+			isolationUnconditional:      true,
 		},
 	}
 }
@@ -117,7 +143,7 @@ func TestConformanceCoveredAdaptersAreExhaustive(t *testing.T) {
 func conformanceRunner(t *testing.T) *fakeProcessRunner {
 	t.Helper()
 	return &fakeProcessRunner{
-		result: ProcessResult{ExitCode: 0},
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("{\"type\":\"turn.completed\",\"usage\":{}}\n")},
 		act: func(req ProcessRequest) error {
 			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
 		},
@@ -141,6 +167,12 @@ func TestConformanceToolAllowlist(t *testing.T) {
 				CompletionPath: DefaultResultPath,
 				Tools:          []string{"telemetry"},
 			})
+			if ca.restrictiveToolsUnsupported {
+				if err == nil || !strings.Contains(err.Error(), "restrictive tools declarations are unsupported") {
+					t.Fatalf("Run error = %v, want explicit restrictive-tools rejection", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -183,7 +215,7 @@ func TestConformanceMCPServersMaterializeAndAreReachable(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if !slices.Contains(runner.lastReq.Env, "GOOBERS_MCP_CREDENTIAL_0_0=context-secret") {
+			if !slices.Contains(runner.lastReq.Env, ca.mcpCredentialEnv) {
 				t.Errorf("resolved MCP credential missing from subprocess environment: %v", runner.lastReq.Env)
 			}
 			for _, arg := range runner.lastReq.Command {
@@ -362,6 +394,12 @@ var knownGaps = []knownGap{
 		adapter:       "copilot-cli",
 		detail:        `COPILOT_HOME redirection only fires when Sandbox != nil or MCP servers are declared — a bare, unsandboxed, MCP-free Copilot run still inherits ambient COPILOT_HOME, unlike claude-code's unconditional CLAUDE_CONFIG_DIR redirect on every run (#2775). Surfaced by this suite (#2776), not fixed here — out of scope for "build a conformance suite"; tracked separately`,
 		trackingIssue: "#2816",
+	},
+	{
+		dimension:     "tool allowlist",
+		adapter:       "codex",
+		detail:        `Codex CLI exposes no general built-in-tool allowlist; restrictive Spec.Tools declarations fail closed instead of silently exposing omitted tools`,
+		trackingIssue: "first-class codex harness",
 	},
 }
 

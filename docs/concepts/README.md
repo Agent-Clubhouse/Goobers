@@ -32,9 +32,11 @@ compiles into a step-machine, and executes when a trigger is admitted.
 | Editing runtime files can change later behavior. | Behavior changes originate in the definitions under `config/`. |
 
 At tiers 1-2, `goobers up` materializes, validates, and loads definitions into
-`config/`. With the default local source, it reads that directory at startup;
-the optional `--watch-config` mode watches direct edits and atomically reloads
-valid changes. A Git `workflowSource` instead continuously reconciles its
+`config/`. With the default local source, it reads that directory at startup
+and watches direct edits by default (`--watch-config=false` opts out),
+atomically reloading valid changes. This watcher never reloads `instance.yaml`;
+changes there, including `retention:` and `telemetry.retention:`, require a
+daemon restart. A Git `workflowSource` instead continuously reconciles its
 tracked ref without `--watch-config`: periodic fetch-and-compare polling is
 always active, local ref changes wake the loop immediately, and authenticated
 GitHub push deliveries wake it when `webhook.secret` is configured. Invalid

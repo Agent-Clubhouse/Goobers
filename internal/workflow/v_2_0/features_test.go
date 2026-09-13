@@ -856,6 +856,14 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FeaturesForGoober (claude-code): %v", err)
 	}
+	codexGoober := goober
+	codexGoober.Harness = apiv1.HarnessCodex
+	codexGoober.Model = ""
+	codexGoober.HarnessOptions = nil
+	codexFeatures, err := FeaturesForGoober(codexGoober)
+	if err != nil {
+		t.Fatalf("FeaturesForGoober (codex): %v", err)
+	}
 	var gaggleFeatures []Feature
 	for name, gaggle := range map[string]apiv1.GaggleSpec{
 		"github": githubGaggle,
@@ -868,7 +876,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		}
 		gaggleFeatures = append(gaggleFeatures, features...)
 	}
-	got := featureIDs(append(append(append(workflowFeatures, gooberFeatures...), claudeFeatures...), gaggleFeatures...))
+	got := featureIDs(append(append(append(append(workflowFeatures, gooberFeatures...), claudeFeatures...), codexFeatures...), gaggleFeatures...))
 	want := append(expectedCurrentDSLFeatureIDs(), gaggleOnlyFeatureIDs()...)
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
@@ -1064,6 +1072,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"goober.spec.displayName",
 		"goober.spec.instructions",
 		"goober.spec.harness.claude-code",
+		"goober.spec.harness.codex",
 		"goober.spec.harness.copilot",
 		"goober.spec.model",
 		"goober.spec.harnessOptions",

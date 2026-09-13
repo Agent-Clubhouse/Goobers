@@ -1,6 +1,11 @@
-# Per-gaggle namespace template (k8s-infra-shape.md §3: one namespace per
-# gaggle, GAG-012; workload identity per gaggle, SEC-001/002; §5 deny-first
-# networking). Stamp a gaggle by overlaying this base — see ../examples/.
+# Target per-gaggle namespace template (k8s-infra-shape.md §3, GAG-012,
+# SEC-001/002). The active mode-3 worker derives each stage pod's namespace
+# from the OWNING gaggle's isolation.namespace (#4897): apply this template
+# once per gaggle namespace (see examples/gaggle-a, examples/gaggle-b) before
+# a worker dispatches into it — its boot-time preflight refuses to start
+# otherwise. The ServiceAccount here is still not SELECTED per gaggle (every
+# stage pod runs under its namespace's default ServiceAccount); see
+# serviceaccount.yaml and README.md.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

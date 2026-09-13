@@ -71,7 +71,7 @@ func (s *daemonEngineCancelService) cancel(ctx context.Context, input httpapi.Ca
 	if s.log != nil {
 		// Like the local CLI, failure to record this diagnostic does not undo an
 		// accepted cancellation or claim that the run has reached a terminal.
-		_ = s.log.Append(journal.Event{
+		s.log.AppendBestEffort(journal.Event{
 			Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
 			Runner: map[string]any{
 				"kind": journal.RunnerAnnotationRunRecovery, "reason": "cancellation requested by an operator",

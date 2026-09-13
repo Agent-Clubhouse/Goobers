@@ -149,7 +149,7 @@ func TestGenerateProducesReadableRuns(t *testing.T) {
 
 	// The full status scan (the unindexed Overview fallback) must also succeed
 	// and see every run despite the pathologies.
-	status, err := service.ListStatusRuns(ctx)
+	status, err := service.ListStatusRuns(ctx, readservice.StatusRunOptions{})
 	if err != nil {
 		t.Fatalf("ListStatusRuns: %v", err)
 	}

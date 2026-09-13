@@ -158,7 +158,8 @@ func TestTemporalRunStatesDisposesSettledAttempt(t *testing.T) {
 }
 
 // The rule the whole graft exists for: an unreachable engine LEAVES the pod.
-// Never delete on uncertainty — the pod's activeDeadlineSeconds reclaims it.
+// Never delete on uncertainty. activeDeadlineSeconds stops the container, but
+// the retained Pod object still requires an explicit safe deletion.
 func TestTemporalRunStatesLeavesPodWhenTemporalUnreachable(t *testing.T) {
 	attempt := sweepAttempt()
 	describer := &fakeSweepDescriber{unavailable: map[string]bool{attempt.OwningWorkflowID: true}}

@@ -263,7 +263,7 @@ func recordTerminalClaimInspectionError(log *journal.InstanceLog, entry localsch
 	if log == nil {
 		return
 	}
-	_ = log.Append(journal.Event{
+	log.AppendBestEffort(journal.Event{
 		Type:     journal.EventError,
 		Name:     entry.ItemID,
 		Gaggle:   entry.Gaggle,
