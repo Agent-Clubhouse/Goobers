@@ -179,16 +179,37 @@ type platformAppender = *journal.InstanceLog
 package fixture
 type platformAppender = arbitrary
 `)
+	writeFixtureFile(t, repo, "function_parameter.go", `package fixture
+import "github.com/goobers/goobers/internal/journal"
+func discardFunctionParameter(fn func(journal.Event) error) { fn(journal.Event{}) }
+`)
+	writeFixtureFile(t, repo, "function_return.go", `package fixture
+import "github.com/goobers/goobers/internal/journal"
+func returnInstanceMethod(parameter *journal.InstanceLog) func(journal.Event) error { return parameter.Append }
+func returnOtherMethod(other arbitrary) func(journal.Event) error { return other.Append }
+`)
+	writeFixtureFile(t, repo, "interprocedural_calls.go", `package fixture
+import "github.com/goobers/goobers/internal/journal"
+func interprocedural(parameter *journal.InstanceLog, other arbitrary) {
+	discardFunctionParameter(parameter.Append)
+	discardFunctionParameter(other.Append)
+	returned := returnInstanceMethod(parameter)
+	returned(journal.Event{})
+	otherReturned := returnOtherMethod(other)
+	otherReturned(journal.Event{})
+}
+`)
 	runTestGit(t, repo, "add", "go.mod", "internal/journal/journal.go", "internal/livejournal/livejournal.go", "fixture.go",
-		"platform.go", "platform_darwin.go", "platform_windows.go", "platform_other.go")
+		"platform.go", "platform_darwin.go", "platform_windows.go", "platform_other.go",
+		"function_parameter.go", "function_return.go", "interprocedural_calls.go")
 
 	findings := discardedInstanceAppends(t, repo, trackedProductionGoFiles(t, repo))
 	// The original nine shapes plus copied and branch-merged method values, a
 	// nested method value, an embedded/promoted method, the common file whose
 	// receiver is an InstanceLog only on Windows, and a package-scope closure.
 	// Arbitrary/misleading Append types and all propagated results remain legal.
-	if len(findings) != 18 {
-		t.Fatalf("findings = %d, want 18:\n%s", len(findings), strings.Join(findings, "\n"))
+	if len(findings) != 20 {
+		t.Fatalf("findings = %d, want 20:\n%s", len(findings), strings.Join(findings, "\n"))
 	}
 }
 
@@ -229,7 +250,7 @@ func trackedProductionGoFiles(t *testing.T, repo string) []string {
 func discardedInstanceAppends(t *testing.T, repo string, tracked []string) []string {
 	t.Helper()
 	trackedSet := make(map[string]struct{}, len(tracked))
-	candidates := make(map[string]struct{})
+	seedCandidates := make(map[string]struct{})
 	for _, relative := range tracked {
 		trackedSet[relative] = struct{}{}
 		source, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(relative)))
@@ -237,11 +258,11 @@ func discardedInstanceAppends(t *testing.T, repo string, tracked []string) []str
 			t.Fatalf("read %s: %v", relative, err)
 		}
 		if bytes.Contains(source, []byte("Append")) {
-			candidates[relative] = struct{}{}
+			seedCandidates[relative] = struct{}{}
 		}
 	}
 
-	compiled := make(map[string]bool, len(candidates))
+	compiled := make(map[string]bool, len(seedCandidates))
 	findingSet := make(map[string]struct{})
 	for _, goos := range uniqueStrings(runtime.GOOS, "linux", "darwin", "windows") {
 		cfg := &packages.Config{
@@ -256,7 +277,7 @@ func discardedInstanceAppends(t *testing.T, repo string, tracked []string) []str
 			t.Fatalf("load production packages for %s: %v", goos, err)
 		}
 		for _, pkg := range loaded {
-			if len(pkg.Errors) != 0 && packageContainsCandidate(repo, pkg.CompiledGoFiles, candidates) {
+			if len(pkg.Errors) != 0 && packageContainsCandidate(repo, pkg.CompiledGoFiles, seedCandidates) {
 				t.Fatalf("type-check candidate package %s for %s: %s", pkg.PkgPath, goos, pkg.Errors[0])
 			}
 			for i := range pkg.Syntax {
@@ -269,20 +290,19 @@ func discardedInstanceAppends(t *testing.T, repo string, tracked []string) []str
 				if _, tracked := trackedSet[relative]; !tracked {
 					continue
 				}
-				if _, candidate := candidates[relative]; !candidate {
-					continue
+				if _, candidate := seedCandidates[relative]; candidate {
+					compiled[relative] = true
 				}
-				compiled[relative] = true
 			}
 		}
 		program, _ := ssautil.Packages(loaded, ssa.InstantiateGenerics)
 		program.Build()
-		for _, finding := range discardedInstanceAppendsSSA(program, repo, candidates) {
+		for _, finding := range discardedInstanceAppendsSSA(program, repo, trackedSet) {
 			findingSet[finding] = struct{}{}
 		}
 	}
 	var missing []string
-	for path := range candidates {
+	for path := range seedCandidates {
 		if !compiled[path] {
 			missing = append(missing, path)
 		}
@@ -316,6 +336,7 @@ type ssaAppendAnalysis struct {
 	stores       map[ssa.Value][]ssa.Value
 	bindings     map[*ssa.FreeVar][]ssa.Value
 	closureCalls map[*ssa.Function][]ssa.CallInstruction
+	callSites    map[*ssa.Function][]ssa.CallInstruction
 }
 
 func discardedInstanceAppendsSSA(program *ssa.Program, repo string, candidates map[string]struct{}) []string {
@@ -324,6 +345,7 @@ func discardedInstanceAppendsSSA(program *ssa.Program, repo string, candidates m
 		stores:       make(map[ssa.Value][]ssa.Value),
 		bindings:     make(map[*ssa.FreeVar][]ssa.Value),
 		closureCalls: make(map[*ssa.Function][]ssa.CallInstruction),
+		callSites:    make(map[*ssa.Function][]ssa.CallInstruction),
 	}
 	for function := range functions {
 		for _, block := range function.Blocks {
@@ -352,8 +374,11 @@ func discardedInstanceAppendsSSA(program *ssa.Program, repo string, candidates m
 				if !ok || call.Common().IsInvoke() {
 					continue
 				}
-				for closure := range analysis.closureFunctions(call.Common().Value, make(map[ssa.Value]bool)) {
-					analysis.closureCalls[closure] = append(analysis.closureCalls[closure], call)
+				for callee := range analysis.possibleFunctions(call.Common().Value, make(map[ssa.Value]bool)) {
+					analysis.callSites[callee] = append(analysis.callSites[callee], call)
+					if callee.Parent() != nil {
+						analysis.closureCalls[callee] = append(analysis.closureCalls[callee], call)
+					}
 				}
 			}
 		}
@@ -455,7 +480,25 @@ func (a *ssaAppendAnalysis) valueMayBeInstanceAppend(value ssa.Value, seen map[s
 	case *ssa.MakeInterface:
 		return a.valueMayBeInstanceAppend(typed.X, seen)
 	case *ssa.Extract:
+		if call, ok := typed.Tuple.(*ssa.Call); ok {
+			return a.callResultMayBeInstanceAppend(call, typed.Index, seen)
+		}
 		return a.valueMayBeInstanceAppend(typed.Tuple, seen)
+	case *ssa.Parameter:
+		parent := typed.Parent()
+		for index, parameter := range parent.Params {
+			if parameter != typed {
+				continue
+			}
+			for _, site := range a.callSites[parent] {
+				if index < len(site.Common().Args) && a.valueMayBeInstanceAppend(site.Common().Args[index], seen) {
+					return true
+				}
+			}
+			break
+		}
+	case *ssa.Call:
+		return a.callResultMayBeInstanceAppend(typed, 0, seen)
 	}
 	return false
 }
@@ -490,7 +533,7 @@ func (a *ssaAppendAnalysis) storedValues(pointer ssa.Value, seen map[ssa.Value]b
 	return values
 }
 
-func (a *ssaAppendAnalysis) closureFunctions(value ssa.Value, seen map[ssa.Value]bool) map[*ssa.Function]struct{} {
+func (a *ssaAppendAnalysis) possibleFunctions(value ssa.Value, seen map[ssa.Value]bool) map[*ssa.Function]struct{} {
 	result := make(map[*ssa.Function]struct{})
 	if value == nil || seen[value] {
 		return result
@@ -502,25 +545,37 @@ func (a *ssaAppendAnalysis) closureFunctions(value ssa.Value, seen map[ssa.Value
 			result[function] = struct{}{}
 		}
 	case *ssa.Function:
-		if typed.Parent() != nil {
-			result[typed] = struct{}{}
-		}
+		result[typed] = struct{}{}
 	case *ssa.Phi:
 		for _, edge := range typed.Edges {
-			mergeFunctions(result, a.closureFunctions(edge, seen))
+			mergeFunctions(result, a.possibleFunctions(edge, seen))
 		}
 	case *ssa.UnOp:
 		if typed.Op == token.MUL {
 			for _, stored := range a.storedValues(typed.X, make(map[ssa.Value]bool)) {
-				mergeFunctions(result, a.closureFunctions(stored, seen))
+				mergeFunctions(result, a.possibleFunctions(stored, seen))
 			}
 		}
 	case *ssa.ChangeType:
-		mergeFunctions(result, a.closureFunctions(typed.X, seen))
+		mergeFunctions(result, a.possibleFunctions(typed.X, seen))
 	case *ssa.Convert:
-		mergeFunctions(result, a.closureFunctions(typed.X, seen))
+		mergeFunctions(result, a.possibleFunctions(typed.X, seen))
 	}
 	return result
+}
+
+func (a *ssaAppendAnalysis) callResultMayBeInstanceAppend(call *ssa.Call, index int, seen map[ssa.Value]bool) bool {
+	for function := range a.possibleFunctions(call.Common().Value, make(map[ssa.Value]bool)) {
+		for _, block := range function.Blocks {
+			for _, instruction := range block.Instrs {
+				returned, ok := instruction.(*ssa.Return)
+				if ok && index < len(returned.Results) && a.valueMayBeInstanceAppend(returned.Results[index], seen) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func mergeFunctions(destination, source map[*ssa.Function]struct{}) {
