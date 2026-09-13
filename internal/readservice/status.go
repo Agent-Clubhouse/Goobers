@@ -66,6 +66,7 @@ type SchedulerStatus struct {
 	WorkerConfigDivergence []WorkerConfigDivergenceStatus
 	TelemetryRetention     *TelemetryRetentionStatus
 	JournalHealth          *JournalHealthStatus
+	StorageHealth          *StorageHealthStatus
 }
 
 // JournalHealthStatus exposes process-lifetime instance-journal write health.
@@ -73,6 +74,43 @@ type SchedulerStatus struct {
 // volatile counter without pretending the failed journal persisted it.
 type JournalHealthStatus struct {
 	AppendsDropped uint64 `json:"appendsDropped"`
+}
+
+// StorageHealthStatus exposes tiered low-disk protection's current state
+// (#4873): the daemon's most recent free-space sample of the filesystem
+// containing the instance root, the tier it resolved to, and the effective
+// thresholds it resolved against. Like JournalHealthStatus, it is absent from
+// offline readers — the sampled state lives only in the live daemon's memory.
+type StorageHealthStatus struct {
+	// Tier is one of "healthy", "warning", "admission-stopped", or
+	// "measurement-unavailable" (localscheduler.StorageTier.String()).
+	Tier                 string    `json:"tier"`
+	Path                 string    `json:"path,omitempty"`
+	FreeBytes            uint64    `json:"freeBytes"`
+	TotalBytes           uint64    `json:"totalBytes,omitempty"`
+	WarningFloorBytes    int64     `json:"warningFloorBytes,omitempty"`
+	WarningFloorPercent  float64   `json:"warningFloorPercent,omitempty"`
+	CriticalFloorBytes   int64     `json:"criticalFloorBytes,omitempty"`
+	CriticalFloorPercent float64   `json:"criticalFloorPercent,omitempty"`
+	MeasuredAt           time.Time `json:"measuredAt,omitempty"`
+	Error                string    `json:"error,omitempty"`
+}
+
+// storageHealthStatus converts a localscheduler.StorageHealthStats snapshot
+// into the read-service's status shape.
+func storageHealthStatus(stats localscheduler.StorageHealthStats) *StorageHealthStatus {
+	return &StorageHealthStatus{
+		Tier:                 stats.Tier.String(),
+		Path:                 stats.Path,
+		FreeBytes:            stats.FreeBytes,
+		TotalBytes:           stats.TotalBytes,
+		WarningFloorBytes:    stats.WarningFloorBytes,
+		WarningFloorPercent:  stats.WarningFloorPercent,
+		CriticalFloorBytes:   stats.CriticalFloorBytes,
+		CriticalFloorPercent: stats.CriticalFloorPercent,
+		MeasuredAt:           stats.MeasuredAt,
+		Error:                stats.Error,
+	}
 }
 
 // WorkerConfigDivergenceStatus is the last config-tree comparison reported by
@@ -525,6 +563,9 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	if s.sources.InstanceLogStats != nil {
 		stats := s.sources.InstanceLogStats()
 		status.JournalHealth = &JournalHealthStatus{AppendsDropped: stats.AppendsDropped}
+	}
+	if s.sources.StorageHealthStats != nil {
+		status.StorageHealth = storageHealthStatus(s.sources.StorageHealthStats())
 	}
 	for _, worker := range projected.workerDivergenceOrder {
 		status.WorkerConfigDivergence = append(status.WorkerConfigDivergence, projected.workerDivergence[worker])

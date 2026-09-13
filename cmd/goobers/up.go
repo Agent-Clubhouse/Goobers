@@ -35,6 +35,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/winsvc"
@@ -341,6 +342,9 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 }
 
 func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, args []string, stdout, stderr io.Writer) int {
+	// #4252: process-start reference point for logGateFlip's elapsed-time
+	// readout on every named startup gate below.
+	processStart := time.Now()
 	webhookGate, err := webhookhttp.NewDispatchGate(parentCtx)
 	if err != nil {
 		pf(stderr, "error: initialize daemon lifecycle: %v\n", err)
@@ -366,6 +370,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		sweepsStarted           atomic.Bool  // initial sweeps ran once and their periodic tickers are live
 		schedulerTicked         atomic.Bool  // scheduler's heartbeat ticked at least once (liveness grace)
 		lastTickAtNanos         atomic.Int64 // in-memory heartbeat /healthz reads (#3806); unix nanos
+		// planeReady (#4252): true once the FULL versioned handler — with the
+		// credential/blob/journal/surrender plane routes wired in — has been
+		// swapped into the SwitchHandler (apiHandler.Set below), independent
+		// of resumeComplete/sweepsStarted/ready — see httpapi.ReadinessStatus's
+		// doc comment for the plane-ready/scheduler-ready split this drives.
+		// apiListening above flips earlier still (the bare listener, serving
+		// only /healthz/readyz/503) and is not sufficient on its own.
+		planeReady atomic.Bool
 	)
 	stopDaemon := func() {
 		ready.Store(false)
@@ -492,6 +504,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	probes := &daemonProbeState{
 		apiListening:            &apiListening,
+		planeReady:              &planeReady,
 		lastTriggerSweepAtNanos: &lastTriggerSweepAtNanos,
 		startup:                 tracker,
 		ready:                   &ready,
@@ -593,6 +606,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	// #3806: instance config validated, definitions/scheduler wiring built.
 	configLoaded.Store(true)
+	logGateFlip(stdout, processStart, "configLoaded")
+	storageGate, storageThresholds := startDaemonStorageHealth(setup)
 	// #3651: the normal stop path calls this explicitly below so a flush or
 	// close failure fails the command; the defer only covers early returns,
 	// and Shutdown itself runs at most once.
@@ -748,10 +763,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel:        setup.ReadModel,
-		RetentionStats:   setup.RetentionStats,
-		InstanceLogStats: setup.InstanceLog.Stats,
-		WorkItemLookup:   statusWorkItemLookup(l.Root, setup.Definitions),
+		ReadModel:          setup.ReadModel,
+		RetentionStats:     setup.RetentionStats,
+		InstanceLogStats:   setup.InstanceLog.Stats,
+		StorageHealthStats: storageGate.Stats,
+		WorkItemLookup:     statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -829,7 +845,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// for local/mode-1 callers.
 	triggerPlane := newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
 		return runBelongsToGaggle(l, gaggle, runID)
-	})
+	}).withSchedulerReadyGate(ready.Load)
 	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
 	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
 	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
@@ -1022,6 +1038,15 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: activate HTTP API: %v\n", err)
 		return 1
 	}
+	// #4252: the full handler is live — credential/blob/journal/surrender
+	// plane routes included (all constructed synchronously above, well
+	// before this point, with any construction failure already returning 1)
+	// — so a stage pod can now safely reach them, independent of
+	// resumeComplete/sweepsStarted/ready below. This is what lets an
+	// already-running stage pod keep working through the (unbounded) rest of
+	// crash-resume instead of being held out of Service rotation for it.
+	planeReady.Store(true)
+	logGateFlip(stdout, processStart, "planeReady")
 	// Rebuild the claim-renewal set from the LEDGER plus run liveness before
 	// any reap is permitted — DS6's load-bearing ordering
 	// (distributed-state-and-coordination.md §10): this process's in-memory
@@ -1205,6 +1230,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// after EACH such poll instead, bounding staleness to a single
 		// poll's worst case.
 		localscheduler.WithPollHeartbeat(markTickProgress),
+		localscheduler.WithDiskGate(storageGate),
 	)
 	sourceReconcileWake := make(chan struct{}, 1)
 	wakeSourceReconcile := func(context.Context) {
@@ -1233,6 +1259,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// #3806: the scheduler's run-tracking state has been reconciled from the
 	// run directories already on disk.
 	stateOpen.Store(true)
+	logGateFlip(stdout, processStart, "stateOpen")
 	stalledRunTimeout, err := setup.RunConditions.StalledRunTimeoutDuration()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -1397,6 +1424,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// so a kubelet startupProbe against /readyz must still allow enough time
 	// for those runs, not for retained terminal history.
 	resumeComplete.Store(true)
+	logGateFlip(stdout, processStart, "resumeComplete")
 
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
@@ -1594,6 +1622,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}()
 
+	storageHealthTickerDone := startStorageHealthTicker(ctx, setup, storageGate, storageThresholds.CheckInterval)
 	mergedPRCostSweeps := startMergedPRCostSweepRuntime(ctx, setup)
 
 	apiReadCacheLockSweepTickerDone := startAPIReadCacheLockSweepTicker(ctx, l)
@@ -1671,6 +1700,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// above already ran once, and every one of their periodic tickers is now
 	// live.
 	sweepsStarted.Store(true)
+	logGateFlip(stdout, processStart, "sweepsStarted")
 
 	supervisorStop := make(chan error, 1)
 	supervisorStopDone := make(chan struct{})
@@ -1889,6 +1919,7 @@ daemonLoop:
 	<-updateCheckDone
 	<-telemetryRetentionTickerDone
 	<-worktreeRetentionTickerDone
+	<-storageHealthTickerDone
 	<-startupRetentionSweepDone
 	<-mergedPRCostSweeps.tickerDone
 	<-startupMergedPRCostSweepDone
@@ -2130,6 +2161,100 @@ func daemonMemoryGate(rc instance.RunConditions) localscheduler.MemoryGate {
 		return nil
 	}
 	return localscheduler.NewCgroupMemoryGate(highWater)
+}
+
+// newDaemonStorageGate builds tiered low-disk protection's gate for the
+// filesystem containing root (#4873), resolving thresholds the same way
+// `goobers status` and the Instance API report them — see
+// instance.RunConditions.ResolveStorageThresholds — so every consumer agrees
+// on the effective floors without re-deriving the defaulting rule.
+func newDaemonStorageGate(root string, cfg *instance.Config) (*localscheduler.StorageGate, instance.StorageThresholds) {
+	thresholds := cfg.RunConditions.ResolveStorageThresholds(cfg.Retention.RecoveryEffective())
+	gate := localscheduler.NewStorageGate(root,
+		thresholds.WarningFloorBytes, thresholds.WarningFloorPercent,
+		thresholds.CriticalFloorBytes, thresholds.CriticalFloorPercent,
+	)
+	return gate, thresholds
+}
+
+// storageHealthCode names the instance-journal EventError code tiered
+// low-disk protection journals on a tier transition (#4873), reusing the
+// generic error envelope every other best-effort diagnostic in this file
+// does (see sweepErrorReporter) rather than introducing a new schema-
+// registered event type for what is, functionally, one more operational
+// signal alongside a sweep failure.
+func storageHealthCode(tier localscheduler.StorageTier) string {
+	switch tier {
+	case localscheduler.StorageWarning:
+		return "storage_health_warning"
+	case localscheduler.StorageCritical:
+		return "storage_health_critical"
+	case localscheduler.StorageMeasurementUnavailable:
+		return "storage_health_measurement_unavailable"
+	default:
+		return "storage_health_recovered"
+	}
+}
+
+// startDaemonStorageHealth builds tiered low-disk protection's gate for
+// setup.Root and takes its one-time startup sample (#4873: "measure ... at
+// startup"), journaling and telemetering the result exactly like the
+// periodic ticker started later will. Pulled out of runUpContextWithForce to
+// keep that function's cyclomatic complexity and body length from
+// re-accreting past its baseline (see startStorageHealthTicker, same
+// reason).
+func startDaemonStorageHealth(setup *schedulerSetup) (*localscheduler.StorageGate, instance.StorageThresholds) {
+	gate, thresholds := newDaemonStorageGate(setup.Root, setup.Config)
+	tier, changed := gate.Sample()
+	reportStorageHealth(setup.InstanceLog, setup.Telemetry, gate, tier, changed)
+	return gate, thresholds
+}
+
+// startStorageHealthTicker re-samples gate on interval for the life of the
+// daemon (#4873's periodic half), journaling and telemetering only actual
+// tier transitions. Pulled out of runUpContextWithForce alongside the other
+// startTicker-shaped helpers in this file (see
+// startAPIReadCacheLockSweepTicker) for the same complexity-budget reason as
+// startDaemonStorageHealth.
+func startStorageHealthTicker(ctx context.Context, setup *schedulerSetup, gate *localscheduler.StorageGate, interval time.Duration) <-chan struct{} {
+	ticker := time.NewTicker(interval)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				tier, changed := gate.Sample()
+				reportStorageHealth(setup.InstanceLog, setup.Telemetry, gate, tier, changed)
+			}
+		}
+	}()
+	return done
+}
+
+// reportStorageHealth journals a tier transition (deduplicated: the caller
+// passes changed=false for every sample that didn't cross a boundary, and
+// this is a no-op then) and always feeds the current reading to telemetry,
+// satisfying #4873's "emit deduplicated status, log and telemetry signals" —
+// status itself reads the gate directly (readservice.LocalSources.
+// StorageHealthStats), so there is nothing else to update here.
+func reportStorageHealth(log *journal.InstanceLog, tel *telemetry.Client, gate *localscheduler.StorageGate, tier localscheduler.StorageTier, changed bool) {
+	stats := gate.Stats()
+	tel.StorageHealthSampled(tier.String(), stats.FreeBytes, changed)
+	if !changed {
+		return
+	}
+	log.AppendBestEffort(journal.Event{
+		Type: journal.EventError,
+		Error: &journal.ErrorDetail{
+			Code: storageHealthCode(tier),
+			Message: fmt.Sprintf("storage health -> %s: %s free of %s total on %s",
+				tier, memstat.FormatBytes(stats.FreeBytes), memstat.FormatBytes(stats.TotalBytes), stats.Path),
+		},
+	})
 }
 
 func stopReadServiceWorker(stop func() error, name string, stderr io.Writer) {

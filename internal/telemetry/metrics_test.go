@@ -258,6 +258,67 @@ func TestRedactionsTotalRecordsRegistryAndPatternLayersWithoutChangingBytes(t *t
 	}
 }
 
+// TestRecoverySnapshotObservationsRecordFormatBytesFallbackAndFailures pins
+// #5028: Client implements internal/recovery's SnapshotObserver, and each
+// method records the metric its doc comment promises, labeled correctly.
+func TestRecoverySnapshotObservationsRecordFormatBytesFallbackAndFailures(t *testing.T) {
+	reader := metric.NewManualReader()
+	client := newMetricsClient(t, Config{MetricReader: reader})
+
+	client.SnapshotCaptured("delta", 4096)
+	client.SnapshotCaptured("full", 1<<20)
+	client.SnapshotFallback("no_base_ref")
+	client.SnapshotRestoreFailed("base_missing")
+
+	collected := collectMetrics(t, reader)
+
+	formatPoints := metricPoints(t, collected, MetricRecoverySnapshotFormat)
+	if len(formatPoints) != 2 {
+		t.Fatalf("%s points = %+v, want one per format", MetricRecoverySnapshotFormat, formatPoints)
+	}
+	deltaFormat := pointWith(t, formatPoints, MetricAttrRecoverySnapshotFormat, "delta")
+	if deltaFormat.value != 1 {
+		t.Errorf("%s{format=delta} = %v, want 1", MetricRecoverySnapshotFormat, deltaFormat.value)
+	}
+
+	bytesPoints := metricPoints(t, collected, MetricRecoverySnapshotBytes)
+	deltaBytes := pointWith(t, bytesPoints, MetricAttrRecoverySnapshotFormat, "delta")
+	if deltaBytes.value != 4096 {
+		t.Errorf("%s{format=delta} = %v, want 4096", MetricRecoverySnapshotBytes, deltaBytes.value)
+	}
+	fullBytes := pointWith(t, bytesPoints, MetricAttrRecoverySnapshotFormat, "full")
+	if fullBytes.value != 1<<20 {
+		t.Errorf("%s{format=full} = %v, want %d", MetricRecoverySnapshotBytes, fullBytes.value, 1<<20)
+	}
+
+	fallbackPoints := metricPoints(t, collected, MetricRecoverySnapshotFallback)
+	fallback := pointWith(t, fallbackPoints, MetricAttrRecoveryReason, "no_base_ref")
+	if fallback.value != 1 {
+		t.Errorf("%s{reason=no_base_ref} = %v, want 1", MetricRecoverySnapshotFallback, fallback.value)
+	}
+
+	failurePoints := metricPoints(t, collected, MetricRecoveryRestoreFailures)
+	failure := pointWith(t, failurePoints, MetricAttrRecoveryReason, "base_missing")
+	if failure.value != 1 {
+		t.Errorf("%s{reason=base_missing} = %v, want 1", MetricRecoveryRestoreFailures, failure.value)
+	}
+}
+
+// TestRecoverySnapshotObservationsNilSafe pins the same nil-receiver
+// tolerance every other Client observer method has: a *Client with no
+// instruments (built without a metric reader) must not panic.
+func TestRecoverySnapshotObservationsNilSafe(t *testing.T) {
+	var client *Client
+	client.SnapshotCaptured("delta", 1)
+	client.SnapshotFallback("no_base_ref")
+	client.SnapshotRestoreFailed("base_missing")
+
+	noInstruments := &Client{}
+	noInstruments.SnapshotCaptured("delta", 1)
+	noInstruments.SnapshotFallback("no_base_ref")
+	noInstruments.SnapshotRestoreFailed("base_missing")
+}
+
 // The default provider-pattern net used by Redact is package-global. Metric
 // observers belong to clients, so default clients must receive private
 // scrubbers: constructing one client may neither redirect another's events nor

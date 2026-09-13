@@ -1454,6 +1454,130 @@ type RunConditions struct {
 	// which this same instance.yaml, deployed unchanged across
 	// differently-provisioned pods, cannot know in advance.
 	MemoryHighWater float64 `json:"memoryHighWater,omitempty" yaml:"memoryHighWater,omitempty"`
+	// Storage configures tiered low-disk protection for the filesystem
+	// containing the instance root (#4873). Omitted uses conservative
+	// defaults — see StorageHealthConfig and ResolveStorageThresholds.
+	Storage *StorageHealthConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
+}
+
+// StorageHealthConfig configures tiered low-disk protection for the
+// filesystem containing the instance root (#4873, maintainer ruling on the
+// issue). Warning and critical are independent tiers: crossing the warning
+// floor marks storage health degraded and emits deduplicated status, log and
+// telemetry signals; crossing the critical floor additionally stops
+// admitting and dispatching NEW runs until free space recovers past the
+// critical floor (with hysteresis — see localscheduler's disk gate). Neither
+// tier ever blocks journal appends, stage surrender, terminalization,
+// recovery, cleanup, retention, diagnostics, or operator commands: existing
+// work must be able to drain and reclaim space, which is the entire point of
+// stopping new intake instead of continuing it until the journal itself
+// fails.
+type StorageHealthConfig struct {
+	// WarningFloorBytes is an absolute free-space floor for the warning tier.
+	// Omitted or zero disables the absolute check for this tier;
+	// WarningFloorPercent may still apply. When both are set, the tier fires
+	// on whichever floor is higher for the current filesystem size — an
+	// operator opting into both wants the stricter of the two enforced, not
+	// silently overridden by the other.
+	WarningFloorBytes int64 `json:"warningFloorBytes,omitempty" yaml:"warningFloorBytes,omitempty"`
+	// WarningFloorPercent is a floor for the warning tier expressed as a
+	// percentage (0-100) of the filesystem's total size. Omitted or zero
+	// disables the percentage check for this tier.
+	WarningFloorPercent float64 `json:"warningFloorPercent,omitempty" yaml:"warningFloorPercent,omitempty"`
+	// CriticalFloorBytes mirrors WarningFloorBytes for the critical tier.
+	CriticalFloorBytes int64 `json:"criticalFloorBytes,omitempty" yaml:"criticalFloorBytes,omitempty"`
+	// CriticalFloorPercent mirrors WarningFloorPercent for the critical tier.
+	CriticalFloorPercent float64 `json:"criticalFloorPercent,omitempty" yaml:"criticalFloorPercent,omitempty"`
+	// CheckInterval is how often the daemon re-measures free space after its
+	// one-time startup check, as a Go duration ("1m"). Omitted or zero uses
+	// DefaultStorageCheckInterval.
+	CheckInterval string `json:"checkInterval,omitempty" yaml:"checkInterval,omitempty"`
+}
+
+// Default tiered low-disk protection thresholds (#4873), used whenever the
+// corresponding StorageHealthConfig field is omitted or zero.
+//
+// The percentages mirror the ~5% superuser reserve most Linux filesystems
+// carry by default: below that, a general-purpose filesystem is already
+// operating in the range its own designers considered abnormal. Warning
+// doubles it for lead time before the critical tier's behavioral change
+// (stopping new-run admission) actually kicks in.
+//
+// DefaultStorageCheckInterval matches the daemon's other slow health sweeps
+// (see cmd/goobers/up.go's telemetryRetentionSweepInterval-style tickers):
+// free space is a slow-moving aggregate outside a runaway write loop, so a
+// once-a-minute sample is frequent enough to catch a genuine fill without
+// making every tick pay for a syscall.
+const (
+	DefaultStorageWarningFloorPercent  = 10.0
+	DefaultStorageCriticalFloorPercent = 5.0
+	DefaultStorageCheckInterval        = time.Minute
+)
+
+// StorageThresholds are tiered low-disk protection's resolved, effective
+// values — StorageHealthConfig with every omitted field replaced by its
+// default, ready for the gate to compare a diskstat.Footprint against.
+type StorageThresholds struct {
+	WarningFloorBytes    int64
+	WarningFloorPercent  float64
+	CriticalFloorBytes   int64
+	CriticalFloorPercent float64
+	CheckInterval        time.Duration
+}
+
+// ResolveStorageThresholds resolves the effective tiered low-disk thresholds,
+// folding in a conservative default derived from the configured recovery
+// archive bound (#4873's "documented conservative defaults that account for
+// the configured recovery archive bound"): the DEFAULT critical byte floor
+// never resolves below the total bytes a full recovery-snapshot inventory
+// (recovery.MaxSnapshotsEffective() * recovery.MaxArchiveBytesEffective())
+// can commit to disk. Without that floor, admission-stop could still leave
+// less free space than a single recovery capture pass needs, trading the
+// ENOSPC failure mode this issue exists to prevent for a different one.
+//
+// An OPERATOR-configured CriticalFloorBytes is honored exactly as given, even
+// below the recovery bound: #4873 leaves the exact constants to engineering
+// judgement, but an explicit override is a deliberate operator choice, not a
+// default this function should second-guess.
+func (c RunConditions) ResolveStorageThresholds(recovery RecoverySnapshotConfig) StorageThresholds {
+	cfg := StorageHealthConfig{}
+	if c.Storage != nil {
+		cfg = *c.Storage
+	}
+
+	warningPercent := cfg.WarningFloorPercent
+	if warningPercent <= 0 {
+		warningPercent = DefaultStorageWarningFloorPercent
+	}
+	criticalPercent := cfg.CriticalFloorPercent
+	if criticalPercent <= 0 {
+		criticalPercent = DefaultStorageCriticalFloorPercent
+	}
+
+	recoveryBound := int64(recovery.MaxSnapshotsEffective()) * recovery.MaxArchiveBytesEffective()
+	criticalBytes := cfg.CriticalFloorBytes
+	if criticalBytes <= 0 {
+		criticalBytes = recoveryBound
+	}
+	warningBytes := cfg.WarningFloorBytes
+	if warningBytes <= 0 {
+		warningBytes = criticalBytes * 2
+	}
+
+	interval := DefaultStorageCheckInterval
+	if cfg.CheckInterval != "" {
+		if d, err := time.ParseDuration(cfg.CheckInterval); err == nil && d > 0 {
+			interval = d
+		}
+	}
+
+	return StorageThresholds{
+		WarningFloorBytes:    warningBytes,
+		WarningFloorPercent:  warningPercent,
+		CriticalFloorBytes:   criticalBytes,
+		CriticalFloorPercent: criticalPercent,
+		CheckInterval:        interval,
+	}
 }
 
 // memoryHighWaterEnv names the environment variable ResolveMemoryHighWater

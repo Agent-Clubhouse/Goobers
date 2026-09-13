@@ -47,12 +47,12 @@ func TestTriggerSweepProgressRequiresSuccessfulCompletion(t *testing.T) {
 }
 
 func TestDaemonProbeHTTPDistinguishesListeningFromTriggerReadiness(t *testing.T) {
-	var listening, ready, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
+	var listening, planeReady, ready, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
 	var lastTick, lastSweep atomic.Int64
 	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 	started := now
 	state := &daemonProbeState{
-		apiListening: &listening, ready: &ready, configLoaded: &configLoaded,
+		apiListening: &listening, planeReady: &planeReady, ready: &ready, configLoaded: &configLoaded,
 		stateOpen: &stateOpen, resumeComplete: &resumeComplete, sweepsStarted: &sweepsStarted,
 		lastTickAtNanos: &lastTick, lastTriggerSweepAtNanos: &lastSweep,
 		livenessTimeout: time.Minute, now: func() time.Time { return now },
@@ -71,14 +71,20 @@ func TestDaemonProbeHTTPDistinguishesListeningFromTriggerReadiness(t *testing.T)
 		}
 	}
 	listening.Store(true)
-	configLoaded.Store(true)
-	stateOpen.Store(true)
 	for _, delay := range []time.Duration{35 * time.Second, 60 * time.Second} {
 		now = started.Add(delay)
-		// The API can answer for a minute while startup still cannot accept
-		// work. No real sleeps or timing-sensitive subprocesses are needed.
+		// The bare listener answers (apiListening) for a minute before the
+		// full handler — and so plane-ready — is even wired in.
 		probe(http.StatusServiceUnavailable, false, false)
 	}
+	configLoaded.Store(true)
+	stateOpen.Store(true)
+	// #4252: plane-ready (the full handler, credential/blob/journal/surrender
+	// routes included, swapped into the SwitchHandler) flips here — well
+	// before resumeComplete/sweepsStarted/ready — and the HTTP status must
+	// flip to 200 with it, independent of scheduler-readiness below.
+	planeReady.Store(true)
+	probe(http.StatusOK, false, false)
 	resumeComplete.Store(true)
 	sweepsStarted.Store(true)
 	ready.Store(true)
@@ -92,7 +98,10 @@ func TestDaemonProbeHTTPDistinguishesListeningFromTriggerReadiness(t *testing.T)
 	lastSweep.Store(now.UnixNano())
 	probe(http.StatusOK, true, true)
 	ready.Store(false)
-	probe(http.StatusServiceUnavailable, false, false)
+	// #4252: scheduler-ready dropping (schedulerReady/triggerSweepReady
+	// checks go false) no longer takes the HTTP status back to 503 — Ready is
+	// plane-ready, and the plane has not gone anywhere.
+	probe(http.StatusOK, false, false)
 }
 
 // TestDaemonProbeStateLivenessReflectsHeartbeatStaleness is the direct,
@@ -135,12 +144,13 @@ func TestDaemonProbeStateLivenessReflectsHeartbeatStaleness(t *testing.T) {
 // exercises the post-startup happy path; this one specifically starts from
 // ready=false.
 func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
-	var ready, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
+	var ready, planeReady, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
 	started := time.Date(2026, time.September, 12, 19, 30, 0, 0, time.UTC)
 	tracker := &startupPhaseTracker{}
 	tracker.set("worktree-reap-crash-orphan", "efunhouse")
 	state := &daemonProbeState{
 		ready:          &ready,
+		planeReady:     &planeReady,
 		configLoaded:   &configLoaded,
 		stateOpen:      &stateOpen,
 		resumeComplete: &resumeComplete,
@@ -152,8 +162,8 @@ func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 	tracker.mu.Unlock()
 
 	got := state.readiness()
-	if got.Ready {
-		t.Fatal("readiness() must be false before the ready gate flips, not default true")
+	if got.Ready || got.SchedulerReady {
+		t.Fatal("readiness() must be false before its gates flip, not default true")
 	}
 	for name, value := range got.Checks {
 		if value {
@@ -172,6 +182,7 @@ func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 	}
 
 	ready.Store(true)
+	planeReady.Store(true)
 	configLoaded.Store(true)
 	stateOpen.Store(true)
 	resumeComplete.Store(true)
@@ -179,7 +190,10 @@ func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 
 	got = state.readiness()
 	if !got.Ready {
-		t.Fatal("readiness() must flip true once the ready gate is set")
+		t.Fatal("readiness() must flip true once the plane-ready gate is set")
+	}
+	if !got.SchedulerReady {
+		t.Fatal("readiness() SchedulerReady must flip true once the scheduler-ready gate is set")
 	}
 	if got.Startup != nil {
 		t.Fatalf("ready daemon reported startup phase: %+v", got.Startup)
@@ -188,5 +202,58 @@ func TestDaemonProbeStateReadinessReflectsReadyGate(t *testing.T) {
 		if !got.Checks[name] {
 			t.Fatalf("check %q = false once every subsystem flipped true, checks = %+v", name, got.Checks)
 		}
+	}
+}
+
+// TestDaemonProbeStateReadinessPlaneReadyIndependentOfSchedulerReady is
+// #4252's core regression: Ready (plane-ready, the gate the Kubernetes
+// Service/readinessProbe now consumes) must be able to flip true while
+// SchedulerReady (resumeComplete/sweepsStarted, "safe to admit new dispatch")
+// is still false — that gap is exactly the long crash-resume window a
+// running stage pod must be able to reach its planes during, without the
+// daemon yet admitting brand-new scheduling.
+func TestDaemonProbeStateReadinessPlaneReadyIndependentOfSchedulerReady(t *testing.T) {
+	var ready, planeReady, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
+	state := &daemonProbeState{
+		ready:          &ready,
+		planeReady:     &planeReady,
+		configLoaded:   &configLoaded,
+		stateOpen:      &stateOpen,
+		resumeComplete: &resumeComplete,
+		sweepsStarted:  &sweepsStarted,
+	}
+
+	configLoaded.Store(true)
+	stateOpen.Store(true)
+	planeReady.Store(true)
+	// resumeComplete, sweepsStarted, and the overall scheduler-ready gate
+	// remain false: crash-resume is still in progress.
+
+	got := state.readiness()
+	if !got.Ready {
+		t.Fatal("Ready (plane-ready) must be true once the listener/planes are open, even mid crash-resume")
+	}
+	if got.SchedulerReady {
+		t.Fatal("SchedulerReady must stay false while crash-resume has not completed")
+	}
+	if got.Checks["resumeComplete"] {
+		t.Fatal("resumeComplete check must still read false")
+	}
+}
+
+// TestDaemonProbeStateReadinessPlaneReadyNilDefaultsFalse locks that an
+// unwired planeReady pointer (e.g. an older construction site that has not
+// been updated) fails closed rather than reporting ready by omission.
+func TestDaemonProbeStateReadinessPlaneReadyNilDefaultsFalse(t *testing.T) {
+	var ready, configLoaded, stateOpen, resumeComplete, sweepsStarted atomic.Bool
+	state := &daemonProbeState{
+		ready:          &ready,
+		configLoaded:   &configLoaded,
+		stateOpen:      &stateOpen,
+		resumeComplete: &resumeComplete,
+		sweepsStarted:  &sweepsStarted,
+	}
+	if got := state.readiness(); got.Ready {
+		t.Fatal("readiness() with a nil planeReady pointer must fail closed (Ready = false), not panic or default true")
 	}
 }

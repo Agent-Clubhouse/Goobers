@@ -84,6 +84,7 @@ type Instance struct {
 	Maintenance        *MaintenanceStatus        `json:"maintenance,omitempty"`
 	TelemetryRetention *TelemetryRetentionStatus `json:"telemetryRetention,omitempty"`
 	JournalHealth      *JournalHealthStatus      `json:"journalHealth,omitempty"`
+	StorageHealth      *StorageHealthStatus      `json:"storageHealth,omitempty"`
 	// MemoryHighWater, MemoryGateEnabled, and FsyncDisabled surface
 	// GOOBERS_MEMORY_HIGH_WATER and GOOBERS_DISABLE_FSYNC (#4218), settings
 	// that were previously invisible outside the daemon process's own
@@ -410,6 +411,10 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		stats := s.sources.InstanceLogStats()
 		journalHealth = &JournalHealthStatus{AppendsDropped: stats.AppendsDropped}
 	}
+	var storageHealth *StorageHealthStatus
+	if s.sources.StorageHealthStats != nil {
+		storageHealth = storageHealthStatus(s.sources.StorageHealthStats())
+	}
 	projected, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
 	if err != nil {
 		return Instance{}, err
@@ -440,6 +445,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 		Maintenance:        maintenance,
 		TelemetryRetention: telemetryRetention,
 		JournalHealth:      journalHealth,
+		StorageHealth:      storageHealth,
 		MemoryHighWater:    memoryHighWater,
 		MemoryGateEnabled:  !memoryGateDisabled,
 		FsyncDisabled:      journal.FsyncDisabled(),

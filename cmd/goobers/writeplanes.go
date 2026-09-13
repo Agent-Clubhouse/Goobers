@@ -516,6 +516,15 @@ type daemonTriggerService struct {
 	// may POST /triggers for its OWN gaggle". nil is fail-closed: a pod
 	// request is refused rather than admitted unverified.
 	contains func(gaggle, runID string) bool
+	// schedulerReady reports whether crash-resume and the initial sweeps have
+	// completed (#4252's "scheduler-ready" gate). The Kubernetes Service can
+	// start routing traffic to this daemon as soon as it is merely
+	// plane-ready — well before scheduler-ready — so this plane, the one HTTP
+	// path that admits BRAND NEW dispatch, must refuse admission itself
+	// rather than relying on the Service not having sent the request yet.
+	// nil (never wired, e.g. existing tests) means "always ready", the
+	// pre-#4252 behavior.
+	schedulerReady func() bool
 
 	mu    sync.Mutex
 	seen  map[string]triggerReservation
@@ -544,6 +553,13 @@ func (s *daemonTriggerService) AttachScheduler(sched *localscheduler.Scheduler) 
 	if s != nil {
 		s.sched.Store(sched)
 	}
+}
+
+// withSchedulerReadyGate attaches the scheduler-ready check (#4252). See
+// schedulerReady's doc comment.
+func (s *daemonTriggerService) withSchedulerReadyGate(ready func() bool) *daemonTriggerService {
+	s.schedulerReady = ready
+	return s
 }
 
 // dispatchContextHolder boxes a context for atomic.Pointer, which cannot hold
@@ -589,6 +605,18 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 	if dispatch == nil {
 		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
 			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
+		)
+	}
+	// #4252: refuse to admit brand-new dispatch until crash-resume and the
+	// initial sweeps have finished, even though the Service may already be
+	// routing traffic here (plane-ready flips well before scheduler-ready).
+	// Checked before validateTriggerAuthority/dispatchTrigger's dedupe
+	// reservation below so a refused request never poisons its RequestID —
+	// the caller's retry after resume completes must still be able to mint.
+	if s.schedulerReady != nil && !s.schedulerReady() {
+		return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "scheduler_recovering",
+			"the daemon is still resuming interrupted runs from a prior restart; new dispatch is not yet admitted", nil,
 		)
 	}
 	if err := s.validateTriggerAuthority(request); err != nil {

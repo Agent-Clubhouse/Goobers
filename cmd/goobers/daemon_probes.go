@@ -27,8 +27,16 @@ import (
 // cadence, for the cross-process readers (e.g. `goobers status`) that must
 // see it there; only this in-process probe's read path is memory-only.
 type daemonProbeState struct {
-	apiListening            *atomic.Bool
-	ready                   *atomic.Bool
+	apiListening *atomic.Bool
+	// planeReady (#4252): true once the FULL versioned handler — with the
+	// credential/blob/journal/surrender plane routes wired in — has been
+	// swapped into the SwitchHandler (up.go's apiHandler.Set), independent of
+	// resumeComplete/sweepsStarted/ready below. apiListening above flips
+	// earlier still (the bare listener bound, serving only /healthz/
+	// /readyz/503 via startStartupAPI) and is not sufficient on its own: a
+	// stage pod cannot reach those planes until the real handler is live.
+	planeReady              *atomic.Bool
+	ready                   *atomic.Bool // scheduler-ready: crash-resume + initial sweeps complete
 	configLoaded            *atomic.Bool
 	stateOpen               *atomic.Bool
 	resumeComplete          *atomic.Bool
@@ -65,13 +73,15 @@ func (d *daemonProbeState) liveness() bool {
 
 // readiness implements httpapi.ReadinessCheck.
 func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
+	planeReady := d.planeReady != nil && d.planeReady.Load()
 	status := httpapi.ReadinessStatus{
-		// The single Ready gate every authenticated caller already sees on
-		// /api/v1/health.Ready — never recomputed from Checks below, so the
-		// two surfaces cannot drift out of lockstep. Startup also waits for
-		// the first active-count sample before opening this gate; the four
-		// subsystem checks below remain diagnostic, not an exhaustive gate.
-		Ready: d.ready.Load(),
+		// #4252: /readyz's Ready (and so its HTTP status, and the reference
+		// deployment's readinessProbe/startupProbe) reflects plane-ready, NOT
+		// the full scheduler-ready gate /api/v1/health.Ready still exposes —
+		// see httpapi.ReadinessStatus's doc comment for why the split is
+		// deliberate.
+		Ready:          planeReady,
+		SchedulerReady: d.ready.Load(),
 		Checks: map[string]bool{
 			"apiListening":      d.apiListening != nil && d.apiListening.Load(),
 			"schedulerReady":    d.ready.Load() && d.freshHeartbeat(d.lastTickAtNanos),
@@ -84,7 +94,13 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 			"sweepsStarted":  d.sweepsStarted.Load(),
 		},
 	}
-	if !status.Ready && d.startup != nil {
+	// #4252: the Startup diagnostic exists to name what is blocking full
+	// (scheduler) readiness, which now stays interesting for a long time
+	// after Ready (plane-ready) has already flipped — a crash-resume with a
+	// large interrupted-run count is exactly the window an operator most
+	// needs "which phase, since when" for, and Ready flipping early must not
+	// hide that.
+	if !status.SchedulerReady && d.startup != nil {
 		phase, _, since := d.startup.snapshot()
 		if phase != "" {
 			status.Startup = &httpapi.StartupStatus{

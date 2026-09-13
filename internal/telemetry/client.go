@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	apimetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -115,6 +116,59 @@ func (c *Client) InstanceJournalAppendDropped() {
 		return
 	}
 	c.instruments.journalDrops.Add(context.Background(), 1)
+}
+
+// SnapshotCaptured implements internal/recovery's SnapshotObserver (that
+// package sits downstream of this one in the import graph, so the interface
+// it declares uses plain strings rather than a type imported from here).
+// bytes and format are bounded/verified by the recovery package before this
+// is called: format is one of two literal strings, and bytes is the
+// archive's own byte budget.
+func (c *Client) SnapshotCaptured(format string, bytes int64) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	attrs := c.instruments.attributeSet(attribute.String(MetricAttrRecoverySnapshotFormat, format))
+	ctx := context.Background()
+	c.instruments.recoverySnapshotFormat.Add(ctx, 1, attrs)
+	c.instruments.recoverySnapshotBytes.Record(ctx, float64(bytes), attrs)
+}
+
+// SnapshotFallback implements internal/recovery's SnapshotObserver. reason is
+// one of that package's FallbackReason constants.
+func (c *Client) SnapshotFallback(reason string) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	c.instruments.recoverySnapshotFallback.Add(context.Background(), 1,
+		c.instruments.attributeSet(attribute.String(MetricAttrRecoveryReason, reason)))
+}
+
+// SnapshotRestoreFailed implements internal/recovery's SnapshotObserver.
+// reason is one of that package's RestoreFailureReason constants.
+func (c *Client) SnapshotRestoreFailed(reason string) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	c.instruments.recoveryRestoreFailures.Add(context.Background(), 1,
+		c.instruments.attributeSet(attribute.String(MetricAttrRecoveryReason, reason)))
+}
+
+// StorageHealthSampled records one tiered low-disk protection reading
+// (#4873): the current free-byte gauge always updates, and tierChanged is
+// true only on the sample where the tier actually differs from the previous
+// one — the counter increments once per transition, not once per sample, so
+// a quiet instance sitting in one tier does not manufacture the appearance of
+// repeated events.
+func (c *Client) StorageHealthSampled(tier string, freeBytes uint64, tierChanged bool) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	ctx := context.Background()
+	c.instruments.storageFreeBytes.Record(ctx, int64(freeBytes))
+	if tierChanged {
+		c.instruments.storageHealthChanges.Add(ctx, 1, apimetric.WithAttributes(attribute.String(MetricAttrStorageTier, tier)))
+	}
 }
 
 // New configures OpenTelemetry tracing and metrics for a Goobers process.

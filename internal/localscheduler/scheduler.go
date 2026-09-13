@@ -424,6 +424,20 @@ func WithMemoryGate(gate MemoryGate) Option {
 	}
 }
 
+// WithDiskGate wires tiered low-disk protection's critical-tier admission
+// stop (#4873): when the filesystem containing the instance root has crossed
+// the configured critical floor, new runs are refused with
+// ReasonStorageCritical until free space recovers past the gate's hysteresis
+// margin, rather than continuing to admit work the daemon may not be able to
+// durably record. Optional — nil/unset leaves it unenforced.
+func WithDiskGate(gate DiskGate) Option {
+	return func(s *Scheduler) {
+		if gate != nil {
+			s.conditions.SetDiskGate(gate)
+		}
+	}
+}
+
 // WithRunnerCapabilities declares the local runner's static advertised
 // capability set (RRQ-1/#1101). A dispatch whose entry requires a capability
 // not in this set is refused before admission, journaling a tick.skipped with a
