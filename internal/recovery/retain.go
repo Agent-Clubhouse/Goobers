@@ -25,6 +25,9 @@ type RetentionRequest struct {
 	MaxArchiveBytes int64
 	// SkipEmpty permits cleanup without publishing when no implementation
 	// differs from the cumulative base. It returns a zero record and empty path.
+	// RetainAbandonedPreparation applies it to a preparation that differs in
+	// nothing from its parent, which would otherwise hold a scarce inventory
+	// slot for the full retain floor while protecting no work at all (#4994).
 	SkipEmpty bool
 	// AcknowledgeArchive optionally requires custody outside the local
 	// inventory before releasing source state. The path is the bundle, not
@@ -62,7 +65,7 @@ func Retain(ctx context.Context, request RetentionRequest, log PublicationJourna
 	if err != nil {
 		return Record{}, "", err
 	}
-	if request.SkipEmpty && prepared.PatchDigest == "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
+	if request.SkipEmpty && prepared.PatchDigest == emptyPatchDigest {
 		return Record{}, "", nil
 	}
 	retained, path, err := PublishToInventoryWithEviction(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, prepared, request.MaxSnapshots, request.MaxArchiveBytes, request.EvictFull)
