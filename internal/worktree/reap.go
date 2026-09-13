@@ -65,7 +65,8 @@ type ReapWarning struct {
 // Reap scans every managed working copy under Root for worktrees whose
 // marker shows a dead owning process (a crash orphan), a surrendered cleanup
 // awaiting retry, or a keep-on-failure worktree older than opts.StaleAfter,
-// and removes them. It
+// and removes them. Cleanup-retained markers are durable operator quarantine
+// and are never selected automatically. It
 // also removes markerless directories still registered with git (a crash
 // between `git worktree add` and the marker write) and deregistered
 // markerless directories whose owning journal is terminal. Call it on daemon
@@ -189,7 +190,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			if errors.Is(err, errReapAuthorityChanged) {
 				continue
 			}
-			if errors.As(err, &timeoutErr) || errors.Is(err, ErrCleanupDeferred) {
+			if errors.As(err, &timeoutErr) || errors.Is(err, ErrCleanupDeferred) || errors.Is(err, ErrCleanupRetained) {
 				warnings = append(warnings, ReapWarning{Path: path, Err: fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)})
 				continue
 			}
@@ -344,9 +345,14 @@ func (m *Manager) reapOneLocked(ctx context.Context, key, path, markerPath strin
 		worktreeID = mk.RunID
 		cleanupMarker = *mk
 	}
-	if err := m.prepareMarkerCleanup(ctx, path, worktreeID, cleanupMarker); err != nil {
+	if mk != nil {
+		if err := m.prepareMarkerCleanupWithRetention(ctx, key, path, markerPath, worktreeID, cleanupMarker); err != nil {
+			return err
+		}
+	} else if err := m.prepareMarkerCleanup(ctx, path, worktreeID, cleanupMarker); err != nil {
 		return err
 	}
+
 	repoDir := m.repoDirForKey(key)
 	if mk != nil {
 		if err := m.restoreReservedBranchFromMarker(ctx, key, path, *mk); err != nil {
@@ -389,6 +395,44 @@ func (m *Manager) reapOneLocked(ctx context.Context, key, path, markerPath strin
 	}
 	if err := os.Remove(m.ownershipPath(key, filepath.Base(path))); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: remove ownership record for %s: %w", path, err)
+	}
+	return nil
+}
+
+func (m *Manager) markCleanupRetained(key, path, markerPath string, primary marker, disposition string) error {
+	if disposition == "" || len(disposition) > 1024 || strings.ContainsAny(disposition, "\x00\r\n") {
+		return fmt.Errorf("worktree: invalid cleanup retention disposition")
+	}
+	directory, err := primary.directoryName()
+	if err != nil {
+		return err
+	}
+	if directory != filepath.Base(path) || markerPath != m.markerPath(key, primary.RunID) {
+		return fmt.Errorf("worktree: cleanup retention identity does not match target")
+	}
+	ownershipPath := m.ownershipPath(key, directory)
+	ownership, err := readMarker(ownershipPath)
+	if err != nil {
+		return fmt.Errorf("worktree: read cleanup retention ownership: %w", err)
+	}
+	if !sameWorkspaceIdentity(primary, ownership) || primary.Status != ownership.Status {
+		return fmt.Errorf("worktree: cleanup retention ownership records disagree")
+	}
+	if primary.Status != statusActive && primary.Status != statusCleanupPending {
+		return fmt.Errorf("worktree: cannot retain cleanup from status %q", primary.Status)
+	}
+	retainedAt := time.Now().UTC()
+	primary.Status = statusCleanupRetained
+	primary.RetainedAt = retainedAt
+	primary.CleanupDisposition = disposition
+	ownership.Status = statusCleanupRetained
+	ownership.RetainedAt = retainedAt
+	ownership.CleanupDisposition = disposition
+	if err := writeMarker(ownershipPath, ownership); err != nil {
+		return fmt.Errorf("worktree: persist cleanup retention ownership: %w", err)
+	}
+	if err := writeMarker(markerPath, primary); err != nil {
+		return fmt.Errorf("worktree: persist cleanup retention marker: %w", err)
 	}
 	return nil
 }

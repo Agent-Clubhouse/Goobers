@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +24,8 @@ func TestRunStartupPhaseLogsStartDoneAndFailure(t *testing.T) {
 	if !strings.Contains(out, `phase=example-phase status=done target="gaggle-a"`) {
 		t.Fatalf("output = %q, want done line", out)
 	}
-	if phase, target, _ := tracker.snapshot(); phase != "example-phase" || target != "gaggle-a" {
-		t.Fatalf("tracker snapshot = (%q, %q), want (example-phase, gaggle-a)", phase, target)
+	if phase, target, since := tracker.snapshot(); phase != "" || target != "" || !since.IsZero() {
+		t.Fatalf("tracker snapshot = (%q, %q, %s), want cleared completed phase", phase, target, since)
 	}
 
 	buf.Reset()
@@ -39,6 +40,39 @@ func TestRunStartupPhaseLogsStartDoneAndFailure(t *testing.T) {
 	}
 	if strings.Contains(out, "sk-live-abcdef") {
 		t.Fatalf("output = %q, leaked secret from error", out)
+	}
+	if phase, target, since := tracker.snapshot(); phase != "" || target != "" || !since.IsZero() {
+		t.Fatalf("tracker snapshot after failure = (%q, %q, %s), want cleared phase", phase, target, since)
+	}
+}
+
+func TestRunStartupPhaseTransitionsFromCompletedPhaseToBlockedPhase(t *testing.T) {
+	tracker := &startupPhaseTracker{}
+	if err := runStartupPhase(io.Discard, tracker, "completed", "", func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- runStartupPhase(io.Discard, tracker, "blocked", "run-42", func() error {
+			close(blocked)
+			<-release
+			return nil
+		})
+	}()
+	<-blocked
+	phase, target, since := tracker.snapshot()
+	if phase != "blocked" || target != "run-42" || since.IsZero() {
+		t.Fatalf("tracker snapshot = (%q, %q, %s), want active blocked phase", phase, target, since)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if phase, _, _ := tracker.snapshot(); phase != "" {
+		t.Fatalf("completed blocked phase remained active as %q", phase)
 	}
 }
 

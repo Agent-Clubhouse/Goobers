@@ -351,12 +351,23 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	if err := r.Close(); err != nil {
 		return nil, fmt.Errorf("journal: close staged run: %w", err)
 	}
+	markerCreated, err := MarkRunActive(runsDir, id.RunID)
+	if err != nil {
+		return nil, err
+	}
+	publishedDir := false
+	defer func() {
+		if markerCreated && !publishedDir {
+			_ = ClearRunActive(finalDir)
+		}
+	}()
 	if err := renameNoReplace(dir, finalDir); err != nil {
 		if _, statErr := os.Stat(finalDir); statErr == nil {
 			return nil, fmt.Errorf("journal: run %q already exists at %s", id.RunID, finalDir)
 		}
 		return nil, fmt.Errorf("journal: publish run directory: %w", err)
 	}
+	publishedDir = true
 	if err := fsyncDir(runsDir); err != nil {
 		return nil, fmt.Errorf("journal: fsync runs dir: %w", err)
 	}

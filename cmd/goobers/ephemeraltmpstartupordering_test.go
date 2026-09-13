@@ -29,8 +29,8 @@ func TestSweepOrphanedEphemeralTmpRunsBeforeResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	const sweepCall = "sweepOrphanedEphemeralTmp(setup.Config, setup.InstanceLog)"
-	const resumeCall = "resumeInterruptedRunsWithRunners("
+	const sweepCall = "reconcileStartupEphemeralTemp(setup, tracker, stdout)"
+	const resumeCall = "resumeStartupRuns("
 	sweepAt := strings.Index(text, sweepCall)
 	resumeAt := strings.Index(text, resumeCall)
 	if sweepAt < 0 {

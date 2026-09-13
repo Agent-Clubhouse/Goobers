@@ -12,9 +12,10 @@ import (
 
 // FinalizeResult reports how terminal cleanup handled one owned worktree.
 type FinalizeResult struct {
-	WorktreeID string
-	Path       string
-	Kept       bool
+	WorktreeID         string
+	Path               string
+	Kept               bool
+	CleanupDisposition string
 }
 
 // FinalizeRun removes every worktree owned by runID across all managed repos.
@@ -86,23 +87,14 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 			if !ownedByRun(mk, worktreeID, runID) {
 				continue
 			}
-			directory, err := mk.directoryName()
+			preserved, result, err := m.finalizePreservedMarker(key, worktreeID, mk)
 			if err != nil {
 				finalizeErr = errors.Join(finalizeErr,
 					fmt.Errorf("worktree: finalize run %s: resolve marker %s: %w", runID, markerPath, err))
 				continue
 			}
-			if mk.Status == statusKept {
-				results = append(results, FinalizeResult{
-					WorktreeID: worktreeID,
-					Path:       filepath.Join(m.runsDirForKey(key), directory),
-					Kept:       true,
-				})
-				continue
-			}
-			if mk.Status != statusActive && mk.Status != statusCleanupPending {
-				finalizeErr = errors.Join(finalizeErr,
-					fmt.Errorf("worktree: finalize run %s: marker %s has unknown status %q", runID, markerPath, mk.Status))
+			if preserved {
+				results = append(results, result)
 				continue
 			}
 		case os.IsNotExist(markerErr):
@@ -125,6 +117,10 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 		worktreeBytes, worktreeMeasured, measurementErr := m.measureWorktree(path)
 		if err := m.forceClear(ctx, key, path, worktreeID); err != nil {
 			m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
+			if result, retained := finalizeRetainedResult(worktreeID, path, err); retained {
+				results = append(results, result)
+				continue
+			}
 			finalizeErr = errors.Join(finalizeErr,
 				fmt.Errorf("worktree: finalize run %s worktree %s: %w", runID, worktreeID, err))
 			continue
@@ -137,6 +133,7 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 	if finalizeErr != nil {
 		return results, finalizeErr
 	}
+
 	acquisitionDir := m.branchAcquisitionRunDir(key, runID)
 	if err := os.RemoveAll(acquisitionDir); err != nil {
 		finalizeErr = errors.Join(finalizeErr,
@@ -146,6 +143,38 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 			fmt.Errorf("worktree: finalize run %s: sync branch acquisitions: %w", runID, err))
 	}
 	return results, finalizeErr
+}
+
+func (m *Manager) finalizePreservedMarker(key, worktreeID string, mk marker) (bool, FinalizeResult, error) {
+	directory, err := mk.directoryName()
+	if err != nil {
+		return false, FinalizeResult{}, err
+	}
+	result := FinalizeResult{WorktreeID: worktreeID, Path: filepath.Join(m.runsDirForKey(key), directory)}
+	switch mk.Status {
+	case statusKept:
+		result.Kept = true
+		return true, result, nil
+	case statusCleanupRetained:
+		result.CleanupDisposition = mk.CleanupDisposition
+		return true, result, nil
+	case statusActive, statusCleanupPending:
+		return false, result, nil
+	default:
+		return false, FinalizeResult{}, fmt.Errorf("marker has unknown status %q", mk.Status)
+	}
+}
+
+func finalizeRetainedResult(worktreeID, path string, err error) (FinalizeResult, bool) {
+	var retained *CleanupRetentionError
+	if !errors.Is(err, ErrCleanupRetained) || !errors.As(err, &retained) {
+		return FinalizeResult{}, false
+	}
+	return FinalizeResult{
+		WorktreeID:         worktreeID,
+		Path:               path,
+		CleanupDisposition: retained.Disposition,
+	}, true
 }
 
 func ownedByRun(mk marker, worktreeID, runID string) bool {

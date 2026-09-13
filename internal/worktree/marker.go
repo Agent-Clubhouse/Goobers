@@ -13,15 +13,16 @@ import (
 
 // status records why a worktree's marker is on disk. Active is still owned by
 // a stage, cleanup-pending was explicitly surrendered but could not yet be
-// removed, and kept was intentionally retained for debugging. Reap treats the
-// three differently: active markers require a dead owner, cleanup-pending is
-// immediately retryable, and kept requires ReapOptions.StaleAfter.
+// removed, cleanup-retained is quarantined because safe recovery could not be
+// proven, and kept was intentionally retained for debugging. Reap never
+// removes cleanup-retained targets automatically.
 type status string
 
 const (
-	statusActive         status = "active"
-	statusCleanupPending status = "cleanup-pending"
-	statusKept           status = "kept"
+	statusActive          status = "active"
+	statusCleanupPending  status = "cleanup-pending"
+	statusCleanupRetained status = "cleanup-retained"
+	statusKept            status = "kept"
 )
 
 // marker is the on-disk record placed alongside each worktree. It carries
@@ -60,6 +61,7 @@ type marker struct {
 	// remains bound to this exact retained worktree.
 	JournalMissingSince time.Time `json:"journal_missing_since,omitempty"`
 	Status              status    `json:"status"`
+	CleanupDisposition  string    `json:"cleanup_disposition,omitempty"`
 	SizeBytes           *int64    `json:"size_bytes,omitempty"`
 }
 

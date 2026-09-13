@@ -36,14 +36,14 @@ func implicitWritableWorkspaceWarnings(def Definition, gooberSets ...map[string]
 				policyActions = append(append([]string(nil), policyActions...), goober.PolicyActions...)
 			}
 			if !hasRepositoryMutationSignal(capabilities, policyActions) {
-				warnings = append(warnings, implicitWorkspaceWarning(def.Name, "task", task.Name))
+				warnings = append(warnings, implicitAgenticTaskWorkspaceWarning(def.Name, task.Name))
 			}
 			continue
 		}
 		if task.Type == apiv1.TaskDeterministic && task.Run != nil &&
 			deterministicStageAppearsReadOnly(task) &&
 			!hasRepositoryMutationSignal(task.Capabilities, task.PolicyActions) {
-			warnings = append(warnings, implicitWorkspaceWarning(def.Name, "task", task.Name))
+			warnings = append(warnings, implicitDeterministicTaskWorkspaceWarning(def.Name, task.Name))
 		}
 	}
 	for _, gate := range def.Spec.Gates {
@@ -54,7 +54,7 @@ func implicitWritableWorkspaceWarnings(def Definition, gooberSets ...map[string]
 				policyActions = goober.PolicyActions
 			}
 			if !hasRepositoryMutationSignal(capabilities, policyActions) {
-				warnings = append(warnings, implicitWorkspaceWarning(def.Name, "gate", gate.Name))
+				warnings = append(warnings, implicitAgenticGateWorkspaceWarning(def.Name, gate.Name))
 			}
 		}
 	}
@@ -67,10 +67,24 @@ func CheckImplicitWritableWorkspaceWarnings(def Definition, gooberSets ...map[st
 	return implicitWritableWorkspaceWarnings(def, gooberSets...)
 }
 
-func implicitWorkspaceWarning(workflow, kind, stage string) string {
+func implicitAgenticTaskWorkspaceWarning(workflow, stage string) string {
 	return fmt.Sprintf(
-		`workflow %q %s %q omits workspace; it defaults to writable workspace: repo (a run-branch worktree). Choose workspace: scratch when no repository is needed, workspace: repo-readonly when only inspecting repository contents, or workspace: repo when writable repository state is intentional`,
-		workflow, kind, stage,
+		`workflow %q agentic task %q omits task-level workspace; it defaults to writable workspace: repo (a run-branch worktree). Set task-level workspace; for example, workspace: repo-readonly. Choose scratch when no repository is needed, repo-readonly when only inspecting repository contents, or repo when writable repository state is intentional`,
+		workflow, stage,
+	)
+}
+
+func implicitDeterministicTaskWorkspaceWarning(workflow, stage string) string {
+	return fmt.Sprintf(
+		`workflow %q deterministic task %q omits workspace; it defaults to writable workspace: repo (a run-branch worktree). Set run.workspace (preferred and authoritative when both locations are present); for example, run: {command: ["go", "test", "./..."], workspace: repo-readonly}. Task-level workspace is also supported as a fallback. Choose scratch when no repository is needed, repo-readonly when only inspecting repository contents, or repo when writable repository state is intentional`,
+		workflow, stage,
+	)
+}
+
+func implicitAgenticGateWorkspaceWarning(workflow, stage string) string {
+	return fmt.Sprintf(
+		`workflow %q agentic gate %q omits agentic.workspace; it defaults to writable workspace: repo (a run-branch worktree). Set agentic.workspace; for example, agentic: {goober: reviewer, workspace: repo-readonly}. Choose scratch when no repository is needed, repo-readonly when only inspecting repository contents, or repo when writable repository state is intentional`,
+		workflow, stage,
 	)
 }
 

@@ -289,6 +289,97 @@ func TestRetryCleanupPendingCancellationPreservesEvidence(t *testing.T) {
 	}
 }
 
+func TestRetryCleanupPendingRepairsInterruptedRetentionDisposition(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		return errors.New("defer")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wt := createPendingRetryWorktree(t, ctx, m, repo, "retained-stage", "owner")
+	ownershipPath := m.ownershipPath(wt.key, filepath.Base(wt.Path))
+	ownership, err := readMarker(ownershipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownership.Status = statusCleanupRetained
+	ownership.RetainedAt = time.Now().UTC()
+	ownership.CleanupDisposition = CleanupDispositionUnknownBase
+	if err := writeMarker(ownershipPath, ownership); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		t.Fatal("interrupted retention repair must not rerun cleanup guards")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Attempted != 1 || len(report.Removed) != 0 || len(report.Warnings) != 1 ||
+		!errors.Is(report.Warnings[0].Err, ErrCleanupRetained) {
+		t.Fatalf("repair report = %+v", report)
+	}
+	primary, err := readMarker(m.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primary.Status != statusCleanupRetained ||
+		primary.CleanupDisposition != CleanupDispositionUnknownBase ||
+		!primary.RetainedAt.Equal(ownership.RetainedAt) {
+		t.Fatalf("repaired marker = %+v", primary)
+	}
+	second, err := m.RetryCleanupPending(ctx, CleanupRetryOptions{Limit: 1})
+	if err != nil || second.Attempted != 0 {
+		t.Fatalf("second retry = %+v, %v", second, err)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("retention repair changed worktree: %v", err)
+	}
+}
+
+func TestFinalizeRunPersistsCleanupRetentionDisposition(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	if err := m.SetCleanupGuard("recovery", func(context.Context, CleanupTarget) error {
+		return RetainCleanupTarget(CleanupDispositionUnknownBase, errors.New("base unavailable"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "retained-finalize-stage", OwnerRunID: "retained-finalize",
+		BaseRef: "main", Branch: "goobers/test/retained-finalize",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := m.FinalizeRun(ctx, "retained-finalize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].WorktreeID != wt.RunID ||
+		results[0].CleanupDisposition != CleanupDispositionUnknownBase {
+		t.Fatalf("finalize results = %+v", results)
+	}
+	primary, err := readMarker(m.markerPath(wt.key, wt.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primary.Status != statusCleanupRetained ||
+		primary.CleanupDisposition != CleanupDispositionUnknownBase {
+		t.Fatalf("retained marker = %+v", primary)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("finalize discarded retained worktree: %v", err)
+	}
+}
+
 func TestRetryCleanupPendingConcurrentPassesSerialize(t *testing.T) {
 	ctx := context.Background()
 	repo := newSourceRepo(t)

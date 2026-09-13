@@ -254,8 +254,9 @@ func sweepStalledRuns(
 	now time.Time,
 	timeout time.Duration,
 	maxDuration time.Duration,
+	recoveryRunDirs ...[]string,
 ) error {
-	runDirs, err := l.RunDirs()
+	candidates, err := recoveryRunCandidates(ctx, l, recoveryRunDirs...)
 	if err != nil {
 		return err
 	}
@@ -266,198 +267,189 @@ func sweepStalledRuns(
 	// scheduler journal when persisted (#1166, #1414).
 	var sweepErrs []error
 	terminalizers := make(map[string]*runner.Runner)
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
+	for _, runDir := range candidates {
+		runsDir := filepath.Dir(runDir)
+		entryName := filepath.Base(runDir)
+		reader, err := journal.OpenRead(runDir)
 		if err != nil {
-			sweepErrs = append(sweepErrs, fmt.Errorf("read runs directory %s: %w", runsDir, err))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			sweepErrs = append(sweepErrs, fmt.Errorf("inspect run directory %q: %w", entryName, err))
 			continue
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
+		identity, err := reader.Identity()
+		if err != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("read run %q identity: %w", entryName, err))
+			continue
+		}
+		runTimeout := timeout
+		runMaxDuration := maxDuration
+		if identity.RunControls != nil {
+			if controlsErr := runcontrol.ValidatePinned(identity.RunControls); controlsErr != nil {
+				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q controls: %w", identity.RunID, controlsErr))
 				continue
 			}
-			runDir := filepath.Join(runsDir, entry.Name())
-			reader, err := journal.OpenRead(runDir)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-				sweepErrs = append(sweepErrs, fmt.Errorf("inspect run directory %q: %w", entry.Name(), err))
+			runTimeout, _ = time.ParseDuration(identity.RunControls.StalledRunTimeout)
+			runMaxDuration = 0
+			if identity.RunControls.MaxRunDuration != "" {
+				runMaxDuration, _ = time.ParseDuration(identity.RunControls.MaxRunDuration)
+			}
+		}
+		phase, err := reader.Phase()
+		if err != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("read run %q phase: %w", identity.RunID, err))
+			continue
+		}
+		if phase != journal.PhaseRunning {
+			continue
+		}
+		durationExceeded := runMaxDuration > 0 && identity.StartedAt.Before(now.Add(-runMaxDuration))
+		if !durationExceeded {
+			events, eventsErr := reader.Events()
+			if eventsErr != nil {
+				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, eventsErr))
 				continue
 			}
-			identity, err := reader.Identity()
-			if err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q identity: %w", entry.Name(), err))
+			if len(events) == 0 {
+				sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
 				continue
 			}
-			runTimeout := timeout
-			runMaxDuration := maxDuration
-			if identity.RunControls != nil {
-				if controlsErr := runcontrol.ValidatePinned(identity.RunControls); controlsErr != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q controls: %w", identity.RunID, controlsErr))
-					continue
-				}
-				runTimeout, _ = time.ParseDuration(identity.RunControls.StalledRunTimeout)
-				runMaxDuration = 0
-				if identity.RunControls.MaxRunDuration != "" {
-					runMaxDuration, _ = time.ParseDuration(identity.RunControls.MaxRunDuration)
-				}
-			}
-			phase, err := reader.Phase()
-			if err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q phase: %w", identity.RunID, err))
+			// Parked at a gate is the sweep's one exemption, and it has to
+			// hold even when something other than the runner appended after
+			// the pause: a mode-3 pod emits into this journal through the
+			// write API's journal plane (livejournal.Writer.Adopt), so a
+			// retried emit or a pod-executed gate's own events can follow
+			// gate.paused. Testing only the last event escalated a run that
+			// was still waiting for a human. See journal.ParkedAtGate.
+			if journal.ParkedAtGate(events) {
 				continue
 			}
-			if phase != journal.PhaseRunning {
+			if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
 				continue
 			}
-			durationExceeded := runMaxDuration > 0 && identity.StartedAt.Before(now.Add(-runMaxDuration))
-			if !durationExceeded {
-				events, eventsErr := reader.Events()
-				if eventsErr != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, eventsErr))
-					continue
-				}
-				if len(events) == 0 {
-					sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
-					continue
-				}
-				// Parked at a gate is the sweep's one exemption, and it has to
-				// hold even when something other than the runner appended after
-				// the pause: a mode-3 pod emits into this journal through the
-				// write API's journal plane (livejournal.Writer.Adopt), so a
-				// retried emit or a pod-executed gate's own events can follow
-				// gate.paused. Testing only the last event escalated a run that
-				// was still waiting for a human. See journal.ParkedAtGate.
-				if journal.ParkedAtGate(events) {
-					continue
-				}
-				if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
-					continue
-				}
-			}
+		}
 
-			// Past the timeout and engine-driven: cancel the workflow and
-			// leave the journal alone. The engine writes the run's terminal
-			// event itself once the cancellation lands — internal/engine's
-			// cancel arm records run_failed + run.finished(aborted) through a
-			// disconnected context, so the run closes out on the same journal
-			// plane that has been authoring it all along. (Before that arm
-			// existed a cancelled run had NO terminal, which would have left
-			// this sweep cancelling a closed execution on every later tick.)
-			//
-			// The phase differs from the runner-driven neighbour below, which
-			// this sweep escalates: the engine reports what actually happened
-			// to its workflow, and what happened is a cancellation.
-			if identity.EngineDriven() {
-				if err := guards.cancel(ctx, identity.RunID); err != nil {
-					sweepErrs = append(sweepErrs, fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err))
-					continue
-				}
-				if log != nil {
-					message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
-					if durationExceeded {
-						message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
-					}
-					appendErr := log.Append(journal.Event{
-						Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
-						Runner: map[string]any{
-							"kind":   journal.RunnerAnnotationRunRecovery,
-							"reason": message,
-							"action": journal.RecoveryActionEngineCancelRequested,
-							"driver": string(identity.Driver),
-						},
-					})
-					if appendErr != nil {
-						sweepErrs = append(sweepErrs, fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, appendErr))
-					}
-				}
-				// Deliberately no `release`: a cancellation is a REQUEST, and
-				// the run's scheduler slot belongs to whoever learns the
-				// outcome. For a run this daemon seeded at startup that is
-				// reattachEngineRun's goroutine, still waiting on the workflow
-				// and releasing when it closes; a run started during this
-				// daemon's life has no reconciled slot to release at all.
-				// Freeing it here, on a request that has not landed yet, is the
-				// same duplicate-admission hazard from the other end.
+		// Past the timeout and engine-driven: cancel the workflow and
+		// leave the journal alone. The engine writes the run's terminal
+		// event itself once the cancellation lands — internal/engine's
+		// cancel arm records run_failed + run.finished(aborted) through a
+		// disconnected context, so the run closes out on the same journal
+		// plane that has been authoring it all along. (Before that arm
+		// existed a cancelled run had NO terminal, which would have left
+		// this sweep cancelling a closed execution on every later tick.)
+		//
+		// The phase differs from the runner-driven neighbour below, which
+		// this sweep escalates: the engine reports what actually happened
+		// to its workflow, and what happened is a cancellation.
+		if identity.EngineDriven() {
+			if err := guards.cancel(ctx, identity.RunID); err != nil {
+				sweepErrs = append(sweepErrs, fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err))
 				continue
 			}
-
-			runLayout := l
-			if filepath.Clean(runsDir) != filepath.Clean(l.RunsDir()) {
-				rootGaggle := filepath.Base(filepath.Dir(runsDir))
-				runLayout = l.ForGaggle(rootGaggle)
+			if log != nil {
+				message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
+				if durationExceeded {
+					message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
+				}
+				appendErr := log.Append(journal.Event{
+					Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
+					Runner: map[string]any{
+						"kind":   journal.RunnerAnnotationRunRecovery,
+						"reason": message,
+						"action": journal.RecoveryActionEngineCancelRequested,
+						"driver": string(identity.Driver),
+					},
+				})
+				if appendErr != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, appendErr))
+				}
 			}
-			runRunner, liveOwner := runners.Resolve(identity.RunID, runLayout.Gaggle(), fallback)
+			// Deliberately no `release`: a cancellation is a REQUEST, and
+			// the run's scheduler slot belongs to whoever learns the
+			// outcome. For a run this daemon seeded at startup that is
+			// reattachEngineRun's goroutine, still waiting on the workflow
+			// and releasing when it closes; a run started during this
+			// daemon's life has no reconciled slot to release at all.
+			// Freeing it here, on a request that has not landed yet, is the
+			// same duplicate-admission hazard from the other end.
+			continue
+		}
+
+		runLayout := l
+		if filepath.Clean(runsDir) != filepath.Clean(l.RunsDir()) {
+			rootGaggle := filepath.Base(filepath.Dir(runsDir))
+			runLayout = l.ForGaggle(rootGaggle)
+		}
+		runRunner, liveOwner := runners.Resolve(identity.RunID, runLayout.Gaggle(), fallback)
+		if runRunner == nil {
+			runRunner = terminalizers[runsDir]
 			if runRunner == nil {
-				runRunner = terminalizers[runsDir]
-				if runRunner == nil {
-					var terminalPreparer runner.TerminalPreparer
-					if prepare != nil {
-						terminalPreparer, err = prepare(runLayout)
-						if err != nil {
-							sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run terminal preparer for %s: %w", runsDir, err))
-							continue
-						}
-					}
-					manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
-					if managerErr != nil {
-						sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, managerErr))
-						continue
-					}
-					runRunner, err = runner.New(runner.Config{
-						Worktrees:       manager,
-						RunsDir:         runsDir,
-						PrepareTerminal: terminalPreparer,
-						FinalizeTerminal: func(runID string, _ journal.RunPhase) error {
-							return finalizeTerminalRun(runLayout, log, manager, runID)
-						},
-						NotifyTerminal: notify,
-					})
+				var terminalPreparer runner.TerminalPreparer
+				if prepare != nil {
+					terminalPreparer, err = prepare(runLayout)
 					if err != nil {
-						sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err))
+						sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run terminal preparer for %s: %w", runsDir, err))
 						continue
 					}
-					terminalizers[runsDir] = runRunner
 				}
-			}
-			var result runner.Result
-			var terminated bool
-			if durationExceeded {
-				result, terminated, err = runRunner.ExpireRun(identity.RunID, now, identity.StartedAt, runMaxDuration)
-			} else {
-				result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, runTimeout)
-			}
-			if terminated {
-				if release != nil {
-					release(identity.RunID, identity.Workflow)
+				manager, managerErr := worktree.NewManager(runLayout.WorkcopiesDir(), mutationCleanupGuard(runsDir))
+				if managerErr != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run worktree manager for %s: %w", runsDir, managerErr))
+					continue
 				}
-				if log != nil && !liveOwner {
-					terminalPhase := journal.PhaseEscalated
-					errorCode := runner.RunStalledErrorCode
-					message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
-					if durationExceeded {
-						terminalPhase = journal.PhaseAborted
-						errorCode = runner.RunDurationExceededErrorCode
-						message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
-					}
-					appendErr := log.Append(journal.Event{
-						Type:     journal.EventRunFinished,
-						Gaggle:   identity.Gaggle,
-						Workflow: identity.Workflow,
-						RunID:    identity.RunID,
-						Status:   string(terminalPhase),
-						Error: &journal.ErrorDetail{
-							Code:    errorCode,
-							Message: message,
-						},
-					})
-					err = errors.Join(err, appendErr)
+				runRunner, err = runner.New(runner.Config{
+					Worktrees:       manager,
+					RunsDir:         runsDir,
+					PrepareTerminal: terminalPreparer,
+					FinalizeTerminal: func(runID string, _ journal.RunPhase) error {
+						return finalizeTerminalRun(runLayout, log, manager, runID)
+					},
+					NotifyTerminal: notify,
+				})
+				if err != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err))
+					continue
 				}
+				terminalizers[runsDir] = runRunner
 			}
-			if err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("terminate watchdog run %q (%s): %w", identity.RunID, result.Phase, err))
+		}
+		var result runner.Result
+		var terminated bool
+		if durationExceeded {
+			result, terminated, err = runRunner.ExpireRun(identity.RunID, now, identity.StartedAt, runMaxDuration)
+		} else {
+			result, terminated, err = runRunner.EscalateStalled(identity.RunID, now, runTimeout)
+		}
+		if terminated {
+			if release != nil {
+				release(identity.RunID, identity.Workflow)
 			}
+			if log != nil && !liveOwner {
+				terminalPhase := journal.PhaseEscalated
+				errorCode := runner.RunStalledErrorCode
+				message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
+				if durationExceeded {
+					terminalPhase = journal.PhaseAborted
+					errorCode = runner.RunDurationExceededErrorCode
+					message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
+				}
+				appendErr := log.Append(journal.Event{
+					Type:     journal.EventRunFinished,
+					Gaggle:   identity.Gaggle,
+					Workflow: identity.Workflow,
+					RunID:    identity.RunID,
+					Status:   string(terminalPhase),
+					Error: &journal.ErrorDetail{
+						Code:    errorCode,
+						Message: message,
+					},
+				})
+				err = errors.Join(err, appendErr)
+			}
+		}
+		if err != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("terminate watchdog run %q (%s): %w", identity.RunID, result.Phase, err))
 		}
 	}
 	return boundedagg.Join(sweepErrs...)

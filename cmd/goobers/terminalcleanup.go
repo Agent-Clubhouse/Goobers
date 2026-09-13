@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -61,12 +62,18 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 	annotationLog := log
 	closeAnnotationLog := false
 	for _, result := range results {
-		if !result.Kept {
+		worktreeStatus := ""
+		if result.Kept {
+			worktreeStatus = "kept"
+		} else if result.CleanupDisposition != "" {
+			worktreeStatus = "cleanup-retained"
+		}
+		if worktreeStatus == "" {
 			continue
 		}
-		journaled, err := keptWorktreeJournaled(l.SchedulerDir(), runID, result.WorktreeID)
+		journaled, err := worktreeDispositionJournaled(l.SchedulerDir(), runID, result.WorktreeID, worktreeStatus)
 		if err != nil {
-			annotationErr = errors.Join(annotationErr, fmt.Errorf("inspect kept worktree annotation %s: %w", result.WorktreeID, err))
+			annotationErr = errors.Join(annotationErr, fmt.Errorf("inspect worktree disposition annotation %s: %w", result.WorktreeID, err))
 			continue
 		}
 		if journaled {
@@ -76,8 +83,11 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 			Type: journal.EventRunnerAnnotation,
 			Runner: map[string]any{
 				"worktreeID":     result.WorktreeID,
-				"worktreeStatus": "kept",
+				"worktreeStatus": worktreeStatus,
 			},
+		}
+		if result.CleanupDisposition != "" {
+			event.Runner["cleanupDisposition"] = result.CleanupDisposition
 		}
 		event.RunID = runID
 		if annotationLog == nil {
@@ -106,9 +116,14 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 	if isJournaledClaimsLockTimeout(claimErr) {
 		claimErr = nil
 	}
-	return errors.Join(worktreeErr, annotationErr, noOpErr, claimErr)
+	err := errors.Join(worktreeErr, annotationErr, noOpErr, claimErr)
+	if err == nil {
+		err = journal.ClearRunActive(filepath.Join(l.RunsDir(), runID))
+	}
+	return err
 }
 
-func keptWorktreeJournaled(schedulerDir, runID, worktreeID string) (bool, error) {
-	return annotationsForInstance(schedulerDir).worktreeKept(schedulerDir, runID, worktreeID)
+func worktreeDispositionJournaled(schedulerDir, runID, worktreeID, status string) (bool, error) {
+	recorded, err := annotationsForInstance(schedulerDir).worktreeState(schedulerDir, runID, worktreeID)
+	return recorded == status, err
 }
