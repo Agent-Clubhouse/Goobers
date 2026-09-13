@@ -12,13 +12,12 @@ import (
 // lookups into the instance journal. The first lookup establishes a sequence
 // watermark; subsequent lookups parse only records appended after it (#4863).
 type instanceAnnotationFold struct {
-	mu             sync.Mutex
-	seq            uint64
-	journalState   journal.InstanceLogState
-	initialized    bool
-	itemRepos      map[string]recordedItemRepo
-	failureStreaks map[string]int
-	keptWorktrees  map[string]bool
+	mu            sync.Mutex
+	seq           uint64
+	journalState  journal.InstanceLogState
+	initialized   bool
+	itemRepos     map[string]recordedItemRepo
+	keptWorktrees map[string]bool
 }
 
 var instanceAnnotationFolds sync.Map // scheduler directory -> *instanceAnnotationFold
@@ -69,7 +68,6 @@ func (f *instanceAnnotationFold) reset(state journal.InstanceLogState) {
 	f.journalState = state
 	f.initialized = true
 	f.itemRepos = nil
-	f.failureStreaks = nil
 	f.keptWorktrees = nil
 }
 
@@ -100,16 +98,6 @@ func (f *instanceAnnotationFold) apply(events []journal.Event) {
 				repo: providers.RepositoryRef{Provider: providers.ProviderKind(provider), Owner: owner, Project: project, Name: name},
 				kind: kind,
 			}
-		case failureStreakAnnotation:
-			key, _ := event.Runner["key"].(string)
-			count, ok := event.Runner["count"].(float64)
-			if key == "" || !ok {
-				continue
-			}
-			if f.failureStreaks == nil {
-				f.failureStreaks = make(map[string]int)
-			}
-			f.failureStreaks[key] = int(count)
 		}
 		if event.RunID != "" && event.Runner["worktreeID"] != nil && event.Runner["worktreeStatus"] == "kept" {
 			worktreeID, _ := event.Runner["worktreeID"].(string)
@@ -136,15 +124,6 @@ func (f *instanceAnnotationFold) itemRepositories(schedulerDir, runID string, it
 		}
 	}
 	return found, nil
-}
-
-func (f *instanceAnnotationFold) failureStreak(schedulerDir, key string) (int, error) {
-	if err := f.refresh(schedulerDir); err != nil {
-		return 0, fmt.Errorf("read instance log for failure streak: %w", err)
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.failureStreaks[key], nil
 }
 
 func (f *instanceAnnotationFold) worktreeKept(schedulerDir, runID, worktreeID string) (bool, error) {

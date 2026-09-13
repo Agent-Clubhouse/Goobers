@@ -52,7 +52,9 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		// remediation-verdict record, the two marker families moved off
 		// provider comments onto this plane.
 		FailureStreakKey(digest),
-		RemediationVerdictKey(digest),
+		// Goobers#5030 (verdict-json follow-up) has not landed a constructor
+		// yet — the shape itself is reserved and admitted here directly.
+		"remediation-verdict-" + digest + ".json",
 	} {
 		if !ValidKey(key) {
 			t.Fatalf("ValidKey(%q) = false, want the closed namespace to admit it", key)
