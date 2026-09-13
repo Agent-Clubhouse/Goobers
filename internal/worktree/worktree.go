@@ -953,7 +953,9 @@ func (m *Manager) removeUnregisteredWorktreeDirectory(ctx context.Context, repoD
 	if registered {
 		return removeErr
 	}
-	if err := retryOnFileLock(ctx, func() error { return os.RemoveAll(path) }); err != nil {
+	if err := retryOnFileLockWithBudget(ctx, unregisteredWorktreeRetryAttempts, fileLockRetryBackoff, func() error {
+		return os.RemoveAll(path)
+	}); err != nil {
 		return errors.Join(removeErr, fmt.Errorf("remove unregistered worktree directory: %w", err))
 	}
 	if err := runCleanupGit(ctx, repoDir, "worktree prune", "worktree", "prune"); err != nil {
