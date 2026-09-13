@@ -23,6 +23,22 @@ type ReapOptions struct {
 	// IsRunTerminal reports whether a markerless, git-deregistered worktree
 	// belongs to a terminal run. Nil leaves that ambiguous shape untouched.
 	IsRunTerminal func(worktreeID string) (bool, error)
+	// IsRunAbandoned reports whether an active-marked worktree whose owning
+	// process is STILL ALIVE belongs to a run that already settled. It closes
+	// the gap #5035 measured: normal-completion removal is one best-effort
+	// attempt (Worktree.Remove, FinalizeRun) whose failure nothing retries,
+	// and the resulting marker stays `active` under the live daemon's own
+	// PID — so the crash reaper skips it (owner is not dead) and retention
+	// pruning skips it (never marked kept). It then survives until some later
+	// restart makes its PID dead, which is why one instance reached 871
+	// worktree directories with no active runs.
+	//
+	// Unlike IsRunTerminal this takes the marker's stamped OwnerRunID, so the
+	// owning journal is resolved exactly rather than by name prefix.
+	//
+	// Nil disables the check entirely, leaving Reap's pre-#5035 behaviour
+	// untouched for every caller that does not opt in.
+	IsRunAbandoned func(worktreeID, ownerRunID string) (bool, error)
 }
 
 // ReapReason explains why Reap removed a worktree.
@@ -38,7 +54,27 @@ const (
 	// ReapReasonCleanupPending means a prior explicit teardown surrendered the
 	// worktree but one of its guarded cleanup steps deferred removal.
 	ReapReasonCleanupPending ReapReason = "cleanup-pending"
+	// ReapReasonAbandoned means the marker is still `active` under a live
+	// owning process, but the run that owns it already settled — its
+	// one-shot normal-completion removal failed and nothing would ever
+	// retry it (#5035).
+	ReapReasonAbandoned ReapReason = "abandoned"
 )
+
+// runAbandoned reports whether mk's still-live owner has already finished
+// the run this worktree belongs to. A nil IsRunAbandoned (every caller that
+// has not opted in) answers false, preserving Reap's pre-#5035 behaviour.
+//
+// This deliberately races nothing: a run that has just settled may still be
+// inside its own FinalizeRun, in which case both paths remove the same
+// worktree under the same repository lock and converge on the same result.
+// The check exists for the case FinalizeRun already gave up on.
+func (o ReapOptions) runAbandoned(mk marker) (bool, error) {
+	if o.IsRunAbandoned == nil {
+		return false, nil
+	}
+	return o.IsRunAbandoned(mk.RunID, mk.OwnerRunID)
+}
 
 var errReapAuthorityChanged = errors.New("worktree: reap authority changed while waiting for repository lock")
 
@@ -165,9 +201,22 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 		switch mk.Status {
 		case statusActive:
 			if processAlive(mk.PID) && !pidReused(mk) {
-				continue
+				// The owner is alive, so this is not a crash orphan. It is
+				// still reapable when the owning run has settled: the only
+				// way an active marker outlives its own run is a normal
+				// removal that failed and will never be retried (#5035).
+				abandoned, err := opts.runAbandoned(mk)
+				if err != nil {
+					warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
+					continue
+				}
+				if !abandoned {
+					continue
+				}
+				reason = ReapReasonAbandoned
+			} else {
+				reason = ReapReasonOrphaned
 			}
-			reason = ReapReasonOrphaned
 		case statusCleanupPending:
 			// Remove already recorded that the stage surrendered this tree.
 			// Retry immediately even while the owning daemon PID remains live.

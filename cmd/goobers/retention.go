@@ -91,15 +91,18 @@ func startDeferredRetentionSweep(ctx context.Context, l instance.Layout, setup *
 // are not safe for concurrent use.
 func sweepWorktreeRetention(ctx context.Context, l instance.Layout, setup *schedulerSetup) error {
 	for gaggle, manager := range setup.WorktreesByGaggle {
+		runsDir := l.ForGaggle(gaggle).RunsDir()
 		if _, _, err := manager.Reap(ctx, worktree.ReapOptions{
-			IsRunTerminal: worktreeRunTerminal(l.ForGaggle(gaggle).RunsDir()),
+			IsRunTerminal:  worktreeRunTerminal(runsDir),
+			IsRunAbandoned: worktreeRunAbandoned(runsDir),
 		}); err != nil {
 			return fmt.Errorf("reap worktrees for gaggle %s: %w", gaggle, err)
 		}
 	}
 	if setup.LegacyWorktrees != nil {
 		if _, _, err := setup.LegacyWorktrees.Reap(ctx, worktree.ReapOptions{
-			IsRunTerminal: worktreeRunTerminal(l.RunsDir()),
+			IsRunTerminal:  worktreeRunTerminal(l.RunsDir()),
+			IsRunAbandoned: worktreeRunAbandoned(l.RunsDir()),
 		}); err != nil {
 			return fmt.Errorf("reap legacy worktrees: %w", err)
 		}
@@ -439,6 +442,39 @@ func terminalRunPhase(phase journal.RunPhase) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// settledRunPhase is terminalRunPhase minus PhaseEscalated: the phases after
+// which nothing legitimately still holds the run's worktree.
+//
+// Escalation is excluded on purpose. An escalated run is parked awaiting a
+// remediation handoff, and whether that handoff still needs the originating
+// run's worktree is an open question (#3098) — so the abandoned sweep leaves
+// escalated runs to the existing crash-orphan and retention paths rather than
+// resolving #3098 by deleting the evidence. #5035's leak is normal-completion
+// cleanup, which is exactly the three phases below.
+func settledRunPhase(phase journal.RunPhase) bool {
+	switch phase {
+	case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted:
+		return true
+	default:
+		return false
+	}
+}
+
+// worktreeRunAbandoned answers worktree.ReapOptions.IsRunAbandoned: an
+// active-marked worktree under a live owner whose run has settled. Unlike
+// worktreeRunTerminal it forwards the marker's stamped owner run ID, so the
+// journal is resolved exactly when one is present and only falls back to
+// prefix matching for legacy markers that predate the field.
+func worktreeRunAbandoned(runsDir string) func(string, string) (bool, error) {
+	return func(worktreeID, ownerRunID string) (bool, error) {
+		phase, found, err := retainedWorktreePhase(runsDir, worktreeID, ownerRunID)
+		if err != nil {
+			return false, err
+		}
+		return found && settledRunPhase(phase), nil
 	}
 }
 
