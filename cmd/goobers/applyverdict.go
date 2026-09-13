@@ -820,18 +820,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if err := validateVerdictForPublish(posted); err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("validate verdict for PR #%d", selectedNumber), err, resultFile)
+	comment, err := prepareVerdictComment(root, repo, selectedNumber, posted, providerInput("scopeGateParked", "") == "true")
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("prepare verdict for PR #%d", selectedNumber), err, resultFile)
 	}
-	// Authoritative KV write BEFORE the sticky status comment (Goobers#3025/
-	// #5030) — see publishADOPassVerdict's identical ordering rationale.
-	if err := writeVerdictState(root, repo, selectedNumber, posted); err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("persist verdict state for PR #%d", selectedNumber), err, resultFile)
-	}
-	comment := renderScopeGateStateComment(
-		renderVerdictComment(posted),
-		providerInput("scopeGateParked", "") == "true",
-	)
 	historyPayload, err := findingSetHistoryComment(history)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("render finding-set history for PR #%d", selectedNumber), err, resultFile)

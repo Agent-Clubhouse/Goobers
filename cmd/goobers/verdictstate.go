@@ -147,6 +147,23 @@ func migrateVerdictState(root string, repo providers.RepositoryRef, prNumber int
 	})
 }
 
+// prepareVerdictComment validates verdict, writes it to the authoritative KV
+// key, and renders the comment projection — in that order, so the sticky
+// status comment is never posted for a verdict that failed validation or
+// could not be persisted. Consolidated into one call (rather than three
+// separate branches at the call site) to keep runApplyVerdict's own
+// complexity flat: the three checks collapse into the single error this
+// returns.
+func prepareVerdictComment(root string, repo providers.RepositoryRef, selectedNumber int, verdict apiv1.Verdict, scopeGateParked bool) (string, error) {
+	if err := validateVerdictForPublish(verdict); err != nil {
+		return "", err
+	}
+	if err := writeVerdictState(root, repo, selectedNumber, verdict); err != nil {
+		return "", err
+	}
+	return renderScopeGateStateComment(renderVerdictComment(verdict), scopeGateParked), nil
+}
+
 // writeVerdictState is the record's authoritative write, called BEFORE the
 // caller posts the human-visible comment projection. Appends a journal audit
 // event on success via the stage-pod-safe annotation seam (#3898) — the same
