@@ -37,7 +37,13 @@ func TestShippedImageProbesRunWithRealBinary(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build goobers: %v\n%s", err, output)
 	}
-	pathEnv := "PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	// The image always has coreutils and goobers on a normal system path. CI
+	// runs this suite with a PATH that does not always carry /usr/bin and
+	// /bin, and the shipped probe uses mv — without these the script dies
+	// "mv: not found" for reasons that say nothing about the probe.
+	pathEnv := "PATH=" + strings.Join([]string{
+		binDir, os.Getenv("PATH"), "/usr/bin", "/bin",
+	}, string(os.PathListSeparator))
 
 	t.Run("stage", func(t *testing.T) {
 		stage := exec.Command("/bin/sh", "-ec", linuxImageStagePrepare)
